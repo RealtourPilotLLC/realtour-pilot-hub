@@ -8,6 +8,7 @@ import { listPillars, pillarMappingProposal, dismissedPillarLabels } from "@/lib
 import { topicBankByPillar, pendingSuggestions, refreshRuns, monthCapacity, bankStock, heldSuggestions } from "@/lib/contentTopics";
 import { interviewState, interviewsForMonth, answersChangedSinceLastDraft } from "@/lib/contentInterview";
 import { readAngle, readJudge, judgeLine, judgeFlagged } from "@/lib/scriptJudgeRecord";
+import { writerCardOf } from "@/lib/scriptWriter/record";
 import { factsForReview, factCounts } from "@/lib/clientFacts";
 import { importBatches, importReviewItems } from "@/lib/contentImport";
 import { activePolicyVersion } from "@/lib/aiRuns";
@@ -190,13 +191,17 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
       try { if (v.answerIdsJson) answers = (JSON.parse(v.answerIdsJson) as unknown[]).length; } catch { /* none */ }
       try { if (v.regeneratedSections) regenerated = JSON.parse(v.regeneratedSections); } catch { /* none */ }
       const basedOn = v.basedOnVersionId ? vs.find((x) => x.id === v.basedOnVersionId)?.versionNo ?? null : null;
+      // Oct 22 2026: the new writer's brief, creative review and rationale
+      // (staff only). Its review line lives in those notes, not the old check line.
+      const writer = writerCardOf(v.validationJson);
       return {
         id: v.id, versionNo: v.versionNo, status: v.status, source: v.source, body: v.body, createdBy: v.createdBy, createdAt: v.createdAt.toISOString(), changeSummary: v.changeSummary, approvedBy: v.approvedBy, approvedAt: iso(v.approvedAt), sharedAt: iso(v.sharedAt),
         estimatedSeconds: v.estimatedSeconds, spokenWordCount: v.spokenWordCount, pointCount: points, findings, gaps, strategyVersionNo: strategyVs.find((x) => x.id === v.strategyVersionId)?.versionNo ?? null, policyVersionNo: policies.find((x) => x.id === v.policyVersionId)?.versionNo ?? null,
         answerCount: answers, path: v.interviewId ? "written answers" : v.callRecordId ? "call" : v.source.toLowerCase().replace(/_/g, " "), basedOnVersionNo: basedOn, regeneratedSections: regenerated,
         skit: !!v.speakerLabelsJson, filmingNotes: v.filmingNotes,
         // Oct 14 2026: the writer's angle and the automatic check's line (staff only).
-        angle: readAngle(v.validationJson), check: judgeLine(readJudge(v.validationJson)), flagged: judgeFlagged(readJudge(v.validationJson)),
+        angle: readAngle(v.validationJson), flagged: judgeFlagged(readJudge(v.validationJson)),
+        writer, check: writer?.review ? null : judgeLine(readJudge(v.validationJson)),
       };
     };
     // A pre-versioning script shows its legacy body as an implicit v1 until an action lifts it.

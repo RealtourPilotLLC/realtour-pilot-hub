@@ -107,10 +107,10 @@ export type MessagesHttpResponse = { status: number; json: unknown; requestId: s
  * read included). Throws on a network failure, and on the time limit with a
  * DOMException named "TimeoutError". The key travels in the header only.
  */
-export async function postMessages(body: Record<string, unknown> | string, key: string, opts: { timeoutMs: number }): Promise<MessagesHttpResponse> {
+export async function postMessages(body: Record<string, unknown> | string, key: string, opts: { timeoutMs: number; /** Oct 22 2026: extra request headers (the script writer's beta opt-in). Never the key, the version or the content type: those are set below and win. */ headers?: Record<string, string> }): Promise<MessagesHttpResponse> {
   const res = await fetch(ANTHROPIC_MESSAGES_URL, {
     method: "POST",
-    headers: { "x-api-key": key, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json" },
+    headers: { ...(opts.headers ?? {}), "x-api-key": key, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json" },
     body: typeof body === "string" ? body : JSON.stringify(body),
     cache: "no-store",
     signal: AbortSignal.timeout(Math.max(1_000, Math.round(opts.timeoutMs))),
@@ -128,7 +128,7 @@ export async function postMessages(body: Record<string, unknown> | string, key: 
 // Low-level call with transient-failure retry (529/429/5xx/network) inside
 // the call's time limit. Returns the parsed JSON response (caller pulls text /
 // tool_use out). Shared by the simple one-shot helper and the agent loop.
-async function callMessages(body: Record<string, unknown>, key: string, opts: { timeoutMs?: number } = {}): Promise<AnthropicResponse> {
+async function callMessages(body: Record<string, unknown>, key: string, opts: { timeoutMs?: number; headers?: Record<string, string> } = {}): Promise<AnthropicResponse> {
   const payload = JSON.stringify(body);
   const limitMs = opts.timeoutMs ?? aiTimeoutFor(typeof body.max_tokens === "number" ? body.max_tokens : 4000);
   const deadline = Date.now() + limitMs;
@@ -141,7 +141,7 @@ async function callMessages(body: Record<string, unknown>, key: string, opts: { 
     }
     let res: MessagesHttpResponse;
     try {
-      res = await postMessages(payload, key, { timeoutMs: deadline - Date.now() });
+      res = await postMessages(payload, key, { timeoutMs: deadline - Date.now(), headers: opts.headers });
     } catch (e) {
       if (isAbortError(e)) {
         // Out of time is final: another try would only spend the rest of
@@ -244,6 +244,130 @@ export async function aiJsonWithUsage<T>(opts: {
   const call = json.content?.find((b) => b.type === "tool_use" && b.name === "emit");
   if (!call?.input) throw new Error("The AI did not return a usable answer.");
   return { result: decodeStringifiedJson(call.input, opts.schema) as T, usage: usageOf(json), model: json.model ?? model };
+}
+
+// ---------------------------------------------------------------------------
+// THE SCRIPT WRITER'S MODEL PATH (Oct 22 2026). A NEW path beside the one
+// above: only the monthly script writer (src/lib/scriptWriter) calls it, and
+// every other AI feature in the hub keeps aiJson / aiJsonWithUsage, its model
+// and its code exactly as they were.
+//
+// The writer runs on claude-opus-5-5, which REJECTS what the path above relies
+// on: a forced tool_choice ("tool" / "any") is a 400, so is an assistant
+// prefill, and thinking cannot be switched off. So this path:
+//   · asks for the answer as STRUCTURED OUTPUT (output_config.format, a JSON
+//     schema) instead of a forced tool call, and reads the text block by its
+//     type (thinking blocks come first, empty);
+//   · names the effort explicitly (the model's default is medium): the caller
+//     passes it per step (high for the draft and the review, medium for the
+//     source reading and the brief);
+//   · sends no temperature, no thinking field (adaptive is the default) and
+//     the same anthropic-version as every other call (postMessages);
+//   · caches the long, stable system prompt (cache_control on the system
+//     block), so a sweep drafting several scripts reads the house rules once;
+//   · sizes max_tokens for the thinking as well as the answer, and on
+//     stop_reason "max_tokens" tries once more with twice the room before it
+//     gives up (AiTruncatedError: never a half answer parsed as a whole one);
+//   · checks stop_reason "refusal" BEFORE reading the content (AiRefusalError,
+//     with the category the API gave), and opts in to the server-side refusal
+//     fallback (claude-opus-5, beta header) so a false-positive decline does
+//     not stop a draft. An account that does not take the beta gets the same
+//     request once more without it.
+// ---------------------------------------------------------------------------
+export const WRITER_MODEL = "claude-opus-5-5";
+/** The model a declined writer request is retried on, server side (the fallback opt-in). */
+export const WRITER_FALLBACK_MODEL = "claude-opus-5";
+export const WRITER_FALLBACK_BETA = "server-side-fallback-2026-06-01";
+export type AiEffort = "low" | "medium" | "high" | "xhigh" | "max";
+/** The most room one writer answer gets after a max_tokens retry (thinking counts toward it). */
+const WRITER_MAX_TOKENS_CEILING = 32_000;
+
+/** The model declined the request (stop_reason "refusal"). Nothing from it is used. */
+export class AiRefusalError extends Error {
+  category: string | null;
+  constructor(category: string | null) {
+    super(`The AI declined this request${category ? ` (${category})` : ""}. Nothing from it was used; try again, or write this one by hand.`);
+    this.name = "AiRefusalError";
+    this.category = category;
+  }
+}
+/** The answer ran out of room (stop_reason "max_tokens") even after a retry with more. */
+export class AiTruncatedError extends Error {
+  constructor() {
+    super("The AI's answer ran out of room before it finished, twice. Nothing from it was used; try again.");
+    this.name = "AiTruncatedError";
+  }
+}
+
+type StructuredResponse = AnthropicResponse & { stop_details?: { category?: string | null } | null };
+
+export type StructuredRequestOpts = { system: string; prompt: string; schema: Record<string, unknown>; effort: AiEffort; maxTokens: number; model?: string; fallback?: boolean };
+
+/** The request body and extra headers the writer path sends. Pure: the drill reads it to prove the shape. */
+export function buildStructuredRequest(opts: StructuredRequestOpts): { body: Record<string, unknown>; headers: Record<string, string> } {
+  const fallback = opts.fallback !== false;
+  const body: Record<string, unknown> = {
+    model: opts.model ?? WRITER_MODEL,
+    max_tokens: opts.maxTokens,
+    system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
+    messages: [{ role: "user", content: opts.prompt }],
+    output_config: { effort: opts.effort, format: { type: "json_schema", schema: opts.schema } },
+  };
+  if (fallback) body.fallbacks = [{ model: WRITER_FALLBACK_MODEL }];
+  return { body, headers: fallback ? { "anthropic-beta": WRITER_FALLBACK_BETA } : {} };
+}
+
+/**
+ * One structured answer from the writer's model, with the usage of every
+ * attempt it took and the model that answered (the fallback's name when it
+ * served). Throws AiRefusalError / AiTruncatedError / the transport's errors.
+ */
+export async function aiStructuredWithUsage<T>(opts: {
+  system: string;
+  prompt: string;
+  schema: Record<string, unknown>;
+  effort: AiEffort;
+  maxTokens?: number;
+  model?: string;
+  key?: string;
+  /** The whole call's time limit, retries included; default aiTimeoutFor(maxTokens). */
+  timeoutMs?: number;
+  /** false = no server-side refusal fallback. Default on. */
+  fallback?: boolean;
+}): Promise<{ result: T; usage: AiUsage; model: string; stopReason: string | null }> {
+  const key = opts.key ?? (await getSecret("ai"));
+  if (!key) throw new Error("AI is not connected.");
+  const model = opts.model ?? WRITER_MODEL;
+  let maxTokens = opts.maxTokens ?? 16_000;
+  let fallback = opts.fallback !== false;
+  const started = Date.now();
+  const limitMs = opts.timeoutMs ?? aiTimeoutFor(maxTokens);
+  const total: AiUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const req = buildStructuredRequest({ system: opts.system, prompt: opts.prompt, schema: opts.schema, effort: opts.effort, maxTokens, model, fallback });
+    let json: StructuredResponse;
+    try {
+      json = (await callMessages(req.body, key, { timeoutMs: Math.max(1_000, limitMs - (Date.now() - started)), headers: req.headers })) as StructuredResponse;
+    } catch (e) {
+      // The fallback opt-in refused (an account or region without the beta):
+      // the same request once more without it. Anything else is the caller's.
+      if (fallback && e instanceof Error && e.name !== "TimeoutError" && /fallback|anthropic-beta/i.test(e.message)) { fallback = false; continue; }
+      throw e;
+    }
+    const u = usageOf(json);
+    total.inputTokens += u.inputTokens; total.outputTokens += u.outputTokens; total.cacheReadTokens += u.cacheReadTokens; total.cacheWriteTokens += u.cacheWriteTokens;
+    // Checked before the content is read: a declined request's content is empty or partial.
+    if (json.stop_reason === "refusal") throw new AiRefusalError(json.stop_details?.category ?? null);
+    if (json.stop_reason === "max_tokens") {
+      if (maxTokens < WRITER_MAX_TOKENS_CEILING) { maxTokens = Math.min(WRITER_MAX_TOKENS_CEILING, maxTokens * 2); continue; }
+      throw new AiTruncatedError();
+    }
+    const text = (json.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("").trim();
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch { throw new Error("The AI did not return a usable answer."); }
+    return { result: decodeStringifiedJson(parsed, opts.schema) as T, usage: total, model: json.model ?? model, stopReason: json.stop_reason ?? null };
+  }
+  throw new AiTruncatedError();
 }
 
 /**

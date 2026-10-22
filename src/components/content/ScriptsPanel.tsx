@@ -8,6 +8,9 @@ import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { useToast } from "@/components/ui/Toast";
 import { useAiQueueWatch } from "@/components/content/useAiQueueWatch";
 import { ScriptView } from "@/components/script/ScriptView";
+import { WriterNotes } from "@/components/content/WriterNotes";
+import type { WriterCardUi } from "@/lib/scriptWriter/record";
+import { WRITER_LENGTH } from "@/lib/scriptWriter/rules";
 // policy.ts is pure data with no imports of its own ("no node:crypto so this
 // file can be imported from client components") — the 30–50 s target and the
 // 25 s / 65 s warning thresholds are read from it rather than copied, so the
@@ -41,7 +44,9 @@ export type VersionUi = { id: string; versionNo: number; status: string; source:
   /** Still flagged by the automatic check: sorts first in the review queue. */
   flagged?: boolean;
   /** Oct 14 2026: the shoot plan (staff only). Not part of `body`, so the editor carries it in its own box. */
-  filmingNotes?: string | null };
+  filmingNotes?: string | null;
+  /** Oct 22 2026: the new writer's brief, review and rationale (staff only; null for a version it did not make). */
+  writer?: WriterCardUi | null };
 /** One topic the month owes a script, with the reason it is or is not ready. Mirrors ScriptWorkItem in src/lib/contentDrafting.ts. */
 export type OwedUi = { topicId: string; title: string; monthId: string; readiness: string; why: string; interviewId: string | null; excerpts: number };
 
@@ -302,7 +307,8 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
             {pace === "over" && cur.skit && (
               <p className="text-muted">Length: ≈{cur.estimatedSeconds}s ({cur.spokenWordCount} spoken words; speakers and directions aren&rsquo;t counted). Skits run longer than a talking head, and that&rsquo;s fine.</p>
             )}
-            {pace === "over" && !cur.skit && (
+            {/* Oct 22 2026: over the 110-word cap, the "A bit long: needs a fix" line below says it (with its own fix). */}
+            {pace === "over" && !cur.skit && !((cur.spokenWordCount ?? 0) > WRITER_LENGTH.cap) && (
               <p className="flex flex-wrap items-center gap-1.5 text-warning">
                 <span>Length: ≈{cur.estimatedSeconds}s ({cur.spokenWordCount} words) — well over a minute; the target is {TARGET_LO}–{TARGET_HI}s. It can still be approved — this is an estimate from a word count, not a rejection.</span>
                 <button disabled={revBusy} onClick={() => rev?.onRevise("tighten")} className="inline-flex items-center gap-1 rounded-md border border-warning/40 px-2 py-0.5 font-semibold text-warning hover:bg-warning/10 disabled:opacity-50">
@@ -339,6 +345,10 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
               </details>
             )}
           </div>
+        )}
+        {/* Oct 22 2026: the new writer's review, rationale and brief, and the length rule (over 110 words: "A bit long: needs a fix", one press). */}
+        {cur && !s.historical && mode !== "edit" && (
+          <WriterNotes writer={cur.writer} words={cur.spokenWordCount} skit={!!cur.skit} canFix={!!rev} busy={revBusy} onFix={(instruction) => rev?.onRevise("revise", instruction)} />
         )}
         {mode === "edit" ? (
           <div className="mt-2">

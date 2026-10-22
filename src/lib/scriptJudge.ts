@@ -136,11 +136,16 @@ async function finishFlagged(current: VersionRow, record: JudgeRecord, requested
     const pj = prev ? readJudge(prev.validationJson) : null;
     if (!prev || !pj || !pj.criteria.length) break;
     chain.push({ v: prev, j: pj });
-    if (pj.fixRounds === 0) break;
+    // The new writer's trim pass keeps its round count: walk past it to the draft.
+    if (pj.fixRounds === 0 && !pj.trimmed) break;
     cursor = prev;
   }
   const warns = (v: VersionRow) => { try { return ((JSON.parse(v.validationJson ?? "{}") as { findings?: { severity: string }[] }).findings ?? []).filter((f) => f.severity !== "info").length; } catch { return 0; } };
-  const score = (x: { v: VersionRow; j: JudgeRecord }) => x.j.criteria.filter((c) => !c.pass).length * 100 + warns(x.v);
+  // Oct 22 2026: the creative review weighs a must-fix failure far above a flag.
+  const score = (x: { v: VersionRow; j: JudgeRecord }) =>
+    x.j.writer === 2 && x.j.checks?.length
+      ? x.j.checks.filter((c) => !c.pass && c.level === "must-fix").length * 100 + x.j.checks.filter((c) => !c.pass).length * 10 + warns(x.v)
+      : x.j.criteria.filter((c) => !c.pass).length * 100 + warns(x.v);
   const best = chain.reduce((a, b) => (score(b) < score(a) ? b : a), chain[0]);
   if (best.v.id === current.id) {
     await writeJudge(current.id, { ...record, state: "flagged" });
@@ -156,13 +161,102 @@ async function finishFlagged(current: VersionRow, record: JudgeRecord, requested
   const r = await createScriptVersion({
     scriptId: s.id, enrollmentId: s.enrollmentId, monthId: s.monthId, topicId: s.topicId, parts: partsOf(best.v), source: "AI", createdBy: requestedBy, status: "INTERNAL_REVIEW",
     basedOnVersionId: current.id, interviewId: s.interviewId, callRecordId: s.callRecordId, strategyVersionId: best.v.strategyVersionId, policyVersionId: best.v.policyVersionId, aiRunId: best.v.aiRunId,
-    validation: { ok: bag.ok !== false, findings: (bag.findings as never[]) ?? [], angle: bag.angle ?? null, judge: { ...best.j, state: "flagged", fixRounds: record.fixRounds, keptVersionNo: best.v.versionNo } },
-    gaps, changeSummary: `Automatic check: kept v${best.v.versionNo}, the better of the attempts; still flagged for review.`,
+    // The whole bag goes forward (the new writer's brief and close type with it); the judge record is the flagged one.
+    validation: { ...bag, ok: bag.ok !== false, findings: (bag.findings as never[]) ?? [], angle: bag.angle ?? null, judge: { ...best.j, state: "flagged", fixRounds: record.fixRounds, keptVersionNo: best.v.versionNo } },
+    gaps, changeSummary: `${record.writer === 2 ? "Creative review" : "Automatic check"}: kept v${best.v.versionNo}, the better of the attempts; still flagged for review.`,
   });
   return r.versionId;
 }
 
 export type AutoCheckResult = { state: JudgeRecord["state"] | "skipped"; fixRounds: number; versionId: string | null; reason?: string };
+
+/**
+ * ONE STEP OF THE NEW WRITER'S REVIEW LOOP (Oct 22 2026, src/lib/scriptWriter).
+ *
+ *   pending / not_checked → the independent creative review (12 checks + the
+ *                           code's hard numbers). Then, by nextWriterStep:
+ *                           passed; or the trim pass when only the length
+ *                           fails; or a fix round (two at most); or, still over
+ *                           the 110-word cap, the trim pass; or FLAGGED (the
+ *                           better attempt kept, sorted first in the queue).
+ *   fixing                → a fix round from the review's notes (it trims too
+ *                           when over the cap), judged again.
+ *   trimming              → the trim pass, judged again.
+ *
+ * A script already shared with the client is never changed here: no review,
+ * no fix and no trim run on it (the shared version stays exactly what the
+ * client saw; this draft waits for a person).
+ */
+async function writerReviewStep(
+  scriptId: string, v: VersionRow, j: JudgeRecord, shared: boolean,
+  o: { requestedBy: string; unattended: boolean; deadline: number | null; timeFor: (ms: number) => boolean },
+): Promise<AutoCheckResult | "continue"> {
+  const w = await import("@/lib/scriptWriter/pipeline");
+  const { trimInstruction } = await import("@/lib/scriptWriter/rules");
+  const stay = (reason: string): AutoCheckResult => ({ state: j.state, fixRounds: j.fixRounds, versionId: v.id, reason });
+  if (shared) {
+    if (j.state === "pending" || j.state === "fixing" || j.state === "trimming") await writeJudge(v.id, { ...j, state: "not_checked", attempts: MAX_JUDGE_ATTEMPTS, error: "This script was already shared with the client, so the automatic review and fixes do not run on it." });
+    return { state: "skipped", fixRounds: j.fixRounds, versionId: v.id, reason: "already shared with the client" };
+  }
+  const pausedOrRefused = (e: unknown): AutoCheckResult | null => {
+    const msg = e instanceof Error ? e.message : String(e);
+    const name = e instanceof Error ? e.name : "";
+    if (/already running/i.test(msg)) return stay(j.state === "pending" || j.state === "not_checked" ? "judged elsewhere" : "a revision is running");
+    if (name === "AutomationDisabledError" || name === "QuotaExceededError") return stay(name);
+    if (name === "WriterPausedError") return stay("out of time");
+    return null;
+  };
+
+  if (j.state === "pending" || (j.state === "not_checked" && j.attempts < MAX_JUDGE_ATTEMPTS)) {
+    if (!o.timeFor(JUDGE_MIN_START_MS)) return stay("out of time");
+    let r: Awaited<ReturnType<typeof w.reviewVersion>>;
+    try {
+      r = await w.reviewVersion(v.id, { requestedBy: o.requestedBy, unattended: o.unattended, deadline: o.deadline });
+    } catch (e) {
+      const known = pausedOrRefused(e);
+      if (known) return known;
+      const msg = e instanceof Error ? e.message : String(e);
+      await writeJudge(v.id, { ...j, state: "not_checked", attempts: j.attempts + 1, error: msg.slice(0, 300), checkedAt: new Date().toISOString() });
+      return { state: "not_checked", fixRounds: j.fixRounds, versionId: v.id, reason: msg };
+    }
+    const failing = r.checks.filter((c) => !c.pass);
+    const record: JudgeRecord = {
+      ...j, writer: 2, checks: r.checks, hard: r.hard, words: r.words, summary: r.summary, trimmed: !!j.trimmed,
+      criteria: r.checks.map((c) => ({ key: c.key, pass: c.pass, note: c.reason })), issues: failing.map((c) => `${c.n}. ${c.label}: ${c.reason}`),
+      fixInstruction: r.fixInstruction, checkedAt: new Date().toISOString(), runId: r.runId, error: null,
+    };
+    const next = w.nextWriterStep({ mustFails: r.mustFails, words: r.words, fixRounds: j.fixRounds, trimmed: !!j.trimmed, maxFixRounds: MAX_FIX_ROUNDS });
+    if (next === "pass") {
+      await writeJudge(v.id, { ...record, state: "passed" });
+      return { state: "passed", fixRounds: j.fixRounds, versionId: v.id };
+    }
+    if (next === "flag") {
+      const kept = await finishFlagged(v, record, o.requestedBy);
+      return { state: "flagged", fixRounds: j.fixRounds, versionId: kept };
+    }
+    await writeJudge(v.id, { ...record, state: next === "trim" ? "trimming" : "fixing" });
+    return "continue";
+  }
+
+  if (j.state === "fixing" || j.state === "trimming") {
+    if (!o.timeFor(FIX_MIN_START_MS)) return stay("out of time");
+    const trim = j.state === "trimming";
+    try {
+      const { reviseScript } = await import("@/lib/contentGeneration");
+      await reviseScript(scriptId, trim ? trimInstruction(j.words ?? 0) : w.writerFixInstruction(j), o.requestedBy, "REVISION", {
+        autoFix: trim ? { round: j.fixRounds, trim: true } : { round: j.fixRounds + 1, trimmed: !!j.trimmed }, unattended: o.unattended, deadline: o.deadline,
+      });
+    } catch (e) {
+      const known = pausedOrRefused(e);
+      if (known) return known;
+      const msg = e instanceof Error ? e.message : String(e);
+      await writeJudge(v.id, { ...j, state: "flagged", error: `The automatic ${trim ? "trim" : "fix"} could not run: ${msg.slice(0, 200)}` });
+      return { state: "flagged", fixRounds: j.fixRounds, versionId: v.id, reason: msg };
+    }
+    return "continue";
+  }
+  return { state: j.state, fixRounds: j.fixRounds, versionId: v.id };
+}
 
 /**
  * Judge the script's current version and fix it when it fails, until it
@@ -175,8 +269,9 @@ export type AutoCheckResult = { state: JudgeRecord["state"] | "skipped"; fixRoun
 export async function autoCheckScript(scriptId: string, opts: { requestedBy?: string | null; unattended: boolean; deadline?: number | null }): Promise<AutoCheckResult> {
   const deadline = opts.deadline ?? Date.now() + DEFAULT_BUDGET_MS;
   const timeFor = (ms: number) => deadline - Date.now() >= ms;
-  for (let guard = 0; guard < 2 * (MAX_FIX_ROUNDS + 1) + 1; guard++) {
-    const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { currentVersionId: true, historical: true } });
+  // Two fix rounds and (the new writer) one trim pass, each followed by a check.
+  for (let guard = 0; guard < 2 * (MAX_FIX_ROUNDS + 2) + 1; guard++) {
+    const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { currentVersionId: true, historical: true, sharedVersionId: true } });
     if (!s?.currentVersionId || s.historical) return { state: "skipped", fixRounds: 0, versionId: null, reason: "no live version" };
     const v = await prisma.contentScriptVersion.findUnique({ where: { id: s.currentVersionId } });
     if (!v) return { state: "skipped", fixRounds: 0, versionId: null, reason: "no version" };
@@ -184,6 +279,13 @@ export async function autoCheckScript(scriptId: string, opts: { requestedBy?: st
     if (!j) return { state: "skipped", fixRounds: 0, versionId: v.id, reason: "not an automatic draft" };
     if (v.status !== "DRAFT" && v.status !== "INTERNAL_REVIEW") return { state: j.state, fixRounds: j.fixRounds, versionId: v.id, reason: "already reviewed" };
     const requestedBy = opts.requestedBy ?? v.createdBy ?? "cron";
+
+    // Oct 22 2026: a draft by the new writer gets its independent creative review instead of the judge.
+    if (j.writer === 2) {
+      const step = await writerReviewStep(scriptId, v, j, !!s.sharedVersionId, { requestedBy, unattended: opts.unattended, deadline: opts.deadline ?? null, timeFor });
+      if (step === "continue") continue;
+      return step;
+    }
 
     if (j.state === "pending" || (j.state === "not_checked" && j.attempts < MAX_JUDGE_ATTEMPTS)) {
       if (!timeFor(JUDGE_MIN_START_MS)) return { state: j.state, fixRounds: j.fixRounds, versionId: v.id, reason: "out of time" };
@@ -246,7 +348,7 @@ export async function sweepScriptChecks(opts: { max?: number; budgetMs?: number;
   const rows = await prisma.contentScriptVersion.findMany({
     where: {
       status: { in: ["DRAFT", "INTERNAL_REVIEW"] }, createdAt: { gte: since },
-      OR: [{ validationJson: { contains: '"state":"pending"' } }, { validationJson: { contains: '"state":"fixing"' } }, { validationJson: { contains: '"state":"not_checked"' } }],
+      OR: [{ validationJson: { contains: '"state":"pending"' } }, { validationJson: { contains: '"state":"fixing"' } }, { validationJson: { contains: '"state":"not_checked"' } }, { validationJson: { contains: '"state":"trimming"' } }],
     },
     orderBy: { createdAt: "asc" }, take: 50, select: { id: true, scriptId: true, createdBy: true, validationJson: true },
   });

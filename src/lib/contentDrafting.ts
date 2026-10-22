@@ -348,9 +348,14 @@ export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts)
       // monitoring screen — hourly, for as long as the stop was held, burying
       // the real failures it exists to show. A refusal we asked for is a skip.
       const paused = e instanceof Error && e.name === "AutomationDisabledError";
-      outcomes.push({ topicId: w.topicId, title: w.title, result: raced || paused ? "skipped" : "failed", readiness: w.readiness, note: msg.slice(0, 300) });
-      if (!raced && !paused) await noteOutcome(w, "failed", msg);
+      // Oct 22 2026: the new writer stopped between its steps to stay inside
+      // this run's clock. Nothing failed: the steps it finished are kept and
+      // the next run carries on from there.
+      const writerPaused = e instanceof Error && e.name === "WriterPausedError";
+      outcomes.push({ topicId: w.topicId, title: w.title, result: raced || paused || writerPaused ? "skipped" : "failed", readiness: w.readiness, note: msg.slice(0, 300) });
+      if (!raced && !paused && !writerPaused) await noteOutcome(w, "failed", msg);
       if (paused) { pausedBy = msg.slice(0, 300); break; }
+      if (writerPaused) { outOfTime = true; break; }
     }
   }
 

@@ -2,7 +2,7 @@ import "server-only";
 import { createHash } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { isAutomationEnabled } from "@/lib/programAutomation";
-import { aiJsonWithUsage, type AiUsage } from "@/lib/integrations/ai";
+import { aiJsonWithUsage, aiStructuredWithUsage, WRITER_MODEL, type AiUsage, type AiEffort } from "@/lib/integrations/ai";
 import { GENERATION_POLICY, GENERATION_POLICY_HASH, GENERATION_POLICY_VERSION, STRATEGY_TEMPLATE, policyRulesText } from "@/lib/contentPolicy";
 
 // ---------------------------------------------------------------------------
@@ -70,20 +70,38 @@ export type AiRunKind =
   | "strategy_revise"
   // Oct 14 2026: the automatic check after every AI script draft
   // (scriptJudge.ts), and the auto-built creative identity (creativeIdentity.ts).
-  | "script_judge" | "creative_identity";
+  | "script_judge" | "creative_identity"
+  // Oct 22 2026: the script writer's steps before and after the draft
+  // (src/lib/scriptWriter): reading the calls for the topic, the topic brief,
+  // the five hooks, and the independent creative review. The draft itself and
+  // its fix rounds stay script_draft / script_revise.
+  | "script_retrieval" | "script_brief" | "script_hooks" | "script_review";
+
+/**
+ * The writer's steps that only ever run inside one script's draft or check
+ * (Oct 22 2026). The daily caps per client and program-wide count the draft
+ * and its revisions, as before; these ride along under their own per-kind cap,
+ * so a month of scripts written with a brief and a review is not refused for
+ * the steps the old writer did not have.
+ */
+export const WRITER_STEP_KINDS: readonly AiRunKind[] = ["script_retrieval", "script_brief", "script_hooks", "script_review"];
 
 // Anthropic first-party rates, USD per million tokens (cached Sep 2026). A
 // cost ESTIMATE for the ledger — the invoice is the truth; cache reads are
-// billed at a tenth and cache writes at 1.25× of input.
-const RATES_PER_MILLION: Record<string, { input: number; output: number }> = {
+// billed at a tenth and cache writes at 1.25× of input. Oct 22 2026: the
+// script writer's model (claude-opus-5-5, $4 / $20, cache reads at 0.05×) and
+// its refusal fallback (claude-opus-5, $5 / $25).
+const RATES_PER_MILLION: Record<string, { input: number; output: number; cacheRead?: number }> = {
   "claude-sonnet-4-6": { input: 3, output: 15 },
   "claude-haiku-4-5-20251001": { input: 1, output: 5 },
   "claude-haiku-4-5": { input: 1, output: 5 },
+  "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.05 },
+  "claude-opus-5": { input: 5, output: 25 },
 };
 export function estimateCostCents(model: string, u: AiUsage): number {
   const r = RATES_PER_MILLION[model] ?? RATES_PER_MILLION["claude-sonnet-4-6"];
   const usd =
-    (u.inputTokens * r.input + u.outputTokens * r.output + u.cacheReadTokens * r.input * 0.1 + u.cacheWriteTokens * r.input * 1.25) / 1_000_000;
+    (u.inputTokens * r.input + u.outputTokens * r.output + u.cacheReadTokens * r.input * (r.cacheRead ?? 0.1) + u.cacheWriteTokens * r.input * 1.25) / 1_000_000;
   return Math.round(usd * 100);
 }
 
@@ -111,11 +129,15 @@ export async function assertQuota(kind: AiRunKind, enrollmentId: string | null, 
     const row = rows.find((r) => r.scope === scope && r.scopeRef === ref);
     return row?.maxRuns ?? fallback;
   };
+  // Oct 22 2026: the writer's steps (WRITER_STEP_KINDS) are held to their own
+  // per-kind cap only, and never count toward the client or program-wide caps.
+  const step = WRITER_STEP_KINDS.includes(kind);
+  const notSteps = { kind: { notIn: [...WRITER_STEP_KINDS] } };
   const checks: { where: Record<string, unknown>; max: number; what: string }[] = [
-    { where: {}, max: limitFor("GLOBAL", "", DEFAULT_QUOTA.globalPerDay), what: "the program-wide daily AI limit" },
+    ...(step ? [] : [{ where: notSteps, max: limitFor("GLOBAL", "", DEFAULT_QUOTA.globalPerDay), what: "the program-wide daily AI limit" }]),
     { where: { kind }, max: limitFor("KIND", kind, DEFAULT_QUOTA.kindPerDay), what: `the daily limit for ${kind} runs` },
   ];
-  if (enrollmentId) checks.push({ where: { enrollmentId }, max: limitFor("ENROLLMENT", enrollmentId, DEFAULT_QUOTA.enrollmentPerDay), what: "this client's daily AI limit" });
+  if (enrollmentId && !step) checks.push({ where: { enrollmentId, ...notSteps }, max: limitFor("ENROLLMENT", enrollmentId, DEFAULT_QUOTA.enrollmentPerDay), what: "this client's daily AI limit" });
   for (const c of checks) {
     const n = await prisma.programAiRun.count({ where: { ...c.where, startedAt: { gte: since }, status: { in: ["RUNNING", "SUCCEEDED", "FAILED"] }, ...(excludeRunId ? { id: { not: excludeRunId } } : {}) } });
     if (n >= c.max) throw new QuotaExceededError(`${c.what} (${c.max}/day) is reached — try again tomorrow or raise the quota.`);
@@ -168,6 +190,15 @@ export type RunAiOpts<T> = {
    * every write below is fenced on the worker's lease.
    */
   claimedRun?: ClaimedRun | null;
+  /**
+   * Oct 22 2026: "writer" = the script writer's model path
+   * (integrations/ai.aiStructuredWithUsage: claude-opus-5-5, structured
+   * output, an explicit effort). Unset = aiJsonWithUsage, as every other
+   * feature has always run.
+   */
+  engine?: "writer" | null;
+  /** The writer path's effort (required there; ignored elsewhere). */
+  effort?: AiEffort | null;
 };
 
 export type RunAiResult<T> = { runId: string; output: T; usage: AiUsage; model: string; costCents: number };
@@ -210,7 +241,7 @@ export async function runAiJson<T>(opts: RunAiOpts<T>): Promise<RunAiResult<T>> 
     inputRefsJson: opts.inputRefs ? JSON.stringify({ ...opts.inputRefs, promptHash: sha256(opts.system + "\n" + opts.prompt) }) : JSON.stringify({ promptHash: sha256(opts.system + "\n" + opts.prompt) }),
     promptKey: opts.promptKey,
     promptVersion: opts.promptVersion ?? GENERATION_POLICY_VERSION,
-    model: opts.model ?? null,
+    model: opts.model ?? (opts.engine === "writer" ? WRITER_MODEL : null),
     policyVersionId: opts.policyVersionId ?? null,
     strategyVersionId: opts.strategyVersionId ?? null,
     status: "RUNNING",
@@ -254,7 +285,9 @@ export async function runAiJson<T>(opts: RunAiOpts<T>): Promise<RunAiResult<T>> 
   // it), so "RUNNING" alone could be another worker's retry of the same row.
   const mine = claimed ? { leaseBy: claimed.leaseBy } : {};
   try {
-    const { result, usage, model } = await aiJsonWithUsage<T>({ system: opts.system, prompt: opts.prompt, schema: opts.schema, maxTokens: opts.maxTokens, model: opts.model, timeoutMs: opts.timeoutMs });
+    const { result, usage, model } = opts.engine === "writer"
+      ? await aiStructuredWithUsage<T>({ system: opts.system, prompt: opts.prompt, schema: opts.schema, effort: opts.effort ?? "medium", maxTokens: opts.maxTokens, model: opts.model, timeoutMs: opts.timeoutMs })
+      : await aiJsonWithUsage<T>({ system: opts.system, prompt: opts.prompt, schema: opts.schema, maxTokens: opts.maxTokens, model: opts.model, timeoutMs: opts.timeoutMs });
     const output = opts.parse ? opts.parse(result) : result;
     const costCents = estimateCostCents(model, usage);
     const outputJson = JSON.stringify(output).slice(0, 200_000);
