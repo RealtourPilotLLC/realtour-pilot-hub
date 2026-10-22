@@ -336,19 +336,30 @@ async function main() {
     c.ok("with the client's requests Done, Lot Lines needed alone still holds Kyle's delivery", gate.canDeliver === false && gate.holdsOpen === 1 && gate.checks.filter((x) => x.hold && !x.ok).map((x) => x.key).join() === "addon:lot_lines", JSON.stringify(gate.checks.filter((x) => !x.ok).map((x) => x.key)));
     c.ok("…and the same-day order still never approves itself: 'lot lines on the order: Kyle approves it'", (await P.sameDayBlocker(job.id)) === "lot lines on the order: Kyle approves it");
 
-    // (a) a "Lot lines" version on a photo in the delivery clears it.
-    const fixV = await prisma.photoVersion.create({ data: { photoId: photos[0].id, label: "Lot lines (from AutoHDR)", source: "FIX", createdBy: "fix-runner" } });
-    c.ok("a 'Lot lines' version from another source does not count (the contract is the drawing tool's EDITOR version)", (await delivery.deliveryGate(job.id)).checks.find((x) => x.key === "addon:lot_lines")?.ok === false);
+    // (a) the Lot lines tool's version ("Lot lines by Kyle", a hub version: lotLines.ts) on a photo in the delivery clears it.
+    const { lotLinesVersionLabel } = await import("@/lib/photoDelivery/lotLines");
+    const t0 = Date.now() - 60 * 60_000;
+    const at = (min: number) => new Date(t0 + min * 60_000);
+    const lotLine = async () => (await delivery.deliveryGate(job.id)).checks.find((x) => x.key === "addon:lot_lines");
+    const fixV = await prisma.photoVersion.create({ data: { photoId: photos[0].id, label: "Lot lines (from AutoHDR)", source: "FIX", createdBy: "fix-runner", createdAt: at(1) } });
+    c.ok("a 'Lot lines' version from another source (an AutoHDR fix) does not count", (await lotLine())?.ok === false);
     await prisma.photoVersion.delete({ where: { id: fixV.id } });
-    const drawn = await prisma.photoVersion.create({ data: { photoId: photos[0].id, label: "Lot lines drawn from the plat", source: "EDITOR", createdBy: "Kyle" } });
+    const drawn = await prisma.photoVersion.create({ data: { photoId: photos[0].id, label: lotLinesVersionLabel("Kyle"), source: "HUB_EDIT", contentHash: "hub-lotlines-1", createdBy: "Kyle", createdAt: at(2) } });
     gate = await delivery.deliveryGate(job.id);
     const cleared = gate.checks.find((x) => x.key === "addon:lot_lines");
-    c.ok("(a) an EDITOR version labelled 'Lot lines …' on a photo in the delivery clears it: 'Lot lines added', on DJI_0100.jpg", cleared?.ok === true && cleared.label === "Lot lines added" && /on DJI_0100\.jpg, by Kyle/.test(cleared.detail ?? "") && cleared.addOn?.cleared?.how === "version" && gate.canDeliver === true, JSON.stringify(cleared));
+    c.ok("(a) the Lot lines tool's 'Lot lines by Kyle' version on a photo in the delivery clears it: 'Lot lines added', on DJI_0100.jpg", drawn.label === "Lot lines by Kyle" && cleared?.ok === true && cleared.label === "Lot lines added" && /on DJI_0100\.jpg, by Kyle/.test(cleared.detail ?? "") && cleared.addOn?.cleared?.how === "version" && gate.canDeliver === true, JSON.stringify(cleared));
     c.ok("…the hub's same-day approval still never passes it (Kyle approves a lot lines job)", (await P.sameDayBlocker(job.id)) === "lot lines on the order: Kyle approves it" && gate.passed === false);
-    await prisma.photoAsset.update({ where: { id: photos[0].id }, data: { status: "EXCLUDED" } });
-    c.ok("…a photo left out of the delivery does not count", (await delivery.deliveryGate(job.id)).checks.find((x) => x.key === "addon:lot_lines")?.ok === false);
-    await prisma.photoAsset.update({ where: { id: photos[0].id }, data: { status: "ACTIVE" } });
-    await prisma.photoVersion.delete({ where: { id: drawn.id } });
+    const later = await prisma.photoVersion.create({ data: { photoId: photos[0].id, label: "Straightened 1.5° by Kyle", source: "HUB_EDIT", contentHash: "hub-straight-1", createdBy: "Kyle", createdAt: at(3) } });
+    c.ok("…a later Straighten of that photo (drawn from the photo's own file) takes the lines off: it holds again", (await lotLine())?.ok === false);
+    const redrawn = await prisma.photoVersion.create({ data: { photoId: photos[0].id, label: lotLinesVersionLabel("Kyle"), source: "HUB_EDIT", contentHash: "hub-lotlines-2", createdBy: "Kyle", createdAt: at(4) } });
+    c.ok("…drawn again after it: cleared again", (await lotLine())?.ok === true);
+    const listedV = await prisma.photoVersion.create({ data: { photoId: photos[1].id, label: "Lot lines (on the Aryeo listing)", source: "HUB_EDIT_LISTED", contentHash: "lst-ll", createdBy: "Kyle", createdAt: at(5) } });
+    await prisma.photoVersion.deleteMany({ where: { id: { in: [drawn.id, later.id, redrawn.id] } } });
+    c.ok("…the same picture once Update on Aryeo put it on the listing still counts", (await lotLine())?.ok === true);
+    await prisma.photoAsset.update({ where: { id: photos[1].id }, data: { status: "EXCLUDED" } });
+    c.ok("…a photo left out of the delivery does not count", (await lotLine())?.ok === false);
+    await prisma.photoAsset.update({ where: { id: photos[1].id }, data: { status: "ACTIVE" } });
+    await prisma.photoVersion.delete({ where: { id: listedV.id } });
 
     // (b) Kyle confirms by hand, with a note.
     const short = await A.confirmAddOn(job.id, "lot_lines", "ok", "Kyle");
@@ -397,7 +408,7 @@ async function main() {
     c.head("4 · 'What's holding this': every kind in order, its button, 'Ready to send' when clear");
     // ======================================================================
     type Line = import("@/lib/photoDelivery/holding").HoldingGateLine;
-    const base = { jobId: "job-x", projectId: "proj-x", stage: "READY", holdReason: null, holdNote: null, lastError: null, waitingForVisit: null, photographer: "Harrison Wells", decisions: { critical: 1, major: 2, minor: 0 }, listingUrl: "https://realtourpilot.aryeo.com/admin/listings/LX/edit", orderUrl: null, deliveryCheckNote: null };
+    const base = { jobId: "job-x", projectId: "proj-x", stage: "READY", holdReason: null, holdNote: null, lastError: null, waitingForVisit: null, photographer: "Harrison Wells", decisions: { critical: 1, major: 2, minor: 0 }, listingUrl: "https://realtourpilot.aryeo.com/admin/listings/LX/edit", orderUrl: null, deliveryCheckNote: null, listingUpdates: { photoIds: [] as string[], names: [] as string[] } };
     const hubOn = { mode: "on", connected: true, sameDayAuto: false };
     const all: Line[] = [
       { key: "flags", label: "Photo flags", ok: false, advisory: true, href: "/projects/proj-x#flags", detail: "2 photo flags still open" },
@@ -452,7 +463,18 @@ async function main() {
     c.ok("a delivered split job with new photos not re-delivered: 'Re-deliver in Aryeo'", s.redeliver.items[0]?.kind === "redeliver" && s.redeliver.items[0].action?.label === "Re-deliver in Aryeo" && /2 new photos are on the delivered listing/.test(s.redeliver.items[0].text));
     c.ok("nothing holds it: 'Ready to send' with Approve and deliver; photos already up: Deliver in Aryeo; upload off: Mark as delivering", !s.ready.items.length && s.ready.ready?.text === "Ready to send." && s.ready.ready.action?.label === "Approve and deliver" && s.up.ready?.action?.label === "Deliver in Aryeo" && s.off.ready?.action?.label === "Mark as delivering");
     c.ok("delivered: nothing listed, the line says Delivered; no listing linked: Open the order", !s.delivered.items.length && s.delivered.line === "Delivered" && s.noListing.items[0]?.kind === "listing" && (s.noListing.items[0].action as { href?: string })?.href === "https://realtourpilot.aryeo.com/admin/orders/o1");
-    c.ok("every sentence in plain words, no em dashes", !LONG_DASH.test(JSON.stringify([full, ...Object.values(s)])));
+    const upd = { photoIds: ["p1"], names: ["DJI_0100.jpg"] };
+    const u = {
+      delivered: clear({ stage: "DELIVERED", listingUpdates: upd }),
+      ready: clear({ listingUpdates: upd }),
+      changed: clear({ listingUpdates: upd, push: { ...hubOn, progress: { state: "DONE", active: false, total: 3, sent: 3, already: 0, note: "x", changed: true, deliveredAt: null } } }),
+      running: clear({ stage: "DELIVERED", listingUpdates: upd, push: { ...hubOn, progress: { state: "SENDING", active: true, total: 1, sent: 0, already: 0, note: null, deliveredAt: null, update: true } } }),
+      off: clear({ stage: "DELIVERED", listingUpdates: upd, push: { mode: "off", connected: false, sameDayAuto: false, progress: null } }),
+    };
+    c.ok("a photo edited in the hub whose old file is on the listing (a delivered job): '1 photo edited in the hub (DJI_0100.jpg) still has its old file', Update on Aryeo", u.delivered.items[0]?.kind === "update" && /1 photo edited in the hub \(DJI_0100\.jpg\) still has its old file on the Aryeo listing/.test(u.delivered.items[0].text) && u.delivered.items[0].action?.kind === "update" && JSON.stringify((u.delivered.items[0].action as { photoIds: string[] }).photoIds) === '["p1"]' && u.delivered.line === "1 photo to update on Aryeo");
+    c.ok("…before delivery too, it holds 'Ready to send'", u.ready.items[0]?.kind === "update" && !u.ready.ready);
+    c.ok("…the hub's own upload that changed is 'Approve again' (no second line); an Update running says so; with the upload off: by hand, no button", !u.changed.items.some((i) => i.kind === "update") && u.changed.items[0]?.action?.label === "Approve again" && u.running.items.length === 1 && /Updating 1 edited photo on the Aryeo listing/.test(u.running.items[0].text) && u.off.items[0]?.kind === "update" && !u.off.items[0].action && /by hand/.test(u.off.items[0].detail ?? ""));
+    c.ok("every sentence in plain words, no em dashes", !LONG_DASH.test(JSON.stringify([full, ...Object.values(s), ...Object.values(u)])));
 
     // ======================================================================
     c.head("5 · re-delivery: new photos on a delivered listing re-deliver it once");
@@ -534,6 +556,29 @@ async function main() {
     c.ok("a first delivery: Deliver pressed once, no re-delivery recorded", delivers("LFS").length === 1 && !prf?.redeliver && (delivers("LFS")[0].body as { fulfill_orders?: boolean }).fulfill_orders === false, JSON.stringify(prf?.redeliver));
 
     // ======================================================================
+    c.head("5b · a delivered photo edited in the hub holds until Update on Aryeo");
+    // ======================================================================
+    const je = await splitJob("4 Edit Rd", "LER", 2, ["IMG_9001.jpg"]);
+    const drone = await prisma.photoAsset.findFirstOrThrow({ where: { jobId: je.id, sourceRef: "LER-e1" } });
+    // Kyle draws lot lines on the earlier visit's delivered drone photo (the tool makes it the current version).
+    await prisma.photoAsset.update({ where: { id: drone.id }, data: { contentHash: "hub-lotlines-er" } });
+    await prisma.photoVersion.create({ data: { photoId: drone.id, label: "Lot lines by Kyle", source: "HUB_EDIT", contentHash: "hub-lotlines-er", createdBy: "Kyle" } });
+    const ge = await delivery.deliveryGate(je.id);
+    const lu = ge.checks.find((x) => x.key === "listing-update");
+    c.ok("the checklist holds: '1 photo edited in the hub still has its old file on the Aryeo listing: Update on Aryeo first', with the photo", !!lu && lu.hold === true && !lu.ok && JSON.stringify(lu.photoIds) === JSON.stringify([drone.id]) && /4 Edit Rd \(1 of 2\)\.jpg/.test(lu.detail ?? "") && ge.canDeliver === false, JSON.stringify(lu));
+    const refusedE = await P.approveJob(je.id, "Kyle", { deliver: true });
+    c.ok("…Approve and deliver waits for it (nothing sent)", !refusedE.started && /update on aryeo first/.test(refusedE.message) && !calls.some((x) => x.listing === "LER" && x.kind !== "reorder"), refusedE.message);
+    const de = (await data.loadJobDetail(je.id, { viewer: kyleView }))!;
+    const ve = H.holdingFor({ ...de.holdingBase, gate: de.gate, gateError: de.gateError, push: de.aryeoPush });
+    const ce = (await data.loadQueue({ holding: true })).columns.flatMap((col) => col.cards).find((x) => x.id === je.id);
+    c.ok("'What's holding this': Update on Aryeo for that photo, the same line on the board card", ve.items[0]?.kind === "update" && ve.items[0].action?.kind === "update" && JSON.stringify((ve.items[0].action as { photoIds: string[] }).photoIds) === JSON.stringify([drone.id]) && ce?.holding?.line === ve.line && ve.line === "1 photo to update on Aryeo", `${ve.line} | ${ce?.holding?.line}`);
+    c.ok("…and the photo's own panel offers Update on Aryeo (the listing still has the old file)", de.photos.find((p) => p.id === drone.id)?.hubEdit === null || de.photos.find((p) => p.id === drone.id)?.hubEdit?.needsListingUpdate === true);
+    // Update on Aryeo done: the photo is the listing's new image again (aryeoPush.finishListingUpdate → photoEdit.adoptListedEdit).
+    await prisma.photoAsset.update({ where: { id: drone.id }, data: { contentHash: M.listingImageHash("LER-e1b", "https://cdn.aryeo.com/LER-e1b.jpg"), sourceRef: "LER-e1b" } });
+    const ge2 = await delivery.deliveryGate(je.id);
+    c.ok("…once Update on Aryeo has replaced it, nothing holds", !ge2.checks.some((x) => x.key === "listing-update") && ge2.canDeliver === true);
+
+    // ======================================================================
     c.head("6 · the floating-object check (615 Cliff Ln's floating lamp)");
     // ======================================================================
     const reg = await import("@/lib/photoDelivery/registry");
@@ -547,7 +592,8 @@ async function main() {
     const bedroomRules = reg.visionRulesForPhoto({ roomType: "BEDROOM", roomConfidence: 0.9, alternateRoomType: null, maxBuildPhase: 1 });
     c.ok("…in the paid QC's rules block for a bedroom photo", bedroomRules.some((r) => r.id === "AIEDIT_FLOATING_OBJECT") && /AIEDIT_FLOATING_OBJECT/.test(reg.renderRulesBlock(bedroomRules, "BEDROOM")));
     c.ok("…and switched off by a house override there too", !reg.visionRulesForPhoto({ roomType: "BEDROOM", roomConfidence: 0.9, alternateRoomType: null, maxBuildPhase: 1, overrides: [{ ruleId: "AIEDIT_FLOATING_OBJECT", disabled: true, reason: "x" }] }).some((r) => r.id === "AIEDIT_FLOATING_OBJECT"));
-    c.ok("…the paid QC's photo prompt names floating or unsupported objects", /floating or unsupported objects \(a lamp, furniture or decor hovering with nothing under it/.test(P1_BLOCK));
+    // The paid photo prompt stays the pack's text byte for byte (oct14-photo-qc); its AI_ARTIFACTS check and the rule's line in <rules> carry it.
+    c.ok("…the paid QC's photo prompt is unchanged (its AI artifacts check; the rule reaches it in the rules block above)", /AI_ARTIFACTS: smears, cloned textures/.test(P1_BLOCK) && !/floating or unsupported/.test(P1_BLOCK) && /nothing under it/.test(reg.renderRulesBlock(bedroomRules, "BEDROOM")));
     const off = new Set(["GAL_RESOLUTION_CONSISTENCY", "KIT_CABINET_COLOR_ACROSS_PHOTOS", "PERSP_STRETCHED_EDGE_FURNITURE", "PERSP_EXCESSIVE_FISHEYE", "COMP_MOTION_BLUR"]);
     const fq = check.checkPrompt(off);
     c.ok("the free check's question asks it (v4), in plain words, furniture and decor included", check.CHECK_PROMPT_VERSION === 4 && /AIEDIT_FLOATING_OBJECT: a lamp, piece of furniture or decor floating with nothing under it/.test(fq) && /Editing mistakes: .* is AIEDIT_FLOATING_OBJECT, furniture and decor included/.test(fq), fq.split("\n").filter((l) => /FLOATING|Editing/.test(l)).join(" | "));

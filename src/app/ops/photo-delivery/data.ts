@@ -12,7 +12,7 @@ import { buildFixCart } from "@/lib/photoDelivery/fixes";
 import { houseOverrides, mergeOverrides } from "@/lib/photoDelivery/houseRules";
 import { ALWAYS_FIX } from "@/lib/photoDelivery/fixPolicy";
 import { deliveryGate, deliverySteps, type GateResult } from "@/lib/photoDelivery/delivery";
-import { holdingFor, type HoldingBase } from "@/lib/photoDelivery/holding";
+import { holdingFor, needsListingUpdate, type HoldingBase } from "@/lib/photoDelivery/holding";
 import { checkEveryMs } from "@/lib/photoDelivery/verifySweep";
 import { RULES, isExteriorFinding, ruleById } from "@/lib/photoDelivery/registry";
 import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
@@ -96,6 +96,12 @@ function ticketCounts(verdict: VerdictModule | null, open: Parameters<VerdictMod
     for (const f of open) if (f.confidence >= floor && (f.severity === "CRITICAL" || f.severity === "MAJOR" || f.severity === "MINOR")) rec[f.severity] += 1;
   }
   return rec;
+}
+
+/** The photos edited in the hub whose old file is still on the Aryeo listing (holding.needsListingUpdate), in gallery order. Pure. */
+export function listingUpdatesOf(photos: { id: string; name: string; status: string; sourceKind: string; contentHash: string | null }[], stage: string): HoldingBase["listingUpdates"] {
+  const due = photos.filter((p) => (p.status === "ACTIVE" || p.status === ON_LISTING) && needsListingUpdate(p, stage));
+  return { photoIds: due.map((p) => p.id), names: due.map((p) => p.name) };
 }
 
 const VISIT_WAIT = /split job: waiting for the photos from ([^;]+);/;
@@ -386,6 +392,7 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
             listingUrl: p?.aryeoListingId ? aryeoListingUrl(p.aryeoListingId) : null,
             orderUrl: p?.aryeoOrderId ? aryeoOrderUrl(p.aryeoOrderId) : null,
             deliveryCheckNote: j.deliveryCheckNote,
+            listingUpdates: { photoIds: [], names: [] }, // read for the whole board in boardHolding
           };
         }),
     ).catch((e: unknown) => {
@@ -437,7 +444,7 @@ async function boardHolding(bases: HoldingBase[]): Promise<Map<string, { holding
   const ids = bases.map((b) => b.jobId);
   const editing = bases.filter((b) => b.stage === "EDITING").map((b) => b.jobId);
   const [{ progressOf }, { openAddOnsByProject }] = await Promise.all([import("@/lib/photoDelivery/aryeoPush"), import("@/lib/photoDelivery/addOns")]);
-  const [settings, conn, runs, events, addOns] = await Promise.all([
+  const [settings, conn, runs, events, addOns, edited] = await Promise.all([
     photoDeliverySettings(),
     prisma.connection.findUnique({ where: { provider: "aryeo_web" }, select: { secretEncrypted: true } }).catch(() => null),
     prisma.appSetting.findMany({ where: { key: { in: ids.map((id) => `photo_aryeo_push:${id}`) } }, select: { key: true, value: true } }),
@@ -450,7 +457,15 @@ async function boardHolding(bases: HoldingBase[]): Promise<Map<string, { holding
         })
       : Promise.resolve([] as { jobId: string; action: string }[]),
     openAddOnsByProject(bases.filter((b) => b.stage !== "DELIVERED").map((b) => b.projectId)).catch(() => new Map<string, string[]>()),
+    // Photos edited in the hub (their hash is the hub's own): which still need Update on Aryeo.
+    prisma.photoAsset.findMany({
+      where: { jobId: { in: ids }, status: { in: ["ACTIVE", ON_LISTING] }, contentHash: { startsWith: "hub-" } },
+      orderBy: { sequence: "asc" },
+      select: { id: true, jobId: true, name: true, status: true, sourceKind: true, contentHash: true },
+    }),
   ]);
+  const editedOf = new Map<string, typeof edited>();
+  for (const p of edited) editedOf.set(p.jobId, [...(editedOf.get(p.jobId) ?? []), p]);
   const runOf = new Map(runs.map((r) => [r.key.slice("photo_aryeo_push:".length), r.value]));
   const progress = (jobId: string) => {
     const raw = runOf.get(jobId);
@@ -478,6 +493,7 @@ async function boardHolding(bases: HoldingBase[]): Promise<Map<string, { holding
     const view = holdingFor({
       ...b,
       waitingForVisit: waitingForVisitOf(b.stage, eventsOf.get(b.jobId) ?? []),
+      listingUpdates: listingUpdatesOf(editedOf.get(b.jobId) ?? [], b.stage),
       gate,
       gateError: gate || !GATE_STAGES.has(b.stage) ? null : "not read just now",
       push: { ...push, progress: progress(b.jobId) },
@@ -926,6 +942,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       listingUrl: project?.aryeoListingId ? aryeoListingUrl(project.aryeoListingId) : null,
       orderUrl: project?.aryeoOrderId ? aryeoOrderUrl(project.aryeoOrderId) : null,
       deliveryCheckNote: job.deliveryCheckNote,
+      listingUpdates: listingUpdatesOf(photos, job.stage),
     },
     runs: runViews,
     events: eventViews,
@@ -1140,7 +1157,7 @@ function versionViews(
  */
 function hubEditView(
   rows: { id: string; label: string; source: string; contentHash: string | null; derivJson: string | null }[],
-  p: { contentHash: string | null; sourceKind: string },
+  p: { contentHash: string | null; sourceKind: string; status: string },
   stage: string,
 ): import("@/components/photoDelivery/types").HubEditView | null {
   if (!isHubEditHash(p.contentHash)) return null;
@@ -1153,7 +1170,8 @@ function hubEditView(
     kind: m.hub.kind ?? "straighten",
     params: m.hub.params,
     // Oct 22 2026: a photo added by hand is on no listing until the delivery sends it.
-    needsListingUpdate: (p.sourceKind !== "AUTOHDR" && p.sourceKind !== "UPLOAD") || stage === "DELIVERED" || stage === "DELIVERY_MISMATCH",
+    // Oct 22 2026: one rule with "What's holding this" (holding.needsListingUpdate), a split job's delivered photo included.
+    needsListingUpdate: needsListingUpdate(p, stage),
     downloadUrl: m.file ? `/api/photo-fixes/${row.id}` : null,
   };
 }

@@ -60,6 +60,8 @@ export type GateCheck = {
   overridden?: string | null;
   askId?: string;
   addOn?: GateAddOn;
+  /** Oct 22 2026: the photos the line is about (Update on Aryeo of photos edited in the hub). */
+  photoIds?: string[];
   personOnly?: boolean;
 };
 /** The add-on behind a gate line: its key (the confirm button), the order line, the agent's words, and how it was cleared. */
@@ -134,6 +136,9 @@ export async function deliveryGate(jobId: string, opts: { sync?: boolean } = {})
     // openPhotoFlags); here they are information only, never a hold on his
     // Approve and deliver.
     ...(await flagsCheck(job.projectId)),
+    // Oct 22 2026: a photo edited in the hub (Lot lines, Straighten, an upload)
+    // whose old file is still on the Aryeo listing: Update on Aryeo first.
+    ...(await listingUpdateCheck(job.id, job.stage)),
     // Oct 21 2026 (Jordan, 859 N Lawrence St): the photographer's wrap-up and
     // what the client asked, each a line that holds delivery (clientAsked.ts).
     // Oct 22 2026 (Jordan, 58 Recreation Dr): lot lines, virtual staging: add-on
@@ -252,6 +257,32 @@ async function uploadCheck(projectId: string | null): Promise<GateCheck[]> {
     return [{ key: "upload", label: "Everything ordered was uploaded", ok: false, detail: "the upload check could not be read, it runs again on the next pass" }];
   }
   return gaps ? [{ key: "upload", label: "Everything ordered was uploaded", ok: false, detail: gaps.words }] : [];
+}
+
+/**
+ * Photos edited in the hub whose old file is still on the Aryeo listing
+ * (holding.needsListingUpdate: read from the listing, or a split job's
+ * delivered photo): a HOLD line until Update on Aryeo replaces them, so the
+ * listing never goes out (or out again) with the file before the edit. The
+ * delivery itself only sends the photos it puts on the listing.
+ */
+async function listingUpdateCheck(jobId: string, stage: string): Promise<GateCheck[]> {
+  const { needsListingUpdate } = await import("./holding");
+  const rows = await prisma.photoAsset
+    .findMany({ where: { jobId, status: { in: ["ACTIVE", ON_LISTING] }, contentHash: { startsWith: "hub-" } }, orderBy: { sequence: "asc" }, select: { id: true, name: true, status: true, sourceKind: true, contentHash: true } })
+    .catch(() => null);
+  if (rows === null) return [{ key: "listing-update", label: "Photos edited in the hub, on the Aryeo listing", ok: false, hold: true, detail: "could not be read just now, it is read again on the next pass" }];
+  const due = rows.filter((p) => needsListingUpdate(p, stage));
+  if (!due.length) return [];
+  const n = due.length;
+  return [{
+    key: "listing-update",
+    label: `${n} photo${n === 1 ? "" : "s"} edited in the hub still ${n === 1 ? "has its" : "have their"} old file on the Aryeo listing: Update on Aryeo first`,
+    ok: false,
+    hold: true,
+    detail: due.slice(0, 4).map((p) => p.name).join(", ") + (n > 4 ? ", …" : ""),
+    photoIds: due.map((p) => p.id),
+  }];
 }
 
 async function flagsCheck(projectId: string | null): Promise<GateCheck[]> {

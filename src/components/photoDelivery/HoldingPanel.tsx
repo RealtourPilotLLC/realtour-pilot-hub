@@ -2,12 +2,13 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { CheckCircle2, ChevronDown, CircleAlert, Clock, ExternalLink, Quote, Send } from "lucide-react";
+import { CheckCircle2, ChevronDown, CircleAlert, Clock, ExternalLink, Quote, Send, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { holdingFor, type HoldingAction, type HoldingItem } from "@/lib/photoDelivery/holding";
 import {
   clientAskedAnswerAction, clientAskedDoneAction, confirmAddOnAction, overrideWrapUpAction, releaseHoldAction, requestQcAction, startDeliveryAction, verifyDeliveryAction,
 } from "@/app/ops/photo-delivery/actions";
+import { updateOnAryeoAction } from "@/app/ops/photo-delivery/editActions";
 import { useJob } from "./JobContext";
 import { useAryeoPushActions } from "./AryeoPushControls";
 
@@ -20,7 +21,8 @@ import { useAryeoPushActions } from "./AryeoPushControls";
 // one line and the Deliver bar's first line): each blocker in a plain
 // sentence, who it waits on, and the one button that settles it or goes
 // straight to it. "Lot Lines needed" carries the agent's own words under it
-// and its "Lot lines added" (a short note). When nothing holds the job: "Ready
+// and its "Lot lines added" (a short note); a photo edited in the hub whose
+// old file is still on the listing carries Update on Aryeo. When nothing holds the job: "Ready
 // to send" with the button. What is open but does not hold Kyle's approval
 // (photo flags, shadow-mode checks) folds away under the list.
 // View only (the creative manager): the same list, no buttons.
@@ -77,6 +79,16 @@ export function HoldingPanel() {
       danger: true,
     });
     if (reason !== null) await run(() => overrideWrapUpAction(jobId, reason));
+  };
+  // Oct 22 2026: photos edited in the hub (Lot lines, Straighten, an upload) whose old file is still on the listing.
+  const updateListing = async (photoIds: string[]) => {
+    const n = photoIds.length;
+    const ok = await confirm({
+      title: `Update ${n === 1 ? "this photo" : `these ${n} photos`} on Aryeo?`,
+      body: "The hub puts each edited photo on the Aryeo listing in the old one's place, under the same name, and takes the old one off. Nothing is delivered again and no email goes out.",
+      confirmLabel: "Update on Aryeo",
+    });
+    if (ok) await run(() => updateOnAryeoAction(jobId, photoIds));
   };
   const mark = async () => {
     const go = await confirm({ title: "Mark as delivering?", body: ignored ? `${ignored} Go back to look at them first, or deliver as they are.` : "Deliver the photos in Aryeo; the hub confirms when Aryeo says they were delivered.", confirmLabel: "Mark as delivering" });
@@ -138,6 +150,12 @@ export function HoldingPanel() {
         return <button type="button" disabled={pending} onClick={() => void run(() => verifyDeliveryAction(jobId))} className={cls}>{a.label}</button>;
       case "rerun":
         return <button type="button" disabled={pending} onClick={() => void run(() => requestQcAction(jobId))} className={cls}>{a.label}</button>;
+      case "update":
+        return (
+          <button type="button" disabled={pending} onClick={() => void updateListing(a.photoIds)} className={cls}>
+            <UploadCloud aria-hidden className="size-4" /> {a.label}
+          </button>
+        );
     }
   };
 
@@ -208,7 +226,7 @@ export function HoldingPanel() {
       {view.also.length > 0 && (
         <details className="group mt-3 rounded-xl border border-border">
           <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-2 px-3 text-[13px] font-medium text-muted [&::-webkit-details-marker]:hidden">
-            Also open ({view.also.length}): does not hold your approval, holds the hub&rsquo;s own same-day delivery
+            Also open ({view.also.length}): {readOnly ? "Kyle's approval doesn't wait for these" : "your approval doesn't wait for these"}; the hub&rsquo;s own same-day delivery does
             <ChevronDown aria-hidden className="size-4 shrink-0 transition-transform group-open:rotate-180" />
           </summary>
           <ul className="divide-y divide-border border-t border-border px-3 py-2">

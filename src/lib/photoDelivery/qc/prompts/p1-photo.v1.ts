@@ -21,9 +21,7 @@ import {
 // Sonnet, one photo at qc2048 with only the rules for its room, temperature 0,
 // max_tokens 4,000. System = RP_CORE_V1 + this block, then the injected
 // <rules> block carrying the cache breakpoint (same room type, same prefix,
-// same compiled schema). Text VERBATIM from the pack (2.2, 2.3), except
-// AI_ARTIFACTS' floating objects (Oct 22 2026, 615 Cliff Ln's floating lamp;
-// rule AIEDIT_FLOATING_OBJECT). The prompt's hash on each finding records it.
+// same compiled schema). Text VERBATIM from the pack (2.2, 2.3).
 // ---------------------------------------------------------------------------
 
 export const P1_BLOCK = `TASK: SINGLE-PHOTO INSPECTION (P1)
@@ -42,7 +40,7 @@ CROP_COMPOSITION: roof peaks, chimneys or features cut by the frame, too much ce
 COLOR_ACCURACY: color casts, implausible material colors, over or under saturation, unnatural grass or sky.
 HDR_DEFECTS: halos, muddy shadows, overprocessed or flat look, bright edges, poor window masking or unnatural window pulls.
 SKY_REPLACEMENT: masking errors on rooflines and trees, sky bleeding into windows, mismatched light, unnatural twilight.
-AI_ARTIFACTS: smears, cloned textures, warped tile or wood grain, broken edges, altered frames or fixtures, partial removals, invented objects, floating or unsupported objects (a lamp, furniture or decor hovering with nothing under it, an object cut off in mid-air, a doubled or ghost copy).
+AI_ARTIFACTS: smears, cloned textures, warped tile or wood grain, broken edges, altered frames or fixtures, partial removals, invented objects.
 PRIVACY: readable documents, mail, screens, license plates, prescription labels, personal photos of people.
 
 USING HUB DATA

@@ -290,6 +290,8 @@ export type GateCheckView = {
   addOn?: AddOnView;
   /** Never counts for the hub's own same-day delivery (Kyle approves a job with lot lines or staging). */
   personOnly?: boolean;
+  /** Oct 22 2026: the photos the line is about (Update on Aryeo of photos edited in the hub). */
+  photoIds?: string[];
 };
 export type AddOnView = {
   key: string;

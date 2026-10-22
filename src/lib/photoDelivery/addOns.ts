@@ -5,6 +5,8 @@ import { clip, scrubMoney } from "@/lib/text";
 import { etMonthDay } from "@/lib/datetime";
 import { logJobEvent } from "./jobState";
 import { ON_LISTING } from "./listingMatch";
+import { LOT_LINES_LABEL } from "./lotLines";
+import { HUB_EDIT, HUB_EDIT_LISTED } from "./photoEdit";
 
 // ---------------------------------------------------------------------------
 // ADD-ON WORK THAT MUST BE CONFIRMED BEFORE THE PHOTOS GO OUT (Oct 22 2026).
@@ -26,9 +28,10 @@ import { ON_LISTING } from "./listingMatch";
 //   · the hub's own same-day approval never goes past it (personOnly): a job
 //     with lot lines or staging is always Kyle's to approve.
 // It clears when (a) a photo in the delivery has a version whose label starts
-// with the line's `versionLabel` (the hub's Lot lines drawing tool writes
-// "Lot lines …" as an EDITOR version; a staging tool may write "Virtual
-// staging …"), or (b) Kyle confirms it by hand with a short note ("Lot lines
+// with the line's `versionLabel` (the hub's Lot lines tool writes a hub
+// version "Lot lines by <name>", lotLines.ts; a staging tool may write
+// "Virtual staging …"; a later Straighten or upload of that photo replaces
+// the picture, so it stops counting), or (b) Kyle confirms it by hand with a short note ("Lot lines
 // added", for work done outside the hub), kept on the job's activity.
 // Another add-on is one more line in ADD_ON_WORK.
 // ---------------------------------------------------------------------------
@@ -60,9 +63,12 @@ export const ADD_ON_WORK: readonly AddOnWork[] = [
     done: "Lot lines added",
     product: /\b(lot|property|parcel|boundary)[\s-]*lines?\b/i,
     types: [],
-    // The contract with the Lot lines drawing tool (Oct 22 2026): an EDITOR version labelled "Lot lines …".
-    versionLabel: "Lot lines",
-    versionSources: ["EDITOR"],
+    // The contract with the Lot lines tool (lotLines.ts, hubFiles.saveLotLines):
+    // a hub version labelled "Lot lines by <name>" (and the same picture once
+    // it is on the listing, "Lot lines (on the Aryeo listing)"); an EDITOR
+    // version labelled so counts too.
+    versionLabel: LOT_LINES_LABEL,
+    versionSources: [HUB_EDIT, HUB_EDIT_LISTED, "EDITOR"],
     words: /\b(lot|property|parcel|boundary)[\s-]*lines?\b|\bplats?\b|\bsurvey\b|\bacres?\b|\bacreage\b|\bparcels?\b|\bboundar(?:y|ies)\b|\blots?\s+\d|\bseparate lots?\b/i,
   },
   {
@@ -172,22 +178,37 @@ async function confirmationsOf(jobIds: string[]): Promise<Map<string, Map<AddOnK
   return out;
 }
 
-/** The versions that carry each add-on's work, on photos in the delivery (or already on the listing), by job and key. */
+/**
+ * The versions that carry each add-on's work, on photos in the delivery (or
+ * already on the listing), by job and key. A hub picture (HUB_EDIT) made
+ * after the add-on's own, of another kind (Straighten, an upload), replaced
+ * it: every hub edit is drawn on the photo's own file, so the lines are gone
+ * from that photo and it no longer counts (Oct 22 2026, photoEdit.editBaseOf).
+ */
 async function versionsOf(jobIds: string[]): Promise<Map<string, Map<AddOnKey, { at: Date; by: string | null; photoName: string }>>> {
   const out = new Map<string, Map<AddOnKey, { at: Date; by: string | null; photoName: string }>>();
   if (!jobIds.length) return out;
   const rows = await prisma.photoVersion.findMany({
     where: {
       photo: { jobId: { in: jobIds }, status: { in: ["ACTIVE", ON_LISTING] } },
-      OR: ADD_ON_WORK.map((w) => ({ label: { startsWith: w.versionLabel, mode: "insensitive" as const }, ...(w.versionSources?.length ? { source: { in: w.versionSources } } : {}) })),
+      OR: [
+        ...ADD_ON_WORK.map((w) => ({ label: { startsWith: w.versionLabel, mode: "insensitive" as const }, ...(w.versionSources?.length ? { source: { in: w.versionSources } } : {}) })),
+        { source: HUB_EDIT },
+      ],
     },
     orderBy: { createdAt: "desc" },
-    select: { label: true, source: true, createdAt: true, createdBy: true, photo: { select: { jobId: true, name: true } } },
-    take: 400,
+    select: { photoId: true, label: true, source: true, createdAt: true, createdBy: true, photo: { select: { jobId: true, name: true } } },
+    take: 600,
   });
+  const workOf = (v: { label: string; source: string }) => ADD_ON_WORK.find((w) => v.label.toLowerCase().startsWith(w.versionLabel.toLowerCase()) && (!w.versionSources?.length || w.versionSources.includes(v.source)));
+  // The newest hub picture of each photo (rows are newest first).
+  const newestHub = new Map<string, (typeof rows)[number]>();
+  for (const v of rows) if (v.source === HUB_EDIT && !newestHub.has(v.photoId)) newestHub.set(v.photoId, v);
   for (const v of rows) {
-    const work = ADD_ON_WORK.find((w) => v.label.toLowerCase().startsWith(w.versionLabel.toLowerCase()) && (!w.versionSources?.length || w.versionSources.includes(v.source)));
+    const work = workOf(v);
     if (!work) continue;
+    const later = newestHub.get(v.photoId);
+    if (v.source === HUB_EDIT && later && later !== v && workOf(later)?.key !== work.key) continue;
     const m = out.get(v.photo.jobId) ?? new Map();
     if (!m.has(work.key)) m.set(work.key, { at: v.createdAt, by: v.createdBy, photoName: v.photo.name });
     out.set(v.photo.jobId, m);

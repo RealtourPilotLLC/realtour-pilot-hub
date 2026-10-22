@@ -31,6 +31,7 @@ export const HOLDING_ORDER = [
   "coverage", // something ordered not covered
   "checks", // the checklist's own checks (files, the QC covering every photo, rooms)
   "revision", // the client asked for changes after delivery: send again once the rest is settled
+  "update", // photos edited in the hub whose old file is still on the Aryeo listing (Update on Aryeo)
   "listing", // no Aryeo listing linked
   "aryeo", // the push into Aryeo: running, stopped, a photo twice, the order, changed
   "confirming", // waiting for Aryeo to confirm the delivery
@@ -49,7 +50,8 @@ export type HoldingAction =
   | { kind: "deliver"; label: string }
   | { kind: "mark"; label: string }
   | { kind: "verify"; label: string }
-  | { kind: "rerun"; label: string };
+  | { kind: "rerun"; label: string }
+  | { kind: "update"; label: string; photoIds: string[] };
 
 export type HoldingItem = {
   key: string;
@@ -95,6 +97,7 @@ export type HoldingGateLine = {
   askId?: string;
   personOnly?: boolean;
   addOn?: { key: string; need: string; done: string; ordered: string; quotes: { from: string; text: string }[]; cleared: unknown };
+  photoIds?: string[];
 };
 
 export type HoldingPush = {
@@ -133,7 +136,22 @@ export type HoldingBase = {
   listingUrl: string | null;
   orderUrl: string | null;
   deliveryCheckNote: string | null;
+  /** Photos edited in the hub whose old file is still on the Aryeo listing (needsListingUpdate): their ids and names. */
+  listingUpdates: { photoIds: string[]; names: string[] };
 };
+
+/**
+ * A photo edited in the hub (Straighten, Lot lines, an upload) whose file is
+ * on the Aryeo listing: the listing keeps the OLD file until Update on Aryeo
+ * (aryeoPush.requestListingUpdate) replaces it. Its file is on the listing
+ * when the photo was read from the listing, is a split job's delivered photo
+ * (ON_LISTING), or the job is delivered. Before that the delivery itself
+ * sends the edit. Pure (the "hub-" prefix is photoEdit's hub hash). Oct 22 2026.
+ */
+export function needsListingUpdate(p: { contentHash: string | null; sourceKind: string; status: string }, stage: string): boolean {
+  if (!p.contentHash?.startsWith("hub-")) return false;
+  return p.status === "ON_LISTING" || (p.sourceKind !== "AUTOHDR" && p.sourceKind !== "UPLOAD") || stage === "DELIVERED" || stage === "DELIVERY_MISMATCH";
+}
 
 export type HoldingInput = HoldingBase & {
   gate: { checks: HoldingGateLine[]; canDeliver: boolean; advisory: boolean; blockedForOverride: string | null } | null;
@@ -212,7 +230,8 @@ export function holdingFor(input: HoldingInput): HoldingView {
     add(true, item("checks", "gate", `The delivery checklist could not be read${input.gateError ? ` (${input.gateError})` : ""}.`, "Checklist unreadable", "Waiting on the hub", { kind: "rerun", label: "Read it again" }));
   }
   for (const c of delivered ? [] : gate?.checks ?? []) {
-    if (c.ok) continue;
+    // The checklist's Update on Aryeo line is the job's own fact here (listingUpdates, below), delivered or not.
+    if (c.ok || c.key === "listing-update") continue;
     const holds = holdsKyle(c);
     if (c.key === "upload") {
       add(holds, item("upload", c.key, `Part of the order was not uploaded${c.detail ? `: ${c.detail}` : "."}`, "Part of the order not uploaded", photographer, { kind: "link", label: "Open the upload page", href: `/upload/${input.projectId}` }));
@@ -257,12 +276,13 @@ export function holdingFor(input: HoldingInput): HoldingView {
     add(true, item("listing", "listing", "No Aryeo listing is linked to this job yet, so there is nowhere to send the photos.", "No Aryeo listing yet", "Waiting on Kyle", input.orderUrl ? { kind: "link", label: "Open the order", href: input.orderUrl, external: true } : null));
   }
   const listingLink = input.listingUrl ? { label: "Open the listing", href: input.listingUrl, external: true } : null;
-  if (on && pr && !pr.update) {
+  if (on && pr && (!pr.update || ACTIVE_PUSH.has(pr.state))) {
     const kept = pr.kept ? ` The ${pr.kept} already on the listing stay first.` : "";
     const waitingRun = (pr.state === "WAITING" || pr.state === "DONE") && !pr.deliveredAt;
     if (ACTIVE_PUSH.has(pr.state)) {
       const words =
-        pr.state === "PREPARING" ? pr.note ?? "Getting the photos ready in 06-Ready-for-Aryeo first."
+        pr.update ? `Updating ${plural(pr.total, "edited photo")} on the Aryeo listing.`
+        : pr.state === "PREPARING" ? pr.note ?? "Getting the photos ready in 06-Ready-for-Aryeo first."
         : pr.state === "SENDING" ? `Sending the photos to Aryeo: ${pr.sent} of ${pr.total}.${kept}`
         : pr.state === "DELIVERING" || pr.state === "CONFIRMING" ? "Delivering in Aryeo now."
         : pr.note ?? "Putting the photos on the Aryeo listing.";
@@ -286,6 +306,21 @@ export function holdingFor(input: HoldingInput): HoldingView {
         add(true, item("aryeo", "aryeo", pr.note, clipTo(pr.note, 50), "Waiting on Kyle", { kind: "deliver", label: "Deliver in Aryeo" }, { link: listingLink }));
       }
     }
+  }
+  // Photos edited in the hub whose old file is still on the listing: Update on Aryeo replaces them
+  // (the hub's own upload that changed is "Approve again" above instead; an Update already running is "Sending").
+  const toUpdate = input.listingUpdates?.photoIds ?? [];
+  if (toUpdate.length && !(pr && ACTIVE_PUSH.has(pr.state)) && !out.some((i) => i.kind === "aryeo" && i.action?.kind === "approve")) {
+    const n = toUpdate.length;
+    const names = input.listingUpdates.names;
+    add(true, item(
+      "update", "update",
+      `${plural(n, "photo")} edited in the hub (${clipTo(names.slice(0, 3).join(", "), 80)}${names.length > 3 ? ", …" : ""}) still ${n === 1 ? "has its" : "have their"} old file on the Aryeo listing.`,
+      `${plural(n, "photo")} to update on Aryeo`,
+      "Waiting on Kyle",
+      on ? { kind: "update", label: "Update on Aryeo", photoIds: toUpdate } : null,
+      { detail: on ? "Nothing is delivered again and no email goes out." : "The hub's upload is off: download each edit from the photo and replace it on the listing by hand.", link: listingLink },
+    ));
   }
   if (!delivered && stage === "DELIVERING" && !(pr && ACTIVE_PUSH.has(pr.state))) {
     add(true, item("confirming", "confirming", "Waiting for Aryeo to confirm the delivery.", "Waiting for Aryeo to confirm", "Waiting on Aryeo", { kind: "verify", label: "Check now" }, { detail: input.deliveryCheckNote }));

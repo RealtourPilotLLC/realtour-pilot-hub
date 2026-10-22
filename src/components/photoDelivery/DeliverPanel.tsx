@@ -10,6 +10,7 @@ import { CopyButton } from "@/components/ui/CopyButton";
 import {
   clientAskedAnswerAction, clientAskedDoneAction, confirmAddOnAction, overrideDeliverAction, overrideWrapUpAction, restageForAryeoAction, startDeliveryAction, verifyDeliveryAction,
 } from "@/app/ops/photo-delivery/actions";
+import { updateOnAryeoAction } from "@/app/ops/photo-delivery/editActions";
 import { PhotoImg } from "./PhotoImg";
 import { ReadyProgressBar, type ReadyBarState } from "./ReadyProgressBar";
 import { useJob } from "./JobContext";
@@ -442,7 +443,7 @@ export function DeliverPanel() {
                             ))}
                           </span>
                         )}
-                        {!c.ok && (c.href || (!readOnly && (c.askId || c.overridable || c.addOn))) && (
+                        {!c.ok && (c.href || (!readOnly && (c.askId || c.overridable || c.addOn || c.photoIds?.length))) && (
                           <span className="mt-1 flex flex-wrap gap-2">
                             {c.href && (
                               <Link href={c.href} className={cn(cardBtn, secondary, "font-medium")}>
@@ -463,6 +464,11 @@ export function DeliverPanel() {
                             {c.overridable && !readOnly && (
                               <button type="button" disabled={pending} onClick={() => void withoutWrapUp()} className={cn(cardBtn, "border border-danger/50 text-danger hover:bg-danger-soft")}>
                                 Deliver without it
+                              </button>
+                            )}
+                            {!!c.photoIds?.length && !readOnly && hubOn && (
+                              <button type="button" disabled={pending} onClick={() => void run(() => updateOnAryeoAction(jobId, c.photoIds!))} className={cn(cardBtn, secondary)}>
+                                <UploadCloud aria-hidden className="size-4" /> Update on Aryeo
                               </button>
                             )}
                             {c.addOn && !readOnly && (
