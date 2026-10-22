@@ -81,6 +81,13 @@ export type PerVideoRow = {
   source: "own" | "job" | "none";
   /** when the video's row was made: a video the hub set up after the handoff is not the photographer's miss */
   createdAt: Date | null;
+  /** Oct 22 2026 (lib/secondShootCore): waiting on a second shoot. Its box
+   *  stays on the upload page and the brief, and no completeness check (the
+   *  handoff, the KPI, the morning nudge) holds its words against anyone
+   *  until it is released. */
+  waiting?: boolean;
+  /** the office's note on the hold ("Half shot; needs a second appointment") */
+  waitingNote?: string | null;
 };
 
 /**
@@ -90,7 +97,7 @@ export type PerVideoRow = {
  * job's field, exactly as before.
  */
 export function perVideoInstructions(input: {
-  slots: { deliverableId: string; slot: number; label: string }[];
+  slots: { deliverableId: string; slot: number; label: string; waitingOnShoot?: { note: string | null } | null }[];
   styleOf: (deliverableId: string) => VideoStyleKey;
   outputs: { id: string; deliverableId: string; slot: number; filmingNote: string | null }[];
   createdAtOf?: (deliverableId: string) => Date | null;
@@ -120,6 +127,7 @@ export function perVideoInstructions(input: {
       text,
       source: own ? "own" : job ? "job" : "none",
       createdAt: input.createdAtOf?.(s.deliverableId) ?? null,
+      ...(s.waitingOnShoot ? { waiting: true, waitingNote: s.waitingOnShoot.note ?? null } : {}),
     };
   });
 }
@@ -134,6 +142,8 @@ export function perVideoInstructions(input: {
  */
 export function laterVideoGap(row: PerVideoRow, opts: { instructionsInDropbox?: boolean } = {}): string | null {
   if (row.number < 2) return null;
+  // Waiting on a second shoot (Oct 22 2026): its words are not owed yet.
+  if (row.waiting) return null;
   const own = row.own ?? "";
   const name = `video ${row.number} (${row.label})`;
   if (opts.instructionsInDropbox && row.shape !== "minimal") return null;

@@ -7,6 +7,7 @@ import { actualFolderPaths, type FolderProject } from "@/lib/dropboxFolders";
 import { videoStyleFor } from "@/lib/videoStyles";
 import { editorMeta, VIDEO_LANE_KEYS } from "@/lib/editors";
 import { effectiveSlotCounts } from "@/lib/editOverrides";
+import { SECOND_SHOOT_MARK, isWaitingHold, readSecondShoot, type SecondShootHold } from "@/lib/secondShootCore";
 import { backupSourceStamp, completeDropboxBackup, digest, proveOriginalBackup } from "@/lib/finalDropbox";
 
 /** Stamped on a cut row that was auto-approved BECAUSE the job was delivered —
@@ -667,7 +668,36 @@ export type CutSlot = {
    *  into `label`: the label is what the approved file and the Review Room's
    *  cut identity are named by, and a topic rename must not rename a file. */
   topicTitle?: string;
+  /** Oct 22 2026 (lib/secondShootCore): this video is WAITING ON A SECOND
+   *  SHOOT. Only ever present when the caller asked for waiting slots
+   *  (`{ includeWaiting: true }`); the default answer leaves the slot out, so
+   *  every owed-video reader (the editor's slots, the approved gate, the
+   *  Review Room, ready-to-send) carries on without it. */
+  waitingOnShoot?: SecondShootHold;
 };
+
+/** Every video WAITING on a second shoot on these jobs, as job → slot key →
+ *  hold (secondShootCore). One query; a failed read is "none waiting", which is
+ *  exactly the answer every reader gave before the hold existed. */
+export async function waitingHoldsByProject(projectIds: string[]): Promise<Map<string, Map<string, SecondShootHold>>> {
+  const out = new Map<string, Map<string, SecondShootHold>>();
+  const ids = [...new Set(projectIds)].filter(Boolean);
+  if (!ids.length) return out;
+  const rows = await prisma.deliverableOutput
+    .findMany({
+      where: { projectId: { in: ids }, briefJson: { contains: SECOND_SHOOT_MARK }, waivedAt: null, removedFromOrderAt: null },
+      select: { projectId: true, deliverableId: true, slot: true, briefJson: true },
+    })
+    .catch(() => [] as { projectId: string; deliverableId: string; slot: number; briefJson: string | null }[]);
+  for (const r of rows) {
+    const h = readSecondShoot(r.briefJson);
+    if (!isWaitingHold(h)) continue;
+    const m = out.get(r.projectId) ?? new Map<string, SecondShootHold>();
+    m.set(slotKeyOf(r.deliverableId, r.slot), h);
+    out.set(r.projectId, m);
+  }
+  return out;
+}
 
 /** Identity of a cut across rounds — uploaded rows by (deliverable, slot),
  *  legacy folder rows by file path. */
@@ -757,8 +787,14 @@ export function approvedSlotKeys(
  *  sixteen cuts would have read as one. `includeWaived` hands the waived slots
  *  back, flagged, for the one caller that has to record them rather than work
  *  on them (deliverableOutputs.ts — a waived video keeps its row and its
- *  history; it is retired, not deleted). */
-export async function cutSlots(projectId: string, opts: { includeWaived?: boolean } = {}): Promise<CutSlot[]> {
+ *  history; it is retired, not deleted).
+ *
+ *  A VIDEO WAITING ON A SECOND SHOOT OWES NOTHING YET (Oct 22 2026,
+ *  lib/secondShootCore) and drops out the same way, after the counts and the
+ *  names, so video 4 is still "video 4" when it comes back. `includeWaiting`
+ *  hands it back flagged (`waitingOnShoot`) for the readers that show it or
+ *  keep its row: the per-video rows, the brief's list, the upload page. */
+export async function cutSlots(projectId: string, opts: { includeWaived?: boolean; includeWaiting?: boolean } = {}): Promise<CutSlot[]> {
   const p = await prisma.project.findUnique({
     where: { id: projectId },
     select: {
@@ -816,6 +852,7 @@ export async function cutSlots(projectId: string, opts: { includeWaived?: boolea
     return count;
   });
   const counts = effectiveSlotCounts(p, baseCounts);
+  const waiting = (await waitingHoldsByProject([projectId])).get(projectId) ?? new Map<string, SecondShootHold>();
   const out: CutSlot[] = [];
   // Two videos of the same style on one job (two standard reels off two
   // lines, Oct 22 2026) are told apart by their place: "Standard Reel (2)".
@@ -828,6 +865,8 @@ export async function cutSlots(projectId: string, opts: { includeWaived?: boolea
     const same = bases.filter((b) => b === bases[i]).length;
     const base = same > 1 ? `${bases[i]} (${bases.slice(0, i + 1).filter((b) => b === bases[i]).length})` : bases[i];
     for (let slot = 1; slot <= count; slot++) {
+      const hold = waiting.get(slotKeyOf(d.id, slot));
+      if (hold && !opts.includeWaiting) continue;
       out.push({
         deliverableId: d.id,
         deliverableLabel: base,
@@ -836,6 +875,7 @@ export async function cutSlots(projectId: string, opts: { includeWaived?: boolea
         label: count > 1 ? `${base} — Video ${slot} of ${count}` : base,
         ...(d.waivedAt ? { waived: true } : {}),
         ...(topicByKey.has(slotKeyOf(d.id, slot)) ? { topicTitle: topicByKey.get(slotKeyOf(d.id, slot))! } : {}),
+        ...(hold ? { waitingOnShoot: hold } : {}),
       });
     }
   }
@@ -2466,12 +2506,21 @@ export type VideoCutState = {
   projectStatus: string;
   /** when the job was delivered, if it was (Sep 28) */
   projectDeliveredISO?: string | null;
+  /** the video this is a cut of, `${deliverableId}:${slot}`; null on a legacy folder row (Oct 22 2026) */
+  slotKey?: string | null;
 };
 
 export type ProjectVideoState = {
   projectId: string;
-  /** owed cuts on this job (0 = no video ordered) */
+  /** owed cuts on this job (0 = no video ordered). A video WAITING ON A
+   *  SECOND SHOOT is not owed yet (Oct 22 2026) and is counted below instead. */
   owed: number;
+  /** the owed videos, `${deliverableId}:${slot}`, in order (Oct 22 2026) */
+  slotKeys?: string[];
+  /** videos waiting on a second shoot: not owed, not due, nobody's work yet */
+  waitingOnShoot?: number;
+  /** "Video 4 (Premium Social Reel): Waiting on a second shoot: half shot", one per waiting video */
+  waitingLines?: string[];
   approved: number;
   waiting: number;   // cuts awaiting a verdict
   revising: number;  // cuts bounced back to the editor
@@ -2493,6 +2542,8 @@ const pureSlots = (
   monthly: boolean,
   quota: number,
   tier: "standard" | "premium" | null,
+  /** Oct 22 2026: the job's videos waiting on a second shoot, flagged on their slot (the caller drops them) */
+  waiting: Map<string, SecondShootHold> = new Map(),
 ) => {
   const vids = p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   // Same rule as cutSlots(): the hub's count per row, the office's total over
@@ -2510,7 +2561,10 @@ const pureSlots = (
     // total is split by row position, so the row has to keep its place.
     if (d.waivedAt) continue;
     const base = videoStyleFor(d, { monthly, tier }).name;
-    for (let slot = 1; slot <= count; slot++) out.push({ deliverableId: d.id, deliverableLabel: base, slot, count, label: count > 1 ? `${base} — Video ${slot} of ${count}` : base });
+    for (let slot = 1; slot <= count; slot++) {
+      const hold = waiting.get(slotKeyOf(d.id, slot));
+      out.push({ deliverableId: d.id, deliverableLabel: base, slot, count, label: count > 1 ? `${base} — Video ${slot} of ${count}` : base, ...(hold ? { waitingOnShoot: hold } : {}) });
+    }
   }
   return out;
 };
@@ -2567,6 +2621,9 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
     .filter((p) => p.contentMonthId && p.videosFilmed == null && isMonthlyContentJob(p.deliverables, p.packageName))
     .map((p) => p.id));
   const editByProject = new Map(editTasks.map((t) => [t.projectId, t.assignedKey]));
+  // Oct 22 2026: the videos waiting on a second shoot, owed by nobody yet.
+  const waitingHolds = await waitingHoldsByProject(projects.map((p) => p.id));
+  const { waitingLine, plainLabel } = await import("@/lib/secondShootCore");
   const subsByProject = new Map<string, typeof subs>();
   const { isHeldForSelfCheck } = await import("@/lib/selfCheck");
   for (const s of subs) {
@@ -2582,7 +2639,9 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
     const monthly = isMonthlyContentJob(p.deliverables, p.packageName);
     const names = [p.packageName, ...p.deliverables.map((d) => d.label)], sessionQuantity = sessionQuantities.get(p.id);
     const quota = sessionQuantity === undefined ? monthlyVideoQuota(names) : sessionQuantityFloor(names, sessionQuantity);
-    const slots = pureSlots(p, monthly, quota, videoTier(p.deliverables));
+    const allSlots = pureSlots(p, monthly, quota, videoTier(p.deliverables), waitingHolds.get(p.id));
+    const slots = allSlots.filter((s) => !s.waitingOnShoot);
+    const waitingLines = allSlots.flatMap((s, i) => (s.waitingOnShoot ? [`Video ${i + 1} (${plainLabel(s.label)}): ${waitingLine(s.waitingOnShoot)}`] : []));
     const rows = subsByProject.get(p.id) ?? [];
     // latest round per cut
     const latest = new Map<string, (typeof rows)[number]>();
@@ -2593,10 +2652,11 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
     }
     const street = (p.title || "Project").split(",")[0].trim();
     const cuts: VideoCutState[] = [...latest.values()].map((r) => {
-      const slot = slots.find((s) => s.deliverableId === r.deliverableId && s.slot === r.slot);
+      const slot = allSlots.find((s) => s.deliverableId === r.deliverableId && s.slot === r.slot);
       return {
         submissionId: r.id,
         projectId: p.id,
+        slotKey: r.deliverableId ? slotKeyOf(r.deliverableId, r.slot) : null,
         street,
         clientName: p.client?.name ?? "",
         clientAvatarUrl: p.client?.avatarUrl ?? null,
@@ -2651,7 +2711,16 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
       stage === "editing" ? editingDetail(work.get(p.id), { uploaded: cuts.length, owed, approved, legacy: p.status === "EDITING", editor: editByProject.get(p.id) ?? null, done, clock: workClock }) :
       stage === "ready_to_edit" ? `Ready for editing${editByProject.get(p.id) ? ` — ${prettyKey(editByProject.get(p.id) as string)}` : ""}${done}` :
       "Not started — no cut uploaded yet";
-    out.set(p.id, { projectId: p.id, owed, approved, waiting, revising, uploaded: cuts.length, stage, detail, cuts });
+    // A video waiting on a second shoot is said, never counted (Oct 22 2026).
+    const held = waitingLines.length;
+    const heldWords = held ? `${held} waiting on a second shoot` : "";
+    const fullDetail = !held ? detail : detail ? `${detail} · ${heldWords}` : held === 1 && owed === 0 ? "Waiting on a second shoot" : heldWords;
+    out.set(p.id, {
+      projectId: p.id, owed, approved, waiting, revising, uploaded: cuts.length, stage, detail: fullDetail, cuts,
+      slotKeys: slots.map((s) => slotKeyOf(s.deliverableId, s.slot)),
+      waitingOnShoot: held,
+      waitingLines,
+    });
   }
   return out;
 }
