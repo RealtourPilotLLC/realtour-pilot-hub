@@ -73,6 +73,11 @@ export async function autoShareEligible(versionId: string, opts: { now?: Date; c
   if (cfg.requireInTarget && findings.some((f) => f.code === "timing.out-of-range")) reasons.push("a length warning (clearly under 30 seconds or well over a minute)");
   // Oct 14 2026: over the house 110-word ceiling waits for a person, whatever requireInTarget says (a person may still approve it).
   if (findings.some((f) => f.code === "length.over-cap")) reasons.push("over the 110-word ceiling");
+  // Oct 22 2026: a draft the creative review has not passed waits for a person
+  // (flagged, still fixing or trimming, not checked yet). A version with no
+  // review record is judged by the checks above, as before.
+  const judge = (await import("@/lib/scriptJudgeRecord")).readJudge(v.validationJson);
+  if (judge && judge.state !== "passed") reasons.push(`its creative review is ${judge.state.replace("_", " ")}, not passed`);
 
   // The strategy it was drafted from is still the approved one.
   const approved = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: v.enrollmentId, status: "APPROVED" }, orderBy: { versionNo: "desc" }, select: { id: true } });
