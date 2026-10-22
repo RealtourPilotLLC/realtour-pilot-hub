@@ -456,7 +456,9 @@ export function hardNumbers(parts: ScriptParts, sourceText: string, /** What she
   const unsupportedTerms = MARKET_TERMS.filter((t) => t.re.test(spoken) && !t.re.test(src)).map((t) => t.key);
   if (unsupportedTerms.length) findings.push({ key: "market_claim", level: "must-fix", detail: `Market statements she did not make: ${unsupportedTerms.join(", ")}.` });
   const jargon = JARGON_RES.filter((j) => j.re.test(spoken)).map((j) => j.say);
-  if (jargon.length) findings.push({ key: "jargon", level: "flag", detail: `Industry terms spoken to homeowners: ${jargon.join(", ")}.` });
+  // Must-fix (Oct 22 2026): the independent review found "impervious coverage" passing as a flag because
+  // it was one of "her phrases"; Jordan wants plain homeowner words, so an industry term fails the draft.
+  if (jargon.length) findings.push({ key: "jargon", level: "must-fix", detail: `Industry terms spoken to homeowners: ${jargon.join(", ")}.` });
   // A long run is a transcript sentence stitched in (must-fix); a medium one may be a strong line of hers, so it is a flag to look at.
   const spokenSrc = spokenSourceText ?? sourceText;
   const pastedLong = pastedRuns(spoken, spokenSrc, PASTED_MUST_FIX_WORDS);

@@ -947,7 +947,7 @@ async function main() {
     {
       c.ok("HOMEOWNER_LANGUAGE_RULE: a phrase of hers is still jargon", rules.HOMEOWNER_LANGUAGE_RULE.includes("A phrase of hers is still jargon if a homeowner would not say it; her phrases never override this rule.") && prompts.BRIEF_SYSTEM.includes(rules.HOMEOWNER_LANGUAGE_RULE) && prompts.BRIEF_SYSTEM.includes("her phrases never override plain words"));
       const j = rules.hardNumbers({ hook: "Your lot decides the backyard.", points: [{ role: "payoff", text: "I look at grading, impervious coverage, setbacks, and what the actives and pendings say." }], close: "Bring me your backyard wish list." }, "").findings.find((x) => x.key === "jargon");
-      c.ok("\"impervious coverage\", \"setbacks\", \"actives\", \"pendings\" are flagged as industry terms", !!j && ["impervious coverage", "setback", "actives", "pendings"].every((t) => j.detail.includes(t)), j?.detail);
+      c.ok("\"impervious coverage\", \"setbacks\", \"actives\", \"pendings\" are caught as industry terms, and must be fixed (Oct 22: not a flag)", !!j && j.level === "must-fix" && ["impervious coverage", "setback", "actives", "pendings"].every((t) => j.detail.includes(t)), j?.detail);
       c.ok("…\"impervious surface\" too; \"active\" and \"pending\" as plain words are not", rules.hardNumbers({ hook: "x", points: [{ role: "payoff", text: "An impervious surface limit." }], close: "x" }, "").findings.some((x) => x.key === "jargon") && !rules.hardNumbers({ hook: "x", points: [{ role: "payoff", text: "Homes are pending and buyers are active." }], close: "x" }, "").findings.some((x) => x.key === "jargon"));
     }
 
