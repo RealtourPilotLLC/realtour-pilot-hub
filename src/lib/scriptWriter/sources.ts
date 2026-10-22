@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { CONFIDENTIAL_RE, CONFIDENTIAL_PHRASE_RE, confidentialFilter } from "@/lib/clientFacts";
 import { renderStrategy, creativeIdentityBlock } from "@/lib/contentPolicy";
 import { creativeGuardBlock, discontinuedHit, type CreativeGuard } from "@/lib/creativeGuardCore";
-import { segmentTranscript, topicKeywords, keywordHits, keywordWindows, isInternalTalk, type TranscriptLine } from "./passages";
+import { segmentTranscript, topicKeywords, keywordHits, keywordWindows, isInternalTalk, herKeywords, transcriptBody, type TranscriptLine } from "./passages";
 import { TEAM_REVIEWER, DROP_NOTE_PREFIX } from "./factCleanup";
 import type { WriterContext, SourceDoc } from "./prompts";
 import type { WriterFact } from "./record";
@@ -19,7 +19,12 @@ import type { WriterFact } from "./record";
 //                         there is
 //   older calls           her other calls and older month transcripts, as the
 //                         few windows that mention this topic's words (bounded:
-//                         eight windows at most), never every call ever held
+//                         eight windows at most), never every call ever held.
+//                         Oct 22 2026 (the listening fix): the windows are
+//                         chosen AFTER the topic's call is read, by HER words
+//                         there (withHerWords below; pipeline.prepareDraft
+//                         reads them in a second retrieval), never by the
+//                         AI-written description; Gemini's notes are skipped
 //   recorded excerpts     what the call analysis already quoted for the topic
 //   written answers       her portal answers, when she answered in writing
 //   facts                 accepted, AI-allowed facts, AND what she said on a
@@ -27,7 +32,12 @@ import type { WriterFact } from "./record";
 //                         2026, decision 3: usable now, labelled "not reviewed
 //                         yet"); never a fact for the team only (production,
 //                         scheduling, billing, internal notes, reported
-//                         performance, commitments), never a confidential one
+//                         performance, commitments), never a confidential one.
+//                         Oct 22 2026 (the listening fix): an accepted fact
+//                         filed under an OLDER month counts too when it is
+//                         about her (history, process, opinions, service), not
+//                         that month's plans; a fact is labelled "direction,
+//                         never a line to say" only when it reads as one
 //   scripts               her earlier filmed or approved scripts ON THE SAME
 //                         SUBJECT (what she has said on camera), and voice
 //                         examples chosen by subject, client-approved first,
@@ -89,11 +99,29 @@ export type Gathered = {
   labels: { calls: string[]; olderWindows: number; relatedScripts: string[]; voiceRefs: { title: string; why: string }[]; answers: number };
   inputRefs: Record<string, unknown>;
   videoStyle: "DIRECT" | "SKITS";
+  /**
+   * Oct 22 2026 (the listening fix). Her older calls, scrubbed, from the
+   * "Transcript" heading down, not yet cut into windows: withHerWords chooses
+   * the windows by her words once the topic's call has been read.
+   */
+  olderDocs: OlderDoc[];
+  /** Every fact the writer may use (scrubbed, labelled), before they are ranked by her words and numbered. */
+  factPool: PoolFact[];
+  /** Her scripts the writer may read, before they are picked by her words. */
+  scriptCands: ScriptCandidate[];
+  guard: CreativeGuard | null;
+  /** The topic's title and her own words outside the call (quotable lines, written answers): what her keywords start from. */
+  herWords: string[];
 };
+
+export type OlderDoc = { label: string; lines: TranscriptLine[] };
+export type PoolFact = WriterFact & { factId: string; score?: number; at?: number };
 
 const FULL_CALL_CHARS = 150_000;
 const OLDER_WINDOWS_MAX = 8;
 const FACTS_MAX = 30;
+/** How many candidate facts are kept before her words rank them. */
+const FACT_POOL_MAX = 80;
 
 /** Fact categories that are never for a buyer or seller: they stay with the team. */
 export const TEAM_ONLY_CATEGORIES = new Set(["PRODUCTION_PREFERENCE", "INTERNAL", "PERFORMANCE_REPORTED", "PERFORMANCE_MEASURED", "COMMITMENT"]);
@@ -119,11 +147,38 @@ export function isClientSpoken(f: { speaker: string | null; excerptJson: string 
   } catch { return false; }
 }
 
+/**
+ * A fact that is a DIRECTION for how to make her videos (her tone, what she
+ * wants shown or avoided, a content decision), as opposed to something true
+ * about her that she can say (Oct 22 2026, the listening fix): "Marcee
+ * transitioned into real estate from a role as sales and marketing director"
+ * was filed as a brand preference and reached the writer as "never a line to
+ * say". The category alone no longer decides; the words do.
+ */
+const DIRECTION_RE = /\b(?:prefer(?:s|red)?|preference|(?:wants?|would like|likes?|loves?|hates?|(?:does|do)(?:n'?t| not) (?:want|like)) (?:to (?:be (?:seen|known|positioned|perceived)|look|sound|come across|appear|seem|focus|feature|show|highlight|avoid|keep|use|film|post|talk about|mention)|(?:her|his|their|the|more|less|fewer) (?:videos?|content|scripts?|reels?|hooks?|captions?|brand|tone|voice|style|look|edits?))|avoid(?:s|ing)? (?:saying|the word|words?|mentioning|talking about)|tone|brand voice|(?:her|the) voice|style|branding|positioning|on camera|videos?|reels?|scripts?|hooks?|captions?|content|filming|film(?:ed|s)?|editing|music|graphics|b-roll|teleprompter|wardrobe|(?:never|don'?t|do not) say|wording|phrasing)\b/i;
+export function isDirectionFact(body: string): boolean {
+  return DIRECTION_RE.test(body);
+}
+
+/**
+ * A month-scoped fact that is still true after its month: about her history,
+ * her process, her opinions or her service, not that month's plans (Oct 22
+ * 2026, the listening fix). Forty accepted facts migrated from Marcee's notes
+ * ("Left senior living ... didn't have total control", "$350 to $500 for a full
+ * inspection the seller controls") are filed under old months and never
+ * reached the writer.
+ */
+const MONTH_BOUND_RE = /\b(?:this|next|last|that) (?:month|week|call|session|shoot|quarter)|\b(?:today|tomorrow|yesterday|tonight)\b|\b(?:january|february|march|april|june|july|august|september|october|november|december)\b|\b(?:shoot|filming|film day|schedul\w*|resched\w*|deadline|due by|by (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/i;
+export function isDurableFact(f: { body: string; category: string }): boolean {
+  if (TEAM_ONLY_CATEGORIES.has(f.category) || f.category === "DECISION" || f.category === "COMMITMENT") return false;
+  if (isInternalTalk(f.body) || isDirectionFact(f.body)) return false;
+  return !MONTH_BOUND_RE.test(f.body);
+}
+
+type FactRow = { id: string; body: string; category: string; status: string; aiContext: string; confidential: boolean; conflictsWithId: string | null; reviewedBy: string | null; source: string; speaker: string | null; excerptJson: string | null; factDate: Date | null; createdAt: Date; scope?: string | null; monthId?: string | null };
+
 /** The client's facts the writer may use (decision 3), labelled. Pure over the rows given. */
-export function writerFactsFrom(
-  rows: { id: string; body: string; category: string; status: string; aiContext: string; confidential: boolean; conflictsWithId: string | null; reviewedBy: string | null; source: string; speaker: string | null; excerptJson: string | null; factDate: Date | null; createdAt: Date }[],
-  o: { names: string[]; keywords: string[]; max?: number },
-): WriterFact[] {
+export function writerFactsFrom(rows: FactRow[], o: { names: string[]; keywords: string[]; max?: number; /** The topic's month: a MONTH fact filed under another month must be durable (isDurableFact). */ monthId?: string | null }): PoolFact[] {
   const kept: (WriterFact & { score: number; at: number })[] = [];
   for (const f of rows) {
     if (f.confidential || f.conflictsWithId || CONFIDENTIAL_RE.test(f.body) || CONFIDENTIAL_PHRASE_RE.test(f.body)) continue;
@@ -131,15 +186,29 @@ export function writerFactsFrom(
     // The fact cleanup's verdicts (factCleanup.ts): TEAM is for us only; a DROP suggestion waits for a person.
     if (f.reviewedBy === TEAM_REVIEWER || (f.reviewedBy ?? "").startsWith(DROP_NOTE_PREFIX)) continue;
     if (isInternalTalk(f.body)) continue;
+    if (f.scope === "PROJECT") continue;
+    const otherMonth = f.scope === "MONTH" && !!f.monthId && f.monthId !== (o.monthId ?? null);
     let label: string | null = null;
     if (f.status === "ACCEPTED" && f.aiContext === "ALLOWED") label = "accepted";
-    else if (f.status === "PROPOSED" && f.source === "call" && isClientSpoken(f, o.names)) label = `not reviewed yet: she said it on the ${fmtDate(f.factDate ?? f.createdAt)} call`;
+    else if (!otherMonth && f.status === "PROPOSED" && f.source === "call" && isClientSpoken(f, o.names)) label = `not reviewed yet: she said it on the ${fmtDate(f.factDate ?? f.createdAt)} call`;
     if (!label) continue;
-    if (f.category === "BRAND_PREFERENCE" || f.category === "DECISION") label = `${label}; direction for how to write for her, never a line to say`;
+    // An older month's fact: only one about her, never that month's plans.
+    if (otherMonth && !isDurableFact(f)) continue;
+    if (isDirectionFact(f.body)) label = `${label}; direction for how to write for her, never a line to say`;
+    else if (f.category === "BRAND_PREFERENCE" || f.category === "DECISION") label = `${label}; about her, so it can be said`;
     kept.push({ id: f.id, body: f.body.replace(/\s+/g, " ").trim().slice(0, 400), label, score: keywordHits(f.body, o.keywords), at: (f.factDate ?? f.createdAt).getTime() });
   }
   kept.sort((a, b) => b.score - a.score || b.at - a.at);
-  return kept.slice(0, o.max ?? FACTS_MAX).map((f, i) => ({ id: `F${i + 1}`, body: f.body, label: f.label, factId: f.id } as WriterFact & { factId: string }));
+  return kept.slice(0, o.max ?? FACTS_MAX).map((f, i) => ({ id: `F${i + 1}`, body: f.body, label: f.label, factId: f.id, score: f.score, at: f.at }));
+}
+
+/** The facts the brief reads: the pool ranked by these (her) words, then the newest, numbered F1.. Pure. */
+export function rankFacts(pool: PoolFact[], keywords: string[], max = FACTS_MAX): (WriterFact & { factId: string })[] {
+  return pool
+    .map((f) => ({ f, s: keywordHits(f.body, keywords), at: f.at ?? 0 }))
+    .sort((a, b) => b.s - a.s || b.at - a.at)
+    .slice(0, max)
+    .map(({ f }, i) => ({ id: `F${i + 1}`, body: f.body, label: f.label, factId: f.factId }));
 }
 
 export type ScriptCandidate = { id: string; title: string; body: string; tier: 3 | 2 | 1; label: string; at: number };
@@ -187,7 +256,15 @@ export async function gatherForTopic(o: GatherOpts): Promise<Gathered> {
   const calls = callIds.size ? await prisma.programCallRecord.findMany({ where: { id: { in: [...callIds] }, clientId, ...(asOf ? { OR: [{ scheduledStart: null }, { scheduledStart: before }] } : {}) }, select: { id: true, scheduledStart: true, callType: true } }) : [];
   const transcripts = calls.length ? await prisma.programTranscriptSource.findMany({ where: { callRecordId: { in: calls.map((c) => c.id) }, matchState: "CONFIRMED", text: { not: null }, ...(asOf ? { createdAt: before } : {}) }, orderBy: { version: "desc" }, select: { id: true, callRecordId: true, text: true, supersedesId: true, legacyMonthId: true, recordedAt: true } }) : [];
   const superseded = new Set(transcripts.map((x) => x.supersedesId).filter(Boolean));
-  const keywords = topicKeywords(t.title, t.concept, t.intendedMessage, ...(await gen.quotableLinesForTopic(o.topicId, o.monthId, clientId).catch(() => [] as string[])));
+  // Oct 22 2026 (the listening fix): the first keywords come from the title and
+  // her own words outside the call (the call analysis's quotable lines; her
+  // written answers are added below). The AI-written description and intended
+  // message only stand in when there is nothing of hers at all. Once the
+  // topic's call is read, withHerWords replaces these with her words there.
+  const quotable = await gen.quotableLinesForTopic(o.topicId, o.monthId, clientId).catch(() => [] as string[]);
+  const herWords: string[] = [...quotable];
+  let keywords = topicKeywords(t.title, ...quotable);
+  if (keywords.length < 4) keywords = topicKeywords(t.title, t.concept, t.intendedMessage, ...quotable);
   const sources: SourceDoc[] = [];
   const lines = new Map<string, TranscriptLine[]>();
   const callLabels: string[] = [];
@@ -227,7 +304,11 @@ export async function gatherForTopic(o: GatherOpts): Promise<Gathered> {
     ...olderMonths.filter((m) => !asOf || `${m.monthKey}` <= asOf.toISOString().slice(0, 7)).map((m) => ({ label: `older call for ${m.monthKey}`, text: m.transcriptText! })),
     ...otherTx.map((x) => ({ label: `older call of ${fmtDate(otherCalls.find((c) => c.id === x.callRecordId)?.scheduledStart ?? x.recordedAt)}`, text: x.text! })),
   ];
-  const windows: { label: string; text: string; time: string | null; score: number }[] = [];
+  // Oct 22 2026 (the listening fix): read and cleaned here, cut into windows by
+  // withHerWords once the topic's call has told us her words. Gemini's notes
+  // are skipped (transcriptBody): they are a reader's summary, and they matched
+  // generic topic words better than her own lines did.
+  const older: OlderDoc[] = [];
   // A month's pasted transcript that was also lifted into a transcript source is read once.
   const seenText = new Set<string>();
   for (const d of olderDocs) {
@@ -235,14 +316,8 @@ export async function gatherForTopic(o: GatherOpts): Promise<Gathered> {
     if (seenText.has(sig)) continue;
     seenText.add(sig);
     const clean = (await gen.scrubTranscriptForGeneration(clientId, d.text)).text;
-    for (const w of keywordWindows(segmentTranscript(clean), keywords, { radius: 5, max: 3, maxChars: 2200 })) windows.push({ label: d.label, text: w.text, time: w.time, score: w.score });
-  }
-  windows.sort((a, b) => b.score - a.score);
-  let oN = 0;
-  for (const w of windows.slice(0, OLDER_WINDOWS_MAX)) {
-    const id = `o${++oN}`;
-    sources.push({ id, label: `${w.label}${w.time ? `, around ${w.time}` : ""} (a passage that mentions this topic's words)`, kind: "older", text: w.text });
-    lines.set(id, segmentTranscript(w.text));
+    const docLines = segmentTranscript(transcriptBody(clean));
+    if (docLines.length) older.push({ label: d.label, lines: docLines });
   }
 
   // --- what the call analysis already quoted ----------------------------------
@@ -266,28 +341,34 @@ export async function gatherForTopic(o: GatherOpts): Promise<Gathered> {
         .map(([k, v]) => ({ question: ANSWER_LABEL[k] ?? k, answer: `${v.text!.trim()}${v.followUpText ? ` (${v.followUpText.trim()})` : ""}`.slice(0, 1500) }));
     }
   }
+  for (const a of answers) herWords.push(a.answer);
+  if (answers.length) keywords = [...new Set([...keywords, ...topicKeywords(...answers.map((a) => a.answer))])];
 
   // --- facts (decision 3) -----------------------------------------------------
   const factRows = await prisma.clientFact.findMany({
     where: {
       clientId, confidential: false, conflictsWithId: null,
       OR: [{ status: "ACCEPTED", aiContext: "ALLOWED" }, { status: "PROPOSED", source: "call" }],
-      AND: [{ OR: [{ scope: "PERMANENT" }, ...(o.monthId ? [{ scope: "MONTH", monthId: o.monthId }] : [])] }],
+      // Oct 22 2026 (the listening fix): an accepted fact filed under an older
+      // month is read too; writerFactsFrom keeps it only when it is about her
+      // (isDurableFact), never that month's plans.
+      AND: [{ OR: [{ scope: "PERMANENT" }, ...(o.monthId ? [{ scope: "MONTH", monthId: o.monthId }] : []), { scope: "MONTH", status: "ACCEPTED", aiContext: "ALLOWED" }] }],
       ...(asOf ? { createdAt: before } : {}),
     },
     orderBy: [{ factDate: "desc" }, { createdAt: "desc" }],
     take: 300,
-    select: { id: true, body: true, category: true, status: true, aiContext: true, confidential: true, conflictsWithId: true, reviewedBy: true, source: true, speaker: true, excerptJson: true, factDate: true, createdAt: true },
+    select: { id: true, body: true, category: true, status: true, aiContext: true, confidential: true, conflictsWithId: true, reviewedBy: true, source: true, speaker: true, excerptJson: true, factDate: true, createdAt: true, scope: true, monthId: true },
   });
   const secret = await confidentialFilter(clientId);
   const scrubOne = async (text: string) => (await gen.scrubOtherClients(clientId, [text])).stripped === 0;
-  const factCands = writerFactsFrom(factRows, { names, keywords, max: FACTS_MAX + 10 }) as (WriterFact & { factId: string })[];
-  const facts: (WriterFact & { factId: string })[] = [];
+  const factCands = writerFactsFrom(factRows, { names, keywords, max: FACT_POOL_MAX + 10, monthId: o.monthId });
+  const factPool: PoolFact[] = [];
   for (const f of factCands) {
-    if (facts.length >= FACTS_MAX) break;
+    if (factPool.length >= FACT_POOL_MAX) break;
     if (secret(f.body) || !(await scrubOne(f.body))) continue;
-    facts.push({ ...f, id: `F${facts.length + 1}` });
+    factPool.push(f);
   }
+  const facts = rankFacts(factPool, keywords);
 
   // --- scripts: same subject, and voice ---------------------------------------
   const scripts = await prisma.contentScript.findMany({
@@ -345,24 +426,78 @@ export async function gatherForTopic(o: GatherOpts): Promise<Gathered> {
     answers,
     captionExamples: doc?.captionCtaExamples?.items ?? [],
   };
+  const holdBack = async (text: string) => secret(text) || !(await scrubOne(text));
+  return assemble({
+    ctx, enrollmentId: t.enrollmentId, clientId, pillarId: t.pillarId, strategyVersionId, policyVersionId: built.policyVersionId,
+    sources, lines, keywords, holdBack, callLabels, answers: answers.length, picked, facts,
+    inputRefs: { writer: true, strategyVersionId, callRecordIds: [...seenCall], recordedExcerpts: recorded.length, interviewId, asOf: asOf?.toISOString() ?? null },
+    videoStyle: built.ctx.videoStyle === "SKITS" ? "SKITS" : "DIRECT",
+    olderDocs: older, factPool, scriptCands: cands, guard, herWords: [t.title, ...herWords],
+  });
+}
+
+type Picked = ReturnType<typeof pickScripts>;
+
+/** The Gathered shape from its parts: the texts and labels that follow from the sources, facts and scripts chosen. Pure. */
+function assemble(a: Omit<Gathered, "clientText" | "callText" | "labels"> & { callLabels: string[]; answers: number; picked: Picked; facts: (WriterFact & { factId: string })[] }): Gathered {
+  const { callLabels, answers, picked, facts, ...g } = a;
+  const ctx: WriterContext = {
+    ...g.ctx,
+    facts: facts.map(({ id, body, label }) => ({ id, body, label })),
+    voiceRefs: picked.voice.map(({ title, text, why }) => ({ title, text, why })),
+    relatedScripts: picked.related.map(({ title, text, label }) => ({ title, text, label })),
+  };
+  const olderWindows = g.sources.filter((s) => s.kind === "older").length;
   const clientText = [
-    ...sources.map((s) => s.text),
-    ...answers.map((a) => a.answer),
+    ...g.sources.map((s) => s.text),
+    ...ctx.answers.map((x) => x.answer),
     ...facts.map((f) => f.body),
     ...picked.related.map((r) => r.text),
-    strategyText ?? "",
+    ctx.strategyText ?? "",
   ].join("\n");
-  const callText = sources.filter((s) => s.kind === "call").map((s) => `[${s.id}] ${s.label}\n${s.text}`).join("\n\n");
+  const callText = g.sources.filter((s) => s.kind === "call").map((s) => `[${s.id}] ${s.label}\n${s.text}`).join("\n\n");
   return {
-    ctx, enrollmentId: t.enrollmentId, clientId, pillarId: t.pillarId, strategyVersionId, policyVersionId: built.policyVersionId,
-    sources, lines, clientText, callText, keywords,
-    holdBack: async (text: string) => secret(text) || !(await scrubOne(text)),
-    labels: { calls: callLabels, olderWindows: oN, relatedScripts: picked.related.map((r) => `${r.title} (${r.label})`), voiceRefs: picked.voice.map((v) => ({ title: v.title, why: v.why })), answers: answers.length },
+    ...g, ctx, clientText, callText,
+    labels: { calls: callLabels, olderWindows, relatedScripts: picked.related.map((r) => `${r.title} (${r.label})`), voiceRefs: picked.voice.map((v) => ({ title: v.title, why: v.why })), answers },
     inputRefs: {
-      writer: true, strategyVersionId, callRecordIds: [...seenCall], olderWindows: oN, recordedExcerpts: recorded.length, interviewId,
+      ...g.inputRefs, olderWindows,
       factIds: facts.map((f) => f.factId), unreviewedFacts: facts.filter((f) => f.label.startsWith("not reviewed")).length,
-      relatedScriptIds: picked.related.map((r) => r.id), voiceScriptIds: picked.voice.map((v) => v.id), asOf: asOf?.toISOString() ?? null,
+      relatedScriptIds: picked.related.map((r) => r.id), voiceScriptIds: picked.voice.map((v) => v.id),
     },
-    videoStyle: built.ctx.videoStyle === "SKITS" ? "SKITS" : "DIRECT",
   };
+}
+
+/** The best windows of her older calls for these words, across every older call, best first (OLDER_WINDOWS_MAX at most). Pure. */
+export function olderWindowsFor(docs: OlderDoc[], keywords: string[], max = OLDER_WINDOWS_MAX): { label: string; text: string; time: string | null; score: number }[] {
+  const out: { label: string; text: string; time: string | null; score: number }[] = [];
+  for (const d of docs) for (const w of keywordWindows(d.lines, keywords, { radius: 5, max: 3, maxChars: 2200 })) out.push({ label: d.label, text: w.text, time: w.time, score: w.score });
+  return out.sort((a, b) => b.score - a.score).slice(0, max);
+}
+
+/**
+ * AFTER THE TOPIC'S CALL IS READ (Oct 22 2026, the listening fix): her words
+ * there (the passages retrieval found, with the lines around them, which
+ * carry the interviewer's question), the title and her other words become the
+ * keywords, and by them: her older calls' windows (added as sources o1..o8 for
+ * the second retrieval), the facts the brief reads (ranked, numbered F1..), and
+ * her same-subject scripts. Pure over the Gathered it is given.
+ */
+export function withHerWords(g: Gathered, passages: { quote: string; context?: string | null }[]): Gathered {
+  const mine = herKeywords({ title: g.ctx.topic.title, passages, herWords: g.herWords });
+  const keywords = mine.length >= 3 ? mine : [...new Set([...mine, ...g.keywords])];
+  const sources = g.sources.filter((s) => s.kind !== "older");
+  const lines = new Map([...g.lines].filter(([id]) => !id.startsWith("o")));
+  olderWindowsFor(g.olderDocs, keywords).forEach((w, i) => {
+    const id = `o${i + 1}`;
+    sources.push({ id, label: `${w.label}${w.time ? `, around ${w.time}` : ""} (her earlier call: a passage with her words on this subject)`, kind: "older", text: w.text });
+    lines.set(id, segmentTranscript(w.text));
+  });
+  const { clientText: _c, callText: _t, labels, ...rest } = g;
+  void _c; void _t;
+  return assemble({
+    ...rest, sources, lines, keywords,
+    callLabels: labels.calls, answers: labels.answers,
+    picked: pickScripts(g.scriptCands, keywords, g.guard),
+    facts: rankFacts(g.factPool, keywords),
+  });
 }

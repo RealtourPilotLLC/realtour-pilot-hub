@@ -3,10 +3,10 @@ import { prisma } from "@/lib/prisma";
 import { runAiJson, sha256, type AiRunKind, type ClaimedRun } from "@/lib/aiRuns";
 import { timeoutBefore, type AiEffort } from "@/lib/integrations/ai";
 import type { GeneratedScriptJson, Gap } from "@/lib/contentPolicy";
-import { gatherForTopic, type Gathered, type GatherOpts } from "./sources";
-import { buildRetrievalPrompt, buildBriefPrompt, buildHooksPrompt, buildDraftPrompt, buildReviewPrompt, buildReviseWriterPrompt, type DraftOut, type StepPrompt, type WriterContext } from "./prompts";
+import { gatherForTopic, withHerWords, type Gathered, type GatherOpts } from "./sources";
+import { buildRetrievalPrompt, buildBriefPrompt, buildHooksPrompt, buildDraftPrompt, buildReviewPrompt, buildReviseWriterPrompt, buildRedraftPrompt, type DraftOut, type StepPrompt, type WriterContext } from "./prompts";
 import { locateQuote, contextAround, timeOf, isInternalTalk } from "./passages";
-import { pickHook, hardNumbers, mergeReview, mustFixFailures, trimInstruction, spokenTextOf, WRITER_LENGTH, WRITER_VERSION, estimateSeconds, type HookCandidate, type ReviewCheckResult, type HardFinding, type ScriptParts } from "./rules";
+import { pickHook, hardNumbers, mergeReview, mustFixFailures, trimInstruction, spokenTextOf, runnerUpHook, hookInUse, hookFailed, WRITER_LENGTH, WRITER_VERSION, BRIEF_MUST_KEEP_MAX, estimateSeconds, type HookCandidate, type ReviewCheckResult, type HardFinding, type ScriptParts } from "./rules";
 import { readWriter, type TopicBrief, type WriterPassage, type WriterRecord, type WriterRationale } from "./record";
 
 // ---------------------------------------------------------------------------
@@ -108,13 +108,25 @@ export async function runWriterStep<T>(step: Step, prompt: StepPrompt, rc: RunCt
 
 type RetrievalOut = { passages: { sourceId?: string; speaker?: string; kind?: string; quote?: string; forViewer?: boolean; reason?: string; why?: string }[]; overview?: string };
 const MAX_PASSAGES = 14;
+/** Room kept for her older calls among the passages (Oct 22 2026): a long topic call no longer crowds them all out. */
+const OLDER_PASSAGES_MAX = 4;
+/** The interviewer's lines on the topic the brief is shown (Oct 22 2026). */
+const ASKED_MAX = 3;
 
-/** The model's passages, kept only when the quote is really in that source; context added by code; held back by rule or by the model's own reason. */
-export async function passagesFrom(g: Pick<Gathered, "sources" | "lines" | "holdBack">, out: RetrievalOut): Promise<{ kept: WriterPassage[]; excluded: { quote: string; source: string; reason: string }[]; notFound: number }> {
+export type AskedLine = { quote: string; source: string; time: string | null };
+
+/**
+ * The model's passages, kept only when the quote is really in that source; context added by code; held back by rule or by the model's own reason.
+ * Oct 22 2026 (the listening fix): staff lines found on the topic's call are also returned as `asked` (the
+ * interviewer's question, which says what the video is for; never her words, never script material), and up
+ * to OLDER_PASSAGES_MAX passages from her older calls keep their place.
+ */
+export async function passagesFrom(g: Pick<Gathered, "sources" | "lines" | "holdBack">, out: RetrievalOut): Promise<{ kept: WriterPassage[]; excluded: { quote: string; source: string; reason: string }[]; notFound: number; asked: AskedLine[] }> {
   const rank = (id: string) => (id.startsWith("c") ? 0 : id.startsWith("o") ? 1 : 2);
   const kept: (WriterPassage & { r: number; first: number })[] = [];
   const excluded: { quote: string; source: string; reason: string }[] = [];
   const taken: { id: string; first: number; last: number }[] = [];
+  const asked: AskedLine[] = [];
   let notFound = 0;
   for (const p of Array.isArray(out?.passages) ? out.passages : []) {
     const sid = String(p?.sourceId ?? "").trim();
@@ -125,6 +137,7 @@ export async function passagesFrom(g: Pick<Gathered, "sources" | "lines" | "hold
     const range = locateQuote(lines, quote);
     if (!range) { notFound++; continue; }
     const source = doc.label.replace(/\s*\(.*$/, "");
+    if (p.speaker === "us" && doc.kind === "call" && asked.length < ASKED_MAX && !isInternalTalk(quote) && !(await g.holdBack(quote))) asked.push({ quote: quote.slice(0, 400), source, time: timeOf(lines, range) });
     if (p.forViewer === false) { excluded.push({ quote: quote.slice(0, 300), source, reason: String(p.reason ?? "").trim() || "not for a viewer" }); continue; }
     if (p.speaker && p.speaker !== "client") { excluded.push({ quote: quote.slice(0, 300), source, reason: p.speaker === "us" ? "said by Realtour Pilot, not her" : "said by someone else, not her" }); continue; }
     if (isInternalTalk(quote)) { excluded.push({ quote: quote.slice(0, 300), source, reason: "internal talk about our work with her" }); continue; }
@@ -134,25 +147,46 @@ export async function passagesFrom(g: Pick<Gathered, "sources" | "lines" | "hold
     kept.push({ id: "", source, time: timeOf(lines, range), speaker: "client", kind: String(p.kind ?? "experience"), quote: quote.slice(0, 700), context: contextAround(lines, range), why: String(p.why ?? "").trim().slice(0, 200), r: rank(sid), first: range.first });
   }
   kept.sort((a, b) => a.r - b.r || a.first - b.first);
-  const passages = kept.slice(0, MAX_PASSAGES).map((p, i): WriterPassage => ({ id: `P${i + 1}`, source: p.source, time: p.time, speaker: p.speaker, kind: p.kind, quote: p.quote, context: p.context, why: p.why }));
-  return { kept: passages, excluded: excluded.slice(0, 20), notFound };
+  const older = kept.filter((p) => p.r === 1).slice(0, OLDER_PASSAGES_MAX);
+  const calls = kept.filter((p) => p.r === 0).slice(0, MAX_PASSAGES - older.length);
+  const rest = kept.filter((p) => p.r === 2).slice(0, Math.max(0, MAX_PASSAGES - older.length - calls.length));
+  const passages = [...calls, ...older, ...rest].map((p, i): WriterPassage => ({ id: `P${i + 1}`, source: p.source, time: p.time, speaker: p.speaker, kind: p.kind, quote: p.quote, context: p.context, why: p.why }));
+  return { kept: passages, excluded: excluded.slice(0, 20), notFound, asked };
 }
 
 // ---------------------------------------------------------------------------
 // Brief
 // ---------------------------------------------------------------------------
 
-type BriefOut = Partial<Omit<TopicBrief, "whatSheSaid" | "target">> & { whatSheSaid?: string[] };
+type BriefOut = Partial<Omit<TopicBrief, "whatSheSaid" | "target" | "mustKeep" | "proof">> & { whatSheSaid?: string[]; mustKeep?: { text?: unknown; source?: unknown; inProgress?: unknown }[]; proof?: { text?: unknown; source?: unknown } | null };
 const s400 = (v: unknown) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, 600) : "");
 const items = (v: unknown) => (Array.isArray(v) ? v : []).map((x) => ({ text: s400((x as { text?: unknown })?.text), source: s400((x as { source?: unknown })?.source) || "unstated" })).filter((x) => x.text).slice(0, 14);
 
+/**
+ * The brief as stored. Oct 22 2026 (the listening fix), held by code whatever
+ * the model wrote: a point about a deal still in progress is never must-keep
+ * (it goes to excluded); an educational video keeps at most four must-keep
+ * points and a story six, the rest moved to the front of optional. A brief
+ * without a video type is read as educational.
+ */
 export function briefFrom(out: BriefOut, passages: WriterPassage[]): TopicBrief {
   const said = (Array.isArray(out.whatSheSaid) ? out.whatSheSaid : []).map((id) => passages.find((p) => p.id === String(id).trim())).filter((p): p is WriterPassage => !!p);
+  const videoType = out.videoType === "story" ? "story" : "educational";
+  const rawKeep = Array.isArray(out.mustKeep) ? out.mustKeep : [];
+  const live = items(rawKeep.filter((m) => m?.inProgress === true));
+  const keepAll = items(rawKeep.filter((m) => m?.inProgress !== true));
+  const cap = BRIEF_MUST_KEEP_MAX[videoType];
+  const proofText = s400(out.proof?.text);
   return {
+    videoType, whatWeAsked: s400(out.whatWeAsked), angle: s400(out.angle), proof: proofText ? { text: proofText, source: s400(out.proof?.source) || "unstated" } : null,
     centralMessage: s400(out.centralMessage), viewer: s400(out.viewer), whyChosen: s400(out.whyChosen), pillar: s400(out.pillar),
     whatSheSaid: [...new Set(said)].slice(0, 8).map((p) => ({ passageId: p.id, quote: p.quote, source: p.source, time: p.time })),
-    mustKeep: items(out.mustKeep), herPhrases: items(out.herPhrases).slice(0, 5), optional: items(out.optional),
-    excluded: (Array.isArray(out.excluded) ? out.excluded : []).map((x) => ({ text: s400((x as { text?: unknown }).text), reason: s400((x as { reason?: unknown }).reason) })).filter((x) => x.text).slice(0, 14),
+    mustKeep: keepAll.slice(0, cap), herPhrases: items(out.herPhrases).slice(0, 5),
+    optional: [...keepAll.slice(cap).map((m) => ({ ...m, text: `${m.text} (moved from must-keep: ${videoType === "story" ? "a story keeps its main beats" : "one belief, one proof, what she does"})` })), ...items(out.optional)].slice(0, 14),
+    excluded: [
+      ...live.map((m) => ({ text: m.text, reason: "a deal still in progress: never a must-keep; at most a mention in general terms, never identifiable" })),
+      ...(Array.isArray(out.excluded) ? out.excluded : []).map((x) => ({ text: s400((x as { text?: unknown }).text), reason: s400((x as { reason?: unknown }).reason) })).filter((x) => x.text),
+    ].slice(0, 14),
     contradictions: (Array.isArray(out.contradictions) ? out.contradictions : []).map((x) => ({ text: s400((x as { text?: unknown }).text), sources: s400((x as { sources?: unknown }).sources) })).filter((x) => x.text).slice(0, 8),
     verifiedFacts: items(out.verifiedFacts), opinions: items(out.opinions), creativeIdeas: items(out.creativeIdeas), ourAssumptions: items(out.ourAssumptions),
     closeType: out.closeType === "callback" ? "callback" : "cta", closeWhy: s400(out.closeWhy),
@@ -169,34 +203,56 @@ export type Prepared = {
   passages: WriterPassage[];
   excluded: { quote: string; source: string; reason: string }[];
   overview: string | null;
+  /** The interviewer's lines on this topic (Oct 22 2026): what the video is meant to answer. */
+  asked: AskedLine[];
   brief: TopicBrief;
   hooks: HookCandidate[];
   chosen: number;
-  runs: { retrieval: string | null; brief: string | null; hooks: string | null };
+  runs: { retrieval: string | null; brief: string | null; hooks: string | null; olderRetrieval?: string | null };
 };
 
+/**
+ * Gather, then read. Oct 22 2026 (the listening fix): the retrieval runs in two
+ * steps. First the topic's call(s) and the recorded excerpts; then her words
+ * there (with the interviewer's question around them) choose the windows of
+ * her OLDER calls, the facts the brief reads and her same-subject scripts
+ * (sources.withHerWords), and a second retrieval reads those windows for what
+ * they add. Both readings' passages go to the brief and the review alike.
+ */
 export async function prepareDraft(o: GatherOpts & { requestedBy: string; unattended: boolean; deadline?: number | null; offline?: boolean }): Promise<Prepared> {
-  const g = await gatherForTopic(o);
-  const rc: RunCtx = { requestedBy: o.requestedBy, unattended: o.unattended, deadline: o.deadline ?? null, scope: { topicId: o.topicId, monthId: o.monthId, ...(o.offline ? { offline: true, asOf: o.asOf?.toISOString() ?? null } : {}) }, enrollmentId: g.enrollmentId, clientId: g.clientId, strategyVersionId: g.strategyVersionId, policyVersionId: g.policyVersionId, inputRefs: g.inputRefs };
+  const g0 = await gatherForTopic(o);
+  const rcOf = (g: Gathered): RunCtx => ({ requestedBy: o.requestedBy, unattended: o.unattended, deadline: o.deadline ?? null, scope: { topicId: o.topicId, monthId: o.monthId, ...(o.offline ? { offline: true, asOf: o.asOf?.toISOString() ?? null } : {}) }, enrollmentId: g.enrollmentId, clientId: g.clientId, strategyVersionId: g.strategyVersionId, policyVersionId: g.policyVersionId, inputRefs: g.inputRefs });
   const key = (step: string) => `writer:${o.offline ? "offline:" : ""}${step}:${o.topicId}:${o.monthId ?? "bank"}`;
-  let passages: WriterPassage[] = [];
-  let excluded: Prepared["excluded"] = [];
+  let out: RetrievalOut = { passages: [] };
   let overview: string | null = null;
   let retrievalRun: string | null = null;
-  if (g.sources.length) {
-    const r = await runWriterStep<RetrievalOut>("retrieval", buildRetrievalPrompt(g.ctx, g.sources), rc, { dedupeKey: key("retrieval") });
-    const got = await passagesFrom(g, r.output);
-    passages = got.kept;
-    excluded = got.excluded;
+  if (g0.sources.length) {
+    const r = await runWriterStep<RetrievalOut>("retrieval", buildRetrievalPrompt(g0.ctx, g0.sources), rcOf(g0), { dedupeKey: key("retrieval") });
+    out = { passages: Array.isArray(r.output?.passages) ? r.output.passages : [] };
     overview = s400(r.output?.overview) || null;
     retrievalRun = r.runId;
   }
+  const first = await passagesFrom(g0, out);
+  const g = withHerWords(g0, first.kept);
+  const rc = rcOf(g);
+  let olderRun: string | null = null;
+  const olderSources = g.sources.filter((s) => s.kind === "older");
+  if (olderSources.length) {
+    const r2 = await runWriterStep<RetrievalOut>("retrieval", buildRetrievalPrompt(g.ctx, olderSources, { already: first.kept.map((p) => ({ quote: p.quote, source: p.source })) }), rc, { dedupeKey: key("retrieval-older") });
+    // Only what it was shown: a quote it gives from the topic's call was already read the first time.
+    const olderIds = new Set(olderSources.map((s) => s.id));
+    out = { passages: [...out.passages, ...(Array.isArray(r2.output?.passages) ? r2.output.passages : []).filter((p) => olderIds.has(String(p?.sourceId ?? "").trim()))] };
+    olderRun = r2.runId;
+  }
+  const got = olderSources.length ? await passagesFrom(g, out) : first;
+  const passages = got.kept;
+  const excluded = got.excluded;
   // v2.1: the brief checks against the whole call, not only the passages.
-  const b = await runWriterStep<BriefOut>("brief", buildBriefPrompt(g.ctx, passages, excluded, overview, g.callText), rc, { dedupeKey: key("brief") });
+  const b = await runWriterStep<BriefOut>("brief", buildBriefPrompt(g.ctx, passages, excluded, overview, g.callText, got.asked), rc, { dedupeKey: key("brief") });
   const brief = briefFrom(b.output, passages);
   const h = await runWriterStep<{ hooks?: Parameters<typeof pickHook>[0] }>("hooks", buildHooksPrompt(g.ctx, brief), rc, { dedupeKey: key("hooks") });
-  const picked = pickHook(h.output?.hooks ?? []);
-  return { g, passages, excluded, overview, brief, hooks: picked.hooks, chosen: picked.chosen, runs: { retrieval: retrievalRun, brief: b.runId, hooks: h.runId } };
+  const picked = pickHook(h.output?.hooks ?? [], { videoType: brief.videoType });
+  return { g, passages, excluded, overview, asked: got.asked, brief, hooks: picked.hooks, chosen: picked.chosen, runs: { retrieval: retrievalRun, brief: b.runId, hooks: h.runId, olderRetrieval: olderRun } };
 }
 
 /** The draft call (the run a queued click adopts, holding the script's dedupe key until the version is written). */
@@ -232,7 +288,7 @@ export function rationaleOf(out: DraftOut | null | undefined): WriterRationale |
 export function writerRecordOf(p: Prepared, draft: { output: DraftOut; runId: string }, asOf: Date | null = null): WriterRecord {
   return {
     v: 2, version: WRITER_VERSION, brief: p.brief, passages: p.passages, excludedPassages: p.excluded, hooks: p.hooks, chosen: p.chosen, rationale: rationaleOf(draft.output),
-    facts: p.g.ctx.facts, sources: p.g.labels, runs: { retrieval: p.runs.retrieval, brief: p.runs.brief, hooks: p.runs.hooks, draft: draft.runId }, asOf: asOf?.toISOString() ?? null,
+    facts: p.g.ctx.facts, sources: p.g.labels, runs: { retrieval: p.runs.retrieval, brief: p.runs.brief, hooks: p.runs.hooks, draft: draft.runId, ...(p.runs.olderRetrieval ? { olderRetrieval: p.runs.olderRetrieval } : {}) }, asOf: asOf?.toISOString() ?? null,
   };
 }
 
@@ -361,9 +417,27 @@ export async function reviewVersion(versionId: string, o: { requestedBy: string;
   return { ...r, closeType };
 }
 
-/** The revise prompt for a script the writer drafted (fix rounds, the trim pass, a person's or a client's request). */
+/**
+ * The hook a fix round starts again from (Oct 22 2026, the listening fix): when
+ * the review failed the hook or the re-hook at must-fix level, the next-best
+ * usable hook that neither the first draft nor the current version used; null
+ * otherwise (or when every hook has been tried). Pure.
+ */
+export function switchHookFor(rec: Pick<WriterRecord, "hooks" | "chosen" | "brief">, current: { body: string }, failed: { checks?: ReviewCheckResult[] | null; instruction?: string | null }): HookCandidate | null {
+  if (!rec.hooks.length || !hookFailed(failed)) return null;
+  const used = [rec.chosen >= 0 ? rec.hooks[rec.chosen]?.text ?? "" : "", hookInUse(current.body, rec.hooks) ?? ""].filter(Boolean);
+  return runnerUpHook(rec.hooks, used, rec.brief.videoType ?? null);
+}
+
+/**
+ * The revise prompt for a script the writer drafted (fix rounds, the trim pass, a person's or a client's request).
+ * A review fix round whose instruction fails the hook or the re-hook is a fresh draft from the runner-up hook
+ * (switchHookFor); a locked hook, a trim or a person's request never switches.
+ */
 export async function writerRevisePrompt(s: { id: string; topicId: string | null; monthId: string | null }, rec: WriterRecord, current: { versionNo: number; body: string }, instruction: string, opts: { lockedLabels?: string[]; who: "review" | "trim" | "person" | "client" }): Promise<StepPrompt> {
   const { ctx } = await contextForScript(s, rec);
+  const next = opts.who === "review" && !(opts.lockedLabels ?? []).some((l) => /hook/i.test(l)) ? switchHookFor(rec, current, { instruction }) : null;
+  if (next) return buildRedraftPrompt(ctx, rec.brief, rec.passages, { text: next.text, rehook: next.rehook }, current, instruction);
   return buildReviseWriterPrompt(ctx, rec.brief, rec.passages, current, instruction, opts);
 }
 
@@ -403,9 +477,14 @@ export async function draftOffline(o: { topicId: string; monthId: string | null;
     else if (next === "trim") { instruction = trimInstruction(review.words, mustKeep); who = "trim"; trimmed = true; label = "trim"; }
     else { instruction = writerFixInstruction({ checks: review.checks, hard: review.hard, fixInstruction: review.fixInstruction, words: review.words }, mustKeep); who = "review"; fixRounds++; label = `fix ${fixRounds}`; }
     const body = spokenTextOf(cur.parts);
-    const step = buildReviseWriterPrompt(p.g.ctx, p.brief, p.passages, { versionNo: attempts.length, body }, instruction, { who });
+    // Oct 22 2026 (the listening fix): a failed hook or re-hook starts again from the runner-up hook.
+    const switchTo = who === "review" ? switchHookFor(rec, { body }, { checks: review.checks }) : null;
+    const step = switchTo
+      ? buildRedraftPrompt(p.g.ctx, p.brief, p.passages, { text: switchTo.text, rehook: switchTo.rehook }, { versionNo: attempts.length, body }, instruction)
+      : buildReviseWriterPrompt(p.g.ctx, p.brief, p.passages, { versionNo: attempts.length, body }, instruction, { who });
+    if (switchTo) label = `${label} (runner-up hook)`;
     const revised = await runWriterStep<DraftOut>("revise", step, rc);
-    cur = toParts(revised.output, null);
+    cur = toParts(revised.output, switchTo?.text ?? null);
   }
   const best = attempts.reduce((a, b) => (score(b) < score(a) ? b : a), attempts[0]);
   return { prepared: strip(p), record: rec, attempts, final: best, state: "flagged", keptLonger: false };

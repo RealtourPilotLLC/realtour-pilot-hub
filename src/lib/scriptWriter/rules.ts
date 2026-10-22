@@ -31,7 +31,14 @@ import { GENERATION_POLICY, BANNED_OPENERS, SCRIPT_PART_BUDGETS, countSpokenWord
  * to 80 that may drop nothing the brief marks must-keep, and is reviewed
  * again; when the trim loses substance, the longer passing version is kept.
  */
-export const WRITER_VERSION = "writer.v2.1-2026-10-22";
+export const WRITER_VERSION = "writer.v2.2-2026-10-22";
+// v2.2 (Oct 22 2026, the listening fix, LISTENING.md): Jordan's lines and her
+// older calls reach the writer (the other-client filter no longer takes them);
+// older calls are read by her words, in a second retrieval; accepted facts from
+// older months count; the brief chooses one angle and one proof (must-keep
+// capped, never a live deal) and carries the interviewer's question; a story's
+// hook opens on her moment, and a failed hook or re-hook starts the next round
+// from the runner-up hook; no client's finals are quoted in any rule.
 
 /** Words and seconds (Jordan, Oct 22 2026). Seconds are an estimate at the hub's speaking rate, never a measurement. */
 export const WRITER_LENGTH = {
@@ -43,6 +50,18 @@ export const WRITER_LENGTH = {
   cap: 110,
   wordsPerSec: GENERATION_POLICY.timing.wordsPerSec,
 } as const;
+
+/**
+ * How many must-keep points a brief may carry (Oct 22 2026, the listening
+ * fix). The brief put her whole answer on the list (the old belief, the
+ * balance, three buyer expectations, the even playing field, a live deal, the
+ * agent advice), the trim and the review then enforced it, and the 2022 script
+ * came out as notes. Jordan's finals keep one idea and one proof. An
+ * educational video keeps at most four (the belief, the one reason it is not
+ * the whole story, what she does, what the viewer should do); a personal story
+ * keeps its beats, at most six. Code holds the cap (pipeline.briefFrom).
+ */
+export const BRIEF_MUST_KEEP_MAX = { educational: 4, story: 6 } as const;
 
 export const OVER_CAP_LABEL = "A bit long: needs a fix";
 export const LONG_ADVISORY_LABEL = "Longer than the 55 to 85 aim";
@@ -105,7 +124,11 @@ export function trimInstruction(words: number, mustKeep: readonly string[] = [])
 // v2.1 (Jordan on the retro test, Oct 22 2026: every one of his finals ends on
 // a warm spoken invitation): the invitation is the DEFAULT; a callback alone
 // only for a story with no service angle, and a callback may carry the invite.
-export const CLOSE_RULE = `CLOSE (Jordan, Oct 22 2026): the close completes the message and, by default, ends on a natural, warm invitation tied to it, in the client's voice. Jordan's finals for one agent all end this way (examples of the SHAPE only, from another agent's videos: never reuse their words or their content): "Whether it's your first home or your next chapter, you don't need all the answers before calling me. That's what I'm here for." / "There are still great opportunities. And your home is different. That's why it deserves a strategy built for today's market. Let's talk." / "I'm here to help you see your home through their eyes. Before you change everything, let's talk about what actually matters."
+// Oct 22 2026 (the listening fix): Jordan's three finals for Marcee were quoted
+// here, in the hooks and in the brief as "another agent's" examples. For
+// Marcee they were the answer key and a ban on her own framings at once, so
+// every rule below describes the SHAPE in plain words and quotes no client.
+export const CLOSE_RULE = `CLOSE (Jordan, Oct 22 2026): the close completes the message and, by default, ends on a natural, warm invitation tied to it, in the client's voice. The shape of Jordan's finals: one line that returns to the video's idea or names who it is for, then a plain, warm invitation to reach out ("let's talk" in her own words), never a pitch.
 - "cta" (the default): the invitation, tied to what the video just said, often after a line that returns to the hook's idea. Never a hard sell, never "DM me" slang the client would not say.
 - "callback": only when the video is purely a story with no service angle; it returns to the hook's idea and resolves it, and may still carry a soft invitation.
 - A slogan or a rhyming aphorism is not a close. The brief decides which one (closeType) and says why. The caption CTA still carries the contact line.`;
@@ -116,30 +139,32 @@ export const CLOSE_RULE = `CLOSE (Jordan, Oct 22 2026): the close completes the 
 // better"). What she said is the material; how it is said on camera is the
 // craft Realtour Pilot brings.
 // ---------------------------------------------------------------------------
-export const WORDING_RULE = `HER MATERIAL, OUR WORDING: her facts, stories, chronology, motivations, opinions and meaning are the material; the WORDING is ours: tight, natural, spoken and polished, the way she would say it on her best take. Use her exact phrasing only where it is strong and natural on camera: short, vivid, her own vocabulary (the kind of phrase one agent had in "fiercely protect" or "every bit as scary"; use THIS client's phrases, never those). Never paste her spoken sentences from a call: transcript speech rambles, restarts and fills ("um", "you know", "I guess", "it's just that"). A faithful paraphrase of something she said is supported; adding something she did not say is not.`;
+export const WORDING_RULE = `HER MATERIAL, OUR WORDING: her facts, stories, chronology, motivations, opinions and meaning are the material; the WORDING is ours: tight, natural, spoken and polished, the way she would say it on her best take. Use her exact phrasing only where it is strong and natural on camera: short, vivid, her own vocabulary (a few words of hers that carry feeling or a picture, found in THIS client's sources). Never paste her spoken sentences from a call: transcript speech rambles, restarts and fills ("um", "you know", "I guess", "it's just that"). A faithful paraphrase of something she said is supported; adding something she did not say is not.`;
 
 /**
  * Jordan's lessons from Marcee's three scripts (JORDAN-BRIEF.md, cases 1 to 3,
- * "Lessons for future scripts"), as house craft for EVERY client.
+ * "Lessons for future scripts"), as house craft for EVERY client. Oct 22 2026
+ * (the listening fix): the lessons stay; the lines from her finals that
+ * illustrated them are gone (see CLOSE_RULE).
  */
-export const HOUSE_CRAFT_RULES = `HOUSE CRAFT (Jordan's lessons, for every client; the examples in it come from another agent's videos and show the shape only: never put their story, facts or words in this client's script)
+export const HOUSE_CRAFT_RULES = `HOUSE CRAFT (Jordan's lessons, for every client)
 PERSONAL BRAND STORIES (her background, a career change, why she does this work):
-- An understandable narrative progression, in the order it happened: where she was and what she loved; her ACTUAL reason for the change, in her terms (for example wanting the freedom or the final say to build her own business: that reason is the heart of the story, never "biography" to cut); what she expected; what actually happened (the turn); the insight that connects her past to the viewer's need; how she helps the viewer now.
+- An understandable narrative progression, in the order it happened: where she was and what she loved; her ACTUAL reason for the change, in her terms (what she said, whatever it was: that reason is the heart of the story, never "biography" to cut); what she expected; what actually happened (the turn); the insight that connects her past to the viewer's need; how she helps the viewer now.
 - Correct chronology. Never invent a motivation to create drama.
 - Keep the emotionally meaningful words she uses about her purpose.
 - One compelling story, not a complete biography: job duties, side facts and a second turn go.
-- The insight is the point: why her experience matters to THIS viewer (for example, that a first-time buyer and a senior leaving a home of sixty years need the same things: someone to explain their options and fiercely protect their interests). A fun fact about her ("they are my favorite clients") is not the message.
+- The insight is the point: why her experience matters to THIS viewer, and what she gives them. A fun fact about her (who her favorite clients are, a hobby, an award) is not the message.
 - Give the viewer a reason to trust or remember her.
 EDUCATIONAL VIDEOS:
 - Understand the underlying topic, not the title's wording; do not change an established topic because other angles came up.
-- Hook on a relatable belief or misconception, in the words a homeowner or buyer would actually say ("But my house is different.").
+- Hook on a relatable belief or misconception, in the words a homeowner or buyer would actually say (their own sentence, not a description of them).
 - Explain why the belief no longer holds, or why it is not the whole story.
 - Show her actual process and what she does differently; keep the specific details of her process.
-- Use a meaningful contrast (a cosmetic refresh versus a costly property issue); never an invented analogy or a forced example.
+- Use a meaningful contrast from her own material (two things she set side by side); never an invented analogy or a forced example.
 - Balanced: explain the challenge without creating fear. Never add a market claim because it sounds plausible; background reasoning is not spoken content.
 EVERY SCRIPT: the payoff explains why it matters and what she does differently or how she helps; the close is a natural next step tied to the premise.`;
 
-export const HOMEOWNER_LANGUAGE_RULE = `PLAIN WORDS FOR HOMEOWNERS AND BUYERS: speak the way a homeowner or a buyer talks, never in industry terms. "Buyer avatar", "comps", "CMA", "absorption rate", "list-to-sale ratio", "DOM" and similar are the client's working vocabulary, not words to say to a viewer: say what they mean ("who is most likely to buy your house", "what similar homes sold for"). Prefer a line the viewer might say themselves ("But my house is different.") over addressing them by category ("Sellers, ..."). Never open by naming the audience ("Sellers," / "Buyers,").`;
+export const HOMEOWNER_LANGUAGE_RULE = `PLAIN WORDS FOR HOMEOWNERS AND BUYERS: speak the way a homeowner or a buyer talks, never in industry terms. "Buyer avatar", "comps", "CMA", "absorption rate", "list-to-sale ratio", "DOM" and similar are the client's working vocabulary, not words to say to a viewer: say what they mean ("who is most likely to buy your house", "what similar homes sold for"). In an educational video, prefer a line the viewer might say themselves (their own sentence) over addressing them by category ("Sellers, ..."). Never open by naming the audience ("Sellers," / "Buyers,").`;
 
 export const TOPIC_LABEL_RULE = `THE TOPIC TITLE IS A LABEL, NOT COPY: the title organises the plan; it is not a line to say and its wording is not the angle (a title that names a year, a series or a slogan does not put that word in the script). Understand what the topic is about and say that, in the client's words.`;
 
@@ -349,26 +374,82 @@ export function reviewHeadline(checks: ReviewCheckResult[]): string {
 
 export const HOOK_CRITERIA = ["relevance", "curiosity", "specificity", "naturalDelivery", "accuracy", "herVoice", "payoffConnection"] as const;
 export type HookCriterion = (typeof HOOK_CRITERIA)[number];
-export type HookCandidate = { text: string; rehook: string; lever: string; scores: Record<HookCriterion, number>; total: number; note: string; disqualified: string | null };
+/**
+ * What the hook does for the video's job (Oct 22 2026, the listening fix):
+ * "her_moment" opens on her own tension or turn; "viewer_line" is a line the
+ * viewer would say or a question they are asking; "other" anything else.
+ */
+export const HOOK_FITS = ["her_moment", "viewer_line", "other"] as const;
+export type HookFit = (typeof HOOK_FITS)[number];
+export type HookCandidate = { text: string; rehook: string; lever: string; scores: Record<HookCriterion, number>; total: number; note: string; disqualified: string | null; fit?: HookFit };
+/** The brief's reading of the video: a personal story (her background, why she does this work) or an educational one. */
+export type VideoType = "story" | "educational";
 
 const clampScore = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.max(1, Math.min(5, Math.round(v))) : 1);
 
-/** Clean the model's hooks and pick the winner: accurate (4+), no greeting, no audience vocative, no dash; then the highest total; ties go to the earlier one. */
-export function pickHook(raw: { text?: unknown; rehook?: unknown; lever?: unknown; scores?: Record<string, unknown> | null; note?: unknown }[]): { hooks: HookCandidate[]; chosen: number } {
+/**
+ * The order hooks are chosen in: usable before disqualified; for a personal
+ * story, a hook that opens on HER moment before any other (Oct 22 2026, the
+ * listening fix: the seniors pick was "Buying my first home shouldn't feel
+ * this scary, right?", a viewer's line winning 31 to 29 over her own turn);
+ * then the highest total; ties to the earlier one. Pure.
+ */
+function hookOrder(hooks: HookCandidate[], videoType: VideoType | null | undefined): number[] {
+  const storyFit = (h: HookCandidate) => (videoType === "story" && h.fit === "her_moment" ? 1 : 0);
+  return hooks
+    .map((h, i) => ({ h, i }))
+    .filter(({ h }) => !h.disqualified)
+    .sort((a, b) => storyFit(b.h) - storyFit(a.h) || b.h.total - a.h.total || a.i - b.i)
+    .map(({ i }) => i);
+}
+
+/** Clean the model's hooks and pick the winner: accurate (4+), no greeting, no audience vocative, no dash; for a story, her moment first; then the highest total; ties go to the earlier one. */
+export function pickHook(raw: { text?: unknown; rehook?: unknown; lever?: unknown; scores?: Record<string, unknown> | null; note?: unknown; fit?: unknown }[], opts: { videoType?: VideoType | null } = {}): { hooks: HookCandidate[]; chosen: number } {
   const hooks: HookCandidate[] = (Array.isArray(raw) ? raw : []).slice(0, 5).map((h) => {
     const scores = Object.fromEntries(HOOK_CRITERIA.map((k) => [k, clampScore(h?.scores?.[k])])) as Record<HookCriterion, number>;
     const text = String(h?.text ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
     const why = !text ? "empty" : scores.accuracy < 4 ? "accuracy under 4" : GREETING_RE.test(text) ? "opens with a greeting" : AUDIENCE_VOCATIVE_RE.test(text) ? "opens by naming the audience" : DASH_RE.test(text) ? "uses a dash" : null;
-    return { text, rehook: String(h?.rehook ?? "").replace(/\s+/g, " ").trim().slice(0, 400), lever: String(h?.lever ?? "").trim().slice(0, 80), scores, total: HOOK_CRITERIA.reduce((n, k) => n + scores[k], 0), note: String(h?.note ?? "").replace(/\s+/g, " ").trim().slice(0, 300), disqualified: why };
+    const fit = (HOOK_FITS as readonly string[]).includes(String(h?.fit)) ? (h.fit as HookFit) : undefined;
+    return { text, rehook: String(h?.rehook ?? "").replace(/\s+/g, " ").trim().slice(0, 400), lever: String(h?.lever ?? "").trim().slice(0, 80), scores, total: HOOK_CRITERIA.reduce((n, k) => n + scores[k], 0), note: String(h?.note ?? "").replace(/\s+/g, " ").trim().slice(0, 300), disqualified: why, ...(fit ? { fit } : {}) };
   });
-  let chosen = -1;
-  for (let i = 0; i < hooks.length; i++) {
-    if (hooks[i].disqualified) continue;
-    if (chosen < 0 || hooks[i].total > hooks[chosen].total) chosen = i;
-  }
+  let chosen = hookOrder(hooks, opts.videoType)[0] ?? -1;
   if (chosen < 0) {
     // Every hook was disqualified: the most accurate non-empty one, so the draft can still be written and the review says what is wrong.
     for (let i = 0; i < hooks.length; i++) if (hooks[i].text && (chosen < 0 || hooks[i].scores.accuracy * 100 + hooks[i].total > hooks[chosen].scores.accuracy * 100 + hooks[chosen].total)) chosen = i;
   }
   return { hooks, chosen };
+}
+
+const hookKey = (s: string) => s.toLowerCase().replace(/[‘’]/g, "'").replace(/[^a-z0-9']+/g, " ").trim();
+
+/**
+ * The next hook to try when the review fails the hook or the re-hook (Oct 22
+ * 2026, the listening fix): the best usable hook, in the order pickHook
+ * chose by, that has not been used yet. A failed re-hook used to be patched
+ * around the locked hook for two rounds (the seniors draft broke its story to
+ * keep "It should."); now the next round starts again from the runner-up.
+ * Null when every usable hook has been tried. Pure.
+ */
+export function runnerUpHook(hooks: HookCandidate[], used: readonly string[], videoType?: VideoType | null): HookCandidate | null {
+  const tried = new Set(used.map(hookKey).filter(Boolean));
+  for (const i of hookOrder(hooks, videoType)) if (!tried.has(hookKey(hooks[i].text))) return hooks[i];
+  return null;
+}
+
+/** The hook of a script body: the candidate whose words it contains (the first one found), or null. */
+export function hookInUse(body: string, hooks: HookCandidate[]): string | null {
+  const b = hookKey(body);
+  return hooks.find((h) => h.text && b.includes(hookKey(h.text)))?.text ?? null;
+}
+
+/** Review checks whose must-fix failure sends the next round back to a new hook. */
+export const HOOK_SWITCH_CHECKS: readonly ReviewCheckKey[] = ["hook", "rehook"];
+
+/** Did the review fail the hook or the re-hook at must-fix level? From the checks, or from a fix instruction writerFixInstruction wrote. Pure. */
+export function hookFailed(from: { checks?: ReviewCheckResult[] | null; instruction?: string | null }): boolean {
+  if (from.checks?.length) return from.checks.some((c) => !c.pass && c.level === "must-fix" && HOOK_SWITCH_CHECKS.includes(c.key));
+  const text = from.instruction ?? "";
+  const must = /MUST FIX:\n([\s\S]*?)(?:\n[A-Z][A-Z' ]+[:A-Z]|$)/.exec(text)?.[1] ?? "";
+  const labels = REVIEW_CHECKS.filter((c) => HOOK_SWITCH_CHECKS.includes(c.key)).map((c) => `${c.n}. ${c.label}:`);
+  return must.split("\n").some((l) => labels.some((x) => l.startsWith(`- ${x}`)));
 }
