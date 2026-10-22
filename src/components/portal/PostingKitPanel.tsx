@@ -1,5 +1,7 @@
 "use client";
 
+import { etMonthDayTime } from "@/lib/datetime";
+
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Copy, Loader2, Sparkles, TriangleAlert } from "lucide-react";
@@ -27,7 +29,9 @@ import type { CaptionView, DownloadPlan } from "@/lib/postingKit";
 // ---------------------------------------------------------------------------
 
 const KIND_LABEL: Record<string, string> = { CAPTION: "Caption", SHORT_CAPTION: "Shorter caption", CTA: "Call to action", COVER_TITLE: "Cover title" };
-const fmt = (iso: string) => new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+// Two calls, plain spaces (lib/datetime): one call printed different words on
+// the server and in the browser (React #418, audit L4, Oct 22 2026).
+const fmt = (iso: string) => etMonthDayTime(iso);
 
 export function PostingKitPanel({ videoId, title, downloadHref, download, finalLabel, finalNote, captions, assistant, downloadStartedAtISO, downloadCompletedAtISO, canEdit, transcriptGap, access }: {
   videoId: string;

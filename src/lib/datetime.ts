@@ -33,6 +33,24 @@ const toDate = (d: Date | string | null | undefined): Date | null => {
   return isNaN(x.getTime()) ? null : x;
 };
 
+/**
+ * THE SAME RULE IN ANOTHER ZONE (Oct 22 2026, audit L4): an editor's Manila
+ * clock, a client's own zone. Two calls joined here, plain spaces, exactly as
+ * fmt() above, so a client component prints the same words on the server and
+ * in any browser (React #418 on /editing and /portal/me came from one-call
+ * date-and-time labels in a zone).
+ */
+function fmtIn(d: Date, timeZone: string, opts: Intl.DateTimeFormatOptions): string {
+  return new Intl.DateTimeFormat("en-US", { timeZone, ...opts }).format(d).replace(/[   ]/g, " ");
+}
+/** "2:07 PM" in `timeZone`. */
+export const zonedTime = (d: Date | string | null | undefined, timeZone: string) => { const x = toDate(d); return x ? fmtIn(x, timeZone, { hour: "numeric", minute: "2-digit" }) : ""; };
+/** "Sat, Oct 24, 2:07 PM" in `timeZone` (the date part's options are the caller's). */
+export const zonedDateTime = (d: Date | string | null | undefined, timeZone: string, date: Intl.DateTimeFormatOptions = { weekday: "short", month: "short", day: "numeric" }) => {
+  const x = toDate(d);
+  return x ? `${fmtIn(x, timeZone, date)}, ${fmtIn(x, timeZone, { hour: "numeric", minute: "2-digit" })}` : "";
+};
+
 export const etTime = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { hour: "numeric", minute: "2-digit" }) : ""; };
 export const etDate = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { weekday: "short", month: "short", day: "numeric" }) : ""; };
 // Two calls, joined by us — see fmt() above for why never one.

@@ -1,19 +1,27 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { etMonthDayTime } from "@/lib/datetime";
 
 // A live SLA countdown chip. Takes an ISO due date and ticks every minute so a
 // VA glancing at the page always sees the real "due in 14h" / "OVERDUE 2d",
 // never a stale server-rendered value. Red past due. Deliberately tiny — used
 // both in the editor's Do-Now cards and the owner tracker's countdown column.
 export function SlaCountdown({ dueISO, className = "" }: { dueISO: string | null; className?: string }) {
-  const [now, setNow] = useState(() => Date.now());
+  // The clock is read only once mounted (audit L4, Oct 22 2026): the server's
+  // "now" and the browser's differ, so a countdown rendered on both printed
+  // different words (React #418 on /edit). Until then it shows the due time.
+  const [now, setNow] = useState<number | null>(null);
   useEffect(() => {
+    setNow(Date.now());
     const t = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(t);
   }, []);
 
   if (!dueISO) return <span className={`text-xs text-muted-2 ${className}`}>no due date</span>;
+  if (now === null) {
+    return <span className={`inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-xs font-semibold text-muted ${className}`}>due {etMonthDayTime(dueISO)}</span>;
+  }
   const due = new Date(dueISO).getTime();
   const ms = due - now;
   const overdue = ms < 0;

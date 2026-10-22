@@ -1,5 +1,7 @@
 "use client";
 
+import { etMonthDayTime } from "@/lib/datetime";
+
 import { useState, useTransition } from "react";
 import { CheckCircle2, FileImage, Globe, Loader2, Music, Palette, Sparkles, Type } from "lucide-react";
 import { acknowledgeBrandChangesAction, overrideBrandChangesAction } from "@/app/edit/[id]/brand.actions";
@@ -22,7 +24,9 @@ import { acknowledgeBrandChangesAction, overrideBrandChangesAction } from "@/app
 
 export type BrandBannerItem = { id: string; line: string; actorLabel: string | null; createdAtISO: string };
 
-const when = (iso: string) => new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+// Two calls, plain spaces (lib/datetime): one call printed different words on
+// the server and in the browser (React #418, audit L4, Oct 22 2026).
+const when = (iso: string) => etMonthDayTime(iso);
 
 export function BrandUpdatesBanner({ projectId, items, canAck, canOverride = false }: { projectId: string; items: BrandBannerItem[]; canAck: boolean; canOverride?: boolean }) {
   const [done, setDone] = useState<string | null>(null);

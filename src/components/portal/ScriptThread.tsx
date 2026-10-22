@@ -1,5 +1,7 @@
 "use client";
 
+import { etMonthDayTime } from "@/lib/datetime";
+
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Send } from "lucide-react";
@@ -22,7 +24,9 @@ import type { ScriptThreadItem } from "@/lib/scriptThread";
 
 const SHOWN = 6;
 const CLIP = 360;
-const when = (iso: string) => new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+// Two calls, plain spaces (lib/datetime): one call printed different words on
+// the server and in the browser (React #418, audit L4, Oct 22 2026).
+const when = (iso: string) => etMonthDayTime(iso);
 
 export function ScriptThread({ scriptId, items, canReply, large = false, noteAbove = null }: {
   scriptId: string;
