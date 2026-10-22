@@ -173,7 +173,8 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
             }
           : {
               kind: "edit_assigned",
-              title: `Reassigned to you — ${street}${await (await import("@/lib/editorDue")).editDueWords(projectId, key).then((w) => (w ? `, ${w}` : "")).catch(() => "")}`,
+              // The due words survive the bell's 90-character cut (Oct 22 2026, audit L1).
+              title: await (await import("@/lib/editorDue")).editDueTitle(`Reassigned to you — ${street}`, projectId, key).catch(() => `Reassigned to you — ${street}`),
               body: "This edit was moved to your queue.",
               href: `/edit/${projectId}`,
               targets: [{ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${projectId}` }],
@@ -564,8 +565,9 @@ export async function addToEditorQueue(
       body: `Added to the Editing Room — routed to ${editorName}.${cleanNote ? ` Note: ${cleanNote}` : ""}`,
     },
   });
-  const queuedDue = await (await import("@/lib/editorDue")).editDueWords(projectId, key).catch(() => "");
-  await notifyQueued("edit_assigned", `New edit — ${street}${queuedDue ? `, ${queuedDue}` : ""}`);
+  // The due words survive the bell's 90-character cut (Oct 22 2026, audit L1).
+  const queuedTitle = await (await import("@/lib/editorDue")).editDueTitle(`New edit — ${street}`, projectId, key).catch(() => `New edit — ${street}`);
+  await notifyQueued("edit_assigned", queuedTitle);
   return done(`${street} is in the queue — ${editorName} has it.`);
 }
 

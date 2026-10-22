@@ -219,12 +219,13 @@ Decide:
 - pillar: the linked content pillar.
 - whatSheSaid: the passage ids (P1, P2 ...) that carry her actual words on this, most important first.
 - mustKeep: the POINTS the script cannot lose and still be true and complete, each written as a short point in plain words (its meaning, NOT a quote of her sentence), with its source (a passage id, or "call at 01:09:23"). For a personal story these are the story's beats in order (where she was and what she loved, her real reason for the change, what she expected, the turn, what the viewer needs that she gives, how she helps now), at most ${BRIEF_MUST_KEEP_MAX.story}. For an educational video at most ${BRIEF_MUST_KEEP_MAX.educational}, most important first: the belief, the proof (her real moment, when she told one), and how she helps (how she helps appears once, in the payoff or the close, never both). The invitation and what the viewer should do next are never must-keep: they belong to the close. With the hook and the close they have to fit in about ${WRITER_LENGTH.target} spoken words; everything else good goes in optional. inProgress is true for a point about a deal still in progress.
-- NEVER A LIVE DEAL: an offer she just wrote, a listing she is negotiating now, a client's sale still in progress, or anything that identifies a specific listing or a person, is never must-keep. Put it in excluded (or in optional, in general terms only).
+- NEVER A LIVE DEAL: an offer she just wrote, a listing she is negotiating now, a client's sale still in progress, or anything that identifies a specific listing or a person, is never must-keep and never the proof. Put it in excluded: never in the script. Keep it out of verifiedFacts, opinions, optional and herPhrases too.
 - A story she has already told on camera is never this video's proof. Her earlier scripts are listed below: when her moment is one of them, choose another moment she told, or let the insight be the proof.
 - herPhrases: up to five SHORT phrases of hers (a few words each) that are strong and natural on camera and worth saying exactly (her own vocabulary, a few words that carry feeling or a picture). Never a rambling spoken sentence, and never an industry term a homeowner would not say: her phrases never override plain words.
 - optional: good material that can go if length needs it.
 - excluded: what stays out and why (internal talk, background reasoning she did not present as her message, a second topic, job duties and side facts that would make it a biography, anything private). Her actual reason for a career change is never excluded as "biography": it is the heart of that story. A format agreed on the call for this video is never internal talk and never excluded.
 - contradictions: places where her sources disagree with each other or with our assumptions. Flag them; never resolve one by inventing an answer.
+- WHEN THE PROOF AND THE MESSAGE DISAGREE: when a contradiction you list says her proof does not support the message (her story shows one thing; the topic's wording, or a rule she repeats, says another), the angle takes the message the proof supports, and centralMessage and mustKeep follow it. The other message is left out, or kept only where it does not argue with her story. Never frame a story around a message it contradicts.
 - verifiedFacts / opinions / creativeIdeas / ourAssumptions: kept apart. A verified fact is something she stated as true about herself, her work or her process (a passage, the call, a fact, her answers). An opinion is her view. A creative idea is a hook, line or angle she suggested, or a format agreed on the call for this video (word association, two voices, a trend alert, whoever proposed it), written as "Agreed format: ..."; an agreed format is a creative decision the script follows. Our assumptions are the topic's description, intended message, audience need and business goal, and anything you infer: never a claim source.
 - closeType: "cta" by default (a warm spoken invitation tied to the message), "callback" only for a story with no service angle; closeWhy in one line.
 
@@ -326,7 +327,8 @@ THE HOOK DOES THE VIDEO'S JOB (the brief says which video this is):
 - A fun fact about her is a weak hook.
 fit: "her_moment" when the hook opens on her own tension or turn, "viewer_line" when it is a line the viewer would say or a question they are asking, "other" otherwise. For a personal story the best her_moment hook is chosen first; score honestly anyway.
 
-SCORE each hook 1 to 5 on: relevance (immediately relevant to the viewer), curiosity, tension (5 = a real cost, reversal or unanswered question is at stake for the viewer or for her; 1 = a bare wish or belief with nothing at stake), specificity, naturalDelivery (easy to say out loud, sounds like a person), accuracy (5 = fully supported by her sources; under 4 = it claims or implies something she did not say), herVoice, payoffConnection (the brief's central message answers it). A hook is only chosen when its curiosity and its tension are both strong, and the hooks are ranked by curiosity, tension and specificity: score those three with care, never generously. One short note per hook.
+SCORE each hook 1 to 5 on: relevance (immediately relevant to the viewer), curiosity, tension (5 = a real cost, reversal or unanswered question is at stake for the viewer or for her; 1 = a bare wish or belief with nothing at stake), specificity, naturalDelivery (easy to say out loud, sounds like a person), accuracy (5 = fully supported by her sources; under 4 = it claims or implies something she did not say), herVoice, payoffConnection (the brief's central message answers it). A hook is only chosen when its curiosity and its tension are both strong, and the hooks are ranked by curiosity, tension, specificity and payoffConnection: score those four with care, never generously. One short note per hook.
+Never build a hook or a re-hook on anything the brief lists as excluded (a deal still in progress, a story she already told on camera): a hook that tells one is set aside.
 
 ${WORDING_RULE}
 ${HOUSE_CRAFT_RULES}
@@ -420,13 +422,19 @@ export type DraftOut = { title: string; hook: string; rehook: string; buildup: s
  * and in every fix, trim and revision of one script, so it sits in front of a
  * cache breakpoint; `chosen` (the hook to use) is per round and goes after it.
  */
+/** v2.5: the passages a writer prompt shows: never one a live deal's proof cited (brief.heldBack; it is never in the script). The review still reads them all. Pure. */
+export function writerPassages(brief: Pick<TopicBrief, "heldBack"> | null | undefined, passages: readonly WriterPassage[]): WriterPassage[] {
+  const held = new Set((brief?.heldBack ?? []).filter((h) => h.kind === "live").flatMap((h) => h.ids));
+  return passages.filter((p) => !held.has(p.id));
+}
+
 function writerUser(ctx: WriterContext, brief: TopicBrief, passages: WriterPassage[], chosen: { text: string; rehook: string } | null): { stable: string[]; chosen: string } {
   return {
     stable: [
       clientBlock(ctx),
       topicBlock(ctx),
       briefText(brief),
-      passagesBlock(passages),
+      passagesBlock(writerPassages(brief, passages)),
       answersBlock(ctx),
       factsBlock(ctx.facts),
       scriptsBlock(ctx),
@@ -495,7 +503,7 @@ HOW TO JUDGE
 - rehook: it adds a fact, a turn or a stake the hook does not have. A re-hook that opens with a hedge (Maybe, Not exactly), restates the hook's subject in other words, or only explains why the hook is true fails.
 - substance: every must-keep POINT of the brief is present in meaning (a faithful plain version counts), and so is the insight; how she helps appears once, in the payoff or the close, never both. Missing one fails. When she told a story about this topic (her answer when the interviewer asked for an example, or the brief's proof when it is her story), a script that leaves it out fails, and a restated opinion in its place is not the proof. A script under ${WRITER_LENGTH.aim[0]} words passes only if nothing must-keep is missing and it is not dry or incomplete.
 - payoff: it answers the hook's question in one line the viewer could repeat, and lands why it matters to the viewer. A "My job" or credential line that does not answer the hook fails, and a fun fact about her (who her favorite clients are, a hobby, an award) is not a payoff.
-- claims: each factual line traces to something she said ANYWHERE in the full call, a passage (a passage from one of her earlier calls is hers too), a client fact, her written answers or her approved strategy; a faithful paraphrase is supported. The topic description, intended message, audience need, business goal, anything marked "our assumption" and a reader's summary at the top of a call do not count. A market statement she did not make fails.
+- claims: each factual line traces to something she said ANYWHERE in the full call, a passage (a passage from one of her earlier calls is hers too), a client fact, her written answers or her approved strategy; a faithful paraphrase is supported. The topic description, intended message, audience need, business goal, anything marked "our assumption" and a reader's summary at the top of a call do not count. A market statement she did not make fails, and so does any part of a deal the brief excludes as still in progress, even in general terms.
 - close: at most two beats: first a line that calls back a concrete word or image from the hook (or from the re-hook), then, with a service angle, a warm invitation that names this video's specific next step in her voice. "Let's talk" as the whole invitation, an invitation that opens "Thinking about X?", a close with nothing from the hook, a slogan or an aphorism fails. A callback alone passes only for a story with no service angle.
 - her_voice: it sounds like her at her best on camera: her vocabulary and her strongest short phrases in tight, natural, polished spoken sentences. Her transcript sentences pasted in (rambling, filler, restarts) fail; so do industry terms spoken to homeowners ("buyer avatar", "comps", "CMA"), even when they are a phrase of hers, and opening by naming the audience ("Sellers, ...").
 - length: counted by code and given to you; judge only whether the words are well spent (that is check 12). Over ${WRITER_LENGTH.cap} words is must-fix; ${WRITER_LENGTH.aim[1] + 1} to ${WRITER_LENGTH.cap} is advice only.
@@ -542,7 +550,7 @@ export function buildReviewPrompt(ctx: WriterContext, brief: TopicBrief, passage
   ], [
     `SCRIPT TO REVIEW:\n${script.body}`,
     `THE WRITER SAYS THE CLOSE IS: ${script.closeType ?? "not stated"}`,
-    `COUNTED BY CODE: ${numbers.words} spoken words, about ${numbers.seconds} seconds; hook ${numbers.hookWords} words.${numbers.hard.length ? ` Hard checks that failed: ${numbers.hard.join(" ")}` : " Hard checks: no greeting, no dash, no duration, no unsupported figure, no transcript sentence pasted in, no hedge or echo in the re-hook, a close that calls back the hook or the re-hook, every part inside its budget, a build-up in full sentences."}`,
+    `COUNTED BY CODE: ${numbers.words} spoken words, about ${numbers.seconds} seconds; hook ${numbers.hookWords} words.${numbers.hard.length ? ` Hard checks that failed: ${numbers.hard.join(" ")}` : " Hard checks: no greeting, no dash, no duration, no unsupported figure, no deal still in progress, no transcript sentence pasted in, no hedge or echo in the re-hook, a close that calls back the hook or the re-hook, every part inside its budget, a build-up in full sentences."}`,
     "Review it: all twelve checks, and the craft block (the five parts scored 1 to 5, a psychology note each).",
   ]);
 }

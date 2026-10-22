@@ -1078,10 +1078,12 @@ export async function setTaskAssignee(taskId: string, key: string) {
       const VENDOR_KEYS = new Set(["luma", "autohdr", "cubicasa"]);
       const title = `Task for you — ${t.title}`.slice(0, 90);
       if ((TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(assignedKey)) {
-        const due = await (await import("@/lib/editorDue")).editDueWords(t.projectId, assignedKey).catch(() => "");
+        // The due words survive the bell's 90-character cut (Oct 22 2026, audit L1).
+        const head = `Task for you — ${t.title}`;
+        const dueTitle = await (await import("@/lib/editorDue")).editDueTitle(head, t.projectId, assignedKey).catch(() => title);
         await notifyInApp({
           kind: "edit_assigned",
-          title: due ? `${title}, ${due}`.slice(0, 90) : title,
+          title: dueTitle,
           href: t.projectId ? `/edit/${t.projectId}` : "/editing",
           targets: [{ roles: ["EDITOR"], userKey: `editor:${assignedKey}`, href: t.projectId ? `/edit/${t.projectId}` : "/editing" }],
           dedupeKey: `assign-${taskId}-${assignedKey}`,

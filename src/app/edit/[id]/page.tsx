@@ -744,8 +744,11 @@ export default async function EditBriefPage({
   // the override; the tracker below prefers the override where one is set,
   // like every other reader of these columns.
   const overrides = overrideView(project);
+  // THE video due (editorDue.videoDueOf, Oct 22 2026 audit H2): the same
+  // instant the ping, the desk, the edit card and the Video Review Room show.
+  const videoDue = await import("@/lib/editorDue").then((m) => m.videoDueFor(id)).catch(() => null);
   const computed = computedView({
-    dueAt: sla?.due ?? null,
+    dueAt: videoDue?.source ? videoDue.computedAt : sla?.due ?? null,
     videosOwed: computedVideosOwed(project, videoDeliverables),
     tier: monthly ? "branding" : tier === "premium" ? "premium" : "standard",
     typeDetail: videoDeliverables.map((d) => d.label || d.type).join(" · "),
@@ -777,7 +780,7 @@ export default async function EditBriefPage({
       return null;
     }
   })();
-  const trackerDue = reopened ? reopened.at : effectiveDue(project, sla?.due ?? null);
+  const trackerDue = reopened ? reopened.at : videoDue?.source ? videoDue.at : effectiveDue(project, sla?.due ?? null);
   const selectedDeliverable = videoDeliverables.find((item) => item.id === selectedSlot?.deliverableId);
   const selectedVideoStyle = selectedDeliverable ? videoStyleFor(selectedDeliverable, { monthly: !!project.contentMonthId }) : null;
   const selectedPromise = outputBriefs.find((brief) => brief.key === selectedKey)?.promisedAtISO;

@@ -136,7 +136,8 @@ function partsOf(v: VersionRow): VersionParts {
 async function finishFlagged(current: VersionRow, record: JudgeRecord, requestedBy: string): Promise<string> {
   const chain: { v: VersionRow; j: JudgeRecord }[] = [{ v: current, j: record }];
   let cursor = current;
-  for (let i = 0; i < MAX_FIX_ROUNDS + 1 && cursor.basedOnVersionId; i++) {
+  // v2.5: room for the new writer's third fix round and its trims (the walk still stops at the draft).
+  for (let i = 0; i < MAX_FIX_ROUNDS + 4 && cursor.basedOnVersionId; i++) {
     const prev = await prisma.contentScriptVersion.findUnique({ where: { id: cursor.basedOnVersionId } });
     const pj = prev ? readJudge(prev.validationJson) : null;
     if (!prev || !pj || !pj.criteria.length) break;
@@ -149,10 +150,12 @@ async function finishFlagged(current: VersionRow, record: JudgeRecord, requested
   const score = (x: { v: VersionRow; j: JudgeRecord }) => x.j.criteria.filter((c) => !c.pass).length * 100 + warns(x.v);
   // v2.4 (the new writer): never a version over the cap when one at or under it exists; then craft with the
   // hook counted twice; then the fewest must-fixes; then words over 85 (rules.pickFinal). Ties keep the newer.
+  // v2.5: an educational version inside the aim comes before any over it, ahead of craft (a told story is not ranked on the aim).
   const { pickFinal } = await import("@/lib/scriptWriter/rules");
   const writerChain = chain.every((x) => x.j.writer === 2 && x.j.checks?.length);
+  const story = writerChain ? (await (await import("@/lib/scriptWriter/pipeline")).latestWriterRecord(current.scriptId, current.id))?.brief.videoType === "story" : false;
   const best = writerChain
-    ? chain[pickFinal(chain.map((x) => ({ words: x.j.words || x.v.spokenWordCount || 0, craft: x.j.craft ?? null, mustFix: (x.j.checks ?? []).filter((c) => !c.pass && c.level === "must-fix").length })))] ?? chain[0]
+    ? chain[pickFinal(chain.map((x) => ({ words: x.j.words || x.v.spokenWordCount || 0, craft: x.j.craft ?? null, mustFix: (x.j.checks ?? []).filter((c) => !c.pass && c.level === "must-fix").length, story })))] ?? chain[0]
     : chain.reduce((a, b) => (score(b) < score(a) ? b : a), chain[0]);
   if (best.v.id === current.id) {
     await writeJudge(current.id, { ...record, state: "flagged" });
@@ -372,8 +375,8 @@ export async function autoCheckScript(scriptId: string, opts: { requestedBy?: st
   const deadline = opts.deadline ?? Date.now() + DEFAULT_BUDGET_MS;
   const timeFor = (ms: number) => deadline - Date.now() >= ms;
   // Two fix rounds and (the new writer) the cap trim and the aim trim, each followed by a check;
-  // v2.4: and the aim trim of the draft before its first review.
-  for (let guard = 0; guard < 2 * (MAX_FIX_ROUNDS + 4) + 1; guard++) {
+  // v2.4: and the aim trim of the draft before its first review; v2.5: and the third fix round (pipeline.thirdRoundFor).
+  for (let guard = 0; guard < 2 * (MAX_FIX_ROUNDS + 5) + 1; guard++) {
     const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { currentVersionId: true, historical: true, sharedVersionId: true } });
     if (!s?.currentVersionId || s.historical) return { state: "skipped", fixRounds: 0, versionId: null, reason: "no live version" };
     const v = await prisma.contentScriptVersion.findUnique({ where: { id: s.currentVersionId } });
