@@ -538,8 +538,8 @@ Manila runs **12 hours ahead of Eastern** in US summer and **13 hours ahead** in
 | Work | Promise from the shoot |
 | --- | --- |
 | Standard reel or video | 48 hours |
-| Premium reel or video | 72 hours |
-| Monthly content batch | 10 business days |
+| Premium reel or video | 3 days |
+| Monthly content batch | 10 days (weekends count) |
 
 Those are the live settings; Jordan can change them, and the due dates follow automatically.
 
@@ -909,7 +909,7 @@ The true profit-and-loss engine. QuickBooks is pulled daily and every transactio
 One engine, used everywhere. Shoot pay is a percentage of the eligible services on the job — virtual add-ons like staging, twilight and declutter are excluded, which is why the invoice shown beside a shoot is smaller than the client's total. Mileage is routed for real, the free radius per person is subtracted, and a day with several shoots splits the trip. Any owner adjustment survives a recompute. What a photographer sees in My Pay is the same arithmetic as your Payroll tab.
 
 ### Deadlines and SLAs
-Every due date is the shoot date plus that deliverable's promise, and the promises live in Settings → Turnaround promises. Today they are: photos, drone and twilight next morning; floor plans same window; 3D tours a day and a half; standard video 48 hours; premium video 72 hours; monthly content 10 business days.
+Every due date is the shoot date plus that deliverable's promise, and the promises live in Settings → Turnaround promises. Today they are: photos, drone and twilight next morning; floor plans same window; 3D tours a day and a half; standard video 48 hours; premium video 3 days; monthly content 10 days. Every promise counts calendar days, weekends included.
 
 ### Ops Day and QC
 Statuses are derived from evidence, not from someone remembering to update a tracker: media live on Aryeo, files in the Dropbox folders. That is why a QC card can tick its own boxes.

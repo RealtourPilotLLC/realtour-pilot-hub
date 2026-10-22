@@ -6,7 +6,7 @@ import crypto from "crypto";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { type ChecklistItem, parseChecklist, serializeChecklist, checklistComplete } from "@/lib/checklist";
 import { addBusinessDaysET, endOfBusinessDaysET, etAt, etDateTime, etDayKey, etDayStartUtc } from "@/lib/datetime";
-import { premiumDueFrom, businessDayEndHour, cappedByPromise, livePromise, targetAtFor, TIERS, type PromiseRules, type TierKey } from "@/lib/turnaround";
+import { premiumDueFrom, businessDayEndHour, endOfDaysET, cappedByPromise, livePromise, targetAtFor, TIERS, type PromiseRules, type TierKey } from "@/lib/turnaround";
 import { slugForName } from "@/lib/assignees";
 import { BRACKET_RATIO, photoTargetFor } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
@@ -208,7 +208,7 @@ export function deliveryDueFrom(
     // so the board, the card and this engine cannot hold different numbers.
     if (opts.premium) return premiumDueFrom(anchor, r);
     if (opts.monthlyContent) {
-      return endOfBusinessDaysET(anchor, r?.monthlyBusinessDays ?? 10, businessDayEndHour(r));
+      return endOfDaysET(anchor, r?.monthlyBusinessDays ?? 10, businessDayEndHour(r)); // Oct 22 2026: calendar days, weekends included
     }
     return new Date(anchor.getTime() + (r?.standardVideoHours ?? STANDARD_REEL_HOURS) * HOUR);
   }

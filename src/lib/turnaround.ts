@@ -31,10 +31,23 @@ import type { TurnaroundRules } from "@/lib/settings";
 // on it, and one nobody in the office would have quoted out loud.
 // ---------------------------------------------------------------------------
 
-/** The client deadline on a premium reel, in business days from the anchor. */
-export const PREMIUM_BUSINESS_DAYS = 4;
+// CALENDAR DAYS, WEEKENDS INCLUDED (Jordan, Oct 22 2026: "Let's skip business
+// days, just keep the SLAs as x days no matter what, even if it falls on a
+// Saturday or Sunday, that way the team knows the urgency." And: "Premium
+// videos have a 3 day turnaround."). The names below keep their old
+// "business" spelling so Settings keys and callers do not move; every count
+// they feed is now calendar days.
+
+/** The client deadline on a premium reel, in calendar days from the anchor. */
+export const PREMIUM_BUSINESS_DAYS = 3;
 /** The internal target. Always on or before the client deadline. */
 export const PREMIUM_TARGET_BUSINESS_DAYS = 3;
+
+/** End of the ET day `days` calendar days after `from`, at `hour` (ET day-key arithmetic, safe across clock changes). */
+export function endOfDaysET(from: Date, days: number, hour = 17): Date {
+  const [y, m, d] = etDayKey(from).split("-").map(Number);
+  return etAt(new Date(Date.UTC(y, m - 1, d + days, 12)).toISOString().slice(0, 10), hour);
+}
 /** The office's premium hour box when Settings has not been touched (it is
  *  `premiumVideoHours`, default 72). It is a FLOOR under the business-day
  *  promise — see premiumDueFrom. */
@@ -104,7 +117,7 @@ export const businessDayEndHour = (rules?: PromiseRules | null): number =>
  */
 export function premiumDueFrom(anchor: Date, rules?: PromiseRules | null): Date {
   const hour = businessDayEndHour(rules);
-  const byDays = endOfBusinessDaysET(anchor, premiumBusinessDays(rules), hour);
+  const byDays = endOfDaysET(anchor, premiumBusinessDays(rules), hour);
   const floorHours = ruleNum(rules, "premiumVideoHours", PREMIUM_FLOOR_HOURS, 720);
   const byHours = endOfThatBusinessDayET(new Date(anchor.getTime() + floorHours * 3_600_000), hour);
   return byHours > byDays ? byHours : byDays;
@@ -114,13 +127,13 @@ export function premiumDueFrom(anchor: Date, rules?: PromiseRules | null): Date 
  *  on a weekend. Used to give the hour floor above the same shape as every
  *  other day-quoted promise instead of a deadline inside the weekend. */
 function endOfThatBusinessDayET(at: Date, hour: number): Date {
-  const dow = new Date(`${etDayKey(at)}T12:00:00Z`).getUTCDay();
-  return endOfBusinessDaysET(at, dow === 0 || dow === 6 ? 1 : 0, hour);
+  // Oct 22 2026: a weekend day is a promise day like any other.
+  return endOfDaysET(at, 0, hour);
 }
 
 /** The internal aim on a premium reel — three business days, end of day. */
 export function premiumTargetFrom(anchor: Date, rules?: PromiseRules | null): Date {
-  return endOfBusinessDaysET(anchor, premiumTargetBusinessDays(rules), businessDayEndHour(rules));
+  return endOfDaysET(anchor, premiumTargetBusinessDays(rules), businessDayEndHour(rules));
 }
 
 /**
@@ -215,9 +228,9 @@ export const TIERS: Record<TierKey, Tier> = {
   // that both numbers are BUSINESS days. The label says so out loud, because
   // "3–4 days" on Kyle's board next to a date four business days out is the
   // kind of quiet mismatch that makes a board stop being believed.
-  premium_reel: { key: "premium_reel", label: "3–4 business days", targetDays: PREMIUM_TARGET_BUSINESS_DAYS, dueDays: PREMIUM_BUSINESS_DAYS, businessDays: true },
+  premium_reel: { key: "premium_reel", label: "3 days", targetDays: PREMIUM_TARGET_BUSINESS_DAYS, dueDays: PREMIUM_BUSINESS_DAYS, businessDays: false },
   // "7-10 business days" — aim at 7, late after 10.
-  monthly_social: { key: "monthly_social", label: "7–10 business days", targetDays: 7, dueDays: 10, businessDays: true },
+  monthly_social: { key: "monthly_social", label: "7–10 days", targetDays: 7, dueDays: 10, businessDays: false },
 };
 
 // Order matters: the first pattern that matches wins, so the specific named
@@ -342,7 +355,7 @@ export function dueAtFor(tier: Tier, startedAt: Date, rules?: PromiseRules | nul
   const hour = businessDayEndHour(rules);
   const days = tier.key === "monthly_social" ? rules?.monthlyBusinessDays ?? tier.dueDays : tier.dueDays;
   if (tier.businessDays) return endOfBusinessDaysET(startedAt, days, hour);
-  return etAt(etDayKey(new Date(startedAt.getTime() + days * 86_400_000)), hour);
+  return endOfDaysET(startedAt, days, hour);
 }
 
 /** What we AIM for — always on or before dueAtFor for the same tier. */
@@ -350,7 +363,7 @@ export function targetAtFor(tier: Tier, startedAt: Date, rules?: PromiseRules | 
   if (tier.key === "premium_reel") return premiumTargetFrom(startedAt, rules);
   const hour = businessDayEndHour(rules);
   if (tier.businessDays) return endOfBusinessDaysET(startedAt, tier.targetDays, hour);
-  return etAt(etDayKey(new Date(startedAt.getTime() + tier.targetDays * 86_400_000)), hour);
+  return endOfDaysET(startedAt, tier.targetDays, hour);
 }
 
 // ===========================================================================

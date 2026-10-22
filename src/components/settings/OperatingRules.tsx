@@ -143,7 +143,7 @@ export function TurnaroundSettings({ initial }: { initial: TurnaroundRules }) {
         ))}
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2">
           <span className="text-[13px]"><b>Monthly content</b><span className="text-muted"> — personal branding batches</span></span>
-          <Num label="Monthly content turnaround" value={r.monthlyBusinessDays} onChange={(n) => { setR((p) => ({ ...p, monthlyBusinessDays: n })); }} min={1} max={60} suffix="business days" />
+          <Num label="Monthly content turnaround" value={r.monthlyBusinessDays} onChange={(n) => { setR((p) => ({ ...p, monthlyBusinessDays: n })); }} min={1} max={60} suffix="days" />
         </div>
       </div>
       <SaveRow busy={busy} feedback={feedback} dirty={dirty} label="Save turnaround promises" onSave={() => save(saveTurnarounds)} />
