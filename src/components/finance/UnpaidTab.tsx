@@ -4,6 +4,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { NudgeActions } from "@/components/billing/NudgeActions";
 import { RemoveFromAr } from "@/components/billing/RemoveFromAr";
 import { RestoreToAr } from "@/components/billing/RestoreToAr";
+import { RefreshUnpaid } from "@/components/billing/RefreshUnpaid";
 import { getBillingRows, getClearedArRows, type BillingRow } from "@/lib/queries";
 import { usd } from "@/lib/money";
 import { etDate } from "@/lib/datetime";
@@ -167,6 +168,7 @@ export async function UnpaidTab({ show, money }: { show: FinanceTab[]; money: bo
             <span>
               <span className="font-semibold text-foreground">{rows.length}</span> delivered {rows.length === 1 ? "job" : "jobs"} unpaid
             </span>
+            <RefreshUnpaid />
           </div>
         </div>
 

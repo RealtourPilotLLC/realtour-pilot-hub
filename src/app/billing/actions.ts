@@ -1,6 +1,6 @@
 "use server";
 
-import { requireOwner } from "@/lib/auth/guards";
+import { requireAdmin, requireOwner } from "@/lib/auth/guards";
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
@@ -280,4 +280,74 @@ export async function markArPaid(projectId: string, note: string): Promise<{ ok:
   revalidatePath("/day");
   revalidatePath(`/projects/${projectId}`);
   return { ok: true, message: "Marked paid." };
+}
+
+// ---------------------------------------------------------------------------
+// REFRESH THE UNPAID LIST FROM ARYEO (Oct 22 2026). Jordan: "would love to be
+// able to refresh the unpaid section so that I can update the invoices in
+// Aryeo and see the updates in the hub." The list is fed by the order sync,
+// which reaches an older delivered job only on its slow full pass. This runs
+// the same single-order refresh the project page's "Refresh from Aryeo" uses
+// (syncAryeoOrders({ orderId }): reads only, every field mirrored the same
+// way) for every job on the list, a few at a time, longest-unrefreshed first,
+// inside a time budget; a second press picks up the rest. The answer names
+// counts only, never amounts, so the office can press it too.
+// ---------------------------------------------------------------------------
+export async function refreshUnpaidFromAryeo(): Promise<{ ok: boolean; message: string }> {
+  try { await requireAdmin(); } catch (e) { return { ok: false, message: (e as Error).message }; }
+  const { syncAryeoOrders } = await import("@/lib/integrations/aryeo");
+  const where = {
+    aryeoOrderId: { not: null },
+    AND: [
+      { OR: [{ status: "DELIVERED" as const }, { deliveredAt: { not: null } }] },
+      { balanceAmount: { gt: 0 } },
+      { arRemovedAt: null },
+      { paidMarkedAt: null },
+      { aryeoMissingAt: null },
+    ],
+  };
+  const before = await prisma.project.findMany({ where, orderBy: { updatedAt: "asc" }, select: { id: true, aryeoOrderId: true, balanceAmount: true, paymentStatus: true } });
+  if (!before.length) return { ok: true, message: "Nothing on the unpaid list to check." };
+  const started = Date.now();
+  const BUDGET_MS = 45_000;
+  let checked = 0, gone = 0, failed = 0, next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(4, before.length) }, async () => {
+      while (next < before.length && Date.now() - started < BUDGET_MS) {
+        const row = before[next++];
+        try {
+          const r = await syncAryeoOrders({ orderId: row.aryeoOrderId! });
+          // Single-order mode never throws: a read that failed comes back as
+          // nothing scanned (and not "missing"), so it counts as a failure.
+          if (r.missing) { gone++; checked++; }
+          else if (r.scanned === 0) failed++;
+          else checked++;
+        } catch {
+          failed++;
+        }
+      }
+    }),
+  );
+  const after = await prisma.project.findMany({ where: { id: { in: before.map((b) => b.id) } }, select: { id: true, balanceAmount: true, paymentStatus: true, aryeoMissingAt: true } });
+  const byId = new Map(after.map((a) => [a.id, a]));
+  let paid = 0, changed = 0;
+  for (const b of before) {
+    const a = byId.get(b.id);
+    if (!a) continue;
+    if ((a.balanceAmount ?? 0) <= 0 || a.paymentStatus === "PAID" || a.paymentStatus === "paid") paid++;
+    else if (a.balanceAmount !== b.balanceAmount || a.paymentStatus !== b.paymentStatus) changed++;
+  }
+  revalidatePath("/sales");
+  revalidatePath("/billing");
+  revalidatePath("/day");
+  const left = before.length - checked - failed;
+  const parts = [
+    `Checked ${checked} of ${before.length} invoice${before.length === 1 ? "" : "s"} in Aryeo.`,
+    paid ? `${paid} now paid and off the list.` : "None newly paid.",
+    changed ? `${changed} with a new balance or status.` : null,
+    gone ? `${gone} no longer in Aryeo (flagged for a decision).` : null,
+    failed ? `${failed} could not be read; press again.` : null,
+    left > 0 ? `${left} left to check; press again for the rest.` : null,
+  ].filter(Boolean);
+  return { ok: failed === 0, message: parts.join(" ") };
 }
