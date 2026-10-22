@@ -32,7 +32,7 @@ const NEXT_STEP: Record<string, string> = {
 };
 
 export function FindingActions({ findings, className, showFix = true }: { findings: FindingView[]; className?: string; showFix?: boolean }) {
-  const { data, decide, addToCart, cartLineByFinding, selected, pending, viewer, stopFlagging } = useJob();
+  const { data, decide, addToCart, cartLineByFinding, selected, pending, viewer, stopFlagging, readOnly } = useJob();
   const ruleIds = [...new Set(findings.map((f) => f.ruleId))];
   const open = findings.filter((f) => f.status === "OPEN");
   const undoable = findings.filter((f) => UNDOABLE.has(f.status));
@@ -47,6 +47,23 @@ export function FindingActions({ findings, className, showFix = true }: { findin
       {asked.label}: &ldquo;{asked.what}&rdquo;. Fix it, or answer the request first (Deliver panel) before setting it aside.
     </p>
   ) : null;
+  // VIEW ONLY (Oct 22 2026): keep, fix, ignore and every other call on a
+  // finding is the office's. A viewer reads where it stands, no buttons.
+  if (readOnly) {
+    const fixing = inFix.length > 0 ? (inFix.every((f) => f.status === "FIXED") ? "Fixed." : "Fix running.") : null;
+    if (!asked && !planLine && !fixing) return null;
+    return (
+      <div className={cn("flex flex-wrap gap-1.5", className)}>
+        {asked && (
+          <p className="w-full text-[12px] font-medium text-warning">
+            {asked.label}: &ldquo;{asked.what}&rdquo;.
+          </p>
+        )}
+        {fixing && <p className="w-full text-[12px] text-muted">{fixing}</p>}
+        {planLine}
+      </div>
+    );
+  }
   if (!open.length && !undoable.length) {
     if (!inFix.length && !planLine && !askedLine) return null;
     const fixed = inFix.every((f) => f.status === "FIXED");

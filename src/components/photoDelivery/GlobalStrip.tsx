@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { AlertOctagon, Coins, ExternalLink, Images, Settings2 } from "lucide-react";
+import { AlertOctagon, Coins, ExternalLink, Eye, Images, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etDateTime } from "@/lib/datetime";
-import type { CreditStripView, StripData } from "./types";
+import { VIEW_ONLY_NOTE, type CreditStripView, type StripData } from "./types";
 
 // ---------------------------------------------------------------------------
 // THE GLOBAL STRIP (plan 9.2), on every Photo Delivery page:
@@ -64,7 +64,20 @@ export function CreditChip({ credit, isOwner }: { credit: CreditStripView | null
   );
 }
 
+/** The note a view-only viewer reads at the top of the desk (Oct 22 2026). */
+export function ViewOnlyNote({ className }: { className?: string }) {
+  return (
+    <p role="note" data-view-only className={cn("flex items-center gap-2 rounded-xl border border-border bg-surface-2/60 px-3 py-2 text-sm text-muted", className)}>
+      <Eye aria-hidden className="size-4 shrink-0 text-brand" />
+      {VIEW_ONLY_NOTE}
+    </p>
+  );
+}
+
 export function GlobalStrip({ strip, current }: { strip: StripData; current: "queue" | "credits" | "settings" | "job" }) {
+  // VIEW ONLY (Oct 22 2026): the note in place of the credits chip, the
+  // banner and the Credits and Settings tabs; the queue is its one tab.
+  if (strip.readOnly) return <ViewOnlyNote />;
   const c = strip.credit;
   const critical = !!c && c.connected && c.balance != null && c.level === "critical";
   const tab = (key: typeof current, href: string, label: string, Icon: typeof Images) => (

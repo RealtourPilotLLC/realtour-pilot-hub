@@ -130,7 +130,7 @@ function FindingRow({ f }: { f: FindingView }) {
 }
 
 export function IssuesPanel() {
-  const { data, shown, jobId, run, confirm, pending, setTab } = useJob();
+  const { data, shown, jobId, run, confirm, pending, setTab, readOnly } = useJob();
   const visible = useMemo(() => data.findings.filter((f) => f.pass !== "P4_ORDER"), [data.findings]);
   const main = useMemo(() => groupFindings(visible.filter((f) => shown(f)), data.groupMeta), [visible, shown, data.groupMeta]);
   const low = useMemo(() => groupFindings(visible.filter((f) => !shown(f)), data.groupMeta), [visible, shown, data.groupMeta]);
@@ -167,8 +167,8 @@ export function IssuesPanel() {
       ) : (
         <>
           <div className="flex flex-wrap items-center gap-2">
-            <p className="min-w-0 flex-1 text-[13px] text-muted">{plural(openCount, "issue")} to decide.</p>
-            {skippable > 0 && (
+            <p className="min-w-0 flex-1 text-[13px] text-muted">{plural(openCount, "issue")} {readOnly ? "open." : "to decide."}</p>
+            {skippable > 0 && !readOnly && (
               <button type="button" onClick={() => void skipAll()} disabled={pending} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-border-strong px-3 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50">
                 <SkipForward aria-hidden className="size-4" /> Skip all
               </button>

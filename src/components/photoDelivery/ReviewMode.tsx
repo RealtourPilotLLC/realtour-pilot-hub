@@ -11,6 +11,7 @@ import { FixCartPanel } from "./FixCartPanel";
 import { JobProvider, photoTitle, useJob } from "./JobContext";
 import { PhotoFacts, sortFindings } from "./Lightbox";
 import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, intakeLine } from "./format";
+import { ViewOnlyNote } from "./GlobalStrip";
 import type { JobDetail, Viewer } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -24,6 +25,9 @@ import type { JobDetail, Viewer } from "./types";
 //   H       make the photo the hero       B  original vs current version
 //   O       finding boxes on or off       ?  these shortcuts
 // On a phone: swipe left or right, or the buttons along the bottom.
+// VIEW ONLY (Oct 22 2026, the creative manager): the same walk through the
+// photos and their findings, with J, K, B, O and ?; F, I, X and H, the Hero,
+// Leave out and Cart buttons and the decision buttons are not there.
 // ---------------------------------------------------------------------------
 
 const KEYS: [string, string][] = [
@@ -39,6 +43,8 @@ const KEYS: [string, string][] = [
   ["?", "Show or hide these shortcuts"],
   ["Esc", "Close the cart or this list"],
 ];
+/** The keys that change the job: not offered on a view-only page (Oct 22 2026). */
+const VIEW_ONLY_HIDDEN_KEYS = new Set(["F", "I", "X", "H"]);
 
 export function ReviewMode({ data, viewer, initialPhoto }: { data: JobDetail; viewer: Viewer; initialPhoto: string | null }) {
   return (
@@ -51,7 +57,7 @@ export function ReviewMode({ data, viewer, initialPhoto }: { data: JobDetail; vi
 const tool = "inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-border-strong px-2.5 text-sm font-medium hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40 aria-pressed:border-brand aria-pressed:bg-brand-soft";
 
 function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
-  const { data, jobId, findingsByPhoto, selected, decide, excludePhoto, makeHero, addToCart, cartOpen, setCartOpen, promptOpen, pending, shown } = useJob();
+  const { data, jobId, findingsByPhoto, selected, decide, excludePhoto, makeHero, addToCart, cartOpen, setCartOpen, promptOpen, pending, shown, readOnly } = useJob();
   const photos = useMemo(() => data.photos.filter((p) => p.status !== "GONE"), [data.photos]);
   const [currentId, setCurrentId] = useState<string | null>(initialPhoto ?? photos[0]?.id ?? null);
   const idx = Math.max(0, photos.findIndex((p) => p.id === currentId));
@@ -93,6 +99,8 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
       }
       if (cartOpen && e.key !== "?") return;
       const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      // View only (Oct 22 2026): look through the photos; F, I, X and H change the job.
+      if (readOnly && (k === "f" || k === "i" || k === "x" || k === "h")) return;
       if (k === "j" || k === "ArrowRight") {
         e.preventDefault();
         go(1);
@@ -122,7 +130,7 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [addToCart, cartOpen, decide, excludePhoto, help, makeHero, promptOpen, setCartOpen]);
+  }, [addToCart, cartOpen, decide, excludePhoto, help, makeHero, promptOpen, readOnly, setCartOpen]);
 
   if (!photo) {
     return (
@@ -160,15 +168,20 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
           <button type="button" className={tool} aria-pressed={showOriginal} disabled={!canCompare} onClick={() => setOriginal((cur) => (cur === photo.id ? null : photo.id))} title={canCompare ? "Original vs current (B)" : "Only one version of this photo"}>
             <History aria-hidden className="size-4" /> <span className="hidden sm:inline">{showOriginal ? "Original" : "Current"}</span> <kbd className="text-[11px] text-muted">B</kbd>
           </button>
-          <button type="button" className={tool} aria-pressed={isHero} disabled={pending || excluded || isHero} onClick={() => void makeHero(photo)} title="Make hero (H)">
-            <Star aria-hidden className={cn("size-4", isHero && "fill-current text-brand")} /> <span className="hidden sm:inline">Hero</span> <kbd className="text-[11px] text-muted">H</kbd>
-          </button>
-          <button type="button" className={tool} disabled={pending} onClick={() => void excludePhoto(photo, !excluded)} title={excluded ? "Put back (X)" : "Leave out (X)"}>
-            {excluded ? <Eye aria-hidden className="size-4" /> : <EyeOff aria-hidden className="size-4" />} <span className="hidden sm:inline">{excluded ? "Put back" : "Leave out"}</span> <kbd className="text-[11px] text-muted">X</kbd>
-          </button>
-          <button type="button" className={tool} aria-pressed={cartOpen} onClick={() => setCartOpen(!cartOpen)} title="Fix Cart">
-            <ShoppingCart aria-hidden className="size-4" /> Cart{cartCount ? ` (${cartCount})` : ""}
-          </button>
+          {/* The hero, the delivery set and the Fix Cart are the office's (Oct 22 2026: none on a view-only page). */}
+          {!readOnly && (
+            <>
+              <button type="button" className={tool} aria-pressed={isHero} disabled={pending || excluded || isHero} onClick={() => void makeHero(photo)} title="Make hero (H)">
+                <Star aria-hidden className={cn("size-4", isHero && "fill-current text-brand")} /> <span className="hidden sm:inline">Hero</span> <kbd className="text-[11px] text-muted">H</kbd>
+              </button>
+              <button type="button" className={tool} disabled={pending} onClick={() => void excludePhoto(photo, !excluded)} title={excluded ? "Put back (X)" : "Leave out (X)"}>
+                {excluded ? <Eye aria-hidden className="size-4" /> : <EyeOff aria-hidden className="size-4" />} <span className="hidden sm:inline">{excluded ? "Put back" : "Leave out"}</span> <kbd className="text-[11px] text-muted">X</kbd>
+              </button>
+              <button type="button" className={tool} aria-pressed={cartOpen} onClick={() => setCartOpen(!cartOpen)} title="Fix Cart">
+                <ShoppingCart aria-hidden className="size-4" /> Cart{cartCount ? ` (${cartCount})` : ""}
+              </button>
+            </>
+          )}
           <button type="button" className={tool} aria-pressed={help} onClick={() => setHelp((v) => !v)} title="Shortcuts (?)">
             <Keyboard aria-hidden className="size-4" /> <span className="sr-only">Shortcuts</span>?
           </button>
@@ -176,6 +189,7 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
         <div className="h-1 w-full overflow-hidden rounded-full bg-surface-2" aria-hidden>
           <div className="h-full bg-brand transition-[width]" style={{ width: `${((idx + 1) / photos.length) * 100}%` }} />
         </div>
+        {readOnly && <ViewOnlyNote className="w-full py-1.5" />}
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
@@ -261,13 +275,13 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
         <button type="button" className={tool} disabled={idx === 0} onClick={() => step(-1)}>
           <ChevronLeft aria-hidden className="size-5" /> Previous <kbd className="hidden text-[11px] text-muted sm:inline">K</kbd>
         </button>
-        <span className="text-[13px] text-muted">{picked ? `Finding ${numbers.get(picked.id)} picked: F fix, I not worth fixing` : "Swipe or use J and K"}</span>
+        <span className="text-[13px] text-muted">{picked && !readOnly ? `Finding ${numbers.get(picked.id)} picked: F fix, I not worth fixing` : "Swipe or use J and K"}</span>
         <button type="button" className={tool} disabled={idx >= photos.length - 1} onClick={() => step(1)}>
           Next <kbd className="hidden text-[11px] text-muted sm:inline">J</kbd> <ChevronRight aria-hidden className="size-5" />
         </button>
       </nav>
 
-      {cartOpen && (
+      {cartOpen && !readOnly && (
         <div className="fixed inset-0 z-[1150] flex justify-end bg-black/50" onClick={(e) => e.target === e.currentTarget && setCartOpen(false)}>
           <div role="dialog" aria-modal="true" aria-label="Fix Cart" className="flex h-full w-full max-w-xl flex-col bg-surface shadow-2xl">
             <div className="flex items-center gap-2 border-b border-border px-4 py-3">
@@ -294,7 +308,7 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
               </button>
             </div>
             <dl className="mt-2 space-y-1.5 text-sm">
-              {KEYS.map(([k, v]) => (
+              {(readOnly ? KEYS.filter(([k]) => !VIEW_ONLY_HIDDEN_KEYS.has(k)) : KEYS).map(([k, v]) => (
                 <div key={k} className="flex gap-3">
                   <dt className="w-24 shrink-0">
                     <kbd className="rounded border border-border-strong bg-surface-2 px-1.5 py-0.5 text-[12px] font-semibold">{k}</kbd>

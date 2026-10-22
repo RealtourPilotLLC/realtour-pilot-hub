@@ -28,11 +28,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * Kyle's clicks wait behind it), never while the tab is hidden.
  */
 export function useLivePush(push: AryeoPushView): AryeoPushView {
-  const { jobId } = useJob();
+  const { jobId, readOnly } = useJob();
   const router = useRouter();
   const server = push.progress;
   const [live, setLive] = useState<{ base: Progress | null; p: Progress } | null>(null);
-  const active = !!server?.active;
+  // The progress route is the office's (each ask also moves the push on a
+  // step): a view-only page shows the server's line and never asks (Oct 22 2026).
+  const active = !!server?.active && !readOnly;
   const state = server?.state ?? null;
   useEffect(() => {
     if (!active) return;
@@ -104,8 +106,10 @@ function withWarning(warning: string | null | undefined, body: string) {
 
 /** Kyle's presses, each with its confirm: Approve and deliver, Approve and upload to Aryeo (and "Upload anyway"), Deliver in Aryeo. `warning`: the approve summary. */
 export function useAryeoPushActions() {
-  const { jobId, run, confirm, notify } = useJob();
+  const { jobId, run, confirm, notify, readOnly } = useJob();
   const approve = async (deliver: boolean, warning?: string | null) => {
+    // Kyle approves (Oct 22 2026: a view-only page has no such press; the action refuses it too).
+    if (readOnly) return;
     if (deliver) {
       const ok = await confirm({
         title: "Approve and deliver?",

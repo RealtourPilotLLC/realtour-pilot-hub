@@ -27,8 +27,10 @@ export function JobWorkspace({ data, viewer, initialTab, initialPhoto, history }
   initialPhoto?: string | null;
   history: ReactNode;
 }) {
+  // A view-only viewer has no Fix Cart tab (Oct 22 2026): an old ?tab=cart link opens Issues.
+  const tab = initialTab === "files" ? "activity" : initialTab === "cart" && viewer.readOnly ? "issues" : initialTab;
   return (
-    <JobProvider data={data} viewer={viewer} mode="workspace" initialTab={initialTab === "files" ? "activity" : initialTab} initialPhoto={initialPhoto}>
+    <JobProvider data={data} viewer={viewer} mode="workspace" initialTab={tab} initialPhoto={initialPhoto}>
       <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Gallery />
         <RightPanel history={history} />
@@ -40,14 +42,15 @@ export function JobWorkspace({ data, viewer, initialTab, initialPhoto, history }
 }
 
 function RightPanel({ history }: { history: ReactNode }) {
-  const { tab, setTab, data, selected } = useJob();
+  const { tab, setTab, data, selected, readOnly } = useJob();
   const refs = useRef<Record<string, HTMLButtonElement | null>>({});
   const openIssues = data.findings.filter((f) => f.pass !== "P4_ORDER" && f.status === "OPEN" && f.confidence >= data.displayFloor).length;
   const openCoverage = data.findings.filter((f) => f.pass === "P4_ORDER" && f.status === "OPEN").length;
   const inCart = (data.cart?.lines ?? []).filter((l) => !l.humanCall && l.findingIds.some((id) => selected.has(id))).length;
   const tabs: { key: TabKey; label: string; count?: number }[] = [
     { key: "issues", label: "Issues", count: openIssues },
-    { key: "cart", label: "Fix Cart", count: inCart },
+    // The Fix Cart spends AutoHDR credits: the office's tab only (Oct 22 2026).
+    ...(readOnly ? [] : [{ key: "cart" as const, label: "Fix Cart", count: inCart }]),
     { key: "coverage", label: "Coverage", count: openCoverage },
     { key: "activity", label: "History" },
   ];

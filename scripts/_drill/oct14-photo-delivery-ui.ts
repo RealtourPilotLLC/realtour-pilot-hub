@@ -389,7 +389,8 @@ async function main() {
     c.ok("override, settings, profiles and thresholds are owner-only", ownerOnly.every((n) => /await requireOwner\(\)/.test(bodies.get(n) ?? "")), ownerOnly.filter((n) => !/requireOwner/.test(bodies.get(n) ?? "")).join(", "));
     c.ok("the fix approval passes the real role (Kyle's cap applies)", /approveFixBatch\(\{[^}]*role[^}]*\}\)/.test(bodies.get("approveFixesAction") ?? "") && /realRole/.test(fs.readFileSync(actionFiles[0], "utf8")));
     const pages = filesUnder("src/app/ops/photo-delivery").filter((f) => f.endsWith("page.tsx"));
-    const unguardedPages = pages.filter((f) => !/requirePageAccess\("ops"\)/.test(fs.readFileSync(f, "utf8"))).map((f) => path.relative(REPO, f));
+    // Oct 22 2026: the desk has its own page key, `photos` (it rode `ops` before; the creative manager reads it view only).
+    const unguardedPages = pages.filter((f) => !/requirePageAccess\("photos"\)/.test(fs.readFileSync(f, "utf8"))).map((f) => path.relative(REPO, f));
     c.ok(`every page checks access (${pages.length} pages)`, pages.length >= 4 && unguardedPages.length === 0, unguardedPages.join(", "));
     const settingsPage = pages.find((f) => f.endsWith(path.join("settings", "page.tsx")));
     c.ok("the settings page is owner-only", !!settingsPage && /isOwner|role !== "OWNER"/.test(fs.readFileSync(settingsPage, "utf8")));

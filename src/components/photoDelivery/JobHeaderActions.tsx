@@ -21,7 +21,21 @@ import { usePrompt } from "./usePrompt";
 const btn = "inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-border-strong px-3 text-sm font-medium hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50";
 const item = "flex min-h-11 w-full items-center gap-2 rounded-lg px-3 text-left text-sm font-medium hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50";
 
-export function JobHeaderActions({ jobId, stage, qcEnabled, autohdr = false }: { jobId: string; stage: string; qcEnabled: boolean; autohdr?: boolean }) {
+export function JobHeaderActions({ jobId, stage, qcEnabled, autohdr = false, readOnly = false }: { jobId: string; stage: string; qcEnabled: boolean; autohdr?: boolean; readOnly?: boolean }) {
+  // VIEW ONLY (Oct 22 2026): Review mode to look through the photos, nothing else.
+  if (readOnly) return <ReadOnlyHeader jobId={jobId} />;
+  return <OfficeHeader jobId={jobId} stage={stage} qcEnabled={qcEnabled} autohdr={autohdr} />;
+}
+
+function ReadOnlyHeader({ jobId }: { jobId: string }) {
+  return (
+    <Link href={`/ops/photo-delivery/${jobId}/review`} className={btn}>
+      <Maximize2 aria-hidden className="size-4" /> Review mode
+    </Link>
+  );
+}
+
+function OfficeHeader({ jobId, stage, qcEnabled, autohdr }: { jobId: string; stage: string; qcEnabled: boolean; autohdr: boolean }) {
   const [pending, start] = useTransition();
   const { toast, show } = useToast();
   const { ask, dialog } = usePrompt();

@@ -8,7 +8,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { photoQcCards, type QueuePhotoQc } from "@/lib/reviewRoom";
 import { prisma } from "@/lib/prisma";
 import { requirePageAccess } from "@/lib/auth/guards";
-import { homeFor } from "@/lib/auth/access";
+import { homeFor, isCreativeLead } from "@/lib/auth/access";
 import { GlobalStrip } from "@/components/photoDelivery/GlobalStrip";
 import { QueueFilters } from "@/components/photoDelivery/QueueFilters";
 import { QueueBoard, QueueTable } from "@/components/photoDelivery/QueueBoard";
@@ -19,7 +19,8 @@ export const dynamic = "force-dynamic";
 
 // ---------------------------------------------------------------------------
 // /ops/photo-delivery: THE QUEUE (docs/photo-delivery/01 sections 9.1 to 9.3).
-// Jordan and Kyle. Every photo job from the shoot to delivered, sorted by
+// Jordan and Kyle; James (creative manager) reads it view only since Oct 22
+// 2026 (no credits, no controls). Every photo job from the shoot to delivered, sorted by
 // when it is due. Jobs open by themselves (lib/photoDelivery/jobs.ts): one
 // per photo shoot since the feature started, followed until the edited
 // gallery lands on the Aryeo listing, then QC, decisions, fixes, delivery.
@@ -66,10 +67,12 @@ const ID_RE = /^[A-Za-z0-9_-]{6,64}$/;
 const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
 
 export default async function PhotoDeliveryQueuePage({ searchParams }: { searchParams: Promise<SP> }) {
-  await requirePageAccess("ops");
+  await requirePageAccess("photos");
   const viewer = await loadViewer();
   if (!viewer) redirect("/login?next=/ops/photo-delivery");
-  if (viewer.role !== "OWNER" && viewer.role !== "ADMIN") redirect(homeFor(viewer.role));
+  // The owner and the office work the desk; the creative manager reads it,
+  // view only (Oct 22 2026: viewer.readOnly). Nobody else.
+  if (!isCreativeLead(viewer.role)) redirect(homeFor(viewer.role));
 
   const sp = await searchParams;
   const client = one(sp.client);
@@ -83,7 +86,7 @@ export default async function PhotoDeliveryQueuePage({ searchParams }: { searchP
 
   const [strip, queue, mediaChecks] = await Promise.all([
     loadStrip(viewer),
-    loadQueue({ filters }).catch((e) => {
+    loadQueue({ filters, viewer }).catch((e) => {
       console.error("[photo-delivery] queue failed", e);
       return null;
     }),

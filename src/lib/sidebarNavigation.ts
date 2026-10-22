@@ -2,8 +2,9 @@
 const SIDEBAR_GROUPS = [
   // "/ops/checklist" is Your list (Oct 21 2026): first under More → Lists.
   { id: "daily", title: "Daily work", frequent: true, paths: ["/", "/ops/checklist", "/tasks", "/schedule", "/communications"] },
-  // Oct 19 2026: photo delivery and the Shoots board (owner and office). Every
-  // role but editors reads these as doors of their role menu below.
+  // Oct 19 2026: photo delivery and the Shoots board (owner and office; the
+  // photo desk view only for the creative manager since Oct 22). Every role
+  // but editors reads these as doors of their role menu below.
   { id: "operations", title: "Operations", frequent: true, paths: ["/jobs", "/ops/photo-delivery", "/day"] },
   { id: "production", title: "Production", frequent: true, paths: ["/editing", "/review", "/upload", "/shoot"] },
   // Open by default (Oct 5 2026): the office is onboarding clients into the
@@ -84,12 +85,15 @@ export const OFFICE_MENU: readonly MenuDoor[] = [
 ];
 
 /** James (the creative manager): the creative process end to end, his own
- *  uploads (he still shoots) and his scorecard. No office desks, no money. */
+ *  uploads (he still shoots) and his scorecard. No office desks, no money.
+ *  Photos (Jordan, Oct 22 2026): the photo desk, view only, to check photo
+ *  quality across every job; it sits where the owner's menu has it. */
 export const CREATIVE_MENU: readonly MenuDoor[] = [
   { href: "/", label: "Dashboard" },
   { href: "/review", label: "Videos" },
   { href: "/editing", label: "Editing Room" },
   { href: "/content", label: "Monthly Content" },
+  { href: "/ops/photo-delivery", label: "Photos" },
   { href: "/upload", label: "Uploads" },
   { href: "/jobs", label: "Shoots" },
   { href: "/my-pay", label: "My Performance" },

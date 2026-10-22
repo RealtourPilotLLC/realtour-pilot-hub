@@ -9,7 +9,7 @@ import {
 import { EXCLUDE_PRESETS, HUMAN_CALL_LABEL, IGNORE_PRESETS, UNDOABLE, findingPhotoIds, reasonRequired } from "./format";
 import { usePrompt, type AskOptions } from "./usePrompt";
 import { MIN_OWN_WORDS, needsOwnWords } from "@/lib/photoDelivery/careRules";
-import type { CartLineView, FindingView, JobDetail, PhotoView, Viewer } from "./types";
+import { VIEW_ONLY_NOTE, type CartLineView, type FindingView, type JobDetail, type PhotoView, type Viewer } from "./types";
 
 // ---------------------------------------------------------------------------
 // The job page's shared state (plan 9.4, 9.5): which photo is open, which tab
@@ -17,6 +17,11 @@ import type { CartLineView, FindingView, JobDetail, PhotoView, Viewer } from "./
 // surface (the Issues tab, the lightbox, review mode) asks for a reason the
 // same way, shows the same toast, and never double-submits.
 // Server actions revalidate the job page, so the data refreshes on its own.
+//
+// VIEW ONLY (Oct 22 2026): `readOnly` comes from the server (viewer.readOnly,
+// the creative manager) and every surface reads it here to draw no control.
+// The writes below also stop on it before calling the server, which refuses
+// them on its own anyway (requireAdmin, requireOwner).
 // ---------------------------------------------------------------------------
 
 export type TabKey = "issues" | "cart" | "coverage" | "activity" | "files";
@@ -25,6 +30,8 @@ export type DecisionStatus = "IGNORED" | "FALSE_POSITIVE" | "OVERRIDDEN" | "SENT
 type Ctx = {
   data: JobDetail;
   viewer: Viewer;
+  /** Oct 22 2026: the viewer reads the job and acts on none of it (viewer.readOnly): every control hides on it. */
+  readOnly: boolean;
   jobId: string;
   mode: "workspace" | "review";
   photoById: Map<string, PhotoView>;
@@ -83,6 +90,7 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
   children: ReactNode;
 }) {
   const jobId = data.header.id;
+  const readOnly = !!viewer.readOnly;
   const { toast, show } = useToast();
   const { ask, confirm, dialog, open: promptOpen } = usePrompt();
   const [pending, start] = useTransition();
@@ -119,6 +127,11 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
   const run = useCallback(
     (fn: () => Promise<ActionResult>) =>
       new Promise<boolean>((resolve) => {
+        if (readOnly) {
+          show("err", VIEW_ONLY_NOTE);
+          resolve(false);
+          return;
+        }
         start(async () => {
           try {
             const r = await fn();
@@ -130,11 +143,12 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
           }
         });
       }),
-    [show],
+    [readOnly, show],
   );
 
   const addToCart = useCallback(
     (findingIds: string[]) => {
+      if (readOnly) return false;
       const runnable = findingIds.filter((id) => {
         const l = cartLineByFinding.get(id);
         return !!l && !l.humanCall;
@@ -154,11 +168,12 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
       show("ok", runnable.length === 1 ? "Added to the Fix Cart." : `${runnable.length} fixes added to the Fix Cart.`);
       return true;
     },
-    [cartLineByFinding, mode, setSelected, show],
+    [cartLineByFinding, mode, readOnly, setSelected, show],
   );
 
   const decide = useCallback(
     async (list: FindingView[], status: DecisionStatus) => {
+      if (readOnly) return false;
       const target = status === "OPEN" ? list.filter((f) => UNDOABLE.has(f.status)) : list.filter((f) => f.status === "OPEN" || UNDOABLE.has(f.status));
       if (!target.length) {
         show("err", "Nothing to change there: those issues are already in a fix or decided.");
@@ -213,11 +228,12 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
       }
       return run(() => decideFindingsAction({ jobId, findingIds: target.map((f) => f.id), status, reason: reason || null }));
     },
-    [ask, jobId, run, show],
+    [ask, jobId, readOnly, run, show],
   );
 
   const excludePhoto = useCallback(
     async (photo: PhotoView, exclude: boolean) => {
+      if (readOnly) return false;
       if (!exclude) return run(() => setPhotoExcludedAction({ jobId, photoId: photo.id, excluded: false }));
       const reason = await ask({
         title: `Leave ${photoTitle(photo)} out of the delivery?`,
@@ -229,13 +245,14 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
       if (reason === null) return false;
       return run(() => setPhotoExcludedAction({ jobId, photoId: photo.id, excluded: true, reason }));
     },
-    [ask, jobId, run],
+    [ask, jobId, readOnly, run],
   );
 
   const makeHero = useCallback((photo: PhotoView) => run(() => setHeroAction(jobId, photo.id)), [jobId, run]);
 
   const stopFlagging = useCallback(
     async (ruleId: string, label: string) => {
+      if (readOnly) return false;
       const reason = await ask({
         title: `Stop flagging "${label}"?`,
         description: "QC stops checking for this on every shoot, and its open findings are set aside. Turn it back on any time in Photo Delivery settings.",
@@ -246,12 +263,13 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
       if (reason === null) return false;
       return run(() => stopFlaggingAction({ jobId, ruleId, reason }));
     },
-    [ask, jobId, run],
+    [ask, jobId, readOnly, run],
   );
 
   const value: Ctx = {
     data,
     viewer,
+    readOnly,
     jobId,
     mode,
     photoById,
@@ -277,12 +295,13 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
     promptOpen,
     notify: show,
     shown: (f) => f.confidence >= data.displayFloor,
-    openEditor: setEditing,
+    // Straighten and crop is the office's edit tool: never opens on a view-only page.
+    openEditor: readOnly ? () => {} : setEditing,
   };
   return (
     <JobCtx.Provider value={value}>
       {children}
-      {editing && <PhotoEditor photoId={editing} onClose={() => setEditing(null)} />}
+      {editing && !readOnly && <PhotoEditor photoId={editing} onClose={() => setEditing(null)} />}
       {dialog}
       {toast}
     </JobCtx.Provider>

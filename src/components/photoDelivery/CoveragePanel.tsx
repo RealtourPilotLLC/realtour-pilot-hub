@@ -21,7 +21,7 @@ const COV_LABEL: Record<string, string> = { MET: "Met", NOT_MET: "Not met", UNKN
 const btn = "inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50";
 
 function Row({ f }: { f: FindingView }) {
-  const { decide, pending, ask, run, jobId } = useJob();
+  const { decide, pending, ask, run, jobId, readOnly } = useJob();
   const open = f.status === "OPEN";
   const accept = async () => {
     const reason = await ask({
@@ -53,7 +53,8 @@ function Row({ f }: { f: FindingView }) {
           {f.statusReason ? `: ${f.statusReason}` : ""}
         </p>
       )}
-      <div className="mt-2 flex flex-wrap gap-1.5">
+      {/* Accepting a gap is a delivery decision: the office's (Oct 22 2026, view only). */}
+      {!readOnly && <div className="mt-2 flex flex-wrap gap-1.5">
         {open && (
           <>
             <button type="button" disabled={pending} onClick={() => void accept()} className={btn}>
@@ -72,7 +73,7 @@ function Row({ f }: { f: FindingView }) {
             <Undo2 aria-hidden className="size-3.5" /> Undo
           </button>
         )}
-      </div>
+      </div>}
     </li>
   );
 }

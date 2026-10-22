@@ -5,7 +5,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { BackLink } from "@/components/ui/BackLink";
 import { Section } from "@/components/ui/Section";
 import { requirePageAccess } from "@/lib/auth/guards";
-import { homeFor } from "@/lib/auth/access";
+import { homeFor, isCreativeLead, isOffice } from "@/lib/auth/access";
 import { etDateTime } from "@/lib/datetime";
 import { cn } from "@/lib/utils";
 import { GlobalStrip } from "@/components/photoDelivery/GlobalStrip";
@@ -47,10 +47,12 @@ type SP = { checks?: string | string[]; limit?: string | string[] };
 const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
 
 export default async function CreditsPage({ searchParams }: { searchParams: Promise<SP> }) {
-  await requirePageAccess("ops");
+  await requirePageAccess("photos");
   const viewer = await loadViewer();
   if (!viewer) redirect("/login?next=/ops/photo-delivery/credits");
-  if (viewer.role !== "OWNER" && viewer.role !== "ADMIN") redirect(homeFor(viewer.role));
+  // Credits are the office's: the creative manager's view-only desk has no
+  // Credits page and goes back to the queue (Oct 22 2026); anyone else home.
+  if (!isOffice(viewer.role)) redirect(isCreativeLead(viewer.role) ? "/ops/photo-delivery" : homeFor(viewer.role));
 
   const sp = await searchParams;
   const showChecks = one(sp.checks) === "1";

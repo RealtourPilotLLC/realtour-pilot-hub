@@ -21,7 +21,9 @@ const btn = "inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-
 
 /** Straighten on a geometry finding (PERSP_*, framing): opens the editor on its photo (one button per photo, at most six). */
 export function StraightenButtons({ findings, className }: { findings: FindingView[]; className?: string }) {
-  const { openEditor, photoById, pending } = useJob();
+  const { openEditor, photoById, pending, readOnly } = useJob();
+  // Straighten and crop saves are the office's edit (Oct 22 2026): none on a view-only page.
+  if (readOnly) return null;
   const ids = [...new Set(findings.filter((f) => editCanSettle(f.ruleId) && f.status === "OPEN").flatMap((f) => (f.photoId ? [f.photoId] : f.photoIds)))].filter((id) => photoById.get(id)?.status !== "GONE").slice(0, 6);
   if (!ids.length) return null;
   return (
@@ -37,13 +39,24 @@ export function StraightenButtons({ findings, className }: { findings: FindingVi
 
 /** The hub's own edit on this photo: what it is, and Update on Aryeo when the listing still has the old file. */
 export function HubEditPanel({ photo }: { photo: PhotoView }) {
-  const { data, jobId, run, confirm, pending } = useJob();
+  const { data, jobId, run, confirm, pending, readOnly } = useJob();
   const e = photo.hubEdit;
   if (!e) return null;
   const push = data.aryeoPush;
   const running = !!push.progress?.active;
   const last = push.lastUpdate && push.lastUpdate.photoIds.includes(photo.id) ? push.lastUpdate : null;
   const canPush = push.mode !== "off" && push.connected;
+  // View only (Oct 22 2026): what the edit is and where it stands; Update on Aryeo and the file are the office's.
+  if (readOnly) {
+    return (
+      <section className="mt-4 rounded-xl border border-brand/40 bg-brand-soft/40 p-3">
+        <h3 className="text-[12px] font-semibold uppercase tracking-wide text-muted">Edited in the hub</h3>
+        <p className="mt-0.5 text-sm">{e.label}. This is the current version.</p>
+        <p className="mt-1 text-[13px] text-muted">{e.needsListingUpdate ? "The Aryeo listing still has the old file." : "The 06-Ready-for-Aryeo folder and the delivery take it."}</p>
+        {last && <p className={cn("mt-1.5 text-[12px]", last.ok ? "text-success" : "text-danger")}>{etMonthDayTime(last.at)}: {last.note}</p>}
+      </section>
+    );
+  }
   const update = async () => {
     const ok = await confirm({
       title: `Update ${photoTitle(photo)} on Aryeo?`,
@@ -83,7 +96,7 @@ export function HubEditPanel({ photo }: { photo: PhotoView }) {
 
 /** An AI re-edit in Kyle's own words, for one photo: the price shown first, spent only on his press. */
 export function ReeditBox({ photo }: { photo: PhotoView }) {
-  const { jobId, run, confirm, pending } = useJob();
+  const { jobId, run, confirm, pending, readOnly } = useJob();
   const [text, setText] = useState("");
   const [quote, setQuote] = useState<{ credits: number | null; message: string; ok: boolean } | null>(null);
   const [asking, setAsking] = useState(false);
@@ -110,7 +123,8 @@ export function ReeditBox({ photo }: { photo: PhotoView }) {
     if (!ok) return;
     if (await run(() => customReeditAction({ jobId, photoId: photo.id, prompt: words, expectCredits: credits }))) setText("");
   };
-  if (photo.status === "GONE") return null;
+  // It spends credits: never on a view-only page (Oct 22 2026), not even the price read.
+  if (photo.status === "GONE" || readOnly) return null;
   return (
     <details className="mt-4 rounded-xl border border-border p-3" onToggle={(ev) => (ev.currentTarget.open ? void load() : undefined)}>
       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1.5 text-[13px] font-semibold [&::-webkit-details-marker]:hidden">
