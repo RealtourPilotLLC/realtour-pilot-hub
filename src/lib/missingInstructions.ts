@@ -71,6 +71,8 @@ const LOOKBACK_DAYS = 7;
 /** A claim older than this was a tick that died mid-send: the next tick takes it over. */
 const CLAIM_STALE_MS = 15 * 60_000;
 const CLAIM_PREFIX = "instructions_missing:";
+/** The claim and text identity of an ask about a video added after the handoff. */
+const ADDED_SUFFIX = ":added";
 const REQUESTED_BY = "missing-instructions-text";
 /** The bell kind (notify.ts BELL_RULES, notifyPrefs.ts KIND_TO_EVENT → shoot_change). */
 export const MANAGER_BELL_KIND = "instructions_missing";
@@ -213,10 +215,36 @@ async function readMissing(p: JobRow): Promise<MissingInstructions> {
   return out;
 }
 
+/**
+ * A VIDEO SET UP AFTER THE VIDEO HALF WAS HANDED IN (audit H4a, Oct 22 2026,
+ * lib/videoAddedMidJob): 538 Onward Ave's standard reel got its own row six
+ * hours after the page was submitted, so its instructions box never existed
+ * when the photographer (or the office) filled the page in. Its words are
+ * asked for like any other missing instructions. Never held against anyone
+ * (kpiEvidence excuses a video the hub set up after the handoff); a video
+ * waiting on a second shoot asks nothing (laterVideoGap).
+ */
+async function addedVideoGaps(p: JobRow): Promise<{ labels: string[]; since: Date | null }> {
+  const handedIn = categoryHandoffAt(p, "video");
+  if (!handedIn) return { labels: [], since: null };
+  const [{ videoInstructionsFor }, { laterVideoGap }] = await Promise.all([import("@/lib/deliverableOutputs"), import("@/lib/perVideoInstructions")]);
+  const rows = (await videoInstructionsFor(p.id).catch(() => [])).filter((r) => r.number > 1 && r.createdAt && r.createdAt.getTime() > handedIn.getTime());
+  const gaps = rows.map((r) => ({ at: r.createdAt!, gap: laterVideoGap(r, { instructionsInDropbox: !!p.instructionsDropboxPath?.trim() }) })).filter((x): x is { at: Date; gap: string } => !!x.gap);
+  return { labels: gaps.map((g) => g.gap), since: gaps.length ? new Date(Math.min(...gaps.map((g) => g.at.getTime()))) : null };
+}
+
+/** Everything the morning asks for: the page's own gaps plus any video set up after the handoff. */
+async function readAllMissing(p: JobRow): Promise<{ missing: MissingInstructions; addedOnly: boolean; addedSince: Date | null }> {
+  const base = await readMissing(p);
+  const added = await addedVideoGaps(p);
+  const video = [...base.video, ...added.labels.filter((l) => !base.video.includes(l))];
+  return { missing: { video, photos: base.photos }, addedOnly: !base.video.length && !base.photos.length && added.labels.length > 0, addedSince: added.since };
+}
+
 /** What this job's upload page is still missing from its photographer (empty when nothing). */
 export async function missingInstructionsFor(projectId: string): Promise<MissingInstructions | null> {
   const p = await prisma.project.findUnique({ where: { id: projectId }, select: JOB_SELECT });
-  return p ? readMissing(p) : null;
+  return p ? (await readAllMissing(p)).missing : null;
 }
 
 // ---- the morning's claim ---------------------------------------------------------
@@ -249,8 +277,9 @@ export type MissingInstructionsRun =
 
 type TextOutcome = { kind: "sent" | "unconfirmed" | "not_sent"; why?: string };
 
-/** Every 5 minutes (cron/gmail). Idle before 10 AM ET. */
-export async function sweepMissingInstructions(now: Date = new Date()): Promise<MissingInstructionsRun> {
+/** Every 5 minutes (cron/gmail). Idle before 10 AM ET. `projectIds` scopes a
+ *  run to those jobs (a live one-off); the cron passes none. */
+export async function sweepMissingInstructions(now: Date = new Date(), opts: { projectIds?: string[] } = {}): Promise<MissingInstructionsRun> {
   const { internalAlertRules } = await import("@/lib/settings");
   if (!(await internalAlertRules()).missingInstructions.enabled) {
     return { skipped: "switched off (Settings, Internal alerts, Missing instructions, the morning after)" };
@@ -260,14 +289,22 @@ export async function sweepMissingInstructions(now: Date = new Date()): Promise<
   const from = new Date(Math.max(etDayBoundsUtc(FIRST_SHOOT_DAY).start.getTime(), now.getTime() - LOOKBACK_DAYS * 86_400_000));
   const rows = await prisma.project.findMany({
     where: {
+      ...(opts.projectIds ? { id: { in: opts.projectIds } } : {}),
       status: { notIn: ["CANCELLED", "ON_HOLD", "DELIVERED"] },
       aryeoMissingAt: null,
       photographerId: { not: null },
-      // The whole wrap-up is in: nothing is owed by anyone.
-      debriefSubmittedAt: null,
       OR: [
-        { appointments: { some: { startAt: { gte: from, lte: now } } } },
-        { appointments: { none: {} }, shootDate: { gte: from, lte: now } },
+        {
+          // The whole wrap-up is in: nothing is owed by anyone…
+          debriefSubmittedAt: null,
+          OR: [
+            { appointments: { some: { startAt: { gte: from, lte: now } } } },
+            { appointments: { none: {} }, shootDate: { gte: from, lte: now } },
+          ],
+        },
+        // …unless a video was set up after the video half went in (audit H4a):
+        // its own instructions are still owed, whatever the page said.
+        { videoHandoffAt: { not: null }, deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] }, removedFromOrderAt: null, createdAt: { gte: from } } } },
       ],
     },
     orderBy: { shootDate: "asc" },
@@ -291,12 +328,17 @@ export async function sweepMissingInstructions(now: Date = new Date()): Promise<
     const shootDay = etDayKey(shotAt);
     // Not before the morning after, and never history from before it shipped.
     if (shootDay < FIRST_SHOOT_DAY || shootDay >= today) continue;
-    // Asked already this morning: nothing to work out (most ticks after 10 AM).
     const prior = await prisma.appSetting.findMany({ where: { key: { startsWith: `${CLAIM_PREFIX}${p.id}:` } }, select: { key: true, value: true } });
-    const todayRow = prior.find((r) => r.key === claimKey(p.id, today)) ?? null;
-    if (todayRow && parseClaim(todayRow.value)?.state === "sent") continue;
-    const missing = await readMissing(p);
+    const { missing, addedOnly, addedSince } = await readAllMissing(p);
     if (!allItems(missing).length) continue;
+    // A video added after the handoff is its own ask (audit H4a): its own
+    // claim for the morning (so a page asked about at 10 AM still hears about
+    // a video added at 6 PM), its own text identity, and its mornings counted
+    // from when it was added.
+    const dayKey = addedOnly ? `${today}${ADDED_SUFFIX}` : today;
+    // Asked already this morning: nothing to work out (most ticks after 10 AM).
+    const todayRow = prior.find((r) => r.key === claimKey(p.id, dayKey)) ?? null;
+    if (todayRow && parseClaim(todayRow.value)?.state === "sent") continue;
     run.considered++;
     const street = streetOf(p.title, p.addressLine);
     const ph = p.photographer;
@@ -305,7 +347,9 @@ export async function sweepMissingInstructions(now: Date = new Date()): Promise<
     // Every earlier morning that was claimed counts, finished or not: a tick
     // that died mid-send may still have texted, and a fourth ask is the one
     // outcome this must never have.
-    const mornings = prior.filter((r) => r.key !== claimKey(p.id, today)).length;
+    const mornings = prior.filter((r) => r.key !== claimKey(p.id, dayKey) && (addedOnly
+      ? !!addedSince && Date.parse(parseClaim(r.value)?.at ?? "") >= addedSince.getTime()
+      : !r.key.endsWith(ADDED_SUFFIX))).length;
     if (mornings >= MAX_MORNINGS) {
       run.done.push(`${street}: asked ${MAX_MORNINGS} mornings, the office alerts carry it`);
       continue;
@@ -316,7 +360,7 @@ export async function sweepMissingInstructions(now: Date = new Date()): Promise<
       run.waiting.push(`${label}: their quiet time until ${quiet.toISOString()}`);
       continue;
     }
-    const key = claimKey(p.id, today);
+    const key = claimKey(p.id, dayKey);
     const taken = await claimMorning(key, todayRow, now);
     if ("reason" in taken) continue;
 
@@ -337,7 +381,7 @@ export async function sweepMissingInstructions(now: Date = new Date()): Promise<
         const { sendThroughOutbox } = await import("@/lib/outbox");
         let r: Awaited<ReturnType<typeof sendThroughOutbox>>;
         try {
-          r = await sendThroughOutbox({ channel: "sms", toRef: num.key, body: text, dedupeKey: instructionsNudgeKey(p.id, ph.id, today), projectId: p.id, requestedBy: REQUESTED_BY });
+          r = await sendThroughOutbox({ channel: "sms", toRef: num.key, body: text, dedupeKey: instructionsNudgeKey(p.id, ph.id, dayKey), projectId: p.id, requestedBy: REQUESTED_BY });
         } catch (e) {
           // A database failure while queueing: nothing was handed over, or the
           // watchdog owns the row. The morning is released; the next tick asks again.
@@ -381,7 +425,7 @@ export async function sweepMissingInstructions(now: Date = new Date()): Promise<
           // Roles kept broad so the row stays visible whatever their login
           // role is (tasks.ts creativeAlertTargets, same reason).
           targets: copy.map((m) => ({ roles: ["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"], userKey: `tm:${m.id}`, href, slackDm: `${line}\n${appBase()}${href}` })),
-          dedupeKey: `instructions-missing-${p.id}-${today}`,
+          dedupeKey: `instructions-missing-${p.id}-${dayKey}`,
         });
         told.push(...copy.map((m) => firstName(m.name)));
         run.copied.push(...copy.map((m) => `${street} to ${m.name}`));

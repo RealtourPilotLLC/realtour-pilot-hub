@@ -3473,11 +3473,27 @@ export async function reconcileDeliverablesToOrder(
     // the hourly page scan returns, and three round trips per untouched job,
     // every hour, buys nothing the sweep does not already cover.
     const { ensureOutputsSafely } = await import("@/lib/deliverableOutputs");
+    // The video rows before this pass, so a video the order just added to a
+    // job already with the editor is told to them (audit H4a, Oct 22 2026).
+    const videoKeysBefore = out.added.length || out.restored.length || out.relabeled.length
+      ? new Set((await prisma.deliverableOutput.findMany({ where: { projectId: rowHome, removedFromOrderAt: null }, select: { deliverableId: true, slot: true } }).catch(() => [])).map((o) => `${o.deliverableId}:${o.slot}`))
+      : null;
     // On the job the rows live on: ensureOutputsForProject plans and mints per
     // project, so running it on a merged-away job would look at an empty set
     // and leave the survivor's new slot unmaterialised.
     const ensured = await ensureOutputsSafely(rowHome, `aryeo-reconcile#${orderNo}`);
     if (!ensured.ok) out.outputsError = ensured.error;
+    // A VIDEO ADDED MID-JOB (lib/videoAddedMidJob): the edit card is renamed,
+    // the editor pinged, and the photographer asked for its instructions by the
+    // morning nudge. Best-effort; never fails the reconcile.
+    if (videoKeysBefore && ensured.ok && ensured.result) {
+      const added = ensured.result.slotKeys.filter((k) => !videoKeysBefore.has(k));
+      if (added.length) {
+        await import("@/lib/videoAddedMidJob")
+          .then((m) => m.announceVideosAddedMidJob(rowHome, added, { source: `aryeo-reconcile#${orderNo}` }))
+          .catch((e) => console.warn(`[aryeo-reconcile#${orderNo}] video-added notice failed`, e));
+      }
+    }
     // After the card cancel AND the rows' retirement (see closeVideoWork
     // above). A Start that landed before either is closed here; one after
     // finds no card and no live video row of theirs and is refused.

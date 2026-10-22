@@ -101,6 +101,13 @@ export type PacketManifest = {
     instructions: string | null;
     /** Oct 22 2026: the instructions are a FILE in the job's Dropbox folder ("<name> (Dropbox: <path>)"). */
     instructionsFile?: string | null;
+    /**
+     * Oct 22 2026 (audit H4d): on a listing job owing two or more videos the
+     * job's instructions are VIDEO 1's ("video 1 (Premium Social Reel)");
+     * each later video's own words are its note above. Absent on a one-video
+     * job, on a monthly batch (one shared brief) and in an older packet.
+     */
+    instructionsFor?: string | null;
     photographerNotes: string | null;
     scriptStatus: string | null;
     studioScript: string | null;
@@ -185,6 +192,12 @@ export async function buildEditorPacket(projectId: string): Promise<EditorPacket
   const folders = actualFolderPaths({ title: p.title, addressLine: p.addressLine, shootDate: p.shootDate, createdAt: p.createdAt, client: { name: p.client.name }, dropboxFolder: p.dropboxFolder });
   const music = readMusicPick(p.editSpec);
 
+  // Whose words the job's instructions are (perVideoInstructions): a listing
+  // job owing two or more videos splits them per video, so the job's field is
+  // video 1's. A monthly batch keeps one shared brief for all of them.
+  const perVideo = await import("@/lib/deliverableOutputs").then((m) => m.videoInstructionsFor(projectId)).catch(() => []);
+  const instructionsFor = perVideo.length > 1 ? `video 1 (${perVideo[0].label})` : null;
+
   const videos: PacketVideo[] = outputs.map((o) => ({
     outputId: o.outputId,
     index: o.index,
@@ -219,6 +232,7 @@ export async function buildEditorPacket(projectId: string): Promise<EditorPacket
     job: {
       instructions: scrub(p.videoInstructions),
       instructionsFile: p.instructionsDropboxPath ? `${p.instructionsDropboxName ?? p.instructionsDropboxPath.split("/").pop()} (Dropbox: ${p.instructionsDropboxPath})` : null,
+      ...(instructionsFor ? { instructionsFor } : {}),
       photographerNotes: scrub(p.editorBrief),
       scriptStatus: scrub(p.scriptConfirmNote),
       studioScript: scrub([p.reelHook, p.reelScript].filter(Boolean).join("\n\n")),
@@ -662,7 +676,14 @@ export async function buildEditorPacketPdf(
     if (v.dueISO) text(`Due: ${etDateTime(v.dueISO)}`, { size: 9, color: MUTED, x: M + 12 });
   }
   if (manifest.job.instructions || manifest.job.instructionsFile) {
-    heading(manifest.videos.length > 1 ? "Instructions from the shoot (all videos)" : "Instructions from the shoot");
+    // A split listing job's job-level words are video 1's (audit H4d, Oct 22
+    // 2026): saying "all videos" put video 1's style and script over video 2.
+    heading(
+      manifest.job.instructionsFor
+        ? `Instructions from the shoot for ${manifest.job.instructionsFor}`
+        : manifest.videos.length > 1 ? "Instructions from the shoot (all videos)" : "Instructions from the shoot",
+    );
+    if (manifest.job.instructionsFor) text(`Each other video's own instructions are under it in "The videos" above.`, { size: 9, color: MUTED });
     if (manifest.job.instructionsFile) text(`Instructions in Dropbox: ${manifest.job.instructionsFile}`);
     text(manifest.job.instructions);
   }
