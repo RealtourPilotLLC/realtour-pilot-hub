@@ -799,7 +799,7 @@ async function main() {
   c.ok("REVIEW F7: the upload's hand-in closes only stretches begun by the entry's own stamp, and the browser's finish settles that close before it answers (both paths)",
     /startedBefore: enteredAt/.test(cutsSrc) && /closeUploadersStretch\(sub, entered\?\.selfCheckedAt \?\? null\)/.test(cutsSrc) &&
     (actionsSrc.match(/settleUploadHandIn\(input\.submissionId\)/g) ?? []).length === 2 &&
-    /if \(row\.status !== "UPLOADING" && !awaitingBytes\) \{[\s\S]{0,200}settleUploadHandIn\(input\.submissionId\);\s*return \{ ok: true, message: "Already in review\." \};/.test(actionsSrc));
+    /if \(row\.status !== "UPLOADING" && !awaitingBytes\) \{[\s\S]{0,200}settleUploadHandIn\(input\.submissionId\);[\s\S]{0,300}?return \{ ok: true, message: "Already in review\." \};/.test(actionsSrc));
   // A hand-in on a job he never started: the closer finds nothing, starts nothing.
   const c9 = await counts();
   await cut(N.id, N.deliverableId, 1, "PENDING", Z("17:00"));

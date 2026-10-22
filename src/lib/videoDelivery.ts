@@ -21,9 +21,11 @@ import type { VideoPushMode } from "@/lib/videoDeliverySettings";
 //
 // LISTING VIDEOS, one row per video where the hub can tell them apart (each
 // cut the Review Room knows; a video not cut yet is a row of its own), dated
-// by the same promise Kyle's delivery board uses (deliveryBoard: the job's
-// video item, capped by the promise it was sold under; the office's date or a
-// reopened job's clock when there is one). Each row lives in ONE lane:
+// by THE video due (editorDue.videoDueOf, Oct 22 2026 audit H1: the promise
+// the job was sold under, else the SLA off its video deliverable rows; the
+// same date the editor's ping and brief carry), with a reopened job's clock
+// or the office's date from Kyle's delivery board winning when there is one.
+// Each row lives in ONE lane:
 //   late       past its promise, not approved yet
 //   today      due by the end of today (ET), not approved yet
 //   review     a cut waiting for a verdict (not late, not due today)
@@ -168,19 +170,23 @@ function promiseWords(at: Date | null, now: Date, delivered = false): string {
   return `Due ${etDateTime(at)} ET`;
 }
 
-/** The video promise for a listing job: its video item, capped by the promise it was sold under; the office's date or a reopened clock win. */
+/** The video promise for a listing job: a reopened clock or the office's date
+ *  (the delivery board's), else THE video due (editorDue.videoDueOf: the
+ *  promise the job was sold under, else the SLA off its video deliverable
+ *  rows). Never the order's product names (Oct 22 2026, audit H1: "Social
+ *  Influencer", "Standard Package" and "Agent on Camera" carry no video word,
+ *  so they were dated by the next-day Zillow tour or the photos and read late
+ *  the day after the shoot). A job with no video row falls back to the
+ *  office's date or its pin, never the earliest item. */
 function videoPromise(
-  job: { dueAt: Date | null; dueTierLabel: string | null; reopened: boolean; items: { title: string; dueAt: Date | null }[] } | undefined,
+  job: { dueAt: Date | null; dueTierLabel: string | null; reopened: boolean } | undefined,
   project: { promisedDueAt: Date | null; shootDate: Date | null },
-  helpers: { categoryLabelsForLabel: (l: string) => string[]; pinnedPromise: (p: { promisedDueAt?: Date | null; shootDate?: Date | null }) => Date | null; cappedByPromise: (c: Date | null, p: Date | null | undefined) => Date | null },
+  due: { at: Date | null; source: string | null } | undefined,
+  pinnedPromise: (p: { promisedDueAt?: Date | null; shootDate?: Date | null }) => Date | null,
 ): Date | null {
-  const pin = helpers.pinnedPromise(project);
-  if (!job) return pin;
-  if (job.reopened || job.dueTierLabel === "office override") return job.dueAt;
-  const vids = job.items.filter((i): i is { title: string; dueAt: Date } => !!i.dueAt && helpers.categoryLabelsForLabel(i.title).includes("Video"));
-  const itemDue = vids.length ? vids.reduce((a, b) => (a.dueAt <= b.dueAt ? a : b)).dueAt : null;
-  if (itemDue) return helpers.cappedByPromise(itemDue, pin);
-  return job.dueAt ?? pin;
+  if (job && (job.reopened || job.dueTierLabel === "office override")) return job.dueAt;
+  if (due?.source) return due.at;
+  return pinnedPromise(project);
 }
 
 const EMPTY_LANES = (): Record<VideoLane, VideoRow[]> => ({ late: [], today: [], review: [], upcoming: [], sending: [], held: [], finishing: [], delivered: [] });
@@ -215,16 +221,15 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
   // Oct 21 2026, audit A3/H): every board build used to read every client row.
   const excludeClientIds = await import("@/lib/queries").then((m) => m.syntheticClientIds());
 
-  const [{ deliveryBoard }, { readyToSend }, { videoStatesFor }, turnaround, qc, settings, connected] = await Promise.all([
+  const [{ deliveryBoard }, { readyToSend }, { videoStatesFor }, turnaround, editorDue, settings, connected] = await Promise.all([
     import("@/lib/deliveryBoard"),
     import("@/lib/readyToSend"),
     import("@/lib/reviewCuts"),
     import("@/lib/turnaround"),
-    import("@/lib/qcCategories"),
+    import("@/lib/editorDue"),
     videoDeliverySettings(),
     import("@/lib/integrations/aryeoWeb").then((m) => m.aryeoWebCredentials()).then((c) => !!c).catch(() => false),
   ]);
-  const helpers = { categoryLabelsForLabel: qc.categoryLabelsForLabel as (l: string) => string[], pinnedPromise: turnaround.pinnedPromise, cappedByPromise: turnaround.cappedByPromise };
 
   const [board, ready, deliveredRecently] = await Promise.all([
     deliveryBoard({ excludeClientIds }),
@@ -260,6 +265,8 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
     return (j && j.video !== "n/a") || readyRows.some((v) => v.projectId === p.id) || renderingRows.some((v) => v.projectId === p.id) || deliveredRecently.some((d) => d.projectId === p.id);
   }).map((p) => p.id);
   const states = await videoStatesFor(videoJobIds);
+  // THE video due per job (audit H1): the same date the editor's ping and brief read.
+  const dues = await editorDue.videoDuesFor(videoJobIds, { now });
   const { aryeoJobUrl } = await import("@/lib/aryeoUrl");
   // A VIDEO RELEASED FROM A SECOND SHOOT (Oct 22 2026, lib/secondShoot) runs
   // on its OWN clock, from the shoot its footage came from, never the job's
@@ -336,7 +343,8 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
     if (!p) continue;
     const job = jobById.get(pid);
     const st = states.get(pid);
-    const jobPromise = videoPromise(job, p, helpers);
+    // The job's video due (audit H1: THE video due, editorDue.videoDueOf).
+    const jobPromise = videoPromise(job, p, dues.get(pid), turnaround.pinnedPromise);
     // The clock a video runs on: its own when it came from a second shoot
     // (Oct 22 2026), else the job's.
     const clockOf = (slotKey: string | null | undefined) => {

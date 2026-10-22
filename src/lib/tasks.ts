@@ -3117,11 +3117,13 @@ async function announceReady(
   const routedKey = key === "kim" || key === "john" ? key : null;
   // Their brief — the one page the EDITOR role can act from.
   if (routedKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${routedKey}`, href: `/edit/${projectId}` });
-  // Oct 22 2026: the editor hears WHEN it is due, in their own time too (lib/editorDue).
-  const due = await (await import("@/lib/editorDue")).editDueWords(projectId, routedKey).catch(() => "");
+  // Oct 22 2026: the editor hears WHEN it is due, in their own time too
+  // (lib/editorDue), and the time survives the bell's 90-character cut (L1).
+  const head = opts.combined ? `Raws in — ${street}: ready for editing` : `Ready for editing — ${street}`;
+  const title = await (await import("@/lib/editorDue")).editDueTitle(head, projectId, routedKey).catch(() => head);
   const { bridged } = await notifyInApp({
     kind: "raws_landed", // the editors' "job pings" switch, as it always was
-    title: `${opts.combined ? `Raws in — ${street}: ready for editing` : `Ready for editing — ${street}`}${due ? `, ${due}` : ""}`,
+    title,
     href: "/editing",
     targets,
     dedupeKey: since ? `ready-${projectId}-h${since.getTime()}` : `ready-${projectId}`,
@@ -3199,35 +3201,19 @@ export async function ensureEditorLoginNudge(editorKey: string): Promise<void> {
 // `edit-video-<projectId>`; auto-closed by the reconciler when the final video
 // lands (see syncOneProjectTasks). Best-effort — callers wrap in try/catch.
 //
-// dueAt = the video's delivery-due MINUS a 12h QC buffer: the edit has to be in
-// the door early enough for Kyle to QC + the client to see it before the SLA
-// clock (shootDate + VIDEO SLA) actually expires. If the buffer would put the
-// due date in the past (an already-late job), we don't backdate below "now +
-// nudge" — an overdue edit is URGENT either way and a wildly-past date just
-// reads as noise.
+// dueAt = THE video due (editorDue.videoDueOf, Oct 22 2026 audit H2): the
+// same instant the editor's ping, their desk, the brief and the Video Review
+// Room show. It used to be the video's SLA MINUS a 12h QC buffer, from the
+// shoot date, capped by the pin, so the same edit read up to four different
+// dates across the hub (893 S Matlack: the card said Oct 23 5 AM while the
+// ping and the desk said Oct 27 5 PM). The 12 hours are now the AIM, said in
+// the card's words ("aim to hand it in by ..."), never its due. A job with no
+// date at all still gets a short nudge window so the card surfaces.
 // ---------------------------------------------------------------------------
-/** The edit card's due rule, shared with addRoundToEditCard (Sep 8): the
- *  video's SLA minus a 12h QC buffer. Never surface a wildly-backdated due;
- *  clamp an already-late edit to "soon" when the row is BORN. On refresh the
- *  clamp is not rolled forward: doing that every hour meant a late edit read
- *  "due in an hour" forever and the row was rewritten every tick (Sep 8 audit)
- *  — the stamp it already carries stands, and an edit past its SLA reads
- *  late, which is the truth. */
-function editDueRule(
-  shootDate: Date | null,
-  videoType: string,
-  // `rules` and `promisedDueAt` landed Sep 18: this was the one SLA path that
-  // never received the office's editable promises, so an edit card could sit a
-  // day off the QC card and the board for the same reel — and a premium job
-  // sold under the old 72-hour clock has to keep that date, not inherit the
-  // longer business-day one.
-  opts: { premium: boolean; monthlyContent: boolean; rules?: PromiseRules; promisedDueAt?: Date | null },
-): { videoDue: Date | null; late: boolean; dueAt: Date } {
-  const computed = shootDate ? deliveryDueFrom(shootDate, videoType, opts) : null;
-  const videoDue = cappedByPromise(computed, livePromise(opts.promisedDueAt, shootDate));
-  const rawDue = videoDue ? new Date(videoDue.getTime() - 12 * HOUR) : new Date(Date.now() + 4 * HOUR);
-  const late = rawDue.getTime() < Date.now();
-  return { videoDue, late, dueAt: late ? new Date(Date.now() + HOUR) : rawDue };
+/** The edit card's date, shared with addRoundToEditCard. */
+async function editCardDue(projectId: string): Promise<{ due: import("@/lib/editorDue").VideoDue | null; dueAt: Date }> {
+  const due = await import("@/lib/editorDue").then((m) => m.videoDueFor(projectId)).catch(() => null);
+  return { due, dueAt: due?.at ?? new Date(Date.now() + 4 * HOUR) };
 }
 
 /** A bounce round on the edit card starts its summary this way — mintEditTask's
@@ -3290,30 +3276,20 @@ export async function mintEditTask(projectId: string): Promise<void> {
   const editorName = assignedKey ? editorMeta(assignedKey)?.name ?? assignedKey : "manual assignment";
   const street = (p.title || "this job").split(",")[0].trim();
 
-  // Video delivery-due = shootDate + the SAME SLA the status card uses, then a
-  // 12h QC buffer pulls the EDIT due earlier. No shootDate → no computable SLA,
-  // fall back to a short nudge window so the task still surfaces.
-  // THE OFFICE'S DUE (Sep 13): when dueOverrideAt is set the card is due at
-  // exactly that instant — no QC buffer, no late-clamp — and the summary
-  // names that date. The hourly refresh below reads the same column, so it
-  // can never roll the office's date back to the SLA.
-  const { turnaroundRules: editTurnarounds } = await import("@/lib/settings");
-  const rule = editDueRule(p.shootDate, v.type, {
-    premium: isPremium,
-    monthlyContent: monthly,
-    rules: await editTurnarounds().catch(() => undefined),
-    promisedDueAt: p.promisedDueAt,
-  });
-  const videoDue = p.dueOverrideAt ?? rule.videoDue;
-  const dueAt = p.dueOverrideAt ?? rule.dueAt;
-  const late = p.dueOverrideAt ? false : rule.late;
+  // THE video due (editorDue.videoDueOf, Oct 22 2026 audit H2): a reopen's
+  // clock, the office's date (Sep 13), the promise the job was sold under,
+  // else the SLA off the video rows. The hourly refresh below reads the same
+  // thing, so it can never roll the office's date back to the SLA.
+  const { due: oneDue, dueAt } = await editCardDue(projectId);
 
   const rawUrl = dropboxWebUrl(actualFolderPaths(p).rawVideo);
   const briefUrl = `/edit/${projectId}`;
   const tierLabel = isPremium ? "Premium" : "Standard";
-  const dueLabel = videoDue
-    ? videoDue.toLocaleDateString("en-US", { month: "short", day: "numeric" })
-    : "soon";
+  // The due, then the aim in words (never a second due date).
+  const { etWhen } = await import("@/lib/editorDue");
+  const dueWords = oneDue?.at
+    ? `Due ${etWhen(oneDue.at)}${oneDue.source === "office" ? " (set by the office)" : oneDue.source === "reopened" ? " (the reopened work)" : ""}.${oneDue.aimAt ? ` Aim to hand it in by ${etWhen(oneDue.aimAt)} so review has time.` : ""}`
+    : "No due date yet.";
 
   // TWO OR MORE VIDEOS ON A LISTING JOB (audit H4a, Oct 22 2026): the card
   // names every video, so a video the order added mid-job is on it too (538
@@ -3324,7 +3300,7 @@ export async function mintEditTask(projectId: string): Promise<void> {
   const cardTitle = (multi ? `Edit ${owedVideos.length} videos — ${street}` : `Edit — ${street}`).slice(0, 120);
   const what = multi ? `${owedVideos.length} videos for ${street} (${owedVideos.map((s) => s.label).join(", ")}). Raws are in — cut each video` : `${tierLabel} reel for ${street}. Raws are in — cut the video`;
   const summary =
-    `${what}. Delivery due ${dueLabel}${p.dueOverrideAt ? " (set by the office)" : " (edit due 12h earlier for QC)"}. ` +
+    `${what}. ${dueWords} ` +
     `RAW footage: ${rawUrl} · Brief: ${briefUrl}`;
 
   const key = `edit-video-${projectId}`;
@@ -3337,7 +3313,11 @@ export async function mintEditTask(projectId: string): Promise<void> {
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
   if (existing) {
     if (existing.status === "COMPLETED" || existing.status === "CANCELLED") return;
-    const refreshedDue = late && existing.dueAt ? existing.dueAt : dueAt;
+    // The one video due on every refresh: a fixed instant (the pin, the SLA,
+    // the office's date), so there is no "soon" clamp to hold back any more
+    // (the old buffered date was clamped to now + 1 h once late). A job with
+    // no date keeps the stamp it has rather than walking forward each hour.
+    const refreshedDue = oneDue?.at ? dueAt : existing.dueAt ?? dueAt;
     // Read BEFORE the card update below — so it can only ever decide the
     // route, never whether to close work (R01, Sep 28: see the close below).
     // STARTED WORK KEEPS ITS EDITOR (§7.1). An editor who pressed Start (or
@@ -3689,22 +3669,11 @@ export async function addRoundToEditCard(
           .join("\n");
   const coreBlock = bare([core, ...bullets].join("\n"));
   const summary = `Round ${opts.round} — ${n} note${n === 1 ? "" : "s"} to fix (${opts.reason}${by?.name ? `, by ${by.name}` : ""}). The notes are below and on the cut at /edit/${projectId}; fix them and upload the next version.`.slice(0, 500);
-  // Due: the same SLA−12h rule as a first cut, off the job's video deliverable
-  // — unless the office set the due / priority on the job (Sep 13), which a
-  // round refresh must not undo any more than the hourly one may.
-  const p = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { shootDate: true, dueOverrideAt: true, priorityOverride: true, promisedDueAt: true, deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true } } },
-  });
-  const v = p?.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
-  const { videoTier } = await import("@/lib/projectStatus");
-  const { turnaroundRules: roundTurnarounds } = await import("@/lib/settings");
-  const rule = editDueRule(p?.shootDate ?? null, v?.type ?? "VIDEO", {
-    premium: p ? videoTier(p.deliverables) === "premium" : false,
-    monthlyContent: p ? isMonthlyContentJob(p.deliverables) : false,
-    rules: await roundTurnarounds().catch(() => undefined),
-    promisedDueAt: p?.promisedDueAt ?? null,
-  });
+  // Due: THE video due, the same as a first cut (editorDue.videoDueOf, Oct 22
+  // 2026 audit H2), read below once the reopen's clock is stamped. The
+  // office's date (Sep 13) still wins inside it, which a round refresh must
+  // not undo any more than the hourly one may; the office's priority too.
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { priorityOverride: true } });
   // A ROUND ON REOPENED WORK IS DUE BY THE REOPEN'S CLOCK (A52). On a job
   // delivered once, the SLA rule above dates the round off the ORIGINAL shoot,
   // so a new round on a finished job was born weeks overdue. Revisions on the
@@ -3723,7 +3692,7 @@ export async function addRoundToEditCard(
       reopenedAt = pr ? reopenedDueFor({ ...pr, dueSetAt }, (await reopenedClocksFor([projectId])).get(projectId) ?? null).at : undefined;
     }
   }
-  const dueAt = reopenedAt !== undefined ? reopenedAt : p?.dueOverrideAt ?? rule.dueAt;
+  const dueAt = reopenedAt !== undefined ? reopenedAt : (await editCardDue(projectId)).dueAt;
 
   // ---------------------------------------------------------------------
   // A05 (Sep 21 audit, fixed Sep 22 2026) — THE APPEND HAPPENS UNDER A LOCK.

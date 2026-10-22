@@ -6,7 +6,7 @@ import type { GeneratedScriptJson, Gap } from "@/lib/contentPolicy";
 import { gatherForTopic, withHerWords, type Gathered, type GatherOpts } from "./sources";
 import { buildRetrievalPrompt, buildBriefPrompt, buildHooksPrompt, buildDraftPrompt, buildReviewPrompt, buildReviseWriterPrompt, buildRedraftPrompt, type DraftOut, type StepPrompt, type WriterContext } from "./prompts";
 import { locateQuote, contextAround, timeOf, isInternalTalk } from "./passages";
-import { pickHook, hardNumbers, mergeReview, mustFixFailures, trimInstruction, spokenTextOf, runnerUpHook, hookInUse, hookVerdict, hookIsBarPick, hookRank, readCraft, keptLongerConflicts, pickFinal, usedStory, partTextOf, trimAboveFor, WRITER_LENGTH, WRITER_VERSION, BRIEF_MUST_KEEP_MAX, CRAFT_FAIL_AT, CRAFT_PASS, CRAFT_PARTS, SCRIPT_PART_KEYS, CHECK_PARTS, estimateSeconds, type CraftScores, type HookCandidate, type ReviewCheckResult, type HardFinding, type ScriptParts, type ScriptPartKey } from "./rules";
+import { pickHook, hardNumbers, mergeReview, mustFixFailures, trimInstruction, spokenTextOf, runnerUpHook, hookInUse, hookVerdict, hookIsBarPick, hookRank, readCraft, keptLongerConflicts, pickFinal, usedStory, partTextOf, trimAboveFor, agreedFormatOf, WRITER_LENGTH, WRITER_VERSION, BRIEF_MUST_KEEP_MAX, CRAFT_FAIL_AT, CRAFT_PASS, CRAFT_PARTS, SCRIPT_PART_KEYS, CHECK_PARTS, estimateSeconds, type CraftScores, type HookCandidate, type ReviewCheckResult, type HardFinding, type ScriptParts, type ScriptPartKey } from "./rules";
 import { countSpokenWords } from "../contentPolicy/policy";
 import { readWriter, type TopicBrief, type WriterPassage, type WriterRecord, type WriterRationale } from "./record";
 
@@ -25,7 +25,8 @@ import { readWriter, type TopicBrief, type WriterPassage, type WriterRecord, typ
 //   draft       the five-part script; the winning hook word for word
 //                                                  (claude-sonnet-5-5, high)
 //   review      the independent creative review: 12 checks, the craft block
-//               (v2.3) + code's hard numbers; up to two fix rounds and one
+//               (v2.3) + code's hard numbers; up to two fix rounds (v2.5: a
+//               third when Enough substance is the only must-fix left) and one
 //               trim pass; a script that still fails a must-fix arrives
 //               FLAGGED (scriptJudge.ts runs this loop on the version trail)
 //                                                  (claude-sonnet-5-5, medium)
@@ -195,12 +196,18 @@ export const EXAMPLE_ASK_RE = /\b(?:have you ever|has (?:there|that) ever|a real
  */
 export const LIVE_DEAL_RE = /\b(?:just wrote an offer|made an offer|on the market for over|currently|under contract now)\b/i;
 
-/** The passages a brief's proof cites: by id (P3), or by the time it names ("call at 01:26:08"). Pure. */
+/**
+ * The passages a brief's proof cites: by id (P3), or by the time it names ("call at 01:26:08"). Pure.
+ * v2.5: by id only when it names ids. Two passages from one block of the call share a time (Marcee's
+ * 2022: P4, her "even playing field" message, and P5, the live deal, both 01:24:42), so a time beside
+ * the ids took the message out with the deal.
+ */
 export function proofPassages(proof: { source?: string | null } | null | undefined, passages: readonly WriterPassage[]): WriterPassage[] {
   const src = proof?.source ?? "";
   const ids = new Set(src.match(/\bP\d+\b/g) ?? []);
   const times = new Set(src.match(/\b\d{1,2}:\d{2}:\d{2}\b/g) ?? []);
-  return passages.filter((p) => ids.has(p.id) || (!!p.time && times.has(p.time)));
+  if (ids.size) return passages.filter((p) => ids.has(p.id));
+  return passages.filter((p) => !!p.time && times.has(p.time));
 }
 
 /**
@@ -213,7 +220,8 @@ export function proofProblem(proof: { text: string; source?: string | null } | n
   const own = proofPassages(proof, passages);
   const ids = own.map((p) => p.id);
   const live = own.find((p) => LIVE_DEAL_RE.test(p.quote));
-  if (live) return { kind: "live", ids, figures: [], reason: `a deal still in progress (${live.id}: "${(LIVE_DEAL_RE.exec(live.quote)?.[0] ?? "").trim()}"): never this video's proof; at most a mention in general terms, never identifiable` };
+  // v2.5: never in the script (it said "at most a mention in general terms", and the 2022 draft was built on it).
+  if (live) return { kind: "live", ids, figures: [], reason: `a deal still in progress (${live.id}: "${(LIVE_DEAL_RE.exec(live.quote)?.[0] ?? "").trim()}"): never in the script` };
   const used = usedStory([proof.text, ...own.map((p) => p.quote)].join("\n"), onCamera);
   if (used) return { kind: "used", ids, figures: used.figures, reason: `a story she has already told on camera ("${used.title}": ${used.figures.join(", ")}; ${used.words.slice(0, 5).join(", ")}): never this video's proof` };
   return null;
@@ -231,17 +239,33 @@ export function proofProblem(proof: { text: string; source?: string | null } | n
  * camera (`onCamera`: her approved or filmed scripts), is moved to excluded
  * (isHerStory cleared), with every must-keep point that cites its passages or
  * carries its figures; a told story's target is WRITER_LENGTH.storyTarget.
+ * v2.5 (the live deal leaked: Marcee's 2022 proof was emptied, but the deal
+ * stayed in verifiedFacts and her passage P5 stayed quoted, and the hook,
+ * re-hook and build-up were built on it): a LIVE proof's passages leave what
+ * she said, and every verified fact, optional point, opinion, phrase,
+ * creative idea, assumption and contradiction that cites them or tells the
+ * same story goes too. Excluded names the deal by its passages, without its
+ * details ("never in the script"); its words are kept for code only
+ * (heldBack: pickHook, live_deal, the writer's passages).
  */
 export function briefFrom(out: BriefOut, passages: WriterPassage[], asked: readonly { quote: string; time: string | null }[] = [], opts: { onCamera?: readonly { title: string; text: string }[] } = {}): TopicBrief {
-  const said = (Array.isArray(out.whatSheSaid) ? out.whatSheSaid : []).map((id) => passages.find((p) => p.id === String(id).trim())).filter((p): p is WriterPassage => !!p);
+  const said0 = (Array.isArray(out.whatSheSaid) ? out.whatSheSaid : []).map((id) => passages.find((p) => p.id === String(id).trim())).filter((p): p is WriterPassage => !!p);
   const videoType = out.videoType === "story" ? "story" : "educational";
   const rawKeep = Array.isArray(out.mustKeep) ? out.mustKeep : [];
   const live = items(rawKeep.filter((m) => m?.inProgress === true));
   const notLive0 = items(rawKeep.filter((m) => m?.inProgress !== true));
   const proofText0 = s400(out.proof?.text);
-  const problem = proofText0 ? proofProblem({ text: proofText0, source: s400(out.proof?.source) }, passages, opts.onCamera ?? []) : null;
+  const proofSource0 = s400(out.proof?.source);
+  const problem = proofText0 ? proofProblem({ text: proofText0, source: proofSource0 }, passages, opts.onCamera ?? []) : null;
+  const citesProof = (source: string) => !!problem && (source.match(/\bP\d+\b/g) ?? []).some((id) => problem.ids.includes(id));
+  const tellsProof = (text: string) => !!problem && usedStory(text, [{ title: "", text: proofText0 }]) !== null;
   // The must-keep points that are the same proof: they cite its passages, or tell the same story (a figure and three words of it).
-  const sameProof = (m: { text: string; source: string }) => !!problem && ((m.source.match(/\bP\d+\b/g) ?? []).some((id) => problem.ids.includes(id)) || usedStory(m.text, [{ title: "", text: proofText0 }]) !== null);
+  const sameProof = (m: { text: string; source: string }) => citesProof(m.source) || tellsProof(m.text);
+  // v2.5: a live deal leaves every list the writer and the hooks step read.
+  const liveProof = problem?.kind === "live" ? problem : null;
+  const keepOut = <T extends { text: string }>(xs: T[], sourceOf: (x: T) => string): T[] => (liveProof ? xs.filter((x) => !citesProof(sourceOf(x)) && !tellsProof(x.text)) : xs);
+  const bySource = (x: { source: string }) => x.source;
+  const said = liveProof ? said0.filter((p) => !liveProof.ids.includes(p.id)) : said0;
   const unsafeKeep = notLive0.filter(sameProof);
   const notLive = notLive0.filter((m) => !sameProof(m));
   const invites = notLive.filter((m) => INVITATION_RE.test(m.text));
@@ -254,30 +278,56 @@ export function briefFrom(out: BriefOut, passages: WriterPassage[], asked: reado
     if (!EXAMPLE_ASK_RE.test(a.quote) || flat(whatWeAsked).includes(flat(a.quote).slice(0, 60))) continue;
     whatWeAsked = `${whatWeAsked ? `${whatWeAsked} ` : ""}The interviewer asked for an example (her answer is the proof): "${a.quote.replace(/\s+/g, " ").trim().slice(0, 300)}"${a.time ? ` (${a.time})` : ""}.`.trim().slice(0, 1200);
   }
+  // v2.5: what code keeps out, for code only: the excluded proof (with a live deal's passages' words) and the points marked in progress.
+  const heldBack: NonNullable<TopicBrief["heldBack"]> = [
+    ...(problem ? [{ kind: problem.kind, ids: problem.ids, text: [proofText0, ...unsafeKeep.map((m) => m.text), ...(liveProof ? proofPassages({ source: proofSource0 }, passages).map((p) => p.quote) : [])].join("\n").slice(0, 4000) }] : []),
+    ...(live.length ? [{ kind: "live" as const, ids: [] as string[], text: live.map((m) => m.text).join("\n").slice(0, 2000) }] : []),
+  ];
   return {
     videoType, whatWeAsked, angle: s400(out.angle), proof: proofText ? { text: proofText, source: s400(out.proof?.source) || "unstated", ...(out.proof?.isHerStory === true ? { isHerStory: true } : {}) } : null,
     centralMessage: s400(out.centralMessage), viewer: s400(out.viewer), whyChosen: s400(out.whyChosen), pillar: s400(out.pillar),
     whatSheSaid: [...new Set(said)].slice(0, 8).map((p) => ({ passageId: p.id, quote: p.quote, source: p.source, time: p.time })),
-    mustKeep: keepAll.slice(0, cap), herPhrases: items(out.herPhrases).slice(0, 5),
+    mustKeep: keepAll.slice(0, cap), herPhrases: keepOut(items(out.herPhrases), bySource).slice(0, 5),
     optional: [
       ...keepAll.slice(cap).map((m) => ({ ...m, text: `${m.text} (moved from must-keep: ${videoType === "story" ? "a story keeps its main beats" : "the belief, the proof, how she helps"})` })),
       ...invites.map((m) => ({ ...m, text: `${m.text} (moved from must-keep: the invitation belongs to the close)` })),
-      ...items(out.optional),
+      ...keepOut(items(out.optional), bySource),
     ].slice(0, 14),
     excluded: [
       // v2.4: the unsafe or used proof first, with the must-keep points that carried it.
-      ...(problem ? [{ text: `The proof: ${proofText0}`, reason: problem.reason }, ...unsafeKeep.map((m) => ({ text: m.text, reason: problem.reason }))] : []),
-      ...live.map((m) => ({ text: m.text, reason: "a deal still in progress: never a must-keep; at most a mention in general terms, never identifiable" })),
-      ...(Array.isArray(out.excluded) ? out.excluded : []).map((x) => ({ text: s400((x as { text?: unknown }).text), reason: s400((x as { reason?: unknown }).reason) })).filter((x) => x.text),
+      // v2.5: a live deal is named by its passages only: its details never reach the writer or the hooks step.
+      ...(liveProof ? [{ text: `The deal in ${[...liveProof.ids].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1))).join(", ")} (her example; its details stay out)`, reason: liveProof.reason }] : []),
+      ...(problem && !liveProof ? [{ text: `The proof: ${proofText0}`, reason: problem.reason }, ...unsafeKeep.map((m) => ({ text: m.text, reason: problem.reason }))] : []),
+      ...live.map((m) => ({ text: m.text, reason: "a deal still in progress: never in the script" })),
+      ...keepOut((Array.isArray(out.excluded) ? out.excluded : []).map((x) => ({ text: s400((x as { text?: unknown }).text), reason: s400((x as { reason?: unknown }).reason) })).filter((x) => x.text), (x) => x.text),
     ].slice(0, 14),
-    contradictions: (Array.isArray(out.contradictions) ? out.contradictions : []).map((x) => ({ text: s400((x as { text?: unknown }).text), sources: s400((x as { sources?: unknown }).sources) })).filter((x) => x.text).slice(0, 8),
-    verifiedFacts: items(out.verifiedFacts), opinions: items(out.opinions), creativeIdeas: items(out.creativeIdeas), ourAssumptions: items(out.ourAssumptions),
+    contradictions: keepOut((Array.isArray(out.contradictions) ? out.contradictions : []).map((x) => ({ text: s400((x as { text?: unknown }).text), sources: s400((x as { sources?: unknown }).sources) })).filter((x) => x.text), (x) => x.sources).slice(0, 8),
+    verifiedFacts: keepOut(items(out.verifiedFacts), bySource), opinions: keepOut(items(out.opinions), bySource), creativeIdeas: keepOut(items(out.creativeIdeas), bySource), ourAssumptions: keepOut(items(out.ourAssumptions), bySource),
     closeType: out.closeType === "callback" ? "callback" : "cta", closeWhy: s400(out.closeWhy),
     // v2.4: a told personal story may use up to the cap (Jordan's story finals run 94 to 110).
     target: videoType === "story"
       ? { aim: [WRITER_LENGTH.aim[0], WRITER_LENGTH.cap], cap: WRITER_LENGTH.cap, seconds: [estimateSeconds(WRITER_LENGTH.aim[0]), estimateSeconds(WRITER_LENGTH.cap)], words: WRITER_LENGTH.storyTarget }
       : { aim: [WRITER_LENGTH.aim[0], WRITER_LENGTH.aim[1]], cap: WRITER_LENGTH.cap, seconds: [estimateSeconds(WRITER_LENGTH.aim[0]), estimateSeconds(WRITER_LENGTH.aim[1])], words: WRITER_LENGTH.target },
+    ...(heldBack.length ? { heldBack } : {}),
   };
+}
+
+/** v2.5: the live deals a brief keeps out, as one text (hardNumbers' live_deal), or null. Pure. */
+export function liveDealOf(brief: Pick<TopicBrief, "heldBack"> | null | undefined): string | null {
+  const t = (brief?.heldBack ?? []).filter((h) => h.kind === "live").map((h) => h.text).join("\n").trim();
+  return t || null;
+}
+
+/**
+ * v2.5: the brief's material other than what it keeps out (the angle, the
+ * message, the must-keep, optional, facts, opinions, phrases and ideas), as
+ * one text. Words in it belong to the topic, not to a held-back story
+ * (rules.tellsHeldStory). Pure.
+ */
+export function keptTextOf(brief: Partial<Pick<TopicBrief, "angle" | "centralMessage" | "mustKeep" | "optional" | "verifiedFacts" | "opinions" | "herPhrases" | "creativeIdeas">> | null | undefined): string {
+  if (!brief) return "";
+  const xs = [...(brief.mustKeep ?? []), ...(brief.optional ?? []), ...(brief.verifiedFacts ?? []), ...(brief.opinions ?? []), ...(brief.herPhrases ?? []), ...(brief.creativeIdeas ?? [])];
+  return [brief.angle ?? "", brief.centralMessage ?? "", ...xs.map((x) => x.text)].join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -384,7 +434,8 @@ export async function prepareDraft(o: GatherOpts & { requestedBy: string; unatte
   // v2.3: the month's other openings ride into the hooks step (variety), and her own moment wins a tie when the proof is her story.
   const siblingHooks = await siblingHooksFor({ topicId: o.topicId, monthId: o.monthId, enrollmentId: g.enrollmentId, asOf: o.asOf ?? null });
   const h = await runWriterStep<{ hooks?: Parameters<typeof pickHook>[0] }>("hooks", buildHooksPrompt(g.ctx, brief, { siblings: siblingHooks }), rc, { dedupeKey: key("hooks") });
-  const picked = pickHook(h.output?.hooks ?? [], { videoType: brief.videoType, proofIsStory: proofIsHerStory(brief, passages) });
+  // v2.5: a hook whose hook and re-hook tell the excluded proof (a live deal, a story already filmed) is set aside.
+  const picked = pickHook(h.output?.hooks ?? [], { videoType: brief.videoType, proofIsStory: proofIsHerStory(brief, passages), avoid: (brief.heldBack ?? []).map((x) => x.text), kept: keptTextOf(brief) });
   return { g, passages, excluded, overview, asked: got.asked, brief, hooks: picked.hooks, chosen: picked.chosen, hookFallback: picked.fallback, siblingHooks, runs: { retrieval: retrievalRun, brief: b.runId, hooks: h.runId, olderRetrieval: olderRun } };
 }
 
@@ -446,7 +497,9 @@ export function spokenSourceOf(rec: Pick<WriterRecord, "passages">, callText = "
 export async function reviewParts(ctx: WriterContext, rec: WriterRecord, parts: ScriptParts & { closeType?: string | null }, rc: RunCtx, opts: { dedupeKey?: string | null; callText?: string | null } = {}): Promise<ReviewResult> {
   const callText = opts.callText ?? "";
   const story = rec.brief.videoType === "story";
-  const numbers = hardNumbers(parts, clientTextOf(rec, ctx, callText), spokenSourceOf(rec, callText), { story });
+  // v2.5: code fails a script that tells the live deal the brief keeps out (live_deal), and a build-up that
+  // translates the hook's words in the format agreed on the call is not an echo.
+  const numbers = hardNumbers(parts, clientTextOf(rec, ctx, callText), spokenSourceOf(rec, callText), { story, liveDeal: liveDealOf(rec.brief), kept: keptTextOf(rec.brief), agreedFormat: agreedFormatOf(rec.brief) });
   const body = [`HOOK: ${parts.hook}`, ...parts.points.map((p, i) => `${["RE-HOOK", "BUILD-UP", "PAYOFF"][i] ?? "POINT"}: ${p.text}`), `CLOSE: ${parts.close}`].join("\n");
   const prompt = buildReviewPrompt({ ...ctx, facts: rec.facts }, rec.brief, rec.passages, { body, closeType: parts.closeType ?? null }, { words: numbers.words, seconds: numbers.seconds, hookWords: numbers.hookWords, hard: numbers.findings.map((f) => f.detail) }, callText);
   // Every version gets its own review run (never a reused verdict): the ledger shows each check.
@@ -469,11 +522,15 @@ export async function reviewParts(ctx: WriterContext, rec: WriterRecord, parts: 
  *                                           when the longer version says the
  *                                           line the trim failed on, it is
  *                                           kept FLAGGED (keptLongerConflicts)
- *   nothing must-fix fails, over 78 words,→ the aim trim: ONE pass toward 65
- *     no aim trim yet (v2.3: trimAbove)       to 75, must-keep points kept
+ *   nothing must-fix fails, over 85 words,→ the aim trim: ONE pass toward 65
+ *     no aim trim yet (trimAbove; v2.5:       to 75, must-keep points kept
+ *     85, it was 78)
  *   nothing must-fix fails                → pass (flags stay on the card)
  *   only the length fails, no cap trim yet→ the cap trim (110 or fewer)
  *   fix rounds left (two at most)         → a fix round (it trims too when over)
+ *   v2.5: the two rounds used, and Enough → ONE third fix round (the Seniors
+ *     substance is the only must-fix left    draft only needed "retirement
+ *     (so the craft check passed)            community" named)
  *   still over the cap, no cap trim yet   → the cap trim
  *   otherwise                             → flagged for Jordan, never quietly passed
  *
@@ -491,8 +548,20 @@ export function nextWriterStep(o: { mustFails: ReviewCheckResult[]; words: numbe
   if (!o.mustFails.length) return !o.story && o.words > trimAbove && !o.aimTrimmed && !o.isAimTrim ? "aim-trim" : "pass";
   if (o.mustFails.every((c) => c.key === "length") && !o.trimmed) return "trim";
   if (o.fixRounds < (o.maxFixRounds ?? 2)) return "fix";
+  if (thirdRoundFor(o)) return "fix";
   if (o.words > WRITER_LENGTH.cap && !o.trimmed) return "trim";
   return "flag";
+}
+
+/**
+ * v2.5: the one extra fix round. After the usual rounds, when Enough
+ * substance is the ONLY must-fix left (the craft check fails at must-fix, so
+ * it passed), one more round runs: a missing must-keep point is a small,
+ * named fix (Marcee's Seniors draft only needed "retirement community"
+ * named). Never a fourth. Pure.
+ */
+export function thirdRoundFor(o: { mustFails: readonly Pick<ReviewCheckResult, "key">[]; fixRounds: number; maxFixRounds?: number }): boolean {
+  return o.fixRounds === (o.maxFixRounds ?? 2) && o.mustFails.length > 0 && o.mustFails.every((c) => c.key === "substance");
 }
 
 /** The brief's must-keep points as the trim instruction names them. */
@@ -726,7 +795,8 @@ export async function draftOffline(o: { topicId: string; monthId: string | null;
   }
   // The passing attempt the aim trim started from, while the next review is of that trim.
   let aimFrom: OfflineAttempt | null = null;
-  for (let guard = 0; guard < 7; guard++) {
+  // v2.5: one more pass for the third fix round (thirdRoundFor).
+  for (let guard = 0; guard < 8; guard++) {
     const review = await reviewParts(p.g.ctx, rec, { ...cur.parts, closeType: cur.closeType }, rc, { callText: p.g.callText });
     const attempt: OfflineAttempt = { label, parts: cur.parts, closeType: cur.closeType, words: review.words, seconds: review.seconds, review };
     attempts.push(attempt);
@@ -758,8 +828,9 @@ export async function draftOffline(o: { topicId: string; monthId: string | null;
     cur = { ...next2, parts: withLocked(next2.parts, cur.parts, plan.lock) };
   }
   // v2.4: never over the cap when a version at or under it exists; then craft (the hook twice); then fewest must-fixes; then words over 85.
+  // v2.5: an educational version inside the aim before any over it, ahead of craft.
   const reviewed = attempts.filter((a) => a.review);
-  const best = reviewed[pickFinal(reviewed.map((a) => ({ words: a.words, craft: a.review?.craft ?? null, mustFix: a.review?.mustFails.length ?? 99 })))] ?? attempts[attempts.length - 1];
+  const best = reviewed[pickFinal(reviewed.map((a) => ({ words: a.words, craft: a.review?.craft ?? null, mustFix: a.review?.mustFails.length ?? 99, story })))] ?? attempts[attempts.length - 1];
   return { prepared: strip(p), record: rec, attempts, final: best, state: "flagged", keptLonger: false };
 }
 const strip = (p: Prepared): Omit<Prepared, "g"> => { const { g: _g, ...rest } = p; void _g; return rest; };

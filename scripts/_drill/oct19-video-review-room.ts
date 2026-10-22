@@ -132,7 +132,10 @@ async function main() {
     const tonight = etAt(etDayKey(new Date()), 23, 0);
     const canTestToday = tonight.getTime() - Date.now() > 30 * 60_000;
     if (canTestToday) await mk("8 Today Terrace", { status: "EDITING", pin: new Date(Math.min(tonight.getTime() - 5 * 60_000, Date.now() + 20 * 60_000)) });
-    const V9 = await mk("9 Revision Pl", { status: "REVISION" });
+    // Dated by its own promise (Oct 22 2026, audit H1): the board reads THE
+    // video due off the deliverable row (its label, null here), no longer the
+    // product name's premium word, so the fixture states the date it means.
+    const V9 = await mk("9 Revision Pl", { status: "REVISION", pin: new Date(T + DAY) });
     const v9 = await prisma.reviewSubmission.create({ data: { projectId: V9.p.id, deliverableId: V9.d.id, slot: 1, round: 2, status: "CHANGES_REQUESTED", fileName: "revision-v2.mp4", blobUrl: "https://drill.invalid/v9.mp4", assetUrl: "https://drill.invalid/v9.mp4", sizeBytes: 1000, submittedByKey: "kim", decidedAt: new Date(T - 2 * DAY), decidedBy: "James Rivera" } });
     await prisma.smartTask.create({ data: { taskType: "revision", title: "Revision 9 Revision Pl", projectId: V9.p.id, assignedKey: "kim", status: "OPEN" } });
     await mk("10 Future Blvd", { status: "SCHEDULED", shoot: new Date(T + 2 * DAY) });
