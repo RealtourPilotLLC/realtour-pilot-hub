@@ -8,6 +8,9 @@ import { saveTopazRules } from "@/app/settings/actions";
 // settings MODULE — it reaches prisma and would break the production build
 // while tsc stays quiet — but its shapes are free.
 import type { TopazSettings, TopazProteusParams } from "@/lib/settings";
+import type { TestableCut, TopazTestView } from "@/lib/topazTests";
+import { TOPAZ_MODE_OPTIONS, TOPAZ_STARTING_POINTS, matchingStartingPoint, topazStartingPoint } from "@/lib/topazPresets";
+import { TopazTestPanel } from "@/components/settings/TopazTestPanel";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -62,8 +65,16 @@ export function TopazSettingsPanel({
   defaults,
   aryeoNote,
   usage,
+  isOwner = false,
+  testCuts = [],
+  tests = [],
 }: {
   initial: TopazSettings;
+  /** "Try these settings" spends credits, so it is the owner's alone (Oct 22
+   *  2026). The page passes the two lists below only for the owner. */
+  isOwner?: boolean;
+  testCuts?: TestableCut[];
+  tests?: TopazTestView[];
   /** The values we start from — Jordan's desktop preset as we read it. Passed
    *  in by the server page rather than copied here, so the "put it back" button
    *  can never drift from what the engine actually defaults to. */
@@ -102,11 +113,10 @@ export function TopazSettingsPanel({
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-sm font-semibold">Run every approved cut through Topaz</p>
-            <p className="text-[13px] leading-relaxed text-muted">
-              When you approve a video in the Review Room, the hub sends it to Topaz, gets a cleaned-up 1080p version back,
-              and puts it in that job&rsquo;s <b className="font-medium text-foreground/80">05-Final-Video</b> folder beside
-              the editor&rsquo;s original — which is never overwritten. Approving stays instant either way: if this is off,
-              or Topaz is down, or the credits have run out, the approval and the delivery carry on exactly as they do today.
+            {/* SET IT AND FORGET IT (Jordan, Oct 22 2026). One plain line for what
+                happens on its own; everything adjustable is folded away below. */}
+            <p className="text-[13px] leading-relaxed text-foreground/85" data-topaz-plain-line>
+              Videos the editor already exported at 1080p go out as they are; anything else gets the 1080p pass with the house setting.
             </p>
           </div>
           <Toggle on={r.enabled} onChange={(v) => set({ enabled: v })} label="Run approved cuts through Topaz" />
@@ -119,14 +129,6 @@ export function TopazSettingsPanel({
               first — testing it only reads your credit balance and spends nothing.
             </span>
           </p>
-        )}
-        <div className="mt-2 flex flex-wrap items-center gap-4 border-t border-border pt-2">
-          <span className="text-[13px] text-muted">Applies to</span>
-          <Check label="Videos" on={r.deliverableTypes.includes("VIDEO")} onChange={() => toggleType("VIDEO")} />
-          <Check label="Social reels" on={r.deliverableTypes.includes("SOCIAL_REEL")} onChange={() => toggleType("SOCIAL_REEL")} />
-        </div>
-        {r.deliverableTypes.length === 0 && (
-          <p className="mt-1 text-[12px] text-warning">Nothing is ticked, so no video will be sent. Tick at least one.</p>
         )}
       </div>
 
@@ -246,228 +248,310 @@ export function TopazSettingsPanel({
         </div>
       </div>
 
-      {/* ---- 3. the preset ------------------------------------------------ */}
-      <div>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold">The preset</h3>
-          <button
-            type="button"
-            onClick={() => { setR((p) => ({ ...p, params: { ...defaults } })); setMsg(null); }}
-            className="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[12px] font-medium hover:bg-surface-2"
-          >
-            <RotateCcw className="size-3.5" /> Put the sliders back
-          </button>
-        </div>
-
-        <p className="mt-1 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[12px] leading-relaxed">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" />
+      {/* ---- FINE-TUNE (OPTIONAL), CLOSED BY DEFAULT ----------------------
+          Jordan, Oct 22 2026: "I want to set it and forget it." Nothing in here
+          needs touching: the skip rule is on, and the house setting is chosen
+          once with a test render. Which kinds of video, the skip rule, the
+          starting points, the mode, the sliders, the file settings and the
+          owner's "Try these settings" all live here, folded away. */}
+      <details className="group rounded-lg border border-border" data-topaz-fine-tune>
+        <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 px-3 py-2">
           <span>
-            <b className="font-semibold">These numbers are our best reading of your desktop preset, not a confirmed match.</b>{" "}
-            Topaz doesn&rsquo;t publish how the sliders in the desktop app line up with the ones their API takes — we asked
-            them directly. So run one video through, put the result next to the same clip you exported from your desktop, and
-            nudge whatever looks off. Changes take effect on the very next video; nothing needs rebuilding.
+            <span className="text-sm font-semibold">Fine-tune (optional)</span>
+            <span className="block text-[12px] text-muted">You don&rsquo;t need to change anything here.</span>
           </span>
-        </p>
-
-        {/* The single most likely thing to be wrong, so it is first and it says so. */}
-        <div className="mt-2 rounded-lg border border-border p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <p className="text-sm font-semibold">How hard the model works</p>
-              <p className="text-[12px] leading-relaxed text-muted">
-                Your desktop app calls this <b className="font-medium text-foreground/80">Dynamic</b>. Their API offers three
-                words instead, and none of them is that one — <b className="font-medium text-foreground/80">Auto</b> is our
-                reading of it. <b className="font-medium text-foreground/80">If the first render comes back stronger or
-                weaker than your desktop export, change this before you touch any slider.</b>
-              </p>
+          <span aria-hidden className="text-muted transition-transform group-open:rotate-90">›</span>
+        </summary>
+        <div className="space-y-5 border-t border-border p-3">
+          <div className="rounded-lg border border-border p-3">
+            <div className="flex flex-wrap items-center gap-4">
+              <span className="text-[13px] text-muted">Applies to</span>
+              <Check label="Videos" on={r.deliverableTypes.includes("VIDEO")} onChange={() => toggleType("VIDEO")} />
+              <Check label="Social reels" on={r.deliverableTypes.includes("SOCIAL_REEL")} onChange={() => toggleType("SOCIAL_REEL")} />
             </div>
-            <Select
-              value={r.params.auto}
-              onChange={(v) => setParam({ auto: v as TopazProteusParams["auto"] })}
-              options={[
-                ["Auto", "Auto — let it vary across the clip (our reading of Dynamic)"],
-                ["Manual", "Manual — one fixed amount everywhere"],
-                ["Relative", "Relative — Topaz doesn't document this one"],
-              ]}
-            />
+            {r.deliverableTypes.length === 0 && (
+              <p className="mt-1 text-[12px] text-warning">Nothing is ticked, so no video will be sent. Tick at least one.</p>
+            )}
+            {/* Oct 22 2026: every one of the last 30 sources was already a clean
+                1080p H.264 file with AAC sound, and the pass made 711 Boehms
+                worse. On by default. */}
+            <div className="mt-2 flex items-start justify-between gap-3 border-t border-border pt-2" data-topaz-skip-finished>
+              <p className="text-[13px] text-muted">
+                <b className="text-foreground">Skip it when the editor&rsquo;s file is already finished.</b> On by default, nothing to
+                set up. A video that is already {r.outputShortSide}p, H.264 or HEVC, with AAC sound in step with the picture, is not sent
+                to Topaz: the screen says <i>&ldquo;Already 1080p: the editor&rsquo;s file goes out as is.&rdquo;</i> and nothing is spent.
+                4K, smaller videos, other sound formats, and a video with no sound or sound out of step still go through, as before.
+              </p>
+              <Toggle on={r.skipFinished1080p} onChange={(v) => set({ skipFinished1080p: v })} label="Skip the pass when the editor's file is already finished" />
+            </div>
           </div>
-        </div>
 
-        <div className="mt-2 space-y-1.5">
-          {SLIDERS.map((s) => {
-            const shown = Math.round(r.params[s.key] * 100);
-            const fromDesktop = Math.round(defaults[s.key] * 100);
-            return (
-              <div key={String(s.key)} className="rounded-lg border border-border px-3 py-2">
+          {/* ---- 3. the preset ------------------------------------------------ */}
+          <div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold">The preset</h3>
+              <button
+                type="button"
+                onClick={() => { setR((p) => ({ ...p, params: { ...defaults } })); setMsg(null); }}
+                className="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[12px] font-medium hover:bg-surface-2"
+              >
+                <RotateCcw className="size-3.5" /> Put the sliders back
+              </button>
+            </div>
+
+            <p className="mt-1 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[12px] leading-relaxed">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" />
+              <span>
+                <b className="font-semibold">These numbers are our best reading of your desktop preset, not a confirmed match.</b>{" "}
+                Topaz doesn&rsquo;t publish how the sliders in the desktop app line up with the ones their API takes — we asked
+                them directly. So run one video through, put the result next to the same clip you exported from your desktop, and
+                nudge whatever looks off. Changes take effect on the very next video; nothing needs rebuilding.
+              </span>
+            </p>
+
+            {/* STARTING POINTS (Oct 22 2026): one tap fills the mode and the seven
+                sliders. Nothing is saved until Save, and none of them is proven:
+                the test below is how to find out. */}
+            <div className="mt-2 rounded-lg border border-border p-3" data-topaz-starting-points>
+              <p className="text-sm font-semibold">Starting points</p>
+              <p className="text-[12px] leading-relaxed text-muted">
+                Each fills the mode and the sliders below. They are starting points to test, not proven settings: try one on a real
+                video with &ldquo;Try these settings&rdquo; before you save it.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {TOPAZ_STARTING_POINTS.map((sp) => {
+                  const on = matchingStartingPoint(r.params, defaults) === sp.key;
+                  return (
+                    <button
+                      key={sp.key}
+                      type="button"
+                      aria-pressed={on}
+                      onClick={() => setParam(topazStartingPoint(sp.key, defaults))}
+                      className={cn(
+                        "inline-flex min-h-11 flex-col items-start justify-center rounded-lg border px-3 py-1 text-left text-[13px] hover:bg-surface-2",
+                        on ? "border-brand bg-brand/10" : "border-border",
+                      )}
+                    >
+                      <span className="font-semibold">{sp.label}</span>
+                      <span className="text-[11px] text-muted">{sp.hint}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* The single most likely thing to be wrong, so it is first and it says
+                so. The words are Topaz's own API reference (read Oct 22 2026):
+                "Auto - parameter estimation is used with no customization". */}
+            <div className="mt-2 rounded-lg border border-border p-3" data-topaz-mode>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0 flex-1 basis-64">
+                  <p className="text-sm font-semibold">How hard the model works</p>
+                  <p className="text-[12px] leading-relaxed text-muted">
+                    <b className="font-medium text-foreground/80">Auto</b>: Topaz picks its own amounts for each clip, and your sliders are
+                    ignored (Topaz&rsquo;s API reference says Auto uses &ldquo;no customization&rdquo;).{" "}
+                    <b className="font-medium text-foreground/80">Manual</b>: your sliders, exactly.{" "}
+                    <b className="font-medium text-foreground/80">Relative</b>: Topaz picks its amounts, then your sliders nudge them.
+                    {r.params.auto === "Auto" && (
+                      <span className="mt-1 block text-warning">On Auto, the sliders below are not used. Pick Manual for them to count.</span>
+                    )}
+                  </p>
+                </div>
+                <Select
+                  value={r.params.auto}
+                  onChange={(v) => setParam({ auto: v as TopazProteusParams["auto"] })}
+                  options={TOPAZ_MODE_OPTIONS}
+                />
+              </div>
+            </div>
+
+            <div className="mt-2 space-y-1.5">
+              {SLIDERS.map((s) => {
+                const shown = Math.round(r.params[s.key] * 100);
+                const fromDesktop = Math.round(defaults[s.key] * 100);
+                return (
+                  <div key={String(s.key)} className="rounded-lg border border-border px-3 py-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-[13px]">
+                        <b>{s.label}</b>
+                        <span className="text-muted"> — {s.hint}</span>
+                      </span>
+                      <span className="shrink-0 text-sm font-semibold tabular-nums">{shown}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={s.min}
+                      max={100}
+                      step={1}
+                      value={shown}
+                      aria-label={s.label}
+                      onChange={(e) => setParam({ [s.key]: Number(e.target.value) / 100 } as Partial<TopazProteusParams>)}
+                      className="mt-1.5 w-full accent-[var(--brand)]"
+                    />
+                    <p className="text-[11px] text-muted-2">
+                      Your desktop preset: {fromDesktop}
+                      {shown !== fromDesktop && <span className="text-warning"> · changed</span>}
+                    </p>
+                  </div>
+                );
+              })}
+
+              {/* The one slider whose scale we genuinely cannot guess. Saying so is
+                  better than inventing a conversion and hiding it. */}
+              <div className="rounded-lg border border-border px-3 py-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-[13px]">
-                    <b>{s.label}</b>
-                    <span className="text-muted"> — {s.hint}</span>
+                    <b>Add noise</b>
+                    <span className="text-muted"> — puts a little grain back so the picture doesn&rsquo;t look plastic</span>
                   </span>
-                  <span className="shrink-0 text-sm font-semibold tabular-nums">{shown}</span>
+                  <DecBox value={r.params.prenoise} onChange={(n) => setParam({ prenoise: n })} min={0} max={0.1} step={0.005} />
                 </div>
-                <input
-                  type="range"
-                  min={s.min}
-                  max={100}
-                  step={1}
-                  value={shown}
-                  aria-label={s.label}
-                  onChange={(e) => setParam({ [s.key]: Number(e.target.value) / 100 } as Partial<TopazProteusParams>)}
-                  className="mt-1.5 w-full accent-[var(--brand)]"
-                />
                 <p className="text-[11px] text-muted-2">
-                  Your desktop preset: {fromDesktop}
-                  {shown !== fromDesktop && <span className="text-warning"> · changed</span>}
+                  This one runs 0 to 0.1 on their API and there is no published way to convert your desktop number to it. Yours is
+                  at 0, which is 0 here too.
                 </p>
               </div>
-            );
-          })}
-
-          {/* The one slider whose scale we genuinely cannot guess. Saying so is
-              better than inventing a conversion and hiding it. */}
-          <div className="rounded-lg border border-border px-3 py-2">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-[13px]">
-                <b>Add noise</b>
-                <span className="text-muted"> — puts a little grain back so the picture doesn&rsquo;t look plastic</span>
-              </span>
-              <DecBox value={r.params.prenoise} onChange={(n) => setParam({ prenoise: n })} min={0} max={0.1} step={0.005} />
-            </div>
-            <p className="text-[11px] text-muted-2">
-              This one runs 0 to 0.1 on their API and there is no published way to convert your desktop number to it. Yours is
-              at 0, which is 0 here too.
-            </p>
-          </div>
-        </div>
-
-        {/* Output size — a real correction to what the screenshots showed, so it
-            is on the main panel rather than hidden under Advanced. */}
-        <div className="mt-3 rounded-lg border border-border p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <p className="text-sm font-semibold">Finished size</p>
-              <p className="text-[12px] leading-relaxed text-muted">
-                &ldquo;1080p&rdquo; here means the <b className="font-medium text-foreground/80">short side</b> is 1080 and
-                the shape is kept. An upright reel comes out 1080×1920; the wide 4K pieces come out 1920×1080. Both are
-                1080p, and nothing is ever stretched or letterboxed to fit a number.
-              </p>
-            </div>
-            <Num value={r.outputShortSide} onChange={(n) => set({ outputShortSide: n })} min={240} max={2160} suffix="px" wide />
-          </div>
-          <div className="mt-2 flex items-start justify-between gap-3 border-t border-border pt-2">
-            <p className="text-[13px] text-muted">
-              <b className="text-foreground">Leave small videos alone</b> — a clip that is already under 1080 stays its own
-              size instead of being enlarged. Off by default: making a small video bigger and cleaner is exactly what Topaz
-              is for.
-            </p>
-            <Toggle on={r.neverUpscale} onChange={(v) => set({ neverUpscale: v })} label="Leave small videos alone" />
-          </div>
-        </div>
-
-        {/* ---- advanced ---------------------------------------------------- */}
-        <button
-          type="button"
-          onClick={() => setAdvanced((a) => !a)}
-          className="mt-3 text-[12px] font-medium text-brand hover:underline"
-        >
-          {advanced ? "Hide the rest" : "The rest of the preset (grain, film type, file settings)"}
-        </button>
-
-        {advanced && (
-          <div className="mt-2 space-y-1.5">
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2">
-              <span className="text-[13px]">
-                <b>Kind of footage</b>
-                <span className="text-muted"> — everything you shoot is Progressive</span>
-              </span>
-              <Select
-                value={r.params.video_type}
-                onChange={(v) => setParam({ video_type: v as TopazProteusParams["video_type"] })}
-                options={[["Progressive", "Progressive"], ["Interlaced", "Interlaced"], ["ProgressiveInterlaced", "Mixed"]]}
-              />
-            </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2">
-              <span className="text-[13px]">
-                <b>Focus fix</b>
-                <span className="text-muted"> — your desktop preset has this off</span>
-              </span>
-              <Select
-                value={r.params.focus_fix_level}
-                onChange={(v) => setParam({ focus_fix_level: v as TopazProteusParams["focus_fix_level"] })}
-                options={[["None", "Off"], ["Normal", "Normal"], ["Strong", "Strong"]]}
-              />
-            </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2">
-              <span className="text-[13px]">
-                <b>Field order</b>
-                <span className="text-muted"> — only matters for interlaced footage, so it never affects your videos</span>
-              </span>
-              <Select
-                value={r.params.field_order}
-                onChange={(v) => setParam({ field_order: v as TopazProteusParams["field_order"] })}
-                options={[["Auto", "Auto"], ["TopFirst", "Top field first"], ["BottomFirst", "Bottom field first"]]}
-              />
             </div>
 
-            <div className="rounded-lg border border-border px-3 py-2">
-              <div className="flex items-start justify-between gap-3">
-                <span className="text-[13px]">
-                  <b>Film grain</b>
-                  <span className="text-muted"> — your desktop preset has this unticked, so it is off here too</span>
-                </span>
-                <Toggle
-                  on={grainOn}
-                  onChange={(v) => setParam(v ? { grain: 0.02, grain_sigma: 0.5, grain_size: 1 } : { grain: 0, grain_sigma: 0, grain_size: 0 })}
-                  label="Film grain"
-                />
+            {/* Output size — a real correction to what the screenshots showed, so it
+                is on the main panel rather than hidden under Advanced. */}
+            <div className="mt-3 rounded-lg border border-border p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-semibold">Finished size</p>
+                  <p className="text-[12px] leading-relaxed text-muted">
+                    &ldquo;1080p&rdquo; here means the <b className="font-medium text-foreground/80">short side</b> is 1080 and
+                    the shape is kept. An upright reel comes out 1080×1920; the wide 4K pieces come out 1920×1080. Both are
+                    1080p, and nothing is ever stretched or letterboxed to fit a number.
+                  </p>
+                </div>
+                <Num value={r.outputShortSide} onChange={(n) => set({ outputShortSide: n })} min={240} max={2160} suffix="px" wide />
               </div>
-              {grainOn && (
-                <div className="mt-2 space-y-1.5 border-t border-border pt-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-[13px] text-muted">How much</span>
-                    <DecBox value={r.params.grain} onChange={(n) => setParam({ grain: n })} min={0} max={0.1} step={0.005} />
-                  </div>
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-[13px] text-muted">How soft</span>
-                    <DecBox value={r.params.grain_sigma} onChange={(n) => setParam({ grain_sigma: n })} min={0} max={1} step={0.05} />
-                  </div>
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-[13px] text-muted">How big</span>
-                    <DecBox value={r.params.grain_size} onChange={(n) => setParam({ grain_size: n })} min={0} max={5} step={0.1} />
-                  </div>
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-[13px] text-muted">Style</span>
-                    <Select
-                      value={r.params.grain_type}
-                      onChange={(v) => setParam({ grain_type: v as TopazProteusParams["grain_type"] })}
-                      options={[["gaussian", "Gaussian"], ["silver_rich", "Silver rich"], ["grey", "Grey"]]}
+              <div className="mt-2 flex items-start justify-between gap-3 border-t border-border pt-2">
+                <p className="text-[13px] text-muted">
+                  <b className="text-foreground">Leave small videos alone</b> — a clip that is already under 1080 stays its own
+                  size instead of being enlarged. Off by default: making a small video bigger and cleaner is exactly what Topaz
+                  is for.
+                </p>
+                <Toggle on={r.neverUpscale} onChange={(v) => set({ neverUpscale: v })} label="Leave small videos alone" />
+              </div>
+            </div>
+
+            {/* ---- advanced ---------------------------------------------------- */}
+            <button
+              type="button"
+              onClick={() => setAdvanced((a) => !a)}
+              className="mt-3 text-[12px] font-medium text-brand hover:underline"
+            >
+              {advanced ? "Hide the rest" : "The rest of the preset (grain, film type, file settings)"}
+            </button>
+
+            {advanced && (
+              <div className="mt-2 space-y-1.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2">
+                  <span className="text-[13px]">
+                    <b>Kind of footage</b>
+                    <span className="text-muted"> — everything you shoot is Progressive</span>
+                  </span>
+                  <Select
+                    value={r.params.video_type}
+                    onChange={(v) => setParam({ video_type: v as TopazProteusParams["video_type"] })}
+                    options={[["Progressive", "Progressive"], ["Interlaced", "Interlaced"], ["ProgressiveInterlaced", "Mixed"]]}
+                  />
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2">
+                  <span className="text-[13px]">
+                    <b>Focus fix</b>
+                    <span className="text-muted"> — your desktop preset has this off</span>
+                  </span>
+                  <Select
+                    value={r.params.focus_fix_level}
+                    onChange={(v) => setParam({ focus_fix_level: v as TopazProteusParams["focus_fix_level"] })}
+                    options={[["None", "Off"], ["Normal", "Normal"], ["Strong", "Strong"]]}
+                  />
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2">
+                  <span className="text-[13px]">
+                    <b>Field order</b>
+                    <span className="text-muted"> — only matters for interlaced footage, so it never affects your videos</span>
+                  </span>
+                  <Select
+                    value={r.params.field_order}
+                    onChange={(v) => setParam({ field_order: v as TopazProteusParams["field_order"] })}
+                    options={[["Auto", "Auto"], ["TopFirst", "Top field first"], ["BottomFirst", "Bottom field first"]]}
+                  />
+                </div>
+
+                <div className="rounded-lg border border-border px-3 py-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="text-[13px]">
+                      <b>Film grain</b>
+                      <span className="text-muted"> — your desktop preset has this unticked, so it is off here too</span>
+                    </span>
+                    <Toggle
+                      on={grainOn}
+                      onChange={(v) => setParam(v ? { grain: 0.02, grain_sigma: 0.5, grain_size: 1 } : { grain: 0, grain_sigma: 0, grain_size: 0 })}
+                      label="Film grain"
                     />
                   </div>
+                  {grainOn && (
+                    <div className="mt-2 space-y-1.5 border-t border-border pt-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-[13px] text-muted">How much</span>
+                        <DecBox value={r.params.grain} onChange={(n) => setParam({ grain: n })} min={0} max={0.1} step={0.005} />
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-[13px] text-muted">How soft</span>
+                        <DecBox value={r.params.grain_sigma} onChange={(n) => setParam({ grain_sigma: n })} min={0} max={1} step={0.05} />
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-[13px] text-muted">How big</span>
+                        <DecBox value={r.params.grain_size} onChange={(n) => setParam({ grain_size: n })} min={0} max={5} step={0.1} />
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-[13px] text-muted">Style</span>
+                        <Select
+                          value={r.params.grain_type}
+                          onChange={(v) => setParam({ grain_type: v as TopazProteusParams["grain_type"] })}
+                          options={[["gaussian", "Gaussian"], ["silver_rich", "Silver rich"], ["grey", "Grey"]]}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
 
-            <div className="rounded-lg border border-border px-3 py-2">
-              <p className="text-[13px]">
-                <b>File settings</b>
-                <span className="text-muted">
-                  {" "}
-                  — how the finished file is packaged. Topaz doesn&rsquo;t publish the list of words their API accepts here,
-                  so these are boxes rather than menus: if a render ever comes back refused because of one of them, correct it
-                  here and try again.
-                </span>
-              </p>
-              <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                <TextRow label="File type" value={r.container} onChange={(v) => set({ container: v })} />
-                <TextRow label="Sound" value={r.audioCodec} onChange={(v) => set({ audioCodec: v })} />
-                <TextRow label="Sound handling" value={r.audioTransfer} onChange={(v) => set({ audioTransfer: v })} />
-                <TextRow label="Compression level" value={r.dynamicCompressionLevel} onChange={(v) => set({ dynamicCompressionLevel: v })} />
+                <div className="rounded-lg border border-border px-3 py-2">
+                  <p className="text-[13px]">
+                    <b>File settings</b>
+                    <span className="text-muted">
+                      {" "}
+                      — how the finished file is packaged. Topaz doesn&rsquo;t publish the list of words their API accepts here,
+                      so these are boxes rather than menus: if a render ever comes back refused because of one of them, correct it
+                      here and try again.
+                    </span>
+                  </p>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    <TextRow label="File type" value={r.container} onChange={(v) => set({ container: v })} />
+                    <TextRow label="Sound" value={r.audioCodec} onChange={(v) => set({ audioCodec: v })} />
+                    <TextRow label="Sound handling" value={r.audioTransfer} onChange={(v) => set({ audioTransfer: v })} />
+                    <TextRow label="Compression level" value={r.dynamicCompressionLevel} onChange={(v) => set({ dynamicCompressionLevel: v })} />
+                  </div>
+                </div>
               </div>
-            </div>
+            )}
           </div>
-        )}
-      </div>
+
+          {/* ---- try these settings (owner only: it spends credits) ---------- */}
+          {isOwner && (
+            <TopazTestPanel
+              draft={r}
+              cuts={testCuts}
+              tests={tests}
+              onApplied={(saved) => { setR(saved); setMsg("Saved from the test. Every video that goes through Topaz from now on uses these settings."); }}
+            />
+          )}
+        </div>
+      </details>
 
       <SaveRow
         busy={busy}

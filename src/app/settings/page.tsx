@@ -96,7 +96,7 @@ function ProviderCardSkeleton({ icon, title, note }: { icon: LucideIcon; title: 
 
 // The 1080p pass. `initial` is the saved rule, already read with the rest of
 // them; the only thing awaited in here is the live balance.
-async function TopazCard({ initial }: { initial: TopazSettings }) {
+async function TopazCard({ initial, isOwner }: { initial: TopazSettings; isOwner: boolean }) {
   // Only for the "what this month has cost so far" line beside the spending
   // limits — a limit you can't see your position against is a number, not a
   // control. Reading it asks Topaz for the balance (free, starts nothing), so
@@ -113,9 +113,25 @@ async function TopazCard({ initial }: { initial: TopazSettings }) {
         monthCredits: topazLane.month.credits,
       }
     : null;
+  // "Try these settings" (Oct 22 2026) spends credits: its lists are read for
+  // the owner only, and never reach anybody else's browser.
+  const [testCuts, tests] = isOwner
+    ? await Promise.all([
+        capped(import("@/lib/topazTests").then((m) => m.recentCutsForTest(20)), 6000),
+        capped(import("@/lib/topazTests").then((m) => m.topazTestRows(12)), 6000),
+      ])
+    : [null, null];
   return (
     <Section icon={Film} title="1080p video pass">
-      <TopazSettingsPanel initial={initial} defaults={DEFAULT_TOPAZ_PARAMS} aryeoNote={ARYEO_MANUAL_NOTE} usage={usage} />
+      <TopazSettingsPanel
+        initial={initial}
+        defaults={DEFAULT_TOPAZ_PARAMS}
+        aryeoNote={ARYEO_MANUAL_NOTE}
+        usage={usage}
+        isOwner={isOwner}
+        testCuts={testCuts ?? []}
+        tests={tests ?? []}
+      />
     </Section>
   );
 }
@@ -302,7 +318,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     // the Connections page links to.
     topaz: card("topaz",
       <Suspense fallback={<ProviderCardSkeleton icon={Film} title="1080p video pass" note="asking Topaz where the month stands…" />}>
-        <TopazCard initial={topaz} />
+        <TopazCard initial={topaz} isOwner={isOwner} />
       </Suspense>, "topaz"),
 
     // CONTENT-PROGRAM AUTOMATIONS (spec §13) — every switch, including the ones

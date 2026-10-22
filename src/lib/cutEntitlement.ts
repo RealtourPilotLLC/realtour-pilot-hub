@@ -6,6 +6,7 @@ import { DELIVERED_STAMP, NOT_A_CUT, streamUrlFor } from "@/lib/reviewCuts";
 import { cutReleasedAt, impliedPublicationGateWhere, sameVideoTitle, videoCutKey, withPublicationGate } from "@/lib/contentVideos";
 import type { PortalViewer } from "@/lib/portal";
 import { TEXT_KYLE_START } from "@/lib/portalWords";
+import { editorOriginalIsFinal } from "@/lib/topazOriginal";
 
 // ---------------------------------------------------------------------------
 // THE ONE RELEASE RULE (completion audit CP-01, Sep 24 2026).
@@ -573,6 +574,10 @@ export async function clientCutFiles(submissionIds: string[]): Promise<Map<strin
   const pending = await prisma.reviewSubmission.findMany({ where: { id: { in: ids }, clientReleasedAt: null, OR: [{ portalPublicationRequiredAt: { not: null } }, impliedPublicationGateWhere()] }, select: { id: true, topazJob: { select: { state: true, finalPath: true, savedAt: true, outputCheck: true } } } });
   for (const cut of pending) {
     const job = cut.topazJob;
+    // The editor's original as the finished file (Oct 22 2026: the Settings
+    // rule "already finished") is not "finishing": it falls through to the
+    // loop below, which answers kind "original".
+    if (editorOriginalIsFinal(job)) continue;
     if (!(job?.state === "done" && job.finalPath && job.savedAt && VERIFIED_OUTPUT.has(job.outputCheck ?? ""))) out.set(cut.id, { kind: "finishing", state: job?.state ?? "awaiting-render" });
   }
   const jobs = await prisma.topazJob.findMany({
