@@ -49,6 +49,16 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.resolve(__dirname),
   },
+  // THE TYPE CHECK RUNS AS ITS OWN STEP (Oct 22 2026). Vercel's build machine
+  // has 8 GB, and Next's own "Running TypeScript" step loads the whole project
+  // while Turbopack's compile is still holding its memory: three production
+  // builds in a row were killed out of memory at exactly that step. The build
+  // script now runs `tsc --noEmit` BEFORE `next build`, alone on the machine
+  // (about 2 GB), and stops the deploy on any type error, so the check is the
+  // same and only the duplicate inside next build is skipped.
+  typescript: {
+    ignoreBuildErrors: true,
+  },
   // Ask-the-Hub photo/file attachments ride through a server action as base64;
   // the 1MB default would reject a single phone photo.
   experimental: {
