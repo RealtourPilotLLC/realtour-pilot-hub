@@ -57,6 +57,8 @@ export type VideoDetailData = {
   };
   /** Oct 21 2026: our staff through the owner iframe. Approving RECORDS the client's sign-off, with a note. */
   staff?: boolean;
+  /** Oct 22 2026: the client's first name for "Approve for Mike". Set for staff only. */
+  clientFirst?: string | null;
   versions: CutVersion[];
   versionsFailed: boolean;
   kit: PostingKit | null;
@@ -272,8 +274,8 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
           <div className="mt-2"><LoadFailed what="this video's versions" /></div>
         ) : hasCut ? (
           <div className="mt-2">
-            {d.perms.request && !d.readOnly && !d.linkVisitor && d.video.state === "FOR_REVIEW" && <p className="mb-2 text-xs text-muted-2">Pause where you&rsquo;d change something and save a note. Send them all as one change request, or approve this version.</p>}
-            <CutReview versions={d.versions} perms={{ comment: d.perms.comment, request: d.perms.request, approve: d.perms.approve }} readOnly={d.readOnly} poster={d.poster ?? null} signInHref={d.signInHref} linkVisitor={!!d.linkVisitor} linkHasSeat={d.linkHasSeat !== false} staff={!!d.staff} />
+            {d.perms.request && !d.readOnly && !d.linkVisitor && d.video.state === "FOR_REVIEW" && <p className="mb-2 text-xs text-muted-2">Pause where you&rsquo;d change something and send a note. Then press Request changes to send them all to your editor, or approve this version.</p>}
+            <CutReview versions={d.versions} perms={{ comment: d.perms.comment, request: d.perms.request, approve: d.perms.approve }} readOnly={d.readOnly} poster={d.poster ?? null} signInHref={d.signInHref} linkVisitor={!!d.linkVisitor} linkHasSeat={d.linkHasSeat !== false} staff={!!d.staff} clientFirst={d.staff ? d.clientFirst ?? null : null} />
           </div>
         ) : d.delivered ? (
           <div className="mt-2"><PortalPlayer src={d.delivered.playback} poster={d.delivered.thumb} /></div>

@@ -206,11 +206,13 @@ export type LoginConsumption =
  * asks this so a dead link goes straight to the sign-in screen with its
  * reason; only the press (consumeLoginToken) uses it up. No write.
  */
-export async function peekLoginToken(raw: string): Promise<{ ok: true } | { ok: false; reason: "invalid" }> {
+export async function peekLoginToken(raw: string): Promise<{ ok: true; clientUserId: string } | { ok: false; reason: "invalid" }> {
   if (!/^[A-Za-z0-9_-]{40,60}$/.test(raw)) return { ok: false, reason: "invalid" };
-  const holder = await prisma.clientUser.findUnique({ where: { loginTokenHash: hashToken(raw) }, select: { status: true, loginTokenExpiresAt: true } });
+  const holder = await prisma.clientUser.findUnique({ where: { loginTokenHash: hashToken(raw) }, select: { id: true, status: true, loginTokenExpiresAt: true } });
   if (!holder || holder.status === "DISABLED" || !holder.loginTokenExpiresAt || holder.loginTokenExpiresAt.getTime() <= Date.now()) return { ok: false, reason: "invalid" };
-  return { ok: true };
+  // Oct 22 2026: whose link it is, so the sign-in page can pass a person who is
+  // already signed in on this device straight through (their own link only).
+  return { ok: true, clientUserId: holder.id };
 }
 
 export async function consumeLoginToken(raw: string): Promise<LoginConsumption> {

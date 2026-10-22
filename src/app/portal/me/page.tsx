@@ -6,6 +6,7 @@ import { resolvePortalViewer, currentClientUser, liveMemberships } from "@/lib/p
 import { PortalPage, type PortalQuery } from "@/components/portal/PortalPage";
 import { firstQueryValues } from "@/lib/portalNav";
 import { signOutPortal } from "@/app/portal/login/actions";
+import { portalAppMetadata, portalAppViewport } from "@/lib/portalApp";
 
 export const dynamic = "force-dynamic";
 // The page's server actions include the inline self-booking (portalRequestSession →
@@ -15,7 +16,12 @@ export const maxDuration = 90;
 export const metadata = {
   title: "Your Content Program | Realtour Pilot",
   robots: { index: false, follow: false },
+  // Oct 22 2026: installable as "Realtour Pilot" on a phone's home screen,
+  // opening here, signed in (lib/portalApp). Only this signed-in page links the
+  // manifest, so an icon is made while the session exists to carry over.
+  ...portalAppMetadata,
 };
+export const viewport = portalAppViewport;
 
 // /portal/me — the signed-in person's portal. The cookie names the person; the
 // resolver re-reads their seats on every request (a revoked seat is refused

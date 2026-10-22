@@ -4,6 +4,8 @@ import type { NextRequest } from "next/server";
 import { verifySession, SESSION_COOKIE } from "@/lib/auth/jwt";
 import { canAccess, homeFor, PAGES, type PageKey } from "@/lib/auth/access";
 import { authEnforcedNow } from "@/lib/auth/enforced";
+import { CLIENT_COOKIE } from "@/lib/auth/clientSession";
+import { isClientSessionVisit, keepClientSignedIn } from "@/lib/auth/clientSessionRefresh";
 
 // THE AUTH PROXY (Next 16's name for what used to be src/middleware.ts).
 // Oct 20 2026 (audit G4/H22): Next 16 deprecates the `middleware` file and
@@ -58,6 +60,14 @@ const isPublic = isPublicRoute;
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  // Oct 22 2026: a client's portal visit slides their year-long session on
+  // (lib/auth/clientSessionRefresh: only for a person still allowed in, at
+  // most once an hour per device). Every other public request is untouched.
+  if (isClientSessionVisit(req.method, pathname, req.cookies.has(CLIENT_COOKIE))) {
+    const res = NextResponse.next();
+    await keepClientSignedIn(req, res);
+    return res;
+  }
   if (isPublic(pathname)) return NextResponse.next();
 
   // Gate is OFF only in local dev (no AUTH_ENFORCE, not production, not Vercel).

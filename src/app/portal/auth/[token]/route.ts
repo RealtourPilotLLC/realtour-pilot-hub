@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { consumeLoginToken, peekLoginToken } from "@/lib/portalAccess";
 import { signClientSession, CLIENT_COOKIE, clientCookieOptions, CLIENT_SESSION_MAX_AGE } from "@/lib/auth/clientSession";
+import { currentClientUser, liveMemberships } from "@/lib/portal";
+import { portalNextPath } from "@/lib/portalLanding";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,11 +28,26 @@ export const dynamic = "force-dynamic";
 // no scheme, no `//`, no path traversal, nothing appended); anything else is
 // ignored and the person lands on /portal/me as before. The page carries it to
 // the POST as a hidden field, checked again there.
-const SAFE_NEXT = /^\/portal\/me\?tab=topics&iv=[a-z0-9]{10,40}$/;
+//
+// ONE TAP (Oct 22 2026). The allowed landings are now every page a client
+// email points at (the videos waiting on them, one video, Your Month, the
+// scripts, the strategy, messages, the brand kit), from the one allowlist the
+// email builder uses too (lib/portalLanding). And a person ALREADY signed in
+// on this device (a live client session with a live seat) is not shown the
+// button: their own link, or a link that is spent, expired or replaced, goes
+// straight to the page. Nothing is consumed on that path, and a live link that
+// belongs to someone else still gets the button, so it signs in its owner.
+const safePortalNext = portalNextPath;
 
-// Not exported: a route file may export only its handlers and route config.
-function safePortalNext(next: string | null | undefined): string {
-  return typeof next === "string" && SAFE_NEXT.test(next) ? next : "/portal/me";
+/** The client signed in on this request with a live seat, or null. */
+async function signedInClient(req: NextRequest): Promise<string | null> {
+  try {
+    const person = await currentClientUser(req.cookies);
+    if (!person) return null;
+    return (await liveMemberships(person.id)).length > 0 ? person.id : null;
+  } catch {
+    return null;
+  }
 }
 
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -78,12 +95,18 @@ function continuePage(action: string, next: string): string {
 export async function GET(req: NextRequest, ctx: { params: Promise<{ token: string }> }) {
   const { token } = await ctx.params;
   const peek = await peekLoginToken(token);
+  const next = safePortalNext(req.nextUrl.searchParams.get("next"));
+  const signedIn = req.cookies.has(CLIENT_COOKIE) ? await signedInClient(req) : null;
+  if (signedIn && (!peek.ok || peek.clientUserId === signedIn)) {
+    const res = NextResponse.redirect(new URL(next, req.nextUrl.origin), 303);
+    for (const [k, v] of Object.entries(PRIVATE_HEADERS)) res.headers.set(k, v);
+    return res;
+  }
   if (!peek.ok) {
     const res = NextResponse.redirect(new URL(`/portal/login?reason=${peek.reason}`, req.nextUrl.origin), 303);
     for (const [k, v] of Object.entries(PRIVATE_HEADERS)) res.headers.set(k, v);
     return res;
   }
-  const next = safePortalNext(req.nextUrl.searchParams.get("next"));
   // "same-origin", not "no-referrer", on THIS page only (Oct 5 2026): under
   // no-referrer a browser sends `Origin: null` with the button's POST, so the
   // POST could never show it came from here. same-origin still sends no
