@@ -4,6 +4,10 @@ import { prisma } from "@/lib/prisma";
 import { driveBetween } from "@/lib/travel";
 import { etDayKey, etDayStartUtc } from "@/lib/datetime";
 import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
+import {
+  PAY_PERIOD_ANCHOR, PAY_PERIOD_DAYS, FIXED_PAY, FIXED_PAY_ORDER,
+  fixedPayFor, fixedPayInRange, isFixedPayDay, type FixedPayKey, type FixedPayTerms,
+} from "@/lib/payStructure";
 
 // ---------------------------------------------------------------------------
 // Creative payroll engine.
@@ -23,6 +27,13 @@ import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 // The eligible invoice (Project.payableInvoice) already excludes virtual/AI
 // add-ons + canceled items. Mileage is real road distance (home → that day's
 // shoots → home) via OSRM, cached per day in MileageDay.
+//
+// FIXED PAY (Oct 22 2026, lib/payStructure.ts): Harrison and James are paid a
+// yearly service fee + vehicle amount from the Sep 20 2026 pay period on (paid
+// Oct 9). Their shoots in those periods stay on the card (the owner sees what
+// they did) but pay $0 shoot pay and $0 mileage (the vehicle amount replaces
+// mileage), and the person carries a `fixed` block instead. Earlier periods,
+// and everyone else, are the per-shoot formulas above.
 // ---------------------------------------------------------------------------
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -30,9 +41,10 @@ const r2 = (n: number) => Math.round(n * 100) / 100;
 // ---- Bi-weekly pay periods --------------------------------------------------
 // Periods are 14 days, anchored at 2026-05-31 (a real period start). Payout is
 // the Friday 6 days after the period ends (e.g. May 31–Jun 13 → paid Jun 19;
-// Jun 14–Jun 27 → paid Jul 3).
-const PERIOD_ANCHOR = "2026-05-31";
-const PERIOD_DAYS = 14;
+// Jun 14–Jun 27 → paid Jul 3). The anchor and length live in lib/payStructure.ts
+// (fixed pay is counted per period, so the two can never disagree).
+const PERIOD_ANCHOR = PAY_PERIOD_ANCHOR;
+const PERIOD_DAYS = PAY_PERIOD_DAYS;
 const DAY_MS = 86400000;
 const noonUTC = (key: string) => new Date(key + "T12:00:00Z").getTime();
 const keyOf = (ms: number) => new Date(ms).toISOString().slice(0, 10);
@@ -207,6 +219,9 @@ export type PayrollJob = {
   /** Sep 2 2026+ shoots whose upload page was never submitted: hidden from
    *  creative-facing surfaces, chipped "(upload page not submitted)" for the owner. */
   debriefPending?: boolean;
+  /** Oct 22 2026: a fixed-pay person's shoot in a fixed-pay period. Listed so
+   *  the owner sees the work; pays $0 here (the person's `fixed` block pays). */
+  fixedPay?: boolean;
   override: { invoiceOverride: number | null; flatAmount: number | null; noMileage: boolean; excluded: boolean; note: string | null } | null;
 };
 
@@ -228,6 +243,16 @@ export type PayrollDay = {
 
 export type PayrollIssue = { level: "warn" | "info"; message: string; projectId?: string };
 
+/** A fixed-pay person's regular pay for the range (lib/payStructure.ts fixedPayInRange). */
+export type PayrollFixed = {
+  serviceFee: number;
+  vehicle: number;
+  total: number;
+  periodsLabel: string;
+  /** the yearly terms, for the card's header line */
+  annual: { serviceFee: number; vehicle: number; total: number };
+};
+
 export type PayrollPerson = {
   member: { id: string; name: string; avatarColor: string };
   configured: boolean; // percent + floor set
@@ -244,6 +269,9 @@ export type PayrollPerson = {
   shootPayTotal: number;
   mileageTotal: number;
   adjustmentTotal: number;
+  /** Oct 22 2026: fixed pay for the range, OWNER passes only (never forCreativeEyes,
+   *  never oldModel); null = per-shoot pay. Counted in `total`. */
+  fixed: PayrollFixed | null;
   total: number;
 };
 
@@ -270,10 +298,14 @@ export const DEBRIEF_PAY_GATE_FROM = Date.parse("2026-09-02T00:00:00-04:00");
 // `cachedMileageOnly` (Oct 21 2026, lib/paySavings.ts): read each day's miles
 // from the MileageDay cache alone, so the pass never calls the router and never
 // writes. Every other rule is the same pass; /payouts and My Pay never set it.
+//
+// `oldModel` (Oct 22 2026, lib/paySavings.ts): ignore fixed pay entirely and
+// pay everyone per shoot, exactly as before Sep 20 2026: what the old pay would
+// have cost. Only the savings comparison sets it.
 export async function computePayroll(
   start: Date,
   end: Date,
-  opts?: { memberId?: string; forCreativeEyes?: boolean; cachedMileageOnly?: boolean },
+  opts?: { memberId?: string; forCreativeEyes?: boolean; cachedMileageOnly?: boolean; oldModel?: boolean },
 ): Promise<PayrollPerson[]> {
   // Candidate projects: any non-cancelled project with a shoot (appointment or
   // shootDate) in range. We do NOT pre-filter by the project's photographer —
@@ -355,6 +387,37 @@ export async function computePayroll(
       })
     : [];
   const memberMap = new Map(memberRows.map((m) => [m.id, m]));
+
+  // FIXED PAY (Oct 22 2026): who is on it is decided by lib/payStructure.ts
+  // (exact roster name, active row), never by the rates on the row. Read
+  // whether or not they shot this range: they are paid regardless.
+  const fixedTermsOf = new Map<string, FixedPayTerms>();
+  // The one roster row that carries each person's payment. A duplicate active
+  // row with the same name is still fixed pay (its shoots pay $0) but is never
+  // paid a second time.
+  const fixedPayeeOf = new Map<FixedPayKey, string>();
+  if (!opts?.oldModel) {
+    const roster = await prisma.teamMember.findMany({
+      where: {
+        active: true,
+        OR: FIXED_PAY_ORDER.map((k) => ({ name: { contains: FIXED_PAY[k].first, mode: "insensitive" as const } })),
+        ...(opts?.memberId ? { id: opts.memberId } : {}),
+      },
+      select: {
+        id: true, name: true, avatarColor: true, active: true,
+        payPercent: true, payFloor: true, mileageRate: true, homeRadiusMi: true,
+        homeLat: true, homeLng: true,
+      },
+      orderBy: { createdAt: "asc" },
+    });
+    for (const r of roster) {
+      const t = fixedPayFor(r);
+      if (!t) continue;
+      fixedTermsOf.set(r.id, t);
+      if (!fixedPayeeOf.has(t.key)) fixedPayeeOf.set(t.key, r.id);
+      if (!memberMap.has(r.id)) memberMap.set(r.id, r);
+    }
+  }
 
   // Build pay lines — one per paid appointment, grouped by the member who shot it.
   type Built = PayrollJob & { _at: number };
@@ -521,6 +584,23 @@ export async function computePayroll(
     }
   }
 
+  // Fixed-pay lines: a fixed-pay person's shoot whose pay day (the same ET day
+  // that puts the line in its period) sits in a period starting on or after
+  // FIXED_PAY_FROM pays nothing here. The line stays so the owner sees the work.
+  // Overrides (flat amount, invoice) do not apply to it: extra pay goes through
+  // a period adjustment. Its day is never routed (see the mileage loop below).
+  for (const [mid, lines] of linesByMember) {
+    if (!fixedTermsOf.has(mid)) continue;
+    for (const l of lines) {
+      if (!isFixedPayDay(l.dayKey)) continue;
+      l.fixedPay = true;
+      l.shootPay = 0;
+      l.baseShootPay = 0;
+      l.mileageShare = 0;
+      l.jobTotal = 0;
+    }
+  }
+
   // Everyone with lines, a period adjustment, OR a removed job gets a card.
   // The debrief pay gate: flag lines whose shoot (Sep 2+) has HAPPENED but has
   // no submitted upload page. Two deliberate scopes (review, Sep 1): a FUTURE
@@ -556,6 +636,27 @@ export async function computePayroll(
   }
 
   const outMemberIds = new Set<string>([...linesByMember.keys(), ...adjByMember.keys(), ...removedByMember.keys()]);
+  // A fixed-pay person with no shoots this range is still paid: they get a card
+  // whenever the range holds a fixed-pay period. Owner passes only (creative
+  // surfaces never carry fixed amounts; pay is hidden from them anyway).
+  const fixedByMember = new Map<string, PayrollFixed>();
+  if (!opts?.forCreativeEyes) {
+    const fromKey = etDayKey(start);
+    const toKey = etDayKey(end);
+    for (const [key, memberId] of fixedPayeeOf) {
+      const t = FIXED_PAY[key];
+      const range = fixedPayInRange(t, fromKey, toKey);
+      if (range.periods.length === 0) continue;
+      fixedByMember.set(memberId, {
+        serviceFee: range.serviceFee,
+        vehicle: range.vehicle,
+        total: range.total,
+        periodsLabel: range.periodsLabel,
+        annual: { serviceFee: t.serviceFee, vehicle: t.vehicle, total: t.serviceFee + t.vehicle },
+      });
+      outMemberIds.add(memberId);
+    }
+  }
   if (opts?.memberId) for (const id of [...outMemberIds]) if (id !== opts.memberId) outMemberIds.delete(id);
 
   // Every cached mileage row this pass can need, in ONE read (audit G13): each
@@ -564,7 +665,7 @@ export async function computePayroll(
   const rangeFromKey = etDayKey(start);
   const rangeToKey = etDayKey(end);
   const allDayKeys = new Set<string>();
-  for (const id of outMemberIds) for (const b of linesByMember.get(id) ?? []) if (b.dayKey !== "unknown") allDayKeys.add(b.dayKey);
+  for (const id of outMemberIds) for (const b of linesByMember.get(id) ?? []) if (b.dayKey !== "unknown" && !b.fixedPay) allDayKeys.add(b.dayKey);
   const mileageRows: MileageRow[] = outMemberIds.size
     ? await prisma.mileageDay.findMany({
         where: {
@@ -586,11 +687,14 @@ export async function computePayroll(
     const home = m && m.homeLat != null && m.homeLng != null ? { lat: m.homeLat, lng: m.homeLng } : null;
 
     // Mileage by day (both the primary shoot and any return legs count).
+    // A fixed-pay day is never routed, read or written: the vehicle amount
+    // replaces mileage (Oct 22 2026), so there is no figure to work out.
     const freeMiles = (m?.homeRadiusMi ?? 35) * 2;
     const days: PayrollDay[] = [];
-    const dayKeys = Array.from(new Set(built.map((b) => b.dayKey))).filter((k) => k !== "unknown");
+    const perShoot = built.filter((b) => !b.fixedPay);
+    const dayKeys = Array.from(new Set(perShoot.map((b) => b.dayKey))).filter((k) => k !== "unknown");
     for (const dayKey of dayKeys) {
-      const dayJobs = built.filter((b) => b.dayKey === dayKey);
+      const dayJobs = perShoot.filter((b) => b.dayKey === dayKey);
       const mileageJobs = dayJobs.filter((b) => !b.override?.noMileage);
       const stops: Stop[] = home
         ? dayJobs
@@ -625,9 +729,12 @@ export async function computePayroll(
     // rescheduled/reassigned/cancelled after the adjustment): surface them as
     // zero-job rows so they're visible and resettable — an invisible override
     // would silently re-apply if a shoot ever lands back on that day.
+    const isFixedMember = fixedTermsOf.has(memberId);
     const orphanOverrides = mileageRows.filter(
       (r) => r.teamMemberId === memberId && r.overrideMiles != null &&
-        r.dayKey >= rangeFromKey && r.dayKey <= rangeToKey && !dayKeys.includes(r.dayKey),
+        r.dayKey >= rangeFromKey && r.dayKey <= rangeToKey && !dayKeys.includes(r.dayKey) &&
+        // A correction left on a fixed-pay day pays nothing and never will.
+        !(isFixedMember && isFixedPayDay(r.dayKey)),
     );
     for (const o of orphanOverrides) {
       // A day that only LOOKS empty because its shoot was debrief-dropped from
@@ -642,11 +749,16 @@ export async function computePayroll(
     days.sort((a, b) => a.dayKey.localeCompare(b.dayKey));
 
     // ---- Discrepancy detection ------------------------------------------
+    // Per-shoot checks read the per-shoot lines only: a fixed-pay shoot has no
+    // rate, invoice share or mileage to get wrong.
     const issues: PayrollIssue[] = [];
-    if (built.length > 0 && !(m?.payPercent != null && m?.payFloor != null)) {
+    if (isFixedMember && fixedPayeeOf.get(fixedTermsOf.get(memberId)!.key) !== memberId) {
+      issues.push({ level: "warn", message: `Another active team member is also named ${m?.name ?? "this"}: fixed pay is counted once, on the older roster row. Merge or deactivate the duplicate.` });
+    }
+    if (perShoot.length > 0 && !(m?.payPercent != null && m?.payFloor != null)) {
       issues.push({ level: "warn", message: "Pay rates not set — shoot pay shows $0. Set them on the team page." });
     }
-    if (built.length > 0 && m?.payPercent != null && !home) {
+    if (perShoot.length > 0 && m?.payPercent != null && !home) {
       // Downgrade when Jordan already hand-set every day's miles — the mileage
       // IS calculated (by him); a standing warn would nag about corrected days.
       const allDaysOverridden = days.length > 0 && days.every((d) => d.overrideMiles != null);
@@ -656,7 +768,7 @@ export async function computePayroll(
           : { level: "warn", message: "No home address — mileage can't be calculated. Add it on the team page." },
       );
     }
-    const noCoords = built.filter((b) => !b.hasCoords);
+    const noCoords = perShoot.filter((b) => !b.hasCoords);
     if (home && noCoords.length > 0) {
       issues.push({
         level: "warn",
@@ -693,7 +805,7 @@ export async function computePayroll(
         });
       }
     }
-    const zeroInvoice = built.filter((b) => !b.returnTrip && b.invoice === 0 && !b.override);
+    const zeroInvoice = perShoot.filter((b) => !b.returnTrip && b.invoice === 0 && !b.override);
     if (zeroInvoice.length > 0) {
       issues.push({
         level: "info",
@@ -701,7 +813,7 @@ export async function computePayroll(
         projectId: zeroInvoice[0].projectId,
       });
     }
-    const returnLegs = built.filter((b) => b.returnTrip);
+    const returnLegs = perShoot.filter((b) => b.returnTrip);
     if (returnLegs.length > 0) {
       issues.push({
         level: "info",
@@ -712,7 +824,7 @@ export async function computePayroll(
     // Discounted orders: the item list prices sum above what the client actually
     // pays, so the % would be applied to money that never came in. Flag for a
     // per-job call (override the invoice or leave it as goodwill).
-    const overTotal = built.filter((b) => b.invoiceOverTotal);
+    const overTotal = perShoot.filter((b) => b.invoiceOverTotal);
     if (overTotal.length > 0) {
       issues.push({
         level: "warn",
@@ -720,7 +832,7 @@ export async function computePayroll(
         projectId: overTotal[0].projectId,
       });
     }
-    const fallback = built.filter((b) => b.invoiceIsFallback);
+    const fallback = perShoot.filter((b) => b.invoiceIsFallback);
     if (fallback.length > 0) {
       issues.push({
         level: "info",
@@ -733,7 +845,8 @@ export async function computePayroll(
     const shootPayTotal = r2(built.reduce((s, b) => s + b.shootPay, 0));
     const mileageTotal = r2(built.reduce((s, b) => s + b.mileageShare, 0));
     const adjustmentTotal = r2(adj.reduce((s, a) => s + a.amount, 0));
-    const total = r2(shootPayTotal + mileageTotal + adjustmentTotal);
+    const fixed = fixedByMember.get(memberId) ?? null;
+    const total = r2((fixed?.total ?? 0) + shootPayTotal + mileageTotal + adjustmentTotal);
 
     out.push({
       member: { id: memberId, name: m?.name ?? "Unknown", avatarColor: m?.avatarColor ?? "#8b93a3" },
@@ -752,6 +865,7 @@ export async function computePayroll(
       shootPayTotal,
       mileageTotal,
       adjustmentTotal,
+      fixed,
       total,
     });
   }
@@ -799,9 +913,9 @@ export async function paydayPings(now: Date = new Date()): Promise<{ pinged: num
     const people = await computePayroll(start, end);
     // Only someone who may see pay gets a pay figure (Oct 21 2026). Pay is
     // hidden from every login but the owner's (settings.payHiddenFor), and
-    // Harrison and James have been on fixed pay since Sep 25, so this
-    // per-shoot figure is not even what lands for them: the Oct 9 text told
-    // them an old-model amount. A team member with no owner login is skipped.
+    // Harrison and James have been on fixed pay since the Sep 20 period (paid
+    // Oct 9): the Oct 9 text told them an old-model amount. A team member
+    // with no owner login is skipped.
     const owners = new Set(
       (await prisma.appUser.findMany({ where: { role: "OWNER", status: "ACTIVE", teamMemberId: { not: null } }, select: { teamMemberId: true } })).map((u) => u.teamMemberId),
     );

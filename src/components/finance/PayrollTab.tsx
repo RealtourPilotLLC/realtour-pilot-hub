@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Banknote, Car, SlidersHorizontal, ChevronLeft, ChevronRight, CalendarCheck, AlertTriangle } from "lucide-react";
+import { Banknote, Car, SlidersHorizontal, ChevronLeft, ChevronRight, CalendarCheck, AlertTriangle, Receipt } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { computePayroll, payPeriodFor, shiftPeriod, periodBounds, unassignedShootsInRange } from "@/lib/payroll";
@@ -32,6 +32,10 @@ export async function PayrollTab({ show, start }: { show: FinanceTab[]; start?: 
   ]);
   const grandTotal = people.reduce((s, p) => s + p.total, 0);
   const mileageTotal = people.reduce((s, p) => s + p.mileageTotal, 0);
+  // Oct 22 2026: fixed-pay people (lib/payStructure.ts) are paid a yearly
+  // service fee + vehicle; their total already carries it.
+  const fixedTotal = people.reduce((s, p) => s + (p.fixed?.total ?? 0), 0);
+  const anyFixed = people.some((p) => p.fixed);
   const flagCount = people.reduce((s, p) => s + p.issues.filter((i) => i.level === "warn").length, 0) + (unassigned.length > 0 ? 1 : 0);
 
   const prev = shiftPeriod(startKey, -1);
@@ -46,7 +50,7 @@ export async function PayrollTab({ show, start }: { show: FinanceTab[]; start?: 
       <PageHeader
         eyebrow="Finance"
         title="Payroll"
-        subtitle="Photographer shoot pay + mileage, calculated from your rates"
+        subtitle={anyFixed ? "Shoot pay + mileage from your rates, and fixed pay for the people on it" : "Photographer shoot pay + mileage, calculated from your rates"}
         actions={
           flagCount > 0
             ? <Badge color="#d97706" soft="#fef3c7">{flagCount} to review</Badge>
@@ -75,8 +79,9 @@ export async function PayrollTab({ show, start }: { show: FinanceTab[]; start?: 
         </div>
 
         {/* Totals */}
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
+        <div className={`grid grid-cols-2 gap-4 ${anyFixed ? "lg:grid-cols-4" : "lg:grid-cols-3"}`}>
           <Stat icon={<Banknote className="size-4 text-success" />} label="Period total" value={usd(grandTotal)} />
+          {anyFixed && <Stat icon={<Receipt className="size-4 text-brand" />} label="Fixed pay in total" value={usd(fixedTotal)} />}
           <Stat icon={<Car className="size-4 text-accent" />} label="Mileage in total" value={usd(mileageTotal)} />
           <Stat icon={<SlidersHorizontal className="size-4 text-brand" />} label="Photographers" value={String(people.length)} />
         </div>
