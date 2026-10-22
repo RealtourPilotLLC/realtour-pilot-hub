@@ -243,11 +243,13 @@ export type Progress = {
   done: Record<string, number>; errors: Record<string, number>; skipped: string[]; rooms: Record<string, string>;
   light?: Record<string, string>; furnished?: Record<string, string>; prep?: Record<string, string>; features?: Record<string, string[]>; kept?: string[];
   geometry?: Record<string, unknown>; geometryDone?: boolean;
+  /** Oct 22 2026 (photo audit H5): a person's "Check again" started this run (not a changed listing). */
+  asked?: boolean;
 };
 export const readProgress = (json: string | null | undefined): Progress => {
   try {
     const p = JSON.parse(json ?? "{}") as Partial<Progress>;
-    return { v: p.v, done: p.done ?? {}, errors: p.errors ?? {}, skipped: p.skipped ?? [], rooms: p.rooms ?? {}, light: p.light ?? {}, furnished: p.furnished ?? {}, prep: p.prep ?? {}, features: p.features ?? {}, kept: p.kept ?? [], geometry: p.geometry ?? {}, geometryDone: p.geometryDone ?? false };
+    return { v: p.v, done: p.done ?? {}, errors: p.errors ?? {}, skipped: p.skipped ?? [], rooms: p.rooms ?? {}, light: p.light ?? {}, furnished: p.furnished ?? {}, prep: p.prep ?? {}, features: p.features ?? {}, kept: p.kept ?? [], geometry: p.geometry ?? {}, geometryDone: p.geometryDone ?? false, ...(p.asked ? { asked: true } : {}) };
   } catch {
     return { done: {}, errors: {}, skipped: [], rooms: {}, kept: [] };
   }
@@ -285,9 +287,53 @@ export type CheckSummary = { skipped?: string; jobs: { jobId: string; checked: n
  * changed after delivery (2236 Gregory Dr's listing was replaced by a new
  * "(N of 52)" set the hub never looked at).
  */
+/** The job event a person's "Check again" writes (requestFreeRecheck); the check picks the job up while it is newer than the job's last free check. */
+export const FREE_RECHECK_ACTION = "free photo check requested";
+/** Oct 22 2026 (photo audit H5): the stages "Check again" (and a changed gallery) re-check, a client's revision and a delivery problem included. */
+export const RECHECK_STAGES = ["EDITED", "QC_REVIEW", "READY", "ON_HOLD", "FIXING", "REVISION_REQUESTED", "DELIVERY_MISMATCH"] as const;
+
+/**
+ * "Check again" (Oct 22 2026, photo audit H5): while the paid QC is off, the
+ * button asked for a paid run that never came. It now asks for the FREE photo
+ * check: the photos only the free check looked at are marked not inspected,
+ * the job's AutoHDR photos are matched again when some are not (a free read),
+ * and the check picks the job up on its next pass (jobsToCheck: a request
+ * newer than the job's last free check), whatever its stage in RECHECK_STAGES.
+ * Nothing is charged. Pure toward AutoHDR except the free read.
+ */
+export async function requestFreeRecheck(jobId: string, by: string): Promise<{ ok: boolean; message: string }> {
+  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, autohdrPhotoshootId: true } });
+  if (!job) return { ok: false, message: "Photo job not found." };
+  if (job.stage === "EDITING" || job.stage === "EDIT_FAILED") return { ok: false, message: "The edited gallery has not landed yet, so there is nothing to check." };
+  if (job.stage === "DELIVERED") return { ok: false, message: "This job is delivered. A client's request reopens it, and the check runs then." };
+  if (job.stage === "QC_RUNNING" || (await prisma.photoQcRun.count({ where: { jobId, trigger: "AUTOHDR_CHECK", status: "RUNNING" } }))) return { ok: true, message: "The photo check is already running on this job." };
+  if (!(RECHECK_STAGES as readonly string[]).includes(job.stage)) return { ok: false, message: "This job is not at a stage the photo check runs on. Reload the page." };
+  // Photos the paid QC never inspected itself are looked at again (the free check's own marks).
+  const freeOnly = (await prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE", inspectedHash: { not: null } }, select: { id: true, inspectedHash: true, classifiedHash: true } })).filter((p) => p.classifiedHash !== p.inspectedHash);
+  if (freeOnly.length) await prisma.photoAsset.updateMany({ where: { id: { in: freeOnly.map((p) => p.id) } }, data: { inspectedHash: null } });
+  // Photos not matched to AutoHDR yet (a listing replaced in a revision): matched again first (a free read).
+  if (job.autohdrPhotoshootId && (await prisma.photoAsset.count({ where: { jobId, status: "ACTIVE", autohdrImageUuid: null } }))) {
+    const { linkAutohdrShoot } = await import("./autohdrLink");
+    await linkAutohdrShoot(jobId).catch((e) => console.warn("photo delivery: relink before the re-check failed", jobId, (e as Error).message));
+  }
+  await logJobEvent(jobId, by.slice(0, 120) || "staff", FREE_RECHECK_ACTION);
+  return { ok: true, message: "The free photo check runs again on the next pass (within about 5 minutes). Nothing is charged." };
+}
+
 async function jobsToCheck(take: number, afterDelivery: boolean): Promise<string[]> {
   const linked = { some: { status: "ACTIVE", autohdrImageUuid: { not: null } } };
   const weekAgo = new Date(Date.now() - 7 * 86_400_000);
+  // A person's "Check again" (requestFreeRecheck), newer than the job's last free check.
+  const asked = await prisma.photoJobEvent.findMany({ where: { action: FREE_RECHECK_ACTION, at: { gte: weekAgo } }, orderBy: { at: "asc" }, select: { jobId: true, at: true }, take: 50 });
+  const askedJobs = asked.length
+    ? await prisma.photoJob.findMany({
+        where: { id: { in: [...new Set(asked.map((a) => a.jobId))] }, stage: { in: [...RECHECK_STAGES] } },
+        select: { id: true, qcRuns: { where: { trigger: "AUTOHDR_CHECK" }, orderBy: { startedAt: "desc" }, take: 1, select: { startedAt: true } } },
+      })
+    : [];
+  const lastAsk = new Map<string, Date>();
+  for (const a of asked) lastAsk.set(a.jobId, a.at);
+  const requested = askedJobs.filter((j) => !j.qcRuns[0] || j.qcRuns[0].startedAt < lastAsk.get(j.id)!).map((j) => j.id);
   const [running, landed, changed, delivered] = await Promise.all([
     prisma.photoQcRun.findMany({ where: { trigger: "AUTOHDR_CHECK", status: "RUNNING" }, orderBy: { startedAt: "asc" }, select: { jobId: true }, take }),
     prisma.photoJob.findMany({
@@ -296,8 +342,9 @@ async function jobsToCheck(take: number, afterDelivery: boolean): Promise<string
       select: { id: true, finalsChangedAt: true, qcRuns: { where: { trigger: "AUTOHDR_CHECK" }, orderBy: { startedAt: "desc" }, take: 1, select: { startedAt: true } } },
       take: take * 3,
     }),
+    // Oct 22 2026 (photo audit H5): a revision or a delivery problem whose gallery changed is checked again too.
     prisma.photoJob.findMany({
-      where: { stage: { in: ["QC_REVIEW", "READY"] }, finalsChangedAt: { gte: new Date(Date.now() - 7 * 86_400_000) }, qcRuns: { some: { trigger: "AUTOHDR_CHECK", status: "DONE" } }, photos: linked },
+      where: { stage: { in: ["QC_REVIEW", "READY", "REVISION_REQUESTED", "DELIVERY_MISMATCH"] }, finalsChangedAt: { gte: new Date(Date.now() - 7 * 86_400_000) }, qcRuns: { some: { trigger: "AUTOHDR_CHECK", status: "DONE" } }, photos: linked },
       orderBy: { finalsChangedAt: "desc" },
       select: {
         id: true, finalsChangedAt: true,
@@ -323,7 +370,7 @@ async function jobsToCheck(take: number, afterDelivery: boolean): Promise<string
   // After delivery: only a gallery that changed AFTER the job was delivered.
   const afterIt = delivered.filter((j) => !!j.finalsChangedAt && j.finalsChangedAt > j.stageChangedAt && since(j) && j.photos.some((p) => !inspected(p)));
   const fresh = [...landed.filter(since), ...changed.filter((j) => since(j) && j.photos.some((p) => !inspected(p))), ...afterIt].map((j) => j.id);
-  return [...new Set([...running.map((r) => r.jobId), ...fresh])].slice(0, take);
+  return [...new Set([...running.map((r) => r.jobId), ...requested, ...fresh])].slice(0, take);
 }
 
 /** One bounded slice: safe every 5 minutes, resumable photo by photo. */
@@ -352,10 +399,13 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
     if (!run) {
       // Photos already inspected at their current version are left as they
       // are, with what the last check saw in them (rooms, light: the add-ons read it).
-      const last = readProgress((await prisma.photoQcRun.findFirst({ where: { jobId, trigger: "AUTOHDR_CHECK", status: "DONE" }, orderBy: { startedAt: "desc" }, select: { checksJson: true } }))?.checksJson);
+      const lastRow = await prisma.photoQcRun.findFirst({ where: { jobId, trigger: "AUTOHDR_CHECK", status: "DONE" }, orderBy: { startedAt: "desc" }, select: { checksJson: true, startedAt: true } });
+      const last = readProgress(lastRow?.checksJson);
       const unchanged = photos.filter(inspected).map((p) => p.id);
       const carry = <T,>(m: Record<string, T> | undefined) => Object.fromEntries(unchanged.filter((id) => m?.[id] !== undefined).map((id) => [id, m![id]]));
-      const start: Progress = { v: CHECK_PROMPT_VERSION, done: {}, errors: {}, skipped: [], kept: unchanged, rooms: carry(last.rooms), light: carry(last.light), furnished: carry(last.furnished), prep: carry(last.prep), features: carry(last.features), geometry: carry(last.geometry), geometryDone: false };
+      // A person's "Check again" since the last check (requestFreeRecheck): said so on the run, never read as a changed listing.
+      const asked = (await prisma.photoJobEvent.count({ where: { jobId, action: FREE_RECHECK_ACTION, ...(lastRow ? { at: { gt: lastRow.startedAt } } : {}) } })) > 0;
+      const start: Progress = { v: CHECK_PROMPT_VERSION, done: {}, errors: {}, skipped: [], kept: unchanged, rooms: carry(last.rooms), light: carry(last.light), furnished: carry(last.furnished), prep: carry(last.prep), features: carry(last.features), geometry: carry(last.geometry), geometryDone: false, ...(asked ? { asked: true } : {}) };
       run = await prisma.photoQcRun.create({
         data: { jobId, trigger: "AUTOHDR_CHECK", status: "RUNNING", shadow: settings.qcShadow, rulesVersion: RULES_REGISTRY_VERSION, promptVersionsJson: JSON.stringify({ autohdrCheck: CHECK_PROMPT_VERSION }), modelsJson: JSON.stringify({ describe: "AutoHDR describe (free)" }), checksJson: JSON.stringify(start) },
       });
@@ -509,7 +559,7 @@ async function finishCheck(jobId: string, runId: string, photos: Photo[], progre
   const project = job ? await prisma.project.findUnique({ where: { id: job.projectId }, select: { title: true } }) : null;
   const street = (project?.title ?? "A shoot").split(",")[0];
   const issues = verdict.counts.critical + verdict.counts.major + verdict.counts.minor;
-  if (afterDelivery && (checked || unchecked.length)) {
+  if (afterDelivery && !progress.asked && (checked || unchecked.length)) {
     // Oct 15 2026: the listing changed after delivery. Kyle and Jordan hear
     // about it like the other photo alerts; the job stays delivered.
     const fresh = await prisma.photoQcFinding.count({ where: { qcRunId: runId, status: "OPEN", confidence: { gte: settings.displayConfidenceFloor } } });

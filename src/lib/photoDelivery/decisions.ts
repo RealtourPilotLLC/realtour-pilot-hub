@@ -112,8 +112,15 @@ export async function reviewStage(jobId: string): Promise<ReviewStage> {
  * out of FIXING once no fix is left to run. Returns the stage it is in after.
  */
 async function reconcileReviewStage(jobId: string, by: string): Promise<string | null> {
-  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true } });
+  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, holdReason: true } });
   if (!job) return null;
+  // Oct 22 2026 (photo audit H4): deciding the last critical issue on a job
+  // the check held lifts that hold (fixPolicy.refreshVerdict), into QC review.
+  if (job.stage === "ON_HOLD" && job.holdReason === "CRITICAL") {
+    const { refreshVerdict } = await import("./fixPolicy");
+    await refreshVerdict(jobId, by).catch(() => {});
+    return (await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true } }))?.stage ?? job.stage;
+  }
   if (!["QC_REVIEW", "READY", "FIXING"].includes(job.stage)) return job.stage;
   const r = await reviewStage(jobId);
   if (r.stage === "stay" || r.stage === job.stage) return job.stage;
@@ -388,6 +395,8 @@ export async function releaseJobHold(jobId: string, by: string): Promise<WriteRe
   if (job.stage !== "ON_HOLD") return { ok: false, message: "This job is not on hold." };
   const ok = await releaseHold(jobId, who, "hold released by hand");
   if (!ok) return { ok: false, message: "This job moved on in the meantime. Reload the page." };
+  // Oct 22 2026 (photo audit H4): a job back in QC review is placed by the one review rule (READY when nothing is left to decide).
+  await reconcileReviewStage(jobId, who).catch(() => null);
   const fresh = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true } });
   return { ok: true, changed: 1, stage: fresh?.stage ?? null, message: "Hold released. The job is back where it left off." };
 }

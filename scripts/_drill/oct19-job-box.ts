@@ -145,6 +145,8 @@ async function main() {
 
   // Closing on delivery.
   const onPine = await ca.createAsk({ clientId: heather.id, projectId: pine.id, kind: "SPECIAL_REQUEST", source: "text", medium: "video", text: "Use the upbeat song", askedAt: new Date(now.getTime() - 3 * HOUR) });
+  // Oct 22 2026 (photo audit H2): one that does NOT hold delivery, for the sweep to close.
+  const loosePine = await ca.createAsk({ clientId: heather.id, projectId: pine.id, kind: "SPECIAL_REQUEST", source: "staff", medium: "video", text: "FYI she likes the upbeat songs", holdsDelivery: false, askedAt: new Date(now.getTime() - 3 * HOUR) });
   const schedBefore = await ca.createAsk({ clientId: heather.id, projectId: pine.id, kind: "SCHEDULING", source: "text", text: "Can we push the Pine shoot?", askedAt: new Date(now.getTime() - 3 * HOUR) });
   // Oct 21 2026 (oct21-photo-misses, CHANGED): a special request asked AFTER
   // the delivery is about the delivered work and stays open, so the requests
@@ -156,12 +158,17 @@ async function main() {
   c.ok("the boards leave a delivered job out at once", !(await ca.specialRequestsBoard(now)).groups.some((g) => g.projectId === pine.id) && !(await ca.schedulingBoard(now)).asks.some((a) => a.id === schedBefore!.id) && (await ca.schedulingBoard(now)).asks.some((a) => a.id === schedAfter!.id));
   const swept = await ca.closeAsksOnDeliveredJobs(now);
   const pineRow = await prisma.clientAsk.findUniqueOrThrow({ where: { id: onPine!.id } });
-  c.ok("the sweep closes them: DONE, 'the job was delivered', by the Hub", swept.ids.includes(onPine!.id) && pineRow.state === "DONE" && pineRow.confirmNote === "the job was delivered" && pineRow.doneBy === "Hub");
+  // CHANGED Oct 22 2026 (photo audit H2): a request that HOLDS delivery is never closed by the sweep (a person settles it); one that does not hold still is.
+  const looseRow = await prisma.clientAsk.findUniqueOrThrow({ where: { id: loosePine!.id } });
+  c.ok("the sweep closes what does not hold delivery: DONE, 'the job was delivered', by the Hub", swept.ids.includes(loosePine!.id) && looseRow.state === "DONE" && looseRow.confirmNote === "the job was delivered" && looseRow.doneBy === "Hub");
+  c.ok("…and leaves the client's own request that holds delivery OPEN (photo audit H2)", !swept.ids.includes(onPine!.id) && pineRow.state === "OPEN" && pineRow.holdsDelivery === true);
   c.ok("…a scheduling ask asked before the delivery closes; one asked after (book the next shoot) stays", (await prisma.clientAsk.findUniqueOrThrow({ where: { id: schedBefore!.id } })).state === "DONE" && (await prisma.clientAsk.findUniqueOrThrow({ where: { id: schedAfter!.id } })).state === "OPEN");
   const pj = await prisma.photoJob.create({ data: { projectId: barry.id, stage: "DELIVERED", deliveredAt: new Date(now.getTime() - 30 * 60_000) } });
   const vidAsk = await ca.createAsk({ clientId: heather.id, projectId: barry.id, kind: "SPECIAL_REQUEST", source: "text", medium: "video", text: "Vertical please", askedAt: new Date(now.getTime() - 2 * HOUR) });
+  const loosePhoto = await ca.createAsk({ clientId: heather.id, projectId: barry.id, kind: "SPECIAL_REQUEST", source: "staff", medium: "photo", text: "FYI she prefers the brighter edits", holdsDelivery: false, askedAt: new Date(now.getTime() - 2 * HOUR) });
   const swept2 = await ca.closeAsksOnDeliveredJobs(now);
-  c.ok("a photo-only request closes when the photos went out; the video one stays", swept2.ids.includes(lots!.id) && !swept2.ids.includes(vidAsk!.id) && (await prisma.clientAsk.findUniqueOrThrow({ where: { id: lots!.id } })).confirmNote === "the photos were delivered");
+  // CHANGED Oct 22 2026 (photo audit H2): the lots request holds delivery, so it stays OPEN; a photo note that does not hold closes.
+  c.ok("a photo-only request that does not hold closes when the photos went out; the holding one (the lots) and the video one stay", swept2.ids.includes(loosePhoto!.id) && !swept2.ids.includes(lots!.id) && !swept2.ids.includes(vidAsk!.id) && (await prisma.clientAsk.findUniqueOrThrow({ where: { id: loosePhoto!.id } })).confirmNote === "the photos were delivered" && (await prisma.clientAsk.findUniqueOrThrow({ where: { id: lots!.id } })).state === "OPEN");
   c.ok("…a second sweep finds nothing", (await ca.closeAsksOnDeliveredJobs(now)).closed === 0);
   await prisma.photoJob.delete({ where: { id: pj.id } });
   const op = fs.readFileSync("src/lib/webhooks/openphone.ts", "utf8");

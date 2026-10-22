@@ -855,12 +855,19 @@ export function deliveryCloseReason(
  * "the job was delivered" (closesOnDelivery says which). A photo-only request
  * also closes once the job's photos went out. Run every five minutes from the
  * comms cron; cheap (open asks only). Never throws.
+ * Oct 22 2026 (photo audit H2): only asks that do NOT hold delivery.
  */
 export async function closeAsksOnDeliveredJobs(now: Date = new Date()): Promise<{ closed: number; ids: string[] }> {
   const out = { closed: 0, ids: [] as string[] };
   try {
     const open = await prisma.clientAsk.findMany({
-      where: { state: "OPEN", projectId: { not: null } },
+      // PHOTO AUDIT H2 (Oct 22 2026, photo delivery builder): an ask that HOLDS
+      // delivery is never closed by this sweep. A delivery done in Aryeo past
+      // the hub's checklist (or Aryeo's sticky "delivered" read as a revision's)
+      // closed 11 of 23 holding asks in two weeks with nobody looking. Those
+      // stay OPEN until a person settles them (photoDelivery/jobs.ts alerts
+      // Jordan and Kyle once when the photos go out with holds open).
+      where: { state: "OPEN", projectId: { not: null }, holdsDelivery: false },
       select: { id: true, kind: true, medium: true, askedAt: true, projectId: true },
       take: 1000,
     });
@@ -871,7 +878,10 @@ export async function closeAsksOnDeliveredJobs(now: Date = new Date()): Promise<
       prisma.photoJob.findMany({ where: { projectId: { in: pids }, stage: "DELIVERED" }, select: { projectId: true, deliveredAt: true, stageChangedAt: true } }),
     ]);
     const pById = new Map(projects.map((p) => [p.id, p]));
-    const photosOut = new Map(photoJobs.map((j) => [j.projectId, j.deliveredAt ?? j.stageChangedAt]));
+    // PHOTO AUDIT H3 (Oct 22 2026): PhotoJob.deliveredAt now keeps the FIRST
+    // delivery; a photo ask from a later revision closes on the latest one
+    // (the job's move back to Delivered).
+    const photosOut = new Map(photoJobs.map((j) => [j.projectId, j.deliveredAt && j.deliveredAt > j.stageChangedAt ? j.deliveredAt : j.stageChangedAt]));
     for (const a of open) {
       const why = deliveryCloseReason(a, pById.get(a.projectId!), photosOut.get(a.projectId!) ?? null);
       if (!why) continue;

@@ -97,12 +97,24 @@ export async function setStage(
   return true;
 }
 
-/** Release a hold: back to the stage the job left (or `fallback`). */
+/**
+ * Where a released hold goes back to (pure). Oct 22 2026 (photo audit H4):
+ * the free check holds a job straight from EDITED (autohdrCheck finishCheck),
+ * so its hold remembered "EDITED", and nothing moves an EDITED job on once its
+ * check has run (the check skips it unless the gallery changed, the review
+ * rule only moves QC_REVIEW and READY, approval and the Fix Cart refuse it).
+ * A job whose check already ran resumes in QC review instead (30 Caedman Dr).
+ */
+export function resumeStageFor(holdResumeStage: string | null | undefined, checked: boolean, fallback: JobStage = "QC_REVIEW"): JobStage {
+  const resume = (JOB_STAGES as readonly string[]).includes(holdResumeStage ?? "") ? (holdResumeStage as JobStage) : fallback;
+  return checked && (resume === "EDITED" || resume === "QC_RUNNING") ? "QC_REVIEW" : resume;
+}
+
+/** Release a hold: back to the stage the job left (or `fallback`); a checked job never back to EDITED (resumeStageFor). */
 export async function releaseHold(jobId: string, actor: string, why: string, fallback: JobStage = "QC_REVIEW"): Promise<boolean> {
-  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, holdResumeStage: true } });
+  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, holdResumeStage: true, lastQcRunId: true } });
   if (!job || job.stage !== "ON_HOLD") return false;
-  const resume = (JOB_STAGES as readonly string[]).includes(job.holdResumeStage ?? "") ? (job.holdResumeStage as JobStage) : fallback;
-  return setStage(jobId, ["ON_HOLD"], resume, actor, { why });
+  return setStage(jobId, ["ON_HOLD"], resumeStageFor(job.holdResumeStage, !!job.lastQcRunId, fallback), actor, { why });
 }
 
 /** A short-lived processing lease on one job (compare-and-swap), so two cron

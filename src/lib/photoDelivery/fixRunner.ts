@@ -255,7 +255,8 @@ async function submitStep(op: Op, pass: Pass): Promise<"submitted" | "escalated"
     const { fixBudgetFor } = await import("./fixPolicy");
     const b = await fixBudgetFor(job.id);
     if (b.spent + price > b.maxCredits) {
-      await escalate(op, `this shoot has reached its automatic fix maximum ($${settings.fixMaxUsd})`);
+      // Oct 22 2026 (photo audit M7): in credits, never dollars: this reason shows on the finding Kyle reads.
+      await escalate(op, `this shoot has reached its automatic fix maximum (${b.maxCredits} credit${b.maxCredits === 1 ? "" : "s"})`);
       return "escalated";
     }
   }
@@ -670,7 +671,10 @@ async function finishBatches(jobIds: Set<string>): Promise<void> {
       const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true } });
       const project = job ? await prisma.project.findUnique({ where: { id: job.projectId }, select: { title: true } }) : null;
       const street = (project?.title ?? "a listing").split(",")[0];
-      const next = hubPhotos ? "They are the current versions in AutoHDR: look them over there, then push the shoot to Aryeo as usual." : "Replace the fixed photos on the Aryeo listing.";
+      // Oct 22 2026 (photo audit M5): the hub's own push and Update on Aryeo, never "push the shoot to Aryeo" or a replace by hand.
+      const next = hubPhotos
+        ? "They are the current versions: look them over on the job page, then approve there (the hub puts them on the Aryeo listing)."
+        : "Open the job page to put the fixed photos on the Aryeo listing (Update on Aryeo, or the hub's own upload when you approve).";
       await alertOwnerAndKyle({
         kind: "photo_fixes_done",
         title: `${auto ? "Automatic fixes" : "Fixes"} done: ${street}`.slice(0, 90),

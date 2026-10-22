@@ -75,7 +75,8 @@ export type GateAddOn = {
   done: string;
   ordered: string;
   quotes: { from: string; text: string }[];
-  cleared: { how: "version" | "confirmed"; by: string | null; atISO: string; note: string | null; photoName: string | null } | null;
+  /** Oct 22 2026 (photo audit M2): "listing", the work already on the Aryeo listing (photoName: those images). */
+  cleared: { how: "version" | "confirmed" | "listing"; by: string | null; atISO: string; note: string | null; photoName: string | null } | null;
 };
 /** `ignored`: the approve summary of the careful set-asides (clientAsked.ignoredCarefulSummary), shown before delivering, never a block. `holdsOpen`: hold lines still open. */
 export type GateResult = { checks: GateCheck[]; passed: boolean; advisory: boolean; canDeliver: boolean; overrideAllowed: boolean; blockedForOverride: string | null; holdsOpen: number; ignored: string | null };
@@ -194,7 +195,9 @@ async function addOnChecks(job: { id: string; projectId: string | null }): Promi
       detail: a.cleared
         ? a.cleared.how === "version"
           ? `on ${a.cleared.photoName ?? "a photo"}${a.cleared.by ? `, by ${a.cleared.by}` : ""}`
-          : `confirmed by ${a.cleared.by ?? "staff"}${a.cleared.note ? `: ${a.cleared.note}` : ""}`
+          : a.cleared.how === "listing"
+            ? `already on the Aryeo listing: ${a.cleared.photoName ?? "the images"}`
+            : `confirmed by ${a.cleared.by ?? "staff"}${a.cleared.note ? `: ${a.cleared.note}` : ""}`
         : `Ordered: ${a.ordered}`,
       addOn: { key: a.key, need: a.need, done: a.done, ordered: a.ordered, quotes: a.quotes, cleared: a.cleared },
     }));
@@ -506,9 +509,93 @@ export async function verifyDelivery(jobId: string, by = "verify"): Promise<Veri
   return noteCheck(jobId, r);
 }
 
+/** The job event a re-delivery writes (photo audit H3): the first delivery stays in PhotoJob.deliveredAt, each one after it is one of these (data: { at, source }). */
+export const REDELIVERED_ACTION = "re-delivered";
+/** The stages a verified delivery moves on from (Oct 22 2026, photo audit C1): a person's or the hub's delivery, or a delivery problem. */
+const VERIFY_MOVES_FROM = ["DELIVERING", "DELIVERY_MISMATCH"] as const;
+
+/**
+ * Where this job's current round began (photo audit H3): the latest move of a
+ * delivered job back to Editing (a split job's new visit), else when the job
+ * was opened. Deliveries before it were another round's.
+ */
+export async function roundStartOf(jobId: string, createdAt: Date): Promise<Date> {
+  const back = await prisma.photoJobEvent.findFirst({
+    where: { jobId, OR: [{ action: { startsWith: "DELIVERED → EDITING" } }, { action: { startsWith: "DELIVERING → EDITING" } }, { action: { startsWith: "DELIVERY_MISMATCH → EDITING" } }] },
+    orderBy: { at: "desc" },
+    select: { at: true },
+  });
+  return back?.at ?? createdAt;
+}
+
+/** Aryeo's LISTING_DELIVERED webhooks for a listing since `since`, by when Aryeo says it happened (oldest first). Each one's occurred_at is kept only within 10 minutes of when it reached the hub (a stale or odd body proves nothing). */
+export async function listingDeliveredHooks(listingId: string, since: Date, until: Date): Promise<Date[]> {
+  const rows = await prisma.webhookEvent.findMany({
+    where: { provider: "aryeo", eventType: "LISTING_DELIVERED", createdAt: { gte: new Date(since.getTime() - 10 * 60_000), lte: new Date(until.getTime() + 10 * 60_000) }, payload: { contains: listingId } },
+    orderBy: { createdAt: "asc" },
+    select: { payload: true, createdAt: true },
+    take: 50,
+  });
+  const out: Date[] = [];
+  for (const r of rows) {
+    try {
+      const p = JSON.parse(r.payload) as { occurred_at?: unknown; resource?: { id?: unknown } };
+      if (p.resource?.id !== listingId || typeof p.occurred_at !== "string") continue;
+      const at = Date.parse(p.occurred_at);
+      if (!Number.isFinite(at) || Math.abs(at - r.createdAt.getTime()) > 10 * 60_000) continue;
+      if (at >= since.getTime() && at <= until.getTime()) out.push(new Date(at));
+    } catch { /* an unreadable body proves nothing */ }
+  }
+  return out.sort((a, b) => a.getTime() - b.getTime());
+}
+
+/**
+ * WHEN THE PHOTOS REALLY WENT OUT (Oct 22 2026, photo audit H3). deliveredAt
+ * used to be the project's delivery date or "now": when the hub noticed, a day
+ * late for 859 N Lawrence St (out Oct 21 1:45 PM, recorded Oct 22 7:58 AM)
+ * and hours late for 615 Cliff Ln (out 11:38 AM, recorded 5:48 PM). In order:
+ *   1. the hub's own Deliver in Aryeo (the push run's deliveredAt);
+ *   2. Aryeo's LISTING_DELIVERED webhook (the earliest since `since`);
+ *   3. when the sync first saw Aryeo say "delivered" (its move to Delivering);
+ *   4. now.
+ * The earliest of 1 and 2 wins. Read-only.
+ */
+export async function deliveryTimeFor(jobId: string, listingId: string | null, since: Date, now: Date = new Date()): Promise<{ at: Date; source: "push" | "aryeo-webhook" | "sync" | "verify" }> {
+  const found: { at: Date; source: "push" | "aryeo-webhook" }[] = [];
+  const run = await prisma.appSetting.findUnique({ where: { key: `photo_aryeo_push:${jobId}` }, select: { value: true } }).catch(() => null);
+  try {
+    const d = run ? (JSON.parse(run.value) as { deliveredAt?: string | null }).deliveredAt : null;
+    const at = d ? Date.parse(d) : NaN;
+    if (Number.isFinite(at) && at >= since.getTime() && at <= now.getTime()) found.push({ at: new Date(at), source: "push" });
+  } catch { /* no run record */ }
+  if (listingId) {
+    const hooks = await listingDeliveredHooks(listingId, since, now).catch(() => [] as Date[]);
+    if (hooks[0]) found.push({ at: hooks[0], source: "aryeo-webhook" });
+  }
+  if (found.length) return found.sort((a, b) => a.at.getTime() - b.at.getTime())[0];
+  const seen = await prisma.photoJobEvent.findFirst({ where: { jobId, actor: "sync", action: { contains: "→ DELIVERING: delivered in Aryeo" }, at: { gte: since, lte: now } }, orderBy: { at: "asc" }, select: { at: true } });
+  return seen ? { at: seen.at, source: "sync" } : { at: now, source: "verify" };
+}
+
 async function verifyDeliveryOnce(jobId: string, by: string): Promise<VerifyResult> {
-  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true, stage: true } });
+  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true, stage: true, deliveredAt: true, createdAt: true, deliveryStartedAt: true } });
   if (!job) return { ok: false, message: "Photo job not found.", aryeoCount: null, approved: 0 };
+  // Oct 22 2026 (photo audit C1): Aryeo's "delivered" is sticky (it says so
+  // for ever after the first delivery), so it is never read as a client's
+  // revision being delivered again. A revision leaves only through Approve and
+  // deliver again or Mark as delivering (both move the job to Delivering
+  // first), or Settled with the client.
+  if (!["DELIVERED", ...VERIFY_MOVES_FROM].includes(job.stage)) {
+    const approved = await prisma.photoAsset.count({ where: { jobId, status: { in: ["ACTIVE", ON_LISTING] } } });
+    return {
+      ok: false,
+      message: job.stage === "REVISION_REQUESTED"
+        ? "The client asked for changes after delivery. Aryeo still shows the earlier delivery, so nothing is checked: send the photos again (Approve and deliver again, or Mark as delivering), or press Settled with the client."
+        : "This job is not marked as delivering yet, so there is no delivery to check.",
+      aryeoCount: null,
+      approved,
+    };
+  }
   const project = await prisma.project.findUnique({ where: { id: job.projectId }, select: { aryeoListingId: true, title: true, deliveredAt: true, deliverables: { where: { removedFromOrderAt: null, waivedAt: null, type: "FLOORPLAN" }, select: { id: true } } } });
   const photos = await prisma.photoAsset.findMany({
     where: { jobId, status: { in: ["ACTIVE", "EXCLUDED", ON_LISTING] } },
@@ -527,8 +614,8 @@ async function verifyDeliveryOnce(jobId: string, by: string): Promise<VerifyResu
     return { ok: false, error: true, message: `Couldn't read the Aryeo listing (${(e as Error).message.slice(0, 140)}).`, aryeoCount: null, approved };
   }
   // Only the listing's own delivery_status says so (backend audit #14):
-  // Project.deliveredAt can be the hub's guess from the status sweep (it is
-  // still the best time to record once Aryeo agrees).
+  // Project.deliveredAt can be the hub's guess from the status sweep. The time
+  // recorded is deliveryTimeFor's (photo audit H3), never the project's date.
   const delivered = String(listing.data?.delivery_status ?? "").toUpperCase() === "DELIVERED";
   if (!delivered) return { ok: false, waiting: true, message: `Aryeo still has the listing as ${(listing.data?.delivery_status ?? "not delivered").toLowerCase().replace(/_/g, " ")}.`, aryeoCount: null, approved };
   const shown = (listing.data?.images ?? []).filter((i) => i.display_in_gallery !== false);
@@ -585,7 +672,23 @@ async function verifyDeliveryOnce(jobId: string, by: string): Promise<VerifyResu
   }
   await prisma.photoJob.update({ where: { id: jobId }, data: { deliveryDiffJson: JSON.stringify(diff) } });
   if (job.stage !== "DELIVERED") {
-    await setStage(jobId, "any", "DELIVERED", by, { why: `verified: ${aryeoCount} photos on the listing`, extra: { deliveredAt: project.deliveredAt ?? new Date(), deliveredBy: by } });
+    const now = new Date();
+    if (job.deliveredAt) {
+      // A RE-DELIVERY (photo audit H3): the first delivery stays the job's
+      // deliveredAt (the on-time record); this one is written on its own.
+      const since = await import("./clientAsked").then((m) => m.revisionStartOf(jobId)).catch(() => null);
+      const from = job.deliveryStartedAt && (!since || job.deliveryStartedAt > since) ? job.deliveryStartedAt : since ?? job.deliveredAt;
+      const t = await deliveryTimeFor(jobId, project.aryeoListingId, from, now);
+      const moved = await setStage(jobId, [...VERIFY_MOVES_FROM], "DELIVERED", by, { why: `verified: ${aryeoCount} photos on the listing (delivered again; first delivered ${job.deliveredAt.toISOString()})` });
+      if (moved) {
+        await logJobEvent(jobId, by, `${REDELIVERED_ACTION}: ${t.at.toISOString()} (${t.source})`, { at: t.at.toISOString(), source: t.source, firstDeliveredAt: job.deliveredAt.toISOString() });
+        // The revision round is over: the photo revision's to-do closes from the photo side (photo audit H1).
+        await import("./clientAsked").then((m) => m.closePhotoRevisionTask(job.projectId, `the photos were delivered again (${by})`)).catch(() => null);
+      }
+    } else {
+      const t = await deliveryTimeFor(jobId, project.aryeoListingId, await roundStartOf(jobId, job.createdAt), now);
+      await setStage(jobId, [...VERIFY_MOVES_FROM], "DELIVERED", by, { why: `verified: ${aryeoCount} photos on the listing (delivered ${t.at.toISOString()}, from ${t.source === "push" ? "the hub's own delivery" : t.source === "aryeo-webhook" ? "Aryeo's delivery notice" : t.source === "sync" ? "when the hub first saw it delivered" : "this check"})`, extra: { deliveredAt: t.at, deliveredBy: by } });
+    }
     // A delivery nobody approved in the hub (Mark as delivering, Deliver in
     // Aryeo by hand) still settles the shoot's media check (Oct 21 2026).
     const { closeMediaCheckForPhotos } = await import("./mediaCheck");

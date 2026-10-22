@@ -34,6 +34,16 @@ import { HUB_EDIT, HUB_EDIT_LISTED } from "./photoEdit";
 // the picture, so it stops counting), or (b) Kyle confirms it by hand with a short note ("Lot lines
 // added", for work done outside the hub), kept on the job's activity.
 // Another add-on is one more line in ADD_ON_WORK.
+//
+// Oct 22 2026 (photo audit H6, M2):
+//   · a version counts only while it IS the photo (its content hash is the
+//     photo's current one): lot lines drawn and then replaced on the listing
+//     (or by a later edit) no longer clear the hold;
+//   · virtual staging clears by itself too: the fix runner's staging version
+//     ("AutoHDR single_angle_staging"), or staged images already on the Aryeo
+//     listing, as many as were ordered (Lot Lines the same way: 58 Recreation
+//     Dr's lot lines went on as 3 separate "Lot Lines (n).jpg"). The order
+//     line's DONE status is not read (addOnsOrdered says why).
 // ---------------------------------------------------------------------------
 
 export type AddOnKey = "lot_lines" | "virtual_staging";
@@ -52,6 +62,12 @@ export type AddOnWork = {
   versionLabel: string;
   /** Only versions from these sources count (none listed: any source). */
   versionSources?: string[];
+  /** Oct 22 2026 (M2): other labels that carry the same work, each with its own sources (the fix runner's "AutoHDR single_angle_staging"). */
+  moreLabels?: { label: string; sources: string[] }[];
+  /** Oct 22 2026 (M2): a listing image named so ("Lot Lines (2).jpg", "Staged Living.jpg") is the work, already on the Aryeo listing. */
+  listingName?: RegExp;
+  /** Oct 22 2026 (M2): the classifier's "virtually staged" mark on a listing image counts too. */
+  listingStaged?: boolean;
   /** The agent's sentences about it (order notes, questions, texts, the wrap-up). */
   words: RegExp;
 };
@@ -69,6 +85,7 @@ export const ADD_ON_WORK: readonly AddOnWork[] = [
     // version labelled so counts too.
     versionLabel: LOT_LINES_LABEL,
     versionSources: [HUB_EDIT, HUB_EDIT_LISTED, "EDITOR"],
+    listingName: /\b(lot|property|parcel|boundary)[\s_-]*lines?\b/i,
     words: /\b(lot|property|parcel|boundary)[\s-]*lines?\b|\bplats?\b|\bsurvey\b|\bacres?\b|\bacreage\b|\bparcels?\b|\bboundar(?:y|ies)\b|\blots?\s+\d|\bseparate lots?\b/i,
   },
   {
@@ -78,9 +95,20 @@ export const ADD_ON_WORK: readonly AddOnWork[] = [
     product: /\b(virtual(?:ly)?|digital(?:ly)?)[\s-]*stag/i,
     types: ["VIRTUAL_STAGING"],
     versionLabel: "Virtual staging",
+    // The fix runner's own label for AutoHDR's staging transform (fixRunner.ts: `AutoHDR ${transformName}`).
+    moreLabels: [{ label: "AutoHDR single_angle_staging", sources: ["FIX"] }],
+    listingName: /\bstag(?:ed|ing)\b|\bvirtual(?:ly)?[\s_-]*stag/i,
+    listingStaged: true,
     words: /\bstag(?:e|ed|ing)\b|\bfurnish\w*|\bfurniture\b|\bempty rooms?\b|\bvacant\b/i,
   },
 ];
+
+/** Does a version with this label and source carry this add-on's work? Pure. */
+export function versionCarries(work: AddOnWork, v: { label: string; source: string }): boolean {
+  const label = v.label.toLowerCase();
+  if (label.startsWith(work.versionLabel.toLowerCase()) && (!work.versionSources?.length || work.versionSources.includes(v.source))) return true;
+  return (work.moreLabels ?? []).some((m) => label.startsWith(m.label.toLowerCase()) && m.sources.includes(v.source));
+}
 
 export const ADD_ON_BY_KEY = new Map(ADD_ON_WORK.map((w) => [w.key, w]));
 
@@ -90,23 +118,29 @@ export const ADD_ON_CONFIRM_ACTION = "add-on confirmed";
 export const ADD_ON_NOTE_MIN = 5;
 
 type OrderLine = { title: string; isCanceled?: boolean | null };
-type DeliverableLine = { type: string; label: string | null; productTitle: string | null; removedFromOrderAt?: Date | null; waivedAt?: Date | null };
+type DeliverableLine = { type: string; label: string | null; productTitle: string | null; removedFromOrderAt?: Date | null; waivedAt?: Date | null; status?: string | null; quantity?: number | null };
 
 /**
  * The add-on work this order owes, with the order line that asks for it. Pure.
  * A live order item or deliverable asks for it; a deliverable for it that was
  * waived or pulled from the order (and nothing live for it) means it is not owed.
+ * Oct 22 2026 (M2): `quantity`, how many were ordered (at least 1): that
+ * many images of the work on the listing clear it. The deliverable's own DONE
+ * status is NOT read: the hourly status sweep marks a staging line DONE as
+ * soon as any photo is on the listing (projectStatus.expectedCategories puts
+ * VIRTUAL_STAGING under PHOTOS), so it cannot tell staged from not staged.
  */
-export function addOnsOrdered(orderItems: OrderLine[], deliverables: DeliverableLine[]): { work: AddOnWork; line: string }[] {
-  const out: { work: AddOnWork; line: string }[] = [];
+export function addOnsOrdered(orderItems: OrderLine[], deliverables: DeliverableLine[]): { work: AddOnWork; line: string; quantity: number }[] {
+  const out: { work: AddOnWork; line: string; quantity: number }[] = [];
   for (const work of ADD_ON_WORK) {
     const titled = (d: DeliverableLine) => [d.productTitle, d.label].filter((x): x is string => !!x?.trim());
     const isIt = (d: DeliverableLine) => titled(d).some((t) => work.product.test(t)) || (titled(d).length === 0 && work.types.includes(d.type));
     const mine = deliverables.filter(isIt);
     const live = mine.filter((d) => !d.removedFromOrderAt && !d.waivedAt);
     const item = orderItems.find((i) => !i.isCanceled && work.product.test(i.title));
-    if (live.length) out.push({ work, line: titled(live[0])[0] ?? item?.title ?? work.need.replace(/ needed$/, "") });
-    else if (item && !mine.length) out.push({ work, line: item.title });
+    const quantity = Math.max(1, live.reduce((s, d) => s + Math.max(1, d.quantity ?? 1), 0));
+    if (live.length) out.push({ work, line: titled(live[0])[0] ?? item?.title ?? work.need.replace(/ needed$/, ""), quantity });
+    else if (item && !mine.length) out.push({ work, line: item.title, quantity: 1 });
   }
   return out;
 }
@@ -148,9 +182,14 @@ export type AddOnState = {
   /** The order line that asks for it ("Lot Lines"). */
   ordered: string;
   quotes: AddOnQuote[];
-  /** Cleared: a version on a photo in the delivery, or Kyle's confirmation by hand. */
-  cleared: { how: "version" | "confirmed"; by: string | null; atISO: string; note: string | null; photoName: string | null } | null;
+  /**
+   * Cleared: a version on a photo in the delivery, or Kyle's confirmation by
+   * hand. Oct 22 2026 (M2): "listing", the work already on the Aryeo listing
+   * (photoName: the images).
+   */
+  cleared: { how: AddOnClearedHow; by: string | null; atISO: string; note: string | null; photoName: string | null } | null;
 };
+export type AddOnClearedHow = "version" | "confirmed" | "listing";
 
 const firstName = (n: string | null | undefined) => (n ?? "").trim().split(/\s+/)[0] || null;
 
@@ -193,25 +232,69 @@ async function versionsOf(jobIds: string[]): Promise<Map<string, Map<AddOnKey, {
       photo: { jobId: { in: jobIds }, status: { in: ["ACTIVE", ON_LISTING] } },
       OR: [
         ...ADD_ON_WORK.map((w) => ({ label: { startsWith: w.versionLabel, mode: "insensitive" as const }, ...(w.versionSources?.length ? { source: { in: w.versionSources } } : {}) })),
+        ...ADD_ON_WORK.flatMap((w) => (w.moreLabels ?? []).map((m) => ({ label: { startsWith: m.label, mode: "insensitive" as const }, source: { in: m.sources } }))),
         { source: HUB_EDIT },
       ],
     },
     orderBy: { createdAt: "desc" },
-    select: { photoId: true, label: true, source: true, createdAt: true, createdBy: true, photo: { select: { jobId: true, name: true } } },
+    select: { photoId: true, label: true, source: true, createdAt: true, createdBy: true, contentHash: true, autohdrVersionUuid: true, photo: { select: { jobId: true, name: true, contentHash: true, autohdrVersionUuid: true } } },
     take: 600,
   });
-  const workOf = (v: { label: string; source: string }) => ADD_ON_WORK.find((w) => v.label.toLowerCase().startsWith(w.versionLabel.toLowerCase()) && (!w.versionSources?.length || w.versionSources.includes(v.source)));
+  const workOf = (v: { label: string; source: string }) => ADD_ON_WORK.find((w) => versionCarries(w, v));
   // The newest hub picture of each photo (rows are newest first).
   const newestHub = new Map<string, (typeof rows)[number]>();
   for (const v of rows) if (v.source === HUB_EDIT && !newestHub.has(v.photoId)) newestHub.set(v.photoId, v);
   for (const v of rows) {
     const work = workOf(v);
     if (!work) continue;
+    // Oct 22 2026 (photo audit H6): the version counts only while it is the
+    // photo's current picture. Lot lines replaced on the listing (a "Replaced"
+    // version), or a later edit, mean the lines are gone from the photo.
+    if (!isCurrentVersion(v, v.photo)) continue;
     const later = newestHub.get(v.photoId);
     if (v.source === HUB_EDIT && later && later !== v && workOf(later)?.key !== work.key) continue;
     const m = out.get(v.photo.jobId) ?? new Map();
     if (!m.has(work.key)) m.set(work.key, { at: v.createdAt, by: v.createdBy, photoName: v.photo.name });
     out.set(v.photo.jobId, m);
+  }
+  return out;
+}
+
+/**
+ * Is this version the photo's current picture? (pure; photo audit H6) Its
+ * content hash is the photo's, or (an AutoHDR fix, whose hash the hub keeps as
+ * the AutoHDR version) its AutoHDR version is the photo's current one.
+ */
+export function isCurrentVersion(v: { contentHash: string | null; autohdrVersionUuid?: string | null }, photo: { contentHash: string | null; autohdrVersionUuid?: string | null }): boolean {
+  if (v.contentHash && photo.contentHash) return v.contentHash === photo.contentHash;
+  return !!v.autohdrVersionUuid && v.autohdrVersionUuid === photo.autohdrVersionUuid;
+}
+
+/**
+ * Oct 22 2026 (photo audit M2): the add-on work already on the Aryeo listing:
+ * listing images (read from the listing, or a split job's delivered photos)
+ * named for it ("Lot Lines (2).jpg") or, for staging, marked virtually staged
+ * by the classifier. By job and key: how many, and their names.
+ */
+async function listedWorkOf(jobIds: string[]): Promise<Map<string, Map<AddOnKey, { n: number; names: string[]; at: Date }>>> {
+  const out = new Map<string, Map<AddOnKey, { n: number; names: string[]; at: Date }>>();
+  if (!jobIds.length || !ADD_ON_WORK.some((w) => w.listingName || w.listingStaged)) return out;
+  const rows = await prisma.photoAsset.findMany({
+    where: { jobId: { in: jobIds }, OR: [{ status: ON_LISTING }, { status: "ACTIVE", sourceKind: "ARYEO" }] },
+    select: { jobId: true, name: true, isVirtuallyStaged: true, updatedAt: true },
+    take: 2000,
+  });
+  for (const r of rows) {
+    for (const w of ADD_ON_WORK) {
+      if (!((w.listingName && w.listingName.test(r.name)) || (w.listingStaged && r.isVirtuallyStaged))) continue;
+      const m = out.get(r.jobId) ?? new Map();
+      const cur = m.get(w.key) ?? { n: 0, names: [], at: r.updatedAt };
+      cur.n++;
+      cur.names.push(r.name);
+      if (r.updatedAt > cur.at) cur.at = r.updatedAt;
+      m.set(w.key, cur);
+      out.set(r.jobId, m);
+    }
   }
   return out;
 }
@@ -227,18 +310,19 @@ export async function addOnStates(projectId: string, jobId: string): Promise<Add
       removalNotes: true, shotOrderNotes: true, editorBrief: true,
       photographer: { select: { name: true } },
       orderItems: { select: { title: true, isCanceled: true } },
-      deliverables: { select: { type: true, label: true, productTitle: true, removedFromOrderAt: true, waivedAt: true } },
+      deliverables: { select: { type: true, label: true, productTitle: true, removedFromOrderAt: true, waivedAt: true, quantity: true } },
       appointments: { orderBy: { startAt: "asc" }, select: { description: true } },
     },
   });
   if (!p) return [];
   const ordered = addOnsOrdered(p.orderItems, p.deliverables);
   if (!ordered.length) return [];
-  const [{ cleanBrief, parseShootBrief }, { ASK_SOURCES, sourceWords }, confirmed, versions, asks] = await Promise.all([
+  const [{ cleanBrief, parseShootBrief }, { ASK_SOURCES, sourceWords }, confirmed, versions, listed, asks] = await Promise.all([
     import("@/lib/shoot"),
     import("@/lib/clientAsks"),
     confirmationsOf([jobId]),
     versionsOf([jobId]),
+    listedWorkOf([jobId]),
     prisma.clientAsk.findMany({ where: { projectId }, orderBy: { askedAt: "asc" }, take: 40, select: { text: true, source: true, askedBy: true, askedAt: true } }),
   ]);
   // Every place the agent (or the photographer) could have said how they want it.
@@ -258,16 +342,20 @@ export async function addOnStates(projectId: string, jobId: string): Promise<Add
   sources.push({ from: wrap, text: p.editorBrief }, { from: wrap, text: p.removalNotes }, { from: wrap, text: p.shotOrderNotes });
   const mineConfirmed = confirmed.get(jobId);
   const mineVersions = versions.get(jobId);
-  return ordered.map(({ work, line }) => {
+  const mineListed = listed.get(jobId);
+  return ordered.map(({ work, line, quantity }) => {
     const v = mineVersions?.get(work.key);
     const c = mineConfirmed?.get(work.key);
-    // The newer of the two decides what the line says; either clears it.
-    const cleared: AddOnState["cleared"] =
-      v && (!c || v.at >= c.at)
-        ? { how: "version", by: v.by, atISO: v.at.toISOString(), note: null, photoName: v.photoName }
-        : c
-          ? { how: "confirmed", by: c.by, atISO: c.at.toISOString(), note: c.note, photoName: null }
-          : null;
+    // Oct 22 2026 (M2): already on the Aryeo listing, as many images of it as were ordered.
+    const l = mineListed?.get(work.key);
+    const onListing = l && l.n >= quantity ? l : null;
+    // The newest of them decides what the line says; any clears it (on a tie, the first listed: a version, then a person's confirmation).
+    const options: NonNullable<AddOnState["cleared"]>[] = [
+      ...(v ? [{ how: "version" as const, by: v.by, atISO: v.at.toISOString(), note: null, photoName: v.photoName }] : []),
+      ...(c ? [{ how: "confirmed" as const, by: c.by, atISO: c.at.toISOString(), note: c.note, photoName: null }] : []),
+      ...(onListing ? [{ how: "listing" as const, by: null, atISO: onListing.at.toISOString(), note: null, photoName: clip(onListing.names.join(", "), 120) }] : []),
+    ];
+    const cleared: AddOnState["cleared"] = options.length ? options.reduce((best, o) => (Date.parse(o.atISO) > Date.parse(best.atISO) ? o : best)) : null;
     return { key: work.key, need: work.need, done: work.done, ordered: line, quotes: addOnQuotes(work, sources), cleared };
   });
 }
@@ -288,7 +376,7 @@ export async function openAddOnsByProject(projectIds: string[]): Promise<Map<str
       select: {
         id: true,
         orderItems: { select: { title: true, isCanceled: true } },
-        deliverables: { select: { type: true, label: true, productTitle: true, removedFromOrderAt: true, waivedAt: true } },
+        deliverables: { select: { type: true, label: true, productTitle: true, removedFromOrderAt: true, waivedAt: true, quantity: true } },
       },
     }),
     prisma.photoJob.findMany({ where: { projectId: { in: ids } }, select: { id: true, projectId: true, stage: true } }),
@@ -297,12 +385,13 @@ export async function openAddOnsByProject(projectIds: string[]): Promise<Map<str
   if (!owing.length) return out;
   const jobOf = new Map(jobs.map((j) => [j.projectId, j]));
   const jobIds = owing.map((p) => jobOf.get(p.id)?.id).filter((x): x is string => !!x);
-  const [confirmed, versions] = await Promise.all([confirmationsOf(jobIds), versionsOf(jobIds)]);
+  const [confirmed, versions, listed] = await Promise.all([confirmationsOf(jobIds), versionsOf(jobIds), listedWorkOf(jobIds)]);
   for (const p of owing) {
     const job = jobOf.get(p.id);
     // Photos already out: nothing to hold any more.
     if (job?.stage === "DELIVERED") continue;
-    const open = p.ordered.filter((o) => !job || (!confirmed.get(job.id)?.has(o.work.key) && !versions.get(job.id)?.has(o.work.key))).map((o) => o.work.need);
+    const onListing = (key: AddOnKey, n: number) => (listed.get(job?.id ?? "")?.get(key)?.n ?? 0) >= n;
+    const open = p.ordered.filter((o) => !job || (!confirmed.get(job.id)?.has(o.work.key) && !versions.get(job.id)?.has(o.work.key) && !onListing(o.work.key, o.quantity))).map((o) => o.work.need);
     if (open.length) out.set(p.id, open);
   }
   return out;

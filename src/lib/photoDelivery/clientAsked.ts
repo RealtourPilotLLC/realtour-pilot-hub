@@ -312,7 +312,10 @@ export async function clientAskedItems(projectId: string): Promise<ClientAskedIt
   ]);
   return rows
     // Order notes: only the ones Photo Delivery filed (an older row is the Oct 19 clean-up's business).
-    .filter((r) => mediumMatches(r.medium, "photo") && !closesOnDelivery(r, project) && (r.source !== "order_note" || (r.dedupeKey ?? "").startsWith(ORDER_NOTE_KEY_PREFIX)))
+    // Oct 22 2026 (photo audit H2): an ask that holds delivery stays a line
+    // while it is open, the job's delivery notwithstanding (the hub no longer
+    // closes those by itself: a person settles them); a cancelled job's never.
+    .filter((r) => mediumMatches(r.medium, "photo") && (r.holdsDelivery ? project?.status !== "CANCELLED" : !closesOnDelivery(r, project)) && (r.source !== "order_note" || (r.dedupeKey ?? "").startsWith(ORDER_NOTE_KEY_PREFIX)))
     .map((r) => {
       const fromWrapUp = r.source === WRAPUP_ASK_SOURCE;
       // Oct 22 2026 (lib/briefPhotoAsks): the photo part of a client's message,
@@ -458,7 +461,9 @@ export async function photoAskAfterDelivery(input: { projectId: string; words: s
     out.jobId = job.id;
     const words = clip(scrubMoney(input.words.replace(/\s+/g, " ").trim()), 240);
     if (job.stage === "DELIVERED" || job.stage === "DELIVERY_MISMATCH") {
-      out.reopened = await setStage(job.id, ["DELIVERED", "DELIVERY_MISMATCH"], "REVISION_REQUESTED", input.by.slice(0, 120) || "client", { why: `Client asked for changes after delivery: ${words}` });
+      // Oct 22 2026 (photo audit C1): looked at again now, on the open job's
+      // pace, not at the delivered job's 6-hour check.
+      out.reopened = await setStage(job.id, ["DELIVERED", "DELIVERY_MISMATCH"], "REVISION_REQUESTED", input.by.slice(0, 120) || "client", { why: `Client asked for changes after delivery: ${words}`, extra: { nextCheckAt: new Date() } });
     }
     out.taskId = await photoChangesTask({ projectId: input.projectId, jobId: job.id, words, askedBy: input.askedBy ?? null, clientId: input.clientId ?? null });
     return out;
@@ -524,6 +529,78 @@ async function photoChangesTask(input: { projectId: string; jobId: string; words
       .catch(() => {});
   }
   return made?.id ?? null;
+}
+
+// ---- the end of a revision (Oct 22 2026, photo audit C1 / H1) -------------------------------------
+
+/** When the client's latest revision of the photos began (the job's last move into REVISION_REQUESTED), or null. */
+export async function revisionStartOf(jobId: string): Promise<Date | null> {
+  const e = await prisma.photoJobEvent.findFirst({ where: { jobId, action: { contains: "→ REVISION_REQUESTED" } }, orderBy: { at: "desc" }, select: { at: true } });
+  return e?.at ?? null;
+}
+
+/**
+ * The photo revision's to-do (photoRevisionTaskKey) closes from the PHOTO
+ * side only (photo audit H1): when the photos are delivered again, or a
+ * person settles the revision with the client. comms.resolveRevision (the
+ * video side) leaves it alone. When it was the job's last open revision, the
+ * job lands where it stands (comms.resolveRevisionForTask). Never throws.
+ */
+export async function closePhotoRevisionTask(projectId: string, why: string): Promise<boolean> {
+  try {
+    const t = await prisma.smartTask.findUnique({ where: { dedupeKey: photoRevisionTaskKey(projectId) }, select: { id: true, status: true, summary: true } });
+    if (!t || t.status === "COMPLETED" || t.status === "CANCELLED") return false;
+    const r = await prisma.smartTask.updateMany({ where: { id: t.id, status: t.status }, data: { status: "COMPLETED", completedAt: new Date(), summary: clip(`Done: ${why}. ${t.summary ?? ""}`.trim(), 500) } });
+    if (!r.count) return false;
+    const { resolveRevisionForTask } = await import("@/lib/comms");
+    await resolveRevisionForTask(t.id, projectId, "resolved").catch((e) => console.warn("[photo-delivery] landing the job after the photo revision failed", projectId, (e as Error).message));
+    return true;
+  } catch (e) {
+    console.error("[photo-delivery] closing the photo revision to-do failed", projectId, e);
+    return false;
+  }
+}
+
+/** The job event "Settled with the client: nothing to resend" writes (and the stage move's reason). */
+export const SETTLED_ACTION = "settled with the client: nothing to resend";
+
+/**
+ * SETTLED WITH THE CLIENT: NOTHING TO RESEND (Oct 22 2026, photo audit C1).
+ * The third way out of a client's photo revision, beside Approve and deliver
+ * again and Mark as delivering: the office talked it through with the client
+ * and nothing goes out again (the client withdrew it, it was answered, the
+ * photos stay as they are). Only with a typed reason. The photo requests the
+ * client made in this revision (photo only, asked since the photos first went
+ * out) are answered with that reason (Not needed, each with its note); the job
+ * goes back to Delivered with its first delivery date; the photo revision's
+ * to-do closes. A request about the video too is left as it is.
+ */
+export async function settleRevisionNoResend(input: { jobId: string; reason: string; by: string }): Promise<{ ok: boolean; message: string }> {
+  const { SETTLED_REASON_MIN } = await import("./holding");
+  const why = (input.reason ?? "").replace(/\s+/g, " ").trim().slice(0, 400);
+  if (why.length < SETTLED_REASON_MIN) return { ok: false, message: `Write what was settled with the client, and why nothing goes out again (at least ${SETTLED_REASON_MIN} characters).` };
+  const job = await prisma.photoJob.findUnique({ where: { id: input.jobId }, select: { id: true, projectId: true, stage: true, deliveredAt: true } });
+  if (!job) return { ok: false, message: "That photo job no longer exists." };
+  const inRevision = job.stage === "REVISION_REQUESTED" || (!!job.deliveredAt && ["QC_REVIEW", "READY"].includes(job.stage));
+  if (!inRevision) return { ok: false, message: "Only photos reopened for the client's changes can be settled this way. Reload the page." };
+  const who = input.by.trim().slice(0, 120) || "staff";
+  // Asked since the photos first went out (the request is filed a moment before it reopens the job).
+  const since = job.deliveredAt ?? (await revisionStartOf(job.id));
+  const asks = await prisma.clientAsk.findMany({
+    where: { projectId: job.projectId, state: "OPEN", kind: "SPECIAL_REQUEST", medium: "photo", ...(since ? { askedAt: { gte: since } } : {}) },
+    select: { id: true },
+  });
+  const moved = await setStage(job.id, ["REVISION_REQUESTED", "QC_REVIEW", "READY"], "DELIVERED", who, { why: `${SETTLED_ACTION}: ${why}`, extra: { nextCheckAt: new Date(Date.now() + 6 * 3_600_000) } });
+  if (!moved) return { ok: false, message: "This job moved on in the meantime. Reload the page." };
+  const { markNotNeeded } = await import("@/lib/clientAsks");
+  let answered = 0;
+  for (const a of asks) if ((await markNotNeeded(a.id, who, `Settled with the client, nothing to resend: ${why}`)).ok) answered++;
+  await logJobEvent(job.id, who, `${SETTLED_ACTION}: ${why}`, { settled: true, reason: why, answered });
+  await closePhotoRevisionTask(job.projectId, `settled with the client by ${who}: ${why}`);
+  await prisma.activity
+    .create({ data: { projectId: job.projectId, type: "SYSTEM", body: clip(`Photo revision settled with the client by ${who}, nothing to resend: ${why}${answered ? ` (${answered} photo request${answered === 1 ? "" : "s"} answered with this)` : ""}`, 600) } })
+    .catch(() => {});
+  return { ok: true, message: `Settled. The photos stay as delivered${answered ? `, and ${answered} request${answered === 1 ? " is" : "s are"} answered with your note` : ""}.` };
 }
 
 // ---- the approve summary ---------------------------------------------------------------------

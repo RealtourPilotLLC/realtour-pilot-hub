@@ -160,6 +160,29 @@ export async function overrideWrapUpAction(jobId: string, reason: string): Promi
   }
 }
 
+/**
+ * Oct 22 2026 (photo audit C1): the client's photo revision is settled with
+ * them and nothing goes out again: a typed reason, kept on the job and on each
+ * photo request it answers (lib/photoDelivery/clientAsked settleRevisionNoResend).
+ */
+export async function settleRevisionAction(jobId: string, reason: string): Promise<ActionResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  if (!ID.test(String(jobId))) return { ok: false, message: "That job id is not valid." };
+  try {
+    const { by } = await actor();
+    const { settleRevisionNoResend } = await import("@/lib/photoDelivery/clientAsked");
+    const r = await settleRevisionNoResend({ jobId, reason: typeof reason === "string" ? reason : "", by });
+    if (r.ok) refresh(jobId);
+    return r;
+  } catch (e) {
+    return failed("settle the revision", e);
+  }
+}
+
 /** The approve summary, on the job's activity when a person delivers with careful set-asides (shown to them first; never a block). */
 async function noteIgnoredOnDelivery(jobId: string, by: string): Promise<void> {
   try {
@@ -182,9 +205,10 @@ export async function stopFlaggingAction(input: { jobId?: string | null; ruleId:
   }
   if (!input || typeof input.ruleId !== "string" || !/^[A-Z0-9_]{3,80}$/.test(input.ruleId)) return { ok: false, message: "That check is not valid." };
   try {
-    const { by } = await actor();
+    const { by, role } = await actor();
     const { stopRule } = await import("@/lib/photoDelivery/houseRules");
-    const r = await stopRule(input.ruleId, typeof input.reason === "string" ? input.reason : "", by);
+    // Oct 22 2026 (photo audit M6): the real role, so a check only Jordan may switch off stays on for anyone else.
+    const r = await stopRule(input.ruleId, typeof input.reason === "string" ? input.reason : "", by, { role });
     if (r.ok) {
       refresh(typeof input.jobId === "string" && ID.test(input.jobId) ? input.jobId : undefined);
       revalidatePath(`${BASE}/settings`);
@@ -288,7 +312,7 @@ export async function restageForAryeoAction(jobId: string): Promise<ActionResult
  * deliver" or "Approve and upload to Aryeo". Answers at once; the upload (and
  * the delivery after it) carries on after.
  */
-export async function approveAryeoAction(jobId: string, opts: { deliver: boolean; anyway?: boolean }): Promise<ActionResult> {
+export async function approveAryeoAction(jobId: string, opts: { deliver: boolean; anyway?: boolean; holdReason?: string | null }): Promise<ActionResult> {
   try {
     await requireAdmin();
   } catch (e) {
@@ -298,7 +322,8 @@ export async function approveAryeoAction(jobId: string, opts: { deliver: boolean
   try {
     const { by } = await actor();
     const { approveJob, advancePush } = await import("@/lib/photoDelivery/aryeoPush");
-    const r = await approveJob(jobId, by, { deliver: opts.deliver === true, anyway: opts.anyway === true });
+    // Oct 22 2026 (photo audit H2): Approve and upload checks the holds; `holdReason` is Kyle's typed reason to upload past them.
+    const r = await approveJob(jobId, by, { deliver: opts.deliver === true, anyway: opts.anyway === true, holdReason: typeof opts.holdReason === "string" ? opts.holdReason : null });
     if (r.started && opts.deliver === true) await noteIgnoredOnDelivery(jobId, by);
     if (r.started) {
       const go = () => advancePush(jobId, { budgetMs: 50_000 }).then(() => undefined).catch(() => undefined);
@@ -553,8 +578,17 @@ export async function requestQcAction(jobId: string): Promise<ActionResult> {
   if (!ID.test(String(jobId))) return { ok: false, message: "That job id is not valid." };
   try {
     const settings = await photoDeliverySettings();
-    if (!settings.qcEnabled) return { ok: false, message: "QC is switched off in Photo Delivery settings." };
     const { by } = await actor();
+    // Oct 22 2026 (photo audit H5): "Check again" is the FREE photo check
+    // (AutoHDR describe, no credits), on a revision and a delivery problem too.
+    // The paid QC is asked for only when the free check is off and it is on.
+    if (settings.enabled && settings.freeCheck) {
+      const { requestFreeRecheck } = await import("@/lib/photoDelivery/autohdrCheck");
+      const r = await requestFreeRecheck(jobId, by);
+      if (r.ok) refresh(jobId);
+      return r;
+    }
+    if (!settings.qcEnabled) return { ok: false, message: "The photo check is switched off in Photo Delivery settings." };
     const r = await requestQcRerun(jobId, by);
     if (r.ok) refresh(jobId);
     return { ok: r.ok, message: r.message };

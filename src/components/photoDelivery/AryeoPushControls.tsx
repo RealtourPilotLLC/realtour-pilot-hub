@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { etMonthDayTime } from "@/lib/datetime";
 import { approveAryeoAction, deliverInAryeoAction } from "@/app/ops/photo-delivery/actions";
+import { UPLOAD_HELD_PREFIX, UPLOAD_OVERRIDE_MIN } from "@/lib/photoDelivery/holding";
 import { useJob } from "./JobContext";
 import type { AryeoPushView } from "./types";
 
@@ -109,7 +110,7 @@ function withWarning(warning: string | null | undefined, body: string) {
 
 /** Kyle's presses, each with its confirm: Approve and deliver, Approve and upload to Aryeo (and "Upload anyway"), Deliver in Aryeo. `warning`: the approve summary. */
 export function useAryeoPushActions() {
-  const { jobId, run, confirm, notify, readOnly } = useJob();
+  const { jobId, run, confirm, ask, notify, readOnly } = useJob();
   const approve = async (deliver: boolean, warning?: string | null) => {
     // Kyle approves (Oct 22 2026: a view-only page has no such press; the action refuses it too).
     if (readOnly) return;
@@ -122,6 +123,21 @@ export function useAryeoPushActions() {
       if (!ok) return;
     }
     const r = await approveAryeoAction(jobId, { deliver }).catch(() => ({ ok: false, message: "The hub didn't answer. Try again in a moment." }));
+    // Oct 22 2026 (photo audit H2): Approve and upload checks the same holds as
+    // Approve and deliver. Kyle can still put the photos up past them, only
+    // with a typed reason (kept on the job's activity); they are not delivered.
+    if (!r.ok && !deliver && r.message.startsWith(UPLOAD_HELD_PREFIX)) {
+      const reason = await ask({
+        title: "Upload to Aryeo with things still open?",
+        description: `${r.message.slice(UPLOAD_HELD_PREFIX.length).trim()} The photos go on the listing but are not delivered: Deliver in Aryeo still waits for the checklist. Write why they can go up now. It is kept on the job's activity.`,
+        required: true,
+        minLength: UPLOAD_OVERRIDE_MIN,
+        confirmLabel: "Upload anyway",
+        danger: true,
+      });
+      if (reason !== null) await run(() => approveAryeoAction(jobId, { deliver: false, holdReason: reason }));
+      return;
+    }
     if (!r.ok && /Send anyway/.test(r.message)) {
       const go = await confirm({ title: "The listing already has other photos", body: r.message.replace("press Send anyway", "press Upload anyway"), confirmLabel: "Upload anyway" });
       if (go) await run(() => approveAryeoAction(jobId, { deliver, anyway: true }));
