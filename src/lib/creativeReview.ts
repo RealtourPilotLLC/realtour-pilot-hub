@@ -369,6 +369,138 @@ export async function resolveCreativeReview(input: { briefId: string; mode: Reso
   return { ok: true, message: input.mode === "CHANGES" ? `Sent ${added.length} change${added.length === 1 ? "" : "s"} to the editor.` : input.mode === "AS_IS" ? "Sent to the editor with your reading attached." : "Recorded: no change needed." };
 }
 
+// ---------------------------------------------------------------------------
+// A CREATIVE REVIEW THE WORK HAS ALREADY ANSWERED CLOSES ITSELF (audit M1,
+// Oct 22 2026). Nine "Creative review" tasks sat open on delivered jobs whose
+// revisions were finished: nothing ever closed one except a person pressing
+// its buttons, so they piled up on Jordan's and James's lists after the video
+// had gone back to the client. One closes on its own when either:
+//   · the revision card it was filed on (the brief's video-lane revision task)
+//     is COMPLETED; or
+//   · a NEWER version of the video it is about was approved: the brief's cut
+//     (a later round on the same video), else its per-video row (approved
+//     after the ask), else, on a job owing one video, that video (approved
+//     after the ask). A "same ask came back" review (keyed by issue) closes
+//     when its issue is verified or a later version of its video is approved.
+// Closing records RESOLVED / NOT_NEEDED with the reason, archives the held
+// items as resolveCreativeReview does (the client's words stay), gives the
+// editor's card back if this held it, completes the task and says so on the
+// timeline. Runs on every approval (review/actions approveCut) and hourly (the
+// sync cron), so a revision finished any other way closes within the hour.
+// ---------------------------------------------------------------------------
+
+export type SettledCreativeReview = { taskId: string; projectId: string | null; street: string; briefId: string | null; why: string };
+
+async function newerApprovedSince(projectId: string, slot: { deliverableId: string; slot: number; round?: number; since?: Date }): Promise<{ round: number } | null> {
+  return prisma.reviewSubmission.findFirst({
+    where: {
+      projectId, deliverableId: slot.deliverableId, slot: slot.slot, status: "APPROVED",
+      ...(slot.round !== undefined ? { round: { gt: slot.round } } : {}),
+      ...(slot.since ? { decidedAt: { gt: slot.since } } : {}),
+    },
+    orderBy: { round: "desc" },
+    select: { round: true },
+  });
+}
+
+/** Why this open creative review is already answered by the work, or null (reads only). */
+async function settledWhy(task: { id: string; dedupeKey: string | null; projectId: string | null }): Promise<{ why: string; briefId: string | null } | null> {
+  if (!task.projectId || !task.dedupeKey?.startsWith("creative-review:")) return null;
+  if (task.dedupeKey.startsWith("creative-review:issue:")) {
+    const issue = await prisma.revisionIssue.findUnique({ where: { id: task.dedupeKey.slice("creative-review:issue:".length) }, select: { state: true, deliverableId: true, slot: true, raisedOnSubmissionId: true } });
+    if (!issue) return null;
+    if (issue.state === "VERIFIED") return { why: "the change was checked as fixed on a later version", briefId: null };
+    const on = issue.raisedOnSubmissionId ? await prisma.reviewSubmission.findUnique({ where: { id: issue.raisedOnSubmissionId }, select: { deliverableId: true, slot: true, round: true } }) : null;
+    const newer = on?.deliverableId ? await newerApprovedSince(task.projectId, { deliverableId: on.deliverableId, slot: on.slot ?? 1, round: on.round }) : null;
+    return newer ? { why: `a newer version of the video (version ${newer.round}) was approved`, briefId: null } : null;
+  }
+  const briefId = task.dedupeKey.slice("creative-review:".length);
+  const brief = await prisma.revisionBrief.findUnique({ where: { id: briefId }, select: { id: true, projectId: true, taskId: true, submissionId: true, outputId: true, createdAt: true, itemsJson: true } });
+  if (!brief || creativeReviewOf(brief.itemsJson)?.state !== "OPEN") return null;
+  if (brief.taskId) {
+    const rev = await prisma.smartTask.findUnique({ where: { id: brief.taskId }, select: { taskType: true, status: true } });
+    if (rev?.taskType === "revision" && rev.status === "COMPLETED") return { why: "its revision was completed", briefId };
+  }
+  let newer: { round: number } | null = null;
+  if (brief.submissionId) {
+    const sub = await prisma.reviewSubmission.findUnique({ where: { id: brief.submissionId }, select: { deliverableId: true, slot: true, round: true } });
+    if (sub?.deliverableId) newer = await newerApprovedSince(brief.projectId, { deliverableId: sub.deliverableId, slot: sub.slot ?? 1, round: sub.round });
+  } else if (brief.outputId) {
+    const out = await prisma.deliverableOutput.findUnique({ where: { id: brief.outputId }, select: { deliverableId: true, slot: true } });
+    if (out) newer = await newerApprovedSince(brief.projectId, { deliverableId: out.deliverableId, slot: out.slot, since: brief.createdAt });
+  } else {
+    const { cutSlots } = await import("@/lib/reviewCuts");
+    const owed = await cutSlots(brief.projectId).catch(() => []);
+    if (owed.length === 1) newer = await newerApprovedSince(brief.projectId, { deliverableId: owed[0].deliverableId, slot: owed[0].slot, since: brief.createdAt });
+  }
+  return newer ? { why: `a newer version of the video (version ${newer.round}) was approved after the ask`, briefId } : null;
+}
+
+/**
+ * Close every open creative review the work has already answered (on one job,
+ * or everywhere). `dryRun` reads and lists only; `exclude` leaves named tasks
+ * alone. Never throws for one task's failure.
+ */
+export async function closeSettledCreativeReviews(opts: {
+  projectId?: string; now?: Date; dryRun?: boolean; exclude?: string[]; taskIds?: string[]; max?: number;
+  /** a one-off clean-up's own reason for a task the rule above does not reach (task id → why) */
+  alsoClose?: Record<string, string>;
+} = {}): Promise<{ closed: SettledCreativeReview[]; open: number }> {
+  const now = opts.now ?? new Date();
+  const tasks = await prisma.smartTask.findMany({
+    where: {
+      taskType: "creative_review", status: OPEN_TASK,
+      ...(opts.projectId ? { projectId: opts.projectId } : {}),
+      ...(opts.taskIds ? { id: { in: opts.taskIds } } : {}),
+      ...(opts.exclude?.length ? { id: { notIn: opts.exclude } } : {}),
+    },
+    orderBy: { createdAt: "asc" },
+    take: opts.max ?? 200,
+    select: { id: true, dedupeKey: true, projectId: true, propertyAddress: true, project: { select: { title: true } } },
+  });
+  const closed: SettledCreativeReview[] = [];
+  for (const t of tasks) {
+    try {
+      const ruled = await settledWhy(t);
+      const extra = opts.alsoClose?.[t.id];
+      const settled = ruled ?? (extra ? { why: extra, briefId: t.dedupeKey?.startsWith("creative-review:") && !t.dedupeKey.startsWith("creative-review:issue:") ? t.dedupeKey.slice("creative-review:".length) : null } : null);
+      if (!settled) continue;
+      const street = (t.project?.title ?? t.propertyAddress ?? "the job").split(",")[0].trim();
+      const row: SettledCreativeReview = { taskId: t.id, projectId: t.projectId, street, briefId: settled.briefId, why: settled.why };
+      if (opts.dryRun) { closed.push(row); continue; }
+      if (settled.briefId) {
+        const brief = await prisma.revisionBrief.findUnique({ where: { id: settled.briefId }, select: { id: true, taskId: true, itemsJson: true } });
+        const doc = parseDoc(brief?.itemsJson);
+        const cr = doc.creativeReview;
+        if (brief && cr?.state === "OPEN") {
+          const items: BriefItem[] = Array.isArray(doc.items) ? doc.items : [];
+          const held = items.filter((it) => it.held);
+          const archived = held.map((it) => ({ id: it.id, area: it.area, ask: it.ask, quote: it.quote ?? null, detail: it.detail ?? null }));
+          const note = `Closed on its own: ${settled.why}.`;
+          const next: CreativeReviewState = { ...cr, state: "RESOLVED", resolvedAt: now.toISOString(), resolvedBy: "the hub", mode: "NOT_NEEDED", note, archived, heldItemIds: [] };
+          // Compare-and-set on the words read: a person resolving it this very
+          // moment wins, and this pass leaves it.
+          const won = await prisma.revisionBrief.updateMany({
+            where: { id: brief.id, itemsJson: brief.itemsJson },
+            data: { itemsJson: JSON.stringify({ ...doc, items: items.filter((it) => !it.held), questions: [], answeredQuestions: cr.questions, creativeReview: next }) },
+          });
+          if (!won.count) continue;
+          await releaseHold(brief.taskId);
+        }
+      }
+      const done = await prisma.smartTask.updateMany({ where: { id: t.id, status: OPEN_TASK }, data: { status: "COMPLETED", completedAt: now } });
+      if (!done.count) continue;
+      if (t.projectId) {
+        await prisma.activity.create({ data: { projectId: t.projectId, type: "SYSTEM", body: `Creative review closed on its own: ${settled.why}. The client's words stay on the request.`.slice(0, 500) } }).catch(() => {});
+      }
+      closed.push(row);
+    } catch (e) {
+      console.warn("[creative review] auto-close failed", t.id, e);
+    }
+  }
+  return { closed, open: tasks.length };
+}
+
 export type CreativeReviewView = {
   briefId: string;
   createdAtISO: string;

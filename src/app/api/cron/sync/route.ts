@@ -209,6 +209,14 @@ export async function GET(req: NextRequest) {
     const { sweepSecondShoots } = await import("@/lib/secondShoot");
     return sweepSecondShoots({ max: 40 });
   }, { maxMs: 20_000 });
+  // Creative reviews the work already answered (its revision completed, or a
+  // newer version approved) close themselves (audit M1, Oct 22 2026). Database
+  // only; an approval closes its own job's at once, this catches the rest.
+  await step("creativeReviews", async () => {
+    const { closeSettledCreativeReviews } = await import("@/lib/creativeReview");
+    const r = await closeSettledCreativeReviews({ max: 100 });
+    return { closed: r.closed.length, open: r.open };
+  }, { maxMs: 15_000 });
   // (FINISHED VIDEOS THAT MAY ALREADY BE UP THERE — the Ready-to-send card's
   // Aryeo read and the delivery proof — moved to /api/cron/aryeo, every 15
   // minutes, Oct 13 2026.)

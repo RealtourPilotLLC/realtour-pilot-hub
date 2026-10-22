@@ -1326,6 +1326,12 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
       })
     ).resolved;
   } catch { /* the approval itself already landed */ }
+  // A creative review this approval (or the revision it closed) answered
+  // closes itself (audit M1, Oct 22 2026, lib/creativeReview). Database only.
+  try {
+    const { closeSettledCreativeReviews } = await import("@/lib/creativeReview");
+    await closeSettledCreativeReviews({ projectId: submission.projectId });
+  } catch { /* the hourly sync closes what this missed */ }
 
   // THE HONEST NEXT STEP (Oct 5). This used to end by telling the reviewer Kyle
   // had been pinged to deliver, and rang Ready to deliver, on every approval —
