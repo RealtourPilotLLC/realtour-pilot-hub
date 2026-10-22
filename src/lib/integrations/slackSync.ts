@@ -1,4 +1,5 @@
 import "server-only";
+import { createHash } from "crypto";
 import { getSecret } from "./connections";
 import { logComm } from "@/lib/commLog";
 import { clip, stripInvisible } from "@/lib/text";
@@ -332,10 +333,119 @@ const INSTRUCTION_RE =
   /\b(can you|could you|do you mind|please|reach out|check with|let them know|follow up|make sure|send|add|upload|request a revision|schedule|confirm|call|email|fix|need|re-?do|redo|re-?edit)\b/i;
 const IGNORE_RE = /^(thanks|thank you|ok|okay|sounds good|got it|yep|yes|no problem|np|👍|🙏|done)\.?$/i;
 
+// ---------------------------------------------------------------------------
+// ONE DECISION PER SLACK MESSAGE (Oct 22 2026, the AI spend investigation).
+//
+// The router asked Claude about the same Slack message every five minutes.
+// It remembered a message only when it MINTED a card for it (the `slack-<ts>`
+// dedupe key below); "no action", "added to an existing card" and "rolled
+// into a running card" saved nothing, so every poll whose two-minute overlap
+// re-read the channel's latest messages asked again, for four days (the
+// recency guard): about 4,070 Sonnet calls in 30 days where about 280 were
+// needed. Each repeat "added to an existing card" also appended the same
+// "Update:" line again (one card carried it 78 times) and re-opened a card a
+// person had closed.
+//
+// Now EVERY decision is remembered, whatever it was: one AppSetting row per
+// message, `slack-routed:<channel>:<ts>`, holding a hash of the text, the
+// outcome and the card it touched. A message with a row is never asked about
+// again; the overlap stays (it is the safety net for a late write) and costs
+// nothing. The row is claimed BEFORE the ask, so the real-time webhook and
+// the poll seeing the same message in the same minute ask once between
+// them; a claim older than five minutes is a crashed worker and is taken
+// over. A message whose text CHANGED (an edit in Slack) is asked once more,
+// and only once. Rows are pruned after six days: past four the recency guard
+// refuses the message before the row is ever read.
+// ---------------------------------------------------------------------------
+export const SLACK_ROUTED_PREFIX = "slack-routed:";
+const ROUTE_CLAIM_STALE_MS = 5 * 60_000;
+const ROUTED_KEEP_MS = 6 * 24 * 3600_000;
+
+/** s: asking (claimed) | done; h: hash of the text decided on; at: ms;
+ *  o: outcome; t: the card it went to; e: edits asked about since. */
+type RouteMemo = { s: "asking" | "done"; h: string; at: number; o?: string; t?: string | null; e?: number };
+export const slackRoutedKey = (channel: string, ts: string) => `${SLACK_ROUTED_PREFIX}${channel || "-"}:${ts}`;
+const textHash = (t: string) => createHash("sha256").update(t).digest("hex").slice(0, 16);
+const isUnique = (e: unknown) => (e as { code?: string })?.code === "P2002";
+
+type RouteClaim =
+  | { claimed: true; key: string; hash: string; edit: boolean; edits: number; prev: string | null; card: string | null }
+  | { claimed: false; busy: boolean };
+
+function parseMemo(raw: string | null | undefined): RouteMemo | null {
+  if (!raw) return null;
+  try {
+    const m = JSON.parse(raw) as RouteMemo;
+    return m && (m.s === "asking" || m.s === "done") && typeof m.h === "string" ? m : null;
+  } catch { return null; }
+}
+
+/** Take the right to decide this message, or learn that it is decided (or being decided). */
+async function claimRoute(channel: string, ts: string, text: string): Promise<RouteClaim> {
+  const { prisma } = await import("@/lib/prisma");
+  const key = slackRoutedKey(channel, ts);
+  const hash = textHash(text);
+  const asking = (e: number, card: string | null): string => JSON.stringify({ s: "asking", h: hash, at: Date.now(), e, t: card } satisfies RouteMemo);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const row = await prisma.appSetting.findUnique({ where: { key }, select: { value: true } });
+    if (!row) {
+      try {
+        await prisma.appSetting.create({ data: { key, value: asking(0, null) } });
+        return { claimed: true, key, hash, edit: false, edits: 0, prev: null, card: null };
+      } catch (e) {
+        if (isUnique(e)) continue; // someone claimed it this instant: read what they wrote
+        throw e;
+      }
+    }
+    const memo = parseMemo(row.value);
+    let edit = false;
+    if (memo?.s === "done") {
+      if (memo.h === hash) return { claimed: false, busy: false };
+      if ((memo.e ?? 0) >= 1) return { claimed: false, busy: false }; // an edit was asked about once already
+      edit = true;
+    } else if (memo?.s === "asking" && Date.now() - memo.at < ROUTE_CLAIM_STALE_MS) {
+      return { claimed: false, busy: true };
+    }
+    // Claim on the value we read, so two workers cannot both win it.
+    const edits = (memo?.e ?? 0) + (edit ? 1 : 0);
+    const card = memo?.t ?? null;
+    const won = await prisma.appSetting.updateMany({ where: { key, value: row.value }, data: { value: asking(edits, card) } });
+    if (won.count === 1) return { claimed: true, key, hash, edit, edits, prev: memo?.s === "done" ? row.value : null, card };
+    return { claimed: false, busy: true };
+  }
+  return { claimed: false, busy: true };
+}
+
+async function finishRoute(c: Extract<RouteClaim, { claimed: true }>, outcome: string, card: string | null): Promise<void> {
+  const { prisma } = await import("@/lib/prisma");
+  const value = JSON.stringify({ s: "done", h: c.hash, at: Date.now(), o: outcome, t: card ?? c.card, e: c.edits } satisfies RouteMemo);
+  await prisma.appSetting.update({ where: { key: c.key }, data: { value } });
+}
+
+/** The decision failed: give the message back, exactly as it was, for the next poll. */
+async function releaseRoute(c: Extract<RouteClaim, { claimed: true }>): Promise<void> {
+  const { prisma } = await import("@/lib/prisma");
+  if (c.prev) await prisma.appSetting.update({ where: { key: c.key }, data: { value: c.prev } }).catch(() => {});
+  else await prisma.appSetting.deleteMany({ where: { key: c.key } }).catch(() => {});
+}
+
+/** Drop the decisions on messages the recency guard would refuse anyway. */
+export async function pruneSlackRouted(now: Date = new Date()): Promise<number> {
+  const { prisma } = await import("@/lib/prisma");
+  const r = await prisma.appSetting
+    .deleteMany({ where: { key: { startsWith: SLACK_ROUTED_PREFIX }, updatedAt: { lt: new Date(now.getTime() - ROUTED_KEEP_MS) } } })
+    .catch(() => ({ count: 0 }));
+  return r.count;
+}
+
 // Turn a Slack message into a to-do when it reads like an action item. AI writes
 // a clean title/detail and judges whether it's actually actionable (skips
-// chatter). Deduped on the message ts. Used by the webhook AND the poll.
-export async function maybeCreateSlackTask(opts: {
+// chatter). Decided once per message (above). Used by the webhook AND the poll.
+export async function maybeCreateSlackTask(opts: SlackRouteInput): Promise<boolean> {
+  return (await routeSlackMessage(opts)) === true;
+}
+
+type SlackRouteInput = {
   text: string;
   ts: string;
   channel: string;
@@ -344,8 +454,13 @@ export async function maybeCreateSlackTask(opts: {
    *  the addressee rule needs to know who the message could only have been for.
    *  Leave unset on channels and group DMs. */
   dmWith?: string | null;
-}): Promise<boolean> {
-  const { prisma } = await import("@/lib/prisma");
+};
+
+/** true = a card was made or added to; false = decided, nothing to do (now or
+ *  before); "busy" = another worker is deciding it right now (the poll keeps
+ *  its cursor behind it and looks again next time). Throws when the decision
+ *  could not be written; the claim is given back first. */
+async function routeSlackMessage(opts: SlackRouteInput): Promise<boolean | "busy"> {
   const text = opts.text.trim();
   if (text.length < 6 || IGNORE_RE.test(text) || !INSTRUCTION_RE.test(text)) return false;
   // RECENCY GUARD: never turn an OLD message into a task. The Slack ts is unix
@@ -354,8 +469,42 @@ export async function maybeCreateSlackTask(opts: {
   // This is what stopped a Sep conversation from being resurrected in June.
   const tsMs = Number(opts.ts) * 1000;
   if (Number.isFinite(tsMs) && tsMs > 0 && Date.now() - tsMs > 4 * 24 * 3600_000) return false;
+  const claim = await claimRoute(opts.channel, opts.ts, text);
+  if (!claim.claimed) return claim.busy ? "busy" : false;
+  try {
+    return await decideSlackMessage(opts, text, claim);
+  } catch (e) {
+    await releaseRoute(claim);
+    throw e;
+  }
+}
+
+async function decideSlackMessage(opts: SlackRouteInput, text: string, claim: Extract<RouteClaim, { claimed: true }>): Promise<boolean> {
+  const { prisma } = await import("@/lib/prisma");
   const dedupeKey = `slack-${opts.ts}`;
-  if (await prisma.smartTask.findUnique({ where: { dedupeKey } })) return false;
+  const own = await prisma.smartTask.findUnique({ where: { dedupeKey }, select: { id: true, status: true, description: true } });
+  if (own) {
+    // The message already has its own card (made before the hub remembered
+    // decisions, or by the first ask). An edit is added to that card's notes,
+    // never a second card and never a reopen; nothing is asked.
+    if (claim.edit && own.status !== "COMPLETED" && own.status !== "CANCELLED") {
+      const description = [own.description, `Edited in Slack: ${clip(text, 800)}`].filter(Boolean).join("\n\n");
+      await prisma.smartTask.update({ where: { id: own.id }, data: { description: description.length > 4000 ? "…" + description.slice(-4000) : description } });
+    }
+    await finishRoute(claim, "own_card", own.id);
+    return false;
+  }
+  // Added to a card before the hub remembered its decisions: its words are
+  // already on that card as an "Update:" line. Remembered as merged without
+  // asking, so a card a person has closed since gets neither a reopen nor a
+  // twin.
+  if (!claim.edit) {
+    const already = await prisma.smartTask.findFirst({ where: { source: "slack", description: { contains: `Update: ${clip(text, 800)}` } }, select: { id: true } });
+    if (already) {
+      await finishRoute(claim, "merged", already.id);
+      return true;
+    }
+  }
 
   const { matchProjectFromText } = await import("@/lib/matchProject");
   const match = await matchProjectFromText(text);
@@ -392,21 +541,32 @@ export async function maybeCreateSlackTask(opts: {
   // doesn't name them), knows that client's shoots (today/upcoming), and COMBINES
   // this into an existing open Slack to-do when it's the same workflow — one
   // that is for the same person (forKey), or for nobody when this one is.
+  // The outcome, written down OUTSIDE the best-effort try below so a failure
+  // to remember it is never mistaken for "the brain was unavailable".
+  let decided: { outcome: string; card: string | null; result: boolean } | null = null;
   try {
     const { routeSlackTask } = await import("@/lib/brain");
     const d = await routeSlackTask({ message: text, ts: opts.ts, channel: opts.channel, senderName: opts.senderName, forKey: addressee?.key ?? null });
-    if (d) {
-      if (!d.actionable) return false;
-      if (d.mergeIntoTaskId) {
+    if (d && !d.actionable) decided = { outcome: "no_action", card: null, result: false };
+    else if (d?.mergeIntoTaskId) {
+      // The same words never go on a card twice (Oct 22 2026): a message the
+      // router added before it remembered its decisions is already there.
+      const target = await prisma.smartTask.findUnique({ where: { id: d.mergeIntoTaskId }, select: { description: true } });
+      if (target?.description?.includes(`Update: ${clip(text, 800)}`)) {
+        decided = { outcome: "merged", card: d.mergeIntoTaskId, result: true };
+      } else {
         const { mergeIntoExistingTask } = await import("@/lib/tasks");
         const merged = await mergeIntoExistingTask(d.mergeIntoTaskId, {
           title: d.title, detail: d.detail, priority: d.priority,
           projectId: d.projectId ?? undefined, clientId: d.clientId ?? undefined, snippet: text,
-        });
-        // Merge refused (e.g. it pointed at a production task) → fall through and
-        // create a fresh Slack to-do below instead of dropping the message.
-        if (merged) return true;
+        }, { keepClosed: true });
+        // Merge refused (e.g. it pointed at a production task, or a person
+        // closed that card since) → fall through and create a fresh Slack
+        // to-do below instead of dropping the message.
+        if (merged) decided = { outcome: "merged", card: d.mergeIntoTaskId, result: true };
       }
+    }
+    if (d && !decided) {
       title = d.title;
       detail = d.detail || text;
       priority = d.priority;
@@ -418,6 +578,10 @@ export async function maybeCreateSlackTask(opts: {
       addressee = addresseeFor(title);
     }
   } catch { /* fall through to single-message helper */ }
+  if (decided) {
+    await finishRoute(claim, decided.outcome, decided.card);
+    return decided.result;
+  }
 
   // Fallback (no client/project match, or brain unavailable): single-message to-do.
   if (!usedBrain) {
@@ -431,12 +595,16 @@ export async function maybeCreateSlackTask(opts: {
           message: text,
         });
         if (todo) {
-          if (/no action needed/i.test(todo.title)) return false;
+          if (/no action needed/i.test(todo.title)) decided = { outcome: "no_action", card: null, result: false };
           title = todo.title;
           detail = todo.detail || text;
         }
       }
     } catch { /* fall back to raw text */ }
+    if (decided) {
+      await finishRoute(claim, decided.outcome, decided.card);
+      return decided.result;
+    }
   }
 
   // CONSOLIDATE (Aug 24 audit: 86 open per-message Slack tasks = 60% of the
@@ -444,6 +612,7 @@ export async function maybeCreateSlackTask(opts: {
   // it is for, within 24h → append to their OPEN rolling task instead of
   // minting another card. (Same addressee since Sep 8: Kyle's "I'll do it"
   // must not ride on a card that is Jordan's.)
+  let rolledInto: string | null = null;
   try {
     const rolling = await prisma.smartTask.findFirst({
       where: {
@@ -470,9 +639,13 @@ export async function maybeCreateSlackTask(opts: {
           ...(priority === "URGENT" ? { priority: "URGENT" } : {}),
         },
       });
-      return true;
+      rolledInto = rolling.id;
     }
   } catch { /* consolidation is best-effort — fall through to a fresh card */ }
+  if (rolledInto) {
+    await finishRoute(claim, "rolled", rolledInto);
+    return true;
+  }
 
   const sender = opts.senderName || "A teammate";
   const summary = (usedBrain && detail && detail !== text)
@@ -482,7 +655,7 @@ export async function maybeCreateSlackTask(opts: {
   // "Why" line carries the addressee). Sep 8: assigned to the person the
   // message was sent to, or to nobody — Kyle is no longer the default.
   const forWhom = addressee ? `${sender} to ${addressee.name}` : `${sender}, no one named`;
-  await prisma.smartTask.create({
+  const card = await prisma.smartTask.create({
     data: {
       taskType: "internal_instruction",
       title,
@@ -502,7 +675,9 @@ export async function maybeCreateSlackTask(opts: {
       propertyAddress,
       dedupeKey,
     },
+    select: { id: true },
   });
+  await finishRoute(claim, "created", card.id);
   // URGENT means "someone should know NOW" — Slack-ping instead of waiting for
   // the next hub visit. Best-effort: never breaks task creation.
   if (priority === "URGENT") {
@@ -598,6 +773,11 @@ async function recentHistory(token: string, channel: string, oldest: string): Pr
  *
  * Errors are counted and returned rather than swallowed, so a persistent
  * failure shows up in the sync's own result instead of nowhere.
+ *
+ * Oct 22 2026: "idempotent" above held for the card, not for the AI. Only a
+ * minted card was remembered, so a no-action, merged or rolled message was
+ * asked about again on every poll; every decision is remembered now (ONE
+ * DECISION PER SLACK MESSAGE, above maybeCreateSlackTask).
  */
 async function ingest(channel: string, messages: SlackMsg[], minRole: string, source: string, otherName: string | undefined, resolve: (t: string) => string, userMap: Record<string, string>): Promise<{ logged: number; taskErrors: string[]; advanceTo: string | null }> {
   let n = 0;
@@ -632,13 +812,17 @@ async function ingest(channel: string, messages: SlackMsg[], minRole: string, so
         taskErrors.push(`${channel}/${m.ts} (not stored): ${e instanceof Error ? e.message.slice(0, 120) : "unknown"}`);
       }
       // EVERY message in the window is offered to the task rule, every poll. Old
-      // messages and already-tasked ones are refused inside it; a message whose
-      // task write failed last time gets another go (the cursor stays behind
-      // it). A DM names its other party so the addressee rule can use it
-      // (Sep 8); channels and group DMs pass nothing.
+      // messages and already-DECIDED ones (any outcome, Oct 22 2026) are
+      // refused inside it without asking the AI; a message whose task write
+      // failed last time gets another go (the cursor stays behind it). A DM
+      // names its other party so the addressee rule can use it (Sep 8);
+      // channels and group DMs pass nothing.
       if (ok) {
         try {
-          await maybeCreateSlackTask({ text, ts: m.ts ?? "", channel, senderName, dmWith: source === "slack-dm" ? otherName ?? null : null });
+          const routed = await routeSlackMessage({ text, ts: m.ts ?? "", channel, senderName, dmWith: source === "slack-dm" ? otherName ?? null : null });
+          // Another worker (the real-time webhook) is deciding it this minute:
+          // not an error, but the cursor waits behind it until it is decided.
+          if (routed === "busy") ok = false;
         } catch (e) {
           // Not fatal to the sync — but not invisible either. The next poll retries
           // this same message, and until it succeeds the failure is reported.
@@ -770,6 +954,7 @@ export async function syncSlackHistory(opts: { sinceHours?: number } = {}): Prom
   for (const g of dir.mpims) {
     await pull(g.id, "OWNER", "slack-groupdm", undefined);
   }
+  await pruneSlackRouted();
   if (taskErrors.length) console.warn(`syncSlackHistory: ${taskErrors.length} message(s) did not fully land — retried next poll. ${taskErrors.slice(0, 3).join(" · ")}`);
   return { logged, ...(taskErrors.length ? { taskErrors } : {}) };
 }

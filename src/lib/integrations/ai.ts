@@ -1,5 +1,6 @@
 import "server-only";
 import { getSecret } from "./connections";
+import { recordAiUsage } from "@/lib/aiUsage";
 
 // ---------------------------------------------------------------------------
 // AI assistant (Anthropic / Claude). Powers two things, both DRAFT-ONLY — the
@@ -107,7 +108,15 @@ export type MessagesHttpResponse = { status: number; json: unknown; requestId: s
  * read included). Throws on a network failure, and on the time limit with a
  * DOMException named "TimeoutError". The key travels in the header only.
  */
-export async function postMessages(body: Record<string, unknown> | string, key: string, opts: { timeoutMs: number; /** Oct 22 2026: extra request headers (the script writer's beta opt-in). Never the key, the version or the content type: those are set below and win. */ headers?: Record<string, string> }): Promise<MessagesHttpResponse> {
+export async function postMessages(body: Record<string, unknown> | string, key: string, opts: {
+  timeoutMs: number;
+  /** Oct 22 2026: extra request headers (the script writer's beta opt-in). Never the key, the version or the content type: those are set below and win. */
+  headers?: Record<string, string>;
+  /** Oct 22 2026: the usage ledger's feature name (lib/aiUsage). Every helper
+   *  in this file passes one; a direct caller that passes none is the photo
+   *  QC engine (qc/claude.ts), this transport's only other caller. */
+  feature?: string;
+}): Promise<MessagesHttpResponse> {
   const res = await fetch(ANTHROPIC_MESSAGES_URL, {
     method: "POST",
     headers: { ...(opts.headers ?? {}), "x-api-key": key, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json" },
@@ -122,14 +131,28 @@ export async function postMessages(body: Record<string, unknown> | string, key: 
   } catch {
     json = null;
   }
+  // THE USAGE LEDGER (Oct 22 2026): every billed answer is written down —
+  // feature, model, tokens, estimated cost. Not awaited, never throws: a
+  // ledger hiccup must not cost the caller its answer or its time.
+  if (res.status >= 200 && res.status < 300 && json && typeof json === "object") {
+    const r = json as AnthropicResponse;
+    if (r.usage) {
+      const sent = typeof body === "string" ? /"model"\s*:\s*"([^"]+)"/.exec(body)?.[1] : typeof body.model === "string" ? body.model : undefined;
+      void recordAiUsage({ feature: opts.feature ?? "photo_qc", model: r.model ?? sent ?? "unknown", usage: usageOf(r) });
+    }
+  }
   return { status: res.status, json, requestId: res.headers.get("request-id"), retryAfter: res.headers.get("retry-after") };
 }
 
 // Low-level call with transient-failure retry (529/429/5xx/network) inside
 // the call's time limit. Returns the parsed JSON response (caller pulls text /
 // tool_use out). Shared by the simple one-shot helper and the agent loop.
-async function callMessages(body: Record<string, unknown>, key: string, opts: { timeoutMs?: number; headers?: Record<string, string> } = {}): Promise<AnthropicResponse> {
+async function callMessages(body: Record<string, unknown>, key: string, opts: { timeoutMs?: number; headers?: Record<string, string>; feature?: string } = {}): Promise<AnthropicResponse> {
   const payload = JSON.stringify(body);
+  // The ledger's feature (lib/aiUsage). A structured-output request is the
+  // script writer's path (aiStructuredWithUsage, its only user), named here
+  // so that path stays untouched; anything else unnamed is "other".
+  const feature = opts.feature ?? (body.output_config && typeof body.output_config === "object" && "format" in body.output_config ? "script_writer" : "other");
   const limitMs = opts.timeoutMs ?? aiTimeoutFor(typeof body.max_tokens === "number" ? body.max_tokens : 4000);
   const deadline = Date.now() + limitMs;
   let lastErr: Error | null = null;
@@ -141,7 +164,7 @@ async function callMessages(body: Record<string, unknown>, key: string, opts: { 
     }
     let res: MessagesHttpResponse;
     try {
-      res = await postMessages(payload, key, { timeoutMs: deadline - Date.now(), headers: opts.headers });
+      res = await postMessages(payload, key, { timeoutMs: deadline - Date.now(), headers: opts.headers, feature });
     } catch (e) {
       if (isAbortError(e)) {
         // Out of time is final: another try would only spend the rest of
@@ -173,6 +196,8 @@ async function anthropic(opts: {
   key?: string;
   /** The whole call's time limit; default aiTimeoutFor(maxTokens). */
   timeoutMs?: number;
+  /** The usage ledger's feature name (lib/aiUsage). */
+  feature?: string;
 }): Promise<string> {
   const key = opts.key ?? (await getSecret("ai"));
   if (!key) throw new Error("AI is not connected.");
@@ -184,7 +209,7 @@ async function anthropic(opts: {
       messages: [{ role: "user", content: opts.user }],
     },
     key,
-    { timeoutMs: opts.timeoutMs },
+    { timeoutMs: opts.timeoutMs, feature: opts.feature },
   );
   return (json.content?.find((b) => b.type === "text")?.text ?? json.content?.[0]?.text ?? "").trim();
 }
@@ -206,8 +231,10 @@ export async function aiJson<T>(opts: {
   key?: string;
   /** The whole call's time limit; default aiTimeoutFor(maxTokens). */
   timeoutMs?: number;
+  /** The usage ledger's feature name (lib/aiUsage); default "other". */
+  feature?: string;
 }): Promise<T> {
-  return (await aiJsonWithUsage<T>(opts)).result;
+  return (await aiJsonWithUsage<T>({ ...opts, feature: opts.feature ?? "other" })).result;
 }
 
 /**
@@ -225,6 +252,9 @@ export async function aiJsonWithUsage<T>(opts: {
   key?: string;
   /** The whole call's time limit; default aiTimeoutFor(maxTokens). */
   timeoutMs?: number;
+  /** The usage ledger's feature name (lib/aiUsage). Default "content_program":
+   *  the Content Program's run ledger (aiRuns.ts) is this path's main caller. */
+  feature?: string;
 }): Promise<{ result: T; usage: AiUsage; model: string }> {
   const key = opts.key ?? (await getSecret("ai"));
   if (!key) throw new Error("AI is not connected.");
@@ -239,7 +269,7 @@ export async function aiJsonWithUsage<T>(opts: {
       tool_choice: { type: "tool", name: "emit" },
     },
     key,
-    { timeoutMs: opts.timeoutMs },
+    { timeoutMs: opts.timeoutMs, feature: opts.feature ?? "content_program" },
   );
   const call = json.content?.find((b) => b.type === "tool_use" && b.name === "emit");
   if (!call?.input) throw new Error("The AI did not return a usable answer.");
@@ -456,6 +486,8 @@ export async function runHubAgent(opts: {
   maxTokens?: number; // raise for long outputs (formal reports blow the 1600 default)
   /** Each model call's time limit; default aiTimeoutFor(maxTokens). */
   timeoutMs?: number;
+  /** The usage ledger's feature name (lib/aiUsage); default "hub_agent". */
+  feature?: string;
 }): Promise<{ answer: string; toolsUsed: HubToolCall[] }> {
   const key = await getSecret("ai");
   if (!key) throw new Error("AI is not connected.");
@@ -487,7 +519,7 @@ export async function runHubAgent(opts: {
     const json = await callMessages(
       { model, max_tokens: maxTokens, system: opts.system, tools: opts.tools, messages },
       key,
-      { timeoutMs: opts.timeoutMs },
+      { timeoutMs: opts.timeoutMs, feature: opts.feature ?? "hub_agent" },
     );
     const blocks = json.content ?? [];
     messages.push({ role: "assistant", content: blocks });
@@ -527,7 +559,7 @@ export async function runHubAgent(opts: {
       messages,
     },
     key,
-    { timeoutMs: opts.timeoutMs },
+    { timeoutMs: opts.timeoutMs, feature: opts.feature ?? "hub_agent" },
   );
   const text = (finalJson.content ?? []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
   return {
@@ -540,7 +572,7 @@ export async function testAiKey(
   key: string,
 ): Promise<{ ok: true; label: string } | { ok: false; error: string }> {
   try {
-    await anthropic({ model: FAST, system: "Reply with OK.", user: "ping", maxTokens: 5, key });
+    await anthropic({ model: FAST, system: "Reply with OK.", user: "ping", maxTokens: 5, key, feature: "key_test" });
     return { ok: true, label: "Claude (Anthropic)" };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -566,7 +598,7 @@ ${ctx.message.slice(0, 2400)}
 """
 
 Write only the reply, ready to copy and send. Do not add notes or options.`;
-  return anthropic({ model: SMART, system: STYLE, user, maxTokens: 500 });
+  return anthropic({ model: SMART, system: STYLE, user, maxTokens: 500, feature: "reply_draft" });
 }
 
 // Polish a photographer's rough, OUTBOUND note into a clean client text in
@@ -594,7 +626,7 @@ ${ctx.rough.slice(0, 800)}
 """
 
 Keep their intent and any facts (times, delays, requests). Warm but brief, no emojis, no em dashes. Write only the finished text, ready to send.`;
-  return anthropic({ model: FAST, system: STYLE, user, maxTokens: 320 });
+  return anthropic({ model: FAST, system: STYLE, user, maxTokens: 320, feature: "polish" });
 }
 
 // A single turn in a conversation. role: who said it. sender: optional speaker
@@ -673,7 +705,7 @@ ${
     : "- If the latest message needs no reply (a thank-you, a confirmation, an emoji), respond with exactly: NO_REPLY_NEEDED\n"
 }${ctx.isGroup ? "- This is a group thread; address the group naturally, not one person.\n" : ""}
 Write only the reply, ready to copy and send. No preamble, no options, no signature unless it reads like a full email.`;
-  return anthropic({ model: SMART, system: STYLE, user, maxTokens: 500 });
+  return anthropic({ model: SMART, system: STYLE, user, maxTokens: 500, feature: "reply_draft" });
 }
 
 function segmentLabel(seg: string): string {
@@ -709,7 +741,7 @@ export async function summarizeWorkday(input: {
     `Completed tasks (${input.tasks.length}): ${input.tasks.map((t) => `${t.type}: ${t.title}`).join(" | ").slice(0, 4000)}`,
   ].join("\n");
   const system = `You write a concise daily operations recap for the owner of a real estate media agency. Summarize what happened that day in 3 to 6 short sentences (or tight bullets), grouped by theme: shoots, editing and QC, deliveries, and client communications. Name notable clients and properties. Be specific and factual; skip filler. No emojis, no em dashes, no bold.`;
-  return anthropic({ model: FAST, system, user, maxTokens: 500 });
+  return anthropic({ model: FAST, system, user, maxTokens: 500, feature: "workday_recap" });
 }
 
 // ---------------------------------------------------------------------------
@@ -868,7 +900,7 @@ Rules:
 - Base everything ONLY on the data above. Do not invent dates, prices, or promises.`;
 
   try {
-    const raw = await anthropic({ model: SMART, system, user, maxTokens: 1200, key: apiKey });
+    const raw = await anthropic({ model: SMART, system, user, maxTokens: 1200, key: apiKey, feature: "comms_router" });
     const p = parseRouterJson(raw);
     if (!p) return null;
     const orderIds = new Set(ctx.orders.map((o) => o.id));
@@ -972,7 +1004,7 @@ Rules:
 - Base everything ONLY on the data above. Do not invent names, dates, or facts.`;
 
   try {
-    const raw = await anthropic({ model: SMART, system, user, maxTokens: 450, key: apiKey });
+    const raw = await anthropic({ model: SMART, system, user, maxTokens: 450, key: apiKey, feature: "slack_router" });
     const m = raw.match(/\{[\s\S]*\}/);
     if (!m) return null;
     const p = JSON.parse(m[0]) as Partial<SlackDecision>;
@@ -1029,7 +1061,7 @@ Rules:
 
 Respond as strict JSON: {"bullets": ["...", "..."]}. No other text.`;
   try {
-    const raw = await anthropic({ model: FAST, system: "You output only strict JSON.", user, maxTokens: 400 });
+    const raw = await anthropic({ model: FAST, system: "You output only strict JSON.", user, maxTokens: 400, feature: "shoot_focus" });
     const m = raw.match(/\{[\s\S]*\}/);
     if (!m) return [];
     const parsed = JSON.parse(m[0]) as { bullets?: unknown };
@@ -1058,7 +1090,7 @@ ${lines.slice(0, 7000)}
 
 Respond as strict JSON: {"title": "<4 to 7 word topic title>", "summary": "<2 to 4 sentence recap of what they asked and what the hub answered or did, naming real clients/projects/amounts mentioned>"}. No other text. No emojis, no em dashes, no bold.`;
   try {
-    const raw = await anthropic({ model: FAST, system: "You output only strict JSON.", user, maxTokens: 300 });
+    const raw = await anthropic({ model: FAST, system: "You output only strict JSON.", user, maxTokens: 300, feature: "hub_chat_recap" });
     const m = raw.match(/\{[\s\S]*\}/);
     if (!m) return { title: "", summary: "" };
     const parsed = JSON.parse(m[0]) as { title?: string; summary?: string };
@@ -1173,7 +1205,7 @@ Rules:
 - Do not invent facts, dates, or preferences not supported above. Empty arrays and short strings are fine when the signal is thin.`;
 
   try {
-    const raw = await anthropic({ model: SMART, system, user, maxTokens: 1400 });
+    const raw = await anthropic({ model: SMART, system, user, maxTokens: 1400, feature: "client_profile" });
     const m = raw.match(/\{[\s\S]*\}/);
     if (!m) return null;
     const p = JSON.parse(m[0]) as Partial<ClientProfileInsights> & {
@@ -1238,7 +1270,7 @@ ${ctx.message.slice(0, 2400)}
 
 Respond as strict JSON: {"title": "<imperative action, max 8 words>", "detail": "<1 sentence on what they need>"}. No other text.`;
   try {
-    const raw = await anthropic({ model: FAST, system: "You output only strict JSON.", user, maxTokens: 200 });
+    const raw = await anthropic({ model: FAST, system: "You output only strict JSON.", user, maxTokens: 200, feature: "message_to_todo" });
     const m = raw.match(/\{[\s\S]*\}/);
     if (!m) return null;
     const parsed = JSON.parse(m[0]) as { title?: string; detail?: string };

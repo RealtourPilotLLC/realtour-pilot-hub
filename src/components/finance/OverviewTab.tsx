@@ -14,6 +14,7 @@ import { BooksFreshness } from "@/components/finance/BooksFreshness";
 import { listFlaggedQbo } from "@/app/sales/booksReviewActions";
 import { SavingsPlan, type SavingsItemView } from "@/components/finance/SavingsPlan";
 import { MoneyExceptionsCard } from "@/components/finance/MoneyExceptionsCard";
+import { AiSpendCard } from "@/components/finance/AiSpendCard";
 import { getCashPosition, monthBounds } from "@/lib/finance";
 import { prisma } from "@/lib/prisma";
 import { etDate, etDayKey, etYear, etYearStartKey } from "@/lib/datetime";
@@ -394,6 +395,9 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
             </div>
           </div>
         </section>
+
+        {/* AI SPEND (Oct 22 2026) — owner only; renders nothing for anyone else. */}
+        <AiSpendCard />
 
         {/* BOOKS HEALTH */}
         <section className="rounded-2xl border border-border bg-surface p-4 sm:p-5">

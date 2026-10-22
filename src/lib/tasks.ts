@@ -1498,9 +1498,13 @@ export async function mergeIntoExistingTask(taskId: string, opts: {
   snippet?: string;
   clientName?: string;
   contactName?: string | null;
-}, guard: { sameRequestOnly?: boolean } = {}): Promise<boolean> {
-  const existing = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { description: true, taskType: true, clientId: true, projectId: true, title: true, summary: true, propertyAddress: true, ownerId: true, assignedKey: true } });
+}, guard: { sameRequestOnly?: boolean; keepClosed?: boolean } = {}): Promise<boolean> {
+  const existing = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { description: true, taskType: true, clientId: true, projectId: true, title: true, summary: true, propertyAddress: true, ownerId: true, assignedKey: true, status: true } });
   if (!existing) return false;
+  // Oct 22 2026 (AI spend): the reopen below never undoes a person's close for
+  // a caller that asks (the Slack router); the merge is refused instead and the
+  // caller files its own card.
+  if (guard.keepClosed && (existing.status === "COMPLETED" || existing.status === "CANCELLED")) return false;
   // Oct 21 2026: a client's message merges only into the SAME request; a
   // different one (even about the same property) is refused here, and the
   // caller files it as its own to-do instead of retitling this one.
