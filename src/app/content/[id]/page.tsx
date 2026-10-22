@@ -13,7 +13,7 @@ import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
 import { etMonthKey } from "@/lib/contentProgram";
 import { monthProgress, staffMonthView } from "@/lib/monthProgress";
-import { STAFF_TABS, canPreviewPortal, contentHref, resolveStaffTab, type StaffTab } from "@/lib/contentNav";
+import { STAFF_TABS, canPreviewPortal, canOpenPortal, contentHref, resolveStaffTab, type StaffTab } from "@/lib/contentNav";
 import { PortalLinkButton } from "@/components/content/PortalLinkButton";
 import type { TabCtx } from "./tabs/shared";
 import { OverviewTab } from "./tabs/OverviewTab";
@@ -69,12 +69,14 @@ export default async function ContentClientPage({
   const { id } = await params;
   const sp = await searchParams;
   const ownerEyes = canPreviewPortal(me, authEnforced());
+  // Oct 22 2026: the portal buttons are the owner's AND the office's (Kyle); ownerEyes still gates money.
+  const portalEyes = canOpenPortal(me, authEnforced());
   // The creative manager runs the program's creative side (Oct 21 2026);
   // the package, status and catch-ups stay the office's (officeEyes).
   const staffEyes = me ? isCreativeLead(me.role) : !authEnforced();
   const officeEyes = me ? isOffice(me.role) : !authEnforced();
 
-  const nav = resolveStaffTab(sp.tab, sp.view, ownerEyes);
+  const nav = resolveStaffTab(sp.tab, sp.view, portalEyes);
   if (nav.preview) redirect(`/content/${id}/preview`);
   if (nav.redirect) redirect(contentHref(id, { tab: nav.tab, view: nav.view, month: sp.month ?? null, moved: nav.moved }));
 
@@ -140,8 +142,8 @@ export default async function ContentClientPage({
         subtitle={[client.company, client.email].filter(Boolean).join(" · ")}
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            {ownerEyes && <PortalLinkButton enrollmentId={id} />}
-            {ownerEyes && (
+            {portalEyes && <PortalLinkButton enrollmentId={id} />}
+            {portalEyes && (
               <Link href={`/content/${id}/preview`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
                 <Eye className="mr-1 inline size-3.5" />Preview portal
               </Link>

@@ -508,7 +508,8 @@ export async function buildProfile(clientId: string): Promise<Result> {
 // this LINK is client-facing.
 // ---------------------------------------------------------------------------
 export async function issuePortalLink(enrollmentId: string): Promise<Result & { url?: string }> {
-  try { await requireOwner(); } catch (e) { return fail(e); }
+  // Oct 22 2026 (Jordan: "Kyle needs to be able to see the portals"): the owner and the office.
+  try { await requireAdmin(); } catch (e) { return fail(e); }
   const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { portalToken: true } });
   if (!e) return { ok: false, message: "Enrollment not found." };
   let token = e.portalToken;

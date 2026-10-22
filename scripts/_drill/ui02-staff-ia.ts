@@ -418,11 +418,13 @@ async function main() {
   // =========================================================================
   {
     c.ok("canPreviewPortal: OWNER yes; ADMIN, EDITOR, CREATIVE no", canPreviewPortal({ role: "OWNER" }, true) && !canPreviewPortal({ role: "ADMIN" }, true) && !canPreviewPortal({ role: "EDITOR" }, true) && !canPreviewPortal({ role: "CREATIVE" }, true));
+    // Oct 22 2026 (Jordan: "Kyle needs to be able to see the portals"): opening and previewing the portal is the owner's and the office's; money stays the owner's.
+    c.ok("canOpenPortal: OWNER and ADMIN yes; EDITOR, CREATIVE, CREATIVE_MANAGER no", nav.canOpenPortal({ role: "OWNER" }, true) && nav.canOpenPortal({ role: "ADMIN" }, true) && !nav.canOpenPortal({ role: "EDITOR" }, true) && !nav.canOpenPortal({ role: "CREATIVE" }, true) && !nav.canOpenPortal({ role: "CREATIVE_MANAGER" }, true));
     c.ok("signed out: no preview when auth is enforced; open local dev counts as the owner", !canPreviewPortal(null, true) && canPreviewPortal(null, false));
     c.ok("resolveStaffTab('portal') for a non-owner is the overview, not the preview", resolveStaffTab("portal", null, false).tab === "overview" && !resolveStaffTab("portal", null, false).preview);
     const pv = read("src/app/content/[id]/preview/page.tsx");
     const pg = read("src/app/content/[id]/page.tsx");
-    c.ok("the preview page gates on canPreviewPortal and redirects outside any try; the warning moved with it", /if \(!canPreviewPortal\(me, authEnforced\(\)\)\) redirect\(/.test(pv) && !/\btry\s*\{/.test(pv) && /on behalf of/.test(pv) && /<iframe/.test(pv));
+    c.ok("the preview page gates on canPreviewPortal and redirects outside any try; the warning moved with it", /if \(!canOpenPortal\(me, authEnforced\(\)\)\) redirect\(/.test(pv) && !/\btry\s*\{/.test(pv) && /on behalf of/.test(pv) && /<iframe/.test(pv));
     c.ok("the client file redirects old keys outside any try, and no longer embeds the portal", /if \(nav\.redirect\) redirect\(contentHref\(/.test(pg) && !/\btry\s*\{/.test(pg) && !/<iframe/.test(pg));
   }
 

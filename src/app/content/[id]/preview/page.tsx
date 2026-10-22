@@ -8,14 +8,14 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { canAccess } from "@/lib/auth/access";
 import { prisma } from "@/lib/prisma";
-import { canPreviewPortal, contentHref } from "@/lib/contentNav";
+import { canOpenPortal, contentHref } from "@/lib/contentNav";
 
 export const dynamic = "force-dynamic";
 
 // ---------------------------------------------------------------------------
 // PREVIEW THEIR PORTAL (UI-02) — was the "Their portal" tab. The embedded
 // portal is signed in AS STAFF acting on the client's behalf, so it stays the
-// owner's window (canPreviewPortal: the effective role must be OWNER), and the
+// owner and office window (canOpenPortal: OWNER or ADMIN, Oct 22 2026), and the
 // on-behalf warning moved with it word for word. Anyone else who reaches this
 // URL is sent back to the client file's Overview.
 // ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ export default async function PortalPreviewPage({ params }: { params: Promise<{ 
   if (me && !canAccess(me, "content")) redirect("/");
   const { id } = await params;
   // Outside any try — redirect() works by throwing.
-  if (!canPreviewPortal(me, authEnforced())) redirect(contentHref(id));
+  if (!canOpenPortal(me, authEnforced())) redirect(contentHref(id));
 
   const enrollment = await prisma.contentEnrollment.findUnique({ where: { id }, select: { clientId: true, portalToken: true } });
   if (!enrollment) notFound();

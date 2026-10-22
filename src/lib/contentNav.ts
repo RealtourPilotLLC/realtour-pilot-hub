@@ -193,6 +193,19 @@ export function canPreviewPortal(me: { role: string } | null | undefined, enforc
   return me ? me.role === "OWNER" : !enforced;
 }
 
+/**
+ * Who may OPEN or PREVIEW the client's portal from the staff side (Oct 22
+ * 2026, Jordan: "Kyle needs to be able to see the portals"): the owner and the
+ * office (Kyle). The portal shows no prices, invoices or balances, so this
+ * does not show Kyle money; the mirror is signed in as staff on the client's
+ * behalf, which the portal already allows for OWNER and ADMIN
+ * (portal.STAFF_ON_BEHALF_ROLES). canPreviewPortal stays the owner's alone:
+ * it also gates billing and owner-only edits on the client page.
+ */
+export function canOpenPortal(me: { role: string } | null | undefined, enforced: boolean): boolean {
+  return me ? me.role === "OWNER" || me.role === "ADMIN" : !enforced;
+}
+
 /** The roster's layout: an explicit ?view wins, then the remembered cookie, then cards. */
 export type RosterView = "cards" | "table";
 export const ROSTER_VIEW_COOKIE = "rtp_content_view";
