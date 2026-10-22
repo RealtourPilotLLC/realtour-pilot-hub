@@ -1315,6 +1315,26 @@ export async function editTopic(topicId: string, patch: { title?: string; concep
   } catch (e) { return fail(e); }
 }
 
+/**
+ * Oct 22 2026: switch one topic between Skit and Talking to camera (the one
+ * control on its card). It decides what the NEXT draft or revision is written
+ * as; nothing already written, approved or shared changes.
+ */
+export async function setTopicFormatAction(topicId: string, format: string): Promise<Result> {
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
+  if (format !== "SKIT" && format !== "DIRECT") return { ok: false, message: "A topic is a Skit or Talking to camera." };
+  try {
+    const me = await actor();
+    const { setTopicFormat } = await import("@/lib/contentTopics");
+    const r = await setTopicFormat(topicId, format, { kind: "STAFF", staffUserId: me.email });
+    const script = await prisma.contentScript.findFirst({ where: { topicId, historical: false }, select: { id: true } });
+    revalidatePath("/content");
+    const word = format === "SKIT" ? "Skit" : "Talking to camera";
+    if (!r.changed) return { ok: true, message: `Already set: ${word}.` };
+    return { ok: true, message: `Now: ${word}.${script ? " The script on file stays as written; revise or redraft it to rewrite it this way." : " Its script will be written this way."}` };
+  } catch (e) { return fail(e); }
+}
+
 export async function reconcileTopicSelection(topicId: string, monthId: string, keep: boolean): Promise<Result> {
   try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {

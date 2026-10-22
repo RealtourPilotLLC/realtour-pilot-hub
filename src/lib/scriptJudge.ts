@@ -67,8 +67,13 @@ export async function judgeVersion(versionId: string, opts: { requestedBy: strin
   if (!s) throw new Error("Script not found.");
   const { buildClientContext, scriptSourceFor } = await import("@/lib/contentGeneration");
   const built = await buildClientContext(s.enrollmentId, { monthId: s.monthId, excludeScriptId: s.id });
-  const skit = built.ctx.videoStyle === "SKITS" || !!v.speakerLabelsJson;
-  if (skit) built.ctx.videoStyle = "SKITS";
+  // Oct 22 2026: judged as the format it was WRITTEN in (the version's stamp,
+  // or its speaker labels); an older version with neither follows its topic,
+  // else the account's default, as its draft did.
+  const { versionFormatOf, formatForWrite, topicFormatOf, asVideoStyle } = await import("@/lib/contentPolicy/videoFormat");
+  const topicOwn = s.topicId ? topicFormatOf((await prisma.contentTopic.findUnique({ where: { id: s.topicId }, select: { scoresJson: true } }))?.scoresJson) : null;
+  built.ctx.videoFormat = versionFormatOf(v) ?? formatForWrite({ topicFormat: topicOwn, style: asVideoStyle(built.ctx.videoStyle) });
+  const skit = built.ctx.videoFormat === "SKIT";
   const { source } = await scriptSourceFor(s, v);
   let gaps: { kind: string; text: string }[] = [];
   try { gaps = v.gapsJson ? (JSON.parse(v.gapsJson) as { kind: string; text: string }[]) : []; } catch { gaps = []; }

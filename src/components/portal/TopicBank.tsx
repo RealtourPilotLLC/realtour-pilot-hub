@@ -15,6 +15,7 @@ import { awaitingScript, inBank } from "@/lib/portalHome";
 import { CTA_WORDS, SCRIPT_WORDS, TOPIC_WORDS, answerCta, planStepWord } from "@/lib/portalWords";
 import type { PortalTopic, PortalTopicMonth, PortalTopicState } from "@/lib/portal";
 import { portalMonthHref } from "@/lib/portalScheduling";
+import { VIDEO_FORMAT_LABEL, splitSkitSection, skitTargetFor, type VideoStyle } from "@/lib/contentPolicy/videoFormat";
 
 // ---------------------------------------------------------------------------
 // VIDEO TOPICS (spec §5): the client's bank by their pillars, in the
@@ -55,6 +56,13 @@ import { portalMonthHref } from "@/lib/portalScheduling";
 // (portalDeclineTopic, no reason asked): the topic leaves their list, no
 // refresh offers it again, and the card stays put with an Undo until they
 // move on.
+//
+// Oct 22 2026 (Jordan's action item from Bernadette Rabel's call: "Organize a
+// skits category ... within the portal"): when the bank holds skits beside
+// talking-to-camera topics (or the account is Mix), the skits are listed
+// together under "Skits" first, and every card says "Skit" or "Talking to
+// camera" on an account where skits are on. A Mix month says how many skits
+// are picked against its target; nothing is blocked.
 // ---------------------------------------------------------------------------
 
 const subscribeHash = (cb: () => void) => { window.addEventListener("hashchange", cb); return () => window.removeEventListener("hashchange", cb); };
@@ -73,7 +81,7 @@ const PER_PILLAR = 15;
 const monthLabel = (monthKey: string) => { const [y, m] = monthKey.split("-").map(Number); return new Date(Date.UTC(y, m - 1, 1, 12)).toLocaleDateString("en-US", { timeZone: "UTC", month: "long", year: "numeric" }); };
 const shortMonth = (monthKey: string) => { const [y, m] = monthKey.split("-").map(Number); return new Date(Date.UTC(y, m - 1, 1, 12)).toLocaleDateString("en-US", { timeZone: "UTC", month: "short" }); };
 
-export function TopicBank({ groups, months, total, canAct, readOnly, initialFilter, tabHref, view, initialMonthId = null, scriptsHref = null, staff = false, canApprove = false }: {
+export function TopicBank({ groups, months, total, canAct, readOnly, initialFilter, tabHref, view, initialMonthId = null, scriptsHref = null, staff = false, canApprove = false, videoStyle = "DIRECT", skitsPerMonth = null }: {
   groups: { pillarId: string | null; pillarName: string; purpose: string | null; topics: PortalTopic[] }[];
   months: PortalTopicMonth[];
   archivedCount: number;
@@ -94,6 +102,9 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
   staff?: boolean;
   /** Oct 20 2026 (audit E1): may approve scripts (the account owner). */
   canApprove?: boolean;
+  /** Oct 22 2026: the account's video style, and a Mix account's skits a month. */
+  videoStyle?: VideoStyle;
+  skitsPerMonth?: number | null;
 }) {
   const router = useRouter();
   const [filter] = useState<PortalTopicState | "ALL">(FILTERS.some((f) => f.key === initialFilter) ? (initialFilter as PortalTopicState | "ALL") : "ALL");
@@ -137,6 +148,13 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
   const shows = (t: PortalTopic) =>
     justActed(t) || (view === "month" ? !!month && t.selection?.monthId === month.id : (inBank(t, openIds) || t.id === targetId) && (effFilter === "ALL" || t.state === effFilter));
   const visible = active.map((g) => ({ ...g, topics: g.topics.filter(shows) })).filter((g) => g.topics.length > 0);
+  // Oct 22 2026: the Skits category, first, when the bank holds skits beside talking-to-camera topics.
+  const skitSplit = splitSkitSection(visible, (t) => t.format, { always: videoStyle === "MIX" });
+  const sections = skitSplit.show && skitSplit.skits.length > 0
+    ? [{ pillarId: "skits", pillarName: "Skits", purpose: "Short acted videos: the same kind of message, played as a scene. They take a little longer to film.", topics: skitSplit.skits }, ...skitSplit.groups.filter((g) => g.topics.length > 0)]
+    : visible;
+  /** Each card says Skit or Talking to camera wherever skits are part of the plan. */
+  const showFormat = videoStyle !== "DIRECT" || groups.some((g) => g.topics.some((t) => t.format === "SKIT"));
   // 6.3 RECOMMENDED FOR THIS MONTH (month view only): the ranking's picks for
   // the slots still open, each with the one line about why, then the
   // alternatives behind "Choose another topic". The server already cut them to
@@ -236,6 +254,7 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="text-sm font-semibold">{t.title}</span>
+              {showFormat && <span className={cn("rounded-md px-1.5 py-0.5 text-[10px] font-semibold", t.format === "SKIT" ? "bg-brand-soft text-brand" : "bg-surface-2 text-muted")}>{VIDEO_FORMAT_LABEL[t.format]}</span>}
               {/* R01 / §11: a topic on an open month reads its step in the month
                   ("We need one more answer", "Our team is reviewing") — the
                   server's, so it survives a refresh; the bank keeps its states. */}
@@ -320,10 +339,13 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
             // screen rather than from a per-row flag frozen at insert time,
             // which a package change leaves stale (review, Sep 17).
             const waiting = month.overflow;
+            // Oct 22 2026: a Mix account's skits picked for this month, against its target (never a block).
+            const skitLine = skitTargetFor(active.flatMap((g) => g.topics.filter((t) => !t.declined && t.selection?.monthId === month.id).map((t) => t.format)), skitsPerMonth);
             return (
               <p className="mt-1.5 text-sm">
                 <span className="font-semibold">{monthLabel(month.monthKey)}</span>: {month.selected} of {month.owed} video{month.owed === 1 ? "" : "s"} chosen
                 {carriedHere > 0 && <span className="text-muted"> · {carriedHere} carried over</span>}
+                {skitLine && <span className="text-muted"> · {skitLine.line}</span>}
                 {waiting > 0 && <span className="text-muted"> · {waiting} more waiting (your package covers {month.owed} a month; extras stay in line, nothing is thrown away)</span>}
                 {month.selected < month.owed && <span className="text-muted"> · pick {month.owed - month.selected} more</span>}
               </p>
@@ -410,7 +432,7 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
           <p className="rounded-2xl border border-border bg-surface/70 p-4 text-sm text-muted">No new ideas in your topic bank right now.{canAct && !readOnly ? " Suggest one of your own below." : ""}</p>
         )
       ) : (
-        visible.map((g) => {
+        sections.map((g) => {
           // The bank lists what they can choose first, PER_PILLAR to a pillar;
           // the rest (and everything with no pillar) folds under "More ideas".
           const choosable = (t: PortalTopic) => t.state === "SUGGESTED" && !t.selection;

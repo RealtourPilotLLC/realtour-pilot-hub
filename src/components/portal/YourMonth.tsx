@@ -259,7 +259,7 @@ export function YourMonth({ d }: { d: YourMonthData }) {
             <Link href={d.hrefs.bank} className={cn("inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline", focusRing)}>Browse the full topic bank <ChevronRight className="size-4" aria-hidden /></Link>
             <TopicBank
               key={month.id}
-              groups={d.topics.groups} months={d.topics.months} archivedCount={d.topics.archivedCount} total={d.topics.total} strategyLabel={d.topics.strategyLabel}
+              groups={d.topics.groups} months={d.topics.months} archivedCount={d.topics.archivedCount} total={d.topics.total} strategyLabel={d.topics.strategyLabel} videoStyle={d.topics.videoStyle} skitsPerMonth={d.topics.skitsPerMonth}
               canAct={d.can.suggest} readOnly={d.readOnly} initialFilter={d.filter}
               tabHref={d.hrefs.month} view="month" initialMonthId={month.id} scriptsHref={d.hrefs.scripts} staff={!!d.can.staff} canApprove={!!d.can.approve}
             />

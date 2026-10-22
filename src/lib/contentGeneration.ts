@@ -5,7 +5,7 @@ import { runAiJson, activePolicyVersion, setRunOutputRef, releaseRunKey, claimRu
 import { timeoutBefore } from "@/lib/integrations/ai";
 import { approvedStrategy, createStrategyVersion, setMonthPriorities, monthPriorities, structuredFromText, parseStoredSections, deriveStrategyVersion } from "@/lib/contentStrategy";
 import { listPillars, resolvePillarByLabel } from "@/lib/contentPillars";
-import { createTopic, selectTopicForMonth, recordTopicEvent, blockedTopicHashes, pendingSuggestionHashes, finishRefreshRun, topicDedupeHash, type Actor } from "@/lib/contentTopics";
+import { createTopic, selectTopicForMonth, recordTopicEvent, blockedTopicHashes, pendingSuggestionHashes, finishRefreshRun, topicDedupeHash, recordSuggestionFormats, type Actor } from "@/lib/contentTopics";
 import { assembleInterviewInputs } from "@/lib/contentInterview";
 import { createScriptVersion, ensureScriptVersioned, pointsFromJson, pillarNameOf, type VersionParts } from "@/lib/contentScripts";
 import { factsForPrompt, factLines, confidentialFilter, CONFIDENTIAL_RE, CONFIDENTIAL_PHRASE_RE, type FactCategory } from "@/lib/clientFacts";
@@ -18,6 +18,11 @@ import {
   type ClientContext, type SourceExcerpt, type GeneratedScriptJson, type Topic, type TopicBank, type Gap, type StrategyDocument, type ScriptPromptSource, type LockableSection, type ScriptAngle,
 } from "@/lib/contentPolicy";
 import { creativeGuardFromOverrides, discontinuedHit } from "@/lib/creativeGuardCore";
+import { scriptFormatOf } from "@/lib/contentPolicy/prompts";
+import {
+  asVideoStyle, asVideoFormat, formatForWrite, scriptRoute, skitCastFromOverrides, skitsPerMonthFromOverrides, topicFormatOf, versionFormatOf, VERSION_FORMAT_KEY,
+  type ScriptRoute, type VideoFormat,
+} from "@/lib/contentPolicy/videoFormat";
 import { namesToScrub, namesRegex, speakerLabels, splitTurns } from "@/lib/scriptWriter/transcriptScrub";
 
 // ---------------------------------------------------------------------------
@@ -216,6 +221,9 @@ export async function buildClientContext(enrollmentId: string, opts: { monthId?:
     // Oct 13 2026: Direct-to-camera or Skits (Settings › Program style). Every
     // script and topic prompt built from this context reads it.
     videoStyle: videoStyleFromOverrides(e.overridesJson),
+    // Oct 22 2026: a Mix account's skits a month, and the people the client confirmed may act in their skits.
+    skitsPerMonth: skitsPerMonthFromOverrides(e.overridesJson),
+    skitCast: skitCastFromOverrides(e.overridesJson),
     // Oct 14 2026: the auto-built creative identity (creativeIdentity.ts) and this month's priorities.
     creativeIdentity: creativeIdentityFromOverrides(e.overridesJson),
     monthPriorities: priorities,
@@ -263,6 +271,11 @@ function partsFromGenerated(json: GeneratedScriptJson, pillarId: string | null, 
     ...(opts.skit && script.internal.speakerLabels.length ? { speakerLabels: script.internal.speakerLabels } : {}),
   };
   return { parts, validation, gaps: validation.gaps, angle: cleanAngle(json.angle) };
+}
+
+/** Oct 22 2026: a version's validation bag with the format it was written in (validationJson.videoFormat). */
+function withFormat<T extends object>(bag: T, format: VideoFormat): T {
+  return { ...bag, [VERSION_FORMAT_KEY]: format };
 }
 
 /** A new AI draft's validation record: the format check, the angle, and a judge still owed (scriptJudge.ts). */
@@ -373,8 +386,32 @@ async function checkDraft(scriptId: string, o: { requestedBy: string; unattended
  * identity, the client's own lines.
  */
 const SCRIPT_PROMPT_VERSION = "script.v5-angle";
-/** Oct 13 2026: a SKITS account's prompt carries the skit block, so its runs say so. */
-const scriptPromptVersion = (ctx: ClientContext) => (ctx.videoStyle === "SKITS" ? `${SCRIPT_PROMPT_VERSION}+skits` : SCRIPT_PROMPT_VERSION);
+/** Oct 13 2026: a skit's prompt carries the skit block, so its runs say so (Oct 22 2026: the video's format, not the account's). */
+const scriptPromptVersion = (ctx: ClientContext) => (scriptFormatOf(ctx) === "SKIT" ? `${SCRIPT_PROMPT_VERSION}+skits` : SCRIPT_PROMPT_VERSION);
+
+/** A topic's OWN format (ContentTopic.scoresJson.videoFormat), or null when it follows the account. */
+async function ownTopicFormat(topicId: string | null | undefined): Promise<VideoFormat | null> {
+  if (!topicId) return null;
+  const t = await prisma.contentTopic.findUnique({ where: { id: topicId }, select: { scoresJson: true } });
+  return topicFormatOf(t?.scoresJson);
+}
+
+/**
+ * ONE ROUTING RULE FOR BOTH DRAFT PATHS (Oct 22 2026): generateScriptForTopic
+ * (the call) and generateScriptFromInterview (written answers) both ask here.
+ * The video's format is the topic's own, else the account's default; then
+ * videoFormat.scriptRoute: a SKIT always takes the skit path below (the new
+ * writer has no skit brief yet, so a skit never goes to it, even with
+ * script_writer_v2 on); a talking-to-camera video takes the new writer when
+ * its switch is on for this client, else the direct prompt. The context's
+ * format is set here, so the prompt, the stored parts and the judge follow it.
+ */
+export async function routeScriptDraft(o: { topicId: string | null; enrollmentId: string; ctx: ClientContext }): Promise<{ format: VideoFormat; route: ScriptRoute }> {
+  const format = formatForWrite({ topicFormat: await ownTopicFormat(o.topicId), style: asVideoStyle(o.ctx.videoStyle) });
+  const writerOn = format === "DIRECT" ? await (await import("@/lib/scriptWriter/pipeline")).writerOnFor(o.enrollmentId) : false;
+  o.ctx.videoFormat = format;
+  return { format, route: scriptRoute(format, writerOn) };
+}
 
 export type GenerateScriptOpts = {
   topicId: string; monthId: string | null; requestedBy: string; unattended: boolean; callRecordId?: string | null; excerpts?: SourceExcerpt[]; selectedOnCall?: boolean;
@@ -435,8 +472,9 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
   // before any model call (creativeGuardCore.discontinuedHit).
   assertNotDiscontinued(`${row.title} ${row.concept ?? ""}`, built.ctx, row.title);
   // Oct 22 2026: the new writer (src/lib/scriptWriter), when its switch is on
-  // for this client. A skit account stays on this writer.
-  if (built.ctx.videoStyle !== "SKITS" && (await (await import("@/lib/scriptWriter/pipeline")).writerOnFor(row.enrollmentId))) {
+  // for this client. A skit stays on this writer (routeScriptDraft).
+  const { format, route } = await routeScriptDraft({ topicId: o.topicId, enrollmentId: row.enrollmentId, ctx: built.ctx });
+  if (route === "writer") {
     const r = await generateWithWriter({
       topicId: o.topicId, monthId: o.monthId, pillarId: row.pillarId, enrollmentId: row.enrollmentId, clientId: row.clientId, title: row.title, requestedBy: o.requestedBy, unattended: o.unattended,
       callRecordId: o.callRecordId ?? null, interviewId: null, onlyIfUnscripted: !!o.onlyIfUnscripted, claimedRun: o.claimedRun ?? null, checkDeadline: o.checkDeadline ?? null, deadline: o.deadline ?? null,
@@ -456,7 +494,7 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
   });
   let out: { scriptId: string; versionId: string; versionNo: number; ok: boolean; findings: number; gaps: number };
   try {
-    const { parts, validation, gaps, angle } = partsFromGenerated(run.output, row.pillarId ?? (await resolvePillarByLabel(row.enrollmentId, run.output.category)), row.clientId, { skit: built.ctx.videoStyle === "SKITS" });
+    const { parts, validation, gaps, angle } = partsFromGenerated(run.output, row.pillarId ?? (await resolvePillarByLabel(row.enrollmentId, run.output.category)), row.clientId, { skit: format === "SKIT" });
     if (!parts.title) parts.title = row.title;
     // monthId null = the bank-level script (IS NULL), never "any month's script".
     const existing = await prisma.contentScript.findFirst({ where: { topicId: o.topicId, monthId: o.monthId, historical: false }, select: { id: true } });
@@ -466,7 +504,7 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
     await claimRunWrite(run.runId);
     const r = await createScriptVersion({
       scriptId: existing?.id ?? null, enrollmentId: row.enrollmentId, monthId: o.monthId, topicId: o.topicId, parts, source: "AI", createdBy: o.requestedBy, status: "INTERNAL_REVIEW",
-      callRecordId: o.callRecordId ?? null, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: run.runId, validation: draftValidation(validation, angle), gaps,
+      callRecordId: o.callRecordId ?? null, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: run.runId, validation: withFormat(draftValidation(validation, angle), format), gaps,
       changeSummary: `Drafted from the ${excerpts.length ? "call excerpts" : "topic"} (${validation.ok ? "passes the format check" : `${validation.findings.filter((f) => f.severity === "block").length} blocking finding(s)`}; ${gaps.length} gap(s))`,
     });
     await setRunOutputRef(run.runId, `ContentScriptVersion:${r.versionId}`);
@@ -517,7 +555,7 @@ async function generateWithWriter(o: {
     await claimRunWrite(run.runId);
     const record = w.writerRecordOf(p, run);
     // A plain variable, not a literal: the version's validation bag takes the writer's record beside the usual keys.
-    const bag = { ok: validation.ok, findings: validation.findings, angle: null, closeType: run.output?.closeType === "callback" ? "callback" : "cta", writer: record, judge: pendingJudge(0, { writer: true }) };
+    const bag = { ok: validation.ok, findings: validation.findings, angle: null, closeType: run.output?.closeType === "callback" ? "callback" : "cta", writer: record, judge: pendingJudge(0, { writer: true }), [VERSION_FORMAT_KEY]: "DIRECT" };
     const r = await createScriptVersion({
       scriptId: existing?.id ?? null, enrollmentId: o.enrollmentId, monthId: o.monthId, topicId: o.topicId, parts, source: "AI", createdBy: o.requestedBy, status: o.interviewId ? "DRAFT" : "INTERNAL_REVIEW",
       basedOnVersionId: o.interviewId ? existing?.currentVersionId ?? null : null, interviewId: o.interviewId, answerIds: o.answerIds ?? null, callRecordId: o.callRecordId,
@@ -543,7 +581,8 @@ export async function generateScriptFromInterview(interviewId: string, requested
   const built = await buildClientContext(a.enrollmentId, { monthId: a.monthId });
   assertNotDiscontinued(`${a.topic.title} ${a.topic.description ?? ""}`, built.ctx, a.topic.title); // Oct 15 2026
   // Oct 22 2026: the new writer, when its switch is on for this client (it reads the answers and the call alike).
-  if (a.topic.id && built.ctx.videoStyle !== "SKITS" && (await (await import("@/lib/scriptWriter/pipeline")).writerOnFor(a.enrollmentId))) {
+  const { format, route } = await routeScriptDraft({ topicId: a.topic.id ?? null, enrollmentId: a.enrollmentId, ctx: built.ctx });
+  if (a.topic.id && route === "writer") {
     const r = await generateWithWriter({
       topicId: a.topic.id, monthId: a.monthId, pillarId: a.topic.pillarRef.pillarId, enrollmentId: a.enrollmentId, clientId: a.clientId, title: a.topic.title, requestedBy, unattended: opts.unattended ?? false,
       callRecordId: null, interviewId, answerIds: a.answerIds, interviewGaps: a.input.gaps, onlyIfUnscripted: !!opts.onlyIfUnscripted, claimedRun: opts.claimedRun ?? null, checkDeadline: opts.checkDeadline ?? null, deadline: opts.deadline ?? null,
@@ -564,7 +603,7 @@ export async function generateScriptFromInterview(interviewId: string, requested
   });
   let out: { scriptId: string; versionId: string; ok: boolean; gaps: number };
   try {
-    const { parts, validation, gaps, angle } = partsFromGenerated(run.output, a.topic.pillarRef.pillarId, a.clientId, { skit: built.ctx.videoStyle === "SKITS" });
+    const { parts, validation, gaps, angle } = partsFromGenerated(run.output, a.topic.pillarRef.pillarId, a.clientId, { skit: format === "SKIT" });
     if (!parts.title) parts.title = a.topic.title;
     // ONE SCRIPT PER VIDEO (Oct 20 2026, Marcee's Malvern video). This looked
     // only for a script drafted from THESE answers, so the call path's script
@@ -580,7 +619,7 @@ export async function generateScriptFromInterview(interviewId: string, requested
     const r = await createScriptVersion({
       scriptId: existing?.id ?? null, enrollmentId: a.enrollmentId, monthId: a.monthId, topicId: a.topic.id, parts, source: "AI", createdBy: requestedBy, status: "DRAFT",
       basedOnVersionId: existing?.currentVersionId ?? null, interviewId, answerIds: a.answerIds, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: run.runId,
-      validation: draftValidation(validation, angle), gaps: [...a.input.gaps, ...gaps],
+      validation: withFormat(draftValidation(validation, angle), format), gaps: [...a.input.gaps, ...gaps],
       changeSummary: existing ? "New draft from the changed answers — the earlier version is kept." : `Drafted from ${a.input.completeness.substantiveAnswered}/${a.input.completeness.substantiveTotal} substantive answers`,
     });
     await setRunOutputRef(run.runId, `ContentScriptVersion:${r.versionId}`);
@@ -647,8 +686,15 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   // it carries speaker labels (one we drafted for a SKITS account, or an
   // uploaded skit), whatever the account's style is today; a SKITS account's
   // revision is written as a skit too.
-  const skit = built.ctx.videoStyle === "SKITS" || !!base.speakerLabelsJson;
-  if (skit) built.ctx.videoStyle = "SKITS";
+  // Oct 22 2026: per video. The topic's own format wins (the office switched
+  // it), else the format the version was written in, else the account's
+  // default (videoFormat.formatForWrite). A skit never goes to the new writer.
+  // Once a script has been sent to the client, a revision (their change
+  // request, a fix) keeps the format they were shown: switching the topic
+  // later never turns a shared script into the other kind.
+  const format = formatForWrite({ topicFormat: s.sharedVersionId ? null : await ownTopicFormat(s.topicId), baseFormat: versionFormatOf(base), style: asVideoStyle(built.ctx.videoStyle) });
+  built.ctx.videoFormat = format;
+  const skit = format === "SKIT";
   const locks = asLockSections(opts.lockSections ?? []);
   // Oct 22 2026: the instruction is kept WHOLE (on the run and on the
   // version); the change summary below stays a short line for the trail.
@@ -732,6 +778,8 @@ export async function reviseScript(scriptId: string, instructions: string, reque
         ...(owedJudge ? { judge: owedJudge } : {}),
       }
     : { ...(autoFix ? draftValidation(validation, angle, autoFix.round) : { ok: validation.ok, findings: validation.findings, angle }), instruction: instructions };
+  // Oct 22 2026: the version records the format it was written in.
+  (bag as Record<string, unknown>)[VERSION_FORMAT_KEY] = format;
   const { WRITER_LENGTH } = await import("@/lib/scriptWriter/rules");
   const summary = aimTrim
     ? `Trimmed toward ${WRITER_LENGTH.trimTo[0]} to ${WRITER_LENGTH.trimTo[1]} words${personTrim ? "" : " by the creative review"}, must-keep points kept; reviewed again`
@@ -750,7 +798,17 @@ export async function reviseScript(scriptId: string, instructions: string, reque
 
 // --- topic refresh ------------------------------------------------------------------
 
-type BankOut = { complete: boolean; pillars: { pillarName: string; topics: { title: string; description: string; audienceNeed: string; businessGoal: string; intendedMessage: string; sourceRef: string | null }[] }[]; gaps: Gap[] };
+type BankOut = { complete: boolean; pillars: { pillarName: string; topics: { title: string; description: string; audienceNeed: string; businessGoal: string; intendedMessage: string; sourceRef: string | null; /** Oct 22 2026: a Mix account's bank marks each topic DIRECT or SKIT. */ format?: string | null }[] }[]; gaps: Gap[] };
+
+/**
+ * A new idea's format (Oct 22 2026): a Skits account's ideas are skit
+ * concepts (SKIT_TOPIC_RULE), a Mix account's say which they are (DIRECT when
+ * the model left it out), a Direct account's carry none (they follow the
+ * account, as every topic before today does).
+ */
+function newIdeaFormat(style: ReturnType<typeof asVideoStyle>, said: unknown): VideoFormat | null {
+  return style === "SKITS" ? "SKIT" : style === "MIX" ? asVideoFormat(said) ?? "DIRECT" : null;
+}
 
 /** The AI half of a BANK / REFRESH run: prompt from the policy, validated, deduped against archived concepts, stored as PENDING suggestions. */
 export async function executeTopicRefreshRun(runId: string, opts: { unattended: boolean; pillarId?: string | null; count?: number | null; /** Keep only the top N new suggestions (single-suggestion regeneration = 1). */ keep?: number | null; /** Oct 21 2026 (audit H1): a sweep's clock (ms epoch); the model call ends by it. */ deadline?: number | null }): Promise<void> {
@@ -815,6 +873,11 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   ];
   const nearOnFile = (title: string, pillarId: string | null) => onFile.find((r) => { const sim = titleSimilarity(title, r.title); return sim >= NEAR_DUPLICATE_THRESHOLD || (!!pillarId && r.pillarId === pillarId && sim >= SAME_PILLAR_NEAR); });
   const bank: TopicBank = { clientId: run.clientId, clientName: built.ctx.clientName, intro: [], strategyVersion: built.strategyLabel, stamp: policyStamp(built.strategyLabel), pillars: [] };
+  // Oct 22 2026: each new idea's format, by its title, kept on the run until the idea is accepted.
+  const style = asVideoStyle(built.ctx.videoStyle);
+  const formatSaid = new Map<string, VideoFormat>();
+  for (const p of Array.isArray(out.pillars) ? out.pillars : []) for (const t of p.topics ?? []) { const f = newIdeaFormat(style, t.format); if (f && t.title) formatSaid.set(topicDedupeHash(t.title), f); }
+  const formats: Record<string, VideoFormat> = {};
   for (const p of Array.isArray(out.pillars) ? out.pillars : []) {
     const pillarId = await resolvePillarByLabel(run.enrollmentId, p.pillarName);
     bank.pillars.push({ pillarId, name: p.pillarName, purpose: null, topics: (p.topics ?? []).map((t) => makeTopic({ title: t.title, pillarName: p.pillarName, description: t.description, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, source: "GENERATED", sourceRef: t.sourceRef, clientId: run.clientId, pillarRef: { pillarId, pillarName: p.pillarName } })) });
@@ -840,10 +903,14 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
       if (opts.keep && rank >= opts.keep) { notKept++; continue; } // "regenerate ONE": the replacement is the first fresh idea, the rest are not stored
       existingHashes.add(hash);
       rows.push({ refreshRunId: runId, enrollmentId: run.enrollmentId, clientId: run.clientId, pillarId: p.pillarId, kind: "BANK", rank: ++rank, title: t.title.slice(0, 200), description: t.description, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, rationale: t.sourceRef ? `Grounded in: ${t.sourceRef}` : "Inferred from the pillar's focus areas", dedupeHash: hash });
+      { const f = formatSaid.get(hash); if (f) formats[hash] = f; }
       created++;
     }
   }
   if (rows.length) await prisma.contentTopicSuggestion.createMany({ data: rows });
+  // The ideas' formats ride on the run (inputsJson.formats, by title hash):
+  // a suggestion row has no field for it, and acceptSuggestion reads it here.
+  if (Object.keys(formats).length) await recordSuggestionFormats(runId, formats);
   // HANDS OFF (Jordan, Oct 14 2026: "as hands off as possible"). A bank's
   // ideas used to wait for staff to accept each one before the client could
   // see it, so a client with an empty bank had nothing to pick. Ideas that

@@ -5,7 +5,8 @@ import { withCanonicalFrameworkSections, creativeIdentityFromOverrides } from "@
 import type { CreativeIdentityUi } from "@/components/content/CreativeIdentityCard";
 import { parseStoredSections, openStrategyProposals, strategyVersions, monthPriorities } from "@/lib/contentStrategy";
 import { listPillars, pillarMappingProposal, dismissedPillarLabels } from "@/lib/contentPillars";
-import { topicBankByPillar, pendingSuggestions, refreshRuns, monthCapacity, bankStock, heldSuggestions } from "@/lib/contentTopics";
+import { topicBankByPillar, pendingSuggestions, refreshRuns, monthCapacity, bankStock, heldSuggestions, suggestionFormats } from "@/lib/contentTopics";
+import { videoStyleFromOverrides, skitsPerMonthFromOverrides, resolvedTopicFormat, versionFormatOf, topicFormatOf, defaultFormatFor } from "@/lib/contentPolicy/videoFormat";
 import { interviewState, interviewsForMonth, answersChangedSinceLastDraft } from "@/lib/contentInterview";
 import { readAngle, readJudge, judgeLine, judgeFlagged } from "@/lib/scriptJudgeRecord";
 import { writerCardOf } from "@/lib/scriptWriter/record";
@@ -111,7 +112,11 @@ export async function loadTopicsTab(enrollmentId: string, month: { id: string; m
   const alignmentRows = await prisma.contentTopicEvent.findMany({ where: { enrollmentId, kind: "DISCUSSED", actorKind: "SYSTEM", note: { startsWith: "Alignment check:" } }, orderBy: { createdAt: "desc" }, select: { topicId: true, note: true } });
   const alignmentOf = new Map<string, string>();
   for (const r of alignmentRows) if (!alignmentOf.has(r.topicId) && r.note) alignmentOf.set(r.topicId, r.note.replace(/^Alignment check:\s*/, ""));
-  const withScript = (t: Omit<TopicUi, "scriptId">): TopicUi => ({ ...t, scriptId: scriptTopics.get(t.id) ?? null, carriedFrom: carriedFrom.get(t.id) ?? null, alignment: alignmentOf.get(t.id) ?? null });
+  // Oct 22 2026: each topic's format (its own, else the account's default) and the account's style.
+  const enr = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true } });
+  const videoStyle = videoStyleFromOverrides(enr?.overridesJson ?? null);
+  const skitsPerMonth = skitsPerMonthFromOverrides(enr?.overridesJson ?? null);
+  const withScript = (t: Omit<TopicUi, "scriptId" | "format" | "formatOwn"> & { videoFormat?: import("@/lib/contentPolicy/videoFormat").VideoFormat | null }): TopicUi => ({ ...t, scriptId: scriptTopics.get(t.id) ?? null, carriedFrom: carriedFrom.get(t.id) ?? null, alignment: alignmentOf.get(t.id) ?? null, format: resolvedTopicFormat(t.videoFormat ?? null, videoStyle), formatOwn: !!t.videoFormat });
   const groups: GroupUi[] = bank.groups.map((g) => ({ pillarId: g.pillarId, pillarName: g.pillarName, topics: g.topics.filter((t) => !month || t.monthId !== month.id).map(withScript) }));
   const monthTopics: TopicUi[] = month ? bank.groups.flatMap((g) => g.topics).filter((t) => t.monthId === month.id).map(withScript) : [];
   const declined: TopicUi[] = bank.declined.map(withScript);
@@ -129,7 +134,9 @@ export async function loadTopicsTab(enrollmentId: string, month: { id: string; m
     }).filter((x): x is ProposedUi => !!x);
   }
   const pillarName = (id: string | null) => pillars.find((p) => p.id === id)?.name ?? null;
-  const toSug = (s: (typeof suggestions)[number]): SuggestionUi => ({ id: s.id, kind: s.kind, rank: s.rank, title: s.title, description: s.description, pillarName: pillarName(s.pillarId), audienceNeed: s.audienceNeed, businessGoal: s.businessGoal, intendedMessage: s.intendedMessage, rationale: s.rationale, whyNow: s.whyNow, linkedGoal: s.linkedGoal, priorContentRelation: s.priorContentRelation, relatedTopicId: s.relatedTopicId, runSummary: null, clientReason: s.clientReason });
+  // Oct 22 2026: a pending idea's format, kept on its run (a skit concept says so before it is accepted).
+  const sugFormat = await suggestionFormats(suggestions).catch(() => new Map<string, import("@/lib/contentPolicy/videoFormat").VideoFormat>());
+  const toSug = (s: (typeof suggestions)[number]): SuggestionUi => ({ id: s.id, kind: s.kind, rank: s.rank, title: s.title, description: s.description, pillarName: pillarName(s.pillarId), audienceNeed: s.audienceNeed, businessGoal: s.businessGoal, intendedMessage: s.intendedMessage, rationale: s.rationale, whyNow: s.whyNow, linkedGoal: s.linkedGoal, priorContentRelation: s.priorContentRelation, relatedTopicId: s.relatedTopicId, runSummary: null, clientReason: s.clientReason, format: sugFormat.get(s.id) ?? defaultFormatFor(videoStyle) });
   // 6.3: suggestions staff put on hold — off the review list until released.
   const held = (await heldSuggestions(enrollmentId).catch(() => [])).map(toSug);
   const latestRec = runs.find((r) => r.kind === "RECOMMENDATION" && r.status === "SUCCEEDED");
@@ -167,7 +174,7 @@ export async function loadTopicsTab(enrollmentId: string, month: { id: string; m
       };
     }
   }
-  return { groups, proposed, monthTopics, suggestions: bankSugg, recommended, held, runs: runRows, interviews, histories, pillars: pillars.map((p) => ({ id: p.id, name: p.name })), topicsPerPillar: policy.topicsPerPillar, capacity, archivedCount: bank.archived, declined, stock, drafts: queue.topics, queueActive: queue.active };
+  return { groups, proposed, monthTopics, suggestions: bankSugg, recommended, held, runs: runRows, interviews, histories, pillars: pillars.map((p) => ({ id: p.id, name: p.name })), topicsPerPillar: policy.topicsPerPillar, capacity, archivedCount: bank.archived, declined, stock, drafts: queue.topics, queueActive: queue.active, videoStyle, skitsPerMonth };
 }
 
 export async function loadScriptsTab(enrollmentId: string, month: { id: string } | null) {
@@ -177,6 +184,11 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
     prisma.contentStrategyVersion.findMany({ where: { enrollmentId }, select: { id: true, versionNo: true } }), prisma.programGenerationPolicyVersion.findMany({ select: { id: true, versionNo: true } }),
   ]);
   const versions = scripts.length ? await prisma.contentScriptVersion.findMany({ where: { scriptId: { in: scripts.map((s) => s.id) } }, orderBy: { versionNo: "desc" } }) : [];
+  // Oct 22 2026: each script's topic format (its own, else the account's default), beside the format each version was written in.
+  const enr = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true } });
+  const accountStyle = videoStyleFromOverrides(enr?.overridesJson ?? null);
+  const topicIdsOfScripts = [...new Set(scripts.map((s) => s.topicId).filter((x): x is string => !!x))];
+  const topicFormats = new Map((topicIdsOfScripts.length ? await prisma.contentTopic.findMany({ where: { id: { in: topicIdsOfScripts } }, select: { id: true, scoresJson: true } }) : []).map((t) => [t.id, topicFormatOf(t.scoresJson)]));
   // The CLIENT's verdict on each shared script (F09) — the fact that decides
   // whether it is safe to put on a call sheet, and the one nobody could see.
   const verdicts = scripts.length ? await scriptDecisionsFor(enrollmentId, scripts.map((s) => s.id)).catch(() => new Map()) : new Map();
@@ -199,6 +211,8 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
         estimatedSeconds: v.estimatedSeconds, spokenWordCount: v.spokenWordCount, pointCount: points, findings, gaps, strategyVersionNo: strategyVs.find((x) => x.id === v.strategyVersionId)?.versionNo ?? null, policyVersionNo: policies.find((x) => x.id === v.policyVersionId)?.versionNo ?? null,
         answerCount: answers, path: v.interviewId ? "written answers" : v.callRecordId ? "call" : v.source.toLowerCase().replace(/_/g, " "), basedOnVersionNo: basedOn, regeneratedSections: regenerated,
         skit: !!v.speakerLabelsJson, filmingNotes: v.filmingNotes,
+        // Oct 22 2026: the format this version was written in (its stamp, else speaker labels mean a skit).
+        format: versionFormatOf(v) ?? "DIRECT",
         // Oct 14 2026: the writer's angle and the automatic check's line (staff only).
         angle: readAngle(v.validationJson), flagged: judgeFlagged(readJudge(v.validationJson)),
         writer, check: writer?.review ? null : judgeLine(readJudge(v.validationJson)),
@@ -210,6 +224,7 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
       id: s.id, title: s.title, status: s.status, historical: s.historical, releaseState: s.releaseState, monthKey: s.monthId ? months.get(s.monthId) ?? null : null, pillarName: pillars.find((p) => p.id === s.pillarId)?.name ?? null,
       currentVersionId: s.currentVersionId, approvedVersionId: s.approvedVersionId, sharedVersionId: s.sharedVersionId, approvedBy: s.approvedBy, approvedAt: iso(s.approvedAt), sharedAt: iso(s.sharedAt), versions: vlist, sourceFile: s.sourceFile,
       clientVerdict: verdicts.get(s.id)?.decision ?? (verdicts.get(s.id)?.staleApproval ? "STALE" : null), clientVerdictAt: verdicts.get(s.id)?.decidedAt ?? null,
+      topicFormat: s.topicId ? resolvedTopicFormat(topicFormats.get(s.topicId) ?? null, accountStyle) : null,
     };
   });
   // 6.5: the client changed an answer after this script was drafted — nothing

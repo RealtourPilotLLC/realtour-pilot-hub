@@ -75,7 +75,7 @@ export async function deriveCreativeIdentity(enrollmentId: string, opts: { reque
   const policy = await activePolicyVersion();
   const prompt = [
     `CLIENT: ${client?.name ?? "Client"} (id ${e.clientId})`,
-    `VIDEO STYLE: ${style === "SKITS" ? "SKITS (the account is set to acted skits)" : "DIRECT (talking to camera)"}`,
+    `VIDEO STYLE: ${style === "SKITS" ? "SKITS (the account is set to acted skits)" : style === "MIX" ? "MIX (mostly talking to camera, plus a few acted skits a month)" : "DIRECT (talking to camera)"}`,
     "",
     `APPROVED STRATEGY (${strategy.label}):`,
     ...strategyLines(strategy.document).map((l) => `- ${l}`),
@@ -89,7 +89,8 @@ export async function deriveCreativeIdentity(enrollmentId: string, opts: { reque
     requestedBy: opts.requestedBy, unattended: opts.unattended, dedupeKey: `identity:${enrollmentId}`,
     system: SYSTEM, prompt, schema: CREATIVE_IDENTITY_SCHEMA, maxTokens: 1500, timeoutMs: timeoutBefore(opts.deadline, 1500),
   });
-  const ci = normalizeCreativeIdentity(run.output, { skitsAccount: style === "SKITS", factSaysSkits: facts.some((f) => /\bskits?\b/i.test(f)) });
+  // Oct 22 2026: a Mix account films some acted skits, so full skits are allowed (not forced).
+  const ci = normalizeCreativeIdentity(run.output, { skitsAccount: style === "SKITS", factSaysSkits: style === "MIX" || facts.some((f) => /\bskits?\b/i.test(f)) });
   const now = new Date().toISOString();
   const stored: StoredCreativeIdentity = { ...ci, strategyVersionId: strategy.versionId, derivedAt: now, approvedAt: now, approvedBy: "auto", runId: run.runId };
   for (let attempt = 0; attempt < 3; attempt++) {

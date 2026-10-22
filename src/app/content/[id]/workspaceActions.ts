@@ -89,8 +89,9 @@ export async function setWorkflowFlagsAction(enrollmentId: string, flags: { time
  * client plans their own content (we show up and shoot)". Owner or admin.
  * Ledgered; the open months re-derive. Nothing is sent to anyone.
  * Oct 13 2026: and the VIDEO STYLE, Direct-to-camera or Skits (programStyle.setVideoStyle).
+ * Oct 22 2026: or Mix, with its target number of skits a month.
  */
-export async function setProgramStyleAction(enrollmentId: string, change: { strategyCalls?: boolean; clientPlanned?: boolean; videoStyle?: string }): Promise<Result> {
+export async function setProgramStyleAction(enrollmentId: string, change: { strategyCalls?: boolean; clientPlanned?: boolean; videoStyle?: string; skitsPerMonth?: number | null }): Promise<Result> {
   try { await requireCreativeLead(); } catch (e) { return fail(e); }
   if (typeof enrollmentId !== "string" || !enrollmentId) return { ok: false, message: "Enrollment not found." };
   try {
@@ -110,14 +111,34 @@ export async function setProgramStyleAction(enrollmentId: string, change: { stra
         : (r.changed ? "We plan their content again — topics, questions and scripts are back on." : "Already set: we plan their content."));
     }
     if (change.videoStyle !== undefined) {
-      if (change.videoStyle !== "DIRECT" && change.videoStyle !== "SKITS") return { ok: false, message: "The video style is Direct-to-camera or Skits." };
-      const r = await setVideoStyle(enrollmentId, change.videoStyle, me.email);
+      if (change.videoStyle !== "DIRECT" && change.videoStyle !== "SKITS" && change.videoStyle !== "MIX") return { ok: false, message: "The video style is Direct-to-camera or Skits, or a Mix of both." };
+      if (change.skitsPerMonth != null && (!Number.isInteger(change.skitsPerMonth) || change.skitsPerMonth < 1 || change.skitsPerMonth > 8)) return { ok: false, message: "Skits a month is a whole number from 1 to 8." };
+      const r = await setVideoStyle(enrollmentId, change.videoStyle, me.email, { skitsPerMonth: change.skitsPerMonth ?? null });
       said.push(change.videoStyle === "SKITS"
-        ? (r.changed ? "Video style: Skits. New scripts are written as short skits in the same framework, and new topic ideas are skit concepts. Scripts already written stay as they are." : "Already set: Skits.")
-        : (r.changed ? "Video style: Direct-to-camera. New scripts are written to camera again. Scripts already written stay as they are." : "Already set: Direct-to-camera."));
+        ? (r.changed ? "Video style: Skits. New scripts are written as short skits in the same framework, and new topic ideas are skit concepts. A topic marked Talking to camera stays that way. Scripts already written stay as they are." : "Already set: Skits.")
+        : change.videoStyle === "MIX"
+        ? (r.changed ? `Video style: Mix, ${r.skitsPerMonth} skit${r.skitsPerMonth === 1 ? "" : "s"} a month. Topics are talking to camera unless marked Skit on their card, and new topic ideas include skit concepts. Scripts already written stay as they are.` : "Already set: Mix.")
+        : (r.changed ? "Video style: Direct-to-camera. New scripts are written to camera again, except topics marked Skit. Scripts already written stay as they are." : "Already set: Direct-to-camera."));
     }
     touch(enrollmentId);
     return { ok: true, message: said.join(" ") || "Nothing changed." };
+  } catch (e) { return fail(e); }
+}
+
+/**
+ * Oct 22 2026: the SKIT CAST, people the client confirmed may act in their
+ * skits (programStyle.setSkitCast). Add one, or take one off. Ledgered;
+ * nothing is sent to anyone and no script already written changes.
+ */
+export async function setSkitCastAction(enrollmentId: string, change: { add?: { name?: string | null; role: string; note?: string | null } | null; removeId?: string | null }): Promise<Result & { cast?: import("@/lib/contentPolicy/videoFormat").SkitCastMember[] }> {
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
+  if (typeof enrollmentId !== "string" || !enrollmentId) return { ok: false, message: "Enrollment not found." };
+  try {
+    const me = await actor();
+    const { setSkitCast } = await import("@/lib/programStyle");
+    const r = await setSkitCast(enrollmentId, { add: change.add ?? null, removeId: change.removeId ?? null }, me.email);
+    touch(enrollmentId);
+    return { ok: true, cast: r.cast, message: !r.changed ? "Nothing changed." : change.add ? "Added to the skit cast. New skit scripts may give them a few short lines." : "Taken off the skit cast." };
   } catch (e) { return fail(e); }
 }
 
