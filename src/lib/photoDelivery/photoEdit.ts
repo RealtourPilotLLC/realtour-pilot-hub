@@ -49,8 +49,24 @@ const FIXED_PREFIX = "Straightened in the hub";
 export const isHubEditHash = (h: string | null | undefined): h is string => typeof h === "string" && h.startsWith(HASH_PREFIX);
 export const hubHashOf = (bytes: Buffer) => `${HASH_PREFIX}${createHash("sha256").update(bytes).digest("hex").slice(0, 36)}`;
 
+/**
+ * Oct 22 2026: what made a hub version. "straighten" (the editor's sliders),
+ * "lotLines" (lot lines drawn on the picture under it), "upload" (Kyle's own
+ * file in place of the photo), "added" (a photo added to the gallery by hand).
+ * Absent on a version saved before then: a straighten.
+ */
+export type HubEditKind = "straighten" | "lotLines" | "upload" | "added";
+
 export type HubEditInfo = {
   hash: string;
+  kind?: HubEditKind;
+  /**
+   * Oct 22 2026: the hub file later edits start from instead of the photo's
+   * own file: an uploaded replacement (or a photo added by hand) is what
+   * Straighten turns and the lot lines are drawn on. `base` stays the
+   * photo's own file, so Restore can still go back to it.
+   */
+  from?: string | null;
   params: StraightenParams;
   /** What the edit was made from: the photo's own file before any hub edit. */
   base: { sourceHash: string | null; autohdrVersionUuid: string | null; width: number; height: number };
@@ -115,17 +131,24 @@ export async function hubEditBytes(photo: { id: string; contentHash: string | nu
   return readDerivativeBytes({ pathname: cur.meta.file.pathname, url: "" }, MAX_FILE_BYTES + 1024);
 }
 
-/** Where an edit starts: the photo's own file (the hash before any hub edit), the AutoHDR version under it, and the settings in use. */
-export async function editBaseOf(photo: { id: string; contentHash: string | null; autohdrVersionUuid: string | null }): Promise<{ sourceHash: string | null; autohdrVersionUuid: string | null; params: StraightenParams | null; hubVersionId: string | null }> {
+/**
+ * Where an edit starts: the photo's own file (the hash before any hub edit), the AutoHDR version under it, and the settings in use.
+ * `fromHash` (Oct 22 2026): an uploaded replacement or a photo added by hand, which edits start from instead of the own file.
+ */
+export async function editBaseOf(photo: { id: string; contentHash: string | null; autohdrVersionUuid: string | null }): Promise<{ sourceHash: string | null; autohdrVersionUuid: string | null; params: StraightenParams | null; hubVersionId: string | null; fromHash: string | null }> {
   const cur = await currentHubEdit(photo);
-  if (!cur?.meta.hub) return { sourceHash: isHubEditHash(photo.contentHash) ? null : photo.contentHash, autohdrVersionUuid: photo.autohdrVersionUuid, params: null, hubVersionId: null };
-  return { sourceHash: cur.meta.hub.base.sourceHash, autohdrVersionUuid: cur.meta.hub.base.autohdrVersionUuid, params: cur.meta.hub.params, hubVersionId: cur.id };
+  if (!cur?.meta.hub) return { sourceHash: isHubEditHash(photo.contentHash) ? null : photo.contentHash, autohdrVersionUuid: photo.autohdrVersionUuid, params: null, hubVersionId: null, fromHash: null };
+  return { sourceHash: cur.meta.hub.base.sourceHash, autohdrVersionUuid: cur.meta.hub.base.autohdrVersionUuid, params: cur.meta.hub.params, hubVersionId: cur.id, fromHash: isHubEditHash(cur.meta.hub.from) ? cur.meta.hub.from : null };
 }
 
-/** The photo's own full-size file (never a hub edit): what every edit is rendered from. */
+/**
+ * The photo's own full-size file (never a hub edit): what every edit is rendered from.
+ * Oct 22 2026: or the file Kyle uploaded in its place (or added by hand), when there is one (editBaseOf fromHash).
+ */
 export async function editBaseBytes(photo: PhotoRow): Promise<Buffer> {
   const { loadPhotoBytes } = await import("./qc/source");
-  return loadPhotoBytes({ ...photo, contentHash: null });
+  const { fromHash } = await editBaseOf(photo);
+  return loadPhotoBytes({ ...photo, contentHash: fromHash });
 }
 
 // ---- Auto --------------------------------------------------------------------------------------
@@ -141,7 +164,9 @@ export async function measureLean(photoId: string): Promise<{ ok: boolean; messa
   if (!photo) return { ok: false, message: "That photo no longer exists.", ...none };
   const base = await editBaseOf(photo);
   const { freeBytesOf } = await import("./geometry");
-  const got = await freeBytesOf({ ...photo, contentHash: base.sourceHash, autohdrVersionUuid: base.autohdrVersionUuid });
+  // Oct 22 2026: an uploaded replacement is what gets turned, so it is what is measured.
+  const fromBytes = base.fromHash ? await hubEditBytes({ id: photo.id, contentHash: base.fromHash }) : null;
+  const got = fromBytes ? { bytes: fromBytes } : await freeBytesOf({ ...photo, contentHash: base.sourceHash, autohdrVersionUuid: base.autohdrVersionUuid });
   if ("skipped" in got) return { ok: false, message: `The photo could not be measured: ${got.skipped}.`, ...none };
   const D = await import("./qc/derivatives");
   const { lumaOf, verticalLineFits, lineGeometry, geometryWords } = await import("./qc/cv");
@@ -207,6 +232,13 @@ export async function saveHubEdit(input: { jobId: string; photoId: string; baseH
   const base = await editBaseOf(photo);
   if (isIdentity(p)) {
     if (!base.hubVersionId) return { ok: false, message: "Nothing to save: the photo is not turned, keystoned or cropped." };
+    // Oct 22 2026: on an uploaded replacement, all back to zero is that upload, not the file it replaced.
+    if (base.fromHash) {
+      if (photo.contentHash === base.fromHash) return { ok: false, message: "Nothing to save: the photo is not turned, keystoned or cropped." };
+      const from = await currentHubEdit({ id: photo.id, contentHash: base.fromHash });
+      const r = from ? await restoreHubVersion(photo.id, from.id, by) : null;
+      return r?.ok ? { ok: true, message: r.message, versionId: from!.id, hash: base.fromHash } : { ok: false, message: r?.message ?? "The uploaded file could not be found. Restore it under Versions." };
+    }
     // Everything back to zero on an edited photo: that is the photo's own file again.
     const r = await unadoptHubEdit(photo.id, by);
     return r.ok ? { ok: true, message: `${photo.name} is back to its own file (the edit is kept under Versions).`, versionId: base.hubVersionId, hash: photo.contentHash ?? "" } : { ok: false, message: r.message };
@@ -293,7 +325,7 @@ export async function saveHubEdit(input: { jobId: string; photoId: string; baseH
   }
 
   const info: HubEditInfo = {
-    hash, params: p, by, measured, fixed: fixable.map((f) => f.id),
+    hash, kind: "straighten", from: base.fromHash, params: p, by, measured, fixed: fixable.map((f) => f.id),
     base: { sourceHash: base.sourceHash, autohdrVersionUuid: base.autohdrVersionUuid, width: baseW, height: baseH },
   };
   const derivJson: HubEditMeta = { file, ...(preview ? { preview } : {}), sizes, ...(sharp ? { sharpness: sharp.sharpness } : {}), capturedAt: new Date().toISOString(), hub: info };
@@ -463,8 +495,11 @@ export async function adoptListedEdit(photoId: string, expectHash: string, entry
   if (moved.count !== 1) return false;
   await prisma.photoQcFinding.updateMany({ where: { photoId, contentHash: expectHash }, data: { contentHash: next } });
   const m = cur?.meta ?? {};
+  // Oct 22 2026: only the trailing " by <name>" goes ("Replaced by upload by Kyle" keeps its own words).
+  const by0 = cur?.meta.hub?.by;
+  const what = cur?.label ? (by0 && cur.label.endsWith(` by ${by0}`) ? cur.label.slice(0, -` by ${by0}`.length) : cur.label.replace(/ by .*$/, "")) : "Hub edit";
   await prisma.photoVersion.create({
-    data: { photoId, label: `${(cur?.label ?? "Hub edit").replace(/ by .*$/, "")} (on the Aryeo listing)`.slice(0, 80), source: HUB_EDIT_LISTED, contentHash: next, parentVersionUuid: cur?.meta.hub?.base.autohdrVersionUuid ?? null, derivJson: JSON.stringify({ file: m.file, preview: m.preview, sharpness: m.sharpness, capturedAt: new Date().toISOString(), listedFrom: cur?.id ?? null }), width: photo.width, height: photo.height, createdBy: by.slice(0, 120) },
+    data: { photoId, label: `${what} (on the Aryeo listing)`.slice(0, 80), source: HUB_EDIT_LISTED, contentHash: next, parentVersionUuid: cur?.meta.hub?.base.autohdrVersionUuid ?? null, derivJson: JSON.stringify({ file: m.file, preview: m.preview, sharpness: m.sharpness, capturedAt: new Date().toISOString(), listedFrom: cur?.id ?? null }), width: photo.width, height: photo.height, createdBy: by.slice(0, 120) },
   });
   return true;
 }
