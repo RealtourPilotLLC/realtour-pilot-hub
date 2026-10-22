@@ -88,7 +88,7 @@ async function main() {
     const now = new Date();
     const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
     monthKey = next.toISOString().slice(0, 7);
-    const f = await buildContentMonth(prisma, { name: "Grove Call Journey TEST", package: "Starter", videosPerMonth: 2, project: false, monthKey, owner: { email: "maya-call@example.test", name: "Maya Grove" } });
+    const f = await buildContentMonth(prisma, { strategy: false, name: "Grove Call Journey TEST", package: "Starter", videosPerMonth: 2, project: false, monthKey, owner: { email: "maya-call@example.test", name: "Maya Grove" } });
     await prisma.client.update({ where: { id: f.clientId }, data: { name: "Grove Call Realty" } });
     const jordan = await prisma.appUser.create({ data: { name: "Jordan", email: "owner-call@example.test", role: "OWNER", status: "ACTIVE" } });
     const kyle = await prisma.appUser.create({ data: { name: "Kyle", email: "kyle-call@example.test", role: "ADMIN", status: "ACTIVE" } });

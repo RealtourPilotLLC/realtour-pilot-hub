@@ -6,6 +6,7 @@ import { lastSentOf, messageOf, isOnboardingMessageKey, parseOnboardingRecord, O
 import { outboxKind, subjectFor } from "@/lib/outbox";
 import { resolvePortalRoute } from "@/lib/portalNav";
 import { PALETTE } from "@/lib/palette";
+import { strategyGateFor, type StrategyGate } from "@/lib/strategyGate";
 
 // ---------------------------------------------------------------------------
 // CLIENT ACTIVITY (Jordan, Oct 14 2026): "Make sure I have an activity screen
@@ -522,7 +523,7 @@ export async function clientActivityFeed(opts: { clientId?: string | null; limit
 
 // ---- the summary ---------------------------------------------------------------
 
-export type WaitingKind = "REVIEW_VIDEOS" | "APPROVE_SCRIPTS" | "ANSWER_QUESTIONS" | "PICK_TOPICS" | "CHOOSE_ROUTE" | "BOOK_CALL" | "BOOK_SESSION" | "COMPLETE_ADDRESS" | "ADD_BRIEF";
+export type WaitingKind = "REVIEW_VIDEOS" | "APPROVE_SCRIPTS" | "ANSWER_QUESTIONS" | "PICK_TOPICS" | "CHOOSE_ROUTE" | "BOOK_CALL" | "BOOK_SESSION" | "COMPLETE_ADDRESS" | "ADD_BRIEF" | "STRATEGY_PENDING";
 export type WaitingItem = { kind: WaitingKind; count: number; label: string };
 const WAITING_KINDS: readonly string[] = ["REVIEW_VIDEOS", "APPROVE_SCRIPTS", "ANSWER_QUESTIONS", "PICK_TOPICS", "CHOOSE_ROUTE", "BOOK_CALL", "BOOK_SESSION", "COMPLETE_ADDRESS", "ADD_BRIEF"];
 
@@ -538,7 +539,19 @@ export function waitingLabel(kind: WaitingKind, count: number): string {
     case "BOOK_SESSION": return count > 1 ? `${count} filming sessions to book` : "Filming session to book";
     case "COMPLETE_ADDRESS": return `Filming address to add${count > 1 ? ` (${count})` : ""}`;
     case "ADD_BRIEF": return "Month brief to add (optional)";
+    case "STRATEGY_PENDING": return "Waiting on strategy — no booking yet";
   }
+}
+
+/** Oct 21 2026 (strategyGate.ts): the booking asks a closed strategy gate takes away. */
+const STRATEGY_GATED_KINDS: ReadonlySet<string> = new Set(["CHOOSE_ROUTE", "BOOK_CALL", "BOOK_SESSION", "ANSWER_QUESTIONS", "PICK_TOPICS"]);
+
+/** The waiting line for a client with no strategy in their portal yet: the discovery call, then the strategy. */
+function strategyPendingItem(g: StrategyGate): WaitingItem {
+  const label = g.discovery === "booked" && g.discoveryAt
+    ? `Waiting on strategy — discovery call ${etMonthDayTime(g.discoveryAt)}, no booking yet`
+    : g.discovery === "needed" ? "Waiting on strategy — discovery call not booked yet, no booking yet" : waitingLabel("STRATEGY_PENDING", 1);
+  return { kind: "STRATEGY_PENDING", count: 1, label };
 }
 
 export type ActivityRow = {
@@ -640,9 +653,13 @@ export async function waitingOnClient(enrollment: { id: string; clientId: string
     ready: { count: 0, withFile: false, single: null },
     linkVisitor: null,
   });
-  return [actions.primary, ...actions.more]
+  const items: WaitingItem[] = [actions.primary, ...actions.more]
     .filter((a): a is NonNullable<typeof a> => !!a && WAITING_KINDS.includes(a.kind))
     .map((a) => ({ kind: a.kind as WaitingKind, count: a.count, label: waitingLabel(a.kind as WaitingKind, a.count) }));
+  // Oct 21 2026: no strategy in the portal yet → nothing to plan or book; say what it waits on instead.
+  const gate = await strategyGateFor(enrollment.id).catch(() => null);
+  if (gate && !gate.open) return [...items.filter((w) => !STRATEGY_GATED_KINDS.has(w.kind)), strategyPendingItem(gate)];
+  return items;
 }
 
 /**

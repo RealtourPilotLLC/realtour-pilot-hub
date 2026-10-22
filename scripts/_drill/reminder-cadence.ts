@@ -19,6 +19,10 @@
 //   4. Kyle's 15th for a REAL client before launch: off by default (nothing);
 //      with staffFollowUpsForRealClients on, one Kyle task, the client written
 //      to never, no ledger row, no outbox row.
+//   5. (Oct 21 2026) No content strategy in the portal yet: sessions locked
+//      STRATEGY_PENDING, primary asks suppressed strategy_pending with no Kyle
+//      task, Send now refuses; a released strategy lifts it; a self-planned
+//      client is never gated.
 // (Route-awareness, the single 15th across an action change, the durable
 // cancellation stamp and "Schedule later" are held by b2-planning, b3-gates
 // and pro-two-sessions, which this batch re-ran.)
@@ -147,6 +151,44 @@ async function main() {
   c.ok("…and no outbox row", (await prisma.outboxMessage.count()) === 0);
   const before15 = await R.previewReminders(Rl.monthId, { now: et(2026, 10, 14, 10) });
   c.ok("before the 15th nothing is raised for her (the lock alone)", before15.lanes.find((l) => l.lane === "PRIMARY")?.candidate.kyleFollowUp === null);
+
+  // =========================================================================
+  c.head("5 · No content strategy in the portal yet (Oct 21 2026, strategyGate.ts)");
+  // =========================================================================
+  // Jordan: "Strategy calls shouldn't be bookable until we have a content
+  // strategy built and added to the platform for the client." Kristen
+  // Pavillard signed up, had her discovery call booked, and the hub lined up
+  // "book your strategy call" and "book your filming session". The flag from
+  // §4 is still ON, so a Kyle task WOULD be raised if the rule let one through.
+  const PM = await import("@/lib/programMonths");
+  const G = await buildContentMonth(db, { name: "Gia Gated TEST", package: "Accelerator", monthKey: "2026-10", project: false, strategy: false, owner: { email: "info+drill-gia@realtourpilot.com" } });
+  await prisma.client.update({ where: { id: G.clientId }, data: { name: "Gia Moreno" } }); // real-named: the 15th would raise Kyle's task
+  const gRecalc = await PM.recalcProgramMonth(G.monthId, { now: FIFTEENTH, dryRun: true });
+  const gGate = gRecalc ? PM.preparationGate(gRecalc.after) : null;
+  c.ok("sessions locked STRATEGY_PENDING (no earliest start)", !!gRecalc?.after.strategyPending && gGate?.locked === true && gGate.lock === "STRATEGY_PENDING" && gRecalc.after.sessions.every((x) => x.lock === "STRATEGY_PENDING" && !x.earliestSessionAt), `${gGate?.lock} ${gGate?.reason}`);
+  c.ok("…and nothing for Kyle to chase on the month", gRecalc?.after.followUps.length === 0, JSON.stringify(gRecalc?.after.followUps));
+  const gPlan = await primary(R, G.monthId, FIFTEENTH);
+  c.ok("planning ask suppressed strategy_pending, no Kyle follow-up", gPlan.decision === "suppressed" && gPlan.suppressionReason === "strategy_pending" && gPlan.kyleFollowUp === null && (gPlan.action === "CHOOSE_PATH" || gPlan.action === "BOOK_CALL"), `${gPlan.action} ${gPlan.decision} ${gPlan.suppressionReason}`);
+  await prisma.contentMonth.update({ where: { id: G.monthId }, data: { planningMode: "CALL", strategyCallStatus: "COMPLETED", strategyCallAt: et(2026, 10, 2, 10) } }); // Kristen's shape: a pre-sale call read as held
+  const gSession = await primary(R, G.monthId, FIFTEENTH);
+  c.ok("a call stamped held still asks for no filming booking (strategy_pending)", gSession.decision === "suppressed" && gSession.suppressionReason === "strategy_pending" && gSession.kyleFollowUp === null, `${gSession.action} ${gSession.decision} ${gSession.suppressionReason}`);
+  await R.evaluateReminders({ dryRun: false, now: FIFTEENTH, enrollmentIds: [G.enrollmentId] });
+  c.ok("a live run writes no Kyle task, no ledger row, no outbox row", !(await prisma.smartTask.findUnique({ where: { dedupeKey: `program-reminder-midmonth:${G.monthId}` } })) && (await prisma.programReminder.count({ where: { enrollmentId: G.enrollmentId } })) === 0 && (await prisma.outboxMessage.count()) === 0);
+  const sendNow = await R.sendReminderNow(G.monthId, { email: "drill@realtourpilot.com" }, { now: FIFTEENTH });
+  c.ok("Send now refuses with the same reason", !sendNow.ok && /content strategy/.test(sendNow.message), sendNow.message);
+  // The strategy lands in the portal: the gate opens, nothing else changes.
+  const gs = await prisma.contentStrategy.create({ data: { enrollmentId: G.enrollmentId, clientId: G.clientId, sectionsJson: "[]", status: "ACTIVE", source: "manual" }, select: { id: true } });
+  await prisma.contentStrategyVersion.create({ data: { strategyId: gs.id, enrollmentId: G.enrollmentId, clientId: G.clientId, versionNo: 1, sectionsJson: "[]", sourceKind: "manual", status: "APPROVED", approvedAt: FIFTEENTH, releasedAt: FIFTEENTH } });
+  const gOpen = await PM.recalcProgramMonth(G.monthId, { now: FIFTEENTH, dryRun: true });
+  const gAfter = await primary(R, G.monthId, FIFTEENTH);
+  c.ok("strategy released → the lock lifts and the ask is no longer strategy_pending", !gOpen?.after.strategyPending && gOpen?.after.sessions.every((x) => x.lock !== "STRATEGY_PENDING") === true && gAfter.suppressionReason !== "strategy_pending", `${gAfter.action} ${gAfter.decision} ${gAfter.suppressionReason}`);
+  // Self-planned ("we show up and shoot", Mike Ciunci): no strategy by design, never gated.
+  const S = await buildContentMonth(db, { name: "Sam Self TEST", package: "Starter", monthKey: "2026-10", project: false, strategy: false, owner: { email: "info+drill-sam@realtourpilot.com" } });
+  await prisma.contentEnrollment.update({ where: { id: S.enrollmentId }, data: { clientSuppliesTopics: true, strategyCallRequired: false } });
+  const sRecalc = await PM.recalcProgramMonth(S.monthId, { now: FIFTEENTH, dryRun: true });
+  const sGate = sRecalc ? PM.preparationGate(sRecalc.after) : null;
+  const sPrim = await primary(R, S.monthId, FIFTEENTH);
+  c.ok("a self-planned client with no strategy is not gated", !sRecalc?.after.strategyPending && sGate?.locked === false && sGate.anchor?.kind === "CLIENT_PLANNED" && sPrim.suppressionReason !== "strategy_pending", `${sGate?.lock} ${sPrim.action} ${sPrim.suppressionReason}`);
 
   c.ok("nothing left this process", fence.blocked.length === 0, fence.blocked.join(" "));
   c.summary();

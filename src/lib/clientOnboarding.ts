@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { lockAdvisory } from "@/lib/dbLocks";
 import { appBase } from "@/lib/appUrl";
 import { strategyAwaits, strategyInForceNo } from "@/lib/strategyAwaiting";
+import { strategyGateFor } from "@/lib/strategyGate";
 import { isAutomationEnabled, type AutomationKey } from "@/lib/programAutomation";
 import { isStaffControlledEmail, isSyntheticClientRow, isVerifiedTestDestinationEmail, isVerifiedTestDestinationPhone } from "@/lib/testClients";
 import { featureTestOnlyFor, loadProgramRollout, programReach, updateProgramRollout } from "@/lib/programRollout";
@@ -380,6 +381,9 @@ export function autoBookingProblems(
 
 // ---- the messages, composed (never sent here) --------------------------------------
 
+/** Staff-facing: why the strategy-call message is held (strategyGate, Oct 21 2026). */
+const STRATEGY_CALL_GATED = "No strategy in the portal yet. Strategy calls open once it's released.";
+
 const SIGN = "Jordan and the Realtour Pilot team\n(Reply to this email and it comes straight to us.)";
 
 async function composeMessages(a: {
@@ -402,6 +406,9 @@ async function composeMessages(a: {
     prisma.programCalendlyEventMapping.findFirst({ where: { purpose: "MONTHLY_STRATEGY", enabled: true }, select: { publicUrl: true } }).catch(() => null),
     prisma.contentEnrollment.findUnique({ where: { id: a.enrollmentId }, select: { callMode: true, strategyCallRequired: true, clientSuppliesTopics: true } }).catch(() => null),
   ]);
+  // Oct 21 2026 (strategyGate): no strategy-call ask before the strategy is in the portal.
+  const gate = await strategyGateFor(a.enrollmentId).catch(() => null);
+  const gated = !!gate && !gate.open;
   // Jordan, Oct 12 2026: "Content Program - Strategy Call should be the link
   // used for all content program strategy calls" — the monthly mapping's public
   // link (the same one the portal and reminders use), else its known URL.
@@ -414,7 +421,9 @@ async function composeMessages(a: {
     welcome: {
       email: welcome ?? [`Hi ${first},`, "", `Your Realtour Pilot content portal is ready: ${a.portalLink}`, "", SIGN].join("\n"),
       // The link ends the text (a period straight after a URL breaks it on some phones).
-      sms: `Hi ${first}, it's Jordan at Realtour Pilot. Your content portal is ready. It's where you book your calls and filming, pick your video topics and review your videos: ${a.portalLink}`,
+      sms: gated
+        ? `Hi ${first}, it's Jordan at Realtour Pilot. Your content portal is ready. Your brand discovery call comes first, then your content strategy, topics, scripts and videos all live here: ${a.portalLink}`
+        : `Hi ${first}, it's Jordan at Realtour Pilot. Your content portal is ready. It's where you book your calls and filming, pick your video topics and review your videos: ${a.portalLink}`,
       note: a.signInByEmail ? null : `The welcome tells them to sign in with their email, but ${a.signInWhyNot}. Until then, send them the portal link (step 4) instead.`,
     },
     strategy_call: {
@@ -450,11 +459,12 @@ async function composeMessages(a: {
   return ONBOARDING_MESSAGES.map((m) => {
     // Every op the message needs (the welcome: the account AND Jordan's own messages).
     const missing = a.isTest ? [] : missingToggles(m, a.reach);
-    const allowed = missing.length === 0;
+    const gateShut = m.key === "strategy_call" && gated;
+    const allowed = missing.length === 0 && !gateShut;
     return {
       key: m.key,
       allowed,
-      blockedWhy: allowed ? null : `Turn on ${toggleNames(missing)} for ${a.clientName} in step 3 first. That only allows it; nothing is sent until you press Send now.`,
+      blockedWhy: gateShut ? STRATEGY_CALL_GATED : allowed ? null : `Turn on ${toggleNames(missing)} for ${a.clientName} in step 3 first. That only allows it; nothing is sent until you press Send now.`,
       recipients: a.isTest ? a.recipients.filter((r) => (r.channel === "email" ? isVerifiedTestDestinationEmail(r.toRef) : isVerifiedTestDestinationPhone(r.toRef))) : a.recipients,
       body: { email: bodies[m.key].email, sms: bodies[m.key].sms },
       note: bodies[m.key].note,
@@ -683,6 +693,11 @@ export async function sendOnboardingMessage(input: {
   const on = await onboardingRecipientsFor(client.id);
   if (!toRef || !on.some((r) => r.channel === channel && r.toRef === toRef)) return { ok: false, message: "That address is not on file for this client. Pick one from the list. Nothing was sent." };
   const isTest = isSyntheticClientRow(client);
+  if (m.key === "strategy_call") {
+    const e = await prisma.contentEnrollment.findUnique({ where: { clientId: client.id }, select: { id: true } });
+    const gate = e ? await strategyGateFor(e.id) : null;
+    if (gate && !gate.open) return { ok: false, message: `${STRATEGY_CALL_GATED} Nothing was sent.` };
+  }
   if (isTest && !(channel === "email" ? isVerifiedTestDestinationEmail(toRef) : isVerifiedTestDestinationPhone(toRef))) {
     return { ok: false, message: "A TEST client may only be messaged at your verified test inbox or phone. Nothing was sent." };
   }

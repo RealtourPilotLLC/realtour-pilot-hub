@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey, portalLastMonthKey } from "@/lib/contentProgram";
 import { lockAdvisory } from "@/lib/dbLocks";
+import { STRATEGY_GATE_REFUSAL, strategyGateFor } from "@/lib/strategyGate";
 import type { PortalViewer } from "@/lib/portal";
 import type { Invitee, ScheduledEvent } from "@/lib/integrations/calendly";
 import type { HubPilot } from "@/lib/hubWritePermit";
@@ -369,7 +370,9 @@ export async function portalCallBookingView(viewer: PortalViewer, monthId: strin
   const booker = await bookerOf(viewer);
   const decision = await callBookingMode(viewer.enrollment.clientId, { inviteeEmail: booker.email });
   const open = !month.historical && month.monthKey >= etMonthKey(now);
-  const canBook = open && (await canBookFor(viewer)) === null;
+  // Oct 21 2026: closed strategy gate = nothing to book here (the page shows the discovery call instead).
+  const gate = await strategyGateFor(viewer.enrollment.id);
+  const canBook = open && (!gate || gate.open) && (await canBookFor(viewer)) === null;
   const token = portalCallToken(viewer.enrollment.id, month.id);
   const live = await prisma.programCallRecord.findFirst({
     where: {
@@ -465,6 +468,9 @@ async function apiPreflight(viewer: PortalViewer, monthId: string, now: Date): P
 > {
   const refused = await canBookFor(viewer);
   if (refused) return { ok: false, message: refused };
+  // Oct 21 2026 (lib/strategyGate): no strategy call before the strategy is in the portal.
+  const gate = await strategyGateFor(viewer.enrollment.id);
+  if (gate && !gate.open) return { ok: false, message: STRATEGY_GATE_REFUSAL };
   const { openMonthForEnrollment } = await import("@/lib/portal");
   const month = await openMonthForEnrollment(viewer.enrollment.id, monthId);
   if (!month || month.monthKey < etMonthKey(now)) return { ok: false, message: "Pick one of your open program months." };

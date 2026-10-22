@@ -72,6 +72,10 @@ export type WelcomeFacts = {
   sessionsPerMonth?: number;
   /** BULK only: how many videos, how many sessions, and the first session's day. */
   bulk?: { videos: number; sessions: number; firstSessionISO: string | null } | null;
+  /** Oct 21 2026 (strategyGate): false while the client's content strategy is not
+   *  in their portal yet. Then nothing here tells them to book a strategy call
+   *  or filming; it says those open once the strategy is there. Absent = open. */
+  bookingOpen?: boolean;
 };
 
 /**
@@ -117,6 +121,10 @@ function oneTimeSteps(f: WelcomeFacts): string[] {
       ? `If you've already booked your brand discovery call, you're all set and we'll confirm it with you. If not, book it here: ${f.discoveryUrl}\n${why}`
       : `If you've already booked your brand discovery call, you're all set and we'll confirm it with you. If not, reply to this email and we'll find a time.\n${why}`);
   }
+  // Oct 21 2026: the strategy comes before any booking (strategyGate).
+  if (f.bookingOpen === false && f.planning !== "BULK" && f.planning !== "CLIENT_PLANNED") {
+    out.push("We build your content strategy from your discovery call and add it to your portal. Your strategy call and filming open once it's there.");
+  }
   // "your first videos" only for someone whose program is just starting (no strategy to read yet).
   const brand = brandProfileStep(f.setupMissing, !f.strategyReady);
   if (brand) out.push(brand);
@@ -130,6 +138,19 @@ function monthlySteps(f: WelcomeFacts): string[] {
   const pick = n > 1 ? "You can pick times" : "You can pick a time";
   const scripts = "Read and approve your scripts before filming day.";
   const videos = "Review your videos. Approve them or tell us what to change, then download the finished ones.";
+  // Oct 21 2026 (Jordan: "Strategy calls shouldn't be bookable until we have a
+  // content strategy built and added to the platform"): no booking asks yet.
+  if (f.bookingOpen === false && f.planning !== "BULK" && f.planning !== "CLIENT_PLANNED") {
+    const filming = n > 1 ? `your ${n === 2 ? "two" : n} filming sessions` : "your filming session";
+    return [
+      f.planning === "WRITTEN"
+        ? "Once your strategy is in your portal, choose your video topics and answer a few short questions about each. We write your scripts from your answers."
+        : "Once your strategy is in your portal, schedule your monthly strategy call. That's where we plan the month's videos and choose your topics together.",
+      `Then pick a time for ${filming}.`,
+      scripts,
+      videos,
+    ];
+  }
   switch (f.planning) {
     case "BULK": {
       const first = f.bulk?.firstSessionISO ? new Date(f.bulk.firstSessionISO) : null;

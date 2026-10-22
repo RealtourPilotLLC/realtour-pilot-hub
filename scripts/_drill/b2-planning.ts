@@ -536,6 +536,9 @@ async function main() {
     // only) gets the desk task; a TEST client never does.
     const realClient = await prisma.client.create({ data: { name: "Harper Lane Realty", socialClient: true, socialPlan: "Starter" }, select: { id: true } });
     const realE = await prisma.contentEnrollment.create({ data: { clientId: realClient.id, status: "ACTIVE", package: "Starter", videosPerMonth: 1, sessionsPerMonth: 1, sessionHours: 2, callMode: "OPTIONAL_WRITTEN", startedAt: et(8, 1, 0) }, select: { id: true } });
+    // Oct 21 2026: a live client has its strategy in the portal (strategyGate.ts) — without one, nothing is chased.
+    const realS = await prisma.contentStrategy.create({ data: { enrollmentId: realE.id, clientId: realClient.id, sectionsJson: "[]", status: "ACTIVE", source: "manual" }, select: { id: true } });
+    await prisma.contentStrategyVersion.create({ data: { strategyId: realS.id, enrollmentId: realE.id, clientId: realClient.id, versionNo: 1, sectionsJson: "[]", sourceKind: "manual", status: "APPROVED", approvedAt: et(8, 1, 0), releasedAt: et(8, 1, 0) } });
     const realM = await prisma.contentMonth.create({ data: { enrollmentId: realE.id, clientId: realClient.id, monthKey: MONTH, videosOwed: 1, status: "OPEN", planningMode: "WRITTEN" }, select: { id: true } });
     const realT = await prisma.contentTopic.create({ data: { enrollmentId: realE.id, clientId: realClient.id, monthId: realM.id, title: "Harper's topic", source: "staff", status: "SELECTED" }, select: { id: true } });
     await prisma.contentTopicSelection.create({ data: { topicId: realT.id, monthId: realM.id, enrollmentId: realE.id, clientId: realClient.id, status: "SELECTED", source: "client" } });

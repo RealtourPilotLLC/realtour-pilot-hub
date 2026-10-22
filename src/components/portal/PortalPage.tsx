@@ -28,6 +28,8 @@ import Link from "next/link";
 import { PortalShell } from "@/components/portal/PortalShell";
 import { PORTAL_MIGRATION_NOTICE, PORTAL_FEEDBACK_QUERY } from "@/lib/portalNotice";
 import { PlanTab, type PlanTabData } from "@/components/portal/tabs/PlanTab";
+import { strategyGateFor } from "@/lib/strategyGate";
+import type { PortalStrategyGate } from "@/lib/yourMonth";
 import { MoreTab, TermsCard } from "@/components/portal/tabs/MoreTab";
 
 // ---------------------------------------------------------------------------
@@ -188,6 +190,19 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   // that never answers; with no seat they are told how to get one instead.
   const linkHasSeat = actor.kind === "TOKEN" ? await enrollmentHasMembership(enrollment.id).catch(() => false) : false;
   const offerSignIn = emailSignInLive && linkHasSeat;
+  // Oct 21 2026 (lib/strategyGate): until the client's content strategy is in
+  // the portal, Home and Your Month show the brand discovery call and what
+  // comes next, and nothing asks them to book a strategy call or filming.
+  // A read that fails reads as open: the server actions check again.
+  const strategyGate: PortalStrategyGate | null = route.dest === "home" || route.dest === "plan"
+    ? await strategyGateFor(enrollment.id).then(async (g): Promise<PortalStrategyGate | null> => {
+      if (!g || g.open) return null;
+      const discoveryUrl = g.discovery === "needed"
+        ? (await prisma.programCalendlyEventMapping.findFirst({ where: { purpose: "BRAND_DISCOVERY", enabled: true, publicUrl: { not: null } }, select: { publicUrl: true } }).catch(() => null))?.publicUrl ?? null
+        : null;
+      return { open: false, reason: g.reason, discovery: g.discovery, discoveryAtISO: g.discoveryAt?.toISOString() ?? null, meetLink: g.discoveryMeetLink, discoveryUrl };
+    }).catch(() => null)
+    : null;
 
   // ---- per-tab data --------------------------------------------------------
   let home: HomeData | null = null;
@@ -237,6 +252,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       checksFailed: !planning.ok || !schedule.ok || !videos.ok || !topics.ok || !progress.ok || !attention.ok,
       perms: { session: perms.session, suggest: perms.suggest, request: perms.request, approve: perms.approve }, readOnly,
       readOnlyState: readOnly ? (enrollment.status === "PAUSED" ? "PAUSED" : "ENDED") : null,
+      strategyGate,
     };
     // Oct 8 2026: a client who plans their own content — is this month's brief in?
     if (home.planning?.clientPlanned) {
@@ -495,6 +511,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       // A1 (Oct 13 2026): the shared link watches; a signed-in seat decides.
       linkVisitor: actor.kind === "TOKEN" ? { signInHref: offerSignIn ? "/portal/login" : null, hasSeat: linkHasSeat } : null,
       ahead: aheadOpen && aheadKey ? { label: monthLabel(aheadKey).split(" ")[0], href: portalMonthHref(portalHref(contextBase, "plan"), aheadKey), clientPlanned: selfPlanned } : null,
+      strategyPending: !!strategyGate,
     }, contextBase);
   }
 
@@ -543,7 +560,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       brief,
       planning: p.ok ? p.data : null, planningFailed: !p.ok,
       schedule: thisMonth, scheduleFailed: !sm.ok,
-      slotDays: days, bookingUrl: await callBookingUrl(), callBooking: (await loadCallLinks()).view,
+      slotDays: days, bookingUrl: await callBookingUrl(), callBooking: strategyGate ? null : (await loadCallLinks()).view,
+      strategyGate,
       can: { suggest: perms.suggest, session: perms.session, staff: actor.kind === "STAFF", approve: perms.approve },
       // Oct 21 2026: the other open months, for "Also coming up" below the steps.
       months: sm.ok ? sm.data : null,
@@ -586,7 +604,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
           topics: topicsAll?.ok ? topicsAll.data : null, topicsFailed: !!topicsAll && !topicsAll.ok,
           interview: interviewRes?.ok ? interviewRes.data : null, interviewFailed: !!interviewRes && !interviewRes.ok,
           strategy: strategyRes?.ok ? strategyRes.data : null, strategyFailed: !!strategyRes && !strategyRes.ok, priorities,
-          monthKey, canAct: perms.suggest, readOnly, filter: query.filter, hrefs: planHrefs, yourMonth,
+          monthKey, canAct: perms.suggest, readOnly, filter: query.filter, hrefs: planHrefs, yourMonth, strategyGate,
           bulk: bulkView,
           canApprove: perms.approve,
           // Oct 20 2026: each month whose scripts are all approved, as one PDF (the link is minted on the tap).

@@ -4,7 +4,7 @@ import { LateFilmingChoice } from "@/components/portal/LateFilmingChoice";
 import { CheckCircle2, ChevronRight, Circle, Clock, ExternalLink } from "lucide-react";
 import { monthLabel } from "@/lib/contentProgram";
 import type { PortalPlanning, PortalScheduleMonth, PortalSlotDay, PortalTopicsData } from "@/lib/portal";
-import { aheadLine, callWhenWords, yourMonthSteps, yourMonthTabs, type YourMonthStep } from "@/lib/yourMonth";
+import { aheadLine, callWhenWords, yourMonthSteps, yourMonthTabs, type PortalStrategyGate, type YourMonthStep } from "@/lib/yourMonth";
 import { etMonthKey } from "@/lib/datetime";
 import { portalMonthHref } from "@/lib/portalScheduling";
 import { cn } from "@/lib/utils";
@@ -68,6 +68,12 @@ export type YourMonthData = {
   late?: { schedule: PortalScheduleMonth | null; scripts: PortalLateScript[] } | null;
   /** The scheduler month the address asked for (a late month's id, or this month's). */
   selectedScheduleMonthId?: string | null;
+  /**
+   * Oct 21 2026 (lib/strategyGate): closed = no content strategy in the portal
+   * yet. The month shows the discovery call, the strategy, and the strategy
+   * call and filming as still to come; nothing here books either. Null = open.
+   */
+  strategyGate?: PortalStrategyGate | null;
 };
 
 const focusRing = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
@@ -103,11 +109,14 @@ export function YourMonth({ d }: { d: YourMonthData }) {
     hrefs: { bank: d.hrefs.bank, month: `${d.hrefs.month}#this-month`, scripts: d.hrefs.scripts, bookingUrl: d.bookingUrl },
     timezone: p.timezone,
     clientPlanned: p.clientPlanned ? { briefFiles: d.brief?.files.length ?? 0, briefNotes: !!d.brief?.notes?.text.trim() } : null,
+    strategyGate: d.strategyGate ?? null,
   });
   const clientPlanned = p.clientPlanned;
+  // Oct 21 2026: the strategy gate is closed; nothing below books a call or filming.
+  const pending = !!d.strategyGate && !d.strategyGate.open && !clientPlanned;
   const route = p.planningMode === "WRITTEN" ? "WRITTEN" : p.planningMode === "CALL" ? "CALL" : "UNDECIDED";
   // Oct 12 2026: a month the office planned (its scripts uploaded) has no route for the client to choose.
-  const canChoose = p.noCallEligible && d.can.session && !d.readOnly && !p.officePlanned;
+  const canChoose = p.noCallEligible && d.can.session && !d.readOnly && !p.officePlanned && !pending;
   const current = steps.find((x) => x.state === "current") ?? null;
   const topicsAreCurrent = current?.key === "topics" || current?.key === "answers" || (current?.key === "call" && planning.call === "HELD");
   // Oct 21 2026: this month and next, one tap apart; next month reads as getting ahead.
@@ -130,10 +139,12 @@ export function YourMonth({ d }: { d: YourMonthData }) {
       {/* The month in one sentence, and precise progress. */}
       <section aria-labelledby="your-month-headline" className="panel-shadow rounded-2xl border border-brand/30 bg-brand-soft/30 p-4 backdrop-blur">
         <div className="text-[11px] font-semibold uppercase tracking-widest text-brand">{ahead ? `${monthLabel(month.monthKey)} · getting ahead` : monthLabel(month.monthKey)}</div>
-        <h2 id="your-month-headline" className="mt-1 break-words text-lg font-semibold leading-snug">{planning.headline.text}</h2>
-        {ahead && <p className="mt-1 text-sm text-muted">{aheadLine(month.monthKey, !!p.clientPlanned)}</p>}
+        <h2 id="your-month-headline" className="mt-1 break-words text-lg font-semibold leading-snug">{pending ? (d.strategyGate?.discovery === "held" || d.strategyGate?.discovery === "waived" ? "We're building your content strategy" : "First, your brand discovery call") : planning.headline.text}</h2>
+        {ahead && !pending && <p className="mt-1 text-sm text-muted">{aheadLine(month.monthKey, !!p.clientPlanned)}</p>}
         {p.catchUp && <p className="mt-1 text-sm font-medium text-brand">{p.catchUp.line}</p>}
-        {clientPlanned ? (
+        {pending ? (
+          <p className="mt-0.5 text-sm text-muted">{d.strategyGate?.reason}</p>
+        ) : clientPlanned ? (
           <p className="mt-0.5 text-sm text-muted">{month.owed} video{month.owed === 1 ? "" : "s"} this month · you plan them, we film and edit them</p>
         ) : (
           <p className="mt-0.5 text-sm text-muted">
@@ -150,7 +161,7 @@ export function YourMonth({ d }: { d: YourMonthData }) {
       </section>
 
       {/* Oct 12 2026: an over month's session, booked now beside this month's (lateSession.ts). */}
-      {p.late && <LateSessionCard d={d} late={p.late} hostName={monthLabel(month.monthKey).split(" ")[0]} />}
+      {p.late && !pending && <LateSessionCard d={d} late={p.late} hostName={monthLabel(month.monthKey).split(" ")[0]} />}
 
       {/* The steps, in the order the month runs. */}
       <ol aria-label="Your month, step by step" className="space-y-2">
@@ -188,7 +199,7 @@ export function YourMonth({ d }: { d: YourMonthData }) {
 
                 {/* W03: book (or change) the strategy call right here — never
                     once the call has been held. */}
-                {step.key === "call" && d.callBooking && planning.call !== "HELD" && step.state !== "done" && (
+                {step.key === "call" && !pending && d.callBooking && planning.call !== "HELD" && step.state !== "done" && (
                   d.callBooking.booked ? (
                     <details className="mt-1">
                       <summary className={cn("flex min-h-11 cursor-pointer items-center text-sm font-medium text-brand hover:underline", focusRing)}>Manage your strategy call</summary>
@@ -207,7 +218,7 @@ export function YourMonth({ d }: { d: YourMonthData }) {
                 {/* Book, change or cancel filming (C14: the only place). Booked
                     sessions, their address and Change time / Cancel live in the
                     same picker, so it shows whenever the month is open. */}
-                {step.key === "filming" && (d.scheduleFailed ? (
+                {step.key === "filming" && !pending && (d.scheduleFailed ? (
                   <div className="mt-2"><LoadFailed what="your filming calendar" /></div>
                 ) : s && !s.locked && p.late ? (
                   // Both sessions are booked from the one card above (Oct 13 2026: or the one session for both months).
@@ -236,12 +247,12 @@ export function YourMonth({ d }: { d: YourMonthData }) {
 
       {/* Oct 21 2026: the other open months' calls and sessions, and what is
           still to book there (this month's own are in the steps above). */}
-      <AlsoComingUp d={d} thisMonthIds={[p.monthId, s?.monthId ?? null, p.late?.monthId ?? null].filter((x): x is string => !!x)} />
+      <AlsoComingUp d={d} thisMonthIds={[p.monthId, s?.monthId ?? null, p.late?.monthId ?? null].filter((x): x is string => !!x)} showToBook={!pending} />
 
       {/* Keep the full bank in reach when choosing or answering, then fold it
           so a later action does not compete with a second work area. A client
           who plans their own content has no topics to choose (Oct 8 2026). */}
-      {!clientPlanned && <section id="this-month" aria-label="This month's topics" className="scroll-mt-24">
+      {!clientPlanned && !pending && <section id="this-month" aria-label="This month's topics" className="scroll-mt-24">
         <details open={topicsAreCurrent} className="rounded-2xl border border-border bg-surface/70 px-4 py-3">
           <summary className={cn("min-h-11 cursor-pointer py-2 text-sm font-semibold", focusRing)}>This month&rsquo;s topics · {month.selected} of {month.owed} chosen</summary>
           <div className="mt-3 space-y-3">
@@ -260,9 +271,9 @@ export function YourMonth({ d }: { d: YourMonthData }) {
 }
 
 /** The rest of the program's schedule, from Schedule's old list (ComingUp.tsx). Nothing when nothing else is booked or left to book. */
-function AlsoComingUp({ d, thisMonthIds }: { d: YourMonthData; thisMonthIds: string[] }) {
+function AlsoComingUp({ d, thisMonthIds, showToBook = true }: { d: YourMonthData; thisMonthIds: string[]; showToBook?: boolean }) {
   if (!d.months || d.scheduleFailed) return null;
-  const props = { planning: d.planning, months: d.months, perms: { session: d.can.session }, readOnly: d.readOnly, topicsHref: d.hrefs.month, topicsLabel: "Your Month", excludeMonthIds: thisMonthIds, includeCall: false };
+  const props = { planning: d.planning, months: d.months, perms: { session: d.can.session }, readOnly: d.readOnly, topicsHref: d.hrefs.month, topicsLabel: "Your Month", excludeMonthIds: thisMonthIds, includeCall: false, showToBook };
   const { items, toBook } = comingUpItems(props);
   if (items.length === 0 && toBook.length === 0) return null;
   return (

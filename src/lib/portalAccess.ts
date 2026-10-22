@@ -742,7 +742,9 @@ export async function welcomeFactsFor(clientId: string | null, now: Date): Promi
       bulk = { videos: plan.totalVideos, sessions: plan.sessionsPlanned, firstSessionISO: next?.shootDateISO ?? plan.startsOn?.toISOString() ?? null };
     }
   }
-  return { discovery, discoveryUrl: mapping?.publicUrl ?? null, strategyReady: released > 0, planning: bulk ? "BULK" as const : planning, strategyCallsOn: !bulk && mode !== "NOT_INCLUDED", setupMissing, sessionsPerMonth: enrollment?.sessionsPerMonth ?? 1, bulk };
+  // Oct 21 2026: no booking asks before the strategy is in the portal (strategyGate).
+  const gate = enrollment ? await import("@/lib/strategyGate").then((m) => m.strategyGateFor(enrollment.id)).catch(() => null) : null;
+  return { discovery, discoveryUrl: mapping?.publicUrl ?? null, strategyReady: released > 0, planning: bulk ? "BULK" as const : planning, strategyCallsOn: !bulk && mode !== "NOT_INCLUDED", setupMissing, sessionsPerMonth: enrollment?.sessionsPerMonth ?? 1, bulk, bookingOpen: gate ? gate.open : true };
 }
 
 /** Every account we owe but have not opened, oldest debt first. The owner's

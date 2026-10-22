@@ -51,6 +51,13 @@ export type ContentMonthFixtureOptions = {
   owner?: false | { email?: string; name?: string };
   /** false = the enrollment has never been given a link. */
   portalToken?: boolean;
+  /**
+   * Oct 21 2026 (strategyGate.ts): the client gets an approved content strategy
+   * released to the portal, so the strategy gate is OPEN — as for every live
+   * client but a new signup. `false` = a client still waiting on their strategy
+   * (sessions locked STRATEGY_PENDING, no booking asks).
+   */
+  strategy?: boolean;
 };
 
 export type ContentMonthFixture = {
@@ -104,6 +111,16 @@ export async function buildContentMonth(prisma: PrismaClient, opts: ContentMonth
     },
     select: { id: true },
   });
+  if (opts.strategy !== false) {
+    const at = new Date("2026-08-01T04:00:00Z");
+    // The version alone (what the gate reads). ContentStrategy.approvedVersionId
+    // is left unset on purpose: recalcProgramMonth reads it as "a prior call was
+    // held" (written planning allowed), which would change every call-route drill.
+    const strategy = await prisma.contentStrategy.create({ data: { enrollmentId: enrollment.id, clientId: client.id, sectionsJson: "[]", status: "ACTIVE", source: "manual" }, select: { id: true } });
+    await prisma.contentStrategyVersion.create({
+      data: { strategyId: strategy.id, enrollmentId: enrollment.id, clientId: client.id, versionNo: 1, sectionsJson: "[]", sourceKind: "manual", status: "APPROVED", createdBy: "drill", approvedBy: "drill", approvedAt: at, releasedAt: at, releasedBy: "drill" },
+    });
+  }
   const month = await prisma.contentMonth.create({
     data: { enrollmentId: enrollment.id, clientId: client.id, monthKey, videosOwed: videosPerMonth, status: opts.monthStatus ?? "OPEN" },
     select: { id: true },

@@ -12,6 +12,7 @@ import type { JourneyInput } from "@/lib/contentStatus";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { isAutomationEnabled } from "@/lib/programAutomation";
 import { programCallEvidence } from "@/lib/programCallEvidence";
+import { strategyGatesFor } from "@/lib/strategyGate";
 
 // ---------------------------------------------------------------------------
 // THE MONTHLY PORTFOLIO OVERVIEW (spec §16). One row per (client, program
@@ -253,6 +254,8 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     return { rows: [], monthKey: allOpen ? ALL_OPEN : monthKey, monthKeys: [], counts: emptyCounts(), endedCount: 0, globalFailures: (await failedAutomationIndex({ includeTest: opts.includeTest })).global };
   }
   const enrollmentIds = enrollments.map((e) => e.id);
+  // Oct 21 2026 (strategyGate.ts): who has no content strategy in their portal yet — one batch.
+  const strategyGates = await strategyGatesFor(enrollmentIds).catch(() => new Map<string, import("@/lib/strategyGate").StrategyGate>());
 
   // Every month workspace that exists, so the selector lists real months and
   // "all open months" can find obligations that outlived their calendar month.
@@ -401,6 +404,8 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     const legacyCallMode = callModeOf(e);
     const forfeited = !!m && forfeitedSet.has(m.id);
     const clientPlanned = e.clientSuppliesTopics;
+    const strategyGate = strategyGates.get(e.id) ?? null;
+    const strategyPending = strategyGate?.open === false;
     const callMode = (progress?.call.mode as CallMode | null | undefined) ?? legacyCallMode;
     const priorCallHeld = legacyCallMode === "REQUIRED" && callMode === "OPTIONAL_WRITTEN";
 
@@ -484,7 +489,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
             preparationWindowDays: m.preparationWindowDays, preparationExceptionAt: m.preparationExceptionAt,
             preparationExceptionReason: m.preparationExceptionReason, filmingReadyAt: m.filmingReadyAt, historical: m.historical,
           },
-          enrollment: { callMode: e.callMode, strategyCallRequired: e.strategyCallRequired, noCallEligible: e.noCallEligible, priorCallHeld, preparationWindowHours: enrollmentWindowOverrideHours(e.overridesJson), clientPlanned },
+          enrollment: { callMode: e.callMode, strategyCallRequired: e.strategyCallRequired, noCallEligible: e.noCallEligible, priorCallHeld, preparationWindowHours: enrollmentWindowOverrideHours(e.overridesJson), clientPlanned, strategyPending },
           // The call's END (A19): the clock runs from it. This passed
           // `scheduledEnd: null`, so the overview measured every call from its start.
           records: monthly.map((c) => ({ id: c.id, callType: c.callType, status: c.status, matchState: c.matchState, scheduledStart: c.scheduledStart, scheduledEnd: c.scheduledEnd, transcriptState: c.transcriptState, createdAt: c.createdAt })),
@@ -650,6 +655,15 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       };
     } else if (m.historical) {
       next = { text: "Imported history — read only", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", closed: true, deadlineISO: null, href: href(), cta: "Open" };
+    } else if (strategyPending && strategyGate) {
+      // Oct 21 2026: discovery call → strategy → strategy call → filming. Until
+      // the strategy is in the client's portal there is nothing to book or chase.
+      const when = strategyGate.discoveryAt ? strategyGate.discoveryAt.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : null;
+      next = strategyGate.discovery === "needed"
+        ? { text: "New client — no brand discovery call booked yet. Nothing to book until their strategy is in the portal", owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "client", deadlineISO: null, href: href("plan"), cta: "Open the plan" }
+        : strategyGate.discovery === "booked"
+          ? { text: `New client — brand discovery call ${when ? `${when} ET` : "booked"}. Strategy next; no strategy call or filming until it is in the portal`, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "nobody", deadlineISO: strategyGate.discoveryAt ? iso(strategyGate.discoveryAt) : null, href: href("plan"), cta: "Open the plan" }
+          : { text: "Build and release their content strategy — strategy call and filming open once it is in the portal", owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: href("plan"), cta: "Open the plan" };
     } else if (blockingCallProblem) {
       // A confirmed transcript nobody has analysed opens the month's call card,
       // where "Analyze the call" runs it now (Oct 12 2026); anything else

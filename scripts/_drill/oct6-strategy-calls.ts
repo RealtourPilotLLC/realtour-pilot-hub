@@ -46,8 +46,26 @@
 // ---------------------------------------------------------------------------
 import { createRequire } from "node:module";
 import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors } from "./_harness";
-import { buildContentMonth } from "./_fixtures/contentMonth";
+import { buildContentMonth as buildMonthFixture } from "./_fixtures/contentMonth";
 import { makeFakeCalendly } from "./_fake-calendly";
+
+// Oct 21 2026 (the strategy gate): these clients are already running the
+// program, so each has an approved strategy released to its portal
+// (lib/strategyGate). Only the version row the gate reads is written (the
+// identity carries no approvedVersionId, so call modes stay as they were),
+// and only when the client has none yet (the shared fixture may seed one).
+async function releaseStrategyFor(db: Parameters<typeof buildMonthFixture>[0], e: { enrollmentId: string; clientId: string }): Promise<void> {
+  if (await db.contentStrategyVersion.count({ where: { enrollmentId: e.enrollmentId, status: "APPROVED", releasedAt: { not: null } } })) return;
+  const at = new Date("2026-08-01T12:00:00Z");
+  const s = await db.contentStrategy.create({ data: { enrollmentId: e.enrollmentId, clientId: e.clientId, sectionsJson: "{}", status: "DRAFT", source: "import" }, select: { id: true } });
+  await db.contentStrategyVersion.create({ data: { strategyId: s.id, enrollmentId: e.enrollmentId, clientId: e.clientId, versionNo: 1, sectionsJson: "{}", sourceKind: "import", status: "APPROVED", approvedAt: at, approvedBy: "drill", releasedAt: at, releasedBy: "drill" } });
+}
+const buildContentMonth = async (...a: Parameters<typeof buildMonthFixture>) => {
+  const f = await buildMonthFixture(...a);
+  await releaseStrategyFor(a[0], f);
+  return f;
+};
+
 
 const PORT = Number(process.env.DRILL_PORT ?? 6870);
 
@@ -432,6 +450,38 @@ async function main() {
       const msgs = await prisma.programMessage.count().catch(() => 0);
       c.ok("no program message was written", msgs === 0, String(msgs));
       c.ok("no review task was created for any candidate during the whole run", (await reviewTasks()) === tasksBefore);
+    }
+    // =========================================================================
+    // Oct 21 2026 (Kristen Pavillard): strategy calls open only once the
+    // client's strategy is in their portal; a pre-program call is a sales call.
+    // After 11, which proves the run up to here raised no review task.
+    c.head("12 · The strategy gate");
+    {
+      const N = await buildMonthFixture(prisma, { name: "New Signup TEST", monthKey: "2026-10", project: false, owner: false });
+      await prisma.contentStrategyVersion.deleteMany({ where: { enrollmentId: N.enrollmentId } });
+      // A real name: a TEST client's records make no owner work (ensureReviewTask).
+      await prisma.client.update({ where: { id: N.clientId }, data: { name: "Nora Newsignup", email: "new.signup@example.com" } });
+      const nb = book(MONTHLY, edt(10, 8, 10), "Nora Newsignup", "new.signup@example.com");
+      await ccr.syncCallRecordsFromCalendly({ now: now(), lookBackDays: 30, lookAheadDays: 14 });
+      const held = await prisma.programCallRecord.findFirst({ where: { calendlyEventUri: nb.event.uri } });
+      c.ok("no strategy in the portal: the booking is kept, held as AMBIGUOUS_MONTH on no month, with the reason", held?.matchState === "AMBIGUOUS_MONTH" && held.monthId === null && held.clientId === N.clientId && /content strategy was in their portal/.test(held.matchNote ?? ""), JSON.stringify({ m: held?.matchState, month: held?.monthId, note: held?.matchNote }));
+      const nm = await monthOf(N.monthId);
+      c.ok("…the month is not planned by it (no call on file, not COMPLETED)", nm?.callRecordId === null && nm.strategyCallStatus !== "COMPLETED", JSON.stringify(nm));
+      c.ok("…and Jordan has a review task naming it", !!(await prisma.smartTask.findUnique({ where: { dedupeKey: `content-call-review-${held!.id}` } })));
+      await releaseStrategyFor(prisma, N);
+      await ccr.syncCallRecordsFromCalendly({ now: now(), lookBackDays: 30, lookAheadDays: 14 });
+      const open = await prisma.programCallRecord.findUnique({ where: { id: held!.id } });
+      c.ok("once the strategy is released the next sync files it on October as usual", open?.matchState === "MATCHED" && open.monthId === N.monthId, JSON.stringify({ m: open?.matchState, month: open?.monthId }));
+
+      const P = await buildContentMonth(prisma, { name: "Pre Sale TEST", monthKey: "2026-10", project: false, owner: false });
+      await prisma.client.update({ where: { id: P.clientId }, data: { email: "pre.sale@example.com" } });
+      await prisma.contentEnrollment.update({ where: { id: P.enrollmentId }, data: { startedAt: edt(10, 6, 12) } });
+      const pb = book(MONTHLY, edt(10, 5, 10), "Pre Sale", "pre.sale@example.com");
+      await ccr.syncCallRecordsFromCalendly({ now: now(), lookBackDays: 30, lookAheadDays: 14 });
+      const pre = await prisma.programCallRecord.findFirst({ where: { calendlyEventUri: pb.event.uri } });
+      c.ok("a call that starts before the program started is a sales call: held, on no month", pre?.matchState === "AMBIGUOUS_MONTH" && pre.monthId === null && /before the program started/.test(pre.matchNote ?? ""), JSON.stringify({ m: pre?.matchState, note: pre?.matchNote }));
+      c.ok("…but one already filed on a month is left as it is (Erica's Aug 7 call)", (await ccr.strategyCallHold(P.enrollmentId, edt(10, 5, 10), { monthId: P.monthId, matchState: "MATCHED" })) === null);
+      c.ok("…and a call after the start, strategy released, is not held", (await ccr.strategyCallHold(P.enrollmentId, edt(10, 7, 10), null)) === null);
     }
   } finally {
     c.summary();

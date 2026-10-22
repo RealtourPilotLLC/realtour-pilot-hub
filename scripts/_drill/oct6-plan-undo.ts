@@ -30,6 +30,10 @@
 //   §10 Your Month: answers owed on the call route have a step (and Home
 //      links to it); "booked for today at 4:00 PM ET"; past tense once held;
 //      owner bells dedupe per month per ET day.
+//   §11 the strategy gate (Oct 21 2026): a new signup's Home asks nothing
+//      about booking, portalBookCall and the call route refuse with the
+//      gate's sentence, filming is shut with its reason, Your Month shows the
+//      discovery call first; a released strategy opens it.
 //   §8 nothing lost, nothing sent.
 //
 // ISOLATION: PGlite on 127.0.0.1:5631 (the harness). Production is never
@@ -398,6 +402,47 @@ async function main() {
     const ansWritten = [homeIn("WRITTEN").primary, ...homeIn("WRITTEN").more].find((a) => a?.kind === "ANSWER_QUESTIONS");
     c.ok("Home's 'answer the questions' lands on #step-call on the call route (#step-answers does not exist there)", !!ansCall && /#step-call$/.test(ansCall.href), ansCall ? ansCall.href : "none");
     c.ok("…and on #step-answers on the written route", !!ansWritten && /#step-answers$/.test(ansWritten.href), ansWritten?.href);
+
+    // =======================================================================
+    c.head("§11 · the strategy gate (Oct 21 2026): a new signup books no call or filming before the strategy is in the portal");
+    // =======================================================================
+    {
+      const sg = await import("@/lib/strategyGate");
+      const fresh = await buildContentMonth(prisma as never, { name: "Gate TEST New Signup", package: "Starter", project: false, strategy: false });
+      const g0 = await sg.strategyGateFor(fresh.enrollmentId);
+      c.ok("no released strategy → the gate is closed, discovery still needed", !!g0 && !g0.open && g0.discovery === "needed", JSON.stringify(g0));
+      const gated = home.homeActions({
+        status: "ACTIVE", readOnly: false, perms: { session: true, suggest: true, request: true, approve: true, profile: true },
+        review: { count: 0, single: null, soonestDeadlineLabel: null }, scripts: [], unread: 0,
+        planning: { planningMode: "UNDECIDED", callStatus: "NOT_SCHEDULED", noCallEligible: true },
+        month: { monthKey: "2026-10", label: "October 2026", owed: 2, selected: 0 }, toAnswer: [],
+        session: { offerBooking: true, required: 1, missing: 1 }, addressNeeded: 0, setup: { complete: false, remaining: 2 },
+        ready: { count: 0, withFile: false, single: null }, ahead: { label: "November", href: "?tab=plan&month=2026-11" }, strategyPending: true,
+      });
+      const kinds = [gated.primary, ...gated.more].filter(Boolean).map((a) => a!.kind);
+      c.ok("Home while gated: no route, strategy call, topics, filming or get-ahead ask (only setup is left)", kinds.join(",") === "FINISH_SETUP", kinds.join(","));
+      const booked = await actions.portalBookCall(auth(fresh), fresh.monthId, et(10, 20, 14).toISOString());
+      c.ok("portalBookCall refuses with the gate's sentence", !booked.ok && booked.state === "REFUSED" && booked.message === sg.STRATEGY_GATE_REFUSAL, booked.message);
+      const route = await actions.portalPlanWithCall(auth(fresh), fresh.monthId);
+      c.ok("…and so does choosing the call route", !route.ok && route.message === sg.STRATEGY_GATE_REFUSAL, route.message);
+      const shut = await portal.sessionGate(fresh.enrollmentId, fresh.monthId);
+      c.ok("filming is shut with the gate's own reason (the discovery call comes first)", shut.locked && /brand discovery call comes first/.test(shut.reason), shut.reason);
+      const pending = ym.yourMonthSteps({
+        monthLabel: "October", planning: { callMode: "REQUIRED", planningMode: "UNDECIDED", callStatus: "NOT_SCHEDULED", callAtISO: null, noCallEligible: false, chosenAtISO: null, deferredAtISO: null },
+        month: (await plan(fresh)).planning as MonthPlanning, schedule: null, can: { suggest: true, session: true }, readOnly: false,
+        hrefs: { bank: "#b", month: "#m", scripts: "#s", bookingUrl: "https://calendly.invalid" },
+        strategyGate: { open: false, reason: g0?.reason ?? null, discovery: "booked", discoveryAtISO: et(10, 29, 10).toISOString(), meetLink: "https://calendly.com/events/x/google_meet", discoveryUrl: null },
+        now: NOW,
+      });
+      c.ok("Your Month while gated: the discovery call, the strategy, then call and filming with nothing to book", pending.map((s) => s.key).join(",") === "discovery,strategy,call,filming" && pending[0].title === "Your brand discovery call is Thursday, October 29 at 10:00 AM ET" && !pending[2].cta && !pending[3].cta, JSON.stringify(pending.map((s) => [s.key, s.title, s.cta?.label ?? null])));
+      // What lib/strategyGate reads: an APPROVED version released to the portal.
+      const at = new RealDate(RealDate.UTC(2026, 9, 7, 12));
+      const sid = (await prisma.contentStrategy.create({ data: { enrollmentId: fresh.enrollmentId, clientId: fresh.clientId, sectionsJson: "[]", status: "ACTIVE", source: "manual" }, select: { id: true } })).id;
+      await prisma.contentStrategyVersion.create({ data: { strategyId: sid, enrollmentId: fresh.enrollmentId, clientId: fresh.clientId, versionNo: 1, sectionsJson: "[]", sourceKind: "manual", status: "APPROVED", approvedBy: "drill", approvedAt: at, releasedAt: at, releasedBy: "drill" } });
+      const g1 = await sg.strategyGateFor(fresh.enrollmentId);
+      const after = await actions.portalBookCall(auth(fresh), fresh.monthId, et(10, 20, 14).toISOString());
+      c.ok("an approved strategy released to the portal opens the gate: booking is no longer refused for it", !!g1 && g1.open && after.message !== sg.STRATEGY_GATE_REFUSAL, `${JSON.stringify(g1)} · ${after.message}`);
+    }
 
     // =======================================================================
     c.head("§8 · nothing lost, nothing sent");

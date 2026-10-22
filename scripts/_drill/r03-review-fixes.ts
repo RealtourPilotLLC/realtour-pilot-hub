@@ -261,7 +261,7 @@ async function main(): Promise<void> {
     const ce = await import("@/lib/cutEntitlement");
     const { streamUrlFor } = await import("@/lib/reviewCuts");
     const program = async (name: string, realName: string | null) => {
-      const f = await buildContentMonth(db, { name, package: "Starter", monthKey: "2026-09", project: { status: "SCHEDULED", shootDate: new Date(PINNED - 20 * DAY) }, owner: { email: `${name.split(" ")[0].toLowerCase()}@example.test`, name } });
+      const f = await buildContentMonth(db, { strategy: false, name, package: "Starter", monthKey: "2026-09", project: { status: "SCHEDULED", shootDate: new Date(PINNED - 20 * DAY) }, owner: { email: `${name.split(" ")[0].toLowerCase()}@example.test`, name } });
       if (realName) await prisma.client.update({ where: { id: f.clientId }, data: { name: realName } });
       const s = await prisma.contentStrategy.create({ data: { enrollmentId: f.enrollmentId, clientId: f.clientId, sectionsJson: "{}" } });
       const sv = await prisma.contentStrategyVersion.create({ data: { strategyId: s.id, enrollmentId: f.enrollmentId, clientId: f.clientId, versionNo: 1, sectionsJson: "{}", sourceKind: "manual", status: "APPROVED", approvedAt: new Date(PINNED - DAY), releasedAt: new Date(PINNED - DAY) } });
@@ -356,6 +356,8 @@ async function main(): Promise<void> {
     await setSwitch("reminders", false, null);
 
     // (b) automatic sharing: an eligible TEST draft.
+    // Oct 21 2026: the fixture's own released strategy steps aside — this one is the version in force.
+    await prisma.contentStrategyVersion.updateMany({ where: { enrollmentId: T.enrollmentId, status: "APPROVED" }, data: { status: "SUPERSEDED" } });
     const s = await prisma.contentStrategy.create({ data: { enrollmentId: T.enrollmentId, clientId: T.clientId, sectionsJson: "{}" } });
     const sv = await prisma.contentStrategyVersion.create({ data: { strategyId: s.id, enrollmentId: T.enrollmentId, clientId: T.clientId, versionNo: 1, sectionsJson: "{}", sourceKind: "manual", status: "APPROVED", approvedAt: new Date(PINNED - DAY), releasedAt: new Date(PINNED - DAY) } });
     await prisma.contentStrategy.update({ where: { id: s.id }, data: { approvedVersionId: sv.id, currentVersionId: sv.id } });

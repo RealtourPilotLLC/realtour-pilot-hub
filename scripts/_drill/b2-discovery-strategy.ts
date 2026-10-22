@@ -719,7 +719,7 @@ async function main() {
   c.head("9 · A09 gap b — 'said in confidence' after the fact");
   // =========================================================================
   {
-    const f = await buildContentMonth(prisma, { name: "Faye Facts TEST", topics: [{ title: "Pricing in a shifting market", selection: "SELECTED", excerpts: ["Honestly the market has me planning to open my own team office in March"] }] });
+    const f = await buildContentMonth(prisma, { strategy: false, name: "Faye Facts TEST", topics: [{ title: "Pricing in a shifting market", selection: "SELECTED", excerpts: ["Honestly the market has me planning to open my own team office in March"] }] });
     const topicId = f.topicIds[0];
     c.ok("precondition: the excerpt reaches prompts and suggested answers", (await safeTopicExcerpts(topicId, f.monthId, f.clientId)).kept.length === 1);
     const fact = await facts.createFact({ clientId: f.clientId, enrollmentId: f.enrollmentId, category: "DECISION", body: "Planning to open her own team office in March", source: "call" });
@@ -734,7 +734,7 @@ async function main() {
     c.ok("the matching excerpt no longer reaches prompts or suggested answers", (await safeTopicExcerpts(topicId, f.monthId, f.clientId)).kept.length === 0);
     c.ok("the portal prefill is dropped (rebuilt without it)", !(await prisma.appSetting.findUnique({ where: { key: `portal-prefill-${f.enrollmentId}` } })));
     c.ok("the open proposal made from it is REJECTED ('source marked confidential')", p.status === "REJECTED" && p.resolutionNote === "source marked confidential");
-    const excerpts2 = await buildContentMonth(prisma, { name: "Phil Phrases TEST", topics: [{ title: "Open house etiquette", selection: "SELECTED", excerpts: ["Between you and me, the seller is about to drop the price", "Buyers always open the fridge first"] }] });
+    const excerpts2 = await buildContentMonth(prisma, { strategy: false, name: "Phil Phrases TEST", topics: [{ title: "Open house etiquette", selection: "SELECTED", excerpts: ["Between you and me, the seller is about to drop the price", "Buyers always open the fridge first"] }] });
     const kept = await safeTopicExcerpts(excerpts2.topicIds[0], excerpts2.monthId, excerpts2.clientId);
     c.ok("a line that SAYS it is private never reaches a prompt either", kept.kept.length === 1 && /fridge/.test(kept.kept[0].text));
   }

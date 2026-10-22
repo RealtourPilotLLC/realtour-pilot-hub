@@ -10,6 +10,7 @@ import {
 import { enqueueTranscriptJob, cancelTranscriptJobs } from "@/lib/transcriptJobs";
 import { recalcProgramMonth, choosePlanningMode, restorePlanningMode } from "@/lib/programMonths";
 import { isTestClientName } from "@/lib/testClients";
+import { strategyGateFor } from "@/lib/strategyGate";
 
 // ---------------------------------------------------------------------------
 // CALL RECORDS (spec §20 / §21 / §26), Sep 16 2026.
@@ -603,7 +604,25 @@ async function syncOneBooking(
     }
 
     if (candidateType && identity && identity.clientId) provider.callType = "MONTHLY_STRATEGY";
+    // THE STRATEGY GATE (Oct 21 2026, Kristen Pavillard): a strategy call booked
+    // before the program started (the sales call) or before the client's
+    // strategy is in their portal is not a month's strategy call. It is kept,
+    // held for a person (AMBIGUOUS_MONTH) and never planned a month, so it
+    // cannot mark one COMPLETED or move its preparation on.
+    const held = !staffOwned && identity?.matchState === "MATCHED" && identity.enrollmentId && start && provider.callType === "MONTHLY_STRATEGY"
+      ? await strategyCallHold(identity.enrollmentId, start, existing)
+      : null;
+    if (held && identity) {
+      identity = { ...identity, matchState: "AMBIGUOUS_MONTH", note: held };
+      raw.identity = { note: held, candidates: [] };
+      if (existing?.monthId) {
+        await prisma.contentMonth.updateMany({ where: { id: existing.monthId, callRecordId: existing.id }, data: { callRecordId: null } });
+        await releaseMonthStamp(existing.monthId, start);
+        touchedMonths.add(existing.monthId);
+      }
+    }
     const data = {
+      ...(held ? { monthId: null } : {}),
       ...provider,
       ...(identity ? { matchState: identity.matchState, clientId: identity.clientId, enrollmentId: identity.enrollmentId, matchNote: identity.note } : {}),
       ...(portal ? {
@@ -638,6 +657,16 @@ async function syncOneBooking(
         // History stays; open work on the dead booking stops. Its transcript
         // (if any) stays with it — the replacement must be verified on its own.
         await cancelTranscriptJobs(recordId, `booking ${status.toLowerCase()}`);
+      }
+    } else if (held) {
+      out.review++;
+      if (status !== "CANCELLED" && status !== "RESCHEDULED") {
+        const who = await prisma.client.findUnique({ where: { id: identity!.clientId! }, select: { name: true } });
+        await ensureReviewTask(
+          { id: recordId, clientId: identity!.clientId, inviteeName: provider.inviteeName, inviteeEmail: provider.inviteeEmail, scheduledStart: start, callType: "MONTHLY_STRATEGY" },
+          `${who?.name ?? provider.inviteeEmail ?? "A client"} booked a strategy call, but it is not filed on a month: ${held}`,
+          ["If it really is this month's strategy call, confirm the client on the call. If it was a sales call, ignore it."],
+        );
       }
     } else if (REVIEW_STATES.includes(state)) {
       out.review++;
@@ -1206,6 +1235,25 @@ async function releaseMonthStamp(monthId: string, scheduledStart: Date | null): 
     where: { id: monthId, strategyCallAt: scheduledStart, strategyCallStatus: { in: ["SCHEDULED", "COMPLETED"] }, OR: [{ transcriptText: null }, { transcriptText: "" }] },
     data: { strategyCallStatus: "NOT_SCHEDULED", strategyCallAt: null },
   });
+}
+
+/**
+ * Why a strategy call booked by a verified client is NOT a month's strategy
+ * call (null = it is). Two cases (Oct 21 2026):
+ *   · it starts before the enrollment started: the pre-sale call, booked on the
+ *     strategy-call link before the client paid (Kristen's Oct 14 call filed her
+ *     first month as planned). A call already filed on a month is left as it
+ *     is (Erica Walker's Aug 7 call predates her hub start and is her real one);
+ *   · the client's content strategy is not in their portal yet (strategyGate).
+ */
+export async function strategyCallHold(enrollmentId: string, start: Date, existing: { monthId: string | null; matchState: string } | null): Promise<string | null> {
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { startedAt: true } });
+  const filed = !!existing?.monthId && existing.matchState !== "AMBIGUOUS_MONTH";
+  const fmt = (d: Date) => d.toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
+  if (e?.startedAt && start < e.startedAt && !filed) return `booked for ${fmt(start)}, before the program started (${fmt(e.startedAt)}): a sales call, not this month's strategy call`;
+  const gate = await strategyGateFor(enrollmentId);
+  if (gate && !gate.open) return "booked before the client's content strategy was in their portal, so it is not filed as a month's strategy call. Check with Jordan.";
+  return null;
 }
 
 export async function setCallRecordTargetMonth(recordId: string, monthKey: string, by: string | null): Promise<void> {
