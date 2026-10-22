@@ -10,6 +10,7 @@ import { reachSuppressionReason, rolloutDecision, type ProgramRollout, type Reac
 import { clientTextWindowOpen } from "@/lib/clientTextSweeps";
 import { reminderPolicy, inPolicyWindow, nextPolicyWindowOpen, resolvePortalLink, recordSendResult, REMINDER_DEFAULTS, type ReminderPolicy } from "@/lib/programReminders";
 import { templateForAction, renderReminder, reminderTemplate, sendableTemplateId, monthName, firstNameOf, type TemplateVars } from "@/lib/reminderTemplates";
+import { PORTAL_LANDING } from "@/lib/portalLanding";
 
 // ---------------------------------------------------------------------------
 // APPROVE & SHARE (spec §22) — W2-F, Sep 17 2026.
@@ -375,17 +376,19 @@ export async function drainShareNotices(opts: { now?: Date; max?: number; reques
     // @realtourpilot.com address.
     if (isTest && !isVerifiedTestDestinationEmail(email)) { await suppress("test_client_real_address", `TEST client's address ${maskToRef("email", email)} is not one of Jordan's verified test inboxes`); continue; }
     if (dry) { record("send", `${n.action === "SCRIPTS_READY" ? `${titles.length + updated.length} script(s)` : "the strategy"} — would email now`); continue; }
-    const link = await resolvePortalLink(e, seat ? { membershipId: seat.id, clientUserId: seat.clientUserId } : null, opts.byAppUserId ?? null, now);
+    // Oct 22 2026: the link opens the scripts (or the strategy) themselves, the
+    // sign-in link as well as the token page (lib/portalLanding).
+    const landing = n.action === "STRATEGY_READY" ? PORTAL_LANDING.strategy : PORTAL_LANDING.scripts;
+    const link = await resolvePortalLink(e, seat ? { membershipId: seat.id, clientUserId: seat.clientUserId } : null, opts.byAppUserId ?? null, now, { path: landing });
     if (!link) { await suppress("no_portal_link", "no portal link could be produced (no seat, no token)"); continue; }
     // STRATEGY_READY's next steps are composed NOW, at send time (6.2), like
     // the welcome: a call booked, or setup finished, since the release is
     // what the email says.
     const strategyVars = n.action === "STRATEGY_READY" ? await strategyReadyVars(e.id, e.clientId, now, readStrategyVersionId(n.evaluatedStateJson)) : {};
-    // A token link can open straight on the strategy; a sign-in link lands on
-    // their home (the sign-in route honours no other destination).
     // One portal layout (Oct 6 2026): the strategy lives in Your Month ›
     // Strategy; an old ?tab=strategy in a sent email still lands there too.
-    const portalLink = n.action === "STRATEGY_READY" && link.kind === "token" ? `${link.url}?tab=plan&pv=strategy` : link.url;
+    // The landing rides on the link itself now (resolvePortalLink, above).
+    const portalLink = link.url;
     const vars: TemplateVars = {
       firstName: firstNameOf(client.name), month: n.monthKey ? monthName(n.monthKey) : "this month", portalLink, bookCallLink: null, noCallEligible: false, answersStarted: false,
       sessionNote: null, earliestSession: null, itemCount: titles.length, titles, updatedTitles: updated, deadline: null, ...strategyVars,

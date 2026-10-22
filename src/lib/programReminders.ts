@@ -10,6 +10,7 @@ import { loadProgramRollout, readFeatureTestOnly } from "@/lib/programRollout";
 import { rolloutDecision, reachSuppressionReason, type ProgramReachOp, type ProgramRollout, type ReachDecision, type ReachRefusalCode, type ReachTier } from "@/lib/programRolloutCore";
 import { holdsTypedLoginLink, mintLoginLink } from "@/lib/portalAccess";
 import { appBase } from "@/lib/appUrl";
+import { portalLandingQuery, PORTAL_LANDING } from "@/lib/portalLanding";
 import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
 import { clientTextWindowOpen } from "@/lib/clientTextSweeps";
 import { ownersFor, type OwnerDuty } from "@/lib/programOwners";
@@ -1023,10 +1024,12 @@ async function recipientFor(e: EnrollmentRow): Promise<{ email: string; membersh
  *  the person's previous one, so while THEY hold a live link (asked for it in
  *  the last 15 minutes) the token page is used instead of cutting them off. */
 export async function resolvePortalLink(e: Pick<EnrollmentRow, "id" | "portalToken" | "portalTokenExpiresAt" | "accessRevokedAt">, seat: { membershipId: string | null; clientUserId: string | null } | null, byAppUserId: string | null, now: Date, opts: { path?: string | null } = {}): Promise<{ url: string; kind: "login" | "token" } | null> {
-  // CP-08: a follow-up can land on the open questions themselves. Only the one
-  // shape the sign-in route will honour is ever appended; anything else is the
+  // CP-08: a follow-up can land on the open questions themselves. Oct 22 2026:
+  // every client email can land on its own page (the videos to review, the
+  // scripts, messages…). Only the shapes the sign-in route will honour
+  // (lib/portalLanding, shared with it) are ever appended; anything else is the
   // plain link.
-  const path = opts.path && /^\?tab=topics&iv=[a-z0-9]{10,40}$/.test(opts.path) ? opts.path : null;
+  const path = portalLandingQuery(opts.path);
   const tokenLink = e.portalToken && !e.accessRevokedAt && (!e.portalTokenExpiresAt || e.portalTokenExpiresAt > now) ? `${appBase()}/portal/${e.portalToken}${path ?? ""}` : null;
   if (seat?.membershipId && seat.clientUserId) {
     const u = await prisma.clientUser.findUnique({ where: { id: seat.clientUserId }, select: { loginTokenExpiresAt: true } });
@@ -1507,7 +1510,9 @@ async function evaluateMonth(
       : action === "COMPLETE_ANSWERS" && sessionOrdinal && sessionOrdinal > 1
         ? [sessionAnswersParagraph(sessionOrdinal, facts.sessionsRequired, monthVideos, catchUpOf), answerGap?.paragraph].filter(Boolean).join("\n\n")
         : answerGap?.paragraph ?? null;
-  const linkPath = answerGap?.path ?? null;
+  // Oct 22 2026: the link opens the page the email is about (lib/portalLanding):
+  // videos to review, or Your Month for the call, the route and filming.
+  const linkPath = answerGap?.path ?? (lane === "REVIEW" ? PORTAL_LANDING.reviewVideos : action === "BOOK_SESSION" || action === "BOOK_CALL" || action === "CHOOSE_PATH" || action === "COMPLETE_ANSWERS" ? PORTAL_LANDING.yourMonth : null);
 
   // §12/A28: the roll-over note is the one message that must never reach a
   // client in their first paid production cycle, or a client whose shortfall we
@@ -2546,7 +2551,7 @@ async function dispatchBrandKit(a: BrandKitPreview, e: EnrollmentRow, p: Reminde
     await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: "no_recipient", leaseUntil: null, leaseBy: null } });
     return { reminderId, outcome: "suppressed", detail: "no recipient" };
   }
-  const link = await resolvePortalLink(e, to, opts.byAppUserId, now);
+  const link = await resolvePortalLink(e, to, opts.byAppUserId, now, { path: PORTAL_LANDING.brand });
   if (!link) {
     await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: "no_portal_link", leaseUntil: null, leaseBy: null, lastError: "no portal link could be made for this client" } });
     return { reminderId, outcome: "suppressed", detail: "no portal link" };
@@ -2805,7 +2810,7 @@ async function dispatchScriptApproval(a: ScriptApprovalPreview, e: EnrollmentRow
     await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: "no_recipient", leaseUntil: null, leaseBy: null } });
     return { reminderId, outcome: "suppressed", detail: "no recipient" };
   }
-  const link = await resolvePortalLink(e, to, opts.byAppUserId, now);
+  const link = await resolvePortalLink(e, to, opts.byAppUserId, now, { path: PORTAL_LANDING.scripts });
   if (!link) {
     await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: "no_portal_link", toRef: to.email, leaseUntil: null, leaseBy: null } });
     return { reminderId, outcome: "suppressed", detail: "no portal link could be produced (no seat, no token)" };

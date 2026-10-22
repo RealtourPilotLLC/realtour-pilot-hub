@@ -14,11 +14,22 @@ import { SignJWT, jwtVerify } from "jose";
 // The JWT is stateless. Revocation is therefore NOT here: the portal resolver
 // re-reads ClientMembership on every request, so a revoked seat stops working
 // on the next request even though this cookie still verifies.
+//
+// STAY SIGNED IN (Oct 22 2026, Jordan: "Clients need an easy way to access the
+// portal without having to log in every time"). The session is a ROLLING year
+// on the device: the proxy re-issues the cookie on a visit once it is an hour
+// old (lib/auth/clientSessionRefresh), so a client who opens the portal at
+// least once a year never signs in again. The re-issue happens only for a
+// person who is still ACTIVE with a live seat; it never widens anything, and
+// the resolver's per-request checks (revoked seat, revoked program access, a
+// DISABLED person) still refuse on the very next request, cookie or not.
 // ---------------------------------------------------------------------------
 
 export const CLIENT_COOKIE = "rtp_client";
-const DAYS = 30;
+const DAYS = 365;
 export const CLIENT_SESSION_MAX_AGE = DAYS * 24 * 60 * 60;
+/** A cookie older than this is re-issued on the next portal visit (sliding expiry). */
+export const CLIENT_SESSION_REFRESH_AFTER_MS = 60 * 60_000;
 
 if (process.env.NODE_ENV === "production" && !process.env.APP_SECRET) {
   throw new Error("APP_SECRET must be set in production (client session signing key).");
@@ -30,12 +41,31 @@ export type ClientSessionPayload = {
   email: string;
 };
 
-export async function signClientSession(p: ClientSessionPayload): Promise<string> {
-  return new SignJWT({ ...p })
+export async function signClientSession(p: ClientSessionPayload, now: Date = new Date()): Promise<string> {
+  const iat = Math.floor(now.getTime() / 1000);
+  return new SignJWT({ cu: p.cu, email: p.email })
     .setProtectedHeader({ alg: "HS256" })
-    .setIssuedAt()
-    .setExpirationTime(`${DAYS}d`)
+    .setIssuedAt(iat)
+    .setExpirationTime(iat + CLIENT_SESSION_MAX_AGE)
     .sign(SECRET);
+}
+
+/** The session plus when it was issued (for the sliding re-issue). Same
+ *  checks as verifyClientSession. */
+export async function readClientSession(token: string | undefined | null): Promise<(ClientSessionPayload & { issuedAt: Date | null }) | null> {
+  if (!token) return null;
+  try {
+    const { payload } = await jwtVerify(token, SECRET);
+    if (typeof payload.cu !== "string" || typeof payload.email !== "string") return null;
+    return { cu: payload.cu, email: payload.email, issuedAt: typeof payload.iat === "number" ? new Date(payload.iat * 1000) : null };
+  } catch {
+    return null;
+  }
+}
+
+/** Due for a re-issue: issued more than CLIENT_SESSION_REFRESH_AFTER_MS ago (or with no issue time). */
+export function clientSessionDue(issuedAt: Date | null, now: Date = new Date()): boolean {
+  return !issuedAt || now.getTime() - issuedAt.getTime() >= CLIENT_SESSION_REFRESH_AFTER_MS;
 }
 
 export async function verifyClientSession(token: string | undefined | null): Promise<ClientSessionPayload | null> {

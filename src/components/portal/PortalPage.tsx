@@ -31,6 +31,8 @@ import { PlanTab, type PlanTabData } from "@/components/portal/tabs/PlanTab";
 import { strategyGateFor } from "@/lib/strategyGate";
 import type { PortalStrategyGate } from "@/lib/yourMonth";
 import { MoreTab, TermsCard } from "@/components/portal/tabs/MoreTab";
+import { InstallAppCard } from "@/components/portal/InstallAppCard";
+import { clientFirstName } from "@/components/portal/cutReviewCopy";
 
 // ---------------------------------------------------------------------------
 // THE CLIENT PORTAL PAGE — one component, two routes. /portal/<token> (the
@@ -310,6 +312,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
             updated: isUpdatedVersion(video, state.data),
           },
           staff: actor.kind === "STAFF",
+          // Oct 22 2026: "Approve for Mike". Only a STAFF visit is ever handed the name.
+          clientFirst: actor.kind === "STAFF" ? clientFirstName(client?.name) : null,
           versions, versionsFailed: !hist.ok,
           finishing: versions.some((x) => x.isCurrent && finishing.has(x.submissionId)),
           kit: kitData, kitFailed: !kit.ok,
@@ -604,6 +608,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
     >
       {query.month && !selectedMonth && route.dest === "plan" && <p role="status" className="mt-4 rounded-xl border border-border bg-surface-2 p-3 text-sm text-muted">That planning month is not available here. Your open months are shown below.</p>}
       {route.dest === "home" && home && <HomeV2 d={home} actions={actions} href={tabHref} />}
+      {/* Oct 22 2026: "Add to your home screen", for the client's own visit only (never staff on their behalf). */}
+      {route.dest === "home" && home && actor.kind !== "STAFF" && <InstallAppCard signedIn={actor.kind === "CLIENT"} />}
       {route.dest === "plan" && route.planView && (
         <PlanTab d={{
           view: route.planView,
