@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AlertTriangle, Camera, Images, Wrench } from "lucide-react";
+import { AlertTriangle, Camera, CheckCircle2, Hourglass, Images, Wrench } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etMonthDay, etMonthDayTime } from "@/lib/datetime";
 import { PhotoImg } from "./PhotoImg";
@@ -16,6 +16,8 @@ import type { QueueCard, QueueColumn, QueueData, Severity } from "./types";
 // ---------------------------------------------------------------------------
 
 const FIX_TONE = { ok: "text-success", warn: "text-warning", danger: "text-danger", muted: "text-muted" } as const;
+/** Oct 22 2026: the card's "what holds it" line: Kyle's to settle, waiting on someone else, ready to send. */
+const HOLDING_TONE = { held: "text-warning", waiting: "text-muted", ready: "text-success", done: "text-muted" } as const;
 const ODD_STAGES = new Set(["EDIT_FAILED", "EDITED", "DELIVERY_MISMATCH", "REVISION_REQUESTED"]);
 
 function IssueCounts({ issues }: { issues: Record<Severity, number> }) {
@@ -88,6 +90,20 @@ function Card({ card, nowIso }: { card: QueueCard; nowIso: string }) {
         )}
         {unpaid && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-muted ring-1 ring-inset ring-border">Unpaid</span>}
       </div>
+      {/* Oct 22 2026: what holds the job, in the job page's words (its first "What's holding this" line), and the add-ons to confirm. */}
+      {card.holding && card.holding.tone !== "done" && (
+        <p data-holding-line={card.holding.tone} className={cn("mt-1.5 flex items-start gap-1 text-[12px] font-medium", HOLDING_TONE[card.holding.tone])}>
+          {card.holding.tone === "ready" ? <CheckCircle2 aria-hidden className="mt-0.5 size-3 shrink-0" /> : <Hourglass aria-hidden className="mt-0.5 size-3 shrink-0" />}
+          <span className="min-w-0 break-words">{card.holding.line}</span>
+        </p>
+      )}
+      {(card.addOns ?? []).filter((a) => !card.holding?.line.startsWith(a)).length > 0 && (
+        <p className="mt-1.5 flex flex-wrap gap-1">
+          {(card.addOns ?? []).filter((a) => !card.holding?.line.startsWith(a)).map((a) => (
+            <span key={a} data-addon-chip className={cn("rounded-full px-2 py-0.5 text-[12px] font-semibold ring-1 ring-inset", SEVERITY_CLASS.MAJOR)}>{a}</span>
+          ))}
+        </p>
+      )}
       {card.lastError && (
         <p className="mt-1.5 flex items-start gap-1 text-[12px] text-warning">
           <AlertTriangle aria-hidden className="mt-0.5 size-3 shrink-0" />
@@ -164,6 +180,7 @@ export function QueueTable({ data }: { data: QueueData }) {
               <td className="px-3 py-2.5">
                 <span className="block">{column}</span>
                 {card.stageLabel !== column && <span className="block text-[12px] text-muted">{card.stageLabel}</span>}
+                {card.holding && card.holding.tone !== "done" && <span className={cn("block text-[12px] font-medium", HOLDING_TONE[card.holding.tone])}>{card.holding.line}</span>}
               </td>
               <td className="px-3 py-2.5">
                 {card.stage === "DELIVERED" ? <span className="text-muted">{card.deliveredAt ? `Delivered ${etMonthDay(card.deliveredAt)}` : "Delivered"}</span> : <SlaChip dueAt={card.slaDueAt} serverNow={data.nowIso} />}

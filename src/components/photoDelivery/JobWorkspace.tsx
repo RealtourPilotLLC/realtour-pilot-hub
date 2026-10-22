@@ -9,6 +9,7 @@ import { FixCartPanel } from "./FixCartPanel";
 import { CoveragePanel } from "./CoveragePanel";
 import { Lightbox } from "./Lightbox";
 import { DeliverPanel } from "./DeliverPanel";
+import { HoldingPanel } from "./HoldingPanel";
 import type { JobDetail, Viewer } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -20,17 +21,24 @@ import type { JobDetail, Viewer } from "./types";
 // interaction.
 // ---------------------------------------------------------------------------
 
-export function JobWorkspace({ data, viewer, initialTab, initialPhoto, history }: {
+export function JobWorkspace({ data, viewer, initialTab, initialPhoto, history, lead }: {
   data: JobDetail;
   viewer: Viewer;
   initialTab?: TabKey;
   initialPhoto?: string | null;
   history: ReactNode;
+  /** Oct 22 2026: what the page shows between "What's holding this" and the gallery (the job summary, Before you send). */
+  lead?: ReactNode;
 }) {
   // A view-only viewer has no Fix Cart tab (Oct 22 2026): an old ?tab=cart link opens Issues.
   const tab = initialTab === "files" ? "activity" : initialTab === "cart" && viewer.readOnly ? "issues" : initialTab;
   return (
     <JobProvider data={data} viewer={viewer} mode="workspace" initialTab={tab} initialPhoto={initialPhoto}>
+      {/* Oct 22 2026: what holds this job, first (HoldingPanel). */}
+      <div className="mb-4 space-y-4">
+        <HoldingPanel />
+        {lead}
+      </div>
       <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Gallery />
         <RightPanel history={history} />

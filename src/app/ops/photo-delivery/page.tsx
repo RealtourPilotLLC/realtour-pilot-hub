@@ -86,7 +86,8 @@ export default async function PhotoDeliveryQueuePage({ searchParams }: { searchP
 
   const [strip, queue, mediaChecks] = await Promise.all([
     loadStrip(viewer),
-    loadQueue({ filters, viewer }).catch((e) => {
+    // Oct 22 2026: each card says what holds it (the job page's first line) and the add-ons to confirm.
+    loadQueue({ filters, viewer, holding: true }).catch((e) => {
       console.error("[photo-delivery] queue failed", e);
       return null;
     }),

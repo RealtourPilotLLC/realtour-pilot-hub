@@ -11,7 +11,8 @@ import { creditAlertState, creditView, type CreditView } from "@/lib/photoDelive
 import { buildFixCart } from "@/lib/photoDelivery/fixes";
 import { houseOverrides, mergeOverrides } from "@/lib/photoDelivery/houseRules";
 import { ALWAYS_FIX } from "@/lib/photoDelivery/fixPolicy";
-import { deliveryGate, deliverySteps } from "@/lib/photoDelivery/delivery";
+import { deliveryGate, deliverySteps, type GateResult } from "@/lib/photoDelivery/delivery";
+import { holdingFor, type HoldingBase } from "@/lib/photoDelivery/holding";
 import { checkEveryMs } from "@/lib/photoDelivery/verifySweep";
 import { RULES, isExteriorFinding, ruleById } from "@/lib/photoDelivery/registry";
 import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
@@ -81,6 +82,37 @@ async function verdictModule(): Promise<VerdictModule | null> {
 const houseOverridesOnce = cache(houseOverrides);
 const houseRuleIds = async () => (await houseOverridesOnce()).map((o) => o.ruleId);
 const overridesOf = (json: string | null | undefined): RuleOverride[] => (parse<RuleOverride[]>(json) ?? []).filter((o) => o && typeof o.ruleId === "string");
+
+/**
+ * Open QC issues as TICKETS by severity (one per rule and groupKey, the
+ * engine's effective severity). Oct 22 2026: one count for the board's chips
+ * and the job page's "N issues to decide", so the two always agree.
+ */
+function ticketCounts(verdict: VerdictModule | null, open: Parameters<VerdictModule["groupFindings"]>[0], floor: number, overrides: RuleOverride[]): Record<Severity, number> {
+  const rec: Record<Severity, number> = { CRITICAL: 0, MAJOR: 0, MINOR: 0 };
+  if (verdict) {
+    for (const g of verdict.groupFindings(open, { floor, overrides }).groups) rec[g.severity] += 1;
+  } else {
+    for (const f of open) if (f.confidence >= floor && (f.severity === "CRITICAL" || f.severity === "MAJOR" || f.severity === "MINOR")) rec[f.severity] += 1;
+  }
+  return rec;
+}
+
+const VISIT_WAIT = /split job: waiting for the photos from ([^;]+);/;
+/**
+ * "Tue, Oct 21" while a split job waits for a later visit's photos (the
+ * sync's own line, jobs.ts), from the job's events, newest first. Null once
+ * that visit's photos are linked, or when the job is not editing. Pure.
+ */
+export function waitingForVisitOf(stage: string, events: { action: string }[]): string | null {
+  if (stage !== "EDITING") return null;
+  for (const e of events) {
+    const m = VISIT_WAIT.exec(e.action);
+    if (m) return m[1].trim();
+    if (e.action.startsWith("linked to this visit's AutoHDR shoot") || / → EDITING\b/.test(e.action)) return null;
+  }
+  return null;
+}
 
 // ---- who is looking ------------------------------------------------------------------------
 
@@ -196,8 +228,12 @@ function fixStatusOf(batchStatus: string, ops: Map<string, number>): FixStatusVi
 /** What a queue card needs of its cover photo. */
 const COVER_FIELDS = { id: true, jobId: true, contentHash: true, sourceKind: true, sourceUrl: true, roomType: true } as const;
 
-/** `viewer`: a view-only viewer's cards carry no payment status (Oct 22 2026); without one, the office's board. */
-export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilters>; viewer?: Pick<Viewer, "readOnly"> } = {}): Promise<QueueData> {
+/**
+ * `viewer`: a view-only viewer's cards carry no payment status (Oct 22 2026); without one, the office's board.
+ * `holding` (Oct 22 2026): each card also says what holds it, in one line, and the add-on work still to
+ * confirm (boardHolding). The Photo Delivery board asks for it; Home's QC counts do not.
+ */
+export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilters>; viewer?: Pick<Viewer, "readOnly">; holding?: boolean } = {}): Promise<QueueData> {
   const now = opts.now ?? new Date();
   const filters: QueueFilters = { client: opts.filters?.client || null, photographer: opts.filters?.photographer || null, atRisk: !!opts.filters?.atRisk };
   const since = new Date(now.getTime() - 7 * DAY);
@@ -207,7 +243,7 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
       where: {
         OR: [{ stage: { not: "DELIVERED" } }, { stage: "DELIVERED", OR: [{ deliveredAt: { gte: since } }, { deliveredAt: null, stageChangedAt: { gte: since } }] }],
       },
-      select: { id: true, projectId: true, stage: true, slaDueAt: true, qcShadow: true, heroPhotoId: true, holdReason: true, lastError: true, deliveredAt: true, stageChangedAt: true, finalsCount: true },
+      select: { id: true, projectId: true, stage: true, slaDueAt: true, qcShadow: true, heroPhotoId: true, holdReason: true, holdNote: true, lastError: true, deliveredAt: true, stageChangedAt: true, finalsCount: true, deliveryCheckNote: true },
       orderBy: { slaDueAt: { sort: "asc", nulls: "last" } },
       take: 400,
     }),
@@ -219,7 +255,7 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
         prisma.project.findMany({
           where: { id: { in: jobs.map((j) => j.projectId) } },
           select: {
-            id: true, title: true, addressLine: true, status: true, shootDate: true, paymentStatus: true, clientId: true, photographerId: true,
+            id: true, title: true, addressLine: true, status: true, shootDate: true, paymentStatus: true, clientId: true, photographerId: true, aryeoListingId: true, aryeoOrderId: true,
             client: { select: { name: true } }, photographer: { select: { name: true } },
           },
         }),
@@ -282,15 +318,8 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
   }
   const issuesByJob = new Map<string, Record<Severity, number>>();
   for (const [jobId, list] of findingsByJob) {
-    const rec: Record<Severity, number> = { CRITICAL: 0, MAJOR: 0, MINOR: 0 };
-    if (verdict) {
-      const clientId = projectById.get(projectOfJob.get(jobId) ?? "")?.clientId;
-      const { groups } = verdict.groupFindings(list, { floor: settings.displayConfidenceFloor, overrides: (clientId ? overridesByClient.get(clientId) : null) ?? house });
-      for (const g of groups) rec[g.severity] += 1;
-    } else {
-      for (const f of list) if (f.severity === "CRITICAL" || f.severity === "MAJOR" || f.severity === "MINOR") rec[f.severity] += 1;
-    }
-    issuesByJob.set(jobId, rec);
+    const clientId = projectById.get(projectOfJob.get(jobId) ?? "")?.clientId;
+    issuesByJob.set(jobId, ticketCounts(verdict, list, settings.displayConfidenceFloor, (clientId ? overridesByClient.get(clientId) : null) ?? house));
   }
   const opsByBatch = new Map<string, Map<string, number>>();
   for (const r of opRows) {
@@ -337,6 +366,39 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
     });
   }
 
+  // Oct 22 2026: what holds each job, in one line (the job page's first item), and the add-ons to confirm.
+  if (opts.holding && cards.length) {
+    const held = await boardHolding(
+      jobs
+        .filter((j) => cards.some((c) => c.id === j.id))
+        .map((j) => {
+          const p = projectById.get(j.projectId);
+          return {
+            jobId: j.id,
+            projectId: j.projectId,
+            stage: j.stage,
+            holdReason: j.holdReason,
+            holdNote: j.holdNote,
+            lastError: j.lastError,
+            waitingForVisit: null,
+            photographer: p?.photographer?.name ?? null,
+            decisions: (({ CRITICAL, MAJOR, MINOR }) => ({ critical: CRITICAL, major: MAJOR, minor: MINOR }))(issuesByJob.get(j.id) ?? { CRITICAL: 0, MAJOR: 0, MINOR: 0 }),
+            listingUrl: p?.aryeoListingId ? aryeoListingUrl(p.aryeoListingId) : null,
+            orderUrl: p?.aryeoOrderId ? aryeoOrderUrl(p.aryeoOrderId) : null,
+            deliveryCheckNote: j.deliveryCheckNote,
+          };
+        }),
+    ).catch((e: unknown) => {
+      console.warn("[photo-delivery] the board's holding lines could not be read", (e as Error)?.message);
+      return null;
+    });
+    for (const c of cards) {
+      const h = held?.get(c.id);
+      c.holding = h?.holding ?? null;
+      c.addOns = h?.addOns ?? [];
+    }
+  }
+
   const clients = [...new Map(cards.filter((c) => c.clientId).map((c) => [c.clientId!, c.clientName ?? "Unnamed client"])).entries()]
     .map(([id, name]) => ({ id, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -355,6 +417,74 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
     return { key: col.key, label: col.label, hint: col.hint, stages: [...col.stages], cards: mine };
   });
   return { columns, total: cards.length, shown: shown.length, clients, photographers, filters, nowIso: now.toISOString() };
+}
+
+/** The stages where the delivery checklist can be what holds a job (a job before them is held by its own stage first). */
+const GATE_STAGES = new Set(["READY", "QC_REVIEW", "DELIVERING", "DELIVERY_MISMATCH", "REVISION_REQUESTED"]);
+/** At most this many checklists are read for one board (a few at a time); a job past it shows no line rather than a wrong one. */
+const BOARD_GATE_CAP = 40;
+
+/**
+ * The board's "what holds it" line for each job (Oct 22 2026): the same
+ * holdingFor the job page's panel runs, from the same facts, so the card says
+ * what the panel's first line says. The checklist is read (without filing
+ * anything first) only where it can be what holds the job; the push runs, a
+ * split job's wait and the add-ons are one read each for the whole board.
+ */
+async function boardHolding(bases: HoldingBase[]): Promise<Map<string, { holding: QueueCard["holding"]; addOns: string[] }>> {
+  const out = new Map<string, { holding: QueueCard["holding"]; addOns: string[] }>();
+  if (!bases.length) return out;
+  const ids = bases.map((b) => b.jobId);
+  const editing = bases.filter((b) => b.stage === "EDITING").map((b) => b.jobId);
+  const [{ progressOf }, { openAddOnsByProject }] = await Promise.all([import("@/lib/photoDelivery/aryeoPush"), import("@/lib/photoDelivery/addOns")]);
+  const [settings, conn, runs, events, addOns] = await Promise.all([
+    photoDeliverySettings(),
+    prisma.connection.findUnique({ where: { provider: "aryeo_web" }, select: { secretEncrypted: true } }).catch(() => null),
+    prisma.appSetting.findMany({ where: { key: { in: ids.map((id) => `photo_aryeo_push:${id}`) } }, select: { key: true, value: true } }),
+    editing.length
+      ? prisma.photoJobEvent.findMany({
+          where: { jobId: { in: editing }, OR: [{ action: { contains: "split job: waiting for the photos from" } }, { action: { contains: " → EDITING" } }, { action: { startsWith: "linked to this visit's AutoHDR shoot" } }] },
+          orderBy: { at: "desc" },
+          select: { jobId: true, action: true },
+          take: 300,
+        })
+      : Promise.resolve([] as { jobId: string; action: string }[]),
+    openAddOnsByProject(bases.filter((b) => b.stage !== "DELIVERED").map((b) => b.projectId)).catch(() => new Map<string, string[]>()),
+  ]);
+  const runOf = new Map(runs.map((r) => [r.key.slice("photo_aryeo_push:".length), r.value]));
+  const progress = (jobId: string) => {
+    const raw = runOf.get(jobId);
+    try {
+      return raw ? progressOf(JSON.parse(raw)) : null;
+    } catch {
+      return null;
+    }
+  };
+  const eventsOf = new Map<string, { action: string }[]>();
+  for (const e of events) eventsOf.set(e.jobId, [...(eventsOf.get(e.jobId) ?? []), e]);
+  const gates = new Map<string, GateResult | null>();
+  const need = bases.filter((b) => GATE_STAGES.has(b.stage)).slice(0, BOARD_GATE_CAP);
+  for (let i = 0; i < need.length; i += 4) {
+    await Promise.all(need.slice(i, i + 4).map(async (b) => gates.set(b.jobId, await deliveryGate(b.jobId, { sync: false }).catch(() => null))));
+  }
+  const push = { mode: settings.aryeoPush, connected: !!conn?.secretEncrypted, sameDayAuto: false };
+  for (const b of bases) {
+    const extras = addOns.get(b.projectId) ?? [];
+    if (GATE_STAGES.has(b.stage) && !gates.has(b.jobId)) {
+      out.set(b.jobId, { holding: null, addOns: extras });
+      continue;
+    }
+    const gate = gates.get(b.jobId) ?? null;
+    const view = holdingFor({
+      ...b,
+      waitingForVisit: waitingForVisitOf(b.stage, eventsOf.get(b.jobId) ?? []),
+      gate,
+      gateError: gate || !GATE_STAGES.has(b.stage) ? null : "not read just now",
+      push: { ...push, progress: progress(b.jobId) },
+    });
+    out.set(b.jobId, { holding: view.line ? { line: view.line, tone: view.tone } : null, addOns: extras });
+  }
+  return out;
 }
 
 // ---- job detail (plan 9.4) ------------------------------------------------------------------
@@ -610,14 +740,17 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
   // and whether it holds delivery), keyed like the screen's own grouping.
   const groupMeta: Record<string, GroupMeta> = {};
   const verdict = findings.length ? await verdictModule() : null;
+  const jobOverrides = mergeOverrides(await houseOverridesOnce(), overridesOf(profile?.ruleOverridesJson));
   if (verdict) {
     const res = verdict.groupFindings(findings, {
       floor: settings.displayConfidenceFloor,
-      overrides: mergeOverrides(await houseOverridesOnce(), overridesOf(profile?.ruleOverridesJson)),
+      overrides: jobOverrides,
       excludedPhotoIds: photos.filter((p) => p.status === "EXCLUDED").map((p) => p.id),
     });
     for (const g of [...res.groups, ...res.lowConfidence]) groupMeta[g.key] = { severity: g.severity, escalated: g.escalated, escalationReason: g.escalationReason, holds: g.holds };
   }
+  // Oct 22 2026: the open issues to decide, counted exactly as the board counts them (ticketCounts).
+  const tickets = ticketCounts(verdict, findings.filter((f) => f.status === "OPEN"), settings.displayConfidenceFloor, jobOverrides);
 
   const cart: CartView | null = cartR.v
     ? {
@@ -780,6 +913,20 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     steps,
     stepsError: stepsR.e,
     aryeoPush,
+    holdingBase: {
+      jobId: job.id,
+      projectId: job.projectId,
+      stage: job.stage,
+      holdReason: job.holdReason,
+      holdNote: job.holdNote,
+      lastError: job.lastError,
+      waitingForVisit: waitingForVisitOf(job.stage, events),
+      photographer: project?.photographer?.name ?? null,
+      decisions: { critical: tickets.CRITICAL, major: tickets.MAJOR, minor: tickets.MINOR },
+      listingUrl: project?.aryeoListingId ? aryeoListingUrl(project.aryeoListingId) : null,
+      orderUrl: project?.aryeoOrderId ? aryeoOrderUrl(project.aryeoOrderId) : null,
+      deliveryCheckNote: job.deliveryCheckNote,
+    },
     runs: runViews,
     events: eventViews,
     batches: batchViews,

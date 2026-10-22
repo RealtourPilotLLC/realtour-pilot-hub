@@ -45,6 +45,15 @@ import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 // run remembers what the hub put on the listing, so it can take its own
 // old ones off) and the cron does that by itself in approve and auto.
 // The run lives in AppSetting "photo_aryeo_push:<jobId>".
+// RE-DELIVERY (Oct 22 2026, Jordan: "Yes, it should be re-delivered if we are
+// sending new photos"): photos the hub adds to a listing that was ALREADY
+// delivered (a split job's later visit beside the earlier visit's delivery)
+// are written down on the run (addedSinceDelivery). The delivery after them
+// presses Aryeo's Deliver again (Re-deliver, with the delivery email), so the
+// agent gets the "your photos are ready" email for the new photos. Only when
+// new photos really went on: a duplicate-only or nothing-to-send push, a
+// changed photo swapped in place, and Update on Aryeo never re-deliver. The
+// intent is saved before the call and never sent twice; it goes on the job.
 // ---------------------------------------------------------------------------
 
 const KEY = (jobId: string) => `photo_aryeo_push:${jobId}`;
@@ -119,7 +128,16 @@ export type PushRun = {
   keepIds?: string[];
   /** Photos on the listing twice when the run checked it (each: the images' names). Flagged for Kyle, never deleted. */
   duplicates?: string[][];
+  /**
+   * Oct 22 2026: the photos (ids) the hub put on the listing while it was
+   * already delivered, not re-delivered yet. Carried from run to run until a
+   * delivery re-delivers them (then emptied).
+   */
+  addedSinceDelivery?: string[];
+  /** How the re-delivery of those photos ended: sent, refused by Aryeo (Deliver in Aryeo tries again), or uncertain (never sent again). The claim itself is its own record (REDELIVER_KEY). */
+  redelivery?: Redelivery | null;
 };
+export type Redelivery = { state: "sent" | "refused" | "uncertain"; at: string; photos: number; note: string | null };
 export type PushProgress = {
   state: PushState; active: boolean; total: number; sent: number; already: number; note: string | null; startedAt: string; finishedAt: string | null; deliveredAt: string | null; waitingForApproval: boolean; changed: boolean; update?: boolean;
   /** Oct 22 2026: a split job: the photos already on the listing, kept first. */
@@ -128,6 +146,8 @@ export type PushProgress = {
   matched?: number;
   /** Photos on the listing twice when it was checked (the images' names). */
   duplicates?: string[][];
+  /** Oct 22 2026: new photos on an already delivered listing, and their re-delivery. Null when neither. */
+  redeliver?: { pending: number; state: Redelivery["state"] | null; at: string | null; photos: number; note: string | null } | null;
 };
 
 // ---- the run record ---------------------------------------------------------------------------
@@ -175,7 +195,21 @@ export function progressOf(run: PushRun): PushProgress {
     kept: run.split ? run.keptOrder?.length ?? 0 : 0,
     matched: run.items.filter((i) => i.matched).length,
     duplicates: run.duplicates ?? [],
+    redeliver: run.addedSinceDelivery?.length || run.redelivery
+      ? { pending: run.addedSinceDelivery?.length ?? 0, state: run.redelivery?.state ?? null, at: run.redelivery?.at ?? null, photos: run.redelivery?.photos ?? 0, note: run.redelivery?.note ?? null }
+      : null,
   };
+}
+
+/**
+ * The photos of this add that are NEW to a listing that was already delivered
+ * (Oct 22 2026): every one the hub sends now that it had not put there before
+ * (a changed photo swapped in place is not new), added to the ones still
+ * waiting for a re-delivery.
+ */
+function newOnDelivered(r: PushRun, sent: PushItem[]): string[] {
+  const before = new Set((r.listed ?? []).map((l) => l.photoId));
+  return [...new Set([...(r.addedSinceDelivery ?? []), ...sent.filter((i) => !i.matched && !before.has(i.photoId)).map((i) => i.photoId)])];
 }
 
 export async function pushProgress(jobId: string): Promise<PushProgress | null> {
@@ -409,6 +443,8 @@ export async function requestPush(jobId: string, opts: { by?: string | null; the
     id: randomBytes(4).toString("hex"), listingId: project.aryeoListingId, state: "items" in built ? (all ? "CHECKING" : "SENDING") : "PREPARING", then, items, groupId: null,
     addedAt: all ? now : null, ordered: false, deliveredAt: null, by: opts.by ?? null, startedAt: now, updatedAt: now, finishedAt: null, note: "wait" in built ? built.wait : null, lease: null, anyway: opts.anyway === true,
     fingerprint: "fingerprint" in built ? built.fingerprint : null, listed, remove, removedAt: null, approvedBy: opts.approvedBy ?? null,
+    // Photos put on the delivered listing earlier and not re-delivered yet stay owed a re-delivery (Oct 22 2026).
+    addedSinceDelivery: run?.addedSinceDelivery ?? [],
     ...("items" in built ? builtExtras(built) : {}),
   };
   if (!(await save(jobId, next, raw))) return { ok: false, started: false, message: "Someone started it a moment ago." };
@@ -591,15 +627,24 @@ export async function approvePushDelivery(jobId: string, by: string): Promise<{ 
   if (run.state === "CONFIRMING" || run.deliveredAt) return { ok: true, message: "Already delivered in Aryeo." };
   if (run.state !== "WAITING" && !(run.state === "DONE" && run.then === "stop")) return { ok: false, message: "The photos are not all on the listing yet. Wait for the upload to finish." };
   if (await changedSince(jobId, run)) return { ok: false, message: CHANGED };
-  // A person's go-ahead: the same gate as Mark as delivering (shadow mode advises, never blocks).
-  if (job0?.stage !== "DELIVERING") {
+  // Oct 22 2026: a job the sync already reads as delivered (a split job's new
+  // photos uploaded onto the delivered listing) still owes the agent the
+  // email for them: a re-delivery, once nothing holds the photos.
+  const redeliverOnly = job0?.stage === "DELIVERED" && (run.addedSinceDelivery?.length ?? 0) > 0;
+  if (job0?.stage === "DELIVERED" && !redeliverOnly) return { ok: false, message: "This job is already delivered." };
+  if (redeliverOnly) {
+    const { deliveryGate } = await import("./delivery");
+    const open = (await deliveryGate(jobId)).checks.filter((c) => c.hold && !c.ok);
+    if (open.length) return { ok: false, message: `Not yet: ${open.map((c) => c.label.toLowerCase()).join("; ")}.`.slice(0, 400) };
+  } else if (job0?.stage !== "DELIVERING") {
+    // A person's go-ahead: the same gate as Mark as delivering (shadow mode advises, never blocks).
     const { startDelivery } = await import("./delivery");
     const g = await startDelivery(jobId, by);
     if (!g.ok) return { ok: false, message: g.message };
   }
   const next: PushRun = { ...run, state: "DELIVERING", then: "deliver", by, note: null, finishedAt: null };
   if (!(await save(jobId, next, raw))) return { ok: false, message: "That changed a moment ago. Reload the page." };
-  return { ok: true, message: "Delivering in Aryeo now. The listing's customers get Aryeo's usual delivery email." };
+  return { ok: true, message: redeliverOnly ? "Re-delivering in Aryeo now: the agent gets Aryeo's delivery email for the new photos." : "Delivering in Aryeo now. The listing's customers get Aryeo's usual delivery email." };
 }
 
 /** The stages Kyle's approval is taken from: Ready to review, or a job already past it. */
@@ -674,6 +719,9 @@ export async function sameDayBlocker(jobId: string): Promise<string | null> {
   if (busy) return "fixes still running";
   const { deliveryGate } = await import("./delivery");
   const gate = await deliveryGate(jobId);
+  // Oct 22 2026 (addOns.ts): lot lines or staging on the order: always Kyle's approval, never the hub's.
+  const personal = gate.checks.filter((c) => c.personOnly && !c.advisory);
+  if (personal.length) return `${addOnWords(personal)} on the order: Kyle approves it`;
   if (!gate.passed) return "the checklist has open items";
   return null;
 }
@@ -717,6 +765,90 @@ async function download(path: string): Promise<Buffer> {
 }
 
 const fail = (r: PushRun, note: string): PushRun => ({ ...r, state: "FAILED", note: note.slice(0, 400), finishedAt: new Date().toISOString(), lease: null });
+
+/** "lot lines", "lot lines and virtual staging": the person-only add-on lines of a checklist (Oct 22 2026). */
+function addOnWords(lines: { label: string; addOn?: { need: string } }[]): string {
+  const words = [...new Set(lines.map((c) => (c.addOn?.need ?? c.label).replace(/\s+(needed|added)$/i, "").toLowerCase()))];
+  return words.length ? words.join(" and ") : "add-on work";
+}
+
+/** The re-delivery claim of one run (Oct 22 2026): written before the call, so a pass that stops mid-call is never followed by a second email. */
+const REDELIVER_KEY = (jobId: string, runId: string) => `photo_redeliver:${jobId}:${runId}`;
+type RedeliverClaim = { state: "sending" | "sent" | "refused"; at: string; photos: number };
+
+/**
+ * RE-DELIVER a listing that was already delivered, for the new photos the hub
+ * put on it (Oct 22 2026). The same Deliver the hub presses for a first
+ * delivery, as Aryeo's Re-deliver (delivery email, the listing's customers).
+ * Never twice: a claim record ("sending") is written BEFORE the call and
+ * marked "sent" after it; a claim found still "sending" means a pass stopped
+ * mid-call, so the email may have gone and it is never sent again
+ * ("uncertain", on the job). Aryeo's own clear no leaves the run waiting for
+ * Kyle's Deliver in Aryeo (which tries again). Returns the run to save when
+ * this step is not finished (refused); null to go on to the check.
+ */
+async function redeliver(jobId: string, r: PushRun, timezone: string | null, W: typeof import("@/lib/integrations/aryeoWeb")): Promise<PushRun | null> {
+  const n = r.addedSinceDelivery?.length ?? 0;
+  const by = r.approvedBy ?? r.by ?? "aryeo-push";
+  const words = `${n} new photo${n === 1 ? "" : "s"}`;
+  const key = REDELIVER_KEY(jobId, r.id);
+  const now = () => new Date().toISOString();
+  const prior = await prisma.appSetting.findUnique({ where: { key }, select: { value: true } });
+  let p: RedeliverClaim | null = null;
+  try {
+    p = prior ? (JSON.parse(prior.value) as RedeliverClaim) : null;
+  } catch {
+    p = null;
+  }
+  if (p?.state === "sent") {
+    // Sent by a pass that stopped before saving the run: never again.
+    r.redelivery = { state: "sent", at: p.at, photos: p.photos, note: null };
+    r.addedSinceDelivery = [];
+    return null;
+  }
+  if (prior && p?.state !== "refused") {
+    // A pass claimed it and stopped before it knew the answer: the email may have gone.
+    r.redelivery = { state: "uncertain", at: now(), photos: n, note: "The hub stopped while re-delivering; the email may have gone, so it is not sent again." };
+    r.addedSinceDelivery = [];
+    await logJobEvent(jobId, "aryeo-push", `re-delivering in Aryeo for ${words} did not finish cleanly: the email may have gone, so the hub does not send it again. Check the listing in Aryeo`);
+    return null;
+  }
+  // Written down first, before anything reaches Aryeo (a refusal before is taken over: nothing went then).
+  const claim: RedeliverClaim = { state: "sending", at: now(), photos: n };
+  const claimed = prior
+    ? (await prisma.appSetting.updateMany({ where: { key, value: prior.value }, data: { value: JSON.stringify(claim), updatedBy: "aryeo-push" } })).count === 1
+    : await prisma.appSetting.create({ data: { key, value: JSON.stringify(claim), updatedBy: "aryeo-push" } }).then(() => true, () => false);
+  if (!claimed) return r; // another pass claimed it a moment ago: the next step reads what it did
+  const settle = (state: RedeliverClaim["state"]) => prisma.appSetting.updateMany({ where: { key }, data: { value: JSON.stringify({ ...claim, state, at: now() }), updatedBy: "aryeo-push" } }).catch(() => null);
+  try {
+    const sent = await W.deliverListing(r.listingId, { fulfillOrders: true, timezone, redeliver: true });
+    await settle("sent");
+    r.redelivery = { state: "sent", at: now(), photos: n, note: null };
+    r.addedSinceDelivery = [];
+    await logJobEvent(jobId, by, `re-delivered in Aryeo: ${words} on the listing; ${sent.recipients.length ? sent.recipients.join(", ") : "the listing's customers"} get${sent.recipients.length === 1 ? "s" : ""} Aryeo's delivery email`, { redelivered: n, recipients: sent.recipients });
+    return null;
+  } catch (e) {
+    const err = e as Error & { kind?: string };
+    if (err.name === "AryeoWebError" && (err.kind === "refused" || err.kind === "not-connected")) {
+      // Aryeo's clear no (or no login): nothing went. Kyle presses Deliver in Aryeo to try again.
+      await settle("refused");
+      r.redelivery = { state: "refused", at: now(), photos: n, note: err.message.slice(0, 300) };
+      r.state = "WAITING";
+      r.note = `The new photos are on the listing, but Aryeo would not re-deliver it (${err.message.slice(0, 160)}). Press Deliver in Aryeo to try again, or Re-deliver it in Aryeo.`.slice(0, 400);
+      await logJobEvent(jobId, "aryeo-push", `not re-delivered in Aryeo: ${err.message.slice(0, 200)}`);
+      return r;
+    }
+    if (err.name === "AryeoWebError" && err.kind === "sign-in") {
+      const { markError } = await import("@/lib/integrations/connections");
+      await markError(W.ARYEO_WEB_PROVIDER, err.message).catch(() => {});
+    }
+    // No clear answer: the email may have gone. Never sent again by the hub (the claim stays "sending").
+    r.redelivery = { state: "uncertain", at: now(), photos: n, note: err.message.slice(0, 300) };
+    r.addedSinceDelivery = [];
+    await logJobEvent(jobId, "aryeo-push", `re-delivering in Aryeo for ${words} got no clear answer (${err.message.slice(0, 160)}): the email may have gone, so the hub does not send it again. Check the listing in Aryeo`);
+    return null;
+  }
+}
 
 async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
   const r: PushRun = JSON.parse(JSON.stringify(r0));
@@ -800,6 +932,7 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
         if (!listing || ours.some((i) => names.has(lower(i.name)))) {
           r.addedAt = r.addedAt ?? r.addSentAt;
           r.state = "CHECKING";
+          if (r.mode !== "update" && String(listing?.deliveryStatus ?? "").toUpperCase() === "DELIVERED") r.addedSinceDelivery = newOnDelivered(r, ours);
           return r;
         }
       }
@@ -812,6 +945,8 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
       }
       r.addedAt = new Date().toISOString();
       r.state = "CHECKING";
+      // Oct 22 2026: new photos on a listing already delivered: its delivery after this re-delivers it.
+      if (r.mode !== "update" && page.delivered) r.addedSinceDelivery = newOnDelivered(r, ours);
       return r;
     }
     if (r.state === "CHECKING") {
@@ -916,7 +1051,12 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
         const gate = await deliveryGate(jobId);
         if (!r.approvedBy && !gate.passed) {
           r.state = "WAITING";
-          r.note = `Not delivered by itself: the checklist has open items (${gate.checks.filter((c) => !c.ok && !c.advisory).map((c) => c.label.toLowerCase()).join("; ")}). Look at them, then press Deliver in Aryeo or Mark as delivering.`.slice(0, 400);
+          const open = gate.checks.filter((c) => !c.ok && !c.advisory);
+          // Oct 22 2026: lot lines or staging on the order: Kyle approves it, even with every check passing.
+          const personal = gate.checks.filter((c) => c.personOnly && !c.advisory && c.ok);
+          r.note = open.length
+            ? `Not delivered by itself: the checklist has open items (${open.map((c) => c.label.toLowerCase()).join("; ")}). Look at them, then press Deliver in Aryeo or Mark as delivering.`.slice(0, 400)
+            : `Not delivered by itself: the order has ${addOnWords(personal)}, so Kyle approves the delivery. Look at the photos, then press Deliver in Aryeo.`.slice(0, 400);
           return r;
         }
         // Audit C3 (Oct 20 2026): the upload takes several passes, so a client
@@ -947,6 +1087,11 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
       }
       const page = await W.listingPage(r.listingId);
       if (!page.delivered) await W.deliverListing(r.listingId, { fulfillOrders: page.fulfillByDefault, timezone: page.timezone });
+      else if (r.mode !== "update" && (r.addedSinceDelivery?.length ?? 0) > 0) {
+        // RE-DELIVER (Oct 22 2026): new photos went on a listing already delivered.
+        const next = await redeliver(jobId, r, page.timezone, W);
+        if (next) return next;
+      }
       r.deliveredAt = new Date().toISOString();
       r.state = "CONFIRMING";
       return r;
@@ -1011,7 +1156,7 @@ export async function advancePush(jobId: string, opts: { budgetMs?: number } = {
     if (before !== run.state) {
       if (run.state === "FAILED") await logJobEvent(jobId, "aryeo-push", `sending to Aryeo stopped: ${run.note}`);
       else if (run.state === "WAITING") await logJobEvent(jobId, "aryeo-push", `all ${run.items.length} photos are on the Aryeo listing${run.note ? ` (${run.note})` : ""}; waiting for Deliver in Aryeo`);
-      else if (run.state === "DONE" && run.deliveredAt) await logJobEvent(jobId, "aryeo-push", `delivered in Aryeo by the hub and checked`);
+      else if (run.state === "DONE" && run.deliveredAt) await logJobEvent(jobId, "aryeo-push", run.redelivery?.state === "sent" ? "re-delivered in Aryeo by the hub and checked" : `delivered in Aryeo by the hub and checked`);
       else if (run.state === "DONE") await logJobEvent(jobId, "aryeo-push", `all ${run.items.length} photos are on the Aryeo listing, in order; deliver in Aryeo`);
     }
   }
@@ -1044,6 +1189,7 @@ async function noteRefusal(jobId: string, message: string): Promise<void> {
     id: randomBytes(4).toString("hex"), listingId: run?.listingId ?? "", state: "FAILED", then: run?.then ?? "stop", items: run?.items ?? [], groupId: null, addedAt: null, ordered: false,
     deliveredAt: null, by: "aryeo-push", startedAt: now, updatedAt: now, finishedAt: now, note: message.slice(0, 400), lease: null,
     fingerprint: run?.fingerprint ?? null, listed: run?.listed ?? [], retryAfter: new Date(Date.now() + 60 * 60_000).toISOString(), approvedBy: run?.approvedBy ?? null, anyway: run?.anyway,
+    addedSinceDelivery: run?.addedSinceDelivery ?? [],
   };
   if (!(await save(jobId, next, raw))) return;
   if (run?.note !== next.note) await logJobEvent(jobId, "aryeo-push", `not sent to Aryeo: ${next.note}`);

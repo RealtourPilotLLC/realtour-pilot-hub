@@ -9,6 +9,8 @@
 // server-only modules (prisma, the rules registry JSON, jobState).
 // ---------------------------------------------------------------------------
 
+import type { HoldingBase } from "@/lib/photoDelivery/holding";
+
 export type Severity = "CRITICAL" | "MAJOR" | "MINOR";
 
 export type Viewer = {
@@ -89,6 +91,14 @@ export type QueueCard = {
   atRisk: boolean;
   holdReason: string | null;
   lastError: string | null;
+  /**
+   * Oct 22 2026: what holds the job, in one line (holding.ts: the first item
+   * of the job page's "What's holding this", or "Ready to send"), and the
+   * add-on work still to confirm ("Lot Lines needed"). Only on the Photo
+   * Delivery board (loadQueue `holding`).
+   */
+  holding?: { line: string; tone: "held" | "waiting" | "ready" | "done" } | null;
+  addOns?: string[];
 };
 
 export type QueueColumn = { key: QueueColumnKey; label: string; hint: string; stages: string[]; cards: QueueCard[] };
@@ -274,6 +284,18 @@ export type GateCheckView = {
   overridable?: boolean;
   overridden?: string | null;
   askId?: string;
+  /** Oct 22 2026 (addOns.ts): add-on work to confirm before delivery (Lot Lines needed), with the agent's words. */
+  addOn?: AddOnView;
+  /** Never counts for the hub's own same-day delivery (Kyle approves a job with lot lines or staging). */
+  personOnly?: boolean;
+};
+export type AddOnView = {
+  key: string;
+  need: string;
+  done: string;
+  ordered: string;
+  quotes: { from: string; text: string }[];
+  cleared: { how: "version" | "confirmed"; by: string | null; atISO: string; note: string | null; photoName: string | null } | null;
 };
 /** `ignored`: "You're delivering with 6 exterior issues ignored (…)", shown before delivering. */
 export type GateView = { checks: GateCheckView[]; passed: boolean; advisory: boolean; canDeliver: boolean; overrideAllowed: boolean; blockedForOverride: string | null; holdsOpen: number; ignored: string | null };
@@ -416,6 +438,8 @@ export type JobDetail = {
   stepsError: string | null;
   /** The hub's own upload and delivery into Aryeo (aryeoPush.ts, Oct 14 2026). */
   aryeoPush: AryeoPushView;
+  /** Oct 22 2026: the job's own facts for "What's holding this" (holding.ts holdingFor, with the gate and the live push). */
+  holdingBase: HoldingBase;
   runs: RunView[];
   events: EventView[];
   batches: FixBatchView[];
@@ -507,6 +531,8 @@ export type AryeoPushView = {
     matched?: number;
     /** Photos on the listing twice when it was checked (the images' names). */
     duplicates?: string[][];
+    /** Oct 22 2026: new photos put on an already delivered listing, and their re-delivery (aryeoPush). */
+    redeliver?: { pending: number; state: string | null; at: string | null; photos: number; note: string | null } | null;
   } | null;
   /** Oct 21 2026: the last Update on Aryeo of this job and how it ended. */
   lastUpdate?: { at: string; ok: boolean; note: string; photoIds: string[] } | null;

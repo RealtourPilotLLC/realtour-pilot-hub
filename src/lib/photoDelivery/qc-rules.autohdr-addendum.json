@@ -401,5 +401,34 @@
     "buildPhase": 1,
     "priorityRank": 30,
     "groupKey": "COVERAGE_LOST_IN_EDIT"
+  },
+  {
+    "id": "AIEDIT_FLOATING_OBJECT",
+    "section": 13,
+    "sectionName": "AI Editing and Object Removal",
+    "checklistText": "Floating or unsupported objects left by the edit: a lamp, piece of furniture or decor hovering with nothing under it, an object cut off in mid-air, or a doubled or ghost copy of an object (Oct 22 2026, 615 Cliff Ln: the bedroom lamp floating beside the crib)",
+    "shortLabel": "Floating object (nothing under it)",
+    "rooms": [
+      "ANY"
+    ],
+    "pass": "P1_PHOTO",
+    "detector": "VISION_PHOTO",
+    "secondaryDetector": "VISION_COMPARE",
+    "defaultSeverity": "MAJOR",
+    "fixStrategies": [
+      "EDITOR_MANUAL",
+      "REVERT_VERSION",
+      "HUMAN_REVIEW"
+    ],
+    "autohdrTransform": null,
+    "responsibility": "EDITOR",
+    "postFixable": "YES",
+    "reshootPossible": false,
+    "permanentFeatureRisk": false,
+    "autoFixEligible": false,
+    "buildPhase": 1,
+    "priorityRank": 13,
+    "groupKey": "FLOATING_OBJECT",
+    "visionHint": "Look at what every lamp, piece of furniture and decor item rests on. Flag one that hovers with no table, floor or shelf under it (a table lamp floating where its nightstand should be), an object that ends abruptly in mid-air, or the same object shown twice or as a faint ghost copy. Do not flag fixtures that really hang or mount (pendants, chandeliers, sconces, wall shelves, mounted TVs or art), objects standing on glass or clear acrylic, or furniture whose thin legs are visible."
   }
 ]

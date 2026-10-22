@@ -118,6 +118,29 @@ export async function clientAskedAnswerAction(jobId: string, askId: string, note
   }
 }
 
+/**
+ * Oct 22 2026 (lib/photoDelivery/addOns): Kyle confirms add-on work was put on
+ * the photos outside the hub ("Lot lines added", "Virtual staging added"),
+ * with a short note. Releases that add-on's hold on delivery.
+ */
+export async function confirmAddOnAction(jobId: string, addOn: string, note: string): Promise<ActionResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  if (!ID.test(String(jobId)) || !/^[a-z_]{3,40}$/.test(String(addOn))) return { ok: false, message: "That add-on is not valid." };
+  try {
+    const { by } = await actor();
+    const { confirmAddOn } = await import("@/lib/photoDelivery/addOns");
+    const r = await confirmAddOn(jobId, addOn, typeof note === "string" ? note : "", by);
+    if (r.ok) refresh(jobId);
+    return r;
+  } catch (e) {
+    return failed("confirm the add-on", e);
+  }
+}
+
 /** The photos may go out without the photographer's wrap-up: a typed reason, kept on the job's activity. */
 export async function overrideWrapUpAction(jobId: string, reason: string): Promise<ActionResult> {
   try {

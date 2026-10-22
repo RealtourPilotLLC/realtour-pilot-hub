@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { AlertTriangle, Camera, ExternalLink, PauseCircle } from "lucide-react";
+import { AlertTriangle, Camera, CheckCircle2, ExternalLink, PauseCircle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { BackLink } from "@/components/ui/BackLink";
 import { requirePageAccess } from "@/lib/auth/guards";
@@ -23,7 +23,10 @@ export const dynamic = "force-dynamic";
 
 // ---------------------------------------------------------------------------
 // /ops/photo-delivery/[jobId]: ONE JOB (docs/photo-delivery/01 section 9.4).
+// Oct 22 2026: "What's holding this" first (HoldingPanel: every blocker in
+// order, who it waits on, its button; or "Ready to send"), then the summary.
 // Header (address, client, Aryeo links, photographer, shoot time, SLA, stage,
+// add-on work to confirm such as "Lot Lines needed",
 // credits spent, QC verdict, and the run's cost for the owner only), then the
 // gallery and the tabs, the lightbox, and the Deliver panel at the bottom.
 // Deep links: ?tab=cart|coverage|history (activity and files, the two tabs
@@ -58,6 +61,7 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
   const box = await loadBeforeYouSend(h.projectId, "photo");
   const initialTab = TABS.get(tabRaw ?? "") ?? "issues";
   const initialPhoto = photoRaw && data.photos.some((p) => p.id === photoRaw) ? photoRaw : null;
+  const addOns = (data.gate?.checks ?? []).filter((c) => !!c.addOn);
 
   return (
     <div>
@@ -74,6 +78,17 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
       <div className="mx-auto max-w-[120rem] space-y-4 p-4 pb-0 sm:p-6 sm:pb-0">
         <GlobalStrip strip={strip} current="job" />
 
+        {/* WHAT'S HOLDING THIS (Oct 22 2026) comes first, inside the workspace
+            (it settles things with the job's own controls); the summary, Before
+            you send and the coaching note follow it, then the gallery. The
+            events and batches render here on the server; the browser never needs them. */}
+        <JobWorkspace
+          data={{ ...data, events: [], batches: [] }}
+          viewer={viewer}
+          initialTab={initialTab}
+          initialPhoto={initialPhoto}
+          history={<HistoryPanel events={data.events} header={h} photos={data.photos} runs={data.runs} batches={data.batches} canSeeMoney={viewer.canSeeMoney} showCredits={!readOnly} />}
+          lead={<>
         <section aria-label="Job summary" className="panel-shadow space-y-3 rounded-2xl border border-border bg-surface p-4">
           <StageStepper stage={h.stage} holdResumeStage={h.holdResumeStage} />
           <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2 xl:grid-cols-4">
@@ -125,6 +140,21 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
               <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" /> {h.lastError}
             </p>
           )}
+          {/* Oct 22 2026 (addOns.ts): add-on work on the order, in the job's header: "Lot Lines needed" until it is confirmed added. */}
+          {addOns.length > 0 && (
+            <p className="flex flex-wrap gap-1.5" aria-label="Add-on work on the order">
+              {addOns.map((c) => (
+                <span
+                  key={c.key}
+                  data-addon={c.addOn!.key}
+                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[13px] font-semibold ring-1 ring-inset ${c.ok ? "bg-success/10 text-success ring-success/30" : "bg-warning-soft text-warning ring-warning/40"}`}
+                >
+                  {c.ok ? <CheckCircle2 aria-hidden className="size-3.5" /> : <AlertTriangle aria-hidden className="size-3.5" />}
+                  {c.ok ? c.addOn!.done : c.addOn!.need}
+                </span>
+              ))}
+            </p>
+          )}
         </section>
 
         {/* BEFORE YOU SEND (Oct 19 2026, lib/jobChecks): what was flagged at the
@@ -135,14 +165,7 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
         <BeforeYouSendView data={box.data} medium="photo" canCheck={box.canCheck} />
 
         {coaching && <CoachingCard jobId={h.id} coaching={{ photographerName: coaching.photographerName, note: coaching.note, preShootReminders: coaching.preShootReminders, status: coaching.status }} />}
-
-        {/* The events and batches render here on the server; the browser never needs them. */}
-        <JobWorkspace
-          data={{ ...data, events: [], batches: [] }}
-          viewer={viewer}
-          initialTab={initialTab}
-          initialPhoto={initialPhoto}
-          history={<HistoryPanel events={data.events} header={h} photos={data.photos} runs={data.runs} batches={data.batches} canSeeMoney={viewer.canSeeMoney} showCredits={!readOnly} />}
+          </>}
         />
       </div>
     </div>
