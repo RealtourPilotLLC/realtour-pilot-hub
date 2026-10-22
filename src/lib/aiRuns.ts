@@ -2,7 +2,8 @@ import "server-only";
 import { createHash } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { isAutomationEnabled } from "@/lib/programAutomation";
-import { aiJsonWithUsage, aiStructuredWithUsage, WRITER_MODEL, type AiUsage, type AiEffort } from "@/lib/integrations/ai";
+import { aiJsonWithUsage, aiStructuredWithUsage, WRITER_MODEL, type AiUsage, type AiEffort, type PromptBlock } from "@/lib/integrations/ai";
+import { aiCostUsd } from "@/lib/aiUsage";
 import { GENERATION_POLICY, GENERATION_POLICY_HASH, GENERATION_POLICY_VERSION, STRATEGY_TEMPLATE, policyRulesText } from "@/lib/contentPolicy";
 
 // ---------------------------------------------------------------------------
@@ -86,23 +87,16 @@ export type AiRunKind =
  */
 export const WRITER_STEP_KINDS: readonly AiRunKind[] = ["script_retrieval", "script_brief", "script_hooks", "script_review"];
 
-// Anthropic first-party rates, USD per million tokens (cached Sep 2026). A
-// cost ESTIMATE for the ledger — the invoice is the truth; cache reads are
-// billed at a tenth and cache writes at 1.25× of input. Oct 22 2026: the
-// script writer's model (claude-opus-5-5, $4 / $20, cache reads at 0.05×) and
-// its refusal fallback (claude-opus-5, $5 / $25).
-const RATES_PER_MILLION: Record<string, { input: number; output: number; cacheRead?: number }> = {
-  "claude-sonnet-4-6": { input: 3, output: 15 },
-  "claude-haiku-4-5-20251001": { input: 1, output: 5 },
-  "claude-haiku-4-5": { input: 1, output: 5 },
-  "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.05 },
-  "claude-opus-5": { input: 5, output: 25 },
-};
+// A cost ESTIMATE for the run ledger, in cents — the invoice is the truth.
+// Oct 22 2026 (writer v2.3, the model map): this table used to be a second
+// copy of the prices and knew only Opus 5.5 of the new models, so a Sonnet 5.5
+// or Haiku 5.5 run was priced as Sonnet 4.6 ($3 / $15). It now reads the one
+// price table, lib/aiUsage (Opus 5.5 $4 / $20, Sonnet 5.5 $2 / $10, Haiku 5.5
+// $0.10 / $0.50; each model's own cache-read price; cache writes 1.25x input),
+// so the run ledger and the usage ledger price a call the same way, cache
+// reads and writes included. The rows the old table priced are unchanged.
 export function estimateCostCents(model: string, u: AiUsage): number {
-  const r = RATES_PER_MILLION[model] ?? RATES_PER_MILLION["claude-sonnet-4-6"];
-  const usd =
-    (u.inputTokens * r.input + u.outputTokens * r.output + u.cacheReadTokens * r.input * (r.cacheRead ?? 0.1) + u.cacheWriteTokens * r.input * 1.25) / 1_000_000;
-  return Math.round(usd * 100);
+  return Math.round(aiCostUsd(model, u) * 100);
 }
 
 // Code defaults when no ProgramAiQuota row exists. Conservative on purpose:
@@ -199,6 +193,8 @@ export type RunAiOpts<T> = {
   engine?: "writer" | null;
   /** The writer path's effort (required there; ignored elsewhere). */
   effort?: AiEffort | null;
+  /** The writer path's prompt in blocks with cache breakpoints (v2.3; ignored elsewhere). Their texts joined are `prompt`. */
+  promptBlocks?: readonly PromptBlock[] | null;
 };
 
 export type RunAiResult<T> = { runId: string; output: T; usage: AiUsage; model: string; costCents: number };
@@ -286,7 +282,7 @@ export async function runAiJson<T>(opts: RunAiOpts<T>): Promise<RunAiResult<T>> 
   const mine = claimed ? { leaseBy: claimed.leaseBy } : {};
   try {
     const { result, usage, model } = opts.engine === "writer"
-      ? await aiStructuredWithUsage<T>({ system: opts.system, prompt: opts.prompt, schema: opts.schema, effort: opts.effort ?? "medium", maxTokens: opts.maxTokens, model: opts.model, timeoutMs: opts.timeoutMs })
+      ? await aiStructuredWithUsage<T>({ system: opts.system, prompt: opts.prompt, schema: opts.schema, effort: opts.effort ?? "medium", maxTokens: opts.maxTokens, model: opts.model, timeoutMs: opts.timeoutMs, promptBlocks: opts.promptBlocks })
       : await aiJsonWithUsage<T>({ system: opts.system, prompt: opts.prompt, schema: opts.schema, maxTokens: opts.maxTokens, model: opts.model, timeoutMs: opts.timeoutMs });
     const output = opts.parse ? opts.parse(result) : result;
     const costCents = estimateCostCents(model, usage);

@@ -6,7 +6,7 @@ import type { GeneratedScriptJson, Gap } from "@/lib/contentPolicy";
 import { gatherForTopic, withHerWords, type Gathered, type GatherOpts } from "./sources";
 import { buildRetrievalPrompt, buildBriefPrompt, buildHooksPrompt, buildDraftPrompt, buildReviewPrompt, buildReviseWriterPrompt, buildRedraftPrompt, type DraftOut, type StepPrompt, type WriterContext } from "./prompts";
 import { locateQuote, contextAround, timeOf, isInternalTalk } from "./passages";
-import { pickHook, hardNumbers, mergeReview, mustFixFailures, trimInstruction, spokenTextOf, runnerUpHook, hookInUse, hookFailed, WRITER_LENGTH, WRITER_VERSION, BRIEF_MUST_KEEP_MAX, estimateSeconds, type HookCandidate, type ReviewCheckResult, type HardFinding, type ScriptParts } from "./rules";
+import { pickHook, hardNumbers, mergeReview, mustFixFailures, trimInstruction, spokenTextOf, runnerUpHook, hookInUse, hookFailed, readCraft, keptLongerConflicts, WRITER_LENGTH, WRITER_VERSION, BRIEF_MUST_KEEP_MAX, estimateSeconds, type CraftScores, type HookCandidate, type ReviewCheckResult, type HardFinding, type ScriptParts } from "./rules";
 import { readWriter, type TopicBrief, type WriterPassage, type WriterRecord, type WriterRationale } from "./record";
 
 // ---------------------------------------------------------------------------
@@ -17,16 +17,21 @@ import { readWriter, type TopicBrief, type WriterPassage, type WriterRecord, typ
 //               voice examples, why the topic was chosen                (no AI)
 //   retrieval   every passage where she talks about the topic, verbatim, found
 //               in the source by code with the lines around it; internal talk
-//               held back                          (claude-opus-5-5, medium)
-//   brief       the topic brief                    (claude-opus-5-5, medium)
+//               held back                          (claude-haiku-5-5, medium)
+//   brief       the topic brief                    (claude-sonnet-5-5, medium)
 //   hooks       five hooks with re-hooks, scored; code keeps the best
 //                                                  (claude-opus-5-5, high)
 //   draft       the five-part script; the winning hook word for word
-//                                                  (claude-opus-5-5, high)
-//   review      the independent creative review: 12 checks + code's hard
-//               numbers; up to two fix rounds and one trim pass; a script that
-//               still fails a must-fix arrives FLAGGED (scriptJudge.ts runs
-//               this loop on the version trail)    (claude-opus-5-5, high)
+//                                                  (claude-sonnet-5-5, high)
+//   review      the independent creative review: 12 checks, the craft block
+//               (v2.3) + code's hard numbers; up to two fix rounds and one
+//               trim pass; a script that still fails a must-fix arrives
+//               FLAGGED (scriptJudge.ts runs this loop on the version trail)
+//                                                  (claude-sonnet-5-5, medium)
+//   (v2.3, STEP_MODEL: until then every step ran on claude-opus-5-5. Fixes,
+//   trims and revisions: claude-sonnet-5-5, high. The long stable part of each
+//   prompt sits in front of a cache breakpoint, so a second review or fix
+//   round reads it from the cache.)
 //
 // Every step is a ProgramAiRun (kind script_retrieval / script_brief /
 // script_hooks / script_draft / script_review / script_revise). A step whose
@@ -73,8 +78,23 @@ export class WriterPausedError extends Error {
 
 type Step = "retrieval" | "brief" | "hooks" | "draft" | "review" | "revise";
 const STEP_KIND: Record<Step, AiRunKind> = { retrieval: "script_retrieval", brief: "script_brief", hooks: "script_hooks", draft: "script_draft", review: "script_review", revise: "script_revise" };
-/** Jordan's ruling via the brief: high for the draft and the review, medium for reading the sources and the brief. */
-export const STEP_EFFORT: Record<Step, AiEffort> = { retrieval: "medium", brief: "medium", hooks: "high", draft: "high", review: "high", revise: "high" };
+/**
+ * THE MODEL MAP (Oct 22 2026, writer v2.3; Jordan: "$18 for scripts is
+ * insane. Change the model so it doesn't cost me so much. Make sure it's
+ * still a good model for this though."). Measured on 16 offline scripts, all
+ * on Opus 5.5: $19.49, about $1.22 a script (review $5.46, draft $3.40, brief
+ * $3.31, retrieval $3.30, revise $2.93, hooks $1.09). Now:
+ *   hooks      Opus 5.5, high: the most important creative step, and cheap
+ *   draft      Sonnet 5.5, high      revise   Sonnet 5.5, high
+ *   brief      Sonnet 5.5, medium    review   Sonnet 5.5, medium
+ *   retrieval  Haiku 5.5, medium: finding her passages in a long transcript
+ * Exact ids, no date suffix; every effort named (Sonnet 5.5 defaults to high,
+ * Haiku 5.5 to medium, and the levels differ by model). The model is stamped
+ * on every ProgramAiRun (the answering model, as before).
+ */
+export const STEP_MODEL: Record<Step, string> = { retrieval: "claude-haiku-5-5", brief: "claude-sonnet-5-5", hooks: "claude-opus-5-5", draft: "claude-sonnet-5-5", review: "claude-sonnet-5-5", revise: "claude-sonnet-5-5" };
+/** The effort per step (v2.3, with STEP_MODEL): high for the hooks, the draft and every revision; medium for reading the sources, the brief and the review. */
+export const STEP_EFFORT: Record<Step, AiEffort> = { retrieval: "medium", brief: "medium", hooks: "high", draft: "high", review: "medium", revise: "high" };
 /** Room for the thinking as well as the answer (thinking counts toward max_tokens). */
 export const STEP_MAX_TOKENS: Record<Step, number> = { retrieval: 16_000, brief: 12_000, hooks: 8_000, draft: 12_000, review: 10_000, revise: 12_000 };
 const STEP_MIN_START_MS: Record<Step, number> = { retrieval: 75_000, brief: 60_000, hooks: 45_000, draft: 60_000, review: 45_000, revise: 60_000 };
@@ -94,10 +114,10 @@ export async function runWriterStep<T>(step: Step, prompt: StepPrompt, rc: RunCt
   }
   if (rc.deadline != null && rc.deadline - Date.now() < STEP_MIN_START_MS[step]) throw new WriterPausedError(step);
   const run = await runAiJson<T>({
-    kind, engine: "writer", effort: STEP_EFFORT[step], enrollmentId: rc.enrollmentId, clientId: rc.clientId, scope: { ...rc.scope, writerStep: step }, inputRefs: { ...(rc.inputRefs ?? {}), writerVersion: WRITER_VERSION },
+    kind, engine: "writer", model: STEP_MODEL[step], effort: STEP_EFFORT[step], enrollmentId: rc.enrollmentId, clientId: rc.clientId, scope: { ...rc.scope, writerStep: step }, inputRefs: { ...(rc.inputRefs ?? {}), writerVersion: WRITER_VERSION },
     promptKey: `writer-${step}`, promptVersion: WRITER_VERSION, policyVersionId: rc.policyVersionId, strategyVersionId: rc.strategyVersionId, requestedBy: rc.requestedBy, unattended: rc.unattended,
     dedupeKey: opts.dedupeKey ?? null, holdDedupeKey: opts.holdDedupeKey, claimedRun: opts.claimedRun ?? null,
-    system: prompt.system, prompt: prompt.prompt, schema: prompt.schema, maxTokens: STEP_MAX_TOKENS[step], timeoutMs: timeoutBefore(rc.deadline, STEP_MAX_TOKENS[step]),
+    system: prompt.system, prompt: prompt.prompt, promptBlocks: prompt.blocks ?? null, schema: prompt.schema, maxTokens: STEP_MAX_TOKENS[step], timeoutMs: timeoutBefore(rc.deadline, STEP_MAX_TOKENS[step]),
   });
   return { output: run.output, runId: run.runId, reused: false };
 }
@@ -158,31 +178,50 @@ export async function passagesFrom(g: Pick<Gathered, "sources" | "lines" | "hold
 // Brief
 // ---------------------------------------------------------------------------
 
-type BriefOut = Partial<Omit<TopicBrief, "whatSheSaid" | "target" | "mustKeep" | "proof">> & { whatSheSaid?: string[]; mustKeep?: { text?: unknown; source?: unknown; inProgress?: unknown }[]; proof?: { text?: unknown; source?: unknown } | null };
+type BriefOut = Partial<Omit<TopicBrief, "whatSheSaid" | "target" | "mustKeep" | "proof">> & { whatSheSaid?: string[]; mustKeep?: { text?: unknown; source?: unknown; inProgress?: unknown }[]; proof?: { text?: unknown; source?: unknown; isHerStory?: unknown } | null };
 const s400 = (v: unknown) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, 600) : "");
 const items = (v: unknown) => (Array.isArray(v) ? v : []).map((x) => ({ text: s400((x as { text?: unknown })?.text), source: s400((x as { source?: unknown })?.source) || "unstated" })).filter((x) => x.text).slice(0, 14);
+
+/** v2.3: a must-keep point that is the invitation (it belongs to the close, never must-keep). */
+export const INVITATION_RE = /\b(?:let'?s talk|reach out|call me|contact (?:me|her)|get in touch|message me|dm me|the invitation|an invitation|invite (?:the viewer|viewers|them|you) to)\b/i;
+/** v2.3: the interviewer asking for an example; her answer is the proof, so the question stays in whatWeAsked. */
+export const EXAMPLE_ASK_RE = /\b(?:have you ever|has (?:there|that) ever|a real example|an example|for example|give me an example|what was the outcome|how did (?:it|that) (?:end|turn out|go)|tell me about a time|what happened)\b/i;
 
 /**
  * The brief as stored. Oct 22 2026 (the listening fix), held by code whatever
  * the model wrote: a point about a deal still in progress is never must-keep
- * (it goes to excluded); an educational video keeps at most four must-keep
- * points and a story six, the rest moved to the front of optional. A brief
- * without a video type is read as educational.
+ * (it goes to excluded); an educational video keeps at most three must-keep
+ * points (v2.3; it was four) and a story six, the rest moved to the front of
+ * optional. A brief without a video type is read as educational. v2.3: the
+ * invitation is never must-keep (moved to optional); when the interviewer
+ * asked for an example and whatWeAsked lost that question, code puts it back.
  */
-export function briefFrom(out: BriefOut, passages: WriterPassage[]): TopicBrief {
+export function briefFrom(out: BriefOut, passages: WriterPassage[], asked: readonly { quote: string; time: string | null }[] = []): TopicBrief {
   const said = (Array.isArray(out.whatSheSaid) ? out.whatSheSaid : []).map((id) => passages.find((p) => p.id === String(id).trim())).filter((p): p is WriterPassage => !!p);
   const videoType = out.videoType === "story" ? "story" : "educational";
   const rawKeep = Array.isArray(out.mustKeep) ? out.mustKeep : [];
   const live = items(rawKeep.filter((m) => m?.inProgress === true));
-  const keepAll = items(rawKeep.filter((m) => m?.inProgress !== true));
+  const notLive = items(rawKeep.filter((m) => m?.inProgress !== true));
+  const invites = notLive.filter((m) => INVITATION_RE.test(m.text));
+  const keepAll = notLive.filter((m) => !INVITATION_RE.test(m.text));
   const cap = BRIEF_MUST_KEEP_MAX[videoType];
   const proofText = s400(out.proof?.text);
+  let whatWeAsked = s400(out.whatWeAsked);
+  const flat = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  for (const a of asked) {
+    if (!EXAMPLE_ASK_RE.test(a.quote) || flat(whatWeAsked).includes(flat(a.quote).slice(0, 60))) continue;
+    whatWeAsked = `${whatWeAsked ? `${whatWeAsked} ` : ""}The interviewer asked for an example (her answer is the proof): "${a.quote.replace(/\s+/g, " ").trim().slice(0, 300)}"${a.time ? ` (${a.time})` : ""}.`.trim().slice(0, 1200);
+  }
   return {
-    videoType, whatWeAsked: s400(out.whatWeAsked), angle: s400(out.angle), proof: proofText ? { text: proofText, source: s400(out.proof?.source) || "unstated" } : null,
+    videoType, whatWeAsked, angle: s400(out.angle), proof: proofText ? { text: proofText, source: s400(out.proof?.source) || "unstated", ...(out.proof?.isHerStory === true ? { isHerStory: true } : {}) } : null,
     centralMessage: s400(out.centralMessage), viewer: s400(out.viewer), whyChosen: s400(out.whyChosen), pillar: s400(out.pillar),
     whatSheSaid: [...new Set(said)].slice(0, 8).map((p) => ({ passageId: p.id, quote: p.quote, source: p.source, time: p.time })),
     mustKeep: keepAll.slice(0, cap), herPhrases: items(out.herPhrases).slice(0, 5),
-    optional: [...keepAll.slice(cap).map((m) => ({ ...m, text: `${m.text} (moved from must-keep: ${videoType === "story" ? "a story keeps its main beats" : "one belief, one proof, what she does"})` })), ...items(out.optional)].slice(0, 14),
+    optional: [
+      ...keepAll.slice(cap).map((m) => ({ ...m, text: `${m.text} (moved from must-keep: ${videoType === "story" ? "a story keeps its main beats" : "the belief, the proof, how she helps"})` })),
+      ...invites.map((m) => ({ ...m, text: `${m.text} (moved from must-keep: the invitation belongs to the close)` })),
+      ...items(out.optional),
+    ].slice(0, 14),
     excluded: [
       ...live.map((m) => ({ text: m.text, reason: "a deal still in progress: never a must-keep; at most a mention in general terms, never identifiable" })),
       ...(Array.isArray(out.excluded) ? out.excluded : []).map((x) => ({ text: s400((x as { text?: unknown }).text), reason: s400((x as { reason?: unknown }).reason) })).filter((x) => x.text),
@@ -208,8 +247,52 @@ export type Prepared = {
   brief: TopicBrief;
   hooks: HookCandidate[];
   chosen: number;
+  /** v2.3: why the chosen hook is a fallback (no hook reached curiosity 4 and tension 4), or null. */
+  hookFallback: string | null;
+  /** v2.3: the hooks this month's other scripts open with, shown to the hooks step for variety. */
+  siblingHooks: string[];
   runs: { retrieval: string | null; brief: string | null; hooks: string | null; olderRetrieval?: string | null };
 };
+
+/**
+ * Is the brief's proof a story she told (v2.3)? The brief says so
+ * (proof.isHerStory), or the proof cites a passage the retrieval read as a
+ * story or a client example. On a hook tie, her own moment then wins. Pure.
+ */
+export function proofIsHerStory(brief: Pick<TopicBrief, "proof">, passages: readonly Pick<WriterPassage, "id" | "kind">[]): boolean {
+  if (!brief.proof?.text) return false;
+  if (brief.proof.isHerStory === true) return true;
+  const ids = new Set((brief.proof.source ?? "").match(/\bP\d+\b/g) ?? []);
+  return passages.some((p) => ids.has(p.id) && (p.kind === "story" || p.kind === "client_example"));
+}
+
+/**
+ * The hooks the month's other scripts open with (v2.3, for variety: one
+ * month's scripts for one client should not all open the same way). Their
+ * current versions; as of a moment in the past for the offline test. Never
+ * fails the draft: no siblings on any error.
+ */
+export async function siblingHooksFor(o: { topicId: string; monthId: string | null; enrollmentId: string; asOf?: Date | null }): Promise<string[]> {
+  if (!o.monthId) return [];
+  try {
+    // The OR keeps scripts with no topic: a NOT on a nullable column alone would drop them.
+    const scripts = await prisma.contentScript.findMany({ where: { enrollmentId: o.enrollmentId, monthId: o.monthId, historical: false, OR: [{ topicId: null }, { topicId: { not: o.topicId } }], ...(o.asOf ? { createdAt: { lte: o.asOf } } : {}) }, select: { id: true, currentVersionId: true }, orderBy: { createdAt: "asc" }, take: 12 });
+    if (!scripts.length) return [];
+    const versions = o.asOf
+      ? await prisma.contentScriptVersion.findMany({ where: { scriptId: { in: scripts.map((s) => s.id) }, createdAt: { lte: o.asOf } }, orderBy: { versionNo: "desc" }, select: { scriptId: true, hook: true } })
+      : await prisma.contentScriptVersion.findMany({ where: { id: { in: scripts.map((s) => s.currentVersionId).filter((x): x is string => !!x) } }, select: { scriptId: true, hook: true } });
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const s of scripts) {
+      const v = versions.find((x) => x.scriptId === s.id);
+      const h = (v?.hook ?? "").replace(/\s+/g, " ").trim();
+      if (!v || seen.has(s.id) || !h) continue;
+      seen.add(s.id);
+      if (!out.includes(h)) out.push(h.slice(0, 200));
+    }
+    return out.slice(0, 8);
+  } catch { return []; }
+}
 
 /**
  * Gather, then read. Oct 22 2026 (the listening fix): the retrieval runs in two
@@ -249,10 +332,12 @@ export async function prepareDraft(o: GatherOpts & { requestedBy: string; unatte
   const excluded = got.excluded;
   // v2.1: the brief checks against the whole call, not only the passages.
   const b = await runWriterStep<BriefOut>("brief", buildBriefPrompt(g.ctx, passages, excluded, overview, g.callText, got.asked), rc, { dedupeKey: key("brief") });
-  const brief = briefFrom(b.output, passages);
-  const h = await runWriterStep<{ hooks?: Parameters<typeof pickHook>[0] }>("hooks", buildHooksPrompt(g.ctx, brief), rc, { dedupeKey: key("hooks") });
-  const picked = pickHook(h.output?.hooks ?? [], { videoType: brief.videoType });
-  return { g, passages, excluded, overview, asked: got.asked, brief, hooks: picked.hooks, chosen: picked.chosen, runs: { retrieval: retrievalRun, brief: b.runId, hooks: h.runId, olderRetrieval: olderRun } };
+  const brief = briefFrom(b.output, passages, got.asked);
+  // v2.3: the month's other openings ride into the hooks step (variety), and her own moment wins a tie when the proof is her story.
+  const siblingHooks = await siblingHooksFor({ topicId: o.topicId, monthId: o.monthId, enrollmentId: g.enrollmentId, asOf: o.asOf ?? null });
+  const h = await runWriterStep<{ hooks?: Parameters<typeof pickHook>[0] }>("hooks", buildHooksPrompt(g.ctx, brief, { siblings: siblingHooks }), rc, { dedupeKey: key("hooks") });
+  const picked = pickHook(h.output?.hooks ?? [], { videoType: brief.videoType, proofIsStory: proofIsHerStory(brief, passages) });
+  return { g, passages, excluded, overview, asked: got.asked, brief, hooks: picked.hooks, chosen: picked.chosen, hookFallback: picked.fallback, siblingHooks, runs: { retrieval: retrievalRun, brief: b.runId, hooks: h.runId, olderRetrieval: olderRun } };
 }
 
 /** The draft call (the run a queued click adopts, holding the script's dedupe key until the version is written). */
@@ -287,17 +372,18 @@ export function rationaleOf(out: DraftOut | null | undefined): WriterRationale |
 /** What is stored with the version (validationJson.writer). */
 export function writerRecordOf(p: Prepared, draft: { output: DraftOut; runId: string }, asOf: Date | null = null): WriterRecord {
   return {
-    v: 2, version: WRITER_VERSION, brief: p.brief, passages: p.passages, excludedPassages: p.excluded, hooks: p.hooks, chosen: p.chosen, rationale: rationaleOf(draft.output),
+    v: 2, version: WRITER_VERSION, brief: p.brief, passages: p.passages, excludedPassages: p.excluded, hooks: p.hooks, chosen: p.chosen, hookFallback: p.hookFallback ?? null, rationale: rationaleOf(draft.output),
     facts: p.g.ctx.facts, sources: p.g.labels, runs: { retrieval: p.runs.retrieval, brief: p.runs.brief, hooks: p.runs.hooks, draft: draft.runId, ...(p.runs.olderRetrieval ? { olderRetrieval: p.runs.olderRetrieval } : {}) }, asOf: asOf?.toISOString() ?? null,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Review (the 12 checks + the hard numbers)
+// Review (the 12 checks, the craft block + the hard numbers)
 // ---------------------------------------------------------------------------
 
-type ReviewOut = { checks?: { key?: string; pass?: boolean; reason?: string }[]; fixInstruction?: string; summary?: string };
-export type ReviewResult = { checks: ReviewCheckResult[]; hard: HardFinding[]; mustFails: ReviewCheckResult[]; fixInstruction: string | null; summary: string | null; words: number; seconds: number; runId: string };
+type ReviewOut = { checks?: { key?: string; pass?: boolean; reason?: string }[]; craft?: unknown; fixInstruction?: string; summary?: string };
+/** `craft` (v2.3): the five parts scored 1 to 5 with a psychology note each (check 13 reads it). */
+export type ReviewResult = { checks: ReviewCheckResult[]; hard: HardFinding[]; mustFails: ReviewCheckResult[]; craft: CraftScores | null; fixInstruction: string | null; summary: string | null; words: number; seconds: number; runId: string };
 
 /** What she said or approved, as the hard numbers read it (never our assumptions); v2.1: the whole call too. */
 export function clientTextOf(rec: Pick<WriterRecord, "passages" | "facts">, ctx: Pick<WriterContext, "answers" | "strategyText" | "relatedScripts">, callText = ""): string {
@@ -316,10 +402,11 @@ export async function reviewParts(ctx: WriterContext, rec: WriterRecord, parts: 
   const prompt = buildReviewPrompt({ ...ctx, facts: rec.facts }, rec.brief, rec.passages, { body, closeType: parts.closeType ?? null }, { words: numbers.words, seconds: numbers.seconds, hookWords: numbers.hookWords, hard: numbers.findings.map((f) => f.detail) }, callText);
   // Every version gets its own review run (never a reused verdict): the ledger shows each check.
   const r = await runWriterStep<ReviewOut>("review", prompt, rc, { dedupeKey: opts.dedupeKey ?? null, reuse: false });
-  const checks = mergeReview(Array.isArray(r.output?.checks) ? r.output.checks : [], numbers.findings, numbers.words);
+  const craft = readCraft(r.output?.craft);
+  const checks = mergeReview(Array.isArray(r.output?.checks) ? r.output.checks : [], numbers.findings, numbers.words, craft);
   const mustFails = mustFixFailures(checks);
   const fix = typeof r.output?.fixInstruction === "string" ? r.output.fixInstruction.trim().slice(0, 3000) : "";
-  return { checks, hard: numbers.findings, mustFails, fixInstruction: checks.some((c) => !c.pass) ? fix || null : null, summary: s400(r.output?.summary) || null, words: numbers.words, seconds: numbers.seconds, runId: r.runId };
+  return { checks, hard: numbers.findings, mustFails, craft, fixInstruction: checks.some((c) => !c.pass) ? fix || null : null, summary: s400(r.output?.summary) || null, words: numbers.words, seconds: numbers.seconds, runId: r.runId };
 }
 
 /**
@@ -328,9 +415,12 @@ export async function reviewParts(ctx: WriterContext, rec: WriterRecord, parts: 
  *   the version IS the aim trim, and it  → revert: the longer version it came
  *     broke a must-fix check other than     from is kept (never dry or
  *     length ("Enough substance" when it    incomplete); "Longer than the 55
- *     dropped a must-keep point)            to 85 aim" stays as advice
- *   nothing must-fix fails, over 85 words,→ the aim trim: ONE pass toward 75
- *     no aim trim yet                         to 80, must-keep points kept
+ *     dropped a must-keep point)            to 85 aim" stays as advice. v2.3:
+ *                                           when the longer version says the
+ *                                           line the trim failed on, it is
+ *                                           kept FLAGGED (keptLongerConflicts)
+ *   nothing must-fix fails, over 78 words,→ the aim trim: ONE pass toward 65
+ *     no aim trim yet (v2.3: trimAbove)       to 75, must-keep points kept
  *   nothing must-fix fails                → pass (flags stay on the card)
  *   only the length fails, no cap trim yet→ the cap trim (110 or fewer)
  *   fix rounds left (two at most)         → a fix round (it trims too when over)
@@ -340,7 +430,7 @@ export async function reviewParts(ctx: WriterContext, rec: WriterRecord, parts: 
 export type WriterStep = "pass" | "trim" | "aim-trim" | "revert" | "fix" | "flag";
 export function nextWriterStep(o: { mustFails: ReviewCheckResult[]; words: number; fixRounds: number; trimmed: boolean; aimTrimmed?: boolean; isAimTrim?: boolean; maxFixRounds?: number }): WriterStep {
   if (o.isAimTrim && o.mustFails.some((c) => c.key !== "length")) return "revert";
-  if (!o.mustFails.length) return o.words > WRITER_LENGTH.aim[1] && !o.aimTrimmed && !o.isAimTrim ? "aim-trim" : "pass";
+  if (!o.mustFails.length) return o.words > WRITER_LENGTH.trimAbove && !o.aimTrimmed && !o.isAimTrim ? "aim-trim" : "pass";
   if (o.mustFails.every((c) => c.key === "length") && !o.trimmed) return "trim";
   if (o.fixRounds < (o.maxFixRounds ?? 2)) return "fix";
   if (o.words > WRITER_LENGTH.cap && !o.trimmed) return "trim";
@@ -352,9 +442,40 @@ export function mustKeepTexts(brief: Pick<TopicBrief, "mustKeep"> | null | undef
   return (brief?.mustKeep ?? []).map((m) => m.text).filter(Boolean);
 }
 
-/** The note a kept-longer version carries on the card (and in the offline result). */
-export function keptLongerNote(versionLabel: string, words: number): string {
-  return `Kept ${versionLabel} (${words} words, about ${estimateSeconds(words)} seconds): the trim toward ${WRITER_LENGTH.trimTo[0]} to ${WRITER_LENGTH.trimTo[1]} words dropped a must-keep point, so the longer passing version stands. "Longer than the ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]} aim" stays as advice.`;
+/**
+ * The note a kept-longer version carries on the card (and in the offline
+ * result). v2.3: the aim advice only when it is over the aim; and when the
+ * trim's review failed a line this version says too, the note names it (the
+ * version is flagged, not passed).
+ */
+export function keptLongerNote(versionLabel: string, words: number, conflicts: readonly { n: number; label: string; line: string }[] = [], trimFailed: readonly Pick<ReviewCheckResult, "key" | "n" | "label">[] = []): string {
+  return [
+    `Kept ${versionLabel} (${words} words, about ${estimateSeconds(words)} seconds): the trim toward ${WRITER_LENGTH.trimTo[0]} to ${WRITER_LENGTH.trimTo[1]} words ${trimFailWhy(trimFailed)}, so the longer ${conflicts.length ? "" : "passing "}version stands.`,
+    words > WRITER_LENGTH.aim[1] ? `"Longer than the ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]} aim" stays as advice.` : "",
+    conflicts.length ? `Flagged: the trim's review failed a line this version says too (${conflicts.slice(0, 3).map((c) => `${c.n}. ${c.label}: "${c.line}"`).join("; ")}). Read it before approving.` : "",
+  ].filter(Boolean).join(" ");
+}
+
+/**
+ * Why an aim trim was undone, in words (v2.3): "dropped a must-keep point"
+ * when it failed Enough substance (or nothing more is known), else the
+ * must-fix checks it failed (the close is must-fix now, so a trim can be
+ * undone for its close). Pure.
+ */
+export function trimFailWhy(fails: readonly Pick<ReviewCheckResult, "key" | "n" | "label">[]): string {
+  const other = fails.filter((c) => c.key !== "length");
+  if (!other.length || other.some((c) => c.key === "substance")) return "dropped a must-keep point";
+  return `failed a must-fix check (${other.slice(0, 3).map((c) => `${c.n}. ${c.label}`).join(", ")})`;
+}
+
+/** A kept longer version's checks with the trim's failures on its own lines carried in (v2.3), so the card names them. Pure. */
+export function carryConflicts(keptChecks: readonly ReviewCheckResult[], trimChecks: readonly ReviewCheckResult[], conflicts: readonly { key: ReviewCheckResult["key"]; line: string }[]): ReviewCheckResult[] {
+  return keptChecks.map((c) => {
+    const hit = conflicts.filter((x) => x.key === c.key);
+    if (!hit.length) return c;
+    const t = trimChecks.find((x) => x.key === c.key);
+    return { ...c, pass: false, level: "must-fix", reason: `The trim's review failed this line, and this version says it too ("${hit[0].line}"). ${t?.reason ?? ""}`.trim().slice(0, 500), ...(t?.parts ? { parts: t.parts } : {}) };
+  });
 }
 
 /** What a fix round is told: every failing check (must-fix first), the reviewer's instruction, the trim when over the cap, and no invention. */
@@ -423,10 +544,11 @@ export async function reviewVersion(versionId: string, o: { requestedBy: string;
  * usable hook that neither the first draft nor the current version used; null
  * otherwise (or when every hook has been tried). Pure.
  */
-export function switchHookFor(rec: Pick<WriterRecord, "hooks" | "chosen" | "brief">, current: { body: string }, failed: { checks?: ReviewCheckResult[] | null; instruction?: string | null }): HookCandidate | null {
+export function switchHookFor(rec: Pick<WriterRecord, "hooks" | "chosen" | "brief"> & Partial<Pick<WriterRecord, "passages">>, current: { body: string }, failed: { checks?: ReviewCheckResult[] | null; instruction?: string | null }): HookCandidate | null {
   if (!rec.hooks.length || !hookFailed(failed)) return null;
   const used = [rec.chosen >= 0 ? rec.hooks[rec.chosen]?.text ?? "" : "", hookInUse(current.body, rec.hooks) ?? ""].filter(Boolean);
-  return runnerUpHook(rec.hooks, used, rec.brief.videoType ?? null);
+  // v2.3: the same order the hook was picked in (eligible first, then the rank, her moment on a tie when the proof is her story).
+  return runnerUpHook(rec.hooks, used, { videoType: rec.brief.videoType ?? null, proofIsStory: proofIsHerStory(rec.brief, rec.passages ?? []) });
 }
 
 /**
@@ -468,7 +590,12 @@ export async function draftOffline(o: { topicId: string; monthId: string | null;
     attempts.push(attempt);
     // The same order as the automatic check on the version trail (scriptJudge.ts).
     const next = nextWriterStep({ mustFails: review.mustFails, words: review.words, fixRounds, trimmed, aimTrimmed, isAimTrim: !!aimFrom });
-    if (next === "revert" && aimFrom) return { prepared: strip(p), record: rec, attempts, final: { ...aimFrom, note: keptLongerNote(aimFrom.label, aimFrom.words) }, state: "passed", keptLonger: true };
+    if (next === "revert" && aimFrom) {
+      // v2.3: the kept version may not say the line the trim's review failed on; when it does, it is flagged.
+      const conflicts = keptLongerConflicts({ parts: attempt.parts, checks: review.checks }, aimFrom.parts);
+      const keptReview = conflicts.length && aimFrom.review ? { ...aimFrom.review, checks: carryConflicts(aimFrom.review.checks, review.checks, conflicts), mustFails: mustFixFailures(carryConflicts(aimFrom.review.checks, review.checks, conflicts)) } : aimFrom.review;
+      return { prepared: strip(p), record: rec, attempts, final: { ...aimFrom, review: keptReview, note: keptLongerNote(aimFrom.label, aimFrom.words, conflicts, review.mustFails) }, state: conflicts.length ? "flagged" : "passed", keptLonger: true };
+    }
     if (next === "pass") return { prepared: strip(p), record: rec, attempts, final: attempt, state: "passed", keptLonger: false };
     if (next === "flag" || next === "revert") break;
     let instruction: string, who: "review" | "trim";
