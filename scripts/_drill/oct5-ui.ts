@@ -428,8 +428,11 @@ async function main() {
     // =======================================================================
     c.head("3 · the Editing Room: who is on what, soonest due first, one next action");
     // =======================================================================
+    // Each job's date is its promise (promisedDueAt), as on a live job: the
+    // desk reads THE video due since Oct 22 2026 (editorDue.videoDueOf, audit
+    // H2), no longer the stored deliveryDue column.
     const job = async (title: string, editor: typeof kimTm | null, dueH: number) => {
-      const p = await prisma.project.create({ data: { title, clientId: agent.id, status: "SHOT", shootDate: ago(72), deliveryDue: ahead(dueH), photographerId: harrisonTm.id, editorId: editor?.id ?? null, statusEvidence: JSON.stringify({ dropbox: { rawVideo: 2 } }), deliverables: { create: { type: "SOCIAL_REEL", label: "Standard Reel", quantity: 1 } } } });
+      const p = await prisma.project.create({ data: { title, clientId: agent.id, status: "SHOT", shootDate: ago(72), deliveryDue: ahead(dueH), promisedDueAt: ahead(dueH), photographerId: harrisonTm.id, editorId: editor?.id ?? null, statusEvidence: JSON.stringify({ dropbox: { rawVideo: 2 } }), deliverables: { create: { type: "SOCIAL_REEL", label: "Standard Reel", quantity: 1 } } } });
       if (editor) await prisma.smartTask.create({ data: { projectId: p.id, clientId: agent.id, title: `Edit ${title}`, taskType: "edit_video", status: "OPEN", assignedKey: editor === kimTm ? "kim" : "john", assignedManually: true } });
       return p;
     };
