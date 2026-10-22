@@ -1,6 +1,6 @@
 import "server-only";
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { photoDeliverySettings, type AryeoPushMode } from "./settings";
 import { logJobEvent } from "./jobState";
@@ -52,7 +52,18 @@ const LEASE_MS = 45_000;
 const MAX_TRIES = 3;
 const CHECK_FOR_MS = 20 * 60_000;
 
-export type PushItem = { photoId: string; name: string; path: string; uuid: string | null; tries: number; error: string | null; already: boolean; rev?: string | null; /** Oct 21 2026: Update on Aryeo sends the hub's edited file from its private store, not 06-Ready-for-Aryeo. */ blob?: { pathname: string } | null };
+export type PushItem = {
+  photoId: string; name: string; path: string; uuid: string | null; tries: number; error: string | null; already: boolean; rev?: string | null;
+  /** Oct 21 2026: Update on Aryeo sends the hub's edited file from its private store, not 06-Ready-for-Aryeo. */
+  blob?: { pathname: string } | null;
+  /**
+   * Oct 22 2026 (the duplicate guard): the photo is already on the listing,
+   * found by its listing id, its AutoHDR photo, a content hash or its own
+   * file name; `name` is then that listing image's. Never sent, never taken
+   * off (the hub did not put it there).
+   */
+  matched?: "listing id" | "AutoHDR photo" | "content hash" | "file name" | null;
+};
 /** A photo the hub put on the listing: which photo, and which version of it. */
 type Listed = { name: string; photoId: string; rev: string | null };
 export type PushState = "PREPARING" | "SENDING" | "ADDING" | "CHECKING" | "ORDERING" | "WAITING" | "DELIVERING" | "CONFIRMING" | "DONE" | "FAILED";
@@ -96,8 +107,28 @@ export type PushRun = {
   keepOrder?: string[];
   /** Update: the job's run before it, as JSON text (a string, so the cron's text filters never read its state), put back when it ends. */
   prev?: string | null;
+  /**
+   * Oct 22 2026 (615 Cliff Ln): a split job. The listing already holds the
+   * earlier visit's photos (ON_LISTING): they stay where they are, in their
+   * order with the cover first, and this delivery's photos go after them.
+   */
+  split?: boolean;
+  /** Split: the listing images already there when the run was built (lower-case names, in the listing's order). */
+  keptOrder?: string[];
+  /** The listing images the hub must never take off (already there, or matched by the duplicate guard): their ids. */
+  keepIds?: string[];
+  /** Photos on the listing twice when the run checked it (each: the images' names). Flagged for Kyle, never deleted. */
+  duplicates?: string[][];
 };
-export type PushProgress = { state: PushState; active: boolean; total: number; sent: number; already: number; note: string | null; startedAt: string; finishedAt: string | null; deliveredAt: string | null; waitingForApproval: boolean; changed: boolean; update?: boolean };
+export type PushProgress = {
+  state: PushState; active: boolean; total: number; sent: number; already: number; note: string | null; startedAt: string; finishedAt: string | null; deliveredAt: string | null; waitingForApproval: boolean; changed: boolean; update?: boolean;
+  /** Oct 22 2026: a split job: the photos already on the listing, kept first. */
+  kept?: number;
+  /** Photos the duplicate guard found on the listing already (never sent). */
+  matched?: number;
+  /** Photos on the listing twice when it was checked (the images' names). */
+  duplicates?: string[][];
+};
 
 // ---- the run record ---------------------------------------------------------------------------
 
@@ -141,6 +172,9 @@ export function progressOf(run: PushRun): PushProgress {
     waitingForApproval: run.state === "WAITING",
     changed: run.note === CHANGED,
     update: run.mode === "update",
+    kept: run.split ? run.keptOrder?.length ?? 0 : 0,
+    matched: run.items.filter((i) => i.matched).length,
+    duplicates: run.duplicates ?? [],
   };
 }
 
@@ -161,7 +195,8 @@ const lower = (s: string) => s.toLowerCase();
  * The photos to send, from the finished 06-Ready-for-Aryeo folder, checked
  * against what the listing already holds. `wait` = the folder is not ready yet.
  */
-async function buildItems(jobId: string, listingId: string, anyway: boolean, listed: Listed[] = []): Promise<{ items: PushItem[]; remove: string[]; fingerprint: string } | { wait: string } | { error: string }> {
+type Built = { items: PushItem[]; remove: string[]; fingerprint: string; split: boolean; keptOrder: string[]; keepIds: string[]; kept: number };
+async function buildItems(jobId: string, listingId: string, anyway: boolean, listed: Listed[] = []): Promise<Built | { wait: string } | { error: string }> {
   const { deliveryOrderFor } = await import("./delivery");
   const { readyFolderState, readyFingerprintFor } = await import("./handoff");
   const order = await deliveryOrderFor(jobId);
@@ -175,13 +210,64 @@ async function buildItems(jobId: string, listingId: string, anyway: boolean, lis
   const { listingGallery } = await import("./jobs");
   const listing = await listingGallery(listingId);
   if (!listing) return { wait: "The Aryeo listing could not be read just now; trying again." };
-  const revs = new Map((await prisma.photoAsset.findMany({ where: { id: { in: order.map((o) => o.photoId) } }, select: { id: true, autohdrVersionUuid: true, contentHash: true } })).map((p) => [p.id, p.autohdrVersionUuid ?? p.contentHash ?? null]));
+  const { keptOnListing, keptOwner, sameFile } = await import("./listingMatch");
+  const [rows, kept] = await Promise.all([
+    prisma.photoAsset.findMany({
+      where: { id: { in: order.map((o) => o.photoId) } },
+      select: { id: true, name: true, sourceKind: true, sourceRef: true, autohdrImageUuid: true, autohdrVersionUuid: true, contentHash: true },
+    }),
+    keptOnListing(jobId),
+  ]);
+  const rowById = new Map(rows.map((p) => [p.id, p]));
+  const revs = new Map(rows.map((p) => [p.id, p.autohdrVersionUuid ?? p.contentHash ?? null]));
   const want = new Map(order.map((o) => [lower(o.deliveryName), { photoId: o.photoId, rev: revs.get(o.photoId) ?? null }]));
   const ours = new Map(listed.map((l) => [lower(l.name), l]));
+  // THE DUPLICATE GUARD (Oct 22 2026, Jordan: "make sure there are no
+  // duplicates in Aryeo"). Before anything is sent, each photo is looked for
+  // on the listing: its own listing image (a photo read from the listing),
+  // the listing image of the same AutoHDR photo (a row carried over), an
+  // image with its current content hash, or, last, an image with its own file
+  // name (Kyle's hand-added DSC07999). A photo found is never sent again, and
+  // the hub never takes that image off.
+  const uuids = rows.map((p) => p.autohdrImageUuid).filter((u): u is string => !!u);
+  const carried = uuids.length
+    ? await prisma.photoAsset.findMany({ where: { jobId, sourceKind: "ARYEO", sourceRef: { not: null }, autohdrImageUuid: { in: uuids } }, select: { id: true, autohdrImageUuid: true, sourceRef: true } })
+    : [];
+  const hubNames = new Set([...want.keys(), ...ours.keys()]);
+  // Oct 22 2026 (615 Cliff Ln): on a split job the earlier visit's photos are
+  // expected on the listing: they stay, in their order, and never need Send anyway.
+  const isKept = (e: GalleryEntryLike) => !!keptOwner(kept, e);
+  const claimed = new Set<GalleryEntryLike>();
+  const matchOf = new Map<string, { entry: GalleryEntryLike; by: NonNullable<PushItem["matched"]> }>();
+  for (const o of order) {
+    const p = rowById.get(o.photoId);
+    if (!p) continue;
+    const free = listing.entries.filter((e) => !claimed.has(e));
+    // The photo's CURRENT file only: an older version on the listing is a different file (a person decides, as before).
+    const hashes = new Set([p.contentHash].filter((h): h is string => !!h));
+    const carriedRefs = new Set(carried.filter((c) => c.id !== p.id && c.autohdrImageUuid === p.autohdrImageUuid).map((c) => c.sourceRef!));
+    let m: { entry: GalleryEntryLike; by: NonNullable<PushItem["matched"]> } | null = null;
+    // Its own listing image, only while that image is still the photo's current version (a fix or a
+    // hub edit since is a different file: that one is left to a person, as before).
+    const byRef = p.sourceKind === "ARYEO" && p.sourceRef ? free.find((e) => e.sourceRef === p.sourceRef && e.contentHash === p.contentHash) : undefined;
+    if (byRef) m = { entry: byRef, by: "listing id" };
+    const byUuid = !m && carriedRefs.size ? free.find((e) => !!e.sourceRef && carriedRefs.has(e.sourceRef)) : undefined;
+    if (byUuid) m = { entry: byUuid, by: "AutoHDR photo" };
+    const byHash = !m ? free.find((e) => hashes.has(e.contentHash)) : undefined;
+    if (byHash) m = { entry: byHash, by: "content hash" };
+    // Never against the earlier visit's own photos (two cameras can both make a DSC05123).
+    const byFile = !m ? free.find((e) => !hubNames.has(lower(e.name)) && !isKept(e) && sameFile(e.name, p.name)) : undefined;
+    if (byFile) m = { entry: byFile, by: "file name" };
+    if (m) {
+      claimed.add(m.entry);
+      matchOf.set(o.photoId, m);
+    }
+  }
   const onListing = new Set<string>();
   const remove: string[] = [];
   const others: string[] = [];
   for (const e of listing.entries) {
+    if (claimed.has(e) || isKept(e)) continue;
     const n = lower(e.name);
     const w = want.get(n);
     const mine = ours.get(n);
@@ -193,11 +279,77 @@ async function buildItems(jobId: string, listingId: string, anyway: boolean, lis
   if (others.length && !anyway) {
     return { error: `The listing already has ${others.length} photo${others.length === 1 ? "" : "s"} that ${others.length === 1 ? "is" : "are"} not from 06-Ready-for-Aryeo (${others.slice(0, 3).join(", ")}${others.length > 3 ? "…" : ""}). Remove ${others.length === 1 ? "it" : "them"} in Aryeo first, or press Send anyway to add these next to ${others.length === 1 ? "it" : "them"}.` };
   }
+  const split = kept.length > 0;
+  const sending = new Set(order.filter((o) => !matchOf.has(o.photoId)).map((o) => lower(o.deliveryName)));
   return {
     fingerprint,
     remove,
-    items: order.map((o) => ({ photoId: o.photoId, name: o.deliveryName, path: `${rs.folder}/${o.deliveryName}`, uuid: null, tries: 0, error: null, already: onListing.has(lower(o.deliveryName)), rev: revs.get(o.photoId) ?? null })),
+    split,
+    // What stays ahead of this delivery on a split job: everything on the listing but the hub's own new photos, as it is ordered now.
+    keptOrder: split ? listing.entries.map((e) => lower(e.name)).filter((n) => !sending.has(n)) : [],
+    keepIds: [...listing.entries.filter((e) => claimed.has(e) || isKept(e)).map((e) => e.sourceRef).filter((x): x is string => !!x)],
+    kept: listing.entries.filter((e) => isKept(e)).length,
+    items: order.map((o) => {
+      const m = matchOf.get(o.photoId);
+      return m
+        ? { photoId: o.photoId, name: m.entry.name, path: "", uuid: null, tries: 0, error: null, already: true, rev: revs.get(o.photoId) ?? null, matched: m.by }
+        : { photoId: o.photoId, name: o.deliveryName, path: `${rs.folder}/${o.deliveryName}`, uuid: null, tries: 0, error: null, already: onListing.has(lower(o.deliveryName)), rev: revs.get(o.photoId) ?? null };
+    }),
   };
+}
+
+/** A listing image as the push reads it (jobs.ts GalleryEntry). */
+type GalleryEntryLike = { name: string; sourceRef: string | null; contentHash: string };
+
+/**
+ * The listing as a whole, after a push: any photo of the job on it twice
+ * (two images that are the same photo: its listing id, the listing image a
+ * photo added by hand was seen as, or the name this run gave it), or two
+ * images with the same file name (Oct 22 2026).
+ */
+async function duplicatesOnListing(jobId: string, entries: GalleryEntryLike[], r: PushRun): Promise<{ key: string; names: string[] }[]> {
+  const { BY_HAND_LABEL, listingDuplicates } = await import("./listingMatch");
+  const rows = await prisma.photoAsset.findMany({
+    where: { jobId, status: { not: "GONE" } },
+    select: { id: true, sourceKind: true, sourceRef: true, versions: { where: { source: "EDITOR", label: { startsWith: BY_HAND_LABEL } }, select: { contentHash: true } } },
+  });
+  const byRef = new Map(rows.filter((p) => p.sourceKind === "ARYEO" && p.sourceRef).map((p) => [p.sourceRef!, p.id]));
+  const byHash = new Map(rows.flatMap((p) => p.versions.filter((v) => !!v.contentHash).map((v) => [v.contentHash!, p.id] as const)));
+  const byName = new Map(r.items.map((i) => [lower(i.name), i.photoId]));
+  return listingDuplicates(entries, (img) => (img.sourceRef ? byRef.get(img.sourceRef) : undefined) ?? byHash.get(img.contentHash) ?? byName.get(lower(img.name)) ?? null);
+}
+
+/** Kyle hears about a photo on the listing twice (once per job and set of names); the job page says it too. */
+async function flagDuplicates(jobId: string, words: string): Promise<void> {
+  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true } });
+  const project = job ? await prisma.project.findUnique({ where: { id: job.projectId }, select: { title: true } }) : null;
+  const street = (project?.title ?? "this listing").split(",")[0];
+  const { alertOwnerAndKyle } = await import("./notifyOps");
+  const { appBase } = await import("@/lib/appUrl");
+  await alertOwnerAndKyle({
+    kind: "photo_delivery_duplicate",
+    title: `Photo twice on the listing: ${street}`.slice(0, 90),
+    body: `${words}. Take the extra copy off in Aryeo; the hub never deletes there.`.slice(0, 140),
+    href: `/ops/photo-delivery/${jobId}`,
+    dedupeKey: `pd-duplicate-${jobId}-${createHash("sha256").update(words).digest("hex").slice(0, 12)}`,
+    text: `${street}: ${words} on the Aryeo listing. Take the extra copy off in Aryeo (the hub never deletes there). ${appBase()}/ops/photo-delivery/${jobId}`,
+    to: "kyle",
+  });
+}
+
+/**
+ * The file names the hub gave this job's photos on the listing (its push run:
+ * what it put there and what it is putting there), lower case → photo id. The
+ * sync reads them so the hub's own upload is never mistaken for a photo
+ * already on the listing (Oct 22 2026).
+ */
+export async function pushedNames(jobId: string): Promise<Map<string, string>> {
+  const { run } = await load(jobId);
+  const out = new Map<string, string>();
+  if (!run || run.mode === "update") return out;
+  for (const l of run.listed ?? []) out.set(lower(l.name), l.photoId);
+  for (const i of run.items) if (!i.matched) out.set(lower(i.name), i.photoId);
+  return out;
 }
 
 /** The fingerprint the last 06-Ready-for-Aryeo copy was made from (null when there is no record). */
@@ -257,6 +409,7 @@ export async function requestPush(jobId: string, opts: { by?: string | null; the
     id: randomBytes(4).toString("hex"), listingId: project.aryeoListingId, state: "items" in built ? (all ? "CHECKING" : "SENDING") : "PREPARING", then, items, groupId: null,
     addedAt: all ? now : null, ordered: false, deliveredAt: null, by: opts.by ?? null, startedAt: now, updatedAt: now, finishedAt: null, note: "wait" in built ? built.wait : null, lease: null, anyway: opts.anyway === true,
     fingerprint: "fingerprint" in built ? built.fingerprint : null, listed, remove, removedAt: null, approvedBy: opts.approvedBy ?? null,
+    ...("items" in built ? builtExtras(built) : {}),
   };
   if (!(await save(jobId, next, raw))) return { ok: false, started: false, message: "Someone started it a moment ago." };
   const already = items.filter((i) => i.already).length;
@@ -266,8 +419,30 @@ export async function requestPush(jobId: string, opts: { by?: string | null; the
     return { ok: true, started: true, message: "Getting the photos ready in 06-Ready-for-Aryeo first, then sending them to the Aryeo listing. The panel shows the progress." };
   }
   const swap = remove.length ? `, taking ${remove.length} old one${remove.length === 1 ? "" : "s"} off first` : "";
-  await logJobEvent(jobId, opts.by ?? "aryeo-push", `sending ${items.length - already} photo${items.length - already === 1 ? "" : "s"} to the Aryeo listing${already ? ` (${already} already there)` : ""}${swap}${tail}`);
-  return { ok: true, started: true, message: all ? "Every photo is already on the listing. Checking the order." : `Sending ${items.length - already} photo${items.length - already === 1 ? "" : "s"} to the Aryeo listing${swap}. The panel shows the progress.` };
+  const besideWords = "items" in built ? keptWords(built) : "";
+  await logJobEvent(jobId, opts.by ?? "aryeo-push", `sending ${items.length - already} photo${items.length - already === 1 ? "" : "s"} to the Aryeo listing${already ? ` (${already} already there)` : ""}${swap}${tail}${besideWords}`, matchedData(items));
+  return { ok: true, started: true, message: all ? "Every photo is already on the listing. Checking the order." : `Sending ${items.length - already} photo${items.length - already === 1 ? "" : "s"} to the Aryeo listing${swap}.${besideWords ? ` ${besideWords[2].toUpperCase()}${besideWords.slice(3)}.` : ""} The panel shows the progress.` };
+}
+
+/** The split-job fields of a built run (Oct 22 2026). */
+function builtExtras(b: Built): Partial<PushRun> {
+  return { split: b.split, keptOrder: b.keptOrder, keepIds: b.keepIds };
+}
+
+/** "; the 24 already on the listing stay first, in their order; 1 found there already by file name is not sent again" (Oct 22 2026). Empty when neither. */
+function keptWords(b: Built): string {
+  const matched = b.items.filter((i) => i.matched);
+  const parts = [
+    b.split && b.kept ? `the ${b.kept} already on the listing stay first, in their order` : null,
+    matched.length ? `${matched.length} found on the listing already (${matched.slice(0, 3).map((i) => `${i.name}, by ${i.matched}`).join("; ")}${matched.length > 3 ? "; …" : ""}) ${matched.length === 1 ? "is" : "are"} not sent again` : null,
+  ].filter(Boolean);
+  return parts.length ? `; ${parts.join("; ")}` : "";
+}
+
+/** Which photos the duplicate guard found on the listing, for the job's history. */
+function matchedData(items: PushItem[]): Record<string, unknown> | undefined {
+  const m = items.filter((i) => i.matched);
+  return m.length ? { matched: m.map((i) => ({ photoId: i.photoId, listingName: i.name, by: i.matched })) } : undefined;
 }
 
 // ---- Update on Aryeo (Oct 21 2026) ------------------------------------------------------------
@@ -562,6 +737,7 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
       r.items = built.items;
       r.remove = built.remove;
       r.fingerprint = built.fingerprint;
+      Object.assign(r, builtExtras(built));
       r.note = null;
       const all = r.items.every((i) => i.already) && !r.remove.length;
       r.state = all ? "CHECKING" : "SENDING";
@@ -595,8 +771,10 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
       if ((r.remove?.length || r.replaceIds?.length) && !r.removedAt) {
         const gone = new Set(r.remove ?? []);
         const replace = new Set(r.replaceIds ?? []);
+        // Oct 22 2026: never an image that was already on the listing (an earlier visit's, a photo added by hand).
+        const keep = new Set(r.keepIds ?? []);
         const page = await W.listingPage(r.listingId);
-        const ids = page.images.filter((i) => replace.has(i.id) || gone.has(lower(`${i.filename}.${i.filename_extension}`))).map((i) => i.id);
+        const ids = page.images.filter((i) => replace.has(i.id) || (!keep.has(i.id) && gone.has(lower(`${i.filename}.${i.filename_extension}`)))).map((i) => i.id);
         if (ids.length) await W.deleteImages(r.listingId, ids);
         r.removedAt = new Date().toISOString();
         return r;
@@ -649,7 +827,23 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
       if (!missing.length && !lingering.length) {
         r.state = "ORDERING";
         r.note = null;
-        r.listed = r.items.map((i) => ({ name: i.name, photoId: i.photoId, rev: i.rev ?? null }));
+        // A photo the duplicate guard found already there is not the hub's: never listed as its own (so never taken off).
+        r.listed = r.items.filter((i) => !i.matched).map((i) => ({ name: i.name, photoId: i.photoId, rev: i.rev ?? null }));
+        // NO PHOTO TWICE (Oct 22 2026): once everything is on, the listing is
+        // looked at as a whole. A duplicate is said on the job and flagged for
+        // Kyle; the hub never deletes it (and does not deliver by itself).
+        if (r.mode !== "update") {
+          const dups = await duplicatesOnListing(jobId, listing.entries, r);
+          r.duplicates = dups.map((d) => d.names);
+          const { duplicateWords } = await import("./listingMatch");
+          if (dups.length) {
+            const words = duplicateWords(dups);
+            await logJobEvent(jobId, "aryeo-push", `checked the listing: ${dups.length === 1 ? "a photo is" : `${dups.length} photos are`} on it twice (${words}). Flagged for Kyle; nothing was deleted`, { duplicates: r.duplicates });
+            await flagDuplicates(jobId, words).catch(() => {});
+          } else {
+            await logJobEvent(jobId, "aryeo-push", `checked the listing: ${listing.entries.length} photo${listing.entries.length === 1 ? "" : "s"} on it, no photo twice`);
+          }
+        }
         return r;
       }
       if (r.addedAt && Date.now() - Date.parse(r.addedAt) > CHECK_FOR_MS) {
@@ -663,13 +857,23 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
       const { listingGallery } = await import("./jobs");
       const listing = await listingGallery(r.listingId);
       if (!listing) return null;
-      const wantOrder = r.keepOrder?.length ? r.keepOrder : r.items.map((i) => lower(i.name));
+      // Oct 22 2026 (615 Cliff Ln): on a split job the listing's photos stay
+      // first in their own order (the cover stays the cover) and this
+      // delivery's follow in the order Kyle set; nothing new goes ahead of them.
+      const sent = r.items.filter((i) => !i.matched).map((i) => lower(i.name));
+      const sentSet = new Set(sent);
+      const before = r.split ? [...(r.keptOrder ?? []).filter((n) => !sentSet.has(n)), ...listing.entries.map((e) => lower(e.name)).filter((n) => !sentSet.has(n) && !(r.keptOrder ?? []).includes(n))] : [];
+      const wantOrder = r.keepOrder?.length ? r.keepOrder : r.split ? [...before, ...sent] : r.items.map((i) => lower(i.name));
       const ours = listing.entries.map((e) => lower(e.name)).filter((n) => wantOrder.includes(n));
       const inOrder = ours.join("\n") === wantOrder.join("\n") && listing.entries.slice(0, wantOrder.length).every((e, k) => lower(e.name) === wantOrder[k]);
       if (!inOrder && !r.ordered) {
         const page = await W.listingPage(r.listingId);
-        const rank = (img: { filename: string; filename_extension: string }) => {
-          const k = wantOrder.indexOf(lower(`${img.filename}.${img.filename_extension}`));
+        const fileOf = (img: { filename: string; filename_extension: string }) => lower(`${img.filename}.${img.filename_extension}`);
+        // A split job: every image already there keeps its exact place among the others (by id, so two with one name never swap), the new ones after.
+        const keptPos = new Map(page.images.filter((i) => !sentSet.has(fileOf(i))).map((i, k) => [i.id, k]));
+        const rank = (img: { id: string; filename: string; filename_extension: string }) => {
+          if (r.split && !r.keepOrder?.length) return keptPos.get(img.id) ?? keptPos.size + sent.indexOf(fileOf(img));
+          const k = wantOrder.indexOf(fileOf(img));
           return k < 0 ? wantOrder.length : k;
         };
         const sorted = [...page.images].sort((a, b) => rank(a) - rank(b));
@@ -679,6 +883,13 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
       }
       if (!inOrder) r.note = "The photos are on the listing, but Aryeo kept a different order. Check the order in Aryeo before delivering.";
       r.state = r.then === "deliver" ? "DELIVERING" : r.then === "approval" ? "WAITING" : "DONE";
+      // A photo on the listing twice: the client never gets it that way by
+      // itself. Kyle takes the extra copy off in Aryeo, then presses Deliver
+      // in Aryeo (his press delivers as it is).
+      if (r.duplicates?.length) {
+        r.note = `${r.duplicates.length === 1 ? "A photo is" : `${r.duplicates.length} photos are`} on the listing twice (${(await import("./listingMatch")).duplicateWords(r.duplicates.map((names) => ({ key: "", names })))}). Take the extra copy off in Aryeo (the hub never deletes there)${r.state === "DELIVERING" ? ", then press Deliver in Aryeo" : ""}.`;
+        if (r.state === "DELIVERING") r.state = "WAITING";
+      }
       if (r.state === "DONE") r.finishedAt = new Date().toISOString();
       return r;
     }

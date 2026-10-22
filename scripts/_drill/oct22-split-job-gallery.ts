@@ -9,7 +9,8 @@
 // never reached the free check or Kyle. Now:
 //   · the new visit's AutoHDR gallery is the job's while it is not on the
 //     listing; the job leaves the earlier delivery for EDITING → EDITED; the
-//     earlier visit's rows are set aside (GONE, never deleted);
+//     earlier visit's rows stay beside it as delivered (ON_LISTING, Oct 22:
+//     oct22-split-job-delivered-tags.ts has the rest);
 //   · the job links to the new visit's AutoHDR shoot;
 //   · the photo deadline is the photos turnaround from the visit whose photos these are (Oct 22, not Oct 27 or Oct 13);
 //   · a part-pushed listing keeps the AutoHDR gallery; the whole set on the
@@ -88,7 +89,8 @@ async function main() {
     c.ok("the gallery read is the new visit's AutoHDR photos", r1.source === "autohdr" && r1.count === N, `${r1.source} ${r1.count}`);
     c.ok("the job leaves the earlier delivery for EDITING (the normal flow)", j.stage === "EDITING", j.stage);
     c.ok("this visit's photos are rows on the job, linked to AutoHDR", (await prisma.photoAsset.count({ where: { jobId: job.id, sourceKind: "AUTOHDR", status: "ACTIVE", autohdrImageUuid: { not: null } } })) === N);
-    c.ok("the earlier visit's 23 are set aside (GONE), never deleted", (await prisma.photoAsset.count({ where: { jobId: job.id, sourceKind: "ARYEO", status: "GONE" } })) === 23);
+    // Oct 22 2026 (delivered tags): no longer set aside as GONE: shown beside the new visit as Delivered.
+    c.ok("the earlier visit's 23 stay on the job as delivered (ON_LISTING), never deleted", (await prisma.photoAsset.count({ where: { jobId: job.id, sourceKind: "ARYEO", status: "ON_LISTING" } })) === 23);
     c.ok("the job links to the new visit's AutoHDR shoot", j.autohdrPhotoshootId === 2320001 && j.autohdrShootName === "615 Cliff Ln (Alex Drill) (more photos 2)", String(j.autohdrPhotoshootId));
     c.ok("the photo deadline is the Oct 21 visit's next morning (Oct 22, 12:15 PM ET), not the order's Oct 27 or the Oct 13 promise", j.slaDueAt?.toISOString() === "2026-10-22T16:15:00.000Z", j.slaDueAt?.toISOString());
     c.ok("the stale mismatch diff is cleared", j.deliveryDiffJson === null && j.deliveryCheckNote === null);
@@ -123,7 +125,9 @@ async function main() {
     c.ok("the whole set on the listing: read from the listing again", r4.source === "aryeo" && r4.count === 23 + N, `${r4.source} ${r4.count}`);
     c.ok("the new visit's rows are carried over in place (AutoHDR link kept)", rows.filter((r) => r.sourceKind === "ARYEO" && r.autohdrImageUuid && r.status === "ACTIVE").length === N);
     c.ok("the earlier visit's rows come back", rows.filter((r) => r.sourceKind === "ARYEO" && !r.autohdrImageUuid && r.status === "ACTIVE").length === 23);
-    c.ok("no stray rows: 59 photos, all on the listing", rows.length === 23 + N && rows.every((r) => r.status === "ACTIVE"), String(rows.length));
+    // Oct 22 2026: section 2b's hand-added photo was a row while it was on the listing; it stays as history (GONE), never deleted.
+    const kept = rows.filter((r) => r.status !== "GONE");
+    c.ok("no stray rows: 59 photos, all on the listing", kept.length === 23 + N && kept.every((r) => r.status === "ACTIVE") && rows.length - kept.length <= 1, `${kept.length} of ${rows.length}`);
     c.ok("verified DELIVERED with every photo counted", j.stage === "DELIVERED" && JSON.parse(j.deliveryDiffJson ?? "{}").aryeoCount === 59 && JSON.parse(j.deliveryDiffJson ?? "{}").approved === 59, `${j.stage} ${j.deliveryDiffJson}`);
 
     c.head("4 · a mismatch refreshes, and clears itself");

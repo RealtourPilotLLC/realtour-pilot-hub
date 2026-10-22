@@ -9,6 +9,7 @@ import { describePhoto, jsonFrom, refreshVerdict } from "./fixPolicy";
 import { CHECK_FEATURES, readProgress, roomTypeFrom } from "./autohdrCheck";
 import { DRONE_RE, expectedPhotosFor, type IntakeFile } from "./intake";
 import { RULES_REGISTRY_VERSION, type RoomType, type Severity } from "./registry";
+import { ON_LISTING } from "./listingMatch";
 
 // ---------------------------------------------------------------------------
 // ROOM COVERAGE, FREE (Oct 15 2026).
@@ -43,7 +44,8 @@ import { RULES_REGISTRY_VERSION, type RoomType, type Severity } from "./registry
 export type LabeledPhoto = { id: string; name: string; room: RoomType | null; features: string[] };
 export type CapturedPhoto = LabeledPhoto & { where: string };
 export type RoomStatus = "DELIVERED" | "NOT_DELIVERED" | "NOT_CAPTURED" | "UNKNOWN" | "ADVISORY";
-export type RoomRow = { key: string; label: string; status: RoomStatus; severity: Severity | null; photos: string[]; note: string };
+/** `issue` / `action`: the finding's own words, when a row needs other words than its status gives (Oct 22 2026). */
+export type RoomRow = { key: string; label: string; status: RoomStatus; severity: Severity | null; photos: string[]; note: string; issue?: string; action?: string };
 export type EditLoss = { batchNo: number; expected: number; returned: number };
 
 export type CoverageInput = {
@@ -57,6 +59,13 @@ export type CoverageInput = {
   capturedComplete: boolean;
   /** Some captured photos have no room yet: "never shot" cannot be said. */
   unlabeledCaptured: number;
+  /**
+   * Oct 22 2026 (615 Cliff Ln): photos already delivered on the listing (a
+   * split job's earlier visit) that no check ever labeled. A room the new
+   * visit lacks may well be one of them, so it is never "never photographed":
+   * an advisory line asks to check the listing.
+   */
+  unlabeledOnListing?: number;
   /** The check saw features (v3): the shower view can be judged. */
   featuresKnown: boolean;
   lostInEdit: EditLoss[];
@@ -74,6 +83,15 @@ export function assessCoverage(input: CoverageInput): RoomRow[] {
   const missing = (key: string, label: string, severity: Severity, matches: (p: LabeledPhoto) => boolean): RoomRow => {
     const shot = input.notDelivered.filter(matches);
     if (shot.length) return { key, label, status: "NOT_DELIVERED", severity, photos: names(shot), note: `It was shot but is not in the delivery: ${shot.slice(0, 3).map((p) => `${p.name} (${p.where})`).join(", ")}.` };
+    const listed = input.unlabeledOnListing ?? 0;
+    if (listed > 0) {
+      return {
+        key, label, status: "ADVISORY", severity: "MINOR", photos: [],
+        note: `Not in this visit's photos. ${listed} photo${listed === 1 ? " is" : "s are"} already delivered on the listing from an earlier visit and the hub has no room label for ${listed === 1 ? "it" : "them"}, so check the listing has it.`,
+        issue: `${label}: not in this visit's photos (check the listing)`,
+        action: "Check the Aryeo listing has it from the earlier visit. Fine to deliver.",
+      };
+    }
     if (!input.capturedComplete) return { key, label, status: "UNKNOWN", severity, photos: [], note: "Not in the delivery. The hub cannot see all of AutoHDR's photos of the shoot (or match them to the delivered ones), so it cannot tell whether it was shot." };
     if (input.unlabeledCaptured > 0) return { key, label, status: "UNKNOWN", severity, photos: [], note: `Not in the delivery. ${input.unlabeledCaptured} of AutoHDR's photos have not been looked at yet, so the hub cannot say it was never shot.` };
     const lost = input.lostInEdit.length ? " AutoHDR returned fewer photos than were shot, so it may have been lost in editing." : "";
@@ -147,7 +165,7 @@ export function findingsFor(rows: RoomRow[], loss: EditLoss[]): FindingPlan[] {
     if (r.status === "NOT_DELIVERED") out.push({ groupKey: g, ruleId: "COVERAGE_ROOM_NOT_DELIVERED", severity: r.severity, responsibility: "ADMIN", fixStrategy: "ADMIN_ACTION", specificIssue: `${r.label}: shot but not in the delivery`, explanation: r.note, recommendedAction: `Put ${r.photos[0] ?? "the photo"} back in the delivery, or accept with a reason.`, rawStatus: "NOT_MET", confidence: 0.8 });
     else if (r.status === "NOT_CAPTURED") out.push({ groupKey: g, ruleId: "COVERAGE_ROOM_NOT_CAPTURED", severity: r.severity, responsibility: "PHOTOGRAPHER", fixStrategy: "RESHOOT", specificIssue: `${r.label}: never photographed`, explanation: r.note, recommendedAction: "Ask the photographer; a reshoot or a note to the client may be needed, or accept with a reason.", rawStatus: "NOT_MET", confidence: 0.8 });
     else if (r.status === "UNKNOWN") out.push({ groupKey: g, ruleId: "COVERAGE_ROOM_NOT_DELIVERED", severity: r.severity, responsibility: "HUMAN_REVIEW", fixStrategy: "HUMAN_REVIEW", specificIssue: `${r.label}: no photo in the delivery`, explanation: r.note, recommendedAction: "Look for it in AutoHDR's photos of the shoot, then add it, accept with a reason, or ask for a reshoot.", rawStatus: "UNKNOWN", confidence: 0.7 });
-    else out.push({ groupKey: g, ruleId: "COVERAGE_ROOM_NOT_CAPTURED", severity: "MINOR", responsibility: "PHOTOGRAPHER", fixStrategy: "NONE", specificIssue: r.key === "primary-shower" && r.photos.length ? `${r.label.replace(/ or tub$/, "")} has no photo of its own` : `${r.label}: no photo shows it`, explanation: r.note, recommendedAction: "Fine to deliver. Next time: a photo of the shower on its own.", rawStatus: "NOT_MET", confidence: 0.7 });
+    else out.push({ groupKey: g, ruleId: "COVERAGE_ROOM_NOT_CAPTURED", severity: "MINOR", responsibility: r.action ? "HUMAN_REVIEW" : "PHOTOGRAPHER", fixStrategy: "NONE", specificIssue: r.issue ?? (r.key === "primary-shower" && r.photos.length ? `${r.label.replace(/ or tub$/, "")} has no photo of its own` : `${r.label}: no photo shows it`), explanation: r.note, recommendedAction: r.action ?? "Fine to deliver. Next time: a photo of the shower on its own.", rawStatus: "NOT_MET", confidence: 0.7 });
   }
   if (loss.length) {
     const exp = loss.reduce((s, l) => s + l.expected, 0), got = loss.reduce((s, l) => s + l.returned, 0);
@@ -206,7 +224,7 @@ export async function driveCoverage(opts: { deadline: number }): Promise<{ jobs:
       qcRuns: { some: { trigger: "AUTOHDR_CHECK", status: "DONE", checksJson: { contains: '"v":' } } },
     },
     orderBy: { updatedAt: "desc" },
-    select: { id: true, coverageJson: true, photos: { where: { status: "ACTIVE" }, select: { id: true } } },
+    select: { id: true, coverageJson: true, photos: { where: { status: { in: ["ACTIVE", ON_LISTING] } }, select: { id: true } } },
     take: 40,
   });
   for (const j of jobs) {
@@ -236,7 +254,13 @@ export async function coverageJob(jobId: string, deadline: number): Promise<{ do
   let expected: Expected = {};
   try { expected = JSON.parse(job.expectedJson ?? "{}") as Expected; } catch { expected = {}; }
   const photos = await prisma.photoAsset.findMany({ where: { jobId }, orderBy: { sequence: "asc" }, select: { id: true, name: true, status: true, roomType: true, featuresJson: true, autohdrImageUuid: true } });
-  const active = photos.filter((p) => p.status === "ACTIVE");
+  // Oct 22 2026 (615 Cliff Ln, "front exterior never photographed" while the
+  // exteriors were on the listing): coverage reads the WHOLE listing, the
+  // photos delivered now and the ones already delivered on it (ON_LISTING).
+  // What AutoHDR shot is still matched against this visit's photos only.
+  const thisVisit = photos.filter((p) => p.status === "ACTIVE");
+  const listed = photos.filter((p) => p.status === ON_LISTING);
+  const active = [...listed, ...thisVisit];
   const featuresOf = (p: (typeof photos)[number]): string[] => {
     const f = progress.features?.[p.id];
     if (Array.isArray(f)) return f;
@@ -269,7 +293,7 @@ export async function coverageJob(jobId: string, deadline: number): Promise<{ do
       state.capturedNote = `AutoHDR's photo list could not be read (${(e as Error).message.slice(0, 80)}): shoots close after 7 days.`;
     }
   }
-  const unlinked = active.filter((p) => !p.autohdrImageUuid).length;
+  const unlinked = thisVisit.filter((p) => !p.autohdrImageUuid).length;
   const leftOut: CapturedPhoto[] = photos.filter((p) => p.status === "EXCLUDED").map((p) => ({ ...asLabeled(p), where: "left out of the delivery" }));
   state.counts.autohdr = remote.length || null;
   state.capturedKnown = remote.length > 0 && unlinked === 0;
@@ -327,6 +351,7 @@ export async function coverageJob(jobId: string, deadline: number): Promise<{ do
     bedrooms: state.expected.bedrooms, bathrooms: state.expected.bathrooms, propertyType: state.expected.propertyType,
     delivered: active.map(asLabeled),
     notDelivered: leftOut,
+    unlabeledOnListing: listed.filter((p) => !p.roomType).length,
     capturedComplete: state.capturedKnown,
     unlabeledCaptured: unlabeled,
     featuresKnown: (progress.v ?? 0) >= 3,

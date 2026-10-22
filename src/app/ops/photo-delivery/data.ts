@@ -18,6 +18,7 @@ import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
 import { AUTOHDR_BILLING_URL } from "@/lib/integrations/autohdr";
 import { prettyRoom } from "@/components/photoDelivery/format";
 import { HUB_EDIT, hubMeta, isHubEditHash } from "@/lib/photoDelivery/photoEdit";
+import { BY_HAND_LABEL, ON_LISTING } from "@/lib/photoDelivery/listingMatch";
 import type { RuleOverride } from "@/lib/photoDelivery/registry";
 import type {
   CartView, ClientProfileView, CoverageCounts, CreditStripView, CreditsPageData, CvMetric, EventView, ExpectedView, FindingView, FixBatchView, VersionView,
@@ -225,7 +226,8 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
         // The card's cover: the hero, read by id (not every photo of every job).
         heroIds.length ? prisma.photoAsset.findMany({ where: { id: { in: heroIds }, status: "ACTIVE" }, select: COVER_FIELDS }) : [],
         // Included photos per job, and the first one's place for a job with no hero.
-        prisma.photoAsset.groupBy({ by: ["jobId"], where: { jobId: { in: ids }, status: "ACTIVE" }, _count: { _all: true }, _min: { sequence: true } }),
+        // Oct 22 2026: a split job counts the photos already delivered on the listing too, and shows the listing's cover.
+        prisma.photoAsset.groupBy({ by: ["jobId", "status"], where: { jobId: { in: ids }, status: { in: ["ACTIVE", ON_LISTING] } }, _count: { _all: true }, _min: { sequence: true } }),
         prisma.photoQcFinding.findMany({
           where: { jobId: { in: ids }, status: "OPEN", confidence: { gte: settings.displayConfidenceFloor } },
           select: { id: true, jobId: true, ruleId: true, groupKey: true, photoId: true, photoIdsJson: true, severity: true, confidence: true, status: true, arbitration: true, privacySensitive: true, source: true },
@@ -235,7 +237,13 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
     : [[], [], [], [], []];
 
   const projectById = new Map(projects.map((p) => [p.id, p]));
-  const statsByJob = new Map(photoStats.map((r) => [r.jobId, { count: r._count._all, first: r._min.sequence }]));
+  const statsByJob = new Map<string, { count: number; first: number | null; listed: boolean }>();
+  for (const r of photoStats) {
+    const cur = statsByJob.get(r.jobId) ?? { count: 0, first: null, listed: false };
+    const listed = r.status === ON_LISTING;
+    // The listing's cover (its first photo) leads a split job's card; otherwise the first included photo.
+    statsByJob.set(r.jobId, { count: cur.count + r._count._all, first: listed || !cur.listed ? r._min.sequence : cur.first, listed: cur.listed || listed });
+  }
   const heroById = new Map(heroes.map((h) => [h.id, h]));
   const ownHero = (j: (typeof jobs)[number]) => {
     const h = j.heroPhotoId ? heroById.get(j.heroPhotoId) : undefined;
@@ -244,7 +252,7 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
   // A job with no hero shows its first included photo (by sequence): one row
   // per job, matched on the place the groupBy found. (Prisma's `distinct`
   // would read every photo of those jobs and drop the rest in memory.)
-  const needFirst = jobs.filter((j) => !ownHero(j) && statsByJob.get(j.id)?.first != null);
+  const needFirst = jobs.filter((j) => (!ownHero(j) || statsByJob.get(j.id)?.listed) && statsByJob.get(j.id)?.first != null);
   const latestBatch = new Map<string, { id: string; status: string }>();
   for (const b of batches) if (!latestBatch.has(b.jobId)) latestBatch.set(b.jobId, b);
   const clientIds = [...new Set(projects.map((p) => p.clientId))];
@@ -259,7 +267,7 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
       ? prisma.photoFixOperation.groupBy({ by: ["batchId", "status"], where: { batchId: { in: [...latestBatch.values()].map((b) => b.id) } }, _count: { _all: true } })
       : [],
     needFirst.length
-      ? prisma.photoAsset.findMany({ where: { status: "ACTIVE", OR: needFirst.map((j) => ({ jobId: j.id, sequence: statsByJob.get(j.id)!.first! })) }, select: COVER_FIELDS })
+      ? prisma.photoAsset.findMany({ where: { status: { in: ["ACTIVE", ON_LISTING] }, OR: needFirst.map((j) => ({ jobId: j.id, sequence: statsByJob.get(j.id)!.first! })) }, select: COVER_FIELDS })
       : [],
   ]);
   const firstByJob = new Map<string, (typeof firsts)[number]>();
@@ -297,7 +305,7 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
     const p = projectById.get(j.projectId);
     // A cancelled shoot is not work: the sync stops following it, so the board does too.
     if (p?.status === "CANCELLED") continue;
-    const hero = ownHero(j) ?? firstByJob.get(j.id) ?? null;
+    const hero = (statsByJob.get(j.id)?.listed ? firstByJob.get(j.id) : undefined) ?? ownHero(j) ?? firstByJob.get(j.id) ?? null;
     const column = COLUMN_OF.get(j.stage) ?? "editing";
     const delivered = column === "delivered";
     const left = j.slaDueAt ? j.slaDueAt.getTime() - now.getTime() : null;
@@ -432,7 +440,7 @@ const COVERAGE = new Set(["MET", "NOT_MET", "UNKNOWN"]);
 const PHOTO_FIELDS = {
   id: true, name: true, status: true, excludeReason: true, sequence: true, roomType: true, sequenceGroup: true, description: true, featuresJson: true,
   width: true, height: true, cvJson: true, contentHash: true, sourceKind: true, sourceUrl: true, dropboxPath: true, isAerial: true, isTwilight: true,
-  isVirtuallyStaged: true, heroScore: true, verdict: true, autohdrVersionUuid: true,
+  isVirtuallyStaged: true, heroScore: true, verdict: true, autohdrVersionUuid: true, createdAt: true,
 } as const;
 
 /** What the job page and the verdict engine read of a finding (the model's raw answer is read only for the P4 checklist). */
@@ -505,7 +513,11 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
   // else AutoHDR's) for included photos; excluded ones follow, so they can be put back.
   const orderIds = stepsR.v?.order.map((o) => o.photoId) ?? photos.filter((p) => p.status === "ACTIVE").map((p) => p.id);
   const deliveryNameOf = new Map(stepsR.v?.order.map((o) => [o.photoId, o.deliveryName]) ?? []);
-  const position = new Map(orderIds.map((id, i) => [id, i + 1]));
+  // Oct 22 2026 (615 Cliff Ln): a split job's gallery is the whole listing:
+  // the photos already delivered on it come first (its order, its cover),
+  // then the ones to deliver, numbered after them.
+  const listedCount = photos.filter((p) => p.status === ON_LISTING).length;
+  const position = new Map(orderIds.map((id, i) => [id, listedCount + i + 1]));
   const fixingPhotos = new Set(ops.filter((o) => RUNNING_OPS.has(o.status)).map((o) => o.photoId));
   const versionsByPhoto = new Map<string, typeof versions>();
   for (const v of versions) {
@@ -543,9 +555,12 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     deliveryName: p.status === "ACTIVE" ? deliveryNameOf.get(p.id) ?? null : null,
     fixing: fixingPhotos.has(p.id),
     hubEdit: hubEditOf(hubEditView(versionsByPhoto.get(p.id) ?? [], p, job.stage)),
+    delivered: p.status === ON_LISTING ? deliveredView(versionsByPhoto.get(p.id) ?? [], p.createdAt) : null,
   }));
-  const rank = (p: PhotoView) => (p.status === "ACTIVE" ? p.position ?? 9_000 + p.sequence : p.status === "EXCLUDED" ? 20_000 + p.sequence : 40_000 + p.sequence);
+  const rank = (p: PhotoView) => (p.status === ON_LISTING ? -10_000 + p.sequence : p.status === "ACTIVE" ? p.position ?? 9_000 + p.sequence : p.status === "EXCLUDED" ? 20_000 + p.sequence : 40_000 + p.sequence);
   photoViews.sort((a, b) => rank(a) - rank(b));
+  const listedViews = photoViews.filter((p) => p.status === ON_LISTING);
+  listedViews.forEach((p, i) => (p.position = i + 1));
 
   const roomOfPhoto = new Map(photos.map((p) => [p.id, p.roomType]));
   // Oct 21 2026: the finding the client asked to have removed (read after the checklist filed the job's items).
@@ -710,7 +725,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     roomCoverage: cov
       ? {
           checkedAt: iso(job.coverageCheckedAt),
-          current: cov.done && cov.photoSet === photoSetKey(photos.filter((p) => p.status === "ACTIVE").map((p) => p.id)),
+          current: cov.done && cov.photoSet === photoSetKey(photos.filter((p) => p.status === "ACTIVE" || p.status === ON_LISTING).map((p) => p.id)),
           rooms: cov.rooms.map((r) => ({ ...r, photos: [...r.photos] })),
           bedrooms: cov.expected.bedrooms,
           bathrooms: cov.expected.bathrooms,
@@ -754,6 +769,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       deliveryNextCheckAt: job.stage === "DELIVERING" ? nextDeliveryCheck(job.deliveryStartedAt, job.deliveryCheckedAt) : null,
     },
     photos: photoViews,
+    listing: listedCount ? { delivered: listedCount, notDelivered: photos.filter((p) => p.status === "ACTIVE").length } : null,
     heroPhotoId: job.heroPhotoId,
     findings: findingViews,
     displayFloor: settings.displayConfidenceFloor,
@@ -900,6 +916,18 @@ export async function loadClientProfiles(): Promise<ClientProfileView[]> {
  * "current" by the AutoHDR version the hub uses (the content hash for a
  * Dropbox or Aryeo file), with whether a copy was kept and its sharpness.
  */
+/**
+ * A photo already delivered on the Aryeo listing (Oct 22 2026): when the hub
+ * first saw it there, and, for a photo of the new visit Kyle added by hand,
+ * the file name it has on the listing.
+ */
+function deliveredView(rows: { label: string; source: string; createdAt: Date }[], createdAt: Date): NonNullable<PhotoView["delivered"]> {
+  const hand = rows.find((v) => v.source === "EDITOR" && v.label.startsWith(BY_HAND_LABEL));
+  if (hand) return { since: hand.createdAt.toISOString(), asName: hand.label.slice(BY_HAND_LABEL.length).replace(/^:\s*/, "") || null };
+  const first = rows.find((v) => v.label === "On the Aryeo listing");
+  return { since: (first?.createdAt ?? createdAt).toISOString(), asName: null };
+}
+
 function versionViews(
   rows: { id: string; label: string; source: string; contentHash: string | null; createdAt: Date; createdBy: string | null; width: number | null; height: number | null; autohdrVersionUuid: string | null; derivJson: string | null }[],
   p: { contentHash: string | null; autohdrVersionUuid: string | null; sourceKind: string },

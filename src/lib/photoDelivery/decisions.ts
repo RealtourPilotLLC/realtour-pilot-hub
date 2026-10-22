@@ -293,6 +293,8 @@ export async function setPhotoExcluded(photoId: string, excluded: boolean, reaso
   if (!photo) return { ok: false, message: "That photo no longer exists. Reload the page." };
   if (expectJobId && photo.jobId !== expectJobId) return { ok: false, message: "That photo belongs to a different job." };
   if (photo.status === "GONE") return { ok: false, message: "That photo is no longer in the gallery." };
+  // Oct 22 2026: a photo already delivered on the listing (a split job) is not part of this delivery to leave out or put back.
+  if (photo.status === "ON_LISTING") return { ok: false, message: "That photo is already delivered on the Aryeo listing." };
   const now = new Date();
 
   if (excluded) {
@@ -335,6 +337,7 @@ export async function setHero(jobId: string, photoId: string, by: string): Promi
   const who = clean(by, 120) || "staff";
   const photo = await prisma.photoAsset.findUnique({ where: { id: photoId }, select: { id: true, jobId: true, name: true, status: true } });
   if (!photo || photo.jobId !== jobId) return { ok: false, message: "That photo is not part of this job." };
+  if (photo.status === "ON_LISTING") return { ok: false, message: "That photo is already delivered on the Aryeo listing: the listing's own cover stays first." };
   if (photo.status !== "ACTIVE") return { ok: false, message: "Include the photo in the delivery before making it the hero." };
   const res = await prisma.photoJob.updateMany({ where: { id: jobId }, data: { heroPhotoId: photo.id } });
   if (res.count !== 1) return { ok: false, message: "Photo job not found." };

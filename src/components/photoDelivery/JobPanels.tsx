@@ -91,7 +91,11 @@ export function FilesPanel({ header, photos, runs, batches, canSeeMoney, showCre
               <p className="flex flex-wrap items-center gap-x-2">
                 <span className="break-all font-medium">{p.name}</span>
                 <span className="text-[12px] text-muted">{SOURCE_LABEL[p.sourceKind] ?? p.sourceKind}</span>
-                {p.status !== "ACTIVE" && <span className="text-[12px] text-warning">{p.status === "EXCLUDED" ? "left out" : "no longer in the gallery"}</span>}
+                {p.status === "ON_LISTING" ? (
+                  <span className="text-[12px] text-success">delivered: already on the Aryeo listing{p.delivered?.asName ? ` as ${p.delivered.asName}` : ""}</span>
+                ) : (
+                  p.status !== "ACTIVE" && <span className="text-[12px] text-warning">{p.status === "EXCLUDED" ? "left out" : "no longer in the gallery"}</span>
+                )}
               </p>
               {p.versions.length > 0 && (
                 <ul className="mt-1 space-y-0.5 text-[12px] text-muted">
