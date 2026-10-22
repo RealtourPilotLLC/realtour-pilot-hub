@@ -126,7 +126,8 @@ function styleChanged(want: StyledParsed, have: StyledParsed): boolean {
 // status per type; only PENDING work can vanish — anything DONE/UPLOADED for
 // a type that survives keeps its state. DELIVERED history is never touched.
 async function repairProjectsForProduct(title: string): Promise<{ projects: number; added: number; removed: number }> {
-  const { deliverablesForTitle, dedupeParsedDeliverables } = await import("@/lib/integrations/aryeo");
+  const { deliverablesFromStoredItems, matchRowsToWants } = await import("@/lib/integrations/aryeo");
+  type ParsedDeliverable = import("@/lib/integrations/aryeo").ParsedDeliverable;
   const { standardDeliveryDue } = await import("@/lib/tasks");
   const { isMonthlyContentJob } = await import("@/lib/pipeline");
 
@@ -143,18 +144,26 @@ async function repairProjectsForProduct(title: string): Promise<{ projects: numb
       select: {
         id: true, status: true, shootDate: true,
         orderItems: { where: { isCanceled: false }, select: { title: true, quantity: true } },
-        deliverables: { select: { id: true, type: true, label: true, status: true, manual: true, removedFromOrderAt: true, productTitle: true, videoStyle: true } },
+        deliverables: { select: { id: true, type: true, label: true, status: true, manual: true, removedFromOrderAt: true, productTitle: true, videoStyle: true, createdAt: true } },
       },
     });
     if (!p) continue;
-    const parsed = dedupeParsedDeliverables(p.orderItems.flatMap((it) => deliverablesForTitle(it.title, it.quantity)));
-    const wantByType = new Map(parsed.map((d) => [d.type as string, d as typeof d & StyledParsed]));
+    // The same rule the sync uses (Oct 22 2026): two main video products on
+    // one order are two videos, and rows are paired with lines by product
+    // first (matchRowsToWants), so the standard reel's row is never relabelled
+    // as the premium one. Hub-added rows answer no line; a line of their type
+    // with no row of its own is theirs, never a second row.
+    const parsed = deliverablesFromStoredItems(p.orderItems) as (ParsedDeliverable & StyledParsed)[];
+    const answerable = p.deliverables
+      .filter((d) => !d.manual)
+      .sort((a, b) => Number(!!a.removedFromOrderAt) - Number(!!b.removedFromOrderAt) || a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id));
+    const matched = matchRowsToWants(answerable, parsed);
     let touched = false;
-    // Remove phantoms: types no longer implied — PENDING rows only (real work
-    // that already happened is evidence the type was real).
-    for (const d of p.deliverables) {
+    // Remove phantoms: rows no line implies any more — PENDING rows only (real
+    // work that already happened is evidence the type was real).
+    for (const d of matched.unmatchedRows) {
       // Same retire semantics as the order reconcile — never a delete.
-      if (!wantByType.has(d.type) && d.status === "PENDING" && !d.manual && !d.removedFromOrderAt) {
+      if (d.status === "PENDING" && !d.removedFromOrderAt) {
         await prisma.deliverable.update({
           where: { id: d.id },
           data: { removedFromOrderAt: new Date(), removedFromOrderNote: "No longer implied by the order's products (product-map repair)" },
@@ -162,28 +171,31 @@ async function repairProjectsForProduct(title: string): Promise<{ projects: numb
         removed++; touched = true;
       }
     }
-    // Add missing + fix labels in place.
-    for (const [type, want] of wantByType) {
-      const existing = p.deliverables.find((d) => d.type === type);
-      if (existing?.removedFromOrderAt) {
+    // Fix labels in place, restore what came back, add what is missing.
+    for (const { row: existing, want } of matched.pairs) {
+      const w = want as ParsedDeliverable & StyledParsed;
+      if (existing.removedFromOrderAt) {
         await prisma.deliverable.update({
           where: { id: existing.id },
-          data: { removedFromOrderAt: null, removedFromOrderNote: null, label: want.label, quantity: want.quantity, ...styleFields(want) },
+          data: { removedFromOrderAt: null, removedFromOrderNote: null, label: w.label, quantity: w.quantity, ...styleFields(w) },
         });
         added++; touched = true;
-        continue;
-      }
-      if (!existing) {
-        await prisma.deliverable.create({
-          data: { projectId: p.id, type: type as never, label: want.label, quantity: want.quantity, status: "PENDING", ...styleFields(want) },
-        });
-        added++; touched = true;
-      } else if (existing.label !== want.label || styleChanged(want, existing)) {
+      } else if (existing.label !== w.label || styleChanged(w, existing)) {
         // Label AND style fix in place — the editor brief reads the style key
         // off the row, so a re-mapped product must reach live rows here.
-        await prisma.deliverable.update({ where: { id: existing.id }, data: { label: want.label, ...styleFields(want) } });
+        await prisma.deliverable.update({ where: { id: existing.id }, data: { label: w.label, ...styleFields(w) } });
         touched = true;
       }
+    }
+    const hubRows = p.deliverables.filter((d) => d.manual);
+    for (const want of matched.unmatchedWants) {
+      const w = want as ParsedDeliverable & StyledParsed;
+      const hub = hubRows.findIndex((d) => d.type === w.type);
+      if (hub >= 0) { hubRows.splice(hub, 1); continue; }
+      await prisma.deliverable.create({
+        data: { projectId: p.id, type: w.type as never, label: w.label, quantity: w.quantity, status: "PENDING", ...styleFields(w) },
+      });
+      added++; touched = true;
     }
     if (touched) {
       projects++;

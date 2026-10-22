@@ -1365,6 +1365,8 @@ export type ParsedDeliverable = {
   videoStyle: VideoStyleKey | null;
   /** Settings → Products calls the product an ADDON — a merged row keeps the MAIN product's title (stripped before rows are written) */
   addon?: boolean;
+  /** which order line produced it (orderDeliverables sets it) — two main video lines are two videos (stripped before rows are written) */
+  line?: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -1469,8 +1471,46 @@ function labelReadsTier(title: string, tier: "standard" | "premium" | "personal_
 // product). `itemTitles` — every live line on the order, when the caller has
 // them — lets the order-level upgrade below see an add-on whose own mapping
 // produces no row.
+//
+// TWO VIDEO PRODUCTS ARE TWO VIDEOS (Oct 22 2026). Jordan: "Joe's appointment
+// yesterday had two videos. A standard highlight reel, and a Premium reel."
+// 538 Onward Ave's order #1709 carries "Social Influencer" (a package whose
+// reel is the PREMIUM reel) AND "Standard Video Highlight Reel" on its own
+// line. Both are SOCIAL_REEL, so the one-per-type collapse below kept the
+// premium one and the standard reel vanished: no row, no editor slot, no due
+// date, nothing on the upload page. So for the two VIDEO types the rule is now
+// per LINE: every main video product on the order is its own video. What
+// still merges into a video is what rides along with one: an add-on line
+// ("Agent Outro Add-on (Standard Reel)", "Agent on Camera Intro") and an
+// upgrade ("Premium Social Media Video Upgrade") change the video they were
+// bought for, they are not a second one. Every other type keeps one row per
+// type, exactly as before. The lines are told apart by `line` (orderDeliverables
+// and deliverablesFromStoredItems set it); a caller that does not set it gets
+// the old one-per-type answer.
 export function dedupeParsedDeliverables(parsed: ParsedDeliverable[], itemTitles: string[] = []): ParsedDeliverable[] {
-  const byType = new Map<DeliverableType, ParsedDeliverable>();
+  // The split, before the collapse: on a video type with two or more MAIN
+  // lines, each main line becomes its own group key and every rider joins the
+  // main line of its own tier (else the first). Everything else keys by type.
+  const groupOf = new Map<ParsedDeliverable, string>();
+  const mainsByType = new Map<DeliverableType, ParsedDeliverable[]>();
+  // A monthly plan's batch is ONE row sized by the plan (cutSlots puts the whole
+  // batch on the first video row), so plan lines never split; they keep the
+  // type's own group, exactly as before.
+  const monthlyLine = (d: ParsedDeliverable) => d.videoStyle === "personal_branding" || MONTHLY_PLAN_RE.test(d.label ?? "") || MONTHLY_PLAN_RE.test(d.productTitle ?? "");
+  for (const d of parsed) {
+    if (!VIDEOISH.has(d.type) || d.line === undefined || ridesAlongVideo(d) || monthlyLine(d)) continue;
+    const list = mainsByType.get(d.type) ?? [];
+    if (!list.some((m) => m.line === d.line)) list.push(d);
+    mainsByType.set(d.type, list);
+  }
+  const tierOf = (d: ParsedDeliverable) => (d.videoStyle ?? "").startsWith("premium") || isPremiumProduct(d.label) ? "premium" : "standard";
+  for (const d of parsed) {
+    const mains = mainsByType.get(d.type);
+    if (!mains || mains.length < 2 || monthlyLine(d)) { groupOf.set(d, d.type); continue; }
+    const home = mains.find((m) => m.line === d.line) ?? mains.find((m) => tierOf(m) === tierOf(d)) ?? mains[0];
+    groupOf.set(d, `${d.type}#${home.line}`);
+  }
+  const byType = new Map<string, ParsedDeliverable>();
   // How much a label TELLS US, so first-wins can't erase the signal: a premium
   // or monthly-plan label must survive a generic "Video" from another line
   // item on the same order (audit: a standard reel add-on was stripping the
@@ -1489,8 +1529,9 @@ export function dedupeParsedDeliverables(parsed: ParsedDeliverable[], itemTitles
   const score = (d: ParsedDeliverable) =>
     rank(d.label) * 100 + (STYLE_RANK[d.videoStyle ?? ""] ?? 0) * 10 + (d.addon ? 0 : 1);
   for (const d of parsed) {
-    const ex = byType.get(d.type);
-    if (!ex) byType.set(d.type, { ...d });
+    const key = groupOf.get(d) ?? d.type;
+    const ex = byType.get(key);
+    if (!ex) byType.set(key, { ...d });
     else {
       ex.quantity = Math.max(ex.quantity, d.quantity);
       if (score(d) > score(ex)) {
@@ -1508,10 +1549,89 @@ export function dedupeParsedDeliverables(parsed: ParsedDeliverable[], itemTitles
   // the lines' titles — so the add-on's mapping must keep producing a row
   // (today: OTHER) unless the caller passes itemTitles.
   const agentAddon = [...itemTitles, ...parsed.map((d) => d.productTitle)].some(isAgentIntroTitle);
-  return [...byType.values()].map(({ addon: _addon, ...row }) => ({
+  // Split videos of one type sit together, the highest-ranked first (the one
+  // a row named before the split was named after, so it keeps that row).
+  const groups = [...byType.entries()];
+  const firstAt = new Map<string, number>();
+  groups.forEach(([, d], i) => { if (!firstAt.has(d.type)) firstAt.set(d.type, i); });
+  groups.sort(([, a], [, b]) => (firstAt.get(a.type)! - firstAt.get(b.type)!) || (a.type === b.type ? score(b) - score(a) : 0));
+  return groups.map(([, { addon: _addon, line: _line, ...row }]) => ({
     ...row,
     videoStyle: agentAddon && row.videoStyle === "standard_reel" ? "standard_reel_agent_intro" : row.videoStyle,
   }));
+}
+
+/**
+ * Does this order line RIDE ALONG with a video rather than being one (pure)?
+ * An add-on (the catalogue says so, or its name does), an upgrade, or an
+ * agent-on-camera add-on that does not itself sell a reel or video ("Agent on
+ * Camera Intro" upgrades the reel it was bought for; "Standard Reel with Agent
+ * Intro" IS a reel). Riders merge into the video they were bought for.
+ */
+export function ridesAlongVideo(d: { productTitle?: string | null; label?: string | null; addon?: boolean }): boolean {
+  const title = d.productTitle ?? d.label ?? "";
+  if (d.addon) return true;
+  if (/\bupgrade\b/i.test(title)) return true;
+  return isAgentIntroTitle(title) && !/\b(reels?|videos?|cinematic)\b/i.test(title);
+}
+
+/**
+ * Everything a job's STORED order lines owe (OrderItem rows keep only the
+ * title and quantity). The same rule as orderDeliverables, lines told apart
+ * the same way, for the callers that work from the stored lines: the
+ * Settings → Products repair, and the videos-ordered guard.
+ */
+export function deliverablesFromStoredItems(items: { title: string; quantity?: number | null; isCanceled?: boolean | null }[]): ParsedDeliverable[] {
+  return orderDeliverables(items.map((it) => ({ title: it.title, quantity: it.quantity ?? 1, is_canceled: !!it.isCanceled }) as AryeoOrderItem));
+}
+
+/** How many videos an order's lines sell, counted the way the rows are made (pure). */
+export function orderedVideoCount(parsed: ParsedDeliverable[]): number {
+  return parsed.filter((d) => VIDEOISH.has(d.type)).reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
+}
+
+/**
+ * WHICH ROW ANSWERS WHICH LINE (Oct 22 2026). A job can now hold two rows of
+ * one video type (the premium reel and the standard reel), so "the row of this
+ * type" no longer names one row. Rows are matched to wanted deliverables per
+ * type, and for the video types by what the row IS before where it sits:
+ *   1. a live row whose productTitle is the line's title (the row was made
+ *      from that line; a relabel never moves it to another line),
+ *   2. a live row of the same video style,
+ *   3. the remaining live rows in order (oldest first: the caller sorts),
+ *   4. a retired row, its own title first, to be restored.
+ * Every other type has one wanted entry and takes its first row, live before
+ * retired, which is exactly what reconcile did before. Pure.
+ */
+export function matchRowsToWants<R extends { type: string; productTitle?: string | null; videoStyle?: string | null; removedFromOrderAt?: Date | null }>(
+  rows: R[],
+  wants: ParsedDeliverable[],
+): { pairs: { row: R; want: ParsedDeliverable }[]; unmatchedWants: ParsedDeliverable[]; unmatchedRows: R[] } {
+  const pairs: { row: R; want: ParsedDeliverable }[] = [];
+  const usedRows = new Set<R>();
+  const usedWants = new Set<ParsedDeliverable>();
+  const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase();
+  const pair = (row: R, want: ParsedDeliverable) => { pairs.push({ row, want }); usedRows.add(row); usedWants.add(want); };
+  const types = [...new Set(wants.map((w) => w.type as string))];
+  for (const type of types) {
+    const ws = wants.filter((w) => w.type === type);
+    const rs = rows.filter((r) => r.type === type);
+    const live = rs.filter((r) => !r.removedFromOrderAt);
+    const retired = rs.filter((r) => !!r.removedFromOrderAt);
+    const free = (list: R[]) => list.filter((r) => !usedRows.has(r));
+    const open = () => ws.filter((w) => !usedWants.has(w));
+    if (VIDEOISH.has(type as DeliverableType)) {
+      for (const w of open()) { const r = free(live).find((x) => !!w.productTitle && norm(x.productTitle) === norm(w.productTitle)); if (r) pair(r, w); }
+      for (const w of open()) { const r = free(live).find((x) => !!w.videoStyle && x.videoStyle === w.videoStyle); if (r) pair(r, w); }
+    }
+    for (const w of open()) { const r = free(live)[0]; if (r) pair(r, w); }
+    for (const w of open()) { const r = free(retired).find((x) => !!w.productTitle && norm(x.productTitle) === norm(w.productTitle)) ?? free(retired)[0]; if (r) pair(r, w); }
+  }
+  return {
+    pairs,
+    unmatchedWants: wants.filter((w) => !usedWants.has(w)),
+    unmatchedRows: rows.filter((r) => !usedRows.has(r)),
+  };
 }
 
 // Virtual / AI add-ons creatives are NOT paid a percentage on (no work on a
@@ -1960,7 +2080,8 @@ export function orderDeliverables(items: AryeoOrderItem[] | null | undefined): P
   const live = (items ?? []).filter((it) => !it.is_canceled);
   const moved = movedAwayTypes(items);
   const parsed = dedupeParsedDeliverables(
-    live.flatMap(itemToDeliverables),
+    // Each line tagged, so two main video products stay two videos (see dedupe).
+    live.flatMap((it, line) => itemToDeliverables(it).map((d) => ({ ...d, line }))),
     live.map((it) => (it.title || it.sub_title || it.subtitle || "").trim()).filter(Boolean),
   );
   // A type this order moved to another order is not owed here, however many
@@ -3029,7 +3150,6 @@ export async function reconcileDeliverablesToOrder(
   // is more invasive than the bug.
   const strandedOnDonor = (r: { projectId: string; removedFromOrderAt: Date | null }) =>
     !!movedAway && r.projectId === projectId && !!r.removedFromOrderAt;
-  const want = new Map(parsed.map((p) => [p.type, p]));
   const orderNo = order.number ?? order.id ?? "?";
   // WHAT THE HUB ALREADY OWES OUTSIDE THE ORDER (Sep 18). A photographer who
   // shoots a second reel for a listing files it as a MANUAL Deliverable and
@@ -3063,39 +3183,61 @@ export async function reconcileDeliverablesToOrder(
   // struck them off `want`; this is only for the wording of the retire note.
   const moved = movedAwayTypes(order.items);
 
-  for (const r of own) {
-    if (r.manual || /added manually/i.test(r.label ?? "")) continue;
-    // Not this order's to revive while its work lives on another job, and it
-    // must not consume the order's line either — see strandedOnDonor.
-    if (strandedOnDonor(r)) continue;
-    const w = want.get(r.type);
-    if (!w) {
-      if (!r.removedFromOrderAt) {
-        const movedTo = moved.get(r.type);
-        await prisma.deliverable.update({
-          where: { id: r.id },
-          data: {
-            removedFromOrderAt: new Date(),
-            removedFromOrderNote: (movedTo
-              ? `'${r.label ?? r.type}' moved to Aryeo order #${movedTo}`
-              : `'${r.label ?? r.type}' is no longer on Aryeo order #${orderNo}`
-            ).slice(0, 300),
-            // The photographer's "couldn't complete" excuse is moot for an
-            // item the order no longer carries.
-            notCompletedReason: null,
-            notCompletedAt: null,
-          },
-        });
-        out.retired.push(r.label ?? r.type);
-        // The office's "is this really not required?" card, if one was minted
-        // off the photographer's note, is answered by the order itself now.
-        try {
-          const { confirmNotRequiredTask } = await import("@/lib/tasks");
-          await confirmNotRequiredTask(r.id);
-        } catch { /* best-effort */ }
-      }
-      continue;
+  // WHICH ROW ANSWERS WHICH LINE (Oct 22 2026). One row per type was the rule
+  // until two video products on one order became two videos (see
+  // dedupeParsedDeliverables), so rows are now paired with what the order
+  // wants by matchRowsToWants: same product first, then same style, then in
+  // order, live before retired. For every type with one wanted entry that is
+  // exactly the old "first row of the type" answer. Hub rows (manual, or
+  // labelled "added manually") never answer a line here: they are the hub's
+  // own, matched below only to stop a second row being minted for them.
+  const isHubRow = (r: { manual: boolean; label: string | null }) => r.manual || /added manually/i.test(r.label ?? "");
+  const answerable = own.filter((r) => !isHubRow(r) && !strandedOnDonor(r));
+  const matched = matchRowsToWants(answerable, parsed);
+  // An editor-added video plus a later video line item must not become two:
+  // a line no order row answers is absorbed by a hub row of its type (live,
+  // retired or manual, as before) before anything is minted. What a live
+  // manual row absorbs this way no longer nets off the matched rows' count.
+  const absorbers = own.filter((r) => isHubRow(r) && !strandedOnDonor(r));
+  const usedAbsorbers = new Set<string>();
+  const toCreate: ParsedDeliverable[] = [];
+  for (const w of matched.unmatchedWants) {
+    const a = absorbers.find((r) => r.type === w.type && !usedAbsorbers.has(r.id));
+    if (!a) { toCreate.push(w); continue; }
+    usedAbsorbers.add(a.id);
+    if (a.manual && !a.removedFromOrderAt) {
+      manualOwed.set(a.type, Math.max(0, (manualOwed.get(a.type) ?? 0) - Math.max(1, w.quantity)));
     }
+  }
+
+  // Rows no line asks for any more: retired, never deleted.
+  for (const r of matched.unmatchedRows) {
+    if (r.removedFromOrderAt) continue;
+    const movedTo = moved.get(r.type);
+    await prisma.deliverable.update({
+      where: { id: r.id },
+      data: {
+        removedFromOrderAt: new Date(),
+        removedFromOrderNote: (movedTo
+          ? `'${r.label ?? r.type}' moved to Aryeo order #${movedTo}`
+          : `'${r.label ?? r.type}' is no longer on Aryeo order #${orderNo}`
+        ).slice(0, 300),
+        // The photographer's "couldn't complete" excuse is moot for an
+        // item the order no longer carries.
+        notCompletedReason: null,
+        notCompletedAt: null,
+      },
+    });
+    out.retired.push(r.label ?? r.type);
+    // The office's "is this really not required?" card, if one was minted
+    // off the photographer's note, is answered by the order itself now.
+    try {
+      const { confirmNotRequiredTask } = await import("@/lib/tasks");
+      await confirmNotRequiredTask(r.id);
+    } catch { /* best-effort */ }
+  }
+
+  for (const { row: r, want: w } of matched.pairs) {
     // Back on the order — and note what is NOT reset here: Deliverable.waivedAt.
     // The waiver is the OFFICE's word ("not required on this job"), and the
     // Aryeo order will never say a package-implied floor plan was discounted
@@ -3117,8 +3259,11 @@ export async function reconcileDeliverablesToOrder(
     } else {
       // The order's quantity minus anything the hub already owes for this type
       // on its own (see manualOwed). Never below 1: an order line exists, so
-      // the row it belongs to is owed at least once.
-      const fromOrder = Math.max(1, w.quantity - (manualOwed.get(r.type) ?? 0));
+      // the row it belongs to is owed at least once. What one row nets off is
+      // spent, so a second row of the type is not netted twice.
+      const spare = manualOwed.get(r.type) ?? 0;
+      const fromOrder = Math.max(1, w.quantity - spare);
+      if (spare > 0) manualOwed.set(r.type, Math.max(0, spare - (w.quantity - fromOrder)));
       const relabel = (r.label ?? "") !== w.label || r.quantity < fromOrder;
       // Product identity (Sep 2 2026) follows the same in-place rule — the
       // row's id, and every cut/upload/verdict keyed on it, never changes.
@@ -3136,18 +3281,13 @@ export async function reconcileDeliverablesToOrder(
         if (relabel) out.relabeled.push(w.label);
       }
     }
-    want.delete(r.type);
   }
-  // Types on the order with no row at all (live, retired OR manual — one row
-  // per type is the invariant, and an editor-added video plus a later video
-  // line item must not become two).
-  for (const [, w] of want) {
-    // A row another job's order parked here does not answer this order's line:
-    // the second shoot's reel sitting on the original job must not stop the
-    // original job's own reel from being minted. A row stranded retired on a
-    // merged-away job does not answer it either — the live row belongs with the
-    // work now.
-    if (own.some((r) => r.type === w.type && !strandedOnDonor(r))) continue;
+  // Lines on the order with no row at all. A row another job's order parked
+  // here does not answer this order's line (it is not in `own`): the second
+  // shoot's reel sitting on the original job must not stop the original job's
+  // own reel from being minted. A row stranded retired on a merged-away job
+  // does not answer it either — the live row belongs with the work now.
+  for (const w of toCreate) {
     const data = {
       type: w.type, label: w.label, quantity: w.quantity, status: "PENDING" as const,
       productTitle: w.productTitle, videoStyle: w.videoStyle,
@@ -5299,11 +5439,9 @@ export async function relabelPremiumDeliverables(): Promise<{ scanned: number; r
     let order: AryeoOrder;
     try { order = await Aryeo.order(proj.aryeoOrderId!); } catch { continue; }
     const parsed = orderDeliverables(order.items);
-    const want = new Map<string, ParsedDeliverable>();
-    for (const p of parsed) want.set(p.type, p);
-    for (const d of proj.deliverables) {
-      const desired = want.get(d.type);
-      if (!desired) continue;
+    // Paired the way the reconcile pairs them (two reels of one type are two
+    // rows now, and each keeps its own product).
+    for (const { row: d, want: desired } of matchRowsToWants(proj.deliverables, parsed).pairs) {
       // Label and product identity move together, in place (same rule as the
       // order reconcile) — the row's id is what the cuts hang off.
       if (desired.label !== d.label || desired.productTitle !== (d.productTitle ?? null) || desired.videoStyle !== (d.videoStyle ?? null)) {

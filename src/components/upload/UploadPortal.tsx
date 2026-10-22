@@ -48,6 +48,7 @@ import { WhatYouSubmitted, type SubmittedItem } from "@/components/upload/WhatYo
 import { NoticeGroup, type Notice } from "@/components/upload/NoticeGroup";
 import { DropboxInstructions, type DropboxInstructionsView } from "@/components/upload/DropboxInstructions";
 import { parseUploadAttempt, uploadAttemptFingerprint, type UploadAttempt } from "@/lib/uploadReceipt";
+import type { BriefShape } from "@/lib/perVideoInstructions";
 
 // ---------------------------------------------------------------------------
 // The shoot debrief portal (rebuilt Aug 31 2026 per Jordan; readability pass
@@ -90,6 +91,24 @@ export type PortalOutputBrief = {
 };
 /** What the page's note action answers: the video's brief as it is now, when it could be read. */
 export type BriefNoteResult = { ok: boolean; changed: boolean; message: string; brief: PortalOutputBrief | null };
+
+/**
+ * Oct 22 2026: one owed video on a job that owes two or more (the page's
+ * server half reads deliverableOutputs.videoInstructionsFor). `own` is the
+ * words already saved for it; `shape` how much its area asks for.
+ */
+export type PortalVideo = {
+  key: string;
+  number: number;
+  total: number;
+  label: string;
+  /** "Premium" / "Standard" */
+  tier: string;
+  shape: BriefShape;
+  own: string | null;
+  /** when this video is due, for the line under its name */
+  dueISO: string | null;
+};
 
 type Deliverable = {
   id: string;
@@ -148,6 +167,11 @@ const VID_SECTIONS = [
   // storage, so the editor brief PDF and /edit render them for free.
   { key: "intro", label: "INTRO SCRIPT", title: "Intro script — exactly as the agent delivered it", required: true, placeholder: "Type the intro word for word as it was filmed — the editor cuts and captions to this." },
   { key: "editNotes", label: "EDITING NOTES", title: "Editing instructions / notes", required: false, placeholder: "Anything the editor should know — order, must-show moments, things to avoid." },
+  // Oct 22 2026: a job that owes two videos gives the second its own area
+  // (LaterVideoArea below), and that video's own script and song live in it.
+  // The job's Studio script is the first video's. Same composed storage.
+  { key: "videoScript", label: "SCRIPT FOR THIS VIDEO", title: "Script for this video", required: false, placeholder: "What was said on camera for this video, if anything. Leave it empty if it is cut to music." },
+  { key: "song", label: "SONG OR MUSIC", title: "Song or music", required: false, placeholder: "A song the agent asked for, or the feel of the music." },
 ] as const;
 type VidKey = (typeof VID_SECTIONS)[number]["key"];
 // A MONTHLY CONTENT SESSION is the client on camera, topic by topic — not a
@@ -214,7 +238,7 @@ function colorProfileOf(text: string | null | undefined): ColorProfile | null {
 //   full        = the six sectioned fields + style picker (FULL_KEYS)
 // (The color line no longer follows the style: the photographer picks it,
 // Oct 21 2026, see COLOR_PROFILES.)
-type BriefShape = "minimal" | "agent_intro" | "full";
+// (BriefShape is shared with lib/perVideoInstructions, Oct 22 2026.)
 const BRIEF_BY_STYLE: Record<VideoStyleKey, { shape: BriefShape }> = {
   standard_reel:             { shape: "minimal" },
   standard_reel_agent_intro: { shape: "agent_intro" },
@@ -277,6 +301,106 @@ function parseVideoInstructions(text: string | null): { style: VidStyle | null; 
   const prefixText = prefix.join("\n").trim();
   if (prefixText) sections.vision = sections.vision ? `${prefixText}\n${sections.vision}` : prefixText;
   return { style, sections };
+}
+
+// ---------------------------------------------------------------------------
+// A LATER VIDEO'S OWN AREA (Oct 22 2026). On a job that owes two or more
+// videos, video 2 and on each get this: what the video is, its own color
+// profile, and its own instructions in the shape its style asks for (a plain
+// reel: one box; an agent-intro reel: the intro and notes; premium: the style
+// and the sectioned fields), plus its own script and song. It composes into
+// the same "STYLE / COLOR PROFILE / VISION FOR THE EDIT …" text as the first
+// video's, so the editor's brief reads both the same way.
+// ---------------------------------------------------------------------------
+const LATER_KEYS: Record<BriefShape, readonly VidKey[]> = {
+  minimal: ["editNotes", "videoScript", "song"],
+  agent_intro: ["intro", "editNotes", "song"],
+  full: ["vision", "videoScript", "song", "mustShow", "avoid", "realtor", "additional"],
+};
+function LaterVideoArea({
+  video,
+  state,
+  onChange,
+}: {
+  video: PortalVideo;
+  state: { style: VidStyle | null; sections: Record<VidKey, string>; color: ColorProfile | null } | undefined;
+  onChange: (patch: Partial<{ style: VidStyle | null; sections: Record<VidKey, string>; color: ColorProfile | null }>) => void;
+}) {
+  const sections = state?.sections ?? (Object.fromEntries(VID_SECTIONS.map((x) => [x.key, ""])) as Record<VidKey, string>);
+  const color = state?.color ?? null;
+  const labelId = `later-color-${video.number}`;
+  const required = (k: VidKey) => (k === "vision" && video.shape === "full") || (k === "intro" && video.shape === "agent_intro");
+  return (
+    <section data-later-video={video.key} aria-labelledby={`later-video-${video.number}`} className="mt-5 rounded-xl border-2 border-brand/30 bg-brand-soft/20 p-3.5 sm:p-4">
+      <h3 id={`later-video-${video.number}`} className="text-sm font-semibold">
+        Video {video.number} of {video.total}: {video.label}
+      </h3>
+      <p className="mt-0.5 text-[13px] text-muted">
+        {video.tier}{video.dueISO ? ` · due ${etDateTime(new Date(video.dueISO))}` : ""}. Its own instructions, separate from video 1.
+      </p>
+      <div className="mt-3">
+        <p id={labelId} className="text-[13px] font-medium text-muted">
+          Color profile you shot this video in <span className="text-danger">*</span>
+        </p>
+        <div role="radiogroup" aria-labelledby={labelId} className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {COLOR_PROFILE_CHOICES.map((c) => {
+            const on = color === c.key;
+            return (
+              <button
+                key={c.key}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                onClick={() => onChange({ color: c.key })}
+                className={cn(
+                  "min-h-11 rounded-xl border px-3 py-2 text-sm font-semibold transition-colors",
+                  on ? "border-brand bg-brand-soft text-brand" : "border-border bg-surface text-foreground hover:border-brand/50",
+                )}
+              >
+                {c.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {video.shape === "full" && (
+        <div className="mt-3">
+          <label htmlFor={`later-style-${video.number}`} className="text-[13px] font-medium text-muted">Edit style <span className="text-brand">*</span></label>
+          <select
+            id={`later-style-${video.number}`}
+            value={state?.style ?? ""}
+            onChange={(e) => onChange({ style: (e.target.value || null) as VidStyle | null })}
+            className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand sm:max-w-xs"
+          >
+            <option value="">Pick a style…</option>
+            <option value="fast">{VID_STYLES.fast}</option>
+            <option value="cinematic">{VID_STYLES.cinematic}</option>
+          </select>
+        </div>
+      )}
+      <div className="mt-3 space-y-3">
+        {LATER_KEYS[video.shape].map((k) => {
+          const sec = VID_SECTIONS.find((x) => x.key === k)!;
+          return (
+            <div key={k}>
+              <label htmlFor={`later-${k}-${video.number}`} className="text-[13px] font-medium text-muted">
+                {k === "editNotes" ? "Your instructions for this video" : sec.title}
+                {required(k) ? <span className="text-brand"> *</span> : <span className="font-normal"> (optional)</span>}
+              </label>
+              <AutoTextarea
+                id={`later-${k}-${video.number}`}
+                value={sections[k] ?? ""}
+                onChange={(e) => onChange({ sections: { ...sections, [k]: e.target.value } })}
+                minRows={k === "vision" || k === "intro" || k === "videoScript" ? 3 : 2}
+                placeholder={sec.placeholder}
+                className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+              />
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 // One numbered step card: orange number while open, green check once its
@@ -419,6 +543,7 @@ export function UploadPortal({
   fieldReports,
   nowMs,
   outputBriefs = [],
+  videos = null,
   onBriefNote,
   briefNoteBlocked = null,
   briefNoteCap = 1000,
@@ -558,6 +683,10 @@ export function UploadPortal({
   nowMs: number;
   /** §7.5 / §6.8: each video's own brief, as the editor reads it (the page picks which to show) */
   outputBriefs?: PortalOutputBrief[];
+  /** Oct 22 2026: a listing job owing two or more videos. `first` names the video the
+   *  instructions above are for; `later` is every other video, each with its own area.
+   *  Absent (or later empty) = a one-video job, which reads exactly as before. */
+  videos?: { first: PortalVideo; later: PortalVideo[] } | null;
   /** the page's server action: add an on-site note to one video's brief */
   onBriefNote?: (projectId: string, outputId: string, note: string) => Promise<BriefNoteResult>;
   /** why notes cannot be added from this view (a "view as" preview); null = they can */
@@ -671,6 +800,40 @@ export function UploadPortal({
   // is never retro-blocked for the new required fields — same rule as the
   // server's first-finalize-only gates.
   const hadPriorBrief = !!project.videoInstructions?.trim();
+  // TWO VIDEOS, TWO AREAS (Oct 22 2026, Jordan: "a separate instructions area
+  // for the upload portal so instructions can be added for both videos").
+  // Each later video keeps its own style, sections and color profile; they
+  // compose exactly like the first video's and save on the submit.
+  const laterVideos = videos?.later ?? [];
+  type LaterState = { style: VidStyle | null; sections: Record<VidKey, string>; color: ColorProfile | null };
+  const [laterVids, setLaterVids] = useState<Record<string, LaterState>>(() =>
+    Object.fromEntries(laterVideos.map((v) => {
+      const parsed = parseVideoInstructions(v.own);
+      return [v.key, { style: parsed.style, sections: parsed.sections, color: colorProfileOf(v.own) }];
+    })),
+  );
+  const setLater = (key: string, patch: Partial<LaterState>) =>
+    setLaterVids((all) => ({ ...all, [key]: { ...(all[key] ?? { style: null, sections: parseVideoInstructions(null).sections, color: null }), ...patch } }));
+  const laterComposed: Record<string, string> = Object.fromEntries(
+    laterVideos.map((v) => {
+      const st = laterVids[v.key];
+      return [v.key, st ? composeVideoInstructions(v.shape === "full" ? st.style : null, st.sections, st.color) : ""];
+    }),
+  );
+  // What a later video still needs before the video half can go (the server
+  // asks the same on the first submit). A video that already has words of
+  // its own is never re-asked, like the first video's prior brief.
+  const laterMissing = laterVideos.flatMap((v) => {
+    if (v.own?.trim()) return [];
+    const st = laterVids[v.key];
+    const name = `video ${v.number}`;
+    return [
+      !st?.color ? `pick the color profile for ${name}` : null,
+      v.shape === "full" && !st?.sections.vision.trim() ? `the vision for ${name}` : null,
+      v.shape === "full" && !st?.style ? `pick an edit style for ${name}` : null,
+      v.shape === "agent_intro" && !st?.sections.intro.trim() ? `the agent's intro script for ${name}` : null,
+    ].filter((x): x is string => !!x);
+  });
   // What "answered" means depends on the package flavor: agent-intro packages
   // need the typed intro script; everything else needs vision + style.
   // Monthly plans: how many videos actually got filmed. The editor works from
@@ -1215,7 +1378,8 @@ export function UploadPortal({
     if (pOn && orderChoice === null) missing.push("answer the shot order");
     if (pOn && orderChoice === "out-of-order" && !orderNotes.trim()) missing.push("the order you shot the home (and why)");
     if (pOn && !removal.trim() && !nothingToRemove) missing.push("answer the removal notes");
-    if (vOn && colorProfile === null) missing.push("pick the color profile you shot in");
+    if (vOn && colorProfile === null) missing.push(laterVideos.length ? "pick the color profile for video 1" : "pick the color profile you shot in");
+    if (vOn) missing.push(...laterMissing);
     if (vOn && !hadPriorBrief) {
       if (spec.requireIntro && !vidSections.intro.trim()) missing.push("the agent's intro script — type it exactly as delivered");
       if (fullFields && !vidSections.vision.trim()) missing.push("the vision for the edit");
@@ -1334,6 +1498,8 @@ export function UploadPortal({
       removalNotes: removal,
       nothingToRemove,
       videoInstructions: vidInstructions,
+      // Oct 22 2026: video 2 and on, each its own composed instructions (absent on a one-video job).
+      ...(laterVideos.length ? { laterVideoInstructions: laterComposed } : {}),
       scriptConfirm: scriptChoice
         ? { state: scriptChoice, ...(scriptChoice === "edited" ? { script: scriptText, note: scriptNote } : {}) }
         : null,
@@ -1426,6 +1592,7 @@ export function UploadPortal({
           // success banner until the photographer manually reloaded the page.
           if (!newerDraft && res.attemptTerminal) router.refresh();
         }
+        if (res.laterVideosNotSaved) setErr(res.laterVideosNotSaved);
         if (!res.attemptTerminal) setErr("Your answers were saved, but the request's finished status could not be recorded. Editor notification is unconfirmed. Check this attempt before another submit, or ask the office to inspect the handoff.");
         resumeAutosave();
         window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1589,6 +1756,7 @@ export function UploadPortal({
   const videoDone =
     vidAnswered &&
     colorProfile !== null &&
+    laterMissing.length === 0 &&
     (!script || hadPriorBrief || (scriptChoice !== null && (scriptChoice !== "edited" || !!scriptText.trim()))) &&
     // Premium: no Studio script → the typed script is part of "done".
     (!spec.requireScript || !!script || hadPriorBrief || !!scriptText.trim());
@@ -2090,6 +2258,7 @@ export function UploadPortal({
             shotOrderNotes={project.shotOrderNotes}
             removalNotes={project.removalNotes}
             videoInstructions={project.videoInstructions}
+            laterVideos={laterVideos.map((v) => ({ number: v.number, label: v.label, text: v.own }))}
             videosFilmed={project.videosFilmed}
             scriptConfirmedAtISO={project.scriptConfirmedAt}
             scriptConfirmNote={project.scriptConfirmNote}
@@ -2419,11 +2588,27 @@ export function UploadPortal({
           subtitle={`${videoStyleName(policy.videoStyle) ?? "Video"} · ${colorProfile ? `shot on ${COLOR_PROFILES[colorProfile].replace(", ", " and ")}` : "pick the color profile you shot in"}`}
           done={videoDone}
         >
+          {/* Oct 22 2026: a job that owes two or more videos says so first,
+              and which video this first set of answers is for. Each later
+              video has its own area at the end of this step. */}
+          {videos && laterVideos.length > 0 && (
+            <div data-video-count={videos.first.total} className="mb-4 rounded-xl border border-brand/30 bg-brand-soft/30 px-3.5 py-2.5">
+              <p className="text-sm font-semibold">This shoot has {videos.first.total} videos, each with its own instructions.</p>
+              <ol className="mt-1 list-decimal pl-5 text-[13px] text-foreground/80">
+                {[videos.first, ...laterVideos].map((v) => (
+                  <li key={v.key}>{v.label} · {v.tier}{v.dueISO ? `, due ${etDateTime(new Date(v.dueISO))}` : ""}</li>
+                ))}
+              </ol>
+              <p data-first-video className="mt-1.5 text-[13px] font-medium">
+                Video 1 of {videos.first.total}: {videos.first.label}. The answers right below are for this video.
+              </p>
+            </div>
+          )}
           {/* Oct 21 2026 (Jordan): the color profile is the photographer's
               pick, required, never guessed from the order's tier. */}
           <div className="mb-4 border-b border-border pb-3.5">
             <p id="color-profile-label" className="text-[13px] font-medium text-muted">
-              Color profile you shot in <span className="text-danger">*</span>
+              {laterVideos.length ? "Color profile you shot video 1 in" : "Color profile you shot in"} <span className="text-danger">*</span>
             </p>
             <div role="radiogroup" aria-labelledby="color-profile-label" className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
               {COLOR_PROFILE_CHOICES.map((c) => {
@@ -2635,6 +2820,10 @@ export function UploadPortal({
                 </>
               );
             })()}
+
+            {laterVideos.map((v) => (
+              <LaterVideoArea key={v.key} video={v} state={laterVids[v.key]} onChange={(patch) => setLater(v.key, patch)} />
+            ))}
 
             {requiredLabels.length > 0 && (
               <p className="mt-1.5 text-xs text-warning">

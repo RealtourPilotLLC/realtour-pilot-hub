@@ -767,7 +767,9 @@ export async function cutSlots(projectId: string, opts: { includeWaived?: boolea
       contentMonthId: true, // CP-09: only a content session can have topics on its slots
       deliverables: {
         where: { removedFromOrderAt: null, type: { in: ["VIDEO", "SOCIAL_REEL"] } },
-        orderBy: { createdAt: "asc" },
+        // id breaks a tie: rows one sync mints together share a createdAt, and
+        // two videos must not swap numbers between two reads (Oct 22 2026).
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
         select: { id: true, type: true, label: true, quantity: true, videoStyle: true, productTitle: true, waivedAt: true },
       },
     },
@@ -815,12 +817,16 @@ export async function cutSlots(projectId: string, opts: { includeWaived?: boolea
   });
   const counts = effectiveSlotCounts(p, baseCounts);
   const out: CutSlot[] = [];
+  // Two videos of the same style on one job (two standard reels off two
+  // lines, Oct 22 2026) are told apart by their place: "Standard Reel (2)".
+  const bases = p.deliverables.map((d) => videoStyleFor(d, { monthly, tier }).name);
   for (const [i, d] of p.deliverables.entries()) {
     const count = counts[i];
     // The waived row kept its place in the arithmetic above (see the note on
     // this function) and drops out here, where dropping it costs nothing.
     if (d.waivedAt && !opts.includeWaived) continue;
-    const base = videoStyleFor(d, { monthly, tier }).name;
+    const same = bases.filter((b) => b === bases[i]).length;
+    const base = same > 1 ? `${bases[i]} (${bases.slice(0, i + 1).filter((b) => b === bases[i]).length})` : bases[i];
     for (let slot = 1; slot <= count; slot++) {
       out.push({
         deliverableId: d.id,

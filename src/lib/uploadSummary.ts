@@ -30,6 +30,9 @@ export const BRIEF_SECTION_TITLES: Record<string, string> = {
   "ADDITIONAL NOTES": "Additional notes",
   "INTRO SCRIPT": "Intro script",
   "EDITING NOTES": "Editing notes",
+  // Oct 22 2026: a later video's own area (UploadPortal LaterVideoArea).
+  "SCRIPT FOR THIS VIDEO": "Script for this video",
+  "SONG OR MUSIC": "Song or music",
 };
 
 export type BriefSection = { label: string; title: string; text: string };

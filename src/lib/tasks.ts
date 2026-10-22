@@ -3841,8 +3841,10 @@ export async function editCardCutSubmitted(
 /** The handoff question for the fields ensureEditorHandoff selects — one
  *  mapping, used for the receipt and the card alike (O01). */
 export async function handoffReadinessOf(p: {
+  /** the job (Oct 22 2026): with it, video 2 and on of a multi-video job are checked for their own instructions */
+  id?: string;
   orderItems: { title: string | null }[];
-  deliverables: { type: string; label: string | null; productTitle: string | null; videoStyle?: string | null; notCompletedReason?: string | null }[];
+  deliverables: { type: string; label: string | null; productTitle: string | null; videoStyle?: string | null; notCompletedReason?: string | null; quantity?: number | null }[];
   packageName: string | null;
   debriefSubmittedAt: Date | null;
   videoHandoffAt?: Date | null;
@@ -3871,7 +3873,20 @@ export async function handoffReadinessOf(p: {
     packageName: p.packageName,
     isPremium: videoTier(live) === "premium",
   });
+  // TWO VIDEOS, TWO SETS OF INSTRUCTIONS (Oct 22 2026): read only on a job
+  // that can owe more than one video, so the one-video job costs nothing more.
+  const videoRows = live.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  let laterVideoGaps: string[] = [];
+  if (p.id && (videoRows.length > 1 || videoRows.some((d) => (d.quantity ?? 1) > 1))) {
+    const [{ videoInstructionsFor }, { laterVideoGap, perVideoRuleApplies }] = await Promise.all([import("@/lib/deliverableOutputs"), import("@/lib/perVideoInstructions")]);
+    // Never retro-flagged: a video half handed in before the page asked per video.
+    if (perVideoRuleApplies(p.videoHandoffAt ?? p.debriefSubmittedAt)) {
+      const rows = await videoInstructionsFor(p.id).catch(() => []);
+      laterVideoGaps = rows.map((r) => laterVideoGap(r, { instructionsInDropbox: !!p.instructionsDropboxPath?.trim() })).filter((g): g is string => !!g);
+    }
+  }
   return handoffReadiness({
+    laterVideoGaps,
     titles: [...p.orderItems.map((o) => o.title), ...p.deliverables.map((d) => d.productTitle ?? d.label)],
     hasFullVideo: p.deliverables.some((d) => d.type === "VIDEO"),
     isMonthly: isMonthlyContentJob(p.deliverables, p.packageName),
@@ -3970,7 +3985,7 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
     .every((d) => d.notCompletedReason);
   let readiness: import("@/lib/handoff").HandoffReadiness | null = null;
   if (v && !allVideoNotCompletable) {
-    try { readiness = await handoffReadinessOf(p); } catch { /* advisory — the receipt then claims nothing */ }
+    try { readiness = await handoffReadinessOf({ ...p, id: projectId }); } catch { /* advisory — the receipt then claims nothing */ }
   }
   const videoFound = (dropbox?.rawVideo ?? 0) > 0 ? true : dropboxFresh && !manualTask ? false : null;
   if (anyRaw) {
@@ -4219,7 +4234,7 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
   try {
     // Asked once, at the top of the pass (O01), so the receipt the bench was
     // sent and the blocker this card carries are the same sentence.
-    const r = readiness ?? (await handoffReadinessOf(p));
+    const r = readiness ?? (await handoffReadinessOf({ ...p, id: projectId }));
     // SAY NOTHING WHEN THERE IS NOTHING TO SAY (Sep 20 journey drill). The card
     // write below has read-then-diff discipline and this one did not, so a job
     // sitting quietly in the editing lane had its project row rewritten with

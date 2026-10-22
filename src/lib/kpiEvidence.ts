@@ -91,6 +91,7 @@ export const THIN_WORDS = 12;
 const HEADINGS = new Set([
   "VISION FOR THE EDIT", "SUMMARY", "SHOTS THAT MUST BE SHOWN", "AREAS TO AVOID", "THINGS TO AVOID",
   "REALTOR REQUESTS", "ADDITIONAL NOTES", "INTRO SCRIPT", "EDITING NOTES",
+  "SCRIPT FOR THIS VIDEO", "SONG OR MUSIC",
 ]);
 const PLACEHOLDER = /^(n\/?a|na|none|nothing|no|nope|same|same as usual|as usual|standard|normal|usual|ok|okay|good|fine|tbd|see above|-+|\.+)$/i;
 
@@ -302,10 +303,24 @@ export async function loadEvidence(
       const handedIn = categoryHandoffAt(r, "video");
       if (readiness && !readiness.minimalReel && handedIn) {
         videoHandoff = true;
-        const gaps = readiness.gaps.filter((g) => g.owedBy === "photographer" && g.key !== "debrief");
+        // TWO VIDEOS, TWO SETS OF INSTRUCTIONS (Oct 22 2026): a later video of
+        // a multi-video job with no words of its own is incomplete (the
+        // readiness above already names it), and a premium one with too few
+        // is thin. A video the hub only set up AFTER this handoff is the hub's
+        // miss, not the photographer's, and is not held against them.
+        const liveVideoRows = r.deliverables.filter((d) => !d.removedFromOrderAt && !d.waivedAt && (d.type === "VIDEO" || d.type === "SOCIAL_REEL"));
+        const { laterVideoGap, perVideoRuleApplies } = await import("@/lib/perVideoInstructions");
+        const later = liveVideoRows.length > 1 && perVideoRuleApplies(handedIn)
+          ? (await import("@/lib/deliverableOutputs").then((m) => m.videoInstructionsFor(r.id)).catch(() => [])).filter((v) => v.number > 1)
+          : [];
+        const excused = new Set(later.filter((v) => v.createdAt && v.createdAt.getTime() > handedIn.getTime()).map((v) => laterVideoGap(v, { instructionsInDropbox: !!r.instructionsDropboxPath }) ?? ""));
+        const gaps = readiness.gaps.filter((g) => g.owedBy === "photographer" && g.key !== "debrief" && !excused.has(g.label));
         const words = ownWords(r.videoInstructions ?? r.editorBrief);
+        const thinLater = r.instructionsDropboxPath ? [] : later
+          .filter((v) => v.shape === "full" && v.own && !(v.createdAt && v.createdAt.getTime() > handedIn.getTime()) && ownWords(v.own) < THIN_WORDS)
+          .map((v) => `${ownWords(v.own)} word${ownWords(v.own) === 1 ? "" : "s"} of your own for video ${v.number} (${v.label}); the rule is at least ${THIN_WORDS}.`);
         const thin = !r.instructionsDropboxPath && words < THIN_WORDS;
-        if (gaps.length || thin) {
+        if (gaps.length || thin || thinLater.length) {
           entries.push({
             id: `instructions:${r.id}`,
             kind: "instructions",
@@ -317,6 +332,7 @@ export async function loadEvidence(
               `Video half submitted ${etDateTime(handedIn)}.`,
               ...(gaps.length ? [`Still missing: ${gaps.map((g) => g.label).join("; ")}.`] : []),
               ...(thin ? [`${words} word${words === 1 ? "" : "s"} of your own in the video instructions; the rule is at least ${THIN_WORDS} (headings, the style and color lines and answers like "n/a" or "standard" do not count) or an instructions file in Dropbox.`] : []),
+              ...thinLater,
             ],
             projectId: r.id,
             effect: "against",
