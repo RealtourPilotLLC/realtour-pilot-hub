@@ -117,6 +117,26 @@ export async function recordUploadsSeenOnListing(listingId: string, listing: Lis
     if (owed.length !== 1 || only.job.durationSec == null || newer[0].durationSec == null) return none("the listing already had video on it, and the new one can't be matched by length — left for a person");
   }
 
+  // THE SAME BYTES (audit C1, Oct 22 2026): one HEAD per new listing video
+  // gives its size, which must match the finished files owed (the 1080p
+  // render's Dropbox size, else the version's own). 859 N Lawrence St's
+  // listing carried the editor's original while the hub recorded the 1080p
+  // file. A size that differs leaves it for a person, said in the log; a size
+  // that could not be read changes nothing.
+  {
+    const { recordedFileFact, listingVideoFacts } = await import("@/lib/listingFileMatch");
+    const read = await listingVideoFacts(listing, floor, newer.length);
+    const listed = newer.map((v) => read.videos.find((x) => x.id === v.id)?.sizeBytes ?? null);
+    const files = (await Promise.all(owed.map((o) => recordedFileFact(o.row.submissionId).catch(() => null)))).map((f) => f?.sizeBytes ?? null);
+    if (listed.every((n) => n != null) && files.every((n) => n != null)) {
+      const key = (xs: (number | null)[]) => [...xs].sort((a, b) => a! - b!).join(",");
+      if (key(listed) !== key(files)) {
+        console.warn(`[aryeo] listing ${listingId}: the new video's size (${listed.join(", ")} bytes) is not the finished file's (${files.join(", ")} bytes)`);
+        return none("the video on the listing is a different file from the finished one (its size differs) — left for a person");
+      }
+    }
+  }
+
   const ids = owed.map((o) => o.row.submissionId);
   if (opts.dryRun) return { recorded: [], wouldRecord: ids, projectIds: [], note: `WOULD record ${ids.length} upload${ids.length === 1 ? "" : "s"} seen on the listing` };
   const uploadedAt = newer[newer.length - 1].at;
