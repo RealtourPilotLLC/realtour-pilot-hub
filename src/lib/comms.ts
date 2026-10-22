@@ -604,6 +604,13 @@ export async function recordClientCommunication(opts: {
       for (const w of wanted) {
         if (!w.projectId || done.has(w.projectId)) continue;
         done.add(w.projectId);
+        // Oct 22 2026: the revision raised for this message already split it,
+        // and its photo part is on the photo job (lib/briefPhotoAsks): the
+        // same words are not filed again as one whole ask.
+        if (revision && w.projectId === anchorProjectId) {
+          const { photoPartRoutedFor } = await import("@/lib/briefPhotoAsks");
+          if (await photoPartRoutedFor(w.projectId, opts.text)) continue;
+        }
         const { photosDeliveredAt, photoAskAfterDelivery } = await import("@/lib/photoDelivery/clientAsked");
         const job = await prisma.photoJob.findUnique({ where: { projectId: w.projectId }, select: { stage: true, deliveredAt: true, stageChangedAt: true } });
         if (!photosDeliveredAt(job)) continue;
@@ -748,6 +755,9 @@ type DetailedRevisionOpts = RaiseRevisionOpts & {
   reopened?: boolean;
   /** Notes added to an OPEN request: a new brief on the SAME task, no new round. */
   addendum?: { n: number; requestKey?: string | null };
+  /** Oct 22 2026: what the client's recent messages say this ask is about,
+   *  used when its own words do not say (raiseRevision reads the conversation). */
+  mediumHint?: AskMedium;
 };
 export async function raiseRevisionDetailed(opts: DetailedRevisionOpts) {
   return runRevisionDetailed(opts);
@@ -783,7 +793,12 @@ async function runRevisionDetailed(opts: DetailedRevisionOpts, receiptTx?: { db:
   // Kyle triages it like any photo/3D/floor-plan revision.
   // A portal ask is pinned to a video cut: that IS the medium, whatever words
   // the client used ("the photo at 0:12 is dark" is about the video).
-  const medium: AskMedium = opts.pin ? "video" : askMedium(opts.note);
+  // Oct 22 2026 (859 N Lawrence St): "Outdoor furniture, fire pit table,
+  // plants?" says nothing by itself; it answered our "any specific requests
+  // for 38?" about a staged photo. The conversation's reading (raiseRevision)
+  // decides when the words alone are unclear.
+  const ownMedium = askMedium(opts.note);
+  const medium: AskMedium = opts.pin ? "video" : ownMedium === "unclear" && opts.mediumHint ? opts.mediumHint : ownMedium;
   // A clearly-photo ask never goes to the video lane on a mixed job, and a
   // video-only job still routes to video when the wording is neutral.
   const primary =
@@ -923,6 +938,14 @@ async function runRevisionDetailed(opts: DetailedRevisionOpts, receiptTx?: { db:
     else existing = row;
   }
   const wasAlreadyOpen = !!existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED";
+  // AN ASK NOBODY COULD PLACE NEVER TAKES OVER AN OPEN VIDEO CARD (Oct 22
+  // 2026, 859 N Lawrence St). An unclear ask on a photos-and-video job keeps
+  // the job's original key, so it lands on the open video revision; it used
+  // to rewrite that card's title, summary and person to the photo side's
+  // ("Revision", Kyle), and the editor's Cafe La Maude fix left the Editing
+  // Room. It is added to the card's words; the card stays the editor's.
+  const keepVideoCard = wasAlreadyOpen && !!existing && !primaryIsVideoWork && !photoLane && /^Video revision/.test(existing.title ?? "");
+  if (keepVideoCard && existing) Object.assign(data, { title: existing.title, summary: existing.summary ?? data.summary, assignedKey: existing.assignedKey, checklist: existing.checklist ?? data.checklist });
   if (existing) {
     // A second ask must ADD to the work order, not replace it — overwriting
     // description with only the newest message made earlier asks vanish from
@@ -1201,6 +1224,9 @@ export async function raiseRevision(opts: RaiseRevisionOpts): Promise<boolean> {
   // approved video and the words are about video (or the job is video only),
   // that video goes back to the editor: the cut reopens (lib/cutReopen) and
   // the brief is pinned to it. Several videos, or a photo ask: as before.
+  // The conversation's reading also decides which card an unclear ask joins
+  // (Oct 22 2026): it is handed on as the hint.
+  let mediumHint: AskMedium | undefined;
   try {
     // The text first; when it alone is unclear ("can we swap that frame?"),
     // the client's recent messages say what it is about (Oct 14 2026).
@@ -1211,6 +1237,7 @@ export async function raiseRevision(opts: RaiseRevisionOpts): Promise<boolean> {
       const around = lines.filter((l) => l.role === "client").map((l) => l.text).join(" ");
       if (around) medium = askMedium(`${opts.note} ${around}`);
     }
+    if (medium !== "unclear") mediumHint = medium;
     const project = await prisma.project.findUnique({ where: { id: opts.projectId }, select: { deliverables: { where: { removedFromOrderAt: null }, select: { type: true } } } });
     const videoOnly = !!project?.deliverables.length && project.deliverables.every((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     if (medium === "video" || (medium === "unclear" && videoOnly)) {
@@ -1226,7 +1253,7 @@ export async function raiseRevision(opts: RaiseRevisionOpts): Promise<boolean> {
   } catch (e) {
     console.error("[revision] reopening the delivered video failed; raising it as before", opts.projectId, e);
   }
-  return (await raiseRevisionDetailed(opts)).ok;
+  return (await raiseRevisionDetailed({ ...opts, mediumHint })).ok;
 }
 
 // Where a resolved revision GENUINELY puts the job back.

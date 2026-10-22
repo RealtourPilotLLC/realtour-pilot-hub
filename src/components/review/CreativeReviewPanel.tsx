@@ -41,11 +41,18 @@ function OneReview({ r, canResolve }: { r: CreativeReviewView; canResolve: boole
         {r.held.map((h) => (
           <li key={h.id}>
             <p className="border-l-2 border-brand/40 pl-2 italic text-foreground/90">&ldquo;{h.quote || h.ask}&rdquo;</p>
-            <p className="pl-2 text-[11px] text-muted-2">{h.area}{h.videos.length ? ` · ${h.videos.join(", ")}` : ""}</p>
+            <p className="pl-2 text-[11px] text-muted-2">{h.area}{h.videos.length ? ` · ${h.videos.join(", ")}` : ""}{h.label ? ` · ${h.label}` : ""}</p>
           </li>
         ))}
-        {r.questions.map((q, i) => <li key={`q${i}`} className="text-foreground/85">Open question: {q}</li>)}
+        {r.questions.map((q, i) => (
+          <li key={`q${i}`} className="text-foreground/85">
+            Open question: {q}
+            {r.questionLabels[i] && <span className="ml-1 rounded bg-warning/10 px-1 py-px text-[10px] font-medium text-warning">{r.questionLabels[i]}</span>}
+          </li>
+        ))}
       </ul>
+      {/* Oct 22 2026: what the client said about the photos went to the photo job's asks, not here. */}
+      {r.photoNote && <p className="text-[11px] text-muted">{r.photoNote}</p>}
       <details>
         <summary className="cursor-pointer py-2 text-xs font-medium text-brand">Everything they said</summary>
         <p className="mt-1 whitespace-pre-wrap text-xs text-foreground/80">{r.originalText}</p>

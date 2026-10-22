@@ -19,6 +19,7 @@ import {
 import { cn } from "@/lib/utils";
 import { setBriefItemDone, reanalyzeBrief } from "@/app/edit/revisionActions";
 import type { BriefView } from "@/lib/revisionBrief";
+import { mediumLabel } from "@/lib/itemMedium";
 import { byLine, requesterLine, verdictLine, type Verdict } from "@/lib/reviewAttribution";
 
 // Every change asked for on this job, in one card — and both kinds of ask
@@ -367,6 +368,10 @@ function Item({
                 </span>
               )}
               <span className="shrink-0 rounded bg-surface-2 px-1 py-px text-[10px] font-medium text-muted-2">{it.area}</span>
+              {/* Oct 22 2026: an item about both, or nobody can tell, is on the photo job too. */}
+              {mediumLabel(it.medium) && (
+                <span className="shrink-0 rounded bg-warning/10 px-1 py-px text-[10px] font-medium text-warning" title="This one is on the photo job's list too">{mediumLabel(it.medium)}</span>
+              )}
             </>
           )}
         </div>
@@ -583,6 +588,10 @@ function OneBrief({
           {/* The full headline — the header line above truncates it. */}
           {brief.headline && total > 0 && (
             <p className="text-[13px] font-semibold leading-snug text-foreground">{brief.headline}</p>
+          )}
+          {/* Oct 22 2026: what the client said about the photos went to the photo job, not here. */}
+          {(brief.photoPart ?? 0) > 0 && (
+            <p className="text-[11px] text-muted">The part about the photos ({brief.photoPart}) went to the photo job. Nothing in it is for you.</p>
           )}
 
           {/* CONFIRM FIRST — the things too vague to start on. Open by default,
