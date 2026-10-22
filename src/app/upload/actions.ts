@@ -85,6 +85,11 @@ export async function markDeliverableUploaded(
       await confirmNotRequiredTask(deliverableId);
     } catch { /* the tick above is saved either way */ }
   }
+  // Oct 22 2026 (lib/secondShoot): a video ticked in after a later
+  // appointment releases a video the office held for it. Never throws.
+  if (uploaded) {
+    await import("@/lib/secondShoot").then((m) => m.releaseFromUploads(d.projectId, { actor: "the upload page" })).catch(() => {});
+  }
   revalidatePath(`/upload/${d.projectId}`);
   revalidatePath(`/projects/${d.projectId}`);
   return { ok: true };
@@ -1346,6 +1351,15 @@ export async function finalizeUpload(
       const { sendSplitNoticeIfChaserPassed } = await import("@/lib/uploadDigest");
       await sendSplitNoticeIfChaserPassed(projectId);
     } catch { /* best-effort — the page itself states the deadline */ }
+  }
+  // WAITING ON A SECOND SHOOT (Oct 22 2026, lib/secondShoot): a video half
+  // submitted after a later appointment is that visit's footage coming in,
+  // so a video the office held for it starts its own clock now. Never throws;
+  // the hourly check (which also reads Dropbox) catches anything missed.
+  if (videoPart && anyVideoOrdered) {
+    await import("@/lib/secondShoot")
+      .then((m) => m.releaseFromUploads(projectId, { now: nowStamp, extra: [nowStamp], actor: "the upload page" }))
+      .catch(() => {});
   }
   let attemptTerminal = !attemptId;
   if (attemptId && attemptReceipt) {

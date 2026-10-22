@@ -81,6 +81,8 @@ export type ShootRow = JobRow & {
   dueThisWeek: boolean;
   /** Oct 22 2026: the order sells more videos than the job has set up ("2 videos ordered, 1 set up"); null when they agree. */
   videoSetup: string | null;
+  /** Oct 22 2026: "Video 4 (Premium Social Reel): Waiting on a second shoot: half shot", one line per held video; empty when none. */
+  waitingOnShoot?: string[];
 };
 
 const HOUR = 3_600_000;
@@ -366,6 +368,21 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
   const setupGaps = await import("@/lib/videoSetup")
     .then((m) => m.videoSetupGaps(ids))
     .catch(() => new Map<string, { words: string }>());
+  // Oct 22 2026 (Jordan, 34 Oakland Rd): a video held for a second shoot is
+  // said on the row with the office's note. One read; the slot names only for
+  // the few jobs that have one.
+  const waitingOnShoot = await import("@/lib/reviewCuts")
+    .then(async (m) => {
+      const holds = await m.waitingHoldsByProject(ids);
+      const { waitingLine, plainLabel } = await import("@/lib/secondShootCore");
+      const out = new Map<string, string[]>();
+      for (const [pid, byKey] of holds) {
+        const slots = await m.cutSlots(pid, { includeWaiting: true }).catch(() => []);
+        out.set(pid, slots.flatMap((s, i) => (byKey.has(`${s.deliverableId}:${s.slot}`) ? [`Video ${i + 1} (${plainLabel(s.label)}): ${waitingLine(byKey.get(`${s.deliverableId}:${s.slot}`)!)}`] : [])));
+      }
+      return out;
+    })
+    .catch(() => new Map<string, string[]>());
   const monthlyIds = new Set(extras.filter((p) => p.contentMonthId).map((p) => p.id));
   const photoStageBy = new Map(photoJobs.map((p) => [p.projectId, p.stage]));
   // Photo audit M3 (Oct 22 2026): photo jobs in Editing whose raws the hub never saw (no intake batch, no photos read). A read that fails marks none.
@@ -480,6 +497,7 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
       delivered,
       dueThisWeek: !delivered && !!dueAt && dueAt.getTime() <= weekEnd,
       videoSetup: delivered ? null : setupGaps.get(j.id)?.words ?? null,
+      waitingOnShoot: waitingOnShoot.get(j.id) ?? [],
       _rank: delivered ? 4 : late ? 0 : owedNoClock ? 1 : dueAt ? 2 : 3,
       _sort: delivered ? -(j.deliveredAt?.getTime() ?? 0) : dueAt?.getTime() ?? 0,
     });

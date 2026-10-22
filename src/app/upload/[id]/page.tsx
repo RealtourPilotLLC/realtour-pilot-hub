@@ -461,6 +461,8 @@ export default async function UploadProjectPage({
     shape: r.shape,
     own: r.own,
     dueISO: dueOfKey.get(r.key) ?? null,
+    // Oct 22 2026: held for a second shoot (lib/secondShootCore).
+    waiting: r.waiting ? `Waiting on a second shoot${r.waitingNote ? `: ${r.waitingNote.replace(/[.\s]+$/, "")}` : ""}` : null,
   });
   const videos = perVideo.length > 1 ? { first: portalVideo(perVideo[0]), later: perVideo.slice(1).map(portalVideo) } : null;
 

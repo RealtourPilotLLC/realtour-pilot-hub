@@ -352,6 +352,15 @@ async function main() {
     c.ok("…marked as the finished file", row?.originalIsFinal === true);
     const lines = await push.pushLinesFor([FIN.subId]);
     c.ok("the Aryeo button is offered for it", lines.get(FIN.subId)?.canStart === true, lines.get(FIN.subId)?.says);
+    // The Video Review Room's own row (audit C2, Oct 22 2026): its button
+    // follows byHandWhy, which refused every file that was not a render, so the
+    // skip hid "Upload to Aryeo and send" and "Send all". The board leaves test
+    // clients out, so the client loses its TEST name for this one read.
+    await prisma.client.update({ where: { id: client.id }, data: { name: "Drill Client" } });
+    const { videoDeliveryBoard } = await import("@/lib/videoDelivery");
+    const vrow = Object.values((await videoDeliveryBoard({ now: new Date() })).lanes).flat().find((r) => r.submissionId === FIN.subId);
+    c.ok("the Video Review Room row keeps 'Upload to Aryeo and send' (not 'goes up by hand')", !!vrow?.send && vrow.send.byHandWhy === null && vrow.push?.canStart === true, vrow?.send?.byHandWhy ?? (vrow ? `lane ${vrow.lane}, no send block` : "no row"));
+    await prisma.client.update({ where: { id: client.id }, data: { name: "Drill Client TEST" } });
     const started = await push.requestVideoPush(FIN.subId, { by: "Kyle Drill" });
     const run = await push.videoPushRun(FIN.subId);
     const sub = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: FIN.subId }, select: { finalPath: true } });
