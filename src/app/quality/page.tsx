@@ -155,8 +155,8 @@ export default async function QualityPage({
     <div>
       <PageHeader
         eyebrow="Quality desk"
-        title="Client & team feedback"
-        subtitle="What clients said about the work, and how each photographer is doing. Requests and bugs about the hub itself live on Feedback & requests."
+        title="Team feedback"
+        subtitle="What clients said about the work, and how each photographer is doing. Problems with the hub itself go to Report a hub problem."
       />
       <div className="mx-auto max-w-4xl space-y-5 px-4 py-5 sm:px-6">
         <QualityTabs active={tab} counts={{ ...tabCounts, editors: editors?.unclassified.length }} only={officeView ? undefined : creativeLead ? ["photographers", "editors"] : ["editors"]} />

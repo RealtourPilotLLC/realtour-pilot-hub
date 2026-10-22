@@ -117,7 +117,7 @@ export default async function ContentProgramPage({
     <div>
       <PageHeader
         eyebrow="Monthly content clients"
-        title="Content Program"
+        title="Monthly Content"
         subtitle={allOpenView ? "every open month" : monthLabel(selectedMonth)}
         actions={
           <div className="flex items-center gap-1.5">

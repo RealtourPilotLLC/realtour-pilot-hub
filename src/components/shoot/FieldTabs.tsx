@@ -13,7 +13,7 @@ export function FieldTabs({ active, asId, feedbackCount }: {
   const suffix = asId ? `?as=${asId}` : "";
   const tabs = [
     { key: "shoots" as const, label: "Shoots", href: `/shoot${suffix}`, icon: Camera },
-    { key: "feedback" as const, label: "Quality feedback", href: `/shoot/feedback${suffix}`, icon: MessageSquareHeart },
+    { key: "feedback" as const, label: "Quality notes", href: `/shoot/feedback${suffix}`, icon: MessageSquareHeart },
   ];
   return (
     <div className="mb-4 flex items-center gap-1 rounded-2xl border bg-surface p-1">

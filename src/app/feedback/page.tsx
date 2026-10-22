@@ -65,7 +65,7 @@ export default async function FeedbackPage() {
   return (
     <div>
       <PageHeader
-        title="Feedback & requests"
+        title="Report a hub problem"
         subtitle="About the hub itself — what to build or fix. Jordan reviews each one, and approved ideas get built."
       />
       <div className="mx-auto max-w-3xl space-y-6 p-4 sm:p-6">

@@ -16,7 +16,7 @@ const RETENTION_DAYS = 90;
 
 // Detail routes that don't map to a nav PAGES entry.
 const DETAIL: [RegExp, string][] = [
-  [/^\/shoot\/feedback$/, "Quality feedback"],
+  [/^\/shoot\/feedback$/, "Quality notes"],
   [/^\/shoot\/[^/]+$/, "Shoot screen"],
   [/^\/projects\/[^/]+$/, "Project page"],
   [/^\/edit\/[^/]+$/, "Editor brief"],

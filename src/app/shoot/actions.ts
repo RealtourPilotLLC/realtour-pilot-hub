@@ -446,7 +446,8 @@ export async function completeShoot(projectId: string, appointmentId?: string | 
       kind: "shoot_completed",
       title: `Shoot done — ${street} (${who})`,
       href: `/projects/${projectId}`,
-      targets: [{ roles: ["OWNER", "ADMIN"] }],
+      // Oct 21 2026: the creative manager follows the field day too.
+      targets: [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }],
       dedupeKey: `shootdone-${appt?.id ?? projectId}`,
     });
   } catch { /* bell is best-effort */ }
