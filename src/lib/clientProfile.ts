@@ -225,6 +225,7 @@ async function generalCareerContext(input: {
     const { aiJson } = await import("@/lib/integrations/ai");
     return await aiJson<CareerContext>({
       maxTokens: 700,
+      feature: "client_brief",
       system:
         "You brief a real estate media agency's team on a brand-new client they have never worked with. You know NOTHING about this specific person beyond the contact details given, and you must not pretend otherwise: never state or imply a preference, a history, a personality or a track record for them. Everything you write is GENERAL knowledge about how a real estate agent's career and marketing needs typically work, offered as a starting expectation the team will replace with real observations. It must be appropriate for a creative to read: never mention pricing, fees, payments, invoices, balances, margins or business strategy. Warm, plain, specific. No em dashes, no emojis, no bold. Do not use the client's name as if you know them.",
       prompt: `Brand-new client just added to our system from our booking platform.
@@ -385,6 +386,79 @@ export async function buildNewClientBrief(clientId: string): Promise<{ ok: boole
 // actually costing us something, so they jump the queue ahead of the merely
 // old-but-complete ones.
 const AGE_STALE_MS = 10 * 24 * 3600_000;
+
+// REBUILD ONLY ON NEWS (Oct 22 2026, the AI spend investigation). The last
+// step of the queue used to rebuild every real client's profile once it was
+// ten days old, whether or not anything had happened since: a client with no
+// new message, job, feedback or revision got the same Sonnet call for the same
+// answer three times a month. A profile older than ten days is now rebuilt
+// only when something the synthesis reads (clientProfileInput above) arrived
+// after it was written; one never built is built as before. Ten days stays the
+// minimum spacing, so a busy client is still not rebuilt every night.
+const STALE_POOL = 1000;
+async function staleProfilesWithNews(exclude: string[], take: number): Promise<{ id: string }[]> {
+  const pool = await prisma.client.findMany({
+    where: {
+      parentClientId: null,
+      transactionCount: { gt: 0 },
+      id: { notIn: exclude },
+      OR: [{ profileUpdatedAt: null }, { profileUpdatedAt: { lt: new Date(Date.now() - AGE_STALE_MS) } }],
+    },
+    orderBy: [{ profileUpdatedAt: { sort: "asc", nulls: "first" } }],
+    take: STALE_POOL,
+    select: { id: true, profileUpdatedAt: true },
+  });
+  const built = pool.filter((c) => c.profileUpdatedAt);
+  const news = built.length
+    ? await latestProfileNews(built.map((c) => c.id), new Date(Math.min(...built.map((c) => c.profileUpdatedAt!.getTime()))))
+    : new Map<string, number>();
+  return pool
+    .filter((c) => !c.profileUpdatedAt || (news.get(c.id) ?? 0) > c.profileUpdatedAt.getTime())
+    .slice(0, take)
+    .map((c) => ({ id: c.id }));
+}
+
+/** clientId → the newest moment (ms) anything a profile reads arrived after
+ *  `since`: a message the creative team may see, a job, a revision, feedback,
+ *  a request or revision note on a job, a confirmed field fact. Exported for
+ *  the drill. */
+export async function latestProfileNews(clientIds: string[], since: Date): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (clientIds.length === 0) return out;
+  const bump = (id: string | null | undefined, at: Date | null | undefined) => {
+    if (!id || !at) return;
+    const t = at.getTime();
+    if (t > (out.get(id) ?? 0)) out.set(id, t);
+  };
+  const ids = { in: clientIds };
+  const [comms, jobs, revisions, facts, feedback, notes] = await Promise.all([
+    prisma.commLog.groupBy({ by: ["clientId"], where: { clientId: ids, minRole: { in: COMM_ROLES }, createdAt: { gt: since } }, _max: { createdAt: true } }),
+    prisma.project.groupBy({ by: ["clientId"], where: { clientId: ids, createdAt: { gt: since } }, _max: { createdAt: true } }),
+    prisma.smartTask.groupBy({ by: ["clientId"], where: { clientId: ids, taskType: "revision", createdAt: { gt: since } }, _max: { createdAt: true } }),
+    prisma.clientFact.groupBy({
+      by: ["clientId"],
+      where: { clientId: ids, source: "field", status: "ACCEPTED", aiContext: "ALLOWED", confidential: false, scope: "PERMANENT", OR: [{ reviewedAt: { gt: since } }, { createdAt: { gt: since } }] },
+      _max: { reviewedAt: true, createdAt: true },
+    }),
+    prisma.feedback.groupBy({ by: ["projectId"], where: { dismissedAt: null, createdAt: { gt: since }, project: { clientId: ids } }, _max: { createdAt: true } }),
+    prisma.activity.groupBy({
+      by: ["projectId"],
+      where: { createdAt: { gt: since }, project: { clientId: ids }, OR: [{ type: "SPECIAL_REQUEST" }, { type: "FLAG", body: { startsWith: REVISION_FLAG_PREFIX } }] },
+      _max: { createdAt: true },
+    }),
+  ]);
+  for (const r of comms) bump(r.clientId, r._max.createdAt);
+  for (const r of jobs) bump(r.clientId, r._max.createdAt);
+  for (const r of revisions) bump(r.clientId, r._max.createdAt);
+  for (const r of facts) { bump(r.clientId, r._max.reviewedAt); bump(r.clientId, r._max.createdAt); }
+  const projectIds = [...new Set([...feedback, ...notes].map((r) => r.projectId))];
+  if (projectIds.length) {
+    const owner = new Map((await prisma.project.findMany({ where: { id: { in: projectIds } }, select: { id: true, clientId: true } })).map((p) => [p.id, p.clientId]));
+    for (const r of [...feedback, ...notes]) bump(owner.get(r.projectId), r._max.createdAt);
+  }
+  return out;
+}
+
 export async function refreshStaleClientProfiles(limit = 20, budgetMs = 120_000): Promise<{ refreshed: number; ranOut: boolean }> {
   const cap = Math.min(limit, 60);
   // Each profile is one AI call (~7.5s), so 20 of them is 150s of work — more
@@ -429,21 +503,7 @@ export async function refreshStaleClientProfiles(limit = 20, budgetMs = 120_000)
     : [];
 
   const done = [...outgrown, ...preV2].map((c) => c.id);
-  const rest = done.length < cap
-    ? await prisma.client.findMany({
-        where: {
-          ...real,
-          id: { notIn: done },
-          OR: [
-            { profileUpdatedAt: null },
-            { profileUpdatedAt: { lt: new Date(Date.now() - AGE_STALE_MS) } },
-          ],
-        },
-        orderBy: [{ profileUpdatedAt: { sort: "asc", nulls: "first" } }],
-        take: cap - done.length,
-        select: { id: true },
-      })
-    : [];
+  const rest = done.length < cap ? await staleProfilesWithNews(done, cap - done.length) : [];
 
   let refreshed = 0;
   let ranOut = false;
