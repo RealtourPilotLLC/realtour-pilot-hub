@@ -39,8 +39,9 @@ async function main() {
     if (skit) { console.log(`   restored as v${r.versionNo}`); continue; }
     const { autoCheckScript } = await import("../../src/lib/scriptJudge");
     const res = await autoCheckScript(s.id, { requestedBy: "info@realtourpilot.com", unattended: false }).catch((e) => ({ state: "error", reason: String(e).slice(0, 160) } as never));
-    const after = await prisma.contentScript.findUniqueOrThrow({ where: { id: s.id }, select: { currentVersion: { select: { versionNo: true, spokenWordCount: true, hook: true } } } as never }) as unknown as { currentVersion: { versionNo: number; spokenWordCount: number; hook: string } };
-    console.log(`   restored as v${r.versionNo}; v2.4 check: ${(res as { state: string }).state}; now v${after.currentVersion?.versionNo} ${after.currentVersion?.spokenWordCount}w "${after.currentVersion?.hook.slice(0, 70)}"`);
+    const curId = (await prisma.contentScript.findUniqueOrThrow({ where: { id: s.id }, select: { currentVersionId: true } })).currentVersionId;
+    const after = curId ? await prisma.contentScriptVersion.findUnique({ where: { id: curId }, select: { versionNo: true, spokenWordCount: true, hook: true } }) : null;
+    console.log(`   restored as v${r.versionNo}; v2.4 check: ${(res as { state: string }).state}; now v${after?.versionNo} ${after?.spokenWordCount}w "${after?.hook.slice(0, 70)}"`);
   }
   process.exit(0);
 }
