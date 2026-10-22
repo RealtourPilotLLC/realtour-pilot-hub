@@ -48,14 +48,16 @@ export function judgeListingFile(file: RecordedFileFact, videos: ListingVideoFac
       : { verdict: "mismatch", message: "The Aryeo listing shows no video yet. If you just uploaded it, give Aryeo a minute and press again." };
   }
   const newest = videos.reduce((a, b) => (a.at >= b.at ? a : b));
+  // The exact bytes settle it, whatever the id's time says: Aryeo can replace
+  // a video's file in place under an id older than this file.
+  const same = file.sizeBytes != null ? videos.find((v) => v.sizeBytes === file.sizeBytes) : undefined;
+  if (same) return { verdict: "match", message: "The listing has this exact file.", mediaId: same.id };
   const after = videos.filter((v) => v.at.getTime() >= file.readyAt.getTime());
   if (!after.length) {
     if (undated) return { verdict: "unknown", message: "A video on the listing carries no upload time the hub can read." };
     return { verdict: "mismatch", message: `The newest video on the Aryeo listing went up ${etDateTime(newest.at)} ET, before ${fileWhen}. ${DIFFERENT}` };
   }
   if (file.sizeBytes == null) return { verdict: "unknown", message: "This file's size could not be read, so only its time was checked." };
-  const hit = after.find((v) => v.sizeBytes === file.sizeBytes);
-  if (hit) return { verdict: "match", message: "The listing has this exact file.", mediaId: hit.id };
   if (after.every((v) => v.sizeBytes != null)) {
     const latest = after.reduce((a, b) => (a.at >= b.at ? a : b));
     return { verdict: "mismatch", message: `The newest video on the Aryeo listing is ${mb(latest.sizeBytes!)}; ${file.kind === "1080p" ? "the 1080p file" : "this version"} is ${mb(file.sizeBytes)}. ${DIFFERENT}` };
@@ -134,7 +136,9 @@ export async function checkListingHasFile(submissionId: string, opts: { listing?
       if (listing === undefined) return { verdict: "unknown", message: "Aryeo could not be read just now." };
     }
     if (!listing || (listing.id && listing.id !== listingId)) return { verdict: "unknown", message: "Aryeo's listing is not this job's listing." };
-    const { videos, undated } = await listingVideoFacts(listing, file.readyAt);
+    // The newest few, whatever their time: a size match on an older id is an
+    // in-place replacement of the file, and still this file.
+    const { videos, undated } = await listingVideoFacts(listing, null);
     return judgeListingFile(file, videos, undated);
   } catch (e) {
     return { verdict: "unknown", message: e instanceof Error ? e.message.slice(0, 160) : "The check failed." };

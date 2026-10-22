@@ -78,6 +78,7 @@ async function main() {
     const sizeWrong = lfm.judgeListingFile(RENDER, [v859, later]);
     c.ok("a later video of the wrong size → a different file, both sizes named", sizeWrong.verdict === "mismatch" && /114\.6 MB \(114,597,798 bytes\); the 1080p file is 122\.5 MB \(122,532,068 bytes\)/.test(sizeWrong.message), sizeWrong.message);
     c.ok("the right size after the save → this file", lfm.judgeListingFile(RENDER, [v859, { ...later, sizeBytes: 122_532_068 }]).verdict === "match");
+    c.ok("the exact bytes under an older id (Aryeo replaced the file in place) → still this file", lfm.judgeListingFile(RENDER, [{ ...v859, sizeBytes: 122_532_068 }]).verdict === "match");
     c.ok("a size that could not be read → nothing concluded", lfm.judgeListingFile(RENDER, [{ ...later, sizeBytes: null }]).verdict === "unknown" && lfm.judgeListingFile({ ...RENDER, sizeBytes: null }, [later]).verdict === "unknown");
     c.ok("no video on the listing → refused, with what to do", lfm.judgeListingFile(RENDER, []).verdict === "mismatch" && /shows no video yet/.test(lfm.judgeListingFile(RENDER, []).message));
 

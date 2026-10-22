@@ -3486,7 +3486,9 @@ export async function reconcileDeliverablesToOrder(
     // A VIDEO ADDED MID-JOB (lib/videoAddedMidJob): the edit card is renamed,
     // the editor pinged, and the photographer asked for its instructions by the
     // morning nudge. Best-effort; never fails the reconcile.
-    if (videoKeysBefore && ensured.ok && ensured.result) {
+    // Only a job that already had a video row: a first materialisation is not
+    // "another" video.
+    if (videoKeysBefore && videoKeysBefore.size > 0 && ensured.ok && ensured.result) {
       const added = ensured.result.slotKeys.filter((k) => !videoKeysBefore.has(k));
       if (added.length) {
         await import("@/lib/videoAddedMidJob")
