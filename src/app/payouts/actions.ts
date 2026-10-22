@@ -124,8 +124,9 @@ export async function addShootToPayroll(projectId: string, teamMemberId: string)
 
 // Build a clean, print-ready payout statement for ONE creative — what they see
 // when they get paid. Shows final per-shoot pay + mileage + any adjustments and
-// the total. Deliberately HIDES internal mechanics: no override badges, no
-// invoice corrections, no "$0 invoice"/return-trip/discrepancy flags.
+// the total (a fixed-pay person: service fee + vehicle + adjustments, shoots
+// listed without amounts). Deliberately HIDES internal mechanics: no override
+// badges, no invoice corrections, no "$0 invoice"/return-trip/discrepancy flags.
 export async function creativeStatementHtml(
   memberId: string,
   startKey: string,
@@ -146,7 +147,14 @@ export async function creativeStatementHtml(
   const rangeLabel = `${dKey(period.startKey, { month: "long", day: "numeric" })} – ${dKey(period.endKey, { month: "long", day: "numeric", year: "numeric" })}`;
   const paysLabel = dKey(period.payoutKey, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
 
-  const rows = p.jobs
+  // FIXED PAY (Oct 22 2026, lib/payStructure.ts): a fixed-pay person's
+  // statement leads with the regular pay (service fee and vehicle). Their
+  // shoots in the period are listed by date and property, without amounts:
+  // the fixed pay covers them. Any per-shoot lines (a period before fixed pay)
+  // keep the usual table.
+  const fixedJobs = p.jobs.filter((j) => j.fixedPay);
+  const perShootJobs = p.jobs.filter((j) => !j.fixedPay);
+  const rows = perShootJobs
     .map(
       (j) => `<tr>
         <td>${dISO(j.shootISO)}</td>
@@ -157,6 +165,25 @@ export async function creativeStatementHtml(
       </tr>`,
     )
     .join("");
+  const fixedSection = p.fixed
+    ? `<div class="section-label">Regular pay, ${esc(p.fixed.periodsLabel)}</div>
+    <table class="lines"><tbody>
+      <tr><td>Service fee</td><td class="num">${usd(p.fixed.serviceFee)}</td></tr>
+      <tr><td>Vehicle</td><td class="num">${usd(p.fixed.vehicle)}</td></tr>
+    </tbody></table>
+    <div class="section-label">Shoots this period</div>
+    <table class="lines"><tbody>${
+      fixedJobs.length
+        ? fixedJobs.map((j) => `<tr><td>${dISO(j.shootISO)}</td><td>${esc(j.title.split(",")[0])}</td><td class="num muted">Fixed pay</td></tr>`).join("")
+        : '<tr><td class="muted">No shoots this period.</td></tr>'
+    }</tbody></table>`
+    : "";
+  const perShootTable = !p.fixed || perShootJobs.length > 0
+    ? `<table>
+      <thead><tr><th>Date</th><th>Property</th><th class="num">Shoot</th><th class="num">Mileage</th><th class="num">Total</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5" style="text-align:center;color:#94a3b8">No shoots this period.</td></tr>'}</tbody>
+    </table>`
+    : "";
 
   const adjustments = p.adjustments.length
     ? `<table class="lines"><tbody>${p.adjustments
@@ -181,6 +208,7 @@ export async function creativeStatementHtml(
   td { padding: 9px 8px; border-bottom: 1px solid #f1f5f9; }
   td.strong { font-weight: 700; }
   .neg { color: #b91c1c; }
+  .muted { color: #64748b; }
   .totals { margin-top: 18px; border-top: 2px solid #e2e8f0; padding-top: 12px; }
   .totals .row { display: flex; justify-content: space-between; font-size: 14px; padding: 3px 8px; color: #475569; }
   .totals .grand { font-size: 18px; font-weight: 800; color: #0f172a; margin-top: 6px; }
@@ -202,14 +230,14 @@ export async function creativeStatementHtml(
       <div>Pay period: <b>${rangeLabel}</b></div>
       <div>Payout date: <b>${paysLabel}</b></div>
     </div>
-    <table>
-      <thead><tr><th>Date</th><th>Property</th><th class="num">Shoot</th><th class="num">Mileage</th><th class="num">Total</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="5" style="text-align:center;color:#94a3b8">No shoots this period.</td></tr>'}</tbody>
-    </table>
+    ${fixedSection}
+    ${perShootTable}
     ${adjustments ? `<div class="section-label">Adjustments</div>${adjustments}` : ""}
     <div class="totals">
-      <div class="row"><span>Shoot pay</span><span>${usd(p.shootPayTotal)}</span></div>
-      <div class="row"><span>Mileage</span><span>${usd(p.mileageTotal)}</span></div>
+      ${p.fixed ? `<div class="row"><span>Service fee</span><span>${usd(p.fixed.serviceFee)}</span></div>
+      <div class="row"><span>Vehicle</span><span>${usd(p.fixed.vehicle)}</span></div>` : ""}
+      ${!p.fixed || perShootJobs.length > 0 ? `<div class="row"><span>Shoot pay</span><span>${usd(p.shootPayTotal)}</span></div>
+      <div class="row"><span>Mileage</span><span>${usd(p.mileageTotal)}</span></div>` : ""}
       ${p.adjustmentTotal !== 0 ? `<div class="row"><span>Adjustments</span><span>${p.adjustmentTotal < 0 ? "−" : "+"}${usd(Math.abs(p.adjustmentTotal))}</span></div>` : ""}
       <div class="row grand"><span>Total payout</span><span>${usd(p.total)}</span></div>
     </div>

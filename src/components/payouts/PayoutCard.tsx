@@ -8,7 +8,7 @@ import {
   Camera, Car, SlidersHorizontal, ChevronDown, AlertTriangle, Loader2, Pencil, Plus, X, RefreshCw, FileDown, RotateCcw, Search, Receipt,
 } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
-import { usd, parseMoney } from "@/lib/money";
+import { usd, usd0, parseMoney } from "@/lib/money";
 import type { PayrollPerson, PayrollJob, PayrollDay } from "@/lib/payroll";
 import { setJobOverride, addAdjustment, removeAdjustment, recomputeMileage, setMileageOverride, creativeStatementHtml, restoreJob, searchPayableProjects, addShootToPayroll } from "@/app/payouts/actions";
 
@@ -22,6 +22,12 @@ export function PayoutCard({ person, periodStartISO }: { person: PayrollPerson; 
   const [busy, start] = useTransition();
   const [exporting, startExport] = useTransition();
   const refresh = () => router.refresh();
+  // FIXED PAY (Oct 22 2026, lib/payStructure.ts): the person is paid a yearly
+  // service fee + vehicle, so their shoots this period pay nothing on their own.
+  // The card leads with the fixed pay and lists the shoots as "fixed pay".
+  const fixed = person.fixed;
+  const perShoot = person.jobs.filter((j) => !j.fixedPay);
+  const showPerShoot = !fixed || perShoot.length > 0;
 
   // Open a clean, print-ready statement for the creative (no overrides/flags).
   // Window is opened synchronously on click to dodge pop-up blockers, then filled.
@@ -43,14 +49,16 @@ export function PayoutCard({ person, periodStartISO }: { person: PayrollPerson; 
           <div>
             <div className="text-sm font-semibold">{person.member.name}</div>
             <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted">
-              {person.configured ? (
+              {fixed ? (
+                <span>Fixed pay · {usd0(fixed.annual.serviceFee)} service fee + {usd0(fixed.annual.vehicle)} vehicle a year, no mileage</span>
+              ) : person.configured ? (
                 <span>{Math.round((person.payPercent ?? 0) * 100)}% · min {usd(person.payFloor)} · ${person.mileageRate}/mi over {person.homeRadiusMi}mi</span>
               ) : (
                 <Link href={`/team/${person.member.id}`} className="inline-flex items-center gap-1 text-warning hover:underline">
                   <AlertTriangle className="size-3" /> Set pay rates
                 </Link>
               )}
-              {person.configured && !person.hasHome && (
+              {showPerShoot && person.configured && !person.hasHome && (
                 <Link href={`/team/${person.member.id}`} className="inline-flex items-center gap-1 text-warning hover:underline">
                   <AlertTriangle className="size-3" /> Add home address for mileage
                 </Link>
@@ -95,13 +103,30 @@ export function PayoutCard({ person, periodStartISO }: { person: PayrollPerson; 
         </div>
       )}
 
+      {/* Fixed pay: the period's regular pay */}
+      {fixed && (
+        <div className="border-t border-border px-5 py-3">
+          <div className="text-xs font-medium text-brand">Fixed pay · {fixed.periodsLabel}</div>
+          <div className="mt-1.5 space-y-0.5 text-sm">
+            <div className="flex items-center justify-between gap-2"><span className="text-muted">Service fee</span><span className="tabular-nums">{usd(fixed.serviceFee)}</span></div>
+            <div className="flex items-center justify-between gap-2"><span className="text-muted">Vehicle (replaces mileage)</span><span className="tabular-nums">{usd(fixed.vehicle)}</span></div>
+            <div className="flex items-center justify-between gap-2 border-t border-border/60 pt-1 font-semibold"><span>Fixed pay this period</span><span className="tabular-nums">{usd(fixed.total)}</span></div>
+          </div>
+        </div>
+      )}
+
       {/* Breakdown chips */}
       <div className="flex flex-wrap gap-2 px-5 py-3 text-xs">
-        {/* Total eligible invoices their % is computed from (return-trip legs
-            count $0 — those pay a flat rate, not a share of the invoice). */}
-        <Chip icon={<Receipt className="size-3.5" />} label="Invoices" value={usd(person.jobs.reduce((s, j) => s + j.invoice, 0))} />
-        <Chip icon={<Camera className="size-3.5" />} label="Shoot pay" value={usd(person.shootPayTotal)} />
-        <Chip icon={<Car className="size-3.5" />} label="Mileage" value={usd(person.mileageTotal)} />
+        {fixed && <Chip icon={<Receipt className="size-3.5" />} label="Fixed pay" value={usd(fixed.total)} />}
+        {showPerShoot && (
+          <>
+            {/* Total eligible invoices their % is computed from (return-trip legs
+                count $0 — those pay a flat rate, not a share of the invoice). */}
+            <Chip icon={<Receipt className="size-3.5" />} label="Invoices" value={usd(perShoot.reduce((s, j) => s + j.invoice, 0))} />
+            <Chip icon={<Camera className="size-3.5" />} label="Shoot pay" value={usd(person.shootPayTotal)} />
+            <Chip icon={<Car className="size-3.5" />} label="Mileage" value={usd(person.mileageTotal)} />
+          </>
+        )}
         <Chip icon={<SlidersHorizontal className="size-3.5" />} label="Adjustments" value={usd(person.adjustmentTotal)} />
       </div>
 
@@ -113,32 +138,47 @@ export function PayoutCard({ person, periodStartISO }: { person: PayrollPerson; 
         <div className="mt-2 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-[11px] uppercase tracking-wide text-muted-2">
-                <th className="py-1 pr-2 font-medium">Date</th>
-                <th className="py-1 pr-2 font-medium">Property</th>
-                <th className="py-1 pr-2 text-right font-medium">Invoice</th>
-                <th className="py-1 pr-2 text-right font-medium">Shoot</th>
-                <th className="py-1 pr-2 text-right font-medium">Mileage</th>
-                <th className="py-1 pr-2 text-right font-medium">Total</th>
-                <th className="py-1 font-medium"></th>
-              </tr>
+              {showPerShoot ? (
+                <tr className="text-left text-[11px] uppercase tracking-wide text-muted-2">
+                  <th className="py-1 pr-2 font-medium">Date</th>
+                  <th className="py-1 pr-2 font-medium">Property</th>
+                  <th className="py-1 pr-2 text-right font-medium">Invoice</th>
+                  <th className="py-1 pr-2 text-right font-medium">Shoot</th>
+                  <th className="py-1 pr-2 text-right font-medium">Mileage</th>
+                  <th className="py-1 pr-2 text-right font-medium">Total</th>
+                  <th className="py-1 font-medium"></th>
+                </tr>
+              ) : (
+                <tr className="text-left text-[11px] uppercase tracking-wide text-muted-2">
+                  <th className="py-1 pr-2 font-medium">Date</th>
+                  <th className="py-1 pr-2 font-medium">Property</th>
+                  <th className="py-1 pr-2 text-right font-medium">Pay</th>
+                </tr>
+              )}
             </thead>
             <tbody>
-              {person.jobs.map((j) => (
-                <JobRow key={j.projectId} job={j} memberId={person.member.id} busy={busy} run={(fn) => start(async () => { await fn(); refresh(); })} />
-              ))}
+              {person.jobs.map((j) =>
+                j.fixedPay ? (
+                  <FixedJobRow key={`${j.projectId}-${j.shootISO}`} job={j} wide={showPerShoot} />
+                ) : (
+                  <JobRow key={j.projectId} job={j} memberId={person.member.id} busy={busy} run={(fn) => start(async () => { await fn(); refresh(); })} />
+                ),
+              )}
               {person.jobs.length === 0 && (
-                <tr><td colSpan={7} className="py-3 text-center text-xs text-muted">No shoots this period.</td></tr>
+                <tr><td colSpan={showPerShoot ? 7 : 3} className="py-3 text-center text-xs text-muted">No shoots this period.</td></tr>
               )}
             </tbody>
           </table>
         </div>
       </details>
 
-      {/* Add a shoot (by address → pulls the order) */}
-      <div className="border-t border-border px-5 py-2.5">
-        <AddShoot memberId={person.member.id} busy={busy} run={(fn) => start(async () => { await fn(); refresh(); })} />
-      </div>
+      {/* Add a shoot (by address → pulls the order). Not on a fixed-pay card:
+          a shoot added there would pay nothing. */}
+      {!fixed && (
+        <div className="border-t border-border px-5 py-2.5">
+          <AddShoot memberId={person.member.id} busy={busy} run={(fn) => start(async () => { await fn(); refresh(); })} />
+        </div>
+      )}
 
       {/* Removed shoots — restore anything taken out of the payout */}
       {person.removedJobs.length > 0 && (
@@ -221,6 +261,22 @@ function Chip({ icon, label, value }: { icon: React.ReactNode; label: string; va
       <span className="text-muted">{label}</span>
       <span className="font-semibold">{value}</span>
     </span>
+  );
+}
+
+// A fixed-pay shoot: listed so the work is visible, no amounts and no override
+// controls (extra pay for it goes in as a manual adjustment).
+function FixedJobRow({ job, wide }: { job: PayrollJob; wide: boolean }) {
+  return (
+    <tr className="border-t border-border/60">
+      <td className="py-1.5 pr-2 text-muted whitespace-nowrap">{fmtDay(job.shootISO)}</td>
+      <td className="py-1.5 pr-2">
+        <Link href={`/projects/${job.projectId}`} className="hover:text-brand">{job.title.split(",")[0]}</Link>
+        {job.returnTrip && <span className="ml-1 text-[10px] text-muted-2">return trip</span>}
+        {job.debriefPending && <span className="ml-1 rounded bg-danger/15 px-1 text-[10px] font-medium text-danger" title="The upload page for this shoot was never submitted">upload page not submitted</span>}
+      </td>
+      <td colSpan={wide ? 5 : 1} className="py-1.5 pr-2 text-right text-xs text-muted">fixed pay</td>
+    </tr>
   );
 }
 

@@ -3,12 +3,14 @@ import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { Section } from "@/components/ui/Section";
 import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
-import { ownerPaySavings, PAY_STRUCTURE, TIER_LIST_PRICE, WEEKEND_HOLIDAY_PREMIUM, type MonthRow, type PersonMonth, type PaySavings } from "@/lib/paySavings";
+import { ownerPaySavings, TIER_LIST_PRICE, WEEKEND_HOLIDAY_PREMIUM, type MonthRow, type PersonMonth, type PaySavings } from "@/lib/paySavings";
+import { FIXED_PAY } from "@/lib/payStructure";
 import { usd, usd0 } from "@/lib/money";
 
 // Finance → Pay structure (Jordan, Oct 21 2026): what James and Harrison
 // would have cost on the old per-shoot pay against what the new yearly pay
-// costs, month by month since Sep 25 2026, with every part shown.
+// costs, month by month since the Sep 20 2026 pay period (paid Oct 9; Jordan,
+// Oct 22: "Oct 9 pay was the new pay structure"), with every part shown.
 // OWNER ONLY: the Finance page already sends every non-owner to Unpaid, and
 // ownerPaySavings() refuses anyone else on its own (lib/paySavings.ts).
 
@@ -28,7 +30,7 @@ export async function PayStructureTab({ show }: { show: FinanceTab[] }) {
       <PageHeader
         eyebrow="Finance"
         title="Pay structure"
-        subtitle="Old per-shoot pay against the new yearly pay for James and Harrison, since Sep 25 2026"
+        subtitle="Old per-shoot pay against the new yearly pay for James and Harrison, since the Sep 20 pay period, paid Oct 9"
         actions={<Badge soft="var(--surface-2)">Through {dayLabel(data.asOfKey, true)}</Badge>}
       />
       <div className="mx-auto max-w-5xl space-y-5 p-4 sm:p-6">
@@ -41,7 +43,7 @@ export async function PayStructureTab({ show }: { show: FinanceTab[] }) {
         )}
 
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <Stat icon={<PiggyBank className="size-4 text-success" />} label="Saved since Sep 25" value={signed(data.totals.savings)} tone={savedTone(data.totals.savings)} />
+          <Stat icon={<PiggyBank className="size-4 text-success" />} label="Saved since Sep 20" value={signed(data.totals.savings)} tone={savedTone(data.totals.savings)} />
           <Stat icon={<CalendarRange className="size-4 text-brand" />} label={mtd ? `${mtd.label.split(" ")[0]} so far` : "This month so far"} value={mtd ? signed(mtd.savings) : "$0"} tone={mtd ? savedTone(mtd.savings) : "text-muted"} />
           <Stat icon={<TrendingUp className="size-4 text-muted" />} label="Old pay would have been" value={usd0(data.totals.old)} />
           <Stat icon={<TrendingDown className="size-4 text-muted" />} label="New pay, bonus at most" value={usd0(data.totals.new)} />
@@ -49,7 +51,7 @@ export async function PayStructureTab({ show }: { show: FinanceTab[] }) {
 
         <Section icon={ArrowLeftRight} title="Month by month" count={data.months.length || null} flush>
           {data.months.length === 0 ? (
-            <p className="px-5 py-6 text-sm text-muted">The new pay structure starts on Sep 25 2026. Nothing to compare yet.</p>
+            <p className="px-5 py-6 text-sm text-muted">The new pay structure starts with the Sep 20 2026 pay period, paid Oct 9. Nothing to compare yet.</p>
           ) : (
             <div>
               <div className="grid grid-cols-[minmax(0,1.4fr)_repeat(3,minmax(0,1fr))] gap-2 border-b border-border px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-2">
@@ -59,7 +61,7 @@ export async function PayStructureTab({ show }: { show: FinanceTab[] }) {
                 {data.months.map((m) => <MonthDetails key={m.monthKey} m={m} />)}
               </div>
               <div className="grid grid-cols-[minmax(0,1.4fr)_repeat(3,minmax(0,1fr))] gap-2 border-t border-border bg-surface-2/50 px-5 py-3 text-sm font-semibold tabular-nums">
-                <span>Total since Sep 25</span>
+                <span>Total since Sep 20</span>
                 <span className="text-right">{usd0(data.totals.old)}</span>
                 <span className="text-right">{usd0(data.totals.new)}</span>
                 <span className={`text-right ${savedTone(data.totals.savings)}`}>{signed(data.totals.savings)}</span>
@@ -164,7 +166,7 @@ function PersonCard({ p }: { p: PersonMonth }) {
         <Line
           label={`Regular pay, ${n.days} day${n.days === 1 ? "" : "s"}`}
           value={n.regular.total}
-          note={`service fee ${usd(n.regular.serviceFee)} + vehicle ${usd(n.regular.vehicle)}`}
+          note={`service fee ${usd(n.regular.serviceFee)} + vehicle ${usd(n.regular.vehicle)}, ${n.regular.periodsLabel}`}
         />
         <Line
           label={`Weekend/holiday appointments, assumed approved, ${n.premiums.count} × ${usd0(n.premiums.each)}`}
@@ -177,7 +179,7 @@ function PersonCard({ p }: { p: PersonMonth }) {
         <Line
           label="Bonus at most"
           value={n.bonusAtMost.total}
-          note={`${usd0(n.bonusAtMost.max)} for ${n.bonusAtMost.periodLabel} spread over its ${n.bonusAtMost.periodDays} days`}
+          note={`${usd0(n.bonusAtMost.max)} for ${n.bonusAtMost.periodLabel} spread over its ${n.bonusAtMost.periodDays} days, ${n.bonusAtMost.days} of them this month`}
         />
         <Line label="New total" value={n.total} strong />
       </div>
@@ -218,17 +220,18 @@ function Assumptions({ data }: { data: PaySavings }) {
     const figures = `${pct(r.payPercent)} of the invoice or a ${usd0(r.payFloor)} floor, ${usd(r.mileageRate)} a mile past ${r.homeRadiusMi} miles each way`;
     return r.fromProfile
       ? `${p.name}: ${figures}, from their team profile.`
-      : `${p.name}: ${figures}. Their team profile no longer has a ${r.fellBack.join(", ")}, so the rates they had on Sep 25 are used.`;
+      : `${p.name}: ${figures}. Their team profile no longer has a ${r.fellBack.join(", ")}, so the rates they had before fixed pay are used.`;
   });
   const items = [
-    "Old pay is the per-shoot pay Payroll used before Sep 25: the higher of the percent of the eligible invoice or the floor, plus mileage past the free radius, with the same return-trip, reshoot and per-job override rules. Shoots count in the month they happened.",
+    "Both sides start with the first fixed-pay period, Sep 20 2026 (paid Oct 9).",
+    "Old pay is the per-shoot pay Payroll used before the Sep 20 pay period: the higher of the percent of the eligible invoice or the floor, plus mileage past the free radius, with the same return-trip, reshoot and per-job override rules. Shoots count in the month they happened.",
     ...rateLines,
     `Content program sessions show $0 in Aryeo. On the old side each one is priced at what that client pays for their tier (their monthly rate divided by their sessions a month; paid in full is spread over its months; a trial is its one month), or the tier's month-to-month list price when no billing terms are on file (Starter ${usd0(TIER_LIST_PRICE.Starter)}, Accelerator ${usd0(TIER_LIST_PRICE.Accelerator)}, Pro ${usd0(TIER_LIST_PRICE.Pro)}). The old percent and floor then run on that price. ${data.sessionsAtTheirRate} session${data.sessionsAtTheirRate === 1 ? "" : "s"} used their rate and ${data.sessionsAtListPrice} the list price.`,
     `Mileage comes from the miles Payroll already worked out for each day; this page never looks a route up. ${data.notComputedDays > 0 ? `Mileage not computed for ${data.notComputedDays} day${data.notComputedDays === 1 ? "" : "s"}: those count as 0, so the old side is if anything low.` : "Every shoot day has its miles worked out."}`,
-    "New regular pay (service fee plus vehicle) accrues by the day: the yearly amount divided by 365, from Sep 25. The vehicle amount replaces mileage, so the new side has no mileage.",
+    "New regular pay (service fee plus vehicle) is what Payroll pays: one twenty-sixth of the yearly amount for each pay period, from the Sep 20 period. A pay period split by the month's edge counts its days out of 14 in each month. The vehicle amount replaces mileage, so the new side has no mileage.",
     `Weekend and company-holiday appointments are assumed approved at ${usd0(WEEKEND_HOLIDAY_PREMIUM)} each, one per appointment even when a holiday falls on a weekend (there is no approval record yet). Holidays: New Year's Day, Memorial Day, Independence Day, Labor Day, Thanksgiving and Christmas, on the day itself.`,
     "Commissions are not tracked in the hub yet, so they count $0.",
-    `The bonus formula is not set yet, so the new side carries the most each bonus period could pay (James ${usd0(PAY_STRUCTURE.james.bonusMax)}, Harrison ${usd0(PAY_STRUCTURE.harrison.bonusMax)}; Sep 25 to Dec 31 2026, then calendar quarters), spread evenly over the period's days. Savings are never overstated by the bonus.`,
+    `The bonus formula is not set yet, so the new side carries the most each bonus period could pay (James ${usd0(FIXED_PAY.james.bonusMax)}, Harrison ${usd0(FIXED_PAY.harrison.bonusMax)}; Sep 25 to Dec 31 2026, then calendar quarters), spread evenly over the period's days. Sep 20 to 24 are before the first bonus period and carry none. Savings are never overstated by the bonus.`,
     "This month counts through today on both sides. Payout adjustments entered on Payroll count on neither side.",
   ];
   return (

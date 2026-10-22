@@ -8,6 +8,10 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { canSeeMoney } from "@/lib/auth/access";
 import { authEnforcedNow } from "@/lib/auth/enforced";
 import { usd0 } from "@/lib/money";
+import {
+  FIXED_PAY, FIXED_PAY_ORDER, FIXED_PAY_FROM, FIRST_BONUS_PERIOD,
+  fixedPayFor, fixedPayInRange, type FixedPayKey,
+} from "@/lib/payStructure";
 
 // ---------------------------------------------------------------------------
 // OLD PAY vs NEW PAY: WHAT THE NEW PAY STRUCTURE SAVES (Jordan, Oct 21 2026).
@@ -22,18 +26,25 @@ import { usd0 } from "@/lib/money";
 // the page is Finance (owner tabs), and ownerPaySavings() below refuses any
 // other viewer on its own, so the figures cannot be fetched around the page.
 //
-// OLD = the per-shoot engine in lib/payroll.ts, the same pass /payouts runs,
-// over the shoots each person actually did since Sep 25, attributed to months
-// by shoot day. Two differences, both on purpose and both shown on the page:
+// Both sides start with the first fixed-pay period, Sep 20 2026 (paid Oct 9;
+// Jordan, Oct 22 2026: "Oct 9 pay was the new pay structure").
+//
+// OLD = the per-shoot engine in lib/payroll.ts with fixed pay switched off
+// (oldModel), the pass /payouts ran before Sep 20, over the shoots each person
+// actually did, attributed to months by shoot day. Two differences, both on
+// purpose and both shown on the page:
 //   · mileage comes from the MileageDay cache only (cachedMileageOnly): this
 //     page never calls the router; a day never worked out counts 0 miles;
 //   · a content program session (a $0 order in Aryeo) is priced at what that
 //     client pays for their tier, then the old percent and floor run on that.
-// NEW = the yearly service fee + vehicle accrued by the day, $200 for each
-// weekend or company-holiday appointment (assumed approved: there is no
-// approval record yet), commissions (not tracked in the hub yet, so $0) and
-// the KPI bonus at its MAXIMUM spread over the bonus period's days, because
-// the payout formula is not set: savings are never overstated by the bonus.
+// NEW = the fixed pay the pay periods pay (lib/payStructure.ts, the same
+// figures Payroll pays: 1/26 of the yearly service fee + vehicle for each pay
+// period, a period cut by the month's edge counted by its days out of 14),
+// $200 for each weekend or company-holiday appointment (assumed approved: there
+// is no approval record yet), commissions (not tracked in the hub yet, so $0)
+// and the KPI bonus at its MAXIMUM spread over the bonus period's days (the
+// first bonus period starts Sep 25), because the payout formula is not set:
+// savings are never overstated by the bonus.
 //
 // This computes; it pays nobody and changes nothing /payouts does.
 // ---------------------------------------------------------------------------
@@ -52,28 +63,16 @@ const nextMonthKey = (monthKey: string) => {
   return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
 };
 
-/** The first day the new pay structure applies (ET). */
-export const NEW_PAY_EFFECTIVE_KEY = "2026-09-25";
+/** The first day the new pay structure applies (ET): the first fixed-pay period, paid Oct 9. */
+export const NEW_PAY_EFFECTIVE_KEY = FIXED_PAY_FROM;
 /** Each approved weekend or company-holiday appointment, on the new structure. */
 export const WEEKEND_HOLIDAY_PREMIUM = 200;
 
-export type PersonKey = "james" | "harrison";
+export type PersonKey = FixedPayKey;
 
-/** The two people on the new structure, with their terms and the old per-shoot rates they had. */
-export const PAY_STRUCTURE: Record<PersonKey, {
-  key: PersonKey;
-  fullName: string;
-  first: string;
-  serviceFee: number;
-  vehicle: number;
-  /** the most the quarterly KPI bonus can pay in one bonus period */
-  bonusMax: number;
-  old: { payPercent: number; payFloor: number; mileageRate: number; homeRadiusMi: number };
-}> = {
-  james: { key: "james", fullName: "James Livingston", first: "James", serviceFee: 72_200, vehicle: 7_800, bonusMax: 1_500, old: { payPercent: 0.3, payFloor: 75, mileageRate: 0.65, homeRadiusMi: 35 } },
-  harrison: { key: "harrison", fullName: "Harrison Wells", first: "Harrison", serviceFee: 58_200, vehicle: 7_800, bonusMax: 1_000, old: { payPercent: 0.35, payFloor: 100, mileageRate: 0.67, homeRadiusMi: 35 } },
-};
-const PEOPLE_ORDER: PersonKey[] = ["james", "harrison"];
+// The two people on the new structure, their terms and the old per-shoot
+// rates they had: ONE copy, in lib/payStructure.ts (FIXED_PAY).
+const PEOPLE_ORDER: PersonKey[] = FIXED_PAY_ORDER;
 
 // ---- calendar ----------------------------------------------------------------
 
@@ -110,10 +109,11 @@ export function premiumReason(dayKey: string): string | null {
   return dow === 6 ? "Saturday" : dow === 0 ? "Sunday" : null;
 }
 
-/** The KPI bonus period holding a day: Sep 25 to Dec 31 2026, then calendar quarters. */
+/** The KPI bonus period holding a day: Sep 25 to Dec 31 2026, then calendar quarters.
+ *  A day before Sep 25 gets the first period too; the caller counts only the days inside it. */
 export function bonusPeriodFor(dayKey: string): { startKey: string; endKey: string; label: string; days: number } {
-  if (dayKey <= "2026-12-31") {
-    const startKey = NEW_PAY_EFFECTIVE_KEY, endKey = "2026-12-31";
+  if (dayKey <= FIRST_BONUS_PERIOD.endKey) {
+    const { startKey, endKey } = FIRST_BONUS_PERIOD;
     return { startKey, endKey, label: "Sep 25 to Dec 31 2026", days: daysBetween(startKey, endKey) };
   }
   const y = Number(dayKey.slice(0, 4));
@@ -207,16 +207,16 @@ export type OldRates = {
   payFloor: number;
   mileageRate: number;
   homeRadiusMi: number;
-  /** "team profile" = every figure from TeamMember; otherwise which ones fell back to the Sep 25 rates */
+  /** "team profile" = every figure from TeamMember; otherwise which ones fell back to the rates they had before fixed pay */
   fromProfile: boolean;
   fellBack: string[];
 };
 
 type MemberPay = { payPercent: number | null; payFloor: number | null; mileageRate: number | null; homeRadiusMi: number | null };
 
-/** The member's pay fields when set; a cleared (or zero) field falls back to the rate they had on Sep 25. */
+/** The member's pay fields when set; a cleared (or zero) field falls back to the rate they had before fixed pay. */
 export function resolveOldRates(key: PersonKey, m: MemberPay | null): OldRates {
-  const old = PAY_STRUCTURE[key].old;
+  const old = FIXED_PAY[key].old;
   const fellBack: string[] = [];
   const pick = (v: number | null | undefined, dflt: number, label: string) => {
     if (v != null && Number.isFinite(v) && v > 0) return v;
@@ -280,10 +280,12 @@ export type PremiumLine = { projectId: string; title: string; dayKey: string; wh
 
 export type NewSide = {
   days: number;
-  regular: { serviceFee: number; vehicle: number; total: number };
+  /** what the pay periods pay for these days (lib/payStructure.ts fixedPayInRange) */
+  regular: { serviceFee: number; vehicle: number; total: number; periodsLabel: string };
   premiums: { count: number; each: number; total: number; appointments: PremiumLine[] };
   commissions: { total: number; tracked: boolean };
-  bonusAtMost: { total: number; max: number; periodLabel: string; periodDays: number };
+  /** `days` = the days of this month inside a bonus period (none before Sep 25) */
+  bonusAtMost: { total: number; max: number; periodLabel: string; periodDays: number; days: number };
   total: number;
 };
 
@@ -308,7 +310,7 @@ export type MonthRow = {
   old: number;
   new: number;
   savings: number;
-  /** savings since Sep 25 through the end of this row */
+  /** savings since Sep 20 through the end of this row */
   runningSavings: number;
 };
 
@@ -343,21 +345,20 @@ export type PaySavings = {
 const monthLabel = (monthKey: string) =>
   new Date(noonUtc(`${monthKey}-01`)).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
 
-/** Harrison's and James's roster rows: the full name first, then the first name alone (active first, oldest first). */
+/** Harrison's and James's roster rows, matched exactly as Payroll matches them
+ *  (lib/payStructure.ts fixedPayFor: the full name on an active row, the oldest
+ *  row when there are two), so this page compares the same people Payroll pays. */
 async function findPeople(): Promise<Map<PersonKey, { id: string; name: string } & MemberPay>> {
   const rows = await prisma.teamMember.findMany({
-    where: { OR: PEOPLE_ORDER.map((k) => ({ name: { startsWith: PAY_STRUCTURE[k].first, mode: "insensitive" as const } })) },
+    where: { active: true, OR: PEOPLE_ORDER.map((k) => ({ name: { contains: FIXED_PAY[k].first, mode: "insensitive" as const } })) },
     select: { id: true, name: true, active: true, createdAt: true, payPercent: true, payFloor: true, mileageRate: true, homeRadiusMi: true },
     orderBy: { createdAt: "asc" },
   });
   const out = new Map<PersonKey, { id: string; name: string } & MemberPay>();
-  for (const k of PEOPLE_ORDER) {
-    const p = PAY_STRUCTURE[k];
-    const firstRe = new RegExp(`^${p.first}\\b`, "i");
-    const fullRe = new RegExp(`^${p.fullName.replace(/\s+/g, "\\s+")}\\b`, "i");
-    const mine = rows.filter((r) => firstRe.test(r.name.trim()));
-    const best = mine.find((r) => fullRe.test(r.name.trim()) && r.active) ?? mine.find((r) => fullRe.test(r.name.trim())) ?? mine.find((r) => r.active) ?? mine[0];
-    if (best) out.set(k, { id: best.id, name: best.name, payPercent: best.payPercent, payFloor: best.payFloor, mileageRate: best.mileageRate, homeRadiusMi: best.homeRadiusMi });
+  for (const r of rows) {
+    const t = fixedPayFor(r);
+    if (!t || out.has(t.key)) continue;
+    out.set(t.key, { id: r.id, name: r.name, payPercent: r.payPercent, payFloor: r.payFloor, mileageRate: r.mileageRate, homeRadiusMi: r.homeRadiusMi });
   }
   return out;
 }
@@ -424,15 +425,16 @@ async function brandingSessions(projectIds: string[]): Promise<Map<string, Brand
 const emptyOld = (): OldSide => ({ shoots: 0, shootPay: 0, sessions: [], branding: 0, mileage: 0, miles: 0, notComputedDays: 0, noLocation: 0, total: 0 });
 
 /**
- * The comparison, month by month from September 2026 (from Sep 25) through
- * today. Not gated: ownerPaySavings() is the guarded door for pages.
+ * The comparison, month by month from September 2026 (from Sep 20, the first
+ * fixed-pay period) through today. Not gated: ownerPaySavings() is the guarded
+ * door for pages.
  */
 export async function computePaySavings(opts: { now?: Date } = {}): Promise<PaySavings> {
   const now = opts.now ?? new Date();
   const todayKey = etDayKey(now);
   const effectiveKey = NEW_PAY_EFFECTIVE_KEY;
   const people = await findPeople();
-  const missing = PEOPLE_ORDER.filter((k) => !people.has(k)).map((k) => PAY_STRUCTURE[k].fullName);
+  const missing = PEOPLE_ORDER.filter((k) => !people.has(k)).map((k) => FIXED_PAY[k].fullName);
 
   const months: MonthRow[] = [];
   if (todayKey < effectiveKey) {
@@ -440,13 +442,15 @@ export async function computePaySavings(opts: { now?: Date } = {}): Promise<PayS
   }
 
   // ONE engine pass per person over the whole stretch, mileage from the cache
-  // only. Sequential on purpose (the shared Neon pool; see kpi.ts).
+  // only, fixed pay switched OFF (oldModel): this is what the old per-shoot pay
+  // would have cost, never what Payroll pays now. Sequential on purpose (the
+  // shared Neon pool; see kpi.ts).
   const { start, end } = periodBounds({ startKey: effectiveKey, endKey: todayKey });
   const runs = new Map<PersonKey, PayrollPerson | null>();
   for (const k of PEOPLE_ORDER) {
     const m = people.get(k);
     if (!m) continue;
-    const out = await computePayroll(start, end, { memberId: m.id, cachedMileageOnly: true });
+    const out = await computePayroll(start, end, { memberId: m.id, cachedMileageOnly: true, oldModel: true });
     runs.set(k, out.find((p) => p.member.id === m.id) ?? null);
   }
 
@@ -472,7 +476,7 @@ export async function computePaySavings(opts: { now?: Date } = {}): Promise<PayS
     }
   }
 
-  // Months: September 2026 (from Sep 25) through this month (through today).
+  // Months: September 2026 (from Sep 20) through this month (through today).
   const monthKeys: string[] = [];
   for (let mk = effectiveKey.slice(0, 7); mk <= todayKey.slice(0, 7); mk = nextMonthKey(mk)) monthKeys.push(mk);
 
@@ -480,7 +484,7 @@ export async function computePaySavings(opts: { now?: Date } = {}): Promise<PayS
   for (const k of PEOPLE_ORDER) {
     const m = people.get(k);
     if (!m) continue;
-    const t = PAY_STRUCTURE[k];
+    const t = FIXED_PAY[k];
     summaries.set(k, {
       key: k, name: m.name, memberId: m.id, rates: resolveOldRates(k, m),
       annual: t.serviceFee + t.vehicle, serviceFee: t.serviceFee, vehicle: t.vehicle, bonusMax: t.bonusMax,
@@ -500,7 +504,7 @@ export async function computePaySavings(opts: { now?: Date } = {}): Promise<PayS
     for (const k of PEOPLE_ORDER) {
       const s = summaries.get(k);
       if (!s) continue;
-      const t = PAY_STRUCTURE[k];
+      const t = FIXED_PAY[k];
       const run = runs.get(k) ?? null;
       const rates = s.rates;
       const inMonth = (dayKey: string) => dayKey >= fromKey && dayKey <= toKey;
@@ -548,24 +552,30 @@ export async function computePaySavings(opts: { now?: Date } = {}): Promise<PayS
       old.total = r2(old.shootPay + old.branding + old.mileage);
 
       // ---- NEW -------------------------------------------------------------
-      const serviceFee = r2((t.serviceFee / 365) * days);
-      const vehicle = r2((t.vehicle / 365) * days);
+      // Regular pay: exactly what the pay periods pay for these days (the same
+      // helper Payroll uses), never mileage on top.
+      const regular = fixedPayInRange(t, fromKey, toKey);
       const premiumLines: PremiumLine[] = [];
       for (const j of lines) {
         const why = premiumReason(j.dayKey);
         if (why) premiumLines.push({ projectId: j.projectId, title: j.title, dayKey: j.dayKey, why });
       }
+      // The bonus ceiling counts only the month's days inside a bonus period:
+      // the first one starts Sep 25, so Sep 20 to 24 carry none.
       const bp = bonusPeriodFor(fromKey);
-      const bonus = r2((t.bonusMax / bp.days) * days);
+      const bonusFrom = fromKey > bp.startKey ? fromKey : bp.startKey;
+      const bonusTo = toKey < bp.endKey ? toKey : bp.endKey;
+      const bonusDays = bonusFrom <= bonusTo ? daysBetween(bonusFrom, bonusTo) : 0;
+      const bonus = r2((t.bonusMax / bp.days) * bonusDays);
       const premiums = r2(premiumLines.length * WEEKEND_HOLIDAY_PREMIUM);
       const commissions = 0; // no sales attribution in the hub yet
       const next: NewSide = {
         days,
-        regular: { serviceFee, vehicle, total: r2(serviceFee + vehicle) },
+        regular: { serviceFee: regular.serviceFee, vehicle: regular.vehicle, total: regular.total, periodsLabel: regular.periodsLabel },
         premiums: { count: premiumLines.length, each: WEEKEND_HOLIDAY_PREMIUM, total: premiums, appointments: premiumLines },
         commissions: { total: commissions, tracked: false },
-        bonusAtMost: { total: bonus, max: t.bonusMax, periodLabel: bp.label, periodDays: bp.days },
-        total: r2(serviceFee + vehicle + premiums + commissions + bonus),
+        bonusAtMost: { total: bonus, max: t.bonusMax, periodLabel: bp.label, periodDays: bp.days, days: bonusDays },
+        total: r2(regular.total + premiums + commissions + bonus),
       };
 
       const adjustments = r2((run?.adjustments ?? []).filter((a) => inMonth(etDayKey(new Date(a.dateISO)))).reduce((sum, a) => sum + a.amount, 0));

@@ -56,7 +56,7 @@ export type JobRow = {
   status: string;
   paymentStatus: string | null;
   revenue: number;          // eligible invoice (payableInvoice) or order price
-  photographerCost: number; // exact: base shoot pay + mileage share
+  photographerCost: number; // exact: base shoot pay + mileage share (fixed-pay creatives: an even share of their fixed pay)
   premiumVideos: number;    // $299 Luma premium reels/cinematics
   monthlyVideos: number;    // $120 monthly-social videos (Kim)
   standardVideos: number;   // $40 standard videos/reels (in-house)
@@ -91,13 +91,17 @@ export type JobProfit = {
   /** recorded rework over the window, beside the margin (null = none recorded) */
   reworkActual: number | null;
   reworkEstimate: number | null;
+  /** Oct 22 2026: a line for the page's note area when a fixed-pay creative's
+   *  pay was spread over their jobs here; null when nobody's was. */
+  fixedPayNote: string | null;
   start: Date;
   end: Date;
 };
 
 /**
  * Per-job P&L over a window. Revenue = eligible invoice. Costs, to the penny:
- *  • photographer — exact payroll (base % + mileage) from one computePayroll pass.
+ *  • photographer — exact payroll (base % + mileage) from one computePayroll pass;
+ *    a fixed-pay creative's fixed pay spread evenly over their jobs (see below).
  *  • editing — Luma at $299 per PREMIUM video/reel (from the deliverable data).
  * AutoHDR ($0.50/raw photo) and the in-house editor pool are added as their data
  * sources come online; margin here is "revenue minus shooter and Luma."
@@ -125,6 +129,32 @@ export async function jobProfitability(start: Date, end: Date): Promise<JobProfi
     },
     orderBy: { shootDate: "desc" },
   });
+
+  // FIXED-PAY CREATIVES (Oct 22 2026, lib/payStructure.ts). From the Sep 20
+  // 2026 pay period Harrison and James are paid a yearly service fee + vehicle
+  // amount, so their shoot lines pay $0 and every job they shot would read as
+  // free. Their fixed pay for THIS window (whole pay periods, a period the
+  // window only partly covers pro-rated by day) is spread EVENLY across the
+  // jobs they shot in the window: an even split, not a weighting by invoice,
+  // because the pay does not depend on the job. Fixed pay in a window where
+  // they shot nothing has no job to land on and is not in this view (Finance
+  // → Payroll and the P&L carry it in full).
+  const inView = new Set(projects.map((p) => p.id));
+  let fixedPaySpread = false;
+  for (const p of people) {
+    if (!p.fixed || p.fixed.total <= 0) continue;
+    const ids = [...new Set(p.jobs.filter((j) => j.fixedPay && inView.has(j.projectId)).map((j) => j.projectId))];
+    if (ids.length === 0) continue;
+    // To the cent, and the shares add back to the exact total.
+    const cents = Math.round(p.fixed.total * 100);
+    const each = Math.floor(cents / ids.length);
+    ids.forEach((id, i) => {
+      const share = (each + (i < cents - each * ids.length ? 1 : 0)) / 100;
+      costByProject[id] = Math.round(((costByProject[id] ?? 0) + share) * 100) / 100;
+    });
+    fixedPaySpread = true;
+  }
+
   const rework = await import("@/lib/reworkCost")
     .then((m) => m.reworkByProject(projects.map((p) => p.id)))
     .catch(() => new Map<string, { actualCents: number | null; estimateCents: number | null; rows: number }>());
@@ -191,6 +221,7 @@ export async function jobProfitability(start: Date, end: Date): Promise<JobProfi
     marginComplete: uncountedJobs === 0,
     reworkActual: sumOrNull(jobs.map((j) => j.reworkActual)),
     reworkEstimate: sumOrNull(jobs.map((j) => j.reworkEstimate)),
+    fixedPayNote: fixedPaySpread ? "Fixed-pay creatives: their pay is spread evenly across their shoots." : null,
     start,
     end,
   };

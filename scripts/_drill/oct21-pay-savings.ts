@@ -13,8 +13,10 @@
 //      mileage included, and the page never calls the router or writes a day;
 //      content sessions repriced at their rate / list price, a session the
 //      sweep has not linked yet still found, a non-enrolled branding shoot not;
-//   4. cleared rates fall back to the Sep 25 rates;
-//   5. the new side: September from Sep 25 only, regular pay by the day, a
+//   4. cleared rates fall back to the rates they had before fixed pay;
+//   5. the new side: September from Sep 20 only (Oct 22 2026: the first
+//      fixed-pay period, paid Oct 9; it was Sep 25), regular pay as Payroll
+//      pays it (1/26 a period, a split period by its days), a
 //      weekend premium per appointment, commissions $0, the bonus at most;
 //   6. savings: old minus new, both signs, running total, this month so far;
 //   7. the guard: only the owner, never Kyle, James, Harrison, an editor, a
@@ -149,7 +151,7 @@ async function main() {
       return p.id;
     };
     // James
-    await shoot(james.id, "2026-09-20", 10, { clientId: agent.id, invoice: 500 }); //            before Sep 25: never counted
+    await shoot(james.id, "2026-09-20", 10, { clientId: agent.id, invoice: 500 }); //            Sunday, first fixed-pay day: $150 old, $200 premium
     await shoot(james.id, "2026-09-27", 10, { clientId: agent.id, invoice: 300 }); //            Sunday: $90 old, $200 premium
     await shoot(james.id, "2026-10-06", 10, { clientId: agent.id, invoice: 400 }); //            $120
     await shoot(james.id, "2026-10-06", 14, { clientId: agent.id, invoice: 200 }); //            $75 floor
@@ -169,7 +171,7 @@ async function main() {
     // The miles Payroll already worked out, under the engine's own route
     // signature so /payouts would read them from the cache too.
     const miles: Record<string, number> = {
-      [`${james.id}|2026-09-27`]: 60, [`${james.id}|2026-10-06`]: 150, [`${james.id}|2026-10-10`]: 60, [`${james.id}|2026-10-13`]: 110,
+      [`${james.id}|2026-09-20`]: 80, [`${james.id}|2026-09-27`]: 60, [`${james.id}|2026-10-06`]: 150, [`${james.id}|2026-10-10`]: 60, [`${james.id}|2026-10-13`]: 110,
       [`${james.id}|2026-10-15`]: 70, [`${james.id}|2026-10-16`]: 200,
       [`${harrison.id}|2026-10-07`]: 100, [`${harrison.id}|2026-10-14`]: 70, [`${harrison.id}|2026-10-17`]: 90,
     };
@@ -195,17 +197,21 @@ async function main() {
     // =======================================================================
     c.ok("two months, September and October, October is this month", s.months.map((m) => m.monthKey).join() === "2026-09,2026-10" && s.currentMonth?.monthKey === "2026-10");
     c.ok("only James and Harrison, found on the roster by name", s.people.map((p) => p.name).join() === "James Livingston,Harrison Wells" && s.missing.length === 0);
-    // /payouts' own pass over October, router and all (every day is cached under its real signature).
+    // The engine's own OLD-model pass over October, router and all (every day
+    // is cached under its real signature). Oct 22 2026: /payouts now pays James
+    // fixed pay, so the old side is compared with the oldModel pass.
     const { start: oStart, end: oEnd } = periodBounds({ startKey: "2026-10-01", endKey: "2026-10-21" });
-    const engine = (await computePayroll(oStart, oEnd, { memberId: james.id })).find((p) => p.member.id === james.id)!;
+    const engine = (await computePayroll(oStart, oEnd, { memberId: james.id, oldModel: true })).find((p) => p.member.id === james.id)!;
+    const fixedEngine = (await computePayroll(oStart, oEnd, { memberId: james.id })).find((p) => p.member.id === james.id)!;
     const jo = J(oct).old;
     const atAryeo = r2(jo.sessions.reduce((n, x) => n + x.atAryeoPrice, 0));
-    c.ok("James, October: shoot pay + mileage + the sessions at Aryeo's $0 equals what /payouts pays for the same days",
+    c.ok("James, October: shoot pay + mileage + the sessions at Aryeo's $0 equals the old-model engine for the same days",
       near(r2(jo.shootPay + jo.mileage + atAryeo), engine.total) && near(jo.mileage, engine.mileageTotal), `${r2(jo.shootPay + jo.mileage + atAryeo)} vs ${engine.total}`);
     c.ok("…shoot pay $5,745 on 4 shoots (120 + 75 floor + 150 + 5,400), mileage $162.50 (80, 40 and 130 miles past the radius at $0.65)", jo.shootPay === 5745 && jo.shoots === 4 && jo.mileage === 162.5, `${jo.shootPay} / ${jo.shoots} / ${jo.mileage}`);
     c.ok("the page never calls the router", routerCalls === 0, String(routerCalls));
     c.ok("…and never writes a mileage day (Harrison's Oct 12 stays unworked)", (await prisma.mileageDay.count()) === rowsBefore && (await prisma.mileageDay.count({ where: { teamMemberId: harrison.id, dayKey: "2026-10-12" } })) === 0);
-    c.ok("/payouts' engine is unchanged: its days carry no not-computed flag", engine.days.every((d) => !("notComputed" in d)));
+    c.ok("the old-model engine is unchanged: its days carry no not-computed flag", engine.days.every((d) => !("notComputed" in d)));
+    c.ok("…while /payouts' own pass pays James fixed pay for those days (no shoot pay, no mileage)", fixedEngine.fixed != null && fixedEngine.shootPayTotal === 0 && fixedEngine.mileageTotal === 0 && fixedEngine.days.length === 0 && fixedEngine.total === fixedEngine.fixed.total, JSON.stringify(fixedEngine.fixed));
 
     c.head("3b · content sessions at the tier price");
     const sRate = jo.sessions.find((x) => x.projectId === jRate)!;
@@ -221,7 +227,7 @@ async function main() {
     c.ok("a session the sweep has not linked to a month yet is still found, at their $1,499 contract rate", sLate?.source === "their rate" && sLate.priceUsed === 1499 && sLate.oldPay === 524.65 && sLate.notes.includes("not linked to a program month yet"), JSON.stringify(sLate));
     c.ok("a branding shoot for someone not enrolled keeps its Aryeo invoice ($800 → $280), not a session", !ho.sessions.some((x) => x.projectId === hPaid) && ho.shootPay === r2(105 + 280) && ho.shoots === 2, `${ho.shootPay} / ${ho.shoots}`);
 
-    c.head("4 · cleared rates fall back to the Sep 25 rates");
+    c.head("4 · cleared rates fall back to the rates they had before fixed pay");
     const hr = s.people.find((p) => p.key === "harrison")!.rates;
     const jr = s.people.find((p) => p.key === "james")!.rates;
     c.ok("Harrison's cleared percent and floor read as 35% / $100, and say so", hr.payPercent === 0.35 && hr.payFloor === 100 && !hr.fromProfile && hr.fellBack.join() === "percent,floor" && hr.mileageRate === 0.67);
@@ -232,28 +238,32 @@ async function main() {
     c.head("5 · the new side");
     // =======================================================================
     const js = J(sep);
-    c.ok("September counts from Sep 25: 6 days, the Sep 20 shoot left out", sep.fromKey === "2026-09-25" && sep.toKey === "2026-09-30" && sep.days === 6 && js.old.shoots === 1 && js.old.shootPay === 90);
-    const reg = (annualPart: number, days: number) => r2((annualPart / 365) * days);
-    c.ok("James, September: regular pay = ($72,200 + $7,800) ÷ 365 × 6", js.new.regular.serviceFee === reg(72200, 6) && js.new.regular.vehicle === reg(7800, 6) && js.new.regular.total === r2(reg(72200, 6) + reg(7800, 6)), JSON.stringify(js.new.regular));
-    c.ok("…a Sunday appointment adds $200 (assumed approved)", js.new.premiums.count === 1 && js.new.premiums.total === 200 && js.new.premiums.appointments[0]?.why === "Sunday");
-    c.ok("…bonus at most = $1,500 ÷ 98 × 6", js.new.bonusAtMost.total === r2((1500 / 98) * 6) && js.new.bonusAtMost.periodDays === 98 && js.new.bonusAtMost.max === 1500);
+    // Oct 22 2026: both sides start with the first fixed-pay period, Sep 20 (was Sep 25).
+    c.ok("September counts from Sep 20: 11 days, the Sep 20 shoot counted ($150 + $90)", sep.fromKey === "2026-09-20" && sep.toKey === "2026-09-30" && sep.days === 11 && js.old.shoots === 2 && js.old.shootPay === 240, `${sep.fromKey} ${sep.days} ${js.old.shoots} ${js.old.shootPay}`);
+    // One payment = the yearly amount ÷ 26 to the cent; Sep 20 to 30 is 11 of the period's 14 days.
+    const reg = (annualPart: number, days: number) => r2((r2(annualPart / 26) * days) / 14);
+    c.ok("James, September: regular pay = 11/14 of one payment ($2,776.92 + $300.00)", js.new.regular.serviceFee === reg(72200, 11) && js.new.regular.vehicle === reg(7800, 11) && js.new.regular.total === r2(reg(72200, 11) + reg(7800, 11)), JSON.stringify(js.new.regular));
+    c.ok("…two Sunday appointments add $200 each (assumed approved)", js.new.premiums.count === 2 && js.new.premiums.total === 400 && js.new.premiums.appointments.every((a) => a.why === "Sunday"));
+    c.ok("…bonus at most = $1,500 ÷ 98 × 6: Sep 20 to 24 are before the first bonus period", js.new.bonusAtMost.total === r2((1500 / 98) * 6) && js.new.bonusAtMost.periodDays === 98 && js.new.bonusAtMost.max === 1500 && js.new.bonusAtMost.days === 6);
     c.ok("…commissions $0, not tracked", js.new.commissions.total === 0 && js.new.commissions.tracked === false);
     c.ok("October counts through today: 21 days, tomorrow's shoot not in", oct.days === 21 && oct.toKey === "2026-10-21" && J(oct).old.shoots === 4);
     c.ok("James, October: one Saturday appointment, $200", J(oct).new.premiums.count === 1 && J(oct).new.premiums.appointments[0]?.dayKey === "2026-10-10");
     c.ok("Harrison, October: one Saturday appointment, $200; bonus at most $1,000 ÷ 98 × 21",
       H(oct).new.premiums.count === 1 && H(oct).new.premiums.total === 200 && H(oct).new.bonusAtMost.total === r2((1000 / 98) * 21));
-    c.ok("Harrison, September: regular pay and the bonus ceiling with no shoots", H(sep).old.total === 0 && H(sep).new.total === r2(reg(58200, 6) + reg(7800, 6) + r2((1000 / 98) * 6)));
+    c.ok("Harrison, September: regular pay and the bonus ceiling with no shoots", H(sep).old.total === 0 && H(sep).new.total === r2(reg(58200, 11) + reg(7800, 11) + r2((1000 / 98) * 6)), String(H(sep).new.total));
+    const octReg = (annualPart: number) => r2(reg(annualPart, 3) + r2(annualPart / 26) + reg(annualPart, 4));
+    c.ok("James, October: 3 days of the Sep 20 period + the whole Oct 4 period + 4 days of the Oct 18 period", J(oct).new.regular.serviceFee === octReg(72200) && J(oct).new.regular.vehicle === octReg(7800), JSON.stringify(J(oct).new.regular));
     c.ok("no mileage on the new side: its parts are regular + premiums + commissions + bonus", s.months.every((m) => m.people.every((p) => near(p.new.total, p.new.regular.total + p.new.premiums.total + p.new.commissions.total + p.new.bonusAtMost.total))));
 
     // =======================================================================
     c.head("6 · savings");
     // =======================================================================
     c.ok("savings = old - new for every person and month", s.months.every((m) => m.people.every((p) => p.savings === r2(p.old.total - p.new.total)) && m.savings === r2(m.old - m.new)));
-    c.ok("September cost more on the new pay (James did one shoot): negative savings", js.savings < 0 && sep.savings < 0, `${js.savings} / ${sep.savings}`);
+    c.ok("September cost more on the new pay (James did two small shoots): negative savings", js.savings < 0 && sep.savings < 0, `${js.savings} / ${sep.savings}`);
     c.ok("October, James saved (the $18,000 job alone was $5,400 of old pay)", J(oct).savings > 0, String(J(oct).savings));
-    c.ok("the running total ends at the total since Sep 25", oct.runningSavings === s.totals.savings && sep.runningSavings === sep.savings && s.totals.savings === r2(s.totals.old - s.totals.new));
+    c.ok("the running total ends at the total since Sep 20", oct.runningSavings === s.totals.savings && sep.runningSavings === sep.savings && s.totals.savings === r2(s.totals.old - s.totals.new));
     c.ok("per person totals add up to the month totals", near(s.people.reduce((n, p) => n + p.old, 0), s.totals.old) && near(s.people.reduce((n, p) => n + p.new, 0), s.totals.new));
-    console.log(`\n  since Sep 25: old ${s.totals.old}, new ${s.totals.new}, saved ${s.totals.savings}; October so far ${oct.savings}\n`);
+    console.log(`\n  since Sep 20: old ${s.totals.old}, new ${s.totals.new}, saved ${s.totals.savings}; October so far ${oct.savings}\n`);
 
     // =======================================================================
     c.head("7 · only the owner");
@@ -300,7 +310,7 @@ async function main() {
       : null;
     const text = textOf(ownerTree);
     c.ok("the owner sees the Pay structure tab, linked from the tab bar", typeName(isValidElement(el) ? el.type : null) === "PayStructureTab" && hrefs(ownerTree).includes("/sales?tab=paystructure") && /Pay structure/.test(text));
-    c.ok("…the monthly table with both people and a total", /Month by month/.test(text) && /September 2026/.test(text) && /October 2026/.test(text) && /Total since Sep 25/.test(text) && /James Livingston/.test(text) && /Harrison Wells/.test(text));
+    c.ok("…the monthly table with both people and a total", /Month by month/.test(text) && /September 2026/.test(text) && /October 2026/.test(text) && /Total since Sep 20/.test(text) && /since the Sep 20 pay period, paid Oct 9/.test(text) && /James Livingston/.test(text) && /Harrison Wells/.test(text));
     c.ok("…every part labelled: sessions at tier price, their rate / list price, assumed approved, commissions not tracked yet, bonus at most",
       /Content sessions at tier price/.test(text) && /their rate/.test(text) && /list price/.test(text) && /assumed approved/.test(text) && /commissions not tracked yet/.test(text) && /Bonus at most/.test(text), "");
     c.ok("…the mileage gap and Harrison's fallback rates are said on the page", /mileage not computed for 1 day/i.test(text) && /no longer has a percent, floor/.test(text), "");
