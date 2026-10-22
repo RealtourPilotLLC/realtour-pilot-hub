@@ -727,6 +727,20 @@ export type TopazSettings = {
   /** Which approved cuts get a pass. Jordan said "all videos"; both video
    *  deliverable types are on by default. */
   deliverableTypes: string[];
+  /** SKIP THE PASS WHEN THE EDITOR'S FILE IS ALREADY FINISHED (Jordan, Oct 22
+   *  2026: "It did a bad job on the video for 711 Boehms … I just want to
+   *  prevent it going forward"). Measured on the last 30 renders: every
+   *  source was already 1080p H.264 with AAC sound at about 15 Mbit, so the
+   *  pass was re-processing a clean, finished file at the same size and
+   *  making it worse (crunchy foliage, waxy faces). ON by default, nothing to
+   *  set up ("set it and forget it"): a source whose short side already
+   *  equals outputShortSide, whose picture is H.264 or HEVC and whose sound
+   *  is AAC in step with the picture is NOT sent; the editor's original goes
+   *  out as is and nothing is spent. Anything else (4K, under 1080, PCM sound,
+   *  no sound or sound out of step, a header that can't be read) runs exactly
+   *  as before. See topazOriginal.alreadyFinishedRule and
+   *  topazJobs.finishAlreadyFinished. */
+  skipFinished1080p: boolean;
 
   // ---- output ------------------------------------------------------------
   /** "1080p" = the SHORT side is 1080, orientation and aspect preserved. A
@@ -811,6 +825,18 @@ export type TopazSettings = {
 // like. If the first render comes back stronger or weaker than his desktop
 // export, this is the first field to try changing, and it is a dropdown on
 // /settings precisely for that.
+//
+// WHAT TOPAZ'S API REFERENCE ACTUALLY SAYS (read Oct 22 2026, the OpenAPI
+// schema on developer.topazlabs.com/reference/video/create-request/
+// create-video-request.md — the model page and their docs agent are silent,
+// the schema is not): "Auto - parameter estimation is used with no
+// customization · Relative - uses auto parameters with optional weights added
+// · Manual - all parameters are manually set". So on "Auto" the sliders below
+// are NOT used at all: every render since Sep 16 was Topaz's own amounts, and
+// that is what over-sharpened 711 Boehms. The default stays "Auto" on purpose
+// (Jordan picks after testing — the Settings page's "Try these settings" and
+// the three starting points in lib/topazPresets); this note is why the select
+// now says so in plain words.
 export const DEFAULT_TOPAZ_PARAMS: TopazProteusParams = {
   video_type: "Progressive", // desktop: Video type = Progressive
   auto: "Auto", // desktop "Dynamic" — see the paragraph above
@@ -881,6 +907,7 @@ export const DEFAULT_TOPAZ_PARAMS: TopazProteusParams = {
 export const DEFAULT_TOPAZ: TopazSettings = {
   enabled: false, // Jordan turns it on after he has compared one render
   deliverableTypes: ["VIDEO", "SOCIAL_REEL"],
+  skipFinished1080p: true, // Oct 22 2026: a finished 1080p H.264/AAC export goes out as is
   outputShortSide: 1080,
   neverUpscale: false,
   audioCodec: "aac",
@@ -920,7 +947,16 @@ export const DEFAULT_TOPAZ: TopazSettings = {
  *  parameter is merged and range-checked individually here. A bad save can
  *  never put an out-of-range number in front of a paid API. */
 export async function topazSettings(): Promise<TopazSettings> {
-  const r = await getSetting<TopazSettings>("topaz", DEFAULT_TOPAZ);
+  return clampTopazSettings(await getSetting<TopazSettings>("topaz", DEFAULT_TOPAZ));
+}
+
+/** The clamp itself, over any object at all — the stored row (above), or a
+ *  draft from the Settings page's "Try these settings" test (Oct 22 2026),
+ *  which runs the sliders ON SCREEN, saved or not. The same range checks apply
+ *  to both, so a hand-crafted draft can never put an out-of-range number in
+ *  front of a paid API either. Pure: no database, no cache. */
+export function clampTopazSettings(raw: Partial<TopazSettings> | null | undefined): TopazSettings {
+  const r = { ...DEFAULT_TOPAZ, ...(raw ?? {}) } as TopazSettings;
   const d = DEFAULT_TOPAZ;
   const num = (v: unknown, fallback: number, min: number, max: number) =>
     typeof v === "number" && Number.isFinite(v) && v >= min && v <= max ? v : fallback;
@@ -937,6 +973,9 @@ export async function topazSettings(): Promise<TopazSettings> {
     deliverableTypes: Array.isArray(r.deliverableTypes)
       ? r.deliverableTypes.filter((t): t is string => typeof t === "string" && ["VIDEO", "SOCIAL_REEL"].includes(t))
       : d.deliverableTypes,
+    // ON unless it was explicitly switched off: a row saved before Oct 22
+    // 2026 has no such key, and the rule is the new default for everybody.
+    skipFinished1080p: r.skipFinished1080p !== false,
     outputShortSide: int(r.outputShortSide, d.outputShortSide, 240, 2160),
     neverUpscale: r.neverUpscale === true,
     audioCodec: free(r.audioCodec, d.audioCodec),

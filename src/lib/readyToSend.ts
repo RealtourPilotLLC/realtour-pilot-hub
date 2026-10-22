@@ -13,6 +13,7 @@ import { dropboxWebUrl } from "@/lib/dropboxFolders";
 import type { TopazState } from "@/lib/topazJobs";
 import { monthlyOwnerAccess, claimMonthlyFinalDelivery } from "@/lib/monthlyFinal";
 import { portalReason } from "@/lib/deliveryReadyMessage";
+import { ALREADY_FINISHED_SAYS, editorOriginalIsFinal } from "@/lib/topazOriginal";
 
 // ===========================================================================
 // READY TO SEND — the videos that are finished and have not gone to the client.
@@ -205,6 +206,10 @@ export type ReadyVideo = {
   monthlyPortalAccess?: boolean;
   /** null for cases (b)/(c) — there is no 1080p job to stamp */
   topazJobId: string | null;
+  /** The editor's original IS the trusted file (Oct 22 2026: the Settings
+   *  rule "already finished" skipped the pass): sendable to the portal and by
+   *  the Aryeo button, exactly as a checked render. */
+  originalIsFinal?: boolean;
   /** "322 N 62nd St" — the same street the rest of the day uses */
   street: string;
   clientName: string;
@@ -1043,6 +1048,9 @@ export async function readyToSend(opts?: ReadyToSendOpts): Promise<ReadyBoard> {
       monthlyPortalReleased: Boolean(sub.project.contentMonthId && cutReleasedAt({ ...sub, status: "APPROVED", portalPublicationRequiredAt: publicationRequiredAt({ ...sub, status: "APPROVED" }, true) })),
       monthlyPortalAccess: monthlyAccessOk,
       topazJobId: sub.topazJob?.id ?? null,
+      // Oct 22 2026: the Settings rule said the editor's file is already the
+      // finished file, so it is the one to send (the row says why).
+      originalIsFinal: editorOriginalIsFinal(sub.topazJob),
       street: cut.street,
       clientName: cut.clientName,
       clientAvatarUrl: cut.clientAvatarUrl,
@@ -2007,7 +2015,11 @@ export function portalStepFor(
 ): PortalStep {
   const j = sub.topazJob;
   const gated = !!publicationRequiredAt({ ...sub, status: "APPROVED" }, true);
-  const verified = !!j && j.state === "done" && !!j.finalPath && !!j.savedAt && VERIFIED_1080P.has(j.outputCheck ?? "");
+  // THE EDITOR'S ORIGINAL AS THE FINISHED FILE (Oct 22 2026): the Settings
+  // rule skipped the pass because the editor's export already is the 1080p
+  // file, and its sound passed the same check a render gets. The portal gets
+  // it exactly as it would a verified render (monthlyFinal, cutEntitlement).
+  const verified = (!!j && j.state === "done" && !!j.finalPath && !!j.savedAt && VERIFIED_1080P.has(j.outputCheck ?? "")) || editorOriginalIsFinal(j);
   if (gated && !verified) {
     if (!j) {
       if (!sub.blobUrl) return { action: null, blocked: true, says: "This version was sent from the Dropbox Final folder, so the hub has no copy to put through the 1080p pass. Ask the editor to upload it in the hub, then approve that version." };
@@ -2065,7 +2077,10 @@ function fileFor(sub: CandidateSub, s: { enabled: boolean; deliverableTypes: str
   // Everything below hands over the EDITOR'S OWN export. Say which of the three
   // reasons put us here, so nobody has to go looking for it.
   const type = sub.deliverable?.type ?? "VIDEO";
-  const says =
+  // THE ORIGINAL AS THE FINISHED FILE (Oct 22 2026), in Jordan's words:
+  // "Already 1080p: the editor's file goes out as is."
+  const original = editorOriginalIsFinal(j) ? ALREADY_FINISHED_SAYS : null;
+  const says = original ?? (
     j?.state === "skipped"
       ? "The 1080p pass was skipped — send the editor's own export."
       : j?.state === "failed" || j?.state === "cancelled"
@@ -2076,8 +2091,10 @@ function fileFor(sub: CandidateSub, s: { enabled: boolean; deliverableTypes: str
             ? "The 1080p pass is switched off in Settings — the editor's export is the deliverable."
             : s && !s.deliverableTypes.includes(type)
               ? `${type} doesn't go through the 1080p pass — the editor's export is the deliverable.`
-              : "No 1080p pass ran for this cut — the editor's export is the deliverable.";
-  const why = trimReason(j?.skipReason ?? j?.error ?? null);
+              : "No 1080p pass ran for this cut — the editor's export is the deliverable.");
+  // A decided original carries no "why the pass didn't produce it": nothing
+  // went wrong, and the sentence above already says what happened.
+  const why = original ? null : trimReason(j?.skipReason ?? j?.error ?? null);
 
   if (sub.blobUrl) {
     return {

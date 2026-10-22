@@ -91,6 +91,8 @@ const SOURCE_CHIP: Record<ReadyVideo["file"]["source"], string> = {
   "editor-hub-copy": "Editor's file",
   "editor-dropbox": "Editor's file",
 };
+/** The chip for an editor's original that IS the finished file (Oct 22 2026). */
+const chipOf = (v: ReadyVideo) => (v.originalIsFinal ? "Original, as is" : SOURCE_CHIP[v.file.source]);
 const usesPortal = (v: ReadyVideo) => v.deliveryDestination ? v.deliveryDestination === "client-portal" : v.monthlyProgram;
 
 export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBoard; includeTest?: boolean }) {
@@ -395,9 +397,9 @@ function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: (sent?: boole
         {v.monthlyProgram && <span className="min-w-0 font-medium">· {v.topicTitle ?? "Topic not linked"}</span>}
         <span className={cn(
           "rounded px-1.5 py-0.5 text-ui-status font-semibold",
-          v.file.source === "topaz-1080p" ? "bg-brand/15 text-brand" : "bg-warning/15 text-warning",
+          v.file.source === "topaz-1080p" || v.originalIsFinal ? "bg-brand/15 text-brand" : "bg-warning/15 text-warning",
         )}>
-          {v.portalStep?.blocked ? "Needs 1080p" : SOURCE_CHIP[v.file.source]}
+          {v.portalStep?.blocked ? "Needs 1080p" : chipOf(v)}
         </span>
         {v.overdue && (
           <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-ui-status font-bold text-danger">
@@ -412,6 +414,11 @@ function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: (sent?: boole
         <span>· Kyle · <span className={cn(stale && "font-semibold text-danger")}>ready {waited(v.waitingHours)}</span></span>
       </p>
       <p className="mt-1 text-sm text-muted">Approved {etDateTime(new Date(v.approvedAtISO))}{v.approvedBy ? ` by ${v.approvedBy}` : ""}.</p>
+      {/* WHY THERE IS NO TOPAZ VERSION, on the row and not folded away (Oct
+          22 2026): "Already 1080p: the editor's file goes out as is." */}
+      {v.originalIsFinal && (
+        <p className="mt-1 text-sm font-medium text-foreground/85">{v.file.says}</p>
+      )}
       {/* A portal video: exactly what stands between it and the client, and
           the one button that moves it (Oct 5 2026). */}
       {usesPortal(v) && v.portalStep
@@ -579,7 +586,9 @@ function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: (sent?: boole
             job to re-run and a reason printed two lines above it. A row already
             carrying the enhanced file has nothing to retry, and showing the
             button there would invite spending money to replace a good file. */}
-        {v.topazJobId && v.file.source !== "topaz-1080p" && !usesPortal(v) && (
+        {/* Not on a row whose original is already the finished file (Oct 22
+            2026, the Settings rule): nothing failed, so nothing to retry. */}
+        {v.topazJobId && v.file.source !== "topaz-1080p" && !usesPortal(v) && !v.originalIsFinal && (
           <RetryRender jobId={v.topazJobId} street={v.street} />
         )}
       </div>

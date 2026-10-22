@@ -7,8 +7,10 @@ import { videoStyleFor } from "@/lib/videoStyles";
 import { aryeoJobUrl } from "@/lib/aryeoUrl";
 import { appBase } from "@/lib/appUrl";
 import { etDayKey, etAt } from "@/lib/datetime";
-import { topazSettings, type TopazSettings } from "@/lib/settings";
+import { topazSettings, type TopazSettings, type TopazProteusParams } from "@/lib/settings";
 import { HELD_ATTESTATION, type HeldChoice } from "@/lib/topazHold";
+import { ALREADY_FINISHED_SAYS, alreadyFinishedRule } from "@/lib/topazOriginal";
+import type { Prisma } from "@prisma/client";
 import { kyleDesk, kyleTeamMemberId, noticeForKyle } from "@/lib/kyleNotice";
 import { portalReason } from "@/lib/deliveryReadyMessage";
 import { createHash } from "crypto";
@@ -38,6 +40,8 @@ import {
   topazConnected,
   videoStatus,
   type TopazFilter,
+  type TopazOutput,
+  type TopazRequestBody,
   type TopazUploadResult,
   type TopazUploadTarget,
   type VideoMeta,
@@ -212,6 +216,101 @@ export async function queueTopazRender(submissionId: string): Promise<QueueResul
 }
 
 // ---------------------------------------------------------------------------
+// THE REQUEST, BUILT IN ONE PLACE (Oct 22 2026).
+//
+// The lane (stepQueued) and the Settings page's "Try these settings" test
+// (lib/topazTests) both send THIS body, so a test predicts a live render
+// exactly — same filter, same output block, same encoder and bitrate. The
+// object returned is the object sent, and it is also what goes on the record
+// (presetJson): the whole output block, not just the filters and the size, so
+// a bad render can be traced to the exact request that made it.
+// ---------------------------------------------------------------------------
+
+/**
+ * The Proteus filter block. Every parameter is sent under the name Topaz's
+ * model page uses (snake_case: `recover_original_detail_value`), AND — for the
+ * seven with more than one word — under the name their API reference's schema
+ * uses (camelCase: `recoverOriginalDetailValue`). The two pages disagree (read
+ * Oct 22 2026: developer.topazlabs.com/video-models/proteus/proteus.md vs
+ * reference/video/create-request/create-video-request.md), their API has
+ * accepted the snake_case body on every real render since Sep 16 without
+ * complaint, and it validates the schema's names. Sending both means whichever
+ * one Topaz reads gets the value — "Recover detail" in particular may never
+ * have arrived under the old name alone. The single-word ones (`auto`,
+ * `compression`, `details`, `noise`, `halo`, `preblur`, `blur`, `prenoise`,
+ * `grain`) are spelled the same either way.
+ */
+export function topazFilterFor(p: TopazProteusParams): TopazFilter {
+  return {
+    model: "prob-4",
+    ...p,
+    videoType: p.video_type,
+    fieldOrder: p.field_order,
+    focusFixLevel: p.focus_fix_level,
+    grainSigma: p.grain_sigma,
+    grainSize: p.grain_size,
+    grainType: p.grain_type,
+    recoverOriginalDetailValue: p.recover_original_detail_value,
+  };
+}
+
+/** The whole create-request body for one source under one set of settings. */
+export function topazRequestFor(meta: Pick<VideoMeta, "width" | "height" | "container" | "sizeBytes" | "durationSec" | "frameRate" | "frameCount">, s: TopazSettings): {
+  body: TopazRequestBody;
+  output: TopazOutput;
+  filters: TopazFilter[];
+  /** What goes on the record: everything sent except the source block, which
+   *  the row already carries column by column. */
+  presetJson: string;
+} {
+  const resolution = plannedOutput(meta, { shortSide: s.outputShortSide, neverUpscale: s.neverUpscale });
+  const filters: TopazFilter[] = [topazFilterFor(s.params)];
+  const output: TopazOutput = {
+    resolution,
+    // AUDIO. "Copy" does not fail when Topaz cannot copy the track — it
+    // DROPS it. On Sep 17 a client was delivered a silent video: the editor's
+    // export carried uncompressed 24-bit PCM ("ipcm"), which an mp4 cannot
+    // hold as-is, while every other render (AAC in, AAC out) kept its sound.
+    // So copy only what an mp4 can carry unchanged, and convert anything
+    // else. Their API validates NEITHER field — it accepted "Transcode" and
+    // "Re-encode" without complaint — so the choice is ours to get right, and
+    // stepProcessing checks the finished file before anything is filed.
+    // Only AAC ("mp4a") audio reaches the lane's request — anything else was
+    // skipped first — so copying the track through is both safe and lossless.
+    audioCodec: s.audioCodec,
+    audioTransfer: s.audioTransfer,
+    // Frame interpolation is OFF in Jordan's preset ("30 FPS original, no
+    // slow motion"), so the output frame rate is simply the source's.
+    frameRate: meta.frameRate,
+    // NAME THE ENCODER. Left unnamed on the first real render, Topaz returned
+    // VP9 at 1.06 Mbit — a file Aryeo and Zillow Showcase are likely to
+    // refuse, QuickTime cannot open, and which threw away the detail the pass
+    // had just paid to recover. H264/High is what every downstream target
+    // takes; see DEFAULT_TOPAZ.
+    videoEncoder: s.videoEncoder,
+    videoProfile: s.videoProfile,
+    // videoBitrate and dynamicCompressionLevel are MUTUALLY EXCLUSIVE in
+    // Topaz's schema — sending both is a 400. An explicit bitrate wins when
+    // there is one, because their automatic picker is what chose 1.06 Mbit.
+    ...(s.videoBitrate ? { videoBitrate: s.videoBitrate } : { dynamicCompressionLevel: s.dynamicCompressionLevel }),
+    container: s.container,
+  };
+  const body: TopazRequestBody = {
+    source: {
+      resolution: { width: meta.width, height: meta.height },
+      container: meta.container,
+      size: meta.sizeBytes,
+      duration: meta.durationSec,
+      frameRate: meta.frameRate,
+      frameCount: meta.frameCount,
+    },
+    output,
+    filters,
+  };
+  return { body, output, filters, presetJson: JSON.stringify({ filters, output }) };
+}
+
+// ---------------------------------------------------------------------------
 // E. THE SPEND GUARDS.
 //
 // Each one is checked here, server-side, before anything can be accepted. They
@@ -237,6 +336,58 @@ function etWindows(now = new Date()): { dayStart: Date; monthStart: Date; nextDa
   const nextDay = new Date(dayStart.getTime() + 24 * 3600_000);
   const nextMonthKey = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
   return { dayStart, monthStart, nextDay, nextMonth: etAt(nextMonthKey, 0) };
+}
+
+// ---------------------------------------------------------------------------
+// TESTS COUNT TOWARD THE CAPS (Oct 22 2026).
+//
+// "Try these settings" on Settings (lib/topazTests) renders a real approved
+// video through Topaz without filing it anywhere, and it spends real credits.
+// It cannot be a TopazJob row — one render per cut is a unique constraint on
+// submissionId, and the cut it tests already has one — so each test is an
+// AppSetting row under TOPAZ_TEST_KEY. Every cap below reads BOTH: a test
+// accepted today is a render today, its estimate is committed against the
+// month's credits exactly as a job's is, and a test at Topaz holds one of the
+// plan's concurrent slots. reserveSpendSlot and reserveTestSlot take the same
+// budget lock, so a test and a job can never both take the last slot.
+// ---------------------------------------------------------------------------
+
+/** AppSetting key prefix of one "Try these settings" test run. */
+export const TOPAZ_TEST_KEY = "topaz-test:";
+
+export type TestLedger = { day: number; month: number; credits: number; inFlight: number };
+
+/** What the tests have committed: renders today / this month (ET), estimated
+ *  credits this month, and how many hold a slot at Topaz right now. A row
+ *  that does not parse counts as nothing — these rows are written only by
+ *  lib/topazTests. Rows not written since before the month began cannot hold
+ *  anything this month (acceptedAt is written in the row), so they are not
+ *  read at all. */
+export async function topazTestLedger(db: Pick<Prisma.TransactionClient, "appSetting"> = prisma, now = new Date()): Promise<TestLedger> {
+  const { dayStart, monthStart } = etWindows(now);
+  const rows = await db.appSetting.findMany({
+    where: { key: { startsWith: TOPAZ_TEST_KEY }, updatedAt: { gte: new Date(monthStart.getTime() - 86_400_000) } },
+    select: { value: true },
+  });
+  const out: TestLedger = { day: 0, month: 0, credits: 0, inFlight: 0 };
+  for (const r of rows) {
+    let t: { acceptedAt?: string | null; estimateCredits?: number | null; state?: string } | null = null;
+    try {
+      t = JSON.parse(r.value);
+    } catch {
+      t = null;
+    }
+    if (!t?.acceptedAt) continue;
+    const at = new Date(t.acceptedAt).getTime();
+    if (!Number.isFinite(at)) continue;
+    if (at >= monthStart.getTime()) {
+      out.month++;
+      out.credits += typeof t.estimateCredits === "number" && Number.isFinite(t.estimateCredits) ? t.estimateCredits : 0;
+    }
+    if (at >= dayStart.getTime()) out.day++;
+    if (t.state === "estimated" || t.state === "uploading" || t.state === "processing") out.inFlight++;
+  }
+  return out;
 }
 
 /**
@@ -268,19 +419,24 @@ export async function spendGate(s: TopazSettings, opts: { estimateCredits?: numb
     };
   }
 
+  // Settings-page tests (Oct 22 2026) are renders too: they count everywhere.
+  const tests = await topazTestLedger();
+
   // 1. NEVER MORE THAN THE PLAN'S CONCURRENCY. Counted from the rows that are
   //    actually in Topaz's hands, so a job stuck in `saving` (ours, not theirs)
   //    does not hold a slot hostage.
-  const inFlight = await prisma.topazJob.count({ where: { state: { in: IN_TOPAZ_HANDS } } });
+  const inFlight = (await prisma.topazJob.count({ where: { state: { in: IN_TOPAZ_HANDS } } })) + tests.inFlight;
   if (inFlight >= s.maxConcurrent) {
     return { ok: false, hold: true, reason: `${inFlight} videos are already being processed — this one waits its turn.`, retryAt: new Date(Date.now() + 3 * 60_000) };
   }
 
   // 2. A CAP ON RENDERS PER DAY and per calendar month.
-  const [today, thisMonth] = await Promise.all([
+  const [jobsToday, jobsThisMonth] = await Promise.all([
     prisma.topazJob.count({ where: { acceptedAt: { gte: dayStart } } }),
     prisma.topazJob.count({ where: { acceptedAt: { gte: monthStart } } }),
   ]);
+  const today = jobsToday + tests.day;
+  const thisMonth = jobsThisMonth + tests.month;
   if (today >= s.maxRendersPerDay) {
     return { ok: false, hold: true, reason: `Today's limit of ${s.maxRendersPerDay} videos is used up — this one goes through tomorrow.`, retryAt: nextDay };
   }
@@ -295,7 +451,7 @@ export async function spendGate(s: TopazSettings, opts: { estimateCredits?: numb
     where: { acceptedAt: { gte: monthStart } },
     _sum: { estimateCredits: true },
   });
-  const committed = spent._sum.estimateCredits ?? 0;
+  const committed = (spent._sum.estimateCredits ?? 0) + tests.credits;
   if (committed + wanted > s.maxCreditsPerMonth) {
     return {
       ok: false,
@@ -519,14 +675,20 @@ export async function reserveSpendSlot(
       // Uncast, every call raised 42883 and this function returned false for
       // ever, which would have quietly stopped every render in the building.
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${SPEND_LOCK[0]}::int4, ${SPEND_LOCK[1]}::int4)`;
+      // What the Settings-page tests hold (Oct 22 2026), read INSIDE the lock:
+      // a test reserves behind this same lock (reserveTestSlot), so nothing
+      // can add to it between this read and the UPDATE below. The caps are
+      // lowered by it rather than the numbers added inside the SQL, which
+      // keeps every comparison below the one that has always been there.
+      const t = await topazTestLedger(tx);
       const n = await tx.$executeRaw`
         UPDATE "TopazJob" SET "acceptedAt" = now(), "leaseUntil" = now() + interval '10 minutes'
         WHERE "id" = ${job.id}
           AND "acceptedAt" IS NULL
           AND "leaseBy" IS NOT DISTINCT FROM ${job.leaseBy}
-          AND (SELECT count(*) FROM "TopazJob" WHERE "acceptedAt" >= ${monthStart}) < ${s.maxRendersPerMonth}
-          AND (SELECT count(*) FROM "TopazJob" WHERE "acceptedAt" >= ${dayStart}) < ${s.maxRendersPerDay}
-          AND (SELECT coalesce(sum("estimateCredits"), 0) FROM "TopazJob" WHERE "acceptedAt" >= ${monthStart}) + ${wanted} <= ${s.maxCreditsPerMonth}
+          AND (SELECT count(*) FROM "TopazJob" WHERE "acceptedAt" >= ${monthStart}) < ${s.maxRendersPerMonth - t.month}
+          AND (SELECT count(*) FROM "TopazJob" WHERE "acceptedAt" >= ${dayStart}) < ${s.maxRendersPerDay - t.day}
+          AND (SELECT coalesce(sum("estimateCredits"), 0) FROM "TopazJob" WHERE "acceptedAt" >= ${monthStart}) + ${wanted} <= ${s.maxCreditsPerMonth - t.credits}
           -- A RESERVATION OCCUPIES A SLOT (drill, Sep 18). Counting only
           -- uploading/processing let two workers both reserve against one free
           -- slot: a reserved row is still 'estimated' until the state write
@@ -538,7 +700,7 @@ export async function reserveSpendSlot(
           AND (
             SELECT count(*) FROM "TopazJob"
             WHERE "acceptedAt" IS NOT NULL AND "state" IN ('estimated', 'uploading', 'processing')
-          ) < ${s.maxConcurrent}
+          ) < ${s.maxConcurrent - t.inFlight}
       `;
       return n === 1;
     },
@@ -559,6 +721,55 @@ export async function reserveSpendSlot(
       true,
     );
   });
+}
+
+/**
+ * THE SAME RESERVATION, FOR A SETTINGS-PAGE TEST (Oct 22 2026).
+ *
+ * Behind the same budget lock as reserveSpendSlot, with every cap counted over
+ * the jobs AND the tests, so a test and a job contesting the last slot cannot
+ * both win. The test's own row is stamped by `stamp` (it writes acceptedAt)
+ * as a compare-and-set on the row's exact value: a test that changed since it
+ * was read is not reserved. Returns true when this test now holds a slot.
+ * Throws (nothing spent) when the lock itself could not be taken — the same
+ * reason reserveSpendSlot throws rather than reading "no capacity".
+ */
+export async function reserveTestSlot(
+  testKey: string,
+  s: TopazSettings,
+  wanted: number,
+  stamp: (current: string) => string | null,
+): Promise<boolean> {
+  const { dayStart, monthStart } = etWindows();
+  return await prisma
+    .$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${SPEND_LOCK[0]}::int4, ${SPEND_LOCK[1]}::int4)`;
+        const t = await topazTestLedger(tx);
+        const day = await tx.topazJob.count({ where: { acceptedAt: { gte: dayStart } } });
+        const month = await tx.topazJob.count({ where: { acceptedAt: { gte: monthStart } } });
+        const credits = (await tx.topazJob.aggregate({ where: { acceptedAt: { gte: monthStart } }, _sum: { estimateCredits: true } }))._sum.estimateCredits ?? 0;
+        const inFlight = await tx.topazJob.count({ where: { acceptedAt: { not: null }, state: { in: ["estimated", "uploading", "processing"] } } });
+        if (wanted > s.maxCreditsPerVideo) return false;
+        if (day + t.day >= s.maxRendersPerDay || month + t.month >= s.maxRendersPerMonth) return false;
+        if (credits + t.credits + wanted > s.maxCreditsPerMonth) return false;
+        if (inFlight + t.inFlight >= s.maxConcurrent) return false;
+        const row = await tx.appSetting.findUnique({ where: { key: testKey }, select: { value: true } });
+        if (!row) return false;
+        const next = stamp(row.value);
+        if (!next) return false;
+        const u = await tx.appSetting.updateMany({ where: { key: testKey, value: row.value }, data: { value: next } });
+        return u.count === 1;
+      },
+      { timeout: 20_000, maxWait: 15_000 },
+    )
+    .catch((e: unknown) => {
+      throw new TopazError(
+        `Couldn't reserve a render slot for the test: the spend lock didn't answer (${(e as Error).message.slice(0, 120)}). Nothing was charged.`,
+        0,
+        true,
+      );
+    });
 }
 
 /** Give a reserved slot back. Only ever called before anything was spent. */
@@ -707,6 +918,82 @@ async function skip(job: NonNullable<JobRow>, reason: string) {
   if (!won) return;
   await markEditorFileFinal(job);
   await tellSomebody(job, `Skipped the 1080p pass — ${streetOf(job.project.title)}`, reason, `topaz-skipped-${job.id}`);
+}
+
+/**
+ * THE EDITOR'S FILE IS ALREADY THE FINISHED FILE (Oct 22 2026) — end the job
+ * here, before anything is asked of Topaz. Returns the state it ended in, or
+ * null when the pass must run after all (the caller carries on as before).
+ *
+ * The SAME sound check a finished render gets is run on the original
+ * (finalRendition.judgeFinalSound over the header already read — no second
+ * fetch). Sound present and in step with the picture → "original-final", and
+ * the original flows everywhere a checked render flows (Ready to send, the
+ * Aryeo button, the client's portal). No sound, or sound out of step → NOT
+ * skipped: the hub never trusts such a file on its own word, and the only
+ * person-in-the-loop route it has is the existing one (the pass runs, the
+ * render is held for a listen, somebody presses "I listened — use this
+ * file"). There is no per-video control to add (Jordan, Oct 22 2026: settings
+ * in general, not per video). A header whose timing can't be read is judged
+ * the way the render check judges one: not a hold.
+ *
+ * Quiet: this is the expected path for nearly every video now, and it is not
+ * a problem anybody has to hear about.
+ */
+async function finishAlreadyFinished(job: NonNullable<JobRow>, header: VideoMeta, rule: string): Promise<string | null> {
+  const { judgeFinalSound } = await import("@/lib/finalRendition");
+  const sound = judgeFinalSound({ audio: header.audio, timing: header.timing ?? null });
+  // No line on the timeline here: a job waiting on a cap comes back through
+  // this step every few minutes, and the held render explains itself.
+  if (sound.verdict === "hold") return null;
+  // An estimate a "Try again" left behind is handed back (free either way).
+  if (job.requestId && !job.acceptedAt) await cancelEstimate(job.requestId);
+  const now = new Date();
+  const won = await finishAs(job, "skipped", {
+    skipReason: ALREADY_FINISHED_SAYS,
+    resolution: "already-finished",
+    outputCheck: "original-final",
+    outputCheckedAt: now,
+    outputCheckJson: JSON.stringify({
+      verdict: "ok",
+      reason: null,
+      where: "original",
+      at: now.toISOString(),
+      rule,
+      source: {
+        size: `${header.width}x${header.height}`,
+        codec: header.codec,
+        hasAudio: header.audio.present,
+        audioCodec: header.audio.codec,
+        durationSec: header.durationSec,
+        mbit: header.durationSec > 0 ? Math.round(((header.sizeBytes * 8) / header.durationSec / 1_000_000) * 10) / 10 : null,
+      },
+      ...(sound.verdict === "ok" && sound.av ? { av: sound.av } : {}),
+    }),
+    sourceWidth: header.width,
+    sourceHeight: header.height,
+    sourceHasAudio: header.audio.present,
+    sourceAudioCodec: header.audio.codec,
+  });
+  if (!won) return job.state; // another tick moved this row on; its outcome is the true one
+  // The editor's export IS the deliverable: it says so on the file itself.
+  await markEditorFileFinal(job);
+  await prisma.activity
+    .create({
+      data: {
+        projectId: job.projectId,
+        type: "SYSTEM",
+        body: `1080p pass not needed: the editor's file is already ${rule}, so it goes out as is. Nothing was sent to Topaz and nothing was spent.`.slice(0, 500),
+      },
+    })
+    .catch(() => {});
+  // A program video goes to the client's portal now, exactly as a finished
+  // render would (finishSaving), once its Dropbox backup has landed; until
+  // then the hourly publication repair picks it up.
+  if (job.project.contentMonthId && job.submissionId && job.submission?.completedAt) {
+    await import("@/lib/contentVideos").then((m) => m.publishApprovedCutToLibrary(job.submissionId)).catch(() => null);
+  }
+  return "skipped";
 }
 
 async function tellSomebody(job: NonNullable<JobRow>, title: string, body: string, dedupeKey: string) {
@@ -873,6 +1160,11 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
   // The source's own audio track decides how we ask Topaz to carry it (see the
   // request below). It is not stored on the row, so it comes off the header.
   let sourceAudio: { present: boolean; codec: string | null } | null = null;
+  // The whole header as read this step, when it was (Oct 22 2026): the
+  // already-finished rule needs the picture's codec and the sound's timing,
+  // neither of which the row stores. A holder object, because it is filled in
+  // inside a promise chain below.
+  const seen: { header: VideoMeta | null } = { header: null };
   if (!(meta.frameCount > 0 && meta.durationSec > 0 && meta.width > 0)) {
     // probeVideoMetadata range-GETs a bare URL with no headers, so on a private
     // store the object's own address answers 401 and every render would skip
@@ -887,6 +1179,7 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
     const probed = await probeVideoMetadata(readable, sub.sizeBytes ?? null);
     meta = probed;
     sourceAudio = probed.audio;
+    seen.header = probed;
     await prisma.topazJob.update({
       where: { id: job.id },
       data: {
@@ -913,7 +1206,10 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
         if (!readable) throw new Error("no readable url for this cut");
         return probeVideoMetadata(readable, meta.sizeBytes || sub.sizeBytes || null);
       })
-      .then((p) => p.audio)
+      .then((p) => {
+        seen.header = p;
+        return p.audio;
+      })
       .catch(() => {
         audioUnreadable = true;
         return { present: true, codec: null };
@@ -964,6 +1260,23 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
     return "skipped";
   }
 
+  // ALREADY THE FINISHED FILE (Jordan, Oct 22 2026). A source whose short side
+  // already IS the output size, H.264 or HEVC, with AAC sound or none, is not
+  // sent: every one of the last 30 renders was exactly that, and on 711 Boehms
+  // the pass made a clean file worse. The editor's original goes out as is and
+  // nothing is spent — before the price check, so not even a free estimate is
+  // asked for. Checked only on a job that has committed nothing, and never on
+  // one a person explicitly sent back through ("Try the pass again" on an
+  // already-finished skip writes resolution "force-pass").
+  if (job.resolution !== "force-pass" && !job.acceptedAt && !job.completeUploadAt && seen.header) {
+    const h = seen.header;
+    const rule = alreadyFinishedRule({ width: h.width, height: h.height, codec: h.codec, audio: h.audio }, s);
+    if (rule.skip) {
+      const ended = await finishAlreadyFinished(job, h, rule.why);
+      if (ended) return ended;
+    }
+  }
+
   // Topaz answers 413 over 500 MB. Real cuts measure 76–465 MB, so this is a
   // fence a real file can actually hit — say so in words Jordan can act on.
   const mb = Math.round(meta.sizeBytes / 1048576);
@@ -972,7 +1285,9 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
     return "skipped";
   }
 
-  const output = plannedOutput(meta, { shortSide: s.outputShortSide, neverUpscale: s.neverUpscale });
+  // The whole request, from the one builder the Settings-page test uses too.
+  const request = topazRequestFor(meta, s);
+  const output = request.output.resolution;
 
   // Guard BEFORE the pre-flight: the estimate is free, but there is no point
   // asking for one when the lane is full or the month is spent.
@@ -987,50 +1302,9 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
     return "estimated";
   }
 
-  const filters: TopazFilter[] = [{ model: "prob-4", ...s.params }];
-  const est = await createVideoRequest({
-    source: {
-      resolution: { width: meta.width, height: meta.height },
-      container: meta.container,
-      size: meta.sizeBytes,
-      duration: meta.durationSec,
-      frameRate: meta.frameRate,
-      frameCount: meta.frameCount,
-    },
-    output: {
-      resolution: output,
-      // AUDIO. "Copy" does not fail when Topaz cannot copy the track — it
-      // DROPS it. On Sep 17 a client was delivered a silent video: the editor's
-      // export carried uncompressed 24-bit PCM ("ipcm"), which an mp4 cannot
-      // hold as-is, while every other render (AAC in, AAC out) kept its sound.
-      // So copy only what an mp4 can carry unchanged, and convert anything
-      // else. Their API validates NEITHER field — it accepted "Transcode" and
-      // "Re-encode" without complaint — so the choice is ours to get right, and
-      // stepProcessing checks the finished file before anything is filed.
-      // Only AAC ("mp4a") audio reaches this point — anything else was skipped
-      // above — so copying the track through is both safe and lossless.
-      audioCodec: s.audioCodec,
-      audioTransfer: s.audioTransfer,
-      // Frame interpolation is OFF in Jordan's preset ("30 FPS original, no
-      // slow motion"), so the output frame rate is simply the source's.
-      frameRate: meta.frameRate,
-      // NAME THE ENCODER. Left unnamed on the first real render, Topaz returned
-      // VP9 at 1.06 Mbit — a file Aryeo and Zillow Showcase are likely to
-      // refuse, QuickTime cannot open, and which threw away the detail the pass
-      // had just paid to recover. H264/High is what every downstream target
-      // takes; see DEFAULT_TOPAZ.
-      videoEncoder: s.videoEncoder,
-      videoProfile: s.videoProfile,
-      // videoBitrate and dynamicCompressionLevel are MUTUALLY EXCLUSIVE in
-      // Topaz's schema — sending both is a 400. An explicit bitrate wins when
-      // there is one, because their automatic picker is what chose 1.06 Mbit.
-      ...(s.videoBitrate
-        ? { videoBitrate: s.videoBitrate }
-        : { dynamicCompressionLevel: s.dynamicCompressionLevel }),
-      container: s.container,
-    },
-    filters,
-  });
+  // ONE body, built by topazRequestFor (the AUDIO / ENCODER / BITRATE notes
+  // that used to sit here live on it now, beside the code they explain).
+  const est = await createVideoRequest(request.body);
 
   // NO PRICE, NO SPEND. Topaz's estimate field names are not pinned down in
   // their docs, so estimateFrom() reads generously — but if it still comes back
@@ -1061,7 +1335,10 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
       estimateSeconds: est.seconds,
       outputWidth: output.width,
       outputHeight: output.height,
-      presetJson: JSON.stringify({ filters, output: { resolution: output, container: s.container } }),
+      // THE WHOLE REQUEST (Oct 22 2026): filters AND the full output block —
+      // encoder, profile, bitrate, audio, frame rate, size, container — so a
+      // bad render can be traced to exactly what was asked for.
+      presetJson: request.presetJson,
       startedAt: job.startedAt ?? new Date(),
     },
   });
@@ -2848,6 +3125,8 @@ export type DriveResult = {
   claimed: number;
   advanced: Record<string, number>;
   swept?: number;
+  /** Settings-page test runs advanced this tick, by the state they ended in. */
+  tests?: Record<string, number>;
 };
 
 /** One driver tick: sweep expired leases, claim what is due, advance each one
@@ -2884,7 +3163,19 @@ export async function driveTopazJobs(opts: { max?: number; budgetMs?: number; le
     });
     advanced[state] = (advanced[state] ?? 0) + 1;
   }
-  return { claimed: ids.length, advanced, swept };
+  // SETTINGS-PAGE TESTS (Oct 22 2026) ride the same tick: one step each,
+  // after the real work, and only with time left. A test never files anything
+  // anywhere (lib/topazTests), so the worst a slow one can do is wait a tick.
+  let tests: Record<string, number> | undefined;
+  if (budget.remainingMs() > 60_000) {
+    try {
+      const { driveTopazTests } = await import("@/lib/topazTests");
+      tests = await driveTopazTests({ budget, leaseBy });
+    } catch (e) {
+      console.warn("driveTopazTests threw", (e as Error).message);
+    }
+  }
+  return { claimed: ids.length, advanced, swept, ...(tests && Object.keys(tests).length ? { tests } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -3028,13 +3319,18 @@ export async function retryTopazJobRefusal(jobId: string): Promise<string | null
 export async function retryTopazJob(jobId: string): Promise<{ ok: boolean; message: string }> {
   const refusal = await retryTopazJobRefusal(jobId);
   if (refusal) return { ok: false, message: refusal };
-  const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { id: true, state: true, requestId: true, completeUploadAt: true, acceptedAt: true, outputCheck: true, heldPath: true } });
+  const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { id: true, state: true, requestId: true, completeUploadAt: true, acceptedAt: true, outputCheck: true, heldPath: true, resolution: true } });
   if (!job) return { ok: false, message: "That 1080p job no longer exists." };
   // A portal video whose finished render was set aside by "keep the original"
   // (reachable only for a portal video — see the refusal): the render is
   // already paid for and in superseded/, so it comes back for a listen rather
   // than being bought again.
   if (job.outputCheck === "resolved-original") return await reopenSetAsideRender(job.id, job.heldPath);
+  // THE ALREADY-FINISHED SKIP, PRESSED AGAIN ON PURPOSE (Oct 22 2026): the
+  // existing "Try again" means "run the pass", so the rule must not skip the
+  // very job a person sent back through. Only this row changes (force-pass);
+  // every other retry is exactly as it was.
+  const forcePass = job.resolution === "already-finished";
 
   if (job.completeUploadAt) {
     await prisma.topazJob.update({
@@ -3081,6 +3377,7 @@ export async function retryTopazJob(jobId: string): Promise<{ ok: boolean; messa
       finishedAt: null,
       leaseUntil: null,
       leaseBy: null,
+      ...(forcePass ? { outputCheck: null, resolution: "force-pass" } : {}),
     },
   });
   return { ok: true, message: "Back in the queue. It starts again from the free price check, so every limit you've set still applies to it." };
@@ -3197,7 +3494,8 @@ export type TopazJobView = {
   nextAttemptAt: Date | null;
   /** O02: where an unchecked render waits in Dropbox while it is held. */
   heldPath: string | null;
-  /** O02: verified | unverified | resolved-processed | resolved-original; null = a row from before the check was kept. */
+  /** O02: verified | unverified | resolved-processed | resolved-original; Oct 22 2026: original-final (the
+   *  Settings rule skipped the pass, the editor's file is the finished file); null = a row from before the check was kept. */
   outputCheck: string | null;
 };
 
@@ -3338,7 +3636,10 @@ export async function topazDashboard(): Promise<TopazDashboard> {
     }
   }
 
-  const [today, monthRenders, monthCredits, inFlight, waitingOnKyle, recentFailures, heldForReview] = await Promise.all([
+  // Settings-page tests are renders too (Oct 22 2026): the same numbers the
+  // caps count, so the strip beside the limits never disagrees with them.
+  const tests = await topazTestLedger().catch(() => ({ day: 0, month: 0, credits: 0, inFlight: 0 }));
+  const [jobsToday, jobsMonth, monthCredits, inFlight, waitingOnKyle, recentFailures, heldForReview] = await Promise.all([
     prisma.topazJob.count({ where: { acceptedAt: { gte: dayStart } } }),
     prisma.topazJob.count({ where: { acceptedAt: { gte: monthStart } } }),
     // WHAT THIS MONTH HAS COST, per job and then added up — never two whole-
@@ -3353,6 +3654,8 @@ export async function topazDashboard(): Promise<TopazDashboard> {
     prisma.topazJob.count({ where: { state: "failed", errorAt: { gte: new Date(Date.now() - 7 * 24 * 3600_000) } } }),
     prisma.topazJob.count({ where: { state: "held" } }),
   ]);
+  const today = jobsToday + tests.day;
+  const monthRenders = jobsMonth + tests.month;
 
   return {
     connected,
@@ -3365,10 +3668,10 @@ export async function topazDashboard(): Promise<TopazDashboard> {
       cap: s.maxRendersPerMonth,
       // What it really cost when Topaz said, and what we committed when it
       // didn't — never a number we invented.
-      credits: Math.round(monthCredits.reduce((n, j) => n + (j.creditsCharged ?? j.estimateCredits ?? 0), 0)),
+      credits: Math.round(monthCredits.reduce((n, j) => n + (j.creditsCharged ?? j.estimateCredits ?? 0), 0) + tests.credits),
       creditCap: s.maxCreditsPerMonth,
     },
-    inFlight,
+    inFlight: inFlight + tests.inFlight,
     concurrencyCap: s.maxConcurrent,
     waitingOnKyle,
     recentFailures,

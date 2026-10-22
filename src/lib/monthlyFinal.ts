@@ -7,6 +7,7 @@ import { clientCutFiles } from "@/lib/cutEntitlement";
 import { PROGRAM_ROLLOUT_SETTING_KEY, parseProgramRollout, rolloutDecision } from "@/lib/programRolloutCore";
 import { digest, proveOriginalBackup, readDropboxFile } from "@/lib/finalDropbox";
 import type { TopazState } from "@/lib/topazJobs";
+import { editorOriginalIsFinal } from "@/lib/topazOriginal";
 
 type Db = Pick<Prisma.TransactionClient, "contentMonth" | "contentEnrollment" | "clientMembership" | "clientUser" | "client" | "appSetting">;
 /** `live`: this month belongs to an ACTIVE, unrevoked program of this client —
@@ -109,7 +110,16 @@ export async function monthlyFinalSnapshot(id: string): Promise<MonthlyFinalSnap
   return { ok: true, cut, fingerprint, mediaId, previewUrl: `/api/review/cut/${id}/final?f=${fingerprint}`, fileName: file.kind === "processed" ? file.fileName : cut.fileName ?? path.split("/").pop()!, file: file.kind === "processed" ? { kind: "processed", path: file.path } : { kind: "original" }, backup, access };
 }
 
-const verified1080p = (cut: MonthlyCut) => cut.topazJob?.state === "done" && !!cut.topazJob.finalPath && !!cut.topazJob.savedAt && ["verified", "resolved-processed"].includes(cut.topazJob.outputCheck ?? "");
+// The checked file a portal publication accepts: a verified (or listened-to)
+// 1080p render — or, since Oct 22 2026, the editor's original when it IS the
+// finished file ("original-final": the Settings rule found it already 1080p
+// H.264/HEVC with AAC sound, so the pass was not needed). For that,
+// clientCutFiles answers kind "original" and the snapshot above proves the
+// original's own Dropbox backup in the Final folder, as it always has for an
+// original (proveOriginalBackup).
+const verified1080p = (cut: MonthlyCut) =>
+  (cut.topazJob?.state === "done" && !!cut.topazJob.finalPath && !!cut.topazJob.savedAt && ["verified", "resolved-processed"].includes(cut.topazJob.outputCheck ?? ""))
+  || editorOriginalIsFinal(cut.topazJob);
 
 /** Provider proof is collected before the transaction; the first delivery
  * claim rechecks canonical version, exact seat/scope and saved check inside it. */

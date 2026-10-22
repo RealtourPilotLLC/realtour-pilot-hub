@@ -6,6 +6,7 @@ import { videoDeliverySettings, type VideoPushMode } from "@/lib/videoDeliverySe
 import type { HoldingAsk } from "@/lib/clientAsks";
 import type { FinalSoundCheck } from "@/lib/finalRendition";
 import type { UploadReceipt } from "@/lib/deliveryUploads";
+import { editorOriginalIsFinal } from "@/lib/topazOriginal";
 
 // ---------------------------------------------------------------------------
 // LISTING VIDEOS INTO ARYEO, BY THE HUB (Oct 19 2026).
@@ -324,6 +325,9 @@ async function releaseAddLock(r: VideoPushRun): Promise<void> {
 
 const CUT_SELECT = {
   id: true, projectId: true, status: true, round: true, deliverableId: true, slot: true, fileName: true, sentToClientAt: true, sentToClientBy: true, decidedAt: true,
+  // The editor's original's own Dropbox copy (Oct 22 2026): what the button
+  // sends when the original IS the finished file (lib/topazOriginal).
+  finalPath: true, completedAt: true, sizeBytes: true,
   deliverable: { select: { label: true, productTitle: true, type: true } },
   project: { select: { id: true, title: true, status: true, contentMonthId: true, aryeoListingId: true } },
   topazJob: { select: { id: true, state: true, finalPath: true, savedAt: true, outputCheck: true, outputCheckJson: true, sourceDurationSec: true, sourceSizeBytes: true } },
@@ -375,12 +379,27 @@ async function gates(submissionId: string, opts: { asks: boolean; sound: boolean
     const reason = heldReason(j.outputCheckJson);
     return { ok: false, kind: "hold", gate: "sound", why: `Sound check held this file${reason ? `: ${reason}` : ": its sound could not be checked"}. Listen to it on the delivery queue.` };
   }
-  if (j.state === "failed" || j.state === "skipped" || j.state === "cancelled") return { ok: false, kind: "manual", why: "The 1080p pass did not produce a file. Upload the editor's export by hand." };
-  if (j.state !== "done" || !j.finalPath || !j.savedAt) return { ok: false, kind: "not-yet", why: "The 1080p pass has not finished yet." };
-  if (!VERIFIED.has(j.outputCheck ?? "")) {
-    if (j.outputCheck === "unverified") return { ok: false, kind: "hold", gate: "sound", why: "Sound check held this file: it was never confirmed. Listen to it on the delivery queue." };
-    if (j.outputCheck === "resolved-original") return { ok: false, kind: "manual", why: "A reviewer kept the editor's original, so the hub does not send it on its own. Upload it by hand." };
-    return { ok: false, kind: "manual", why: "The 1080p file was never checked, so the hub does not send it on its own. Upload it by hand." };
+  // THE EDITOR'S ORIGINAL AS THE FINISHED FILE (Oct 22 2026): the Settings
+  // rule ("Already 1080p: the editor's file goes out as is."). The button sends the
+  // original's own copy in the job's Final Dropbox folder — the file Kyle
+  // delivered by hand before the 1080p pass existed (.mov included) — through
+  // every gate below exactly as a render goes (open client asks, the sound
+  // read off the file's header, the listing).
+  let file: { path: string; durationSec: number | null; approxBytes: number | null };
+  if (editorOriginalIsFinal(j)) {
+    if (!cut.finalPath || !cut.completedAt || cut.finalPath.includes("/superseded/")) {
+      return { ok: false, kind: "not-yet", why: "The editor's original isn't in the Final Dropbox folder yet. It can go once it lands there." };
+    }
+    file = { path: cut.finalPath, durationSec: j.sourceDurationSec ?? null, approxBytes: cut.sizeBytes ?? j.sourceSizeBytes ?? null };
+  } else {
+    if (j.state === "failed" || j.state === "skipped" || j.state === "cancelled") return { ok: false, kind: "manual", why: "The 1080p pass did not produce a file. Upload the editor's export by hand." };
+    if (j.state !== "done" || !j.finalPath || !j.savedAt) return { ok: false, kind: "not-yet", why: "The 1080p pass has not finished yet." };
+    if (!VERIFIED.has(j.outputCheck ?? "")) {
+      if (j.outputCheck === "unverified") return { ok: false, kind: "hold", gate: "sound", why: "Sound check held this file: it was never confirmed. Listen to it on the delivery queue." };
+      if (j.outputCheck === "resolved-original") return { ok: false, kind: "manual", why: "A reviewer kept the editor's original, so the hub does not send it on its own. Upload it by hand." };
+      return { ok: false, kind: "manual", why: "The 1080p file was never checked, so the hub does not send it on its own. Upload it by hand." };
+    }
+    file = { path: j.finalPath, durationSec: j.sourceDurationSec ?? null, approxBytes: j.sourceSizeBytes ?? null };
   }
   const fingerprint = sourceFingerprint(full);
   if (!fingerprint) return { ok: false, kind: "not-yet", why: "The finished file is not ready yet." };
@@ -404,8 +423,8 @@ async function gates(submissionId: string, opts: { asks: boolean; sound: boolean
     if (s.verdict === "unchecked") note = s.message;
   }
   return {
-    ok: true, fingerprint, listingId: cut.project.aryeoListingId, projectId: cut.projectId, topazJobId: j.id, path: j.finalPath,
-    durationSec: j.sourceDurationSec ?? null, approxBytes: j.sourceSizeBytes ?? null, note,
+    ok: true, fingerprint, listingId: cut.project.aryeoListingId, projectId: cut.projectId, topazJobId: j.id, path: file.path,
+    durationSec: file.durationSec, approxBytes: file.approxBytes, note,
   };
 }
 
@@ -562,7 +581,7 @@ async function siblingsOnTheWay(r: VideoPushRun): Promise<string[]> {
     if (!cut || !(await currentApproved(cut))) continue;
     const run = runs.get(s.id);
     const rendering = !!s.topazJob && !["done", "failed", "cancelled", "skipped", "held"].includes(s.topazJob.state);
-    const startsSoon = !run && s.topazJob?.state === "done" && VERIFIED.has(s.topazJob.outputCheck ?? "");
+    const startsSoon = !run && ((s.topazJob?.state === "done" && VERIFIED.has(s.topazJob.outputCheck ?? "")) || editorOriginalIsFinal(s.topazJob));
     if (rendering || startsSoon || (run && BEFORE_LISTING.includes(run.state))) out.push(s.id);
   }
   return out;
@@ -652,7 +671,10 @@ export async function requestVideoPush(submissionId: string, opts: { by: string;
   }
   const cut = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: submissionId }, select: { topazJob: { select: { id: true, finalPath: true, sourceDurationSec: true } } } });
   next.topazJobId = cut.topazJob?.id ?? null;
-  next.file = { path: cut.topazJob?.finalPath ?? "", name: cut.topazJob?.finalPath?.split("/").pop() ?? "video.mp4", size: null, durationSec: cut.topazJob?.sourceDurationSec ?? null, contentType: contentTypeOf(cut.topazJob?.finalPath ?? "") };
+  // The gates name the file (Oct 22 2026): the 1080p render, or the editor's
+  // original when the original IS the finished file (lib/topazOriginal).
+  const sendPath = g.ok ? g.path : cut.topazJob?.finalPath ?? "";
+  next.file = { path: sendPath, name: sendPath.split("/").pop() || "video.mp4", size: null, durationSec: g.ok ? g.durationSec : cut.topazJob?.sourceDurationSec ?? null, contentType: contentTypeOf(sendPath) };
   next.fingerprint = g.ok ? g.fingerprint : null;
   if (!g.ok) {
     // A hold the run itself re-checks (the client's requests, the job on hold,
@@ -1544,12 +1566,17 @@ export async function pushLinesFor(submissionIds: string[], opts: { uploadedBy?:
   if (!submissionIds.length) return out;
   const [runs, subs] = await Promise.all([
     runsFor(submissionIds),
-    prisma.reviewSubmission.findMany({ where: { id: { in: submissionIds } }, select: { id: true, project: { select: { contentMonthId: true, aryeoListingId: true } }, topazJob: { select: { state: true, outputCheck: true, savedAt: true, finalPath: true } } } }),
+    prisma.reviewSubmission.findMany({ where: { id: { in: submissionIds } }, select: { id: true, finalPath: true, completedAt: true, project: { select: { contentMonthId: true, aryeoListingId: true } }, topazJob: { select: { state: true, outputCheck: true, savedAt: true, finalPath: true } } } }),
   ]);
   for (const s of subs) {
     if (s.project.contentMonthId && !opts.aryeoChosen?.has(s.id)) continue;
     const run = runs.get(s.id) ?? null;
-    const eligible = !!s.project.aryeoListingId && s.topazJob?.state === "done" && !!s.topazJob.savedAt && !!s.topazJob.finalPath && VERIFIED.has(s.topazJob.outputCheck ?? "");
+    const eligible = !!s.project.aryeoListingId && (
+      (s.topazJob?.state === "done" && !!s.topazJob.savedAt && !!s.topazJob.finalPath && VERIFIED.has(s.topazJob.outputCheck ?? ""))
+      // The editor's original as the finished file (Oct 22 2026), once its
+      // Final Dropbox copy has landed — the same test the gates apply.
+      || (editorOriginalIsFinal(s.topazJob) && !!s.finalPath && !!s.completedAt && !s.finalPath.includes("/superseded/"))
+    );
     const line = lineFor(run, { eligible, uploadedBy: opts.uploadedBy?.get(s.id) ?? null });
     if (line) out.set(s.id, line);
   }
