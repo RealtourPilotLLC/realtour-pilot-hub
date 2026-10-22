@@ -18,6 +18,7 @@ import {
   type ClientContext, type SourceExcerpt, type GeneratedScriptJson, type Topic, type TopicBank, type Gap, type StrategyDocument, type ScriptPromptSource, type LockableSection, type ScriptAngle,
 } from "@/lib/contentPolicy";
 import { creativeGuardFromOverrides, discontinuedHit } from "@/lib/creativeGuardCore";
+import { namesToScrub, namesRegex, speakerLabels, splitTurns } from "@/lib/scriptWriter/transcriptScrub";
 
 // ---------------------------------------------------------------------------
 // GENERATION — the only place the Content Program talks to the model, and it
@@ -36,26 +37,32 @@ import { creativeGuardFromOverrides, discontinuedHit } from "@/lib/creativeGuard
 
 // --- client context ---------------------------------------------------------------
 
-/** The names a client's lines are scrubbed of: every OTHER enrolled client's full name and its first two words. */
-function namesToScrub(clients: { name: string | null }[]): string[] {
-  const out: string[] = [];
-  for (const c of clients) {
-    const n = (c.name ?? "").trim();
-    const w = n.split(/\s+/);
-    if (w.length >= 2) out.push(n, `${w[0]} ${w[1]}`);
-  }
-  return [...new Set(out.filter((n) => n.length >= 5))];
+// Oct 22 2026 (the listening fix): who counts as "another client" is decided in
+// scriptWriter/transcriptScrub.ts. A test client ("Jordan Spackman TEST") and a
+// member of staff are never one; before that, every line Jordan said on every
+// call was dropped here, and with it whole older transcripts.
+
+/** Every staff name the hub knows (team members, sign-ins), so none is ever read as another client's. */
+async function staffNames(): Promise<string[]> {
+  const [team, users] = await Promise.all([
+    prisma.teamMember.findMany({ select: { name: true } }),
+    prisma.appUser.findMany({ where: { name: { not: null } }, select: { name: true } }),
+  ]);
+  return [...team.map((t) => t.name), ...users.map((u) => u.name ?? "")].filter(Boolean);
 }
 
 async function otherClientNames(clientId: string): Promise<string[]> {
   const enrolled = await prisma.contentEnrollment.findMany({ where: { clientId: { not: clientId } }, select: { clientId: true } });
-  const clients = await prisma.client.findMany({ where: { id: { in: enrolled.map((e) => e.clientId) } }, select: { name: true } });
-  return namesToScrub(clients);
+  const [clients, staff] = await Promise.all([
+    prisma.client.findMany({ where: { id: { in: enrolled.map((e) => e.clientId) } }, select: { id: true, name: true } }),
+    staffNames(),
+  ]);
+  return namesToScrub(clients, staff);
 }
 
 const scrubWith = (names: string[], lines: string[]): { kept: string[]; stripped: number } => {
-  if (!names.length) return { kept: lines, stripped: 0 };
-  const re = new RegExp(`\\b(${names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i");
+  const re = namesRegex(names);
+  if (!re) return { kept: lines, stripped: 0 };
   const kept = lines.filter((l) => !re.test(l));
   return { kept, stripped: lines.length - kept.length };
 };
@@ -75,9 +82,12 @@ export async function otherClientScrubbers(clientIds: string[]): Promise<Map<str
   const out = new Map<string, (lines: string[]) => string[]>();
   if (!clientIds.length) return out;
   const enrolled = await prisma.contentEnrollment.findMany({ select: { clientId: true } });
-  const clients = await prisma.client.findMany({ where: { id: { in: [...new Set(enrolled.map((e) => e.clientId))] } }, select: { id: true, name: true } });
+  const [clients, staff] = await Promise.all([
+    prisma.client.findMany({ where: { id: { in: [...new Set(enrolled.map((e) => e.clientId))] } }, select: { id: true, name: true } }),
+    staffNames(),
+  ]);
   for (const id of new Set(clientIds)) {
-    const names = namesToScrub(clients.filter((c) => c.id !== id));
+    const names = namesToScrub(clients.filter((c) => c.id !== id), staff);
     out.set(id, (lines) => scrubWith(names, lines).kept);
   }
   return out;
@@ -97,9 +107,19 @@ export async function otherClientScrubbers(clientIds: string[]): Promise<Map<str
  * Single-word lines ("Right.", "Okay.") are never judged by overlap: a word
  * shared with a secret is not the secret. The counts go on the run's
  * inputRefs, so what was held back is on the record without its content.
+ *
+ * Oct 22 2026 (the listening fix): judged per SPEAKER TURN. A stored line that
+ * holds several "Name: ..." turns (Gemini's exports before mid-2026 ran a
+ * minute or two of both speakers together on one line) is split; the
+ * confidential-fact overlap and the other-client name drop only the turn they
+ * hit, and the kept turns come out one per line. A marker or a "this is
+ * private" phrase still takes the whole stored line: the private part can run
+ * on across the other speaker's turns.
  */
 export async function scrubTranscriptForGeneration(clientId: string, text: string): Promise<{ text: string; stripped: number; reasons: { marker: number; phrase: number; confidentialFact: number; otherClient: number } }> {
-  const overlapsSecret = await confidentialFilter(clientId, { phrases: false });
+  const [overlapsSecret, names] = await Promise.all([confidentialFilter(clientId, { phrases: false }), otherClientNames(clientId)]);
+  const namesRe = namesRegex(names);
+  const labels = speakerLabels(text);
   const reasons = { marker: 0, phrase: 0, confidentialFact: 0, otherClient: 0 };
   const kept: string[] = [];
   for (const line of text.split("\n")) {
@@ -107,14 +127,18 @@ export async function scrubTranscriptForGeneration(clientId: string, text: strin
     if (!t) { kept.push(line); continue; }
     if (CONFIDENTIAL_RE.test(t)) { reasons.marker++; continue; }
     if (CONFIDENTIAL_PHRASE_RE.test(t)) { reasons.phrase++; continue; }
-    if (t.split(/\s+/).length >= 2 && overlapsSecret(t)) { reasons.confidentialFact++; continue; }
-    kept.push(line);
+    const turns = splitTurns(t, labels);
+    const ok: string[] = [];
+    for (const turn of turns) {
+      if (turn.split(/\s+/).length >= 2 && overlapsSecret(turn)) { reasons.confidentialFact++; continue; }
+      if (namesRe?.test(turn)) { reasons.otherClient++; continue; }
+      ok.push(turn);
+    }
+    if (turns.length === 1) { if (ok.length) kept.push(line); }
+    else kept.push(...ok);
   }
-  const others = await scrubOtherClients(clientId, kept);
-  // scrubOtherClients also "strips" blank lines only if they name someone — they never do.
-  reasons.otherClient = others.stripped;
   const stripped = reasons.marker + reasons.phrase + reasons.confidentialFact + reasons.otherClient;
-  return { text: others.kept.join("\n").replace(/\n{3,}/g, "\n\n"), stripped, reasons };
+  return { text: kept.join("\n").replace(/\n{3,}/g, "\n\n"), stripped, reasons };
 }
 
 export type BuiltContext = { ctx: ClientContext; enrollmentId: string; clientId: string; strategyVersionId: string | null; strategyLabel: string | null; policyVersionId: string; inputRefs: Record<string, unknown> };

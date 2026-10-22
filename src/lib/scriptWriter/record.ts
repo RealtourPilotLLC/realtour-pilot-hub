@@ -29,6 +29,15 @@ export type BriefItem = { text: string; source: string };
 export type WriterPassage = { id: string; source: string; time: string | null; speaker: string; kind: string; quote: string; context: string; why: string };
 
 export type TopicBrief = {
+  /**
+   * Oct 22 2026 (the listening fix): the brief CHOOSES. A personal story or an
+   * educational video; the interviewer's question for the topic (its intent);
+   * one angle and one proof. A brief written before has none of these.
+   */
+  videoType?: "story" | "educational";
+  whatWeAsked?: string;
+  angle?: string;
+  proof?: BriefItem | null;
   centralMessage: string;
   viewer: string;
   whyChosen: string;
@@ -66,7 +75,7 @@ export type WriterRecord = {
   rationale: WriterRationale | null;
   facts: WriterFact[];
   sources: { calls: string[]; olderWindows: number; relatedScripts: string[]; voiceRefs: { title: string; why: string }[]; answers: number };
-  runs: { retrieval: string | null; brief: string | null; hooks: string | null; draft: string | null };
+  runs: { retrieval: string | null; brief: string | null; hooks: string | null; draft: string | null; /** Oct 22 2026: the second retrieval, over her older calls. */ olderRetrieval?: string | null };
   /** Phase 3's offline test: the moment the sources were read as of. Null = now. */
   asOf: string | null;
 };

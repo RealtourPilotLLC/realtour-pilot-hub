@@ -32,6 +32,14 @@
 //   12. a person's revision keeps the whole instruction
 //   13. the fact cleanup: the dry run writes nothing and sorts a fixture set
 //       correctly; --apply is compare-and-set, idempotent and resumable
+//   14. the listening fix (Oct 22 2026, LISTENING.md): with "Jordan Spackman
+//       TEST" enrolled, Jordan's lines still reach the writer and only a real
+//       other client's turn goes; her older calls are read by HER words in a
+//       second retrieval; an accepted fact from an older month reaches the
+//       writer, a month-bound one does not; the brief caps must-keep and never
+//       keeps a live deal; a story's hook opens on her moment; a failed
+//       re-hook starts the next round from the runner-up hook (the automatic
+//       check and the offline run); no client's finals in any rule
 //
 // ISOLATION: PGlite on 127.0.0.1 via the shared harness; the Anthropic API is
 // faked at fetch with canned answers; nothing else may leave.
@@ -66,6 +74,7 @@ const TRANSCRIPT = [
   `${CLIENT}: Buyers and their agents look at the roof and the major systems first.`,
   "00:14:30",
   "Jordan Spackman: Can we film on Tuesday next week instead?",
+  `${CLIENT}: Erica Walker told me her listing on Elm went under contract in two days.`,
   `${CLIENT}: Tuesday works, and I uploaded the raw files to the Dropbox last night.`,
   "Jordan Spackman: Perfect.",
   "00:20:00",
@@ -96,6 +105,10 @@ const TOPIC_E = "Why the First Weekend Sets Your Price";
 const TOPIC_F = "What I Check Before Every Listing";
 const TOPIC_H = "Offline Topic That Passes After a Trim";
 const TOPIC_I = "Offline Topic Whose Trim Loses Substance";
+const TOPIC_G = "A Topic Whose Re-hook Fails Review";
+const TOPIC_J = "Offline Topic Whose Re-hook Fails Once";
+const HOOK_RUNNER_UP = "Fresh paint can do more than a new kitchen.";
+const HOOK_THIRD = "Before you renovate, look at your house the way a buyer will.";
 const CONCEPT_A = "Items buyers and inspectors flag every single time, and most are never cosmetic.";
 const HOOK_WIN = "The repairs you think your house needs might not be where your money should go.";
 const HOOK_WIN_B = "I loved working in senior living. So why did I leave?";
@@ -114,7 +127,7 @@ const ctl = {
 };
 const usage = { input_tokens: 1200, output_tokens: 400, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 const ok = (json: unknown, extra: Record<string, unknown> = {}) => new Response(JSON.stringify({ id: "msg_drill", type: "message", role: "assistant", model: "claude-opus-5-5", content: [{ type: "thinking", thinking: "" }, { type: "text", text: JSON.stringify(json) }], stop_reason: "end_turn", usage, ...extra }), { status: 200, headers: { "content-type": "application/json" } });
-const topicOf = (prompt: string) => (prompt.includes(TOPIC_A) ? "A" : prompt.includes(TOPIC_B) ? "B" : prompt.includes(TOPIC_C) ? "C" : prompt.includes(TOPIC_E) ? "E" : prompt.includes(TOPIC_F) ? "F" : prompt.includes(TOPIC_H) ? "H" : prompt.includes(TOPIC_I) ? "I" : "?");
+const topicOf = (prompt: string) => (prompt.includes(TOPIC_A) ? "A" : prompt.includes(TOPIC_B) ? "B" : prompt.includes(TOPIC_C) ? "C" : prompt.includes(TOPIC_E) ? "E" : prompt.includes(TOPIC_F) ? "F" : prompt.includes(TOPIC_H) ? "H" : prompt.includes(TOPIC_I) ? "I" : prompt.includes(TOPIC_G) ? "G" : prompt.includes(TOPIC_J) ? "J" : "?");
 const stepOf = (system: string, prompt: string) =>
   /^You read call transcripts for ONE video topic/.test(system) ? "retrieval"
   : /^You write the TOPIC BRIEF/.test(system) ? "brief"
@@ -130,7 +143,9 @@ function writerAnswer(t: string, step: string, prompt: string) {
   const queue = ctl.sizes.get(t) ?? [];
   const sz = queue.shift() ?? [15, 15, 15, 12];
   ctl.sizes.set(t, queue);
-  const hook = t === "B" ? HOOK_WIN_B : HOOK_WIN;
+  // A redraft from the runner-up hook (Oct 22 2026) is answered with that hook, as the model is told to.
+  const told = /THE CHOSEN HOOK \(use it word for word\): (.*)/.exec(prompt)?.[1];
+  const hook = step !== "draft" && told ? told : t === "B" ? HOOK_WIN_B : HOOK_WIN;
   return {
     title: step === "draft" ? `Draft for ${t}` : `Revised ${t}`, hook: step === "draft" ? "A hook the code must replace with the winner." : hook,
     rehook: words(sz[0], 1), buildup: words(sz[1], 3), payoff: words(sz[2], 5), close: t === "A" ? `Before you change everything, ${words(Math.max(1, sz[3] - 4), 7)}` : words(sz[3], 9),
@@ -224,15 +239,23 @@ async function main() {
     await saveSecret("ai", ["sk", "ant", "drill", "0000000000"].join("-"));
     const f = await buildContentMonth(prisma, {
       name: CLIENT, package: "Pro", monthKey: "2026-10",
-      topics: [TOPIC_A, TOPIC_B, TOPIC_C, TOPIC_D, TOPIC_E, TOPIC_F, TOPIC_H, TOPIC_I].map((title) => ({ title, selection: "SELECTED" as const, source: "ai" })),
+      topics: [TOPIC_A, TOPIC_B, TOPIC_C, TOPIC_D, TOPIC_E, TOPIC_F, TOPIC_H, TOPIC_I, TOPIC_G, TOPIC_J].map((title) => ({ title, selection: "SELECTED" as const, source: "ai" })),
     });
-    const [tA, tB, tC, tD, tE, tF, tH, tI] = f.topicIds;
+    const [tA, tB, tC, tD, tE, tF, tH, tI, tG, tJ] = f.topicIds;
+    // The listening fix (Oct 22 2026): production holds "Jordan Spackman TEST" enrolled beside real clients.
+    // With the old filter that one row deleted every line Jordan said; a real other client still goes.
+    const enroll = async (name: string) => { const cl = await prisma.client.create({ data: { name } }); await prisma.contentEnrollment.create({ data: { clientId: cl.id, package: "Pro", videosPerMonth: 4, sessionsPerMonth: 1, sessionHours: 2 } }); return cl; };
+    await enroll("Jordan Spackman TEST");
+    await enroll("Erica Walker");
+    // A real client row carrying a staff member's name (production's two real "Jordan Spackman" rows are Jordan).
+    await prisma.teamMember.create({ data: { name: "Harrison Drillwell", email: "harrison.drill@example.test" } });
+    await enroll("Harrison Drillwell");
     await prisma.contentTopic.update({ where: { id: tA }, data: { concept: CONCEPT_A, intendedMessage: "Inspectors flag the same things every time." } });
     await prisma.contentEnrollment.update({ where: { id: f.enrollmentId }, data: { overridesJson: JSON.stringify({ creative: { discontinued: [{ name: "Fairy God Realtor", by: "jordan", at: "2026-10-01T00:00:00.000Z", reason: "she stopped the series" }] } }) } });
     // The topic's call, confirmed, with its transcript; an older month's pasted transcript.
     const call = await prisma.programCallRecord.create({ data: { enrollmentId: f.enrollmentId, clientId: f.clientId, callType: "MONTHLY_STRATEGY", monthId: f.monthId, scheduledStart: new Date("2026-10-15T14:00:00Z"), status: "COMPLETED", matchState: "MATCHED", transcriptState: "ANALYZED" } });
     await prisma.programTranscriptSource.create({ data: { callRecordId: call.id, provider: "drive", text: TRANSCRIPT, contentHash: `drill-${Date.now()}`, matchState: "CONFIRMED", recordedAt: new Date("2026-10-15T14:00:00Z") } });
-    await prisma.contentMonth.create({ data: { enrollmentId: f.enrollmentId, clientId: f.clientId, monthKey: "2026-02", videosOwed: 4, status: "COMPLETED", transcriptText: OLDER, strategyCallAt: new Date("2026-02-05T15:00:00Z") } });
+    const feb = await prisma.contentMonth.create({ data: { enrollmentId: f.enrollmentId, clientId: f.clientId, monthKey: "2026-02", videosOwed: 4, status: "COMPLETED", transcriptText: OLDER, strategyCallAt: new Date("2026-02-05T15:00:00Z") } });
     // Facts.
     const fact = (d: Record<string, unknown>) => prisma.clientFact.create({ data: { clientId: f.clientId, enrollmentId: f.enrollmentId, category: "BRAND_PREFERENCE", source: "call", status: "PROPOSED", aiContext: "DENIED", ...d } as never, select: { id: true } });
     const fUnreviewed = await fact({ body: "Recommends the pre-listing inspection to every seller so repairs happen on her terms", category: "PROPOSED_CHANGE", speaker: "client", factDate: new Date("2026-10-15T14:30:00Z") });
@@ -240,6 +263,13 @@ async function main() {
     const fProduction = await fact({ body: "Prefers to film inspection videos on Tuesday mornings", category: "PRODUCTION_PREFERENCE", speaker: "client" });
     const fTeam = await fact({ body: "Wants her listing repair checklist mailed to past clients", category: "PROPOSED_CHANGE", speaker: "client", status: "ACCEPTED", aiContext: "DENIED", reviewedBy: cleanup.TEAM_REVIEWER });
     const fAccepted = await fact({ body: "Her husband Dan is a professional renovator who prices repairs on walkthroughs", category: "PROPOSED_CHANGE", source: "staff", status: "ACCEPTED", aiContext: "ALLOWED", reviewedBy: STAFF });
+    // The listening fix: facts filed under an OLDER month (her migrated notes).
+    const OLD_HISTORY = "Left senior living for real estate because she did not have total control over everything";
+    const OLD_LOGISTICS = "Wants to film the February repair series at her office";
+    const OLD_CLAIM = "Transitioned into real estate from a role as sales and marketing director";
+    await fact({ body: OLD_HISTORY, category: "PROPOSED_CHANGE", source: "note_migration", status: "ACCEPTED", aiContext: "ALLOWED", reviewedBy: "ai-cleanup-oct22", scope: "MONTH", monthId: feb.id });
+    await fact({ body: OLD_LOGISTICS, category: "PROPOSED_CHANGE", source: "note_migration", status: "ACCEPTED", aiContext: "ALLOWED", reviewedBy: "ai-cleanup-oct22", scope: "MONTH", monthId: feb.id });
+    await fact({ body: OLD_CLAIM, category: "BRAND_PREFERENCE", source: "call", status: "ACCEPTED", aiContext: "ALLOWED", reviewedBy: STAFF });
     // Scripts: a discontinued series, a same-subject filmed script, an office-approved one on another subject.
     const histScript = async (title: string, body: string) => prisma.contentScript.create({ data: { enrollmentId: f.enrollmentId, clientId: f.clientId, title, body, source: "import", historical: true, status: "APPROVED", createdAt: new Date("2026-03-01T00:00:00Z") } });
     await histScript("Fairy God Realtor Tip #5", "Sellers, buyers notice the little repairs before they list and the roof too.");
@@ -298,7 +328,10 @@ async function main() {
     {
       const ret = step("retrieval")[0];
       c.ok("the retrieval step read the topic's call IN FULL (every line of it)", !!ret && ret.prompt.includes(Q_SENIOR) && ret.prompt.includes("Buyers and their agents look at the roof"), `${ret?.prompt.length} chars`);
-      c.ok("…and an older call's window found by the topic's words", !!ret && ret.prompt.includes(Q_PAINT) && /older call for 2026-02/.test(ret.prompt));
+      // Oct 22 2026 (the listening fix): the topic's call is read first; her words there choose the older windows,
+      // read in a second retrieval that is told what she already said (this assertion used to read the first request).
+      const ret2 = step("retrieval")[1];
+      c.ok("…and an older call's window found by HER words, read in a second retrieval told what she already said", !!ret2 && ret2.prompt.includes(Q_PAINT) && /older call for 2026-02/.test(ret2.prompt) && !ret.prompt.includes(Q_PAINT) && /WHAT SHE ALREADY SAID ON THIS TOPIC'S CALL[\s\S]*I always recommend a pre-listing inspection/.test(ret2.prompt) && ret2.system === ret.system, `${step("retrieval").length} retrievals`);
       c.ok("retrieval and brief at medium effort; hooks, draft and review at high", ret?.body && (ret.body.output_config as { effort: string }).effort === "medium" && (step("brief")[0]?.body.output_config as { effort: string }).effort === "medium" && (step("hooks")[0]?.body.output_config as { effort: string }).effort === "high" && (step("draft")[0]?.body.output_config as { effort: string }).effort === "high" && (step("review")[0]?.body.output_config as { effort: string }).effort === "high");
       c.ok("every writer request: opus 5.5, json_schema, no tool_choice, no temperature, version unchanged", mine.filter((r) => r.step !== "other").every((r) => r.body.model === "claude-opus-5-5" && (r.body.output_config as { format: { type: string } }).format.type === "json_schema" && !("tool_choice" in r.body) && !("temperature" in r.body) && r.headers["anthropic-version"] === "2023-06-01"), mine.map((r) => r.step).join(","));
 
@@ -472,13 +505,13 @@ async function main() {
       const briefReq = reqs.find((r) => r.step === "brief" && r.prompt.includes(TOPIC_B));
       const reviewReq = reqs.find((r) => r.step === "review" && r.prompt.includes(TOPIC_B));
       c.ok("the brief and the review are given THE FULL CALL to check what she said", !!briefReq && /THE FULL CALL \(to check what she said, anywhere in it/.test(briefReq.prompt) && briefReq.prompt.includes("every bit as scary") && !!reviewReq && /THE FULL CALL/.test(reviewReq.prompt) && reviewReq.prompt.includes("Buyers and their agents look at the roof"));
-      c.ok("brief rules: the insight plus how she helps (not a fun fact); must-keep are POINTS; her real reason is never \"biography\"; check the whole call", prompts.BRIEF_SYSTEM.includes("the INSIGHT plus HOW SHE HELPS") && prompts.BRIEF_SYSTEM.includes("NOT \"first-time buyers are her favorite clients\"") && prompts.BRIEF_SYSTEM.includes("the POINTS the script cannot lose") && prompts.BRIEF_SYSTEM.includes("never excluded as \"biography\"") && prompts.BRIEF_SYSTEM.includes("CHECK AGAINST THE WHOLE CALL"));
+      c.ok("brief rules: the insight plus how she helps (not a fun fact); must-keep are POINTS; her real reason is never \"biography\"; check the whole call", prompts.BRIEF_SYSTEM.includes("the INSIGHT plus HOW SHE HELPS") && prompts.BRIEF_SYSTEM.includes("Not a fun fact about her (who her favorite clients are") && prompts.BRIEF_SYSTEM.includes("the POINTS the script cannot lose") && prompts.BRIEF_SYSTEM.includes("never excluded as \"biography\"") && prompts.BRIEF_SYSTEM.includes("CHECK AGAINST THE WHOLE CALL"));
       c.ok("…and her best short phrases are kept apart (herPhrases), stored with the brief", wB?.brief.herPhrases?.[0]?.text === "fiercely protect their interests");
       for (const [name, sys] of [["writer", prompts.WRITER_SYSTEM], ["brief", prompts.BRIEF_SYSTEM], ["hooks", prompts.HOOKS_SYSTEM], ["review", prompts.REVIEW_SYSTEM]] as const) {
         c.ok(`${name}: her material, our wording, and Jordan's craft rules (story progression, her ACTUAL reason, the insight, educational contrast)`, sys.includes("HER MATERIAL, OUR WORDING") && sys.includes("Never paste her spoken sentences") && sys.includes("her ACTUAL reason for the change") && sys.includes("the insight that connects her past to the viewer's need") && sys.includes("meaningful contrast"));
       }
       c.ok("close: a warm invitation by default, a callback alone only for a story with no service angle", rules.CLOSE_RULE.includes("by default, ends on a natural, warm invitation") && rules.CLOSE_RULE.includes("only when the video is purely a story with no service angle") && prompts.REVIEW_SYSTEM.includes("by default a warm, natural invitation tied to the message"));
-      c.ok("review: transcript sentences pasted in fail her voice; a faithful paraphrase is supported; a fun fact is not a payoff", prompts.REVIEW_SYSTEM.includes("Her transcript sentences pasted in (rambling, filler, restarts) fail") && prompts.REVIEW_SYSTEM.includes("a faithful paraphrase is supported") && prompts.REVIEW_SYSTEM.includes("a fun fact about her (\"they are my favorite clients\") is not a payoff"));
+      c.ok("review: transcript sentences pasted in fail her voice; a faithful paraphrase is supported; a fun fact is not a payoff", prompts.REVIEW_SYSTEM.includes("Her transcript sentences pasted in (rambling, filler, restarts) fail") && prompts.REVIEW_SYSTEM.includes("a faithful paraphrase is supported") && prompts.REVIEW_SYSTEM.includes("a fun fact about her (who her favorite clients are, a hobby, an award) is not a payoff"));
       const pasted = rules.hardNumbers({ hook: "I loved working in senior living.", points: [{ role: "re-hook", text: "I used to run sales and marketing for a retirement community before I got my license." }], close: "Let's talk." }, TRANSCRIPT);
       const phrase = rules.hardNumbers({ hook: "I loved working in senior living.", points: [{ role: "payoff", text: "Both needed someone to explain their options and fiercely protect their interests." }], close: "Let's talk." }, TRANSCRIPT);
       c.ok("code: a sentence pasted from the call (11 words or more in a row) fails Sounds like her, must-fix; her short phrase does not", pasted.findings.some((x) => x.key === "pasted" && x.level === "must-fix") && !phrase.findings.some((x) => x.key === "pasted"), JSON.stringify(pasted.findings.map((x) => x.key)));
@@ -628,6 +661,103 @@ async function main() {
       const wf = sources.writerFactsFrom(rows, { names: ["Second Agent TEST"], keywords: [] }).map((y) => y.body).join(" | ");
       c.ok("after the cleanup the writer reads the SCRIPT facts, never TEAM or a DROP suggestion", wf.includes("Recommends a pre-listing inspection before every listing") && !/Tuesday|Invoices|again before/.test(wf), wf);
       void ap; void d1;
+    }
+
+    // =======================================================================
+    c.head("14 · the listening fix (Oct 22 2026): Jordan's lines, her older calls and facts, a brief that chooses, the hook's job");
+    {
+      // --- 1. the name filter, end to end (topic A was drafted with "Jordan Spackman TEST" and "Erica Walker" enrolled)
+      const ret = reqs.find((r) => r.step === "retrieval" && r.prompt.includes(TOPIC_A))?.prompt ?? "";
+      c.ok("with \"Jordan Spackman TEST\" enrolled, every line Jordan said reaches the writer", ["So what do people get wrong about repairs", "Jordan Spackman: Love that.", "Can we film on Tuesday next week", "That is a great way to put it"].every((x) => ret.includes(x)));
+      c.ok("…and the real other client's turn does not (her other lines around it stay)", !ret.includes("Erica Walker") && !ret.includes("went under contract in two days") && ret.includes("Tuesday works, and I uploaded"));
+      const wA = record.readWriter((await prisma.contentScriptVersion.findFirst({ where: { scriptId: rA.scriptId, versionNo: 1 } }))?.validationJson);
+      const briefA = reqs.find((r) => r.step === "brief" && r.prompt.includes(TOPIC_A))?.prompt ?? "";
+      c.ok("the interviewer's question reaches the brief as WHAT WE ASKED (never as her words)", /WHAT WE ASKED[^\n]*\n- "So what do people get wrong about repairs before they list\?" \(strategy call/.test(briefA) && !(wA?.passages ?? []).some((p) => /get wrong/.test(p.quote)), (/WHAT WE ASKED[^\n]*\n[^\n]*/.exec(briefA) ?? [""])[0]);
+
+      // --- 2. older calls by her words (pure, on a Marcee-shaped older export)
+      const P = await import("@/lib/scriptWriter/passages");
+      const OLD_EXPORT = [
+        "📝 Notes", "", "Summary", "",
+        "Jordan Spackman met with Marcee McMullen to discuss a work plan for her senior niche, her type of client and her life today.", "",
+        "📖 Transcript", "", "Jan 26, 2026", "",
+        "00:13:48", "",
+        " Jordan Spackman: What do buyers tell you when they first call?Marcee McMullen: Buyers often share with me that they feel lost and kind of on their own or uncertain what to do.Jordan Spackman: Mhm.Marcee McMullen: Especially first-time home buyers. They like me because I protect them and I'm very honest with them.",
+        "00:20:10", "",
+        " Jordan Spackman: Okay, and the video style?Marcee McMullen: I like the bright edits we did, the music was great.Jordan Spackman: Okay.",
+      ].join("\n");
+      const seniorsPassages = [
+        { quote: "In my case, what surprised me was how many first-time home buyers were attracted to me. And I think it's because um they felt the need to be protected and cared for.", context: "Jordan Spackman: how did you transition into real estate?" },
+        { quote: "it's every bit as scary and difficult as when you're a senior that is moving out of a home", context: "Marcee McMullen: honest guidance for first-time buyers" },
+      ];
+      const kw = P.herKeywords({ title: "I Used to Think I Would Only Work With Seniors", passages: seniorsPassages });
+      const aiKw = P.topicKeywords("I Used to Think I Would Only Work With Seniors", "The original assumption about a senior niche, the moment it changed and the type of client she works with today", "Make the advisor relatable to every type of client in life");
+      const scrubbed = (await gen.scrubTranscriptForGeneration(f.clientId, OLD_EXPORT)).text;
+      const docLines = P.segmentTranscript(P.transcriptBody(scrubbed));
+      const wins = sources.olderWindowsFor([{ label: "older call for 2026-01", lines: docLines }], kw);
+      c.ok("her keywords come from her words (first-time, protect, scary), never the generic AI words (work, type, life, make)", ["first", "protect", "scary"].every((k) => kw.includes(k)) && !["work", "type", "life", "make", "moment", "original"].some((k) => kw.includes(k)) && aiKw.length > 0, kw.join(","));
+      c.ok("an old one-line-per-block export is read turn by turn, Jordan's turns kept, Gemini's notes skipped", docLines.some((l) => l.text.startsWith("Jordan Spackman: What do buyers tell you")) && docLines.some((l) => l.text.startsWith("Marcee McMullen: Buyers often share")) && !docLines.some((l) => /met with Marcee/.test(l.text)), docLines.map((l) => l.text.slice(0, 30)).join(" | "));
+      c.ok("…and the window found by her words is her \"feel lost ... uncertain\" answer at 00:13:48, not the notes and not the video-style talk", wins.length >= 1 && wins[0].text.includes("feel lost") && wins[0].time === "00:13:48" && !wins.some((w) => /bright edits/.test(w.text) && !/feel lost/.test(w.text)), JSON.stringify(wins.map((w) => [w.time, w.score, w.text.slice(0, 60)])));
+      const longLines = Array.from({ length: 30 }, (_, i) => ({ i, text: i === 22 ? "Marcee McMullen: the pre-listing inspection protects the seller and the inspection cost is small" : `Marcee McMullen: filler line number ${i} about nothing in particular at all, padded out to some length.`, time: i >= 20 ? "00:53:00" : "00:50:00", speaker: "Marcee McMullen" }));
+      const centred = P.keywordWindows(longLines, ["inspection", "protect", "cost", "small"], { radius: 12, max: 1, maxChars: 500 });
+      c.ok("a long window is cut AROUND its best line, with that line's time", centred.length === 1 && centred[0].text.includes("pre-listing inspection protects") && centred[0].time === "00:53:00", centred[0]?.text.slice(0, 80));
+
+      // --- 3. her durable facts from older months (topic A's draft prompt)
+      const draftA = reqs.find((r) => r.step === "draft" && r.prompt.includes(TOPIC_A))?.prompt ?? "";
+      c.ok("an accepted fact filed under an older month, about her, reaches the writer", draftA.includes(OLD_HISTORY));
+      c.ok("…a month-bound one (that month's filming plan) does not", !draftA.includes(OLD_LOGISTICS));
+      c.ok("…and a brand-preference fact that is a claim about her is labelled sayable, not \"never a line to say\"", new RegExp(`${OLD_CLAIM}[^\\n]*about her, so it can be said`).test(draftA) && !new RegExp(`${OLD_CLAIM}[^\\n]*never a line to say`).test(draftA));
+      c.ok("isDurableFact / isDirectionFact (pure)", sources.isDurableFact({ body: OLD_HISTORY, category: "PROPOSED_CHANGE" }) && !sources.isDurableFact({ body: "Next month she wants the open house series", category: "PROPOSED_CHANGE" }) && !sources.isDurableFact({ body: "Decided on three repair videos", category: "DECISION" }) && sources.isDirectionFact("Her brand voice is fun and honest") && !sources.isDirectionFact(OLD_CLAIM));
+
+      // --- 4. the brief chooses (pure)
+      const six = ["the belief", "reason one", "reason two", "her process", "the contrast", "the invitation"].map((text, i) => ({ text, source: `P${i + 1}` }));
+      const edu = pipe.briefFrom({ videoType: "educational", angle: "Your neighbor's sale is not your price.", whatWeAsked: "What do sellers need to know? (01:21:57)", proof: { text: "buyers have options", source: "P2" }, mustKeep: [...six, { text: "her buyer's offer on the overpriced listing, $20,000 over", source: "P7", inProgress: true }] }, []);
+      c.ok("an educational brief keeps at most four must-keep points; the rest move to optional, marked", edu.mustKeep.length === 4 && edu.mustKeep.map((m) => m.text).join() === "the belief,reason one,reason two,her process" && edu.optional.slice(0, 2).every((o) => /moved from must-keep/.test(o.text)), JSON.stringify(edu.mustKeep.map((m) => m.text)));
+      c.ok("…a deal still in progress is never must-keep: it is excluded, with the reason", !edu.mustKeep.some((m) => /20,000/.test(m.text)) && edu.excluded.some((x) => /20,000/.test(x.text) && /still in progress/.test(x.reason)));
+      c.ok("…the angle, the one proof and what we asked are kept, and the brief text shows them", edu.angle === "Your neighbor's sale is not your price." && edu.proof?.text === "buyers have options" && /What we asked her[^\n]*What do sellers need to know/.test(prompts.briefText(edu)) && /Angle \(the one thing\)/.test(prompts.briefText(edu)));
+      const story = pipe.briefFrom({ videoType: "story", mustKeep: [...six, { text: "seventh beat", source: "P9" }] }, []);
+      const old = pipe.briefFrom({ mustKeep: six }, []);
+      c.ok("a story keeps its beats up to six; a brief with no video type is read as educational (four)", story.mustKeep.length === 6 && story.videoType === "story" && old.mustKeep.length === 4 && old.videoType === "educational");
+      c.ok("the brief prompt asks for one angle, one proof, the interviewer's question, the cap and no live deal", ["angle: ONE sentence", "proof: the ONE proof", "whatWeAsked:", "at most 4", "NEVER A LIVE DEAL", "when her story serves two groups, the viewer is both"].every((x) => prompts.BRIEF_SYSTEM.includes(x)));
+
+      // --- 5. the hook for the story's job, and the runner-up on a failed re-hook (pure)
+      const sc = (n: number) => ({ relevance: n, curiosity: n, specificity: n, naturalDelivery: n, accuracy: 5, herVoice: n, payoffConnection: n });
+      const raw = [
+        { text: "Buying my first home shouldn't feel this scary, right?", rehook: "It should.", lever: "viewer question", fit: "viewer_line", scores: sc(5) },
+        { text: "Every senior I helped move felt like my responsibility. Then I walked away.", rehook: "Here is why.", lever: "her moment", fit: "her_moment", scores: sc(4) },
+        { text: "I came into real estate sure I'd only work with seniors. I was wrong.", rehook: "First-time buyers called.", lever: "her moment", fit: "her_moment", scores: sc(3) },
+      ];
+      const asStory = rules.pickHook(raw, { videoType: "story" });
+      const asEdu = rules.pickHook(raw, { videoType: "educational" });
+      c.ok("a personal story opens on HER moment, even when a viewer's line scores higher; an educational video keeps the score order", asStory.chosen === 1 && asEdu.chosen === 0, `${asStory.chosen} / ${asEdu.chosen}`);
+      c.ok("the runner-up: the next usable hook not yet tried, in the same order", rules.runnerUpHook(asStory.hooks, [raw[1].text], "story")?.text === raw[2].text && rules.runnerUpHook(asStory.hooks, raw.map((r) => r.text), "story") === null);
+      const instr = pipe.writerFixInstruction({ checks: rules.mergeReview([{ key: "rehook", pass: false, reason: "It should. tells a nervous buyer the fear is warranted" }], [], 70) });
+      c.ok("a failed re-hook is read from the fix instruction; a failed close is not", rules.hookFailed({ instruction: instr }) && !rules.hookFailed({ instruction: pipe.writerFixInstruction({ checks: rules.mergeReview(rules.REVIEW_CHECK_KEYS.map((key) => ({ key, pass: key !== "close", reason: "x" })), [], 70) }) }));
+      c.ok("the hooks prompt: a story opens on her moment; the viewer's line is for an educational video; each hook says its fit", prompts.HOOKS_SYSTEM.includes("A PERSONAL STORY opens on HER moment") && prompts.HOOKS_SYSTEM.includes("An EDUCATIONAL video voices the viewer's own belief") && JSON.stringify(prompts.HOOKS_SCHEMA).includes("her_moment"));
+
+      // --- 6. the runner-up hook in the automatic check: a re-hook that keeps failing
+      ctl.reviews.set("G", [["rehook"], ["rehook"], ["rehook"]]);
+      const g0 = reqs.length;
+      const rG = await gen.generateScriptForTopic({ topicId: tG, monthId: f.monthId, requestedBy: STAFF, unattended: false, callRecordId: call.id });
+      const fixesG = reqs.slice(g0).filter((r) => r.step === "fix");
+      c.ok("fix round 1 starts again from the runner-up hook (a redraft, not a patch around the locked one)", fixesG.length === 2 && fixesG[0].prompt.includes(`THE CHOSEN HOOK (use it word for word): ${HOOK_RUNNER_UP}`) && /REDRAFT RULES/.test(fixesG[0].prompt) && /THE PREVIOUS VERSION \(v1\), which failed the review/.test(fixesG[0].prompt), String(fixesG.length));
+      c.ok("…fix round 2, the re-hook failing again, takes the third hook (never one already tried)", fixesG[1]?.prompt.includes(`THE CHOSEN HOOK (use it word for word): ${HOOK_THIRD}`));
+      const vsG = await prisma.contentScriptVersion.findMany({ where: { scriptId: rG.scriptId }, orderBy: { versionNo: "asc" }, select: { hook: true } });
+      c.ok("…and the versions carry those hooks", vsG.map((v) => v.hook).join(" | ") === [HOOK_WIN, HOOK_RUNNER_UP, HOOK_THIRD].join(" | ") || vsG.length >= 3 && vsG[1].hook === HOOK_RUNNER_UP && vsG[2].hook === HOOK_THIRD, vsG.map((v) => v.hook).join(" | "));
+      // ... and in the offline run
+      ctl.reviews.set("J", [["rehook"], []]);
+      const offJ = await pipe.draftOffline({ topicId: tJ, monthId: f.monthId, requestedBy: STAFF });
+      c.ok("offline: a failed re-hook → \"fix 1 (runner-up hook)\" with the runner-up word for word, then passed", offJ.state === "passed" && offJ.attempts[1]?.label === "fix 1 (runner-up hook)" && offJ.attempts[1].parts.hook === HOOK_RUNNER_UP, offJ.attempts.map((a) => `${a.label}:${a.parts.hook.slice(0, 20)}`).join(","));
+
+      // --- 7. no client's finals in any rule or system prompt (they were the answer key for Marcee's test)
+      const FINALS = [
+        "I absolutely loved working in senior living. So why did I leave? I wanted the freedom to do more. So I became a Realtor, expecting to help older adults downsize. Then the first-time buyers started calling. And surprisingly, both groups were asking the same questions. Where do I start? Who can I trust? What am I not asking? They needed someone to explain their options and fiercely protect their interests. That's the work I've always loved, but now I have the opportunity to help even more people. Whether it's your first home or your next chapter, you don't need all the answers before calling me. That's what I'm here for.",
+        "But my house is different. Maybe it is. But that doesn't automatically mean it'll sell for more. The market has changed. But some homeowners still expect a bidding war by Sunday. Buyers have options. Your neighbor's sale isn't the whole story, and pricing, preparation, and marketing all matter. That's why I study what's selling, what's sitting, and what buyers are passing over. I'll give you honest advice on what to do next. There are still great opportunities. And your home is different! That's why it deserves a strategy built for today's market. Let's talk.",
+        "The repairs you think your house needs before you sell? They might not be where your money should go. Sometimes, fresh paint and rearranging furniture do more than an expensive renovation. But preparation goes deeper than appearances. Buyers and their agents are also looking at the roof, major systems, and any signs of potentially costly problems. That's why I recommend a pre-listing inspection. We can identify issues early and decide what to repair, refresh, or leave alone before negotiations. I'm here to help you see your home through their eyes. Before you change everything, let's talk about what actually matters.",
+      ].join("\n");
+      const allRules = [prompts.RETRIEVAL_SYSTEM, prompts.BRIEF_SYSTEM, prompts.HOOKS_SYSTEM, prompts.WRITER_SYSTEM, prompts.REVIEW_SYSTEM, rules.CLOSE_RULE, rules.HOUSE_CRAFT_RULES, rules.WORDING_RULE, rules.HOMEOWNER_LANGUAGE_RULE, rules.trimInstruction(98), JSON.stringify([prompts.BRIEF_SCHEMA, prompts.HOOKS_SCHEMA, prompts.DRAFT_SCHEMA, prompts.REVIEW_SCHEMA])].join("\n");
+      const leaked = rules.pastedRuns(FINALS, allRules, 5);
+      c.ok("no run of five or more words from Jordan's three finals appears in any rule, system prompt or schema", leaked.length === 0, leaked.join(" | "));
+      c.ok("…nor their signature phrases", !/fiercely protect|every bit as scary|my house is different|bidding war|first home or your next chapter|through their eyes|senior living/i.test(allRules));
     }
 
     c.ok("nothing left the drill but the faked model", fence.blocked.length === 0 && fence.faked.every((u) => u === "https://api.anthropic.com/v1/messages"), fence.blocked.join(", "));
