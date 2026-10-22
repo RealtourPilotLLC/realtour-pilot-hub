@@ -83,13 +83,16 @@ export function aryeoPushLine(push: AryeoPushView): { text: string; tone: "muted
   if (p.deliveredAt && p.state === "DONE") return { text: `Delivered in Aryeo by the hub ${etMonthDayTime(p.deliveredAt)}.`, tone: "good" };
   if (p.state === "FAILED") return { text: p.note ?? "Sending to Aryeo stopped.", tone: "bad" };
   if (p.state === "PREPARING") return { text: p.note ?? "Getting the photos ready in 06-Ready-for-Aryeo first.", tone: "busy" };
-  if (p.state === "SENDING") return { text: `Sending to Aryeo: ${p.sent} of ${p.total}${p.already ? ` (${p.already} already there)` : ""}.`, tone: "busy" };
+  // Oct 22 2026 (a split job): the photos already on the listing stay first and are never sent again.
+  const kept = p.kept ? ` The ${p.kept} already on the listing stay first, in their order.` : "";
+  if (p.state === "SENDING") return { text: `Sending to Aryeo: ${p.sent} of ${p.total}${p.already ? ` (${p.already} already there)` : ""}.${kept}`, tone: "busy" };
   if (p.state === "ADDING") return { text: "Adding the photos to the listing.", tone: "busy" };
   if (p.state === "CHECKING") return { text: p.note ?? "Checking that Aryeo has every photo.", tone: "busy" };
   if (p.state === "ORDERING") return { text: "Putting the photos in delivery order.", tone: "busy" };
   if (p.state === "DELIVERING" || p.state === "CONFIRMING") return { text: "Delivering in Aryeo.", tone: "busy" };
-  if (p.state === "WAITING") return { text: p.note ?? `All ${p.total} photos are on the listing, in order. Ready to deliver.`, tone: p.note ? "bad" : "good" };
-  if (p.state === "DONE") return p.changed ? { text: p.note ?? "", tone: "bad" } : { text: `All ${p.total} photos are on the listing, in order${p.note ? ` (${p.note})` : ""}. Deliver in Aryeo when ready.`, tone: "good" };
+  const after = p.kept ? `, after the ${p.kept} already there` : "";
+  if (p.state === "WAITING") return { text: p.note ?? `All ${p.total} photos are on the listing, in order${after}. Ready to deliver.`, tone: p.note ? "bad" : "good" };
+  if (p.state === "DONE") return p.changed ? { text: p.note ?? "", tone: "bad" } : { text: `All ${p.total} photos are on the listing, in order${after}${p.note ? ` (${p.note})` : ""}. Deliver in Aryeo when ready.`, tone: p.duplicates?.length ? "bad" : "good" };
   return null;
 }
 

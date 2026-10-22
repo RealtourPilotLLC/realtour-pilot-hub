@@ -147,7 +147,8 @@ export type CvMetric = { label: string; value: string };
 export type PhotoView = {
   id: string;
   name: string;
-  status: "ACTIVE" | "EXCLUDED" | "GONE" | string;
+  /** ON_LISTING (Oct 22 2026): already delivered on the Aryeo listing beside a split job's new visit. */
+  status: "ACTIVE" | "EXCLUDED" | "GONE" | "ON_LISTING" | string;
   excludeReason: string | null;
   sequence: number;
   roomType: string | null;
@@ -168,13 +169,18 @@ export type PhotoView = {
   verdict: string | null;
   cv: CvMetric[];
   versions: VersionView[];
-  /** 1-based position in the delivery order (ACTIVE photos only). */
+  /** 1-based position in the delivery order (ACTIVE photos); on a split job, the place on the listing (the delivered ones first). */
   position: number | null;
   deliveryName: string | null;
   /** A fix operation is queued or running on this photo. */
   fixing: boolean;
   /** Oct 21 2026: the hub's own edit, when that is the current version. */
   hubEdit?: HubEditView | null;
+  /**
+   * Oct 22 2026 (615 Cliff Ln): already delivered on the Aryeo listing (ON_LISTING):
+   * when the hub first saw it there, and the listing's file name when Kyle added it by hand.
+   */
+  delivered?: { since: string; asName: string | null } | null;
 };
 
 export type FindingView = {
@@ -397,6 +403,8 @@ export type JobDetail = {
   roomCoverage: RoomCoverageView | null;
   groupMeta: Record<string, GroupMeta>;
   photos: PhotoView[];
+  /** Oct 22 2026: a split job: photos already delivered on the listing, and the ones not delivered yet. Null on a single visit. */
+  listing?: { delivered: number; notDelivered: number } | null;
   heroPhotoId: string | null;
   findings: FindingView[];
   displayFloor: number;
@@ -493,6 +501,12 @@ export type AryeoPushView = {
     waitingForApproval: boolean;
     /** Oct 21 2026: an Update on Aryeo (the hub's edit replacing photos on the listing). */
     update?: boolean;
+    /** Oct 22 2026: a split job: the photos already on the listing, kept first. */
+    kept?: number;
+    /** Photos found on the listing already (never sent again). */
+    matched?: number;
+    /** Photos on the listing twice when it was checked (the images' names). */
+    duplicates?: string[][];
   } | null;
   /** Oct 21 2026: the last Update on Aryeo of this job and how it ended. */
   lastUpdate?: { at: string; ok: boolean; note: string; photoIds: string[] } | null;

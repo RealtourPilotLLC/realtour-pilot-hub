@@ -7,6 +7,7 @@ import { photoDeliverySettings } from "./settings";
 import { logJobEvent, setStage } from "./jobState";
 import { alertOwnerAndKyle } from "./notifyOps";
 import { appBase } from "@/lib/appUrl";
+import { BY_HAND_LABEL, ON_LISTING, duplicateWords, listingDuplicates, listingImageHash } from "./listingMatch";
 
 // ---------------------------------------------------------------------------
 // THE DELIVER PANEL (docs/photo-delivery/01 §9.6).
@@ -64,14 +65,18 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
     photoDeliverySettings(),
   ]);
   if (!job) throw new Error("Photo job not found.");
-  const [open, photos, lastRun] = await Promise.all([
+  const [open, all, lastRun] = await Promise.all([
     prisma.photoQcFinding.findMany({
       where: { jobId, status: { in: ["OPEN", "APPROVED_FIX", "FIXING"] } },
       select: { id: true, severity: true, confidence: true, arbitration: true, pass: true, ruleId: true, privacySensitive: true },
     }),
-    prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE" }, select: { id: true, contentHash: true, inspectedHash: true, width: true, height: true, format: true } }),
+    prisma.photoAsset.findMany({ where: { jobId, status: { in: ["ACTIVE", ON_LISTING] } }, select: { id: true, status: true, contentHash: true, inspectedHash: true, width: true, height: true, format: true } }),
     job.lastQcRunId ? prisma.photoQcRun.findUnique({ where: { id: job.lastQcRunId }, select: { status: true, passesJson: true, trigger: true, checksJson: true } }) : Promise.resolve(null),
   ]);
+  // Oct 22 2026: the photos already delivered on the listing (a split job's
+  // earlier visit) were checked when they went out; the checklist is about
+  // the ones to deliver now. Room coverage reads them all (coverage.ts).
+  const photos = all.filter((p) => p.status === "ACTIVE");
   const floor = settings.displayConfidenceFloor;
   const shown = open.filter((f) => f.confidence >= floor);
   const critical = shown.filter((f) => f.severity === "CRITICAL" && f.arbitration !== "OVERTURNED");
@@ -98,7 +103,7 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
     // Oct 15 2026: after a v3 free check, the free room coverage check must
     // have looked at THIS set of photos (coverage.ts), so the same-day
     // automatic delivery never goes out before it.
-    ...(await roomsCheck(settings.freeCoverage && settings.freeCheck, lastRun, job.coverageJson, photos.map((p) => p.id))),
+    ...(await roomsCheck(settings.freeCoverage && settings.freeCheck, lastRun, job.coverageJson, all.map((p) => p.id))),
     // Oct 19 2026 (lib/uploadGaps): the shoot's upload is missing part of the
     // order, e.g. only drone photos came in. Delivering the edits of half a
     // shoot is the one thing this gate must not wave through.
@@ -251,15 +256,22 @@ export function suggestedOrder(photos: OrderablePhoto[], heroId: string | null):
   return hero ? [hero, ...sorted.filter((p) => p.id !== hero!.id)] : sorted;
 }
 
+/** Where a split job's new photos start: after every photo already on the listing, and after any number the hub already gave one there. Pure. 0 on a single visit. */
+export function listingOffset(listedNames: string[]): number {
+  if (!listedNames.length) return 0;
+  return Math.max(listedNames.length, ...listedNames.map((n) => Number(/^(\d{1,3})-/.exec(n)?.[1] ?? 0)));
+}
+
 /** The delivery order: a person's saved order, else the suggested one. */
 export async function deliveryOrderFor(jobId: string): Promise<{ photoId: string; name: string; deliveryName: string }[]> {
-  const [job, photos] = await Promise.all([
+  const [job, photos, listed] = await Promise.all([
     prisma.photoJob.findUnique({ where: { id: jobId }, select: { orderJson: true, heroPhotoId: true } }),
     prisma.photoAsset.findMany({
       where: { jobId, status: "ACTIVE" },
       orderBy: { sequence: "asc" },
       select: { id: true, name: true, sequence: true, sequenceGroup: true, heroScore: true, isTwilight: true, roomType: true },
     }),
+    prisma.photoAsset.findMany({ where: { jobId, status: ON_LISTING }, select: { name: true } }),
   ]);
   let ordered: OrderablePhoto[];
   const saved = (() => {
@@ -279,14 +291,18 @@ export async function deliveryOrderFor(jobId: string): Promise<{ photoId: string
   } else {
     ordered = suggestedOrder(photos, job?.heroPhotoId ?? null);
   }
-  const width = Math.max(2, String(ordered.length).length);
+  // Oct 22 2026 (615 Cliff Ln): a split job's new photos follow the ones
+  // already on the listing, so they are numbered after them ("25-Kitchen.jpg"
+  // after 24 delivered), and never share a name with one already there.
+  const offset = listingOffset(listed.map((p) => p.name));
+  const width = Math.max(2, String(offset + ordered.length).length);
   return ordered.map((p, i) => {
     const ext = (/\.[a-z0-9]+$/i.exec(p.name)?.[0] ?? ".jpg").toLowerCase();
     const word = (p.sequenceGroup && ROOM_WORDS[p.sequenceGroup]) || "Photo";
     // AutoHDR's QC checklist: twilight frames carry a twilight suffix and go
     // out with the main set.
     const suffix = p.isTwilight || p.roomType === "TWILIGHT_EXTERIOR" ? "-Twilight" : "";
-    return { photoId: p.id, name: p.name, deliveryName: `${String(i + 1).padStart(width, "0")}-${word}${suffix}${ext}` };
+    return { photoId: p.id, name: p.name, deliveryName: `${String(offset + i + 1).padStart(width, "0")}-${word}${suffix}${ext}` };
   });
 }
 
@@ -369,7 +385,7 @@ export async function startDelivery(jobId: string, by: string, opts: { override?
   return { ok: true, message: "Marked as delivering. Finish the steps in Aryeo; the hub confirms when Aryeo says it was delivered." };
 }
 
-type ListingRead = { data?: { images?: { id?: string; original_url?: string; caption?: string | null; display_in_gallery?: boolean }[]; floor_plans?: unknown[]; delivery_status?: string } };
+type ListingRead = { data?: { images?: { id?: string; filename?: string | null; original_url?: string; large_url?: string; caption?: string | null; display_in_gallery?: boolean }[]; floor_plans?: unknown[]; delivery_status?: string } };
 
 export type VerifyResult = { ok: boolean; waiting?: boolean; error?: boolean; message: string; aryeoCount: number | null; approved: number };
 
@@ -404,8 +420,14 @@ async function verifyDeliveryOnce(jobId: string, by: string): Promise<VerifyResu
   const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true, stage: true } });
   if (!job) return { ok: false, message: "Photo job not found.", aryeoCount: null, approved: 0 };
   const project = await prisma.project.findUnique({ where: { id: job.projectId }, select: { aryeoListingId: true, title: true, deliveredAt: true, deliverables: { where: { removedFromOrderAt: null, waivedAt: null, type: "FLOORPLAN" }, select: { id: true } } } });
-  const photos = await prisma.photoAsset.findMany({ where: { jobId, status: { in: ["ACTIVE", "EXCLUDED"] } }, select: { id: true, name: true, status: true, sourceKind: true, sourceRef: true } });
-  const active = photos.filter((p) => p.status === "ACTIVE");
+  const photos = await prisma.photoAsset.findMany({
+    where: { jobId, status: { in: ["ACTIVE", "EXCLUDED", ON_LISTING] } },
+    select: { id: true, name: true, status: true, sourceKind: true, sourceRef: true, versions: { where: { source: "EDITOR", label: { startsWith: BY_HAND_LABEL } }, select: { contentHash: true } } },
+  });
+  // Oct 22 2026 (615 Cliff Ln): the target is the WHOLE listing: the photos
+  // delivered now and the ones already on it (a split job's earlier visit, a
+  // photo added by hand), so 23 + 1 + 35 verify as 59.
+  const active = photos.filter((p) => p.status === "ACTIVE" || p.status === ON_LISTING);
   const approved = active.length;
   if (!project?.aryeoListingId) return { ok: false, error: true, message: "This job has no Aryeo listing linked yet, so the hub cannot check it.", aryeoCount: null, approved };
   let listing: ListingRead;
@@ -422,18 +444,33 @@ async function verifyDeliveryOnce(jobId: string, by: string): Promise<VerifyResu
   const shown = (listing.data?.images ?? []).filter((i) => i.display_in_gallery !== false);
   const shownIds = new Set(shown.map((i) => i.id).filter(Boolean) as string[]);
   const aryeoCount = shown.length;
+  const images = shown.map((i, n) => ({ name: i.filename || `Photo ${n + 1}.jpg`, sourceRef: i.id ?? null, contentHash: listingImageHash(i.id, i.original_url ?? i.large_url ?? "") }));
+  const shownHashes = new Set(images.map((i) => i.contentHash));
   const fromListing = active.filter((p) => p.sourceKind === "ARYEO" && p.sourceRef);
-  const missing = fromListing.filter((p) => !shownIds.has(p.sourceRef!)).map((p) => p.name);
+  // A photo of the new visit on the listing by hand: found by the listing image recorded for it.
+  const byHand = active.filter((p) => p.status === ON_LISTING && p.sourceKind !== "ARYEO" && p.versions.length > 0);
+  const missing = [...fromListing.filter((p) => !shownIds.has(p.sourceRef!)), ...byHand.filter((p) => !p.versions.some((v) => !!v.contentHash && shownHashes.has(v.contentHash)))].map((p) => p.name);
   const excludedShown = photos.filter((p) => p.status === "EXCLUDED" && p.sourceKind === "ARYEO" && p.sourceRef && shownIds.has(p.sourceRef)).map((p) => p.name);
-  const short = fromListing.length === 0 && aryeoCount < approved; // Dropbox-sourced galleries: count only
+  // Photos the hub cannot find by id are counted (Dropbox galleries; a split
+  // job's new visit before the sync carries its rows over to the listing).
+  const split = active.some((p) => p.status === ON_LISTING);
+  const unplaced = active.length - fromListing.length - byHand.length;
+  const short = (fromListing.length === 0 || (split && unplaced > 0)) && aryeoCount < approved;
   const floorMissing = (project.deliverables?.length ?? 0) > 0 && (listing.data?.floor_plans?.length ?? 0) === 0;
   const extra = Math.max(0, aryeoCount - approved);
-  const diff = { approved, aryeoCount, missing, excludedShown, floorPlanMissing: floorMissing, extra, checkedAt: new Date().toISOString() };
+  // NO PHOTO TWICE (Oct 22 2026, Jordan: "make sure there are no duplicates in
+  // Aryeo"): two images that are the same photo of the hub, or two with the
+  // same file name. Flagged for Kyle on the job, never deleted by the hub.
+  const ownerByRef = new Map(photos.filter((p) => p.sourceKind === "ARYEO" && p.sourceRef).map((p) => [p.sourceRef!, p.id]));
+  const ownerByHash = new Map(photos.flatMap((p) => p.versions.filter((v) => !!v.contentHash).map((v) => [v.contentHash!, p.id] as const)));
+  const duplicates = listingDuplicates(images, (img) => (img.sourceRef ? ownerByRef.get(img.sourceRef) : undefined) ?? ownerByHash.get(img.contentHash) ?? null);
+  const diff = { approved, aryeoCount, missing, excludedShown, floorPlanMissing: floorMissing, extra, duplicates: duplicates.map((d) => d.names), checkedAt: new Date().toISOString() };
   const problems: string[] = [];
   if (missing.length) problems.push(`${missing.length} approved photo${missing.length === 1 ? " is" : "s are"} not on the listing`);
   if (short) problems.push(`Aryeo shows ${aryeoCount} photos but ${approved} were approved`);
   if (excludedShown.length) problems.push(`${excludedShown.length} excluded photo${excludedShown.length === 1 ? " is" : "s are"} still shown`);
   if (floorMissing) problems.push("a floor plan was ordered but is not on the listing");
+  if (duplicates.length) problems.push(`${duplicates.length === 1 ? "a photo is" : `${duplicates.length} photos are`} on the listing twice (${duplicateWords(duplicates)}): take the extra copy off in Aryeo, the hub never deletes there`);
   if (problems.length) {
     const line = problems.join("; ");
     // Oct 22 2026 (859 N Lawrence St): a job already in mismatch keeps its
@@ -450,7 +487,7 @@ async function verifyDeliveryOnce(jobId: string, by: string): Promise<VerifyResu
       title: `Delivery check: ${street}`.slice(0, 90),
       body: line.slice(0, 140),
       href: `/ops/photo-delivery/${jobId}`,
-      dedupeKey: `pd-mismatch-${jobId}-${missing.length}-${excludedShown.length}-${aryeoCount}-${approved}-${floorMissing ? 1 : 0}`,
+      dedupeKey: `pd-mismatch-${jobId}-${missing.length}-${excludedShown.length}-${aryeoCount}-${approved}-${floorMissing ? 1 : 0}${duplicates.length ? `-d${duplicates.length}` : ""}`,
       text: `${street}: ${line}. Check: ${appBase()}/ops/photo-delivery/${jobId}`,
       to: "kyle",
     });
@@ -464,6 +501,6 @@ async function verifyDeliveryOnce(jobId: string, by: string): Promise<VerifyResu
     const { closeMediaCheckForPhotos } = await import("./mediaCheck");
     await closeMediaCheckForPhotos(jobId, { by, reason: "Photos delivered through Photo Delivery", human: false });
   }
-  await logJobEvent(jobId, by, `delivery verified: ${aryeoCount} on the listing, ${approved} approved${extra ? `, ${extra} extra` : ""}`);
-  return { ok: true, message: `Verified: ${aryeoCount} photos on the Aryeo listing (${approved} approved${extra ? `, ${extra} extra` : ""}).`, aryeoCount, approved };
+  await logJobEvent(jobId, by, `delivery verified: ${aryeoCount} on the listing, ${approved} approved${extra ? `, ${extra} extra` : ""}, no photo twice`);
+  return { ok: true, message: `Verified: ${aryeoCount} photos on the Aryeo listing (${approved} approved${extra ? `, ${extra} extra` : ""}), no photo on it twice.`, aryeoCount, approved };
 }

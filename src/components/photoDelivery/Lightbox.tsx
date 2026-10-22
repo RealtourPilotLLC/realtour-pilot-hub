@@ -106,6 +106,8 @@ export function Lightbox() {
   const numbers = new Map(findings.map((f, i) => [f.id, i + 1]));
   const isHero = data.heroPhotoId === photo.id;
   const excluded = photo.status === "EXCLUDED";
+  // Oct 22 2026: already delivered on the Aryeo listing (a split job): read only, never sent again.
+  const listed = photo.status === "ON_LISTING";
   const current = photo.versions.find((v) => v.current) ?? photo.versions[photo.versions.length - 1] ?? null;
   const showing = versionId ? photo.versions.find((v) => v.id === versionId) ?? null : null;
   const title = photoTitle(photo);
@@ -174,6 +176,12 @@ export function Lightbox() {
                 {photo.deliveryName ? ` → ${photo.deliveryName}` : ""} · {idx + 1} of {photos.length}
               </p>
               {excluded && <p className="mt-1 text-[13px] font-medium text-warning">Left out of the delivery{photo.excludeReason ? `: ${photo.excludeReason}` : ""}</p>}
+              {listed && (
+                <p className="mt-1 text-[13px] font-medium text-success">
+                  Delivered: already on the Aryeo listing{photo.delivered?.since ? ` (first seen there ${etMonthDayTime(photo.delivered.since)})` : ""}{photo.delivered?.asName ? `, added by hand as ${photo.delivered.asName}` : ""}. Never sent again.
+                </p>
+              )}
+              {!listed && photo.status === "ACTIVE" && (data.listing?.delivered ?? 0) > 0 && <p className="mt-1 text-[13px] font-medium text-warning">Not delivered yet: it goes out with this delivery.</p>}
             </div>
             <button type="button" onClick={() => openLightbox(null)} aria-label="Close" className="inline-flex size-11 items-center justify-center rounded-lg hover:bg-surface-2">
               <X aria-hidden className="size-5" />
@@ -182,7 +190,7 @@ export function Lightbox() {
 
           <div className="mt-3 flex flex-wrap gap-1.5">
             {/* View only (Oct 22 2026): the hero and the delivery set are the office's calls; a viewer reads them. */}
-            {readOnly ? (
+            {readOnly || listed ? (
               isHero && (
                 <span className="inline-flex min-h-10 items-center gap-1.5 px-1 text-[13px] font-medium">
                   <Star aria-hidden className="size-3.5 fill-current text-brand" /> Hero
@@ -203,7 +211,7 @@ export function Lightbox() {
             <button type="button" aria-pressed={overlays} onClick={() => setOverlays((v) => !v)} className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2">
               <Layers aria-hidden className="size-3.5" /> Boxes {overlays ? "on" : "off"} <kbd className="text-[11px] text-muted">O</kbd>
             </button>
-            {photo.status !== "GONE" && !readOnly && (
+            {photo.status !== "GONE" && !listed && !readOnly && (
               <button type="button" disabled={pending || photo.fixing} onClick={() => openEditor(photo.id)} title={photo.fixing ? "An AI fix is running on this photo" : "Straighten, fix the vertical perspective or crop (free, exact)"} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-brand/50 bg-brand-soft px-2.5 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-60">
                 <Crop aria-hidden className="size-3.5" /> Straighten and crop
               </button>
@@ -254,7 +262,7 @@ export function Lightbox() {
           <VersionsStrip photo={photo} showingId={showing?.id ?? null} currentId={current?.id ?? null} onShow={(id) => setView({ photoId: photo.id, versionId: id })} />
 
           {/* An AI re-edit spends credits: the office's (Oct 22 2026). */}
-          {!readOnly && <ReeditBox photo={photo} />}
+          {!readOnly && !listed && <ReeditBox photo={photo} />}
 
           <PhotoFacts photo={photo} />
         </aside>
@@ -334,7 +342,7 @@ function VersionsStrip({ photo, showingId, currentId, onShow }: { photo: PhotoVi
       {showing && !showing.current && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {/* Comparing is viewing; Restore changes what is delivered: the office's (Oct 22 2026). */}
-          {readOnly ? null : showing.inAutohdr || showing.restorable ? (
+          {readOnly || photo.status === "ON_LISTING" ? null : showing.inAutohdr || showing.restorable ? (
             <button type="button" disabled={pending} onClick={() => void restore(showing)} className="inline-flex min-h-10 items-center rounded-lg bg-brand-action px-3 text-[13px] font-semibold text-brand-fg hover:brightness-95 disabled:opacity-50">
               Restore this version
             </button>

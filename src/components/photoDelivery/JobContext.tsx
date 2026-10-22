@@ -75,7 +75,7 @@ export function useJob(): Ctx {
   return c;
 }
 
-/** "Photo 04" for an included photo, else its file name. */
+/** "Photo 04" for an included photo (on a split job, its place on the listing), else its file name. */
 export function photoTitle(p: PhotoView | undefined | null): string {
   if (!p) return "Photo";
   return p.position ? `Photo ${String(p.position).padStart(2, "0")}` : p.name;
@@ -233,7 +233,8 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
 
   const excludePhoto = useCallback(
     async (photo: PhotoView, exclude: boolean) => {
-      if (readOnly) return false;
+      // Oct 22 2026: a photo already delivered on the listing is not in or out of this delivery.
+      if (readOnly || photo.status === "ON_LISTING") return false;
       if (!exclude) return run(() => setPhotoExcludedAction({ jobId, photoId: photo.id, excluded: false }));
       const reason = await ask({
         title: `Leave ${photoTitle(photo)} out of the delivery?`,
@@ -248,7 +249,7 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
     [ask, jobId, readOnly, run],
   );
 
-  const makeHero = useCallback((photo: PhotoView) => run(() => setHeroAction(jobId, photo.id)), [jobId, run]);
+  const makeHero = useCallback((photo: PhotoView) => (photo.status === "ON_LISTING" ? Promise.resolve(false) : run(() => setHeroAction(jobId, photo.id))), [jobId, run]);
 
   const stopFlagging = useCallback(
     async (ruleId: string, label: string) => {

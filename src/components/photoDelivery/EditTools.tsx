@@ -123,8 +123,8 @@ export function ReeditBox({ photo }: { photo: PhotoView }) {
     if (!ok) return;
     if (await run(() => customReeditAction({ jobId, photoId: photo.id, prompt: words, expectCredits: credits }))) setText("");
   };
-  // It spends credits: never on a view-only page (Oct 22 2026), not even the price read.
-  if (photo.status === "GONE" || readOnly) return null;
+  // It spends credits: never on a view-only page (Oct 22 2026), not even the price read; never on a photo already delivered on the listing.
+  if (photo.status === "GONE" || photo.status === "ON_LISTING" || readOnly) return null;
   return (
     <details className="mt-4 rounded-xl border border-border p-3" onToggle={(ev) => (ev.currentTarget.open ? void load() : undefined)}>
       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1.5 text-[13px] font-semibold [&::-webkit-details-marker]:hidden">

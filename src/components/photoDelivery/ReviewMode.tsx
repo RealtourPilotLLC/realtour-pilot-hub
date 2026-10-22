@@ -147,6 +147,8 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
   const numbers = new Map(findings.map((f, n) => [f.id, n + 1]));
   const isHero = data.heroPhotoId === photo.id;
   const excluded = photo.status === "EXCLUDED";
+  // Oct 22 2026: already delivered on the Aryeo listing (a split job): never sent again, no hero or leave out.
+  const listed = photo.status === "ON_LISTING";
   const next = photos[idx + 1];
 
   return (
@@ -159,6 +161,7 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
           <p className="truncate text-sm font-semibold">{data.header.street}</p>
           <p className="text-[12px] text-muted">
             {idx + 1} of {photos.length} · {withIssues} with open issues
+            {listed ? <span className="font-medium text-success"> · Delivered: already on the Aryeo listing</span> : photo.status === "ACTIVE" && (data.listing?.delivered ?? 0) > 0 ? <span className="font-medium text-warning"> · Not delivered yet</span> : null}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -171,10 +174,10 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
           {/* The hero, the delivery set and the Fix Cart are the office's (Oct 22 2026: none on a view-only page). */}
           {!readOnly && (
             <>
-              <button type="button" className={tool} aria-pressed={isHero} disabled={pending || excluded || isHero} onClick={() => void makeHero(photo)} title="Make hero (H)">
+              <button type="button" className={tool} aria-pressed={isHero} disabled={pending || excluded || listed || isHero} onClick={() => void makeHero(photo)} title="Make hero (H)">
                 <Star aria-hidden className={cn("size-4", isHero && "fill-current text-brand")} /> <span className="hidden sm:inline">Hero</span> <kbd className="text-[11px] text-muted">H</kbd>
               </button>
-              <button type="button" className={tool} disabled={pending} onClick={() => void excludePhoto(photo, !excluded)} title={excluded ? "Put back (X)" : "Leave out (X)"}>
+              <button type="button" className={tool} disabled={pending || listed} onClick={() => void excludePhoto(photo, !excluded)} title={listed ? "Already delivered on the Aryeo listing" : excluded ? "Put back (X)" : "Leave out (X)"}>
                 {excluded ? <Eye aria-hidden className="size-4" /> : <EyeOff aria-hidden className="size-4" />} <span className="hidden sm:inline">{excluded ? "Put back" : "Leave out"}</span> <kbd className="text-[11px] text-muted">X</kbd>
               </button>
               <button type="button" className={tool} aria-pressed={cartOpen} onClick={() => setCartOpen(!cartOpen)} title="Fix Cart">

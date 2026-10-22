@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, ArrowUpToLine, CheckSquare, Eye, EyeOff, GripVertical, Loader2, Square, Star, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpToLine, CheckCircle2, CheckSquare, Eye, EyeOff, GripVertical, Loader2, Square, Star, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { etMonthDay } from "@/lib/datetime";
 import { saveDeliveryOrderAction } from "@/app/ops/photo-delivery/actions";
 import { PhotoImg } from "./PhotoImg";
 import { photoTitle, useJob } from "./JobContext";
@@ -24,6 +25,13 @@ import type { PhotoView, Severity } from "./types";
 //   · in Reorder, tick several photos and move them together: to the front,
 //     to a position, one step earlier or later, or drag any ticked photo and
 //     the others come with it, in their order.
+//
+// Oct 22 2026 (615 Cliff Ln, a split job): every photo of every visit in one
+// gallery. The photos already delivered on the Aryeo listing come first, in
+// the listing's order with its cover, tagged "Delivered" with the day the hub
+// first saw them there; the new visit's follow, numbered after them and tagged
+// "Not delivered yet", in the order Kyle sets. Delivered photos have no
+// controls (they are never sent again); a view-only viewer sees the same tags.
 // ---------------------------------------------------------------------------
 
 /** The element that scrolls the gallery (the window, unless a parent scrolls). */
@@ -42,6 +50,9 @@ export function Gallery() {
   const { data, jobId, findingsByPhoto, openLightbox, excludePhoto, makeHero, run, pending, shown, readOnly } = useJob();
   const active = useMemo(() => data.photos.filter((p) => p.status === "ACTIVE"), [data.photos]);
   const excluded = useMemo(() => data.photos.filter((p) => p.status === "EXCLUDED"), [data.photos]);
+  // Already on the Aryeo listing (a split job's earlier visit, a photo added by hand), in the listing's order.
+  const listed = useMemo(() => data.photos.filter((p) => p.status === "ON_LISTING"), [data.photos]);
+  const split = listed.length > 0;
   const serverKey = active.map((p) => p.id).join(",");
   // A local order only while it differs from what the server last sent.
   const [local, setLocal] = useState<{ base: string; ids: string[] } | null>(null);
@@ -138,23 +149,26 @@ export function Gallery() {
     press.current = null;
   };
 
-  const tile = (p: PhotoView, index: number | null) => {
+  /** `index`: the place in the delivery order (a drop target); `shownAt`: the number on the tile (split jobs count the delivered ones first). */
+  const tile = (p: PhotoView, index: number | null, shownAt: number | null = index != null ? index + 1 : null) => {
     const sev = p.status === "ACTIVE" ? worst(p) : null;
     const isHero = data.heroPhotoId === p.id;
     const isExcluded = p.status === "EXCLUDED";
+    const isListed = p.status === "ON_LISTING";
     const title = photoTitle(p);
+    const deliveredTitle = isListed ? `Already delivered on the Aryeo listing${p.delivered?.since ? ` (first seen there ${etMonthDay(p.delivered.since)})` : ""}${p.delivered?.asName ? `, added by hand as ${p.delivered.asName}` : ""}. Never sent again.` : "";
     return (
       <li
         key={p.id}
-        draggable={!readOnly && !isExcluded && !pending}
+        draggable={!readOnly && !isExcluded && !isListed && !pending}
         onDragStart={(e) => {
-          if (readOnly || isExcluded) return;
+          if (readOnly || isExcluded || isListed) return;
           setDragId(p.id);
           e.dataTransfer.effectAllowed = "move";
           e.dataTransfer.setData("text/plain", p.id);
         }}
         onDragOver={(e) => {
-          if (!dragId || isExcluded) return;
+          if (!dragId || isExcluded || isListed) return;
           e.preventDefault();
           if (overId !== p.id) setOverId(p.id);
         }}
@@ -191,7 +205,7 @@ export function Gallery() {
           onContextMenu={(e) => {
             if (peek === p.id) e.preventDefault();
           }}
-          aria-label={`Open ${title}: ${p.roomLabel}${sev ? `, worst open issue ${SEVERITY_LABEL[sev].toLowerCase()}` : ""}${isExcluded ? ", left out of the delivery" : ""}`}
+          aria-label={`Open ${title}: ${p.roomLabel}${sev ? `, worst open issue ${SEVERITY_LABEL[sev].toLowerCase()}` : ""}${isExcluded ? ", left out of the delivery" : ""}${isListed ? ", already delivered on the Aryeo listing" : split && p.status === "ACTIVE" ? ", not delivered yet" : ""}`}
           className="block aspect-[3/2] w-full select-none [-webkit-touch-callout:none] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-brand"
         >
           <PhotoImg photoId={p.id} hash={p.contentHash} fallbackUrl={p.sourceUrl} size="thumb768" alt={`${title}: ${p.roomLabel}`} className={cn("size-full object-cover", isExcluded && "opacity-40 grayscale")} />
@@ -212,7 +226,7 @@ export function Gallery() {
                 {picked.has(p.id) ? <CheckSquare aria-hidden className="size-4" /> : <Square aria-hidden className="size-4" />}
               </button>
             )}
-            {index != null && <span className="rounded-md bg-black/65 px-1.5 py-0.5 text-[12px] font-semibold tabular-nums text-white">{String(index + 1).padStart(2, "0")}</span>}
+            {shownAt != null && <span className="rounded-md bg-black/65 px-1.5 py-0.5 text-[12px] font-semibold tabular-nums text-white">{String(shownAt).padStart(2, "0")}</span>}
             {isHero && (
               <span className="inline-flex items-center gap-1 rounded-md bg-brand-action px-1.5 py-0.5 text-[12px] font-semibold text-white">
                 <Star aria-hidden className="size-3 fill-current" /> Hero
@@ -253,9 +267,18 @@ export function Gallery() {
         )}
 
         {/* bottom row: room label + actions (hidden while reordering: the toolbar moves photos then; none on a view-only page) */}
-        <div className={cn("flex items-center gap-1 p-1.5", p.description && "lg:group-hover:invisible", readOnly && "min-h-10")}>
-          <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-muted" title={p.name}>{p.roomLabel}</span>
-          {!readOnly && !reorder && !isExcluded && (
+        <div className={cn("flex items-center gap-1 p-1.5", p.description && "lg:group-hover:invisible", (readOnly || isListed) && "min-h-10")}>
+          {isListed ? (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-success-soft px-1.5 py-0.5 text-[12px] font-semibold text-success ring-1 ring-inset ring-success/30" title={deliveredTitle}>
+              <CheckCircle2 aria-hidden className="size-3" /> Delivered{p.delivered?.since ? ` ${etMonthDay(p.delivered.since)}` : ""}
+            </span>
+          ) : split && p.status === "ACTIVE" ? (
+            <span className="inline-flex shrink-0 items-center rounded-md bg-warning-soft px-1.5 py-0.5 text-[12px] font-semibold text-warning ring-1 ring-inset ring-warning/30" title="Not on the Aryeo listing yet: it goes out with this delivery">
+              Not delivered yet
+            </span>
+          ) : null}
+          <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-muted" title={isListed ? `${p.name}. ${deliveredTitle}` : p.name}>{p.roomLabel}</span>
+          {!readOnly && !reorder && !isExcluded && !isListed && (
             <button
               type="button"
               className={cn(iconBtn, isHero && "text-brand")}
@@ -268,7 +291,7 @@ export function Gallery() {
               <Star aria-hidden className={cn("size-4", isHero && "fill-current")} />
             </button>
           )}
-          {!readOnly && !reorder && (
+          {!readOnly && !reorder && !isListed && (
             <button
               type="button"
               className={iconBtn}
@@ -290,7 +313,9 @@ export function Gallery() {
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <h2 id="pd-gallery-h" className="text-base font-semibold">Gallery</h2>
         <span className="text-[13px] text-muted">
-          {active.length} in the delivery{excluded.length ? ` · ${excluded.length} left out` : ""}
+          {split
+            ? `${listed.length + active.length} photos · ${listed.length} delivered · ${active.length} not delivered yet${excluded.length ? ` · ${excluded.length} left out` : ""}`
+            : `${active.length} in the delivery${excluded.length ? ` · ${excluded.length} left out` : ""}`}
         </span>
         {!readOnly && (
           <div className="ml-auto flex flex-wrap items-center gap-1.5">
@@ -308,7 +333,11 @@ export function Gallery() {
           </div>
         )}
       </div>
-      <p className="mb-2 text-[12px] text-muted">{readOnly ? "In delivery order. The hero goes first." : "Drag to reorder. The hero always goes first."}</p>
+      <p className="mb-2 text-[12px] text-muted">
+        {split
+          ? `The ${listed.length} delivered photo${listed.length === 1 ? " stays" : "s stay"} first on the Aryeo listing, in ${listed.length === 1 ? "its" : "their"} order, and ${listed.length === 1 ? "is" : "are"} never sent again. The new ones follow${readOnly ? " in this order." : ": drag them to reorder."}`
+          : readOnly ? "In delivery order. The hero goes first." : "Drag to reorder. The hero always goes first."}
+      </p>
       {reorder && !readOnly && (
         <div className="sticky top-2 z-10 mb-2 flex flex-wrap items-center gap-1.5 rounded-xl border border-border bg-surface/95 p-2 text-sm backdrop-blur" role="toolbar" aria-label="Move the selected photos">
           <span className="px-1 font-medium">{chosen.length ? `${chosen.length} selected` : "Tick photos to move them together"}</span>
@@ -327,7 +356,8 @@ export function Gallery() {
               e.preventDefault();
               const n = Number(posInput);
               if (!Number.isFinite(n) || n < 1) return;
-              void moveChosenTo(Math.floor(n) - 1);
+              // The tile numbers count the delivered photos first on a split job (Oct 22 2026).
+              void moveChosenTo(Math.max(0, Math.floor(n) - 1 - listed.length));
               setPosInput("");
             }}
           >
@@ -346,16 +376,17 @@ export function Gallery() {
           )}
         </div>
       )}
-      {active.length + excluded.length > 0 && intakeLine(data.intake, true) && <p className="mb-2 rounded-lg border border-border bg-surface-2/40 px-3 py-2 text-[13px] text-muted">{intakeLine(data.intake, true)}</p>}
-      {active.length === 0 && excluded.length === 0 ? (
+      {active.length + excluded.length + listed.length > 0 && intakeLine(data.intake, true) && <p className="mb-2 rounded-lg border border-border bg-surface-2/40 px-3 py-2 text-[13px] text-muted">{intakeLine(data.intake, true)}</p>}
+      {active.length === 0 && excluded.length === 0 && listed.length === 0 ? (
         <p className="rounded-xl border border-border bg-surface p-6 text-center text-sm text-muted">
           {intakeLine(data.intake, false)}
         </p>
       ) : (
         <ol ref={listRef} className="grid grid-cols-2 gap-2 sm:grid-cols-3 2xl:grid-cols-4">
+          {listed.map((p, i) => tile(p, null, i + 1))}
           {order.map((id, i) => {
             const p = byId.get(id);
-            return p ? tile(p, i) : null;
+            return p ? tile(p, i, listed.length + i + 1) : null;
           })}
           {excluded.map((p) => tile(p, null))}
         </ol>
