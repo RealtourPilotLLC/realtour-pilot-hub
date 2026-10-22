@@ -1368,10 +1368,14 @@ export async function syncProjectStatuses(
   // empty list, because empty here does not mean "nothing owed" — it means
   // "fall back to the order row's quantity", a different authority, silently
   // chosen. Unknown is not zero, and it is not a second opinion either.
-  const outputRows: OutputRow[] = await prisma.deliverableOutput.findMany({
+  // A video WAITING ON A SECOND SHOOT (Oct 22 2026, lib/secondShootCore) is
+  // left out the same way: it must not hold the other videos' delivery open.
+  // Once released it counts again like any other video.
+  const { isWaitingJson } = await import("@/lib/secondShootCore");
+  const outputRows: OutputRow[] = (await prisma.deliverableOutput.findMany({
     where: { projectId: { in: projects.map((p) => p.id) }, waivedAt: null, removedFromOrderAt: null },
-    select: { projectId: true, deliverableId: true, slot: true, category: true, deliveredAt: true, approvedAt: true },
-  });
+    select: { projectId: true, deliverableId: true, slot: true, category: true, deliveredAt: true, approvedAt: true, briefJson: true },
+  })).filter((o) => !isWaitingJson(o.briefJson)).map(({ briefJson: _b, ...o }) => { void _b; return o; });
   const outputsByProject = new Map<string, OutputRow[]>();
   for (const o of outputRows) outputsByProject.set(o.projectId, [...(outputsByProject.get(o.projectId) ?? []), o]);
 

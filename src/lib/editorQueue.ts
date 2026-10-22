@@ -14,6 +14,7 @@ import { EDIT_ROUND_SUMMARY, OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import { WAITING_HOLD_PREFIX } from "@/lib/queueWaiting";
 import { removedProjectIds } from "@/lib/queueRemoved";
 import { OWES_AN_ADDITIONAL_SHOOT } from "@/lib/uploadHistory";
+import { OWES_A_RELEASED_SECOND_SHOOT } from "@/lib/secondShoot";
 import { isAdditionalShootRow } from "@/app/upload/additionalShoots";
 import { holdersFor, workLabel, workStateFor, type ProjectWork } from "@/lib/editorWork";
 import { isHeldForSelfCheck } from "@/lib/selfCheck";
@@ -179,6 +180,11 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
           // back" and the queue's are the same fact read twice, never two
           // drifting definitions of an extra shoot.
           OWES_AN_ADDITIONAL_SHOOT,
+          // A VIDEO RELEASED FROM A SECOND SHOOT (Oct 22 2026, lib/secondShoot)
+          // on a job whose other videos were delivered: the same kind of
+          // came-back work, with the video's own clock (deliveryBoard's
+          // extra-shoot clock reads it). The first delivery is not disturbed.
+          { status: "DELIVERED", ...OWES_A_RELEASED_SECOND_SHOOT },
         ],
         aryeoMissingAt: null,
       },
@@ -716,7 +722,11 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
     // "to edit", not "in editing" (§7.1): a slot nobody has handed in is owed,
     // and nothing says anyone is cutting it.
     if (notStarted) parts.push(`${notStarted}${parts.length ? " more" : ""} to edit`);
-    const videoBreakdown = videosOwed > 1 && parts.length > 1 ? parts.join(" · ") : null;
+    // A video waiting on a second shoot (Oct 22 2026) is nobody's work yet:
+    // said beside the others, never counted as one to edit.
+    const heldForShoot = upcoming ? 0 : videoStates.get(p.id)?.waitingOnShoot ?? 0;
+    if (heldForShoot) parts.push(`${heldForShoot} waiting on a second shoot`);
+    const videoBreakdown = (videosOwed > 1 && parts.length > 1) || (heldForShoot > 0 && parts.length > 1) ? parts.join(" · ") : null;
     // THE SAME ARITHMETIC AS A NUMBER (Sep 28), for the editor's desk: the
     // videos still theirs to make or redo — no version in yet, one sent back,
     // or one held for their own check. The pill above picks the loudest state,
@@ -789,7 +799,7 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
       held: (heldSet.has(p.id) || !!p.statusPinnedAt) && (p.status === "BOOKED" || p.status === "SCHEDULED"),
       // "1 ready for review · 3 more to edit" — null on a one-video job. On a
       // row reading Revisions it also names who asked and when (Sep 28).
-      progressSummary: [cut?.approved ? `${cut.approved} approved` : null, cut?.waiting ? `${cut.waiting} review` : null, cut?.revising ? `${cut.revising} changes` : null, cut?.checking ? `${cut.checking} self-check` : null, notStarted ? `${notStarted} to edit` : null].filter(Boolean).join(" · ") || null,
+      progressSummary: [cut?.approved ? `${cut.approved} approved` : null, cut?.waiting ? `${cut.waiting} review` : null, cut?.revising ? `${cut.revising} changes` : null, cut?.checking ? `${cut.checking} self-check` : null, notStarted ? `${notStarted} to edit` : null, heldForShoot ? `${heldForShoot} waiting on a second shoot` : null].filter(Boolean).join(" · ") || null,
       revisionContext: askLine.get(p.id)?.line ?? null,
       // The oldest open ask's age in whole days (Oct 6) — null off Revisions.
       revisionWaitingDays: revisionAsks.length ? waitedDays(revisionAsks[0].sinceISO, now) : null,
@@ -876,8 +886,17 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
     return at - bt || (a.shootISO ?? "").localeCompare(b.shootISO ?? "") || a.street.localeCompare(b.street);
   };
 
+  // EVERY VIDEO ON THE JOB WAITS ON A SECOND SHOOT (Oct 22 2026): there is
+  // nothing to edit, so the job is off the editors' queue until one is
+  // released (then it comes back like any other video). One waiting video
+  // among others leaves the job here for the others.
+  const onlyWaitingOnShoot = (p: P) => {
+    const s = videoStates.get(p.id);
+    return !!s && s.owed === 0 && (s.waitingOnShoot ?? 0) > 0;
+  };
+
   return {
-    notDone: inflight.filter(shown).filter(hasVideo).map((p) => toRow(p)).sort(byDue),
+    notDone: inflight.filter(shown).filter(hasVideo).filter((p) => !onlyWaitingOnShoot(p)).map((p) => toRow(p)).sort(byDue),
     // Upcoming's date IS the shoot date, which is what its query already sorts
     // on, so this changes nothing there today — it holds the order if that
     // column's source ever changes the way Not Done's did.

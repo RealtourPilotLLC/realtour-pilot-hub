@@ -1,4 +1,6 @@
 import { videoNavigationFor } from "@/lib/videoNavigation";
+import { Suspense } from "react";
+import { SecondShootCard } from "@/components/jobs/SecondShootCard";
 import { notFound, redirect } from "next/navigation";
 import { after } from "next/server";
 import { requestsForEditors } from "@/lib/specialRequests";
@@ -1050,6 +1052,8 @@ export default async function EditBriefPage({
           cut,
           outputId: brief?.outputId ?? null,
           selected: v.key === thisVideo?.key,
+          // Oct 22 2026: held for a second shoot (no date, not to edit yet).
+          waiting: v.waiting ? `Waiting on a second shoot${v.waitingNote ? `: ${v.waitingNote.replace(/[.\s]+$/, "")}` : ""}. Not to edit yet: no footage for it until the next appointment.` : null,
         };
       })
     : [];
@@ -1630,9 +1634,13 @@ export default async function EditBriefPage({
                     <p className="text-sm font-semibold">
                       Video {v.number}: {v.label} <span className="font-normal text-muted">· {v.tier}</span>
                     </p>
-                    <p className="mt-0.5 text-sm text-foreground/85">
-                      {v.due ? `Due ${v.due}` : "No due date yet"} · {v.instructions} · {v.cut}
-                    </p>
+                    {v.waiting ? (
+                      <p data-waiting-on-shoot className="mt-0.5 text-sm text-warning">{v.waiting}</p>
+                    ) : (
+                      <p className="mt-0.5 text-sm text-foreground/85">
+                        {v.due ? `Due ${v.due}` : "No due date yet"} · {v.instructions} · {v.cut}
+                      </p>
+                    )}
                     {v.outputId && !v.selected && (
                       <Link href={`/edit/${project.id}?output=${v.outputId}${carry}`} className="mt-1 inline-flex min-h-11 items-center text-sm font-medium text-brand hover:underline">Open video {v.number}</Link>
                     )}
@@ -1641,6 +1649,14 @@ export default async function EditBriefPage({
                 ))}
               </ol>
             </section>
+          )}
+
+          {/* WAITING ON A SECOND SHOOT (Oct 22 2026, lib/secondShoot): the
+              office's hold and release, per video. Office only. */}
+          {isOwnerAdmin && isVideoJob && !project.contentMonthId && (
+            <Suspense fallback={null}>
+              <SecondShootCard projectId={project.id} />
+            </Suspense>
           )}
 
           {/* THIS VIDEO'S OWN INSTRUCTIONS (Oct 22 2026). */}

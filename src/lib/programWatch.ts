@@ -6,6 +6,7 @@ import { getSetting, putSetting } from "@/lib/settings";
 import { pinnedPromise } from "@/lib/turnaround";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { noDashes, scrubMoney } from "@/lib/text";
+import { withSecondShoot } from "@/lib/secondShootCore";
 import {
   MISS_CAUSE_WORDS,
   MILESTONE_WORDS,
@@ -335,7 +336,8 @@ export async function programVideos(opts: Scope & { now?: Date } = {}): Promise<
           slipped: slippedKey,
           facts,
           milestones,
-          briefReady: !!(o.topicId || o.briefJson || cv?.scriptId || p.reelScript),
+          // A second-shoot hold rides in briefJson (Oct 22 2026) and is not a brief.
+          briefReady: !!(o.topicId || (o.briefJson && withSecondShoot(o.briefJson, null)) || cv?.scriptId || p.reelScript),
           editorAssigned: !!(o.ownerKey || p.editorId || p.editorVendorKey),
           internalRounds: approvedIdx >= 0 ? approvedIdx + 1 : rs.length,
           waitingOnVerdictHours: latest && latest.status === "PENDING" ? (now.getTime() - latest.createdAt.getTime()) / HOUR : null,

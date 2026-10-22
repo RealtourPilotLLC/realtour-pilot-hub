@@ -268,6 +268,29 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
   // THE video due per job (audit H1): the same date the editor's ping and brief read.
   const dues = await editorDue.videoDuesFor(videoJobIds, { now });
   const { aryeoJobUrl } = await import("@/lib/aryeoUrl");
+  // A VIDEO RELEASED FROM A SECOND SHOOT (Oct 22 2026, lib/secondShoot) runs
+  // on its OWN clock, from the shoot its footage came from, never the job's
+  // (which belongs to the videos shot the first time). A video still WAITING
+  // is not owed at all (videoStatesFor leaves it out), so it is never late.
+  const ownClock = new Map<string, Date>();
+  const openSecondKeys = new Set<string>();
+  const openSecondJobs = new Set<string>();
+  if (videoJobIds.length) {
+    const released = await prisma.deliverableOutput
+      .findMany({
+        where: { projectId: { in: videoJobIds }, promiseSource: "second-shoot", promisedAt: { not: null }, waivedAt: null, removedFromOrderAt: null },
+        select: { projectId: true, deliverableId: true, slot: true, promisedAt: true, approvedAt: true, deliveredAt: true },
+      })
+      .catch(() => [] as { projectId: string; deliverableId: string; slot: number; promisedAt: Date | null; approvedAt: Date | null; deliveredAt: Date | null }[]);
+    for (const o of released) {
+      const k = `${o.deliverableId}:${o.slot}`;
+      ownClock.set(k, o.promisedAt!);
+      if (!o.approvedAt && !o.deliveredAt) {
+        openSecondKeys.add(k);
+        openSecondJobs.add(o.projectId);
+      }
+    }
+  }
 
   // What stands between an approved video and the client: a run a person
   // started (its line), a held 1080p file, the client's open requests (shown
@@ -320,20 +343,30 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
     if (!p) continue;
     const job = jobById.get(pid);
     const st = states.get(pid);
-    const promise = videoPromise(job, p, dues.get(pid), turnaround.pinnedPromise);
-    const late = !!promise && promise.getTime() < nowMs;
-    const dueToday = !!promise && promise.getTime() <= endOfToday.getTime();
+    // The job's video due (audit H1: THE video due, editorDue.videoDueOf).
+    const jobPromise = videoPromise(job, p, dues.get(pid), turnaround.pinnedPromise);
+    // The clock a video runs on: its own when it came from a second shoot
+    // (Oct 22 2026), else the job's.
+    const clockOf = (slotKey: string | null | undefined) => {
+      const at = (slotKey ? ownClock.get(slotKey) : undefined) ?? jobPromise;
+      return { promise: at, late: !!at && at.getTime() < nowMs, dueToday: !!at && at.getTime() <= endOfToday.getTime() };
+    };
     const base = {
       projectId: pid, street: streetOf(p.title), clientName: p.client?.name ?? "Client",
-      promiseISO: promise?.toISOString() ?? null, aryeoUrl: aryeoJobUrl(p),
+      promiseISO: jobPromise?.toISOString() ?? null, aryeoUrl: aryeoJobUrl(p),
     };
-    const settledJob = !!job?.settled || p.status === "DELIVERED";
+    // A delivered job that owes a video released from a second shoot is live
+    // again for THAT video only (the others were delivered).
+    const doneOnce = !!job?.settled || p.status === "DELIVERED";
+    const reopenedForShoot = doneOnce && openSecondJobs.has(pid);
+    const settledJob = doneOnce && !reopenedForShoot;
     // A program job is here only for its switched versions: nothing else of it
     // (its other videos, its uncut ones) belongs on this board.
     const programJob = !!p.contentMonthId;
     const cuts = (st?.cuts ?? []).filter((c) => !programJob || readyBySub.has(c.submissionId) || renderingBySub.has(c.submissionId));
     for (const c of cuts) {
-      const common = { ...base, key: c.submissionId, submissionId: c.submissionId, label: c.cutLabel, round: c.round, reviewHref: `/review/${pid}?cut=${c.submissionId}`, cutStatus: c.status, sinceISO: c.sinceISO, heldRender: null, send: null };
+      const { promise, late, dueToday } = clockOf(c.slotKey);
+      const common = { ...base, promiseISO: promise?.toISOString() ?? null, key: c.submissionId, submissionId: c.submissionId, label: c.cutLabel, round: c.round, reviewHref: `/review/${pid}?cut=${c.submissionId}`, cutStatus: c.status, sinceISO: c.sinceISO, heldRender: null, send: null };
       if (c.status === "APPROVED") {
         const r = readyBySub.get(c.submissionId);
         const rend = renderingBySub.get(c.submissionId);
@@ -386,6 +419,7 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
         continue;
       }
       if (settledJob) continue;
+      if (reopenedForShoot && !(c.slotKey && openSecondKeys.has(c.slotKey))) continue;
       const stage = c.status === "PENDING" ? `In review, version ${c.round}` : `Changes asked, version ${c.round}`;
       const lane: VideoLane = late ? "late" : dueToday ? "today" : c.status === "PENDING" ? "review" : "upcoming";
       push({
@@ -395,15 +429,22 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
     }
     // Videos owed with no cut yet.
     if (!settledJob && st && !programJob) {
-      const missing = Math.max(0, st.owed - cuts.length);
+      // Uncut videos released from a second shoot carry their own clock; on a
+      // job delivered once they are the only uncut videos it owes.
+      const cutKeys = new Set(cuts.map((c) => c.slotKey).filter((k): k is string => !!k));
+      const ownUncut = (st.slotKeys ?? []).filter((k) => ownClock.has(k) && !cutKeys.has(k) && (!reopenedForShoot || openSecondKeys.has(k)));
+      const missing = reopenedForShoot ? ownUncut.length : Math.max(0, st.owed - cuts.length);
       const stage = ["BOOKED", "SCHEDULED"].includes(p.status) ? "Not shot yet"
         : st.stage === "editing" ? "Editing"
         : st.stage === "ready_to_edit" ? "Ready to edit"
         : "Not cut yet";
       for (let i = 0; i < missing; i++) {
+        const { promise, late, dueToday } = clockOf(ownUncut[i]);
         const lane: VideoLane = late ? "late" : dueToday ? "today" : "upcoming";
+        const at = ownUncut[i] ? (st.slotKeys ?? []).indexOf(ownUncut[i]) : -1;
+        const number = at >= 0 ? at + 1 : cuts.length + i + 1;
         push({
-          ...base, key: `${pid}:uncut:${i}`, submissionId: null, label: st.owed > 1 ? `Video ${cuts.length + i + 1} of ${st.owed}` : "Listing video", round: null, cutStatus: null, sinceISO: null, heldRender: null, send: null,
+          ...base, promiseISO: promise?.toISOString() ?? null, key: `${pid}:uncut:${i}`, submissionId: null, label: st.owed > 1 ? `Video ${number} of ${st.owed}` : "Listing video", round: null, cutStatus: null, sinceISO: null, heldRender: null, send: null,
           lane, stage, promiseWords: promiseWords(promise, now), late, dueToday, lateHours: late ? hoursBetween(promise!.getTime(), nowMs) : null,
           approvedAtISO: null, deliveredAtISO: null, deliveredBy: null, push: null, heldWhy: null, reviewHref: null, waitingSinceISO: late ? promise!.toISOString() : null,
         });

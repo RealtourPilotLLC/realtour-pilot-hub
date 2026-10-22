@@ -108,6 +108,9 @@ export type PortalVideo = {
   own: string | null;
   /** when this video is due, for the line under its name */
   dueISO: string | null;
+  /** Oct 22 2026: "Waiting on a second shoot: half shot" when the office is
+   *  holding this video for another appointment; its fields are not required. */
+  waiting?: string | null;
 };
 
 type Deliverable = {
@@ -338,6 +341,11 @@ function LaterVideoArea({
       <p className="mt-0.5 text-[13px] text-muted">
         {video.tier}{video.dueISO ? ` · due ${etDateTime(new Date(video.dueISO))}` : ""}. Its own instructions, separate from video 1.
       </p>
+      {video.waiting && (
+        <p data-waiting-on-shoot className="mt-1.5 rounded-lg bg-warning/10 px-2.5 py-1.5 text-[13px] text-warning">
+          {video.waiting}. Nothing here is required until its footage is in; add what you know now, or fill it in after the next appointment.
+        </p>
+      )}
       <div className="mt-3">
         <p id={labelId} className="text-[13px] font-medium text-muted">
           Color profile you shot this video in <span className="text-danger">*</span>
@@ -825,6 +833,8 @@ export function UploadPortal({
   // its own is never re-asked, like the first video's prior brief.
   const laterMissing = laterVideos.flatMap((v) => {
     if (v.own?.trim()) return [];
+    // Waiting on a second shoot (Oct 22 2026): not asked for until its footage is in.
+    if (v.waiting) return [];
     const st = laterVids[v.key];
     const name = `video ${v.number}`;
     return [

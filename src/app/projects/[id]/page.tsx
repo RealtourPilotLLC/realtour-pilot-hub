@@ -78,6 +78,7 @@ import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
 import { JobDeliverablesSection } from "@/components/jobs/JobDeliverables";
 import { ShootFlags } from "@/components/jobs/ShootFlags";
 import { VideoSetupNotice } from "@/components/jobs/VideoSetupNotice";
+import { SecondShootCard } from "@/components/jobs/SecondShootCard";
 
 export const dynamic = "force-dynamic";
 
@@ -341,6 +342,11 @@ export default async function ProjectPage({
         {/* Oct 22 2026: more videos ordered than set up (lib/videoSetup). */}
         <Suspense fallback={null}>
           <VideoSetupNotice projectId={project.id} />
+        </Suspense>
+        {/* Oct 22 2026: a video held for a second shoot, and the office's
+            Release to the editor (lib/secondShoot). */}
+        <Suspense fallback={null}>
+          <SecondShootCard projectId={project.id} />
         </Suspense>
         <Suspense fallback={null}>
           <ShootFlags projectId={project.id} />
