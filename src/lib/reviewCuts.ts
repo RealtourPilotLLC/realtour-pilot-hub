@@ -2023,6 +2023,8 @@ async function correctionStillOwed(
   let items: RevisionItemShape[] = [];
   let done: string[] = [];
   try { items = brief?.itemsJson ? ((JSON.parse(brief.itemsJson) as { items?: RevisionItemShape[] }).items ?? []) : []; } catch { /* unreadable analysis holds nothing up */ }
+  // A photo item is the photo job's (Oct 22 2026, lib/itemMedium): no video approval answers it, and none waits for it.
+  items = items.filter((i) => i.medium !== "photo");
   try { done = brief?.doneJson ? (JSON.parse(brief.doneJson) as string[]) : []; } catch { /* ticks are best-effort */ }
 
   if (items.length > 0) {
@@ -2092,7 +2094,7 @@ async function portalRoundsAt(
 /** The shape correctionStillOwed needs out of itemsJson. Structurally the same
  *  as revisionBrief.RevisionItem — declared here so reading a brief needs no
  *  runtime import of that module (the analyser pulls in the AI client). */
-type RevisionItemShape = { id: string; ask: string; cuts?: string[] | null; scope?: "named" | "all" | "unknown" };
+type RevisionItemShape = { id: string; ask: string; cuts?: string[] | null; scope?: "named" | "all" | "unknown"; medium?: string };
 
 export async function correctedCutApproved(
   projectId: string,

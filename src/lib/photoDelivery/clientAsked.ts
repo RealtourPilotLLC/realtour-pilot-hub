@@ -6,6 +6,7 @@ import { clip, scrubMoney } from "@/lib/text";
 import { etDateTime } from "@/lib/datetime";
 import { logJobEvent, setStage } from "./jobState";
 import { ignoredSummaryLine, photoNumbers, type IgnoredGroup } from "./careRules";
+import { PHOTO_OFFICE_KEY_PREFIX } from "@/lib/itemMedium";
 
 // ---------------------------------------------------------------------------
 // WHAT WAS PROMISED, BEFORE THE PHOTOS GO OUT (Oct 21 2026, 859 N Lawrence St).
@@ -279,6 +280,16 @@ export type ClientAskedItem = {
   fromWrapUp: boolean;
   holds: boolean;
   askedAtISO: string;
+  /** Oct 22 2026 (lib/briefPhotoAsks): new work that was not ordered, a scope or price question for Jordan or Kyle, not a fix. */
+  office: boolean;
+  /** "photo" | "both" | "unclear": both / unclear asks are labelled (they show on the video side too). */
+  medium: string | null;
+  /** Who answers it: "Waiting on Kyle", or "Waiting on Jordan or Kyle" for an office question. */
+  waitingOn: string;
+  /** The settle button's words. */
+  doneLabel: string;
+  /** The client's full words, when the line is a summary of them ("Everything they said"). */
+  said: { from: string; text: string } | null;
 };
 
 /**
@@ -304,6 +315,10 @@ export async function clientAskedItems(projectId: string): Promise<ClientAskedIt
     .filter((r) => mediumMatches(r.medium, "photo") && !closesOnDelivery(r, project) && (r.source !== "order_note" || (r.dedupeKey ?? "").startsWith(ORDER_NOTE_KEY_PREFIX)))
     .map((r) => {
       const fromWrapUp = r.source === WRAPUP_ASK_SOURCE;
+      // Oct 22 2026 (lib/briefPhotoAsks): the photo part of a client's message,
+      // split out of a video work order. New work not on the order is a scope
+      // or price question for the office, not a fix; both / unclear say so.
+      const office = (r.dedupeKey ?? "").startsWith(PHOTO_OFFICE_KEY_PREFIX);
       const words = scrubMoney(r.text.replace(/\s+/g, " ").trim());
       const numbers = photoNumbers(r.text);
       const what = scrubMoney((r.summary?.trim() || clip(words, 160)).replace(/^(Remove|Order note):\s*/i, ""));
@@ -312,13 +327,24 @@ export async function clientAskedItems(projectId: string): Promise<ClientAskedIt
         ? `Remove (${firstName(r.askedBy) ?? "the photographer"}'s wrap-up): ${clip(what, 200)}${which}`
         : r.source === "order_note"
           ? `Client asked (order note): ${clip(what, 200)}${which}`
-          : `Client asked: ${clip(what, 200)}${which}`;
+          : office
+            ? `Question for Jordan or Kyle: ${clip(what, 220)}`
+            : r.medium === "both"
+              ? `Client asked, for the photos and the video: ${clip(what, 200)}${which}`
+              : r.medium === "unclear"
+                ? `Client asked (not clear if photos or video): ${clip(what, 200)}${which}`
+                : `Client asked: ${clip(what, 200)}${which}`;
       const detail = fromWrapUp
         ? `From the wrap-up, ${etDateTime(r.askedAt)}`
         : r.source === "order_note"
           ? `${r.askedBy ?? "The client"}, on the Aryeo order`
           : `${r.askedBy ?? "The client"}, ${sourceWords(r.source).toLowerCase()}, ${etDateTime(r.askedAt)}`;
-      return { id: r.id, source: r.source, label, detail, words, numbers, fromWrapUp, holds: r.holdsDelivery, askedAtISO: r.askedAt.toISOString() };
+      // The client's own words in full, when the line is a summary of them.
+      const said = !fromWrapUp && r.summary?.trim() && !norm(what).includes(norm(words)) ? { from: detail, text: words } : null;
+      return {
+        id: r.id, source: r.source, label, detail, words, numbers, fromWrapUp, holds: r.holdsDelivery, askedAtISO: r.askedAt.toISOString(),
+        office, medium: r.medium, waitingOn: office ? "Waiting on Jordan or Kyle" : "Waiting on Kyle", doneLabel: office ? "Settled with the client" : "Done (fixed)", said,
+      };
     });
 }
 

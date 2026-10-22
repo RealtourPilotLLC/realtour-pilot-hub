@@ -11,6 +11,7 @@ import { lockAdvisory } from "@/lib/dbLocks";
 import type { DueSource, ReopenedClock } from "@/lib/deliveryBoard";
 import { isRequesterKind, type Requester } from "@/lib/reviewAttribution";
 import { ITEM_KINDS, REASON_WORDS, creativeReviewOf, heldPlaceholder, kindOf, type CreativeReviewState, type ItemKind } from "@/lib/creativeReviewCore";
+import { ITEM_MEDIA, isPhotoOnly, labelWorkOrder, type ItemMedium } from "@/lib/itemMedium";
 
 // ---------------------------------------------------------------------------
 // THE REVISION WORK ORDER.
@@ -83,6 +84,11 @@ export type RevisionItem = {
   interpretation?: string | null;
   /** Written by the creative reviewer, not read off the client's words. */
   fromReview?: { by: string; at: string } | null;
+  /** Oct 22 2026 (lib/itemMedium): what this item is about. "photo" items go
+   *  to the photo job's client asks and never reach the editor or the Video
+   *  Review Room; "both" / "unclear" show in both places, labelled. Absent on
+   *  rows written before it existed, which read as video. */
+  medium?: ItemMedium;
 };
 
 export type RevisionAnalysis = {
@@ -90,7 +96,9 @@ export type RevisionAnalysis = {
   items: RevisionItem[];
   keep: string[]; // what they liked / must not change
   references: { what: string; where: string }[]; // things they're sending
-  questions: string[]; // confirm before starting
+  questions: string[]; // confirm before starting (the video side's)
+  /** Oct 22 2026: open questions about the photos only: the photo job's, never creative review's. */
+  photoQuestions: string[];
 };
 
 const SCHEMA = {
@@ -125,8 +133,13 @@ const SCHEMA = {
             description: "When scope is \"named\": the reference codes (V1, V2, …) of the videos this item is about, exactly as they appear under VIDEOS ON THIS JOB. Empty otherwise.",
             items: { type: "string" },
           },
+          medium: {
+            type: "string",
+            enum: [...ITEM_MEDIA],
+            description: "What this item is about. \"video\" = the video(s). \"photo\" = the still photos and what is done to them: a numbered photo (\"pic 11\", \"photo 38\"), virtual staging, twilight, lot lines, a floor plan, retouching. \"both\" = the same change on the photos and the video. \"unclear\" = you cannot tell. A photo item never goes to the video editor.",
+          },
         },
-        required: ["area", "ask", "kind", "detail", "quote", "scope", "videos"],
+        required: ["area", "ask", "kind", "detail", "quote", "scope", "videos", "medium"],
       },
     },
     keep: {
@@ -148,7 +161,7 @@ const SCHEMA = {
     },
     questions: {
       type: "array",
-      description: "Anything too vague to start on that somebody has to answer before an editor can act. These go to creative review (Jordan), not to the editor. Empty if the ask is clear.",
+      description: "Anything too vague to start on that somebody has to answer before the work can start. Start each one with what it is about: the photo (\"Photo 38: ...\") or the video (\"V1: ...\"). Questions about the video go to creative review (Jordan); questions about the photos go to the photo desk. Empty if the ask is clear.",
       items: { type: "string" },
     },
   },
@@ -171,7 +184,8 @@ RULES
 9. Never mention prices, invoices, or payment. If the client discussed money, leave it out entirely.
 10. SAY WHICH VIDEO. When the job has more than one video you are given the list, each with a reference code and its current file name. Match each item to the video(s) the client was talking about and put those codes in "videos" with scope "named". Use "all" only when they plainly meant every one of them. If they never said, scope is "unknown" — an item on the wrong video is worse than one nobody has placed.
 11. NEVER STATE PROPERTY FACTS. Lot lines, property or boundary lines, acreage, easements and survey measurements come only from a recorded plat or survey the client supplies. Never state, estimate or describe where a boundary runs. If the client asks for lot lines or a boundary drawn, the item says to draw them from the plat or survey they send, and that document goes under what the client is sending.
-12. SAY WHAT KIND OF ASK EACH ITEM IS (kind): CORRECTION, REFINEMENT, DIRECTION_UNCLEAR or SCOPE. When the client says they can't tell what is wrong, or names a feeling and not a change, it is DIRECTION_UNCLEAR, however strongly they feel it.`;
+12. SAY WHAT KIND OF ASK EACH ITEM IS (kind): CORRECTION, REFINEMENT, DIRECTION_UNCLEAR or SCOPE. When the client says they can't tell what is wrong, or names a feeling and not a change, it is DIRECTION_UNCLEAR, however strongly they feel it.
+13. SAY WHAT EACH ITEM IS ABOUT (medium). Many jobs have photos as well as a video, and one message can be about both. A change to a photo (a photo number like "pic 11" or "photo 38", virtual staging, twilight, lot lines, a floor plan, retouching) is "photo", even when the job has one video: it goes to the photo desk, never to the video editor, so never put a photo item on a video. Virtual staging of a photo the client did not order is new work: kind SCOPE, medium "photo".`;
 
 // The client's ask can be long (a 20-minute call). Give the model plenty of
 // room but keep a hard ceiling so one runaway transcript can't blow the request.
@@ -198,6 +212,8 @@ export async function analyzeRevisionText(opts: {
   conversation?: string | null;
   /** The call's time limit (default: the transport's); the AI cron's sweep passes what is left of its budget. */
   timeoutMs?: number;
+  /** Oct 22 2026: a portal or staff request pinned to one video: every item is that video's, whatever its words. */
+  videoOnly?: boolean;
 }): Promise<RevisionAnalysis> {
   const cuts = opts.cuts ?? [];
   const refOf = (i: number) => `V${i + 1}`;
@@ -251,17 +267,27 @@ export async function analyzeRevisionText(opts: {
       };
       // The model's kind, with the floor creativeReviewCore keeps: words that
       // say the client can't name what is wrong are unclear direction.
-      return { ...item, kind: kindOf({ ...item, kind: (i as { kind?: unknown }).kind }) };
+      return { ...item, kind: kindOf({ ...item, kind: (i as { kind?: unknown }).kind }), medium: (i as { medium?: unknown }).medium as ItemMedium | undefined };
     });
+
+  // WHAT EACH ITEM IS ABOUT (Oct 22 2026, lib/itemMedium): the model's label,
+  // with the floor under it (a photo named and no video named is a photo
+  // item); the questions about the photos only leave the video side.
+  const labelled = labelWorkOrder(
+    { items, questions: Array.isArray(raw.questions) ? raw.questions : [] },
+    { videoOnly: !!opts.videoOnly, relabel: true },
+  );
 
   return {
     headline: (raw.headline ?? "").trim() || "Client asked for changes",
-    items,
+    // A photo item is on no video (the one-video rule above is about videos).
+    items: labelled.items.map((it) => (isPhotoOnly(it) ? { ...it, scope: "unknown" as const, cuts: null } : it)),
     keep: (Array.isArray(raw.keep) ? raw.keep : []).map((s) => String(s).trim()).filter(Boolean),
     references: (Array.isArray(raw.references) ? raw.references : [])
       .filter((r) => r && r.what)
       .map((r) => ({ what: String(r.what).trim(), where: String(r.where ?? "").trim() })),
-    questions: (Array.isArray(raw.questions) ? raw.questions : []).map((s) => String(s).trim()).filter(Boolean),
+    questions: labelled.questions,
+    photoQuestions: labelled.photoQuestions,
   };
 }
 
@@ -668,6 +694,23 @@ async function routeToCreativeReview(briefId: string): Promise<void> {
   } catch { /* the brief stands; the editor sees the items as before */ }
 }
 
+/** Does the order carry anything besides video (photos, drone, staging, a floor plan, a 3D tour)? */
+function hasPhotoWork(deliverables: { type: string }[]): boolean {
+  return deliverables.some((d) => d.type !== "VIDEO" && d.type !== "SOCIAL_REEL");
+}
+
+/** THE PHOTO PART (Oct 22 2026, lib/briefPhotoAsks): the items and open
+ *  questions about the photos become the photo job's client asks, never the
+ *  editor's. Dynamic and best-effort: the client's words are saved. */
+async function routePhotoPart(briefId: string): Promise<void> {
+  try {
+    const { routeBriefPhotoAsks } = await import("@/lib/briefPhotoAsks");
+    await routeBriefPhotoAsks(briefId);
+  } catch (e) {
+    console.error("[revision brief] routing the photo part failed", briefId, e);
+  }
+}
+
 /** The work order's items as revision issues (§8.3) — one per item × video it
  *  names, idempotent on that source, reconciling after a re-read. Dynamic
  *  import: revisionIssues reads this module's slot helpers' home (reviewCuts)
@@ -746,6 +789,7 @@ async function analyzeBriefOnce(briefId: string, ctx?: AnalyzeCtx): Promise<bool
       // A pinned brief (CP-03) keeps its cut through a re-analysis too.
       submissionId: true,
       outputId: true,
+      decisionId: true,
       itemsJson: true,
       project: {
         select: {
@@ -798,6 +842,11 @@ async function analyzeBriefOnce(briefId: string, ctx?: AnalyzeCtx): Promise<bool
         (brief.project?.deliverables ?? []).map((d) => d.label || d.type).filter(Boolean),
       cuts,
       timeoutMs: timeoutBefore(ctx?.deadline, 4000),
+      // A portal or staff request pinned to one video is that video's, every
+      // word of it (Oct 22 2026), and so is every ask on a job with no photo
+      // work ("the picture is shaky" on a video-only order is the video); a
+      // text, email or call on a photos-and-video job is labelled item by item.
+      videoOnly: brief.source === "portal" || brief.source === "review_room_staff" || !!brief.decisionId || !!ctx?.pin?.decisionId || !hasPhotoWork(brief.project?.deliverables ?? []),
     });
     // PINNED: the portal already said which video. Every item the model found
     // is scoped to it — the model never gets to move an ask to another video —
@@ -809,8 +858,9 @@ async function analyzeBriefOnce(briefId: string, ctx?: AnalyzeCtx): Promise<bool
       try { kept = brief.itemsJson ? ((JSON.parse(brief.itemsJson) as { items?: RevisionItem[] }).items ?? []) : []; } catch { /* rebuilt below */ }
       // Staff files and timestamp are evidence from the submit, not model
       // suggestions. A re-read may refine items but cannot replace that evidence.
+      // A photo item in a text that reopened a video stays off that video (Oct 22 2026).
       const items = analysis.items.length
-        ? analysis.items.map((i) => ({ ...i, scope: "named" as const, cuts: [pinKey] }))
+        ? analysis.items.map((i) => (isPhotoOnly(i) ? i : { ...i, scope: "named" as const, cuts: [pinKey] }))
         : kept.length ? kept : pinnedItems(brief.originalText, pinKey);
       const savePinned = async (db: Prisma.TransactionClient | typeof prisma) => {
         // The model may have been running while the attachment/task handoff
@@ -821,7 +871,7 @@ async function analyzeBriefOnce(briefId: string, ctx?: AnalyzeCtx): Promise<bool
           where: { id: briefId },
           data: {
             headline: analysis.items.length ? analysis.headline.slice(0, 300) : undefined,
-            itemsJson: JSON.stringify({ items, keep: analysis.keep, references: saved ? saved.references ?? [] : analysis.references, questions: analysis.questions, ...(saved?.staffReceipt ? { staffReceipt: saved.staffReceipt } : {}) }),
+            itemsJson: JSON.stringify({ items, keep: analysis.keep, references: saved ? saved.references ?? [] : analysis.references, questions: analysis.questions, photoQuestions: analysis.photoQuestions, ...(saved?.staffReceipt ? { staffReceipt: saved.staffReceipt } : {}) }),
             analyzedAt: new Date(), analysisError: null,
           },
         });
@@ -830,6 +880,7 @@ async function analyzeBriefOnce(briefId: string, ctx?: AnalyzeCtx): Promise<bool
       else await savePinned(prisma);
       await routeToCreativeReview(briefId);
       await ingestBriefIssues(briefId);
+      await routePhotoPart(briefId);
       return true;
     }
     // When every item lands on the SAME one video, the brief itself is about
@@ -837,8 +888,10 @@ async function analyzeBriefOnce(briefId: string, ctx?: AnalyzeCtx): Promise<bool
     // (Jordan, Sep 16: "When I click the revisions… It should go directly to
     // the cut that needs a revision"). Mixed or unplaced asks leave it null:
     // a brief is not about a video the hub had to guess at.
-    const placed = [...new Set(analysis.items.flatMap((i) => (i.scope === "named" || i.scope === "all" ? i.cuts ?? [] : [])))];
-    const everyItemPlaced = analysis.items.length > 0 && analysis.items.every((i) => (i.cuts ?? []).length > 0);
+    // Video items only: a photo item is on no video (Oct 22 2026).
+    const videoSide = analysis.items.filter((i) => !isPhotoOnly(i));
+    const placed = [...new Set(videoSide.flatMap((i) => (i.scope === "named" || i.scope === "all" ? i.cuts ?? [] : [])))];
+    const everyItemPlaced = videoSide.length > 0 && videoSide.every((i) => (i.cuts ?? []).length > 0);
     const outputId =
       everyItemPlaced && placed.length === 1
         ? (
@@ -859,6 +912,7 @@ async function analyzeBriefOnce(briefId: string, ctx?: AnalyzeCtx): Promise<bool
           keep: analysis.keep,
           references: analysis.references,
           questions: analysis.questions,
+          photoQuestions: analysis.photoQuestions,
         }),
         analyzedAt: new Date(),
         analysisError: null,
@@ -875,6 +929,7 @@ async function analyzeBriefOnce(briefId: string, ctx?: AnalyzeCtx): Promise<bool
     if (analysis.items.length === 0) await standDownNonRevision(briefId);
     await routeToCreativeReview(briefId);
     await ingestBriefIssues(briefId);
+    await routePhotoPart(briefId);
     return true;
   } catch (e) {
     console.error("[revision brief] reading failed", briefId, e);
@@ -918,6 +973,9 @@ export type BriefView = {
   /** Oct 15 2026: the creative review on this ask, when there is one. The
    *  office sees who has it and why; an editor sees only that it is held. */
   creativeReview?: { state: "OPEN" | "RESOLVED"; reviewerName: string; reasons: string[]; resolvedBy: string | null; mode: string | null; note: string | null } | null;
+  /** Oct 22 2026: how many items and questions in this ask were about the
+   *  photos only. They went to the photo job and are not on this brief. */
+  photoPart?: number;
 };
 
 /**
@@ -939,8 +997,8 @@ export async function getRevisionBriefs(projectId: string, scrub: boolean): Prom
     if (!scrub) return t;
     return stripMoneySentences(t) || null;
   };
-  return rows.map((r) => {
-    let parsed: Omit<RevisionAnalysis, "headline"> = { items: [], keep: [], references: [], questions: [] };
+  const views = rows.map((r) => {
+    let parsed: Omit<RevisionAnalysis, "headline"> = { items: [], keep: [], references: [], questions: [], photoQuestions: [] };
     try {
       if (r.itemsJson) parsed = { ...parsed, ...(JSON.parse(r.itemsJson) as typeof parsed) };
     } catch { /* unreadable analysis → the original text still renders */ }
@@ -954,6 +1012,12 @@ export async function getRevisionBriefs(projectId: string, scrub: boolean): Prom
     // questions are the reviewer's too.
     const cr = (parsed as { creativeReview?: CreativeReviewState }).creativeReview ?? null;
     const holding = cr?.state === "OPEN";
+    // THE PHOTO PART (Oct 22 2026, lib/itemMedium): an item about the photos
+    // only went to the photo job's client asks. It is never on the editor's
+    // brief; both / unclear items stay, with their label.
+    const allItems = parsed.items ?? [];
+    const photoPart = allItems.filter((i) => isPhotoOnly(i)).length + (Array.isArray(parsed.photoQuestions) ? parsed.photoQuestions.length : 0);
+    parsed = { ...parsed, items: allItems.filter((i) => !isPhotoOnly(i)) };
     if (scrub && holding) {
       parsed = {
         ...parsed,
@@ -999,8 +1063,12 @@ export async function getRevisionBriefs(projectId: string, scrub: boolean): Prom
             note: clean(cr.note ?? null),
           }
         : null,
+      photoPart,
+      photoOnly: allItems.length > 0 && parsed.items.length === 0 && (parsed.questions ?? []).length === 0,
     };
   });
+  // A message about the photos only is not on the editor's brief at all.
+  return views.filter((v) => !v.photoOnly).map(({ photoOnly: _photoOnly, ...v }) => v);
 }
 
 // ---------------------------------------------------------------------------

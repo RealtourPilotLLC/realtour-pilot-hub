@@ -202,7 +202,7 @@ export async function ingestReviewNote(noteId: string, opts: { imported?: boolea
   }
 }
 
-type BriefItemShape = { id: string; ask: string; area?: string | null; quote?: string | null; detail?: string | null; cuts?: string[] | null; scope?: string; kind?: string; held?: boolean };
+type BriefItemShape = { id: string; ask: string; area?: string | null; quote?: string | null; detail?: string | null; cuts?: string[] | null; scope?: string; kind?: string; held?: boolean; medium?: string };
 
 /** Is this brief about the VIDEO lane? A photo retouch ask is Kyle's and must
  *  never become an editor issue. A portal (pinned) brief is always a video. */
@@ -253,6 +253,9 @@ export async function ingestBriefItems(briefId: string): Promise<number> {
     // issue at all until the reviewer releases it (and was never the "whole
     // text" fallback above: it has items).
     items = items.filter((it) => !it.held);
+    // THE PHOTO PART (Oct 22 2026, lib/itemMedium): an item about the photos
+    // only is the photo job's client ask, never an editor issue.
+    items = items.filter((it) => it.medium !== "photo");
 
     const slots = await cutSlots(brief.projectId).catch(() => []);
     const owedKeys = slots.map((s) => slotKeyOf(s.deliverableId, s.slot));

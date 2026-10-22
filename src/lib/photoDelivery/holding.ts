@@ -65,6 +65,8 @@ export type HoldingItem = {
   detail: string | null;
   /** The agent's own words (Lot Lines needed, Virtual Staging needed). */
   quotes: { from: string; text: string }[];
+  /** Oct 22 2026: the client's full message behind a summarised request ("Everything they said"). */
+  said?: { from: string; text: string } | null;
   action: HoldingAction | null;
   /** A second way in (the listing to look at before Deliver). */
   link: { label: string; href: string; external?: boolean } | null;
@@ -98,6 +100,9 @@ export type HoldingGateLine = {
   personOnly?: boolean;
   addOn?: { key: string; need: string; done: string; ordered: string; quotes: { from: string; text: string }[]; cleared: unknown };
   photoIds?: string[];
+  waitingOn?: string;
+  doneLabel?: string;
+  said?: { from: string; text: string } | null;
 };
 
 export type HoldingPush = {
@@ -169,8 +174,8 @@ const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 const clipTo = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 const first = (name: string | null) => (name ?? "").trim().split(/\s+/)[0] || null;
 
-function item(kind: HoldingKind, key: string, text: string, short: string, waitingOn: string, action: HoldingAction | null, extra: Partial<Pick<HoldingItem, "detail" | "quotes" | "link">> = {}): HoldingItem {
-  return { key, kind, text, short, waitingOn, detail: extra.detail ?? null, quotes: extra.quotes ?? [], action, link: extra.link ?? null };
+function item(kind: HoldingKind, key: string, text: string, short: string, waitingOn: string, action: HoldingAction | null, extra: Partial<Pick<HoldingItem, "detail" | "quotes" | "link" | "said">> = {}): HoldingItem {
+  return { key, kind, text, short, waitingOn, detail: extra.detail ?? null, quotes: extra.quotes ?? [], said: extra.said ?? null, action, link: extra.link ?? null };
 }
 
 /** The upload is on and the hub has its Aryeo login (AryeoPushControls.aryeoPushOn). */
@@ -242,7 +247,7 @@ export function holdingFor(input: HoldingInput): HoldingView {
       add(holds, item("addon", c.key, a ? `${a.need}.` : `${c.label}.`, a?.need ?? c.label, "Waiting on Kyle", a ? { kind: "addon", label: a.done, addOn: a.key } : null, { detail: c.detail ?? null, quotes: a?.quotes ?? [] }));
     } else if (c.key.startsWith("ask")) {
       const holdsAsk = holds && (!!c.hold || !c.askId);
-      add(holdsAsk, item("ask", c.key, c.label, clipTo(c.label, 60), "Waiting on Kyle", c.askId ? { kind: "ask", label: "Done (fixed)", askId: c.askId } : null, { detail: c.detail ?? null }));
+      add(holdsAsk, item("ask", c.key, c.label, clipTo(c.label, 60), c.waitingOn ?? "Waiting on Kyle", c.askId ? { kind: "ask", label: c.doneLabel ?? "Done (fixed)", askId: c.askId } : null, { detail: c.detail ?? null, said: c.said ?? null }));
     } else if (c.key === "critical" || c.key === "major") {
       // One decisions line for both (below), from the tickets.
       continue;

@@ -5,6 +5,7 @@ import {
   CREATIVE_AREAS, REASON_WORDS, changeLines, creativeReviewOf, isItemKind, kindOf, soundsUnclear,
   type CreativeReviewReason, type CreativeReviewState, type ItemKind,
 } from "@/lib/creativeReviewCore";
+import { isPhotoOnly, itemMediumOf, mediumLabel, mediumOfItem } from "@/lib/itemMedium";
 
 // ---------------------------------------------------------------------------
 // THE CREATIVE REVIEW LANE, SERVER HALF (Oct 15 2026). The vocabulary and the
@@ -40,8 +41,10 @@ type BriefItem = {
   id: string; area: string; ask: string; detail?: string | null; quote?: string | null;
   cuts?: string[] | null; scope?: string; kind?: ItemKind; held?: boolean;
   interpretation?: string | null; fromReview?: { by: string; at: string } | null;
+  /** Oct 22 2026 (lib/itemMedium): a photo item is the photo job's, never held here. */
+  medium?: string;
 };
-type ItemsDoc = { items?: BriefItem[]; keep?: string[]; references?: unknown[]; questions?: string[]; creativeReview?: CreativeReviewState; [k: string]: unknown };
+type ItemsDoc = { items?: BriefItem[]; keep?: string[]; references?: unknown[]; questions?: string[]; photoQuestions?: string[]; creativeReview?: CreativeReviewState; [k: string]: unknown };
 
 const parseDoc = (s: string | null | undefined): ItemsDoc => {
   if (!s) return {};
@@ -117,22 +120,28 @@ async function route(briefId: string, now: Date): Promise<CreativeReviewState | 
   if (items.length === 0 && !brief.itemsJson && soundsUnclear(brief.originalText)) {
     items = [{ id: "i1", area: "Overall direction", ask: clip(brief.originalText, 1000), quote: clip(brief.originalText, 1000), detail: null, cuts: null, scope: "unknown" }];
   }
-  if (items.length === 0 && !(doc.questions ?? []).length) return null;
+  // THE VIDEO SIDE ONLY (Oct 22 2026, lib/itemMedium). An item about the
+  // photos is the photo job's client ask (lib/briefPhotoAsks), and so is an
+  // open question about the photos: neither is ever held here, so neither
+  // opens a card in the Video Review Room (Joe Sutow's "virtually stage the
+  // upper patio, pic 38" did). Both / unclear items stay, labelled.
+  const videoItems = items.filter((it) => !isPhotoOnly(it));
+  const questions = (doc.questions ?? []).map((q) => String(q).trim()).filter(Boolean);
+  if (videoItems.length === 0 && questions.length === 0 && doc.creativeReview?.state !== "OPEN") return null;
 
   const owed = await owedKeysOf(brief.projectId);
   const reasons = new Set<CreativeReviewReason>();
   const held = new Set<string>();
   for (const it of items) {
     it.kind = kindOf(it);
-    if (it.kind === "DIRECTION_UNCLEAR") { held.add(it.id); reasons.add("UNCLEAR"); }
+    if (it.kind === "DIRECTION_UNCLEAR" && !isPhotoOnly(it)) { held.add(it.id); reasons.add("UNCLEAR"); }
   }
-  const questions = (doc.questions ?? []).map((q) => String(q).trim()).filter(Boolean);
   if (questions.length) reasons.add("QUESTIONS");
 
   // THE SAME PART OF THE SAME VIDEO, AGAIN. An earlier client ask in this area
   // on this video was already changed (addressed, verified, or reopened) and
   // the client is back on it: a creative problem, not an editing one.
-  const repeatCandidates = items.filter((it) => !held.has(it.id) && CREATIVE_AREAS.includes(it.area) && it.kind !== "CORRECTION" && it.kind !== "SCOPE");
+  const repeatCandidates = videoItems.filter((it) => !held.has(it.id) && CREATIVE_AREAS.includes(it.area) && it.kind !== "CORRECTION" && it.kind !== "SCOPE");
   if (repeatCandidates.length) {
     const prior = await prisma.revisionIssue.findMany({
       where: {
@@ -151,7 +160,7 @@ async function route(briefId: string, now: Date): Promise<CreativeReviewState | 
 
   // ROUND TWO WANTS A NEW DIRECTION. An "Overall direction" item on a video
   // the client has already asked to change once.
-  const direction = items.filter((it) => !held.has(it.id) && it.area === "Overall direction");
+  const direction = videoItems.filter((it) => !held.has(it.id) && it.area === "Overall direction");
   if (direction.length) {
     const round = brief.roundId ? await prisma.contentRevisionRound.findUnique({ where: { id: brief.roundId }, select: { ordinal: true } }).catch(() => null) : null;
     const earlier = await prisma.revisionBrief.findMany({
@@ -184,8 +193,10 @@ async function route(briefId: string, now: Date): Promise<CreativeReviewState | 
   }
 
   const reviewer = await creativeReviewerFor(brief.projectId, brief.submissionId);
-  const unheld = items.filter((it) => !it.held).length;
-  const taskHeld = unheld === 0;
+  // Only the video side counts: an ask whose items were all about the photos
+  // has nothing of the editor's to hold.
+  const unheld = videoItems.filter((it) => !it.held).length;
+  const taskHeld = !(items.length > 0 && videoItems.length === 0) && unheld === 0;
   const clientName = brief.project?.client?.name ?? "the client";
   const street = (brief.project?.title ?? "the job").split(",")[0].trim();
   const heldItems = items.filter((it) => it.held);
@@ -365,9 +376,14 @@ export type CreativeReviewView = {
   reviewerName: string;
   reasons: string[];
   taskHeld: boolean;
-  held: { id: string; area: string; ask: string; quote: string | null; videos: string[] }[];
+  /** `label`: "Photos and video" / "Photos or video? Not clear" on a both / unclear item (Oct 22 2026). */
+  held: { id: string; area: string; ask: string; quote: string | null; videos: string[]; label: string | null }[];
   questions: string[];
+  /** The label per question, the same words as an item's (null: the video's). */
+  questionLabels: (string | null)[];
   originalText: string;
+  /** "The photo part (2) went to the photo job." when this message was about the photos too. */
+  photoNote: string | null;
 };
 
 /** The OPEN creative reviews on a job, for the Review Room panel. */
@@ -391,9 +407,14 @@ export async function openCreativeReviews(projectId: string): Promise<CreativeRe
       reviewerName: cr.reviewerName,
       reasons: cr.reasons.map((x) => REASON_WORDS[x] ?? x),
       taskHeld: cr.taskHeld,
-      held: (doc.items ?? []).filter((it) => it.held).map((it) => ({ id: it.id, area: it.area, ask: it.ask, quote: it.quote ?? null, videos: (it.cuts ?? []).map((k) => names![k]).filter(Boolean) })),
+      held: (doc.items ?? []).filter((it) => it.held && !isPhotoOnly(it)).map((it) => ({ id: it.id, area: it.area, ask: it.ask, quote: it.quote ?? null, videos: (it.cuts ?? []).map((k) => names![k]).filter(Boolean), label: mediumLabel(mediumOfItem(it)) })),
       questions: cr.questions,
+      questionLabels: cr.questions.map((q) => mediumLabel(itemMediumOf(q))),
       originalText: r.originalText.slice(0, 3000),
+      photoNote: (() => {
+        const n = (doc.items ?? []).filter((it) => isPhotoOnly(it)).length + (doc.photoQuestions ?? []).length;
+        return n > 0 ? `The part about the photos (${n}) went to the photo job, not here.` : null;
+      })(),
     });
   }
   return out;

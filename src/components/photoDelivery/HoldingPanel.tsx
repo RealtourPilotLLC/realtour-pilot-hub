@@ -185,6 +185,14 @@ export function HoldingPanel() {
             ))}
           </ul>
         )}
+        {/* Oct 22 2026: the client's whole message behind a summarised request. */}
+        {it.said && (
+          <details className="mt-1.5">
+            <summary className="cursor-pointer py-1 text-[12px] font-medium text-brand">Everything they said</summary>
+            <p className="mt-1 whitespace-pre-wrap break-words rounded-lg border border-border bg-surface-2/50 px-2.5 py-1.5 text-[13px]">{it.said.text}</p>
+            <p className="mt-0.5 text-[12px] text-muted">{it.said.from}</p>
+          </details>
+        )}
         {!readOnly && (it.action || it.link) && (
           <div className="mt-2 flex flex-wrap gap-2">
             {it.link && (

@@ -63,6 +63,10 @@ export type GateCheck = {
   /** Oct 22 2026: the photos the line is about (Update on Aryeo of photos edited in the hub). */
   photoIds?: string[];
   personOnly?: boolean;
+  /** Oct 22 2026 (a client-asked line): who answers it, the settle button's words, and the client's full words. */
+  waitingOn?: string;
+  doneLabel?: string;
+  said?: { from: string; text: string } | null;
 };
 /** The add-on behind a gate line: its key (the confirm button), the order line, the agent's words, and how it was cleared. */
 export type GateAddOn = {
@@ -237,7 +241,7 @@ async function askedChecks(job: { id: string; projectId: string | null; stage: s
     // tick off, before the photos go out (never after).
     if (sync && !["DELIVERED", "DELIVERING"].includes(job.stage)) await m.syncPhotoAsks(projectId);
     for (const it of await m.clientAskedItems(projectId)) {
-      lines.push({ key: `ask:${it.id}`, label: it.label, ok: false, hold: it.holds, advisory: !it.holds, askId: it.id, detail: it.detail });
+      lines.push({ key: `ask:${it.id}`, label: it.label, ok: false, hold: it.holds, advisory: !it.holds, askId: it.id, detail: it.detail, waitingOn: it.waitingOn, doneLabel: it.doneLabel, said: it.said });
     }
   } catch {
     lines.push({ key: "asks", label: "What the client asked", ok: false, hold: true, detail: "could not be read just now, it is read again on the next pass" });
