@@ -3,7 +3,7 @@
 // H1). The board (and the behind alert that reads it) dated a listing video by
 // the order line whose NAME had a video word, so "Social Influencer",
 // "Standard Package" and "Agent on Camera" fell back to the job's earliest
-// item (the next-day Zillow tour, the photos). Replayed at Thu Oct 23 2026
+// item (the next-day Zillow tour, the photos). Replayed at Fri Oct 23 2026
 // 5:01 PM ET, 850 Springbank Ln, 913 Lakeview Ct and 1316 Blair Cir all read
 // late, and the alert would have posted "very behind" for videos due Oct 24-28.
 //   1  the three live shapes (rows copied from production, read only) plus
@@ -23,7 +23,7 @@ installNextStubs();
 const fence = fenceFetch();
 const PORT = Number(process.env.DRILL_PORT ?? 6991);
 
-// Thu Oct 23 2026, 5:01 PM ET (EDT, UTC-4): the minute the false alarm fired.
+// Fri Oct 23 2026, 5:01 PM ET (EDT, UTC-4): the minute the false alarm fired.
 const NOW = new Date("2026-10-23T21:01:00Z");
 const iso = (d: Date | null | undefined) => d?.toISOString() ?? null;
 
@@ -108,7 +108,7 @@ async function main() {
     const rowsOf = (b: Awaited<ReturnType<typeof videoDeliveryBoard>>, pid: string) =>
       VIDEO_LANES.flatMap((l) => b.lanes[l]).filter((r) => r.projectId === pid);
 
-    c.head("1 · the board at Thu Oct 23, 5:01 PM ET: none of them late, each dated by its video");
+    c.head("1 · the board at Fri Oct 23, 5:01 PM ET: none of them late, each dated by its video");
     const board = await videoDeliveryBoard({ now: NOW });
     const expect: [string, { id: string }, string][] = [
       ["850 Springbank Ln (Standard Package, pinned Sat Oct 24 1 PM)", springbank, "2026-10-24T17:00:00.000Z"],
