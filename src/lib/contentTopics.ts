@@ -7,6 +7,7 @@ import { topicSourceIsCall, topicSourceNeedsApproval } from "@/lib/contentPolicy
 import { approvedStrategy } from "@/lib/contentStrategy";
 import { isAutomationEnabled, recordAutomationRun } from "@/lib/programAutomation";
 import { confidentialFilter } from "@/lib/clientFacts";
+import { topicFormatOf, withTopicFormat, asVideoFormat, shownVersionFormat, VIDEO_FORMAT_LABEL, type VideoFormat } from "@/lib/contentPolicy/videoFormat";
 import { normalizeTitle, titleSimilarity, NEAR_DUPLICATE_THRESHOLD, rankRecommendations, clientReasonFor, GENERATION_POLICY, PILLAR_EMPHASIS_WEIGHT, topicsForEmphasis, type Topic, type FilmedRecord, type PriorScript, type StrategyGoal, type SourceExcerpt } from "@/lib/contentPolicy";
 
 // ---------------------------------------------------------------------------
@@ -51,6 +52,8 @@ export type CreateTopicInput = {
   source: "ai" | "client" | "strategy_call" | "discovery_call" | "staff" | "import"; sourceRef?: string | null; importItemId?: string | null; suggestionId?: string | null;
   status?: string; approvalState?: "PROPOSED" | "APPROVED" | null; approvedBy?: string | null; monthId?: string | null; clientUserId?: string | null; clientWording?: string | null;
   importedMark?: string | null; proposedState?: string | null; actor: Actor; eventKind?: TopicEventKind; evidence?: unknown; note?: string | null;
+  /** Oct 22 2026: the topic's own format (scoresJson.videoFormat). Null or missing = it follows the account's default. */
+  videoFormat?: VideoFormat | null;
 };
 
 /** Create a topic with its first history row. Same-title duplicates inside the enrollment are refused (returns the existing id) so no path can double it. */
@@ -75,6 +78,7 @@ export async function createTopic(input: CreateTopicInput): Promise<{ id: string
       ...(input.approvalState === "APPROVED" ? { approvedBy: input.approvedBy ?? input.actor.staffUserId ?? input.actor.kind, approvedAt: new Date() } : {}),
       strategyVersionId: strategy?.versionId ?? null, policyVersionId: policy.id, clientUserId: input.clientUserId ?? null, clientWording: input.clientWording ?? null,
       importedMark: input.importedMark ?? null, proposedState: input.proposedState ?? null, dedupeHash, lastEventAt: new Date(),
+      ...(input.videoFormat ? { scoresJson: withTopicFormat(null, input.videoFormat) } : {}),
     },
     select: { id: true },
   });
@@ -94,6 +98,76 @@ export async function updateTopicFields(topicId: string, patch: { title?: string
   if (patch.intendedMessage !== undefined) data.intendedMessage = patch.intendedMessage?.slice(0, 1000) || null;
   await prisma.contentTopic.update({ where: { id: topicId }, data });
   await recordTopicEvent(topicId, t.enrollmentId, "EDITED", actor, { note: Object.keys(data).join(", ") });
+}
+
+/**
+ * SWITCH ONE TOPIC'S FORMAT (Oct 22 2026): the office's one control on a
+ * topic card, Skit or Talking to camera. Written to scoresJson.videoFormat
+ * with every other key kept, and on the topic's history. It changes what the
+ * NEXT draft or revision is written as; a script already written, approved or
+ * shared is never touched here.
+ */
+export async function setTopicFormat(topicId: string, format: VideoFormat, actor: Actor): Promise<{ changed: boolean; format: VideoFormat }> {
+  const want = asVideoFormat(format);
+  if (!want) throw new Error("A topic is a Skit or Talking to camera.");
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const t = await prisma.contentTopic.findUnique({ where: { id: topicId }, select: { enrollmentId: true, scoresJson: true } });
+    if (!t) throw new Error("Topic not found.");
+    const before = topicFormatOf(t.scoresJson);
+    if (before === want) return { changed: false, format: want };
+    // Compare-and-swap on the bag: a concurrent write to another key is never lost.
+    const w = await prisma.contentTopic.updateMany({ where: { id: topicId, scoresJson: t.scoresJson }, data: { scoresJson: withTopicFormat(t.scoresJson, want) } });
+    if (!w.count) continue;
+    await recordTopicEvent(topicId, t.enrollmentId, "EDITED", actor, { note: `Format: ${VIDEO_FORMAT_LABEL[want]}${before ? ` (was ${VIDEO_FORMAT_LABEL[before]})` : ""}` });
+    return { changed: true, format: want };
+  }
+  throw new Error("The topic changed while saving. Try again.");
+}
+
+/**
+ * The formats of a refresh run's new ideas (Oct 22 2026), by title hash, kept
+ * on the run's inputsJson.formats: a suggestion row has no field for it, and
+ * the topic an accepted idea becomes takes its format from here.
+ */
+export async function recordSuggestionFormats(runId: string, formats: Record<string, VideoFormat>): Promise<void> {
+  const run = await prisma.contentTopicRefreshRun.findUnique({ where: { id: runId }, select: { inputsJson: true } });
+  let inputs: Record<string, unknown> = {};
+  try { inputs = run?.inputsJson ? (JSON.parse(run.inputsJson) as Record<string, unknown>) : {}; } catch { inputs = {}; }
+  if (!inputs || typeof inputs !== "object" || Array.isArray(inputs)) inputs = {};
+  const had = inputs.formats && typeof inputs.formats === "object" && !Array.isArray(inputs.formats) ? (inputs.formats as Record<string, VideoFormat>) : {};
+  await prisma.contentTopicRefreshRun.update({ where: { id: runId }, data: { inputsJson: JSON.stringify({ ...inputs, formats: { ...had, ...formats } }) } });
+}
+
+/** A pending idea's format, read off its run (null = it will follow the account). */
+export function suggestionFormatOf(runInputsJson: string | null | undefined, dedupeHash: string | null | undefined): VideoFormat | null {
+  if (!runInputsJson || !dedupeHash) return null;
+  try {
+    const f = (JSON.parse(runInputsJson) as { formats?: Record<string, unknown> }).formats;
+    return f && typeof f === "object" ? asVideoFormat(f[dedupeHash]) : null;
+  } catch { return null; }
+}
+
+/** The formats of many pending ideas at once, by suggestion id. */
+export async function suggestionFormats(suggestions: { id: string; refreshRunId: string; dedupeHash: string | null }[]): Promise<Map<string, VideoFormat>> {
+  const out = new Map<string, VideoFormat>();
+  const runIds = [...new Set(suggestions.map((s) => s.refreshRunId))];
+  if (!runIds.length) return out;
+  const runs = new Map((await prisma.contentTopicRefreshRun.findMany({ where: { id: { in: runIds } }, select: { id: true, inputsJson: true } })).map((r) => [r.id, r.inputsJson]));
+  for (const s of suggestions) { const f = suggestionFormatOf(runs.get(s.refreshRunId), s.dedupeHash); if (f) out.set(s.id, f); }
+  return out;
+}
+
+/**
+ * The format each script version was WRITTEN in (Oct 22 2026), by version id:
+ * its stamp, else speaker labels mean a skit, else talking to camera. Only
+ * the format leaves this function: the angle and the review in the same
+ * validation record are staff-only and never reach a caller.
+ */
+export async function scriptVersionFormats(versionIds: string[]): Promise<Map<string, VideoFormat>> {
+  const ids = [...new Set(versionIds.filter(Boolean))];
+  if (!ids.length) return new Map();
+  const rows = await prisma.contentScriptVersion.findMany({ where: { id: { in: ids } }, select: { id: true, validationJson: true, speakerLabelsJson: true } });
+  return new Map(rows.map((v) => [v.id, shownVersionFormat(v)]));
 }
 
 // ---- selection ---------------------------------------------------------------
@@ -346,6 +420,8 @@ export type BankTopic = {
   clientDeclinedAt: string | null; clientDeclineReason: string | null;
   /** The bank's order (oldest first). */
   createdAt: string;
+  /** Oct 22 2026: the topic's OWN format (scoresJson.videoFormat); null = it follows the account's default. */
+  videoFormat: VideoFormat | null;
 };
 export type BankGroup = { pillarId: string | null; pillarName: string; topics: BankTopic[] };
 
@@ -364,6 +440,7 @@ export async function topicBankByPillar(enrollmentId: string): Promise<{ groups:
     id: t.id, title: t.title, concept: t.concept, pillarId: t.pillarId, pillarLabel: t.pillar, status: t.status, approvalState: t.approvalState, source: t.source,
     audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, monthId: t.monthId, importedMark: t.importedMark, proposedState: t.proposedState, lastEventAt: t.lastEventAt?.toISOString() ?? null,
     clientDeclinedAt: t.clientDeclinedAt?.toISOString() ?? null, clientDeclineReason: t.clientDeclineReason, createdAt: t.createdAt.toISOString(),
+    videoFormat: topicFormatOf(t.scoresJson),
   });
   const live = topics.filter((t) => !t.clientDeclinedAt);
   const groups: BankGroup[] = pillars.map((p) => ({ pillarId: p.id, pillarName: p.name, topics: live.filter((t) => t.pillarId === p.id).map(toRow) }));
@@ -910,7 +987,7 @@ export async function pendingSuggestions(enrollmentId: string, kind?: "BANK" | "
 export async function acceptSuggestion(suggestionId: string, by: string, opts: { edits?: { title?: string; description?: string | null; audienceNeed?: string | null; businessGoal?: string | null; intendedMessage?: string | null }; monthId?: string | null } = {}): Promise<{ topicId: string }> {
   const s = await prisma.contentTopicSuggestion.findUnique({ where: { id: suggestionId } });
   if (!s || s.disposition !== "PENDING") throw new Error("That suggestion was already handled.");
-  const run = await prisma.contentTopicRefreshRun.findUnique({ where: { id: s.refreshRunId }, select: { monthId: true } });
+  const run = await prisma.contentTopicRefreshRun.findUnique({ where: { id: s.refreshRunId }, select: { monthId: true, inputsJson: true } });
   const actor: Actor = { kind: "STAFF", staffUserId: by };
   let topicId: string;
   if (s.kind === "RECOMMENDED" && s.relatedTopicId) {
@@ -923,6 +1000,8 @@ export async function acceptSuggestion(suggestionId: string, by: string, opts: {
       enrollmentId: s.enrollmentId, title: edited.title ?? s.title, concept: edited.description ?? s.description, pillarId: s.pillarId,
       audienceNeed: edited.audienceNeed ?? s.audienceNeed, businessGoal: edited.businessGoal ?? s.businessGoal, intendedMessage: edited.intendedMessage ?? s.intendedMessage,
       source: "ai", sourceRef: `refresh:${s.refreshRunId}`, suggestionId, status: "SAVED", approvalState: "APPROVED", actor, eventKind: "SUGGESTED", note: `Accepted from a topic refresh by ${by}${Object.keys(edited).length ? " (edited)" : ""}`,
+      // Oct 22 2026: a skit concept stays a skit (the run kept its format).
+      videoFormat: suggestionFormatOf(run?.inputsJson, s.dedupeHash),
     });
     topicId = r.id;
     await prisma.contentTopic.update({ where: { id: topicId }, data: { approvedBy: by, approvedAt: new Date() } });

@@ -5,6 +5,7 @@ import { cutSlots, slotKeyOf, type CutSlot } from "@/lib/reviewCuts";
 import type { EditorKey } from "@/lib/editors";
 import { unitCategoryFor } from "@/lib/evidenceUnits";
 import { stripMoneySentences } from "@/lib/text";
+import { shownVersionFormat, type VideoFormat } from "@/lib/contentPolicy/videoFormat";
 import { etDateTime, etMonthDay } from "@/lib/datetime";
 
 /** Rounds that are not a version of anything — the same list reviewCuts keeps. */
@@ -952,6 +953,8 @@ export type FilmingBriefScript = {
   standing: string;
   /** the SAME version's production direction; null for a draft with no version */
   direction: ScriptDirection | null;
+  /** Oct 22 2026: Skit or Talking to camera, as these words were written (a skit is cut as a scene). */
+  format?: VideoFormat;
 };
 
 const DIRECTION_CAP = 1500;
@@ -1094,9 +1097,9 @@ export async function filmingBriefFor(projectId: string): Promise<FilmingBrief |
     versionIds.length
       ? prisma.contentScriptVersion.findMany({
           where: { id: { in: versionIds } },
-          select: { id: true, versionNo: true, title: true, body: true, filmingNotes: true, creativeDirection: true, productionNotes: true },
+          select: { id: true, versionNo: true, title: true, body: true, filmingNotes: true, creativeDirection: true, productionNotes: true, validationJson: true, speakerLabelsJson: true },
         })
-      : Promise.resolve([] as { id: string; versionNo: number; title: string; body: string; filmingNotes: string | null; creativeDirection: string | null; productionNotes: string | null }[]),
+      : Promise.resolve([] as { id: string; versionNo: number; title: string; body: string; filmingNotes: string | null; creativeDirection: string | null; productionNotes: string | null; validationJson: string | null; speakerLabelsJson: string | null }[]),
     // R1: ONE rule for "did the client approve this" — the ledger reader the
     // portal, the staff panel and the upload page all ask.
     month && scripts.length
@@ -1118,7 +1121,7 @@ export async function filmingBriefFor(projectId: string): Promise<FilmingBrief |
     //    (confirmFilmedTopics records only an APPROVED version here).
     const filmedAs = v?.scriptVersionId ? versionOf.get(v.scriptVersionId) : undefined;
     if (filmedAs) {
-      return { title: filmedAs.title || sc.title, versionNo: filmedAs.versionNo, text: clip(filmedAs.body), clientApproved: true, standing: "approved by the client before filming", direction: directionOf(filmedAs) };
+      return { title: filmedAs.title || sc.title, versionNo: filmedAs.versionNo, text: clip(filmedAs.body), clientApproved: true, standing: "approved by the client before filming", direction: directionOf(filmedAs), format: shownVersionFormat(filmedAs) };
     }
     // 2. The version the client has been shown, and their verdict on it.
     const shared = sc.sharedVersionId ? versionOf.get(sc.sharedVersionId) : undefined;
@@ -1130,12 +1133,13 @@ export async function filmingBriefFor(projectId: string): Promise<FilmingBrief |
         clientApproved: approvedNow,
         standing: approvedNow ? "approved by the client" : "shared with the client — not approved by them yet",
         direction: directionOf(shared),
+        format: shownVersionFormat(shared),
       };
     }
     // 3. Never shown to the client: the office's approved copy, else the draft.
     const approved = sc.approvedVersionId ? versionOf.get(sc.approvedVersionId) : undefined;
     return approved
-      ? { title: approved.title || sc.title, versionNo: approved.versionNo, text: clip(approved.body), clientApproved: false, standing: "approved by the office, not shared with the client", direction: directionOf(approved) }
+      ? { title: approved.title || sc.title, versionNo: approved.versionNo, text: clip(approved.body), clientApproved: false, standing: "approved by the office, not shared with the client", direction: directionOf(approved), format: shownVersionFormat(approved) }
       : { title: sc.title, versionNo: null, text: clip(sc.body), clientApproved: false, standing: "a working draft — not approved", direction: null };
   };
   const extraOf = (topicId: string | null, kind: string | null): FilmingBriefRow["extra"] => {
@@ -1633,6 +1637,8 @@ export type SessionBriefTopic = {
     title: string; versionNo: number; text: string | null; clientApproved: boolean; standing: string; direction: ScriptDirection | null;
     /** Oct 14 2026: which script and version this is, and its words in parts, so the shoot screen can edit it on site and print it. */
     scriptId?: string; versionId?: string; parts?: SessionScriptParts | null;
+    /** Oct 22 2026: Skit or Talking to camera, as these words were written (a skit is filmed as a scene). */
+    format?: VideoFormat;
   } | null;
   /** why there are no words to show, when there are none */
   noScript: string | null;
@@ -1688,9 +1694,9 @@ export async function sessionBriefFor(projectId: string): Promise<SessionBrief |
     versionIds.length
       ? prisma.contentScriptVersion.findMany({
           where: { id: { in: versionIds }, scriptId: { in: scriptIds } },
-          select: { id: true, scriptId: true, versionNo: true, title: true, body: true, filmingNotes: true, creativeDirection: true, productionNotes: true, hook: true, pointsJson: true, close: true, captionCta: true },
+          select: { id: true, scriptId: true, versionNo: true, title: true, body: true, filmingNotes: true, creativeDirection: true, productionNotes: true, hook: true, pointsJson: true, close: true, captionCta: true, validationJson: true, speakerLabelsJson: true },
         })
-      : Promise.resolve([] as { id: string; scriptId: string; versionNo: number; title: string; body: string; filmingNotes: string | null; creativeDirection: string | null; productionNotes: string | null; hook: string; pointsJson: string; close: string; captionCta: string | null }[]),
+      : Promise.resolve([] as { id: string; scriptId: string; versionNo: number; title: string; body: string; filmingNotes: string | null; creativeDirection: string | null; productionNotes: string | null; hook: string; pointsJson: string; close: string; captionCta: string | null; validationJson: string | null; speakerLabelsJson: string | null }[]),
     // links:false — the names of the files are what a shoot needs; minting a
     // Dropbox link per logo on every page load is not.
     import("@/lib/brandProfile")
@@ -1726,6 +1732,7 @@ export async function sessionBriefFor(projectId: string): Promise<SessionBrief |
             scriptId: v.scriptId,
             versionId: v.id,
             parts: sessionPartsOf(v),
+            format: shownVersionFormat(v),
           }
         : null,
       noScript: v ? null : t.scriptId ? "The script is still with the office; nothing has been released to the client yet." : "No script for this topic yet.",

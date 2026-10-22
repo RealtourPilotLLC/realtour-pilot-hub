@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { type VideoStyle, VIDEO_STYLE_LABEL, VIDEO_STYLE_OVERRIDE_KEY, videoStyleFromOverrides } from "@/lib/contentPolicy/prompts";
+import { SKITS_PER_MONTH_KEY, SKIT_CAST_KEY, MAX_SKIT_CAST, clampSkitsPerMonth, cleanCastMember, skitCastFromOverrides, skitsPerMonthFromOverrides, castMemberLabel, type SkitCastMember } from "@/lib/contentPolicy/videoFormat";
 
 // ---------------------------------------------------------------------------
 // PROGRAM STYLE, PER CLIENT (Oct 8 2026) — two switches on the client file.
@@ -123,6 +124,13 @@ export async function setClientPlanned(enrollmentId: string, on: boolean, by: st
 // a missing value is DIRECT. The change is ledgered (ProgramEnrollmentChange,
 // field "overrides") with who made it. Nothing here messages anyone or touches
 // a script already written.
+//
+// Oct 22 2026 (Bernadette Rabel's call): a third choice, MIX ("Mix"): a
+// target number of skits a month (`skitsPerMonth`, 2 unless the office types
+// another), the rest talking to camera. The style is now the DEFAULT for a
+// topic with no format of its own; each topic can be switched on its card
+// (contentTopics.setTopicFormat). And the SKIT CAST (`skitCast`): people the
+// client confirmed may act in their skits (setSkitCast below).
 // ---------------------------------------------------------------------------
 
 export { type VideoStyle, VIDEO_STYLE_LABEL, asVideoStyle, videoStyleFromOverrides } from "@/lib/contentPolicy/prompts";
@@ -139,27 +147,87 @@ export async function videoStyleOf(enrollmentId: string): Promise<VideoStyle> {
  * session records that share it, so a concurrent write to another key is
  * never lost.
  */
-export async function setVideoStyle(enrollmentId: string, style: VideoStyle, by: string | null): Promise<{ changed: boolean; style: VideoStyle }> {
-  if (style !== "DIRECT" && style !== "SKITS") throw new Error("The video style is Direct-to-camera or Skits.");
+export async function setVideoStyle(enrollmentId: string, style: VideoStyle, by: string | null, opts: { skitsPerMonth?: number | null } = {}): Promise<{ changed: boolean; style: VideoStyle; skitsPerMonth: number | null }> {
+  if (style !== "DIRECT" && style !== "SKITS" && style !== "MIX") throw new Error("The video style is Direct-to-camera or Skits, or a Mix of both.");
   const { recordEnrollmentChange, readOverrides } = await import("@/lib/enrollmentChanges");
   const { etMonthKey } = await import("@/lib/contentProgram");
   for (let attempt = 0; attempt < 3; attempt++) {
     const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true, overridesJson: true } });
     if (!e) throw new Error("Enrollment not found.");
     const before = videoStyleFromOverrides(e.overridesJson);
-    if (before === style) return { changed: false, style };
+    const beforeTarget = skitsPerMonthFromOverrides(e.overridesJson);
+    // A Mix account's target: the one typed, else the one it had, else 2.
+    const target = style === "MIX" ? clampSkitsPerMonth(opts.skitsPerMonth ?? beforeTarget) : null;
+    if (before === style && beforeTarget === target) return { changed: false, style, skitsPerMonth: target };
     const bag = { ...readOverrides(e.overridesJson) };
     if (style === "DIRECT") delete bag[VIDEO_STYLE_OVERRIDE_KEY]; else bag[VIDEO_STYLE_OVERRIDE_KEY] = style;
+    if (target) bag[SKITS_PER_MONTH_KEY] = target; else delete bag[SKITS_PER_MONTH_KEY];
     const next = Object.keys(bag).length ? JSON.stringify(bag) : null;
     const w = await prisma.contentEnrollment.updateMany({ where: { id: enrollmentId, overridesJson: e.overridesJson }, data: { overridesJson: next } });
     if (!w.count) continue; // another write to the bag landed first: read it again
     const now = new Date();
     await recordEnrollmentChange({
-      enrollmentId, clientId: e.clientId, field: "overrides", from: { [VIDEO_STYLE_OVERRIDE_KEY]: before }, to: { [VIDEO_STYLE_OVERRIDE_KEY]: style },
+      enrollmentId, clientId: e.clientId, field: "overrides",
+      from: { [VIDEO_STYLE_OVERRIDE_KEY]: before, ...(beforeTarget ? { [SKITS_PER_MONTH_KEY]: beforeTarget } : {}) },
+      to: { [VIDEO_STYLE_OVERRIDE_KEY]: style, ...(target ? { [SKITS_PER_MONTH_KEY]: target } : {}) },
       effectiveAt: now, effectiveMonthKey: etMonthKey(now), changedBy: by, appliedAt: now,
-      reason: `Video style set to ${VIDEO_STYLE_LABEL[style]} (Program style).`,
+      reason: `Video style set to ${VIDEO_STYLE_LABEL[style]}${target ? ` (${target} skit${target === 1 ? "" : "s"} a month)` : ""} (Program style).`,
     });
-    return { changed: true, style };
+    return { changed: true, style, skitsPerMonth: target };
+  }
+  throw new Error("The client file changed while saving. Try again.");
+}
+
+// ---------------------------------------------------------------------------
+// THE SKIT CAST (Oct 22 2026). Bernadette Rabel's husband, a voice
+// impressionist, will act in her skits. The office adds the people the CLIENT
+// confirmed (on a call, by text); the skit prompts list them and allow one per
+// skit, with few, short lines (prompts.ts skitCastBlock). Stored in
+// overridesJson.skitCast, compare-and-swap like the style, ledgered.
+// ---------------------------------------------------------------------------
+
+export { type SkitCastMember, skitCastFromOverrides } from "@/lib/contentPolicy/videoFormat";
+
+export async function skitCastOf(enrollmentId: string): Promise<SkitCastMember[]> {
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true } });
+  return skitCastFromOverrides(e?.overridesJson ?? null);
+}
+
+/** Add one cast member (`add`) or take one off (`removeId`). Returns the cast as saved. */
+export async function setSkitCast(enrollmentId: string, change: { add?: { name?: string | null; role: string; note?: string | null } | null; removeId?: string | null }, by: string | null): Promise<{ changed: boolean; cast: SkitCastMember[] }> {
+  const { recordEnrollmentChange, readOverrides } = await import("@/lib/enrollmentChanges");
+  const { etMonthKey } = await import("@/lib/contentProgram");
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true, overridesJson: true } });
+    if (!e) throw new Error("Enrollment not found.");
+    const before = skitCastFromOverrides(e.overridesJson);
+    let next = before;
+    let said = "";
+    if (change.add) {
+      const now = new Date();
+      const m = cleanCastMember({ ...change.add, id: `cast_${now.getTime().toString(36)}`, addedBy: by, addedAt: now.toISOString() });
+      if (!m) throw new Error("Say who they are to the client, for example their spouse or business partner.");
+      if (before.length >= MAX_SKIT_CAST) throw new Error(`A skit cast holds up to ${MAX_SKIT_CAST} people.`);
+      if (before.some((x) => x.role.toLowerCase() === m.role.toLowerCase() && (x.name ?? "").toLowerCase() === (m.name ?? "").toLowerCase())) return { changed: false, cast: before };
+      next = [...before, m];
+      said = `Skit cast: added ${castMemberLabel(m)}.`;
+    } else if (change.removeId) {
+      const gone = before.find((x) => x.id === change.removeId);
+      if (!gone) return { changed: false, cast: before };
+      next = before.filter((x) => x.id !== change.removeId);
+      said = `Skit cast: removed ${castMemberLabel(gone)}.`;
+    } else return { changed: false, cast: before };
+    const bag = { ...readOverrides(e.overridesJson) };
+    if (next.length) bag[SKIT_CAST_KEY] = next; else delete bag[SKIT_CAST_KEY];
+    const json = Object.keys(bag).length ? JSON.stringify(bag) : null;
+    const w = await prisma.contentEnrollment.updateMany({ where: { id: enrollmentId, overridesJson: e.overridesJson }, data: { overridesJson: json } });
+    if (!w.count) continue; // another write to the bag landed first: read it again
+    const now = new Date();
+    await recordEnrollmentChange({
+      enrollmentId, clientId: e.clientId, field: "overrides", from: { [SKIT_CAST_KEY]: before.map(castMemberLabel) }, to: { [SKIT_CAST_KEY]: next.map(castMemberLabel) },
+      effectiveAt: now, effectiveMonthKey: etMonthKey(now), changedBy: by, appliedAt: now, reason: said,
+    });
+    return { changed: true, cast: next };
   }
   throw new Error("The client file changed while saving. Try again.");
 }

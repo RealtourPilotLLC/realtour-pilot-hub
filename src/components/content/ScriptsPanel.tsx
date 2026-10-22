@@ -18,6 +18,7 @@ import { WRITER_LENGTH } from "@/lib/scriptWriter/rules";
 // (Oct 6 2026: prompts.ts's prior-scripts line, once a "20–30 s" literal, now
 // reads the policy too.)
 import { GENERATION_POLICY } from "@/lib/contentPolicy/policy";
+import { VIDEO_FORMAT_LABEL, type VideoFormat } from "@/lib/contentPolicy/videoFormat";
 import { approveAndSendScriptAction, approveAndSendScriptsAction, approveScriptVersionAction, queueOwedScriptsAction, queueScriptRevisionAction, releaseScriptAction, restoreScriptVersionAction, retryAiJobAction, returnScriptAction, saveScriptText } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
@@ -37,6 +38,8 @@ import { approveAndSendScriptAction, approveAndSendScriptsAction, approveScriptV
 export type VersionUi = { id: string; versionNo: number; status: string; source: string; body: string; createdBy: string | null; createdAt: string; changeSummary: string | null; approvedBy: string | null; approvedAt: string | null; sharedAt: string | null; estimatedSeconds: number | null; spokenWordCount: number | null; pointCount: number; findings: { severity: string; message: string; code?: string }[]; gaps: { kind: string; text: string; question: string | null }[]; strategyVersionNo: number | null; policyVersionNo: number | null; answerCount: number; path: string; basedOnVersionNo: number | null; regeneratedSections: string[];
   /** A skit kept as written (speaker lines, directions): its length is a note, and Tighten would rewrite it, so it isn't offered. */
   skit?: boolean;
+  /** Oct 22 2026: the format this version was written in: Skit or Talking to camera. */
+  format?: VideoFormat;
   /** Oct 14 2026: the writer's angle (viewer, belief, stake, angle, clientTake, payoff). Staff only, never the portal. */
   angle?: Record<string, string> | null;
   /** Oct 14 2026: the automatic check's line ("Checked: passed", "Auto-fixed 1 time", "Still flagged: …", "Not checked"). */
@@ -54,7 +57,9 @@ export type ScriptUi = { id: string; title: string; status: string; historical: 
   /** 6.5: the client changed an answer after this script was drafted — nothing redrafts on its own. */
   answersChanged?: boolean;
   /** Oct 22 2026: its video is filmed (lib/scriptFilmed) — not the client's verdict, and the client is no longer asked. */
-  filmed?: { atISO: string | null; signal: string } | null };
+  filmed?: { atISO: string | null; signal: string } | null;
+  /** Oct 22 2026: the topic's format (its own, else the account's default); null for a script with no topic. */
+  topicFormat?: VideoFormat | null };
 
 /** A version's status in words (audit D22: staff saw "internal_review"). */
 const VERSION_WORD: Record<string, string> = { DRAFT: "waiting for an OK", INTERNAL_REVIEW: "waiting for an OK", APPROVED: "approved", SHARED: "sent to the client", SUPERSEDED: "replaced", REJECTED: "rejected" };
@@ -265,6 +270,8 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
         <FileText className="size-3.5 shrink-0 text-muted-2" />
         <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">{s.title}</span>
         {s.pillarName && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{s.pillarName}</span>}
+        {cur?.format && <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cur.format === "SKIT" ? "bg-brand-soft text-brand" : "bg-surface-2 text-muted"}`}>{VIDEO_FORMAT_LABEL[cur.format]}</span>}
+        {cur?.format && s.topicFormat && s.topicFormat !== cur.format && !s.historical && <span className="shrink-0 rounded-full bg-warning-soft px-2 py-0.5 text-xs font-medium text-warning" title="The topic's format changed after this version was written. Revise it with AI (or draft again) to rewrite it; nothing changes on its own.">topic is now: {VIDEO_FORMAT_LABEL[s.topicFormat]}</span>}
         {cur && (
           <span className="text-[11px] text-muted-2">
             v{cur.versionNo} · {cur.path}

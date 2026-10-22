@@ -1737,6 +1737,8 @@ export default async function EditBriefPage({
                         {topicScript && (topicScript.clientApproved
                           ? <span className="rounded-full bg-success/10 px-2 py-0.5 text-xs font-semibold text-success">Approved by the client</span>
                           : <span data-not-approved className="rounded-full bg-warning/15 px-2 py-0.5 text-xs font-semibold text-warning">Not approved by the client yet</span>)}
+                        {/* Oct 22 2026: a skit is cut as a scene, so the brief says which it is. */}
+                        {topicScript?.format && <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${topicScript.format === "SKIT" ? "bg-brand/10 text-brand" : "bg-surface-2 text-muted"}`}>{topicScript.format === "SKIT" ? "Skit" : "Talking to camera"}</span>}
                         {useReelScript && <span className="text-sm text-muted">From the Script Studio</span>}
                         <ChevronDown aria-hidden className="ml-auto size-4 text-muted transition-transform group-open:rotate-180" />
                       </summary>

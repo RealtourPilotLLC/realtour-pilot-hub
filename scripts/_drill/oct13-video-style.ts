@@ -196,7 +196,9 @@ async function main() {
     const directPrompt = policy.buildScriptPrompt(builtD.ctx, { path: "transcript", topic: topicFor(builtD.ctx, "Read the inspection report like a pro"), excerpts: [], selectedOnCall: true });
     c.ok("SKITS: the skit block is in the system prompt", skitPrompt.system.includes(policy.SKIT_SCRIPT_BLOCK));
     c.ok("…it keeps the same framework labels in order", /HOOK, Talking Point 1: Re-hook, Talking Point 2: Build up, Talking Point 3: Payoff, Close \/ Call to action/.test(skitPrompt.system));
-    c.ok("…it states the client-alone rule", /THE CLIENT IS ALONE ON CAMERA/.test(skitPrompt.system) && /Never a stranger, an actor or an invented character, and never more than one\. Off-camera voices are always fine\./.test(skitPrompt.system));
+    // Oct 22 2026: "THE CLIENT IS ALONE ON CAMERA" became the cast rule (alone by default; one
+    // confirmed cast member at most, nobody else). oct22-skits-direct.ts proves the rest of it.
+    c.ok("…it states the client-alone rule (the cast rule since Oct 22)", /By default the client is alone on camera/.test(skitPrompt.system) && /Nobody else is written in: never a stranger, an actor/.test(skitPrompt.system) && /at most one of them in a skit/.test(skitPrompt.system) && /Off-camera voices are always fine\./.test(skitPrompt.system));
     c.ok("…speaker labels, bracketed directions, on-screen text, callback, deadpan button", ["speaker label in capitals", "square brackets", "[On-screen text:", "callback", "deadpan final button"].every((s) => skitPrompt.system.includes(s)));
     c.ok("…the value lands inside the joke, never instead of it", /delivered inside the joke, never instead of it/.test(skitPrompt.system));
     c.ok("…the same word cap, dialogue only", /spoken dialogue of the whole script stays within the same cap as every script \(about 70 to 110 words\)/.test(skitPrompt.system) && /PART BUDGETS \(spoken dialogue words; speaker labels and bracketed lines are not counted\)/.test(skitPrompt.system));

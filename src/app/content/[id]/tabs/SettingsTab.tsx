@@ -3,7 +3,7 @@ import { PortalAccessCard } from "@/components/content/PortalAccessCard";
 import { EnrollmentControls } from "@/components/content/Workspace";
 import { ProgramStyleCard } from "@/components/content/ProgramStyleCard";
 import { loadSettingsTab } from "../workspaceData";
-import { videoStyleFromOverrides } from "@/lib/contentPolicy/prompts";
+import { videoStyleFromOverrides, skitsPerMonthFromOverrides, skitCastFromOverrides } from "@/lib/contentPolicy/videoFormat";
 import type { TabCtx } from "./shared";
 import { CreativeGuardEditor } from "@/components/clientCare/CreativeGuardEditor";
 import { EntitlementsCard } from "@/components/clientCare/EntitlementsCard";
@@ -46,9 +46,9 @@ export async function SettingsTab({ ctx }: { ctx: TabCtx }) {
       {care?.[0] && <EntitlementsCard summary={care[0]} canEdit={ctx.officeEyes} />}
       {care?.[2] && <CreativeGuardEditor enrollmentId={ctx.id} guard={care[2]} canEdit />}
       {/* Oct 8 2026: strategy calls on/off and "we show up and shoot" — owner/admin. */}
-      {/* Oct 13 2026: + video style, Direct-to-camera or Skits (overridesJson.videoStyle). */}
+      {/* Oct 13 2026: + video style, Direct-to-camera or Skits (overridesJson.videoStyle). Oct 22 2026: or Mix, and the skit cast. */}
       {/* Oct 21 2026: the ONE call-mode control (Required · Optional · Off) is Program style's. */}
-      <ProgramStyleCard enrollmentId={ctx.id} callMode={s.callMode} callModeExplicit={s.callModeExplicit} noCallEligible={s.noCallEligible} clientPlanned={s.clientSuppliesTopics} videoStyle={videoStyleFromOverrides(s.overrides)} canEdit={ctx.staffEyes} />
+      <ProgramStyleCard enrollmentId={ctx.id} callMode={s.callMode} callModeExplicit={s.callModeExplicit} noCallEligible={s.noCallEligible} clientPlanned={s.clientSuppliesTopics} videoStyle={videoStyleFromOverrides(s.overrides)} skitsPerMonth={skitsPerMonthFromOverrides(s.overrides)} cast={skitCastFromOverrides(s.overrides)} canEdit={ctx.staffEyes} />
       {/* ONE package and status card for Jordan and Kyle alike (Oct 21 2026,
           audit D13), through the ledgered staff actions both already passed. */}
       {ctx.officeEyes && (

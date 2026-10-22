@@ -10,6 +10,7 @@ import { TEXT_KYLE } from "@/lib/portalWords";
 import { PROGRAM_SLOT_HORIZON_DAYS } from "@/lib/portalScheduling";
 import { catchUpInto, catchUpMonthName } from "@/lib/catchUp";
 import { orderByPillarEmphasis } from "@/lib/contentPolicy/topicBank";
+import { videoStyleFromOverrides, skitsPerMonthFromOverrides, resolvedTopicFormat, type VideoFormat, type VideoStyle } from "@/lib/contentPolicy/videoFormat";
 
 // ---------------------------------------------------------------------------
 // The client portal's data layer (interactive layer, Aug 28; identity layer,
@@ -1235,6 +1236,8 @@ export type PortalTopic = {
      * nothing; approved, it reads approved as always.
      */
     filmed?: { atISO: string | null } | null;
+    /** Oct 22 2026: the format the version on this page was written in. */
+    format?: VideoFormat;
   } | null;
   /**
    * THE WORDS, when the client is allowed to read them. Null is the normal
@@ -1276,6 +1279,8 @@ export type PortalTopic = {
    * recommendationsForMonth). Only on a topic the client could choose now.
    */
   recommended?: { monthId: string; kind: "RECOMMENDED" | "ALTERNATIVE"; rank: number; reason: string | null } | null;
+  /** Oct 22 2026: "Skit" or "Talking to camera" (the topic's own format, else the account's default). */
+  format: VideoFormat;
 };
 
 export type PortalTopicScript = {
@@ -1310,6 +1315,9 @@ export type PortalTopicsData = {
   archivedCount: number;
   total: number;
   strategyLabel: string | null;
+  /** Oct 22 2026: the account's video style, and a Mix account's skits a month (shown beside the month, never a block). */
+  videoStyle?: VideoStyle;
+  skitsPerMonth?: number | null;
 };
 
 const LIVE_SELECTION = ["SELECTED", "RECONCILED", "PROPOSED", "CARRIED"];
@@ -1480,6 +1488,11 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
   const strategyLabelOf = new Map(versionsOfStrategies.map((v) => [v.id, `v${v.versionNo}`]));
   const versionIds = scripts.map((s) => s.sharedVersionId ?? s.approvedVersionId ?? s.currentVersionId).filter((x): x is string => !!x);
   const versions = versionIds.length ? await prisma.contentScriptVersion.findMany({ where: { id: { in: versionIds } }, select: { id: true, versionNo: true, strategyVersionId: true } }) : [];
+  // Oct 22 2026: Skit or Talking to camera, per topic (its own, else the account's default) and per script version.
+  const versionFormats = await import("@/lib/contentTopics").then((m) => m.scriptVersionFormats(versionIds)).catch(() => new Map<string, VideoFormat>());
+  const styleRow = await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { overridesJson: true } });
+  const videoStyle = videoStyleFromOverrides(styleRow?.overridesJson ?? null);
+  const skitsPerMonth = skitsPerMonthFromOverrides(styleRow?.overridesJson ?? null);
   const topicRows = topicIds.length ? await prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, strategyVersionId: true, clientUserId: true } }) : [];
   const stratOfTopic = new Map(topicRows.map((t) => [t.id, t.strategyVersionId]));
   const mineOfTopic = new Map(topicRows.map((t) => [t.id, !!t.clientUserId]));
@@ -1528,8 +1541,10 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
             staleApproval: decisions.get(sc.id)?.staleApproval ?? false,
             replies: scriptReplies.filter((m) => m.refId === sc.id).slice(-3).map((m) => ({ body: replyText(m.body), atISO: m.createdAt.toISOString(), by: m.authorLabel })),
             filmed: decisions.get(sc.id)?.filmed ? { atISO: decisions.get(sc.id)!.filmed!.atISO } : null,
+            format: scv ? versionFormats.get(scv.id) ?? "DIRECT" : undefined,
           }
         : null,
+      format: resolvedTopicFormat(t.videoFormat, videoStyle),
       scriptText: topicScripts.get(t.id) ?? null,
       strategyLabel: stratOfTopic.get(t.id) ? strategyLabelOf.get(stratOfTopic.get(t.id)!) ?? null : null,
       lastEventAtISO: t.lastEventAt,
@@ -1594,7 +1609,7 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
   for (const g of groups) for (const t of g.topics) t.recommended = !t.declined && !t.selection && t.state === "SUGGESTED" ? recs.get(t.id) ?? null : null;
   const approvedStrategy = versionsOfStrategies.length ? await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: enrollment.id, status: "APPROVED" }, orderBy: { versionNo: "desc" }, select: { versionNo: true } }) : null;
   const total = groups.reduce((n, g) => n + g.topics.filter((t) => !t.declined).length, 0);
-  return { groups, months, archivedCount: bank.archived, total, strategyLabel: approvedStrategy ? `v${approvedStrategy.versionNo}` : null };
+  return { groups, months, archivedCount: bank.archived, total, strategyLabel: approvedStrategy ? `v${approvedStrategy.versionNo}` : null, videoStyle, skitsPerMonth };
 }
 
 /**

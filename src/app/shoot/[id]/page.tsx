@@ -293,12 +293,17 @@ function SessionTopicCard({ t, n, tools }: { t: NonNullable<ShootView["session"]
           </span>
         )}
         {t.script && <span className="text-muted">Script v{t.script.versionNo}</span>}
+        {/* Oct 22 2026: a skit is filmed differently, so the card says which it is. */}
+        {t.script?.format && <span className={`rounded-full px-2 py-0.5 font-medium ${t.script.format === "SKIT" ? "bg-brand/15 text-brand" : "bg-surface-2 text-muted"}`}>{t.script.format === "SKIT" ? "Skit" : "Talking to camera"}</span>}
         {t.overflow && <span className="rounded-full bg-warning/10 px-2 py-0.5 font-medium text-warning">Extra, if there is time</span>}
       </div>
       {t.script ? (
         <>
           {!t.script.clientApproved && (
             <p className="mt-2 rounded-lg bg-warning/10 px-3 py-2 text-sm leading-relaxed text-foreground/90">Film it as written. The client can still ask for changes.</p>
+          )}
+          {t.script.format === "SKIT" && (
+            <p className="mt-2 rounded-lg bg-brand/10 px-3 py-2 text-sm leading-relaxed text-foreground/90">A skit: an acted scene, not a talk to camera. Film it line by line, follow the directions in brackets, and leave room for reactions. Only the people named in the script are on camera.</p>
           )}
           {t.script.text ? (
             <div className="mt-1 max-w-[65ch]"><ScriptView body={clean(t.script.text) ?? ""} size="lg" audience="staff" showMissingPillar={false} fileTitle={title} textDownload={!t.script.scriptId} /></div>

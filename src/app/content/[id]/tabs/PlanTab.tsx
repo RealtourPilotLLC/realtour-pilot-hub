@@ -100,7 +100,7 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
         <ClientOwnPlan ctx={ctx} />
         <TopicsPanel enrollmentId={id} month={month ? { id: month.id, label: monthName, short: monthShort, key: month.monthKey } : null} capacity={d.capacity} groups={d.groups} proposed={d.proposed} monthTopics={d.monthTopics}
           suggestions={d.suggestions} recommended={d.recommended} runs={d.runs} interviews={d.interviews} histories={d.histories} pillars={d.pillars} topicsPerPillar={d.topicsPerPillar} isOwner={ownerEyes} archivedCount={d.archivedCount} declined={d.declined} stock={d.stock} held={d.held}
-          drafts={d.drafts} queueActive={d.queueActive} />
+          drafts={d.drafts} queueActive={d.queueActive} videoStyle={d.videoStyle} skitsPerMonth={d.skitsPerMonth} />
       </div>
     );
   }

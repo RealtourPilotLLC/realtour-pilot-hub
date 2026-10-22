@@ -145,7 +145,7 @@ export function PlanTab({ d }: { d: PlanTabData }) {
           )}
           <TopicBank
             key={`${d.view}:${plan.month?.id ?? "none"}`}
-            groups={d.topics.groups} months={d.topics.months} archivedCount={d.topics.archivedCount} total={d.topics.total} strategyLabel={d.topics.strategyLabel}
+            groups={d.topics.groups} months={d.topics.months} archivedCount={d.topics.archivedCount} total={d.topics.total} strategyLabel={d.topics.strategyLabel} videoStyle={d.topics.videoStyle} skitsPerMonth={d.topics.skitsPerMonth}
             canAct={d.canAct} readOnly={d.readOnly} canApprove={!!d.canApprove}
             // The bank opens on what is still to choose from; a filter in the address wins.
             initialFilter={d.view === "bank" ? d.filter ?? "SUGGESTED" : undefined}
@@ -200,6 +200,8 @@ function ScriptsView({ plan, canAct, canApprove, readOnly, monthHref, pdfs, upda
                 <p className="mt-1 text-sm text-muted">
                   {t.selection ? `For ${monthLabel(t.selection.monthKey)}` : `No month assigned · ${t.pillarName}`}
                   {fresh ? ` · version ${fresh.versionNo} · from your change on ${fmtShort(fresh.requestedAtISO)}` : t.scriptText?.versionLabel ? ` · script ${t.scriptText.versionLabel}` : ""}
+                  {/* Oct 22 2026: a skit is filmed differently, so the script says which it is. */}
+                  {t.script?.format === "SKIT" ? " · Skit" : t.script?.format && t.format === "SKIT" ? " · Talking to camera" : ""}
                 </p>
                 {fresh?.message && (
                   <div className="mt-3 flex gap-2.5 rounded-xl border border-brand/20 bg-brand-soft/30 px-3 py-2.5">
@@ -242,7 +244,7 @@ function ScriptsView({ plan, canAct, canApprove, readOnly, monthHref, pdfs, upda
           {approvedEarlier.map((t) => (
             <details key={t.id} id={`script-${t.id}`} className="scroll-mt-24 rounded-2xl border border-border bg-surface/70 p-3 text-sm">
               <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-1.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
-                <span className="min-w-0 flex-1 basis-40 break-words font-medium">{t.title}<span className="ml-1 text-xs font-normal text-muted">· {t.selection ? monthLabel(t.selection.monthKey) : "No month assigned"}{t.scriptText?.versionLabel ? ` · script ${t.scriptText.versionLabel}` : ""}</span></span>
+                <span className="min-w-0 flex-1 basis-40 break-words font-medium">{t.title}<span className="ml-1 text-xs font-normal text-muted">· {t.selection ? monthLabel(t.selection.monthKey) : "No month assigned"}{t.scriptText?.versionLabel ? ` · script ${t.scriptText.versionLabel}` : ""}{t.script?.format === "SKIT" ? " · Skit" : ""}</span></span>
                 <StatusChip word={SCRIPT_WORDS.APPROVED} />
               </summary>
               {t.scriptText && <div className="mt-2 rounded-xl border border-border bg-surface-2/40 px-4 py-4"><div className="max-w-[70ch]"><ScriptBody body={t.scriptText.body} size="lg" /></div></div>}

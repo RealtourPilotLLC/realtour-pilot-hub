@@ -472,9 +472,10 @@ export async function withOfficeApprovedScripts(
   const versions = await prisma.contentScriptVersion.findMany({
     // Current authorisation only: a version handed back to review is not approved.
     where: { id: { in: wanted.map((s) => s.approvedVersionId!) }, scriptId: { in: wanted.map((s) => s.id) }, status: { in: ["APPROVED", "SHARED"] } },
-    select: { id: true, scriptId: true, versionNo: true, title: true, body: true, filmingNotes: true, creativeDirection: true, productionNotes: true, hook: true, pointsJson: true, close: true, captionCta: true },
+    select: { id: true, scriptId: true, versionNo: true, title: true, body: true, filmingNotes: true, creativeDirection: true, productionNotes: true, hook: true, pointsJson: true, close: true, captionCta: true, validationJson: true, speakerLabelsJson: true },
   });
   const byId = new Map(versions.map((v) => [v.id, v]));
+  const { shownVersionFormat } = await import("@/lib/contentPolicy/videoFormat");
   const { sessionPartsOf } = await import("@/lib/deliverableOutputs");
   const clipText = (s: string | null | undefined) => {
     const t = stripMoneySentences((s ?? "").trim()).trim();
@@ -499,6 +500,7 @@ export async function withOfficeApprovedScripts(
           scriptId: v.scriptId,
           versionId: v.id,
           parts: sessionPartsOf(v),
+          format: shownVersionFormat(v),
         },
         noScript: null,
       };

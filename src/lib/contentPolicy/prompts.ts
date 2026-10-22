@@ -19,6 +19,7 @@ import { type Topic, emphasisOfPillar, topicsForEmphasis } from "./topicBank";
 import { renderScript } from "./scriptFormat";
 import { type CreativeIdentity, creativeIdentityBlock } from "./creativeIdentity";
 import { type CreativeGuard, creativeGuardBlock } from "../creativeGuardCore";
+import { type VideoStyle, type VideoFormat, type SkitCastMember, asVideoStyle, castMemberLabel, defaultFormatFor } from "./videoFormat";
 
 export type JsonSchema = Record<string, unknown>;
 
@@ -47,8 +48,14 @@ export type ClientContext = {
   sourceExcerpts?: SourceExcerpt[] | null;
   /** The month being planned, when known. */
   monthKey?: string | null;
-  /** Oct 13 2026: the account's video style (Settings › Program style). Missing = DIRECT, today's behaviour. */
+  /** Oct 13 2026: the account's video style (Settings › Program style). Missing = DIRECT, today's behaviour. Oct 22 2026: or MIX. */
   videoStyle?: VideoStyle | null;
+  /** Oct 22 2026: the format of the ONE video a script, revise or judge prompt is about (videoFormat.formatForWrite). Missing = the account's default. */
+  videoFormat?: VideoFormat | null;
+  /** Oct 22 2026: people the client confirmed may act in their skits (overridesJson.skitCast). */
+  skitCast?: SkitCastMember[] | null;
+  /** Oct 22 2026: a Mix account's target number of skits a month. */
+  skitsPerMonth?: number | null;
   /** Oct 14 2026: the auto-built creative identity (creativeIdentity.ts). Rendered in script, topic-bank and revise prompts. */
   creativeIdentity?: CreativeIdentity | null;
   /** Oct 14 2026: this month's priorities (ContentMonth.prioritiesJson), when the month is known. */
@@ -103,28 +110,32 @@ export const NO_INVENTION_RULE = `TRUTHFULNESS (mandatory)
 //     (SKIT_TOPIC_RULE), filmable by the client alone.
 //   Every account's topic bank carries PERSONAL_BRAND_HUMOUR_RULE.
 //
+// Oct 22 2026 (Bernadette Rabel's call): SKIT_SCRIPT_BLOCK goes to every
+// video whose FORMAT is a skit, whatever the account's default, and a DIRECT
+// video on a Skits account gets the direct prompt. "The client alone on
+// camera" became the cast rule: alone by default; a skit may include someone
+// the client confirmed (skitCastBlock, overridesJson.skitCast), with few,
+// short lines, the client staying the lead, nobody else written in. A Mix
+// account's bank asks for skit concepts beside its direct topics
+// (mixTopicRule, built from the same concept rules as SKIT_TOPIC_RULE).
+//
 // Stored in ContentEnrollment.overridesJson as `videoStyle` (programStyle.ts).
 // The house example below is a made-up agent: prompts are client-scoped, so no
 // real client's script ever appears in another client's prompt.
 // ---------------------------------------------------------------------------
 
-export type VideoStyle = "DIRECT" | "SKITS";
-export const VIDEO_STYLE_LABEL: Record<VideoStyle, string> = { DIRECT: "Direct-to-camera", SKITS: "Skits" };
-export const VIDEO_STYLE_OVERRIDE_KEY = "videoStyle";
+// Oct 22 2026: the style is the account's DEFAULT (Direct-to-camera, Skits or
+// Mix) and each video carries its own format, DIRECT or SKIT
+// (contentPolicy/videoFormat.ts, re-exported here so every import keeps
+// working). The script, revise and judge prompts read the format of the ONE
+// video they write (scriptFormatOf); the topic bank reads the account style.
+export {
+  type VideoStyle, type VideoFormat, type SkitCastMember, VIDEO_STYLE_LABEL, VIDEO_FORMAT_LABEL, VIDEO_STYLE_OVERRIDE_KEY, asVideoStyle, asVideoFormat, videoStyleFromOverrides,
+} from "./videoFormat";
 
-/** Anything that is not "SKITS" reads as DIRECT (the default, today's behaviour). */
-export function asVideoStyle(v: unknown): VideoStyle {
-  return typeof v === "string" && v.trim().toUpperCase() === "SKITS" ? "SKITS" : "DIRECT";
-}
-
-/** The style from ContentEnrollment.overridesJson (a JSON string or the parsed bag). */
-export function videoStyleFromOverrides(overrides: string | Record<string, unknown> | null | undefined): VideoStyle {
-  if (!overrides) return "DIRECT";
-  let bag: unknown = overrides;
-  if (typeof overrides === "string") {
-    try { bag = JSON.parse(overrides); } catch { return "DIRECT"; }
-  }
-  return bag && typeof bag === "object" && !Array.isArray(bag) ? asVideoStyle((bag as Record<string, unknown>)[VIDEO_STYLE_OVERRIDE_KEY]) : "DIRECT";
+/** The format of the video THIS prompt writes: the context's own, else the account's default. */
+export function scriptFormatOf(ctx: Pick<ClientContext, "videoStyle" | "videoFormat">): VideoFormat {
+  return ctx.videoFormat ?? defaultFormatFor(asVideoStyle(ctx.videoStyle));
 }
 
 /** The made-up house example: the client alone, a postgame press conference, off-camera questions. */
@@ -150,15 +161,18 @@ SAM: Call me before your inspection, not after.
 [Sam takes a long sip of water and closes his eyes at the mic.]
 SAM (eyes closed): Mostly tired.`;
 
-/** Added to the script prompt's system text for a SKITS account. No dash is used as punctuation here: the model mirrors it. */
-export const SKIT_SCRIPT_BLOCK = `VIDEO STYLE: SKITS (this client's account is set to Skits)
-This client films short comedic skits, not straight talking-to-camera scripts. Write this script as a skit. The house framework does not change: the same five sections, labelled the same way and in the same order (HOOK, Talking Point 1: Re-hook, Talking Point 2: Build up, Talking Point 3: Payoff, Close / Call to action), and each section still does its framework job. Inside the sections, write a short scene instead of a monologue.
+/** Added to the script prompt's system text for a video whose format is a skit (Oct 22 2026: per video, not per account). No dash is used as punctuation here: the model mirrors it. */
+export const SKIT_SCRIPT_BLOCK = `VIDEO STYLE: SKITS (this video is a skit)
+This video is a short comedic skit, not a straight talking-to-camera script. Write this script as a skit. The house framework does not change: the same five sections, labelled the same way and in the same order (HOOK, Talking Point 1: Re-hook, Talking Point 2: Build up, Talking Point 3: Payoff, Close / Call to action), and each section still does its framework job. Inside the sections, write a short scene instead of a monologue.
 
-THE CLIENT IS ALONE ON CAMERA. Other people on camera complicate the shoot, so build every skit for one person:
-- The client plays every on-screen role (two versions of themself, their own client, a reporter), or talks to an off-camera voice.
+WHO IS ON CAMERA (the cast rule). Other people on camera complicate the shoot, so:
+- By default the client is alone on camera. They play every on-screen role (two versions of themself, their own client, a reporter), or talk to an off-camera voice.
 - A recognisable format played solo works best: a press conference answering off-camera questions, a pitch to an unseen panel, a nature documentary the client narrates to camera, a sports commentary, a movie trailer.
 - Get the comedy from props, reaction cuts, on-screen text, sound effects, time cards and deadpan delivery to camera.
-- A second person on camera only rarely, and only someone the client already films with: a teammate or a family member named in the client's facts or brief. Never a stranger, an actor or an invented character, and never more than one. Off-camera voices are always fine.
+- A skit may include a cast member the client confirmed: only the people listed under SKIT CAST below, by the role and name given there, and at most one of them in a skit. Nobody else is written in: never a stranger, an actor, a teammate or family member who is not on that list, or an invented character. Off-camera voices are always fine.
+- A cast member gets few, short lines that are easy to say and easy to film: a reaction, a line or two, plain words, never a speech. The client stays the lead and carries the real estate point. Label a cast member's lines with their first name in capitals, or their role when no name is given.
+- A cast member plays themself in an acted bit. Never reveal anything private about them (their work, health, money, family matters) beyond what the cast note says, and never make who they are the joke.
+- A cast member's talent (a voice, an impression) is welcome, but never as an impression of a real, named person, and never a voice or accent that plays on race, ethnicity, religion, disability or any other protected characteristic.
 
 CRAFT:
 - A concept with a premise: one recognisable format or situation, set up in the first line or two of the HOOK. The first spoken line is the scroll-stopper.
@@ -168,7 +182,7 @@ CRAFT:
 - By default the real estate point still lands: the useful takeaway or the trust point is delivered inside the joke, never instead of it. A viewer who hears only the dialogue still learns the real thing.
 - A skit may be personality-first: when the joke is about the client's real interests (from their facts or creative identity), the real estate point may be subtle or absent.
 - The premise is play; the claims are not. Never invent a deal, a result, a number, a client story or a credential to make a joke work. Anything said as the client's own experience comes from the sources, or it becomes a gap.
-- Simple to film: one location, a few props, a few short lines per section.
+- Simple to film: one location, a few props, a few short lines per section. A skit takes longer to film than a talking-to-camera video, so keep the setups few.
 
 THIS IS AN ACTED SCENE. Never present it as something that happened to a real client, and never imply a fictional person is a real client.
 Never make fun of buyers, sellers or anyone in a vulnerable moment (grief, divorce, money trouble, health, estate situations). Never touch protected characteristics or anything that conflicts with fair housing. Never make the agent look careless or untrustworthy to get the laugh: the agent can be the straight man, the overprepared one, the self-aware one.
@@ -196,12 +210,70 @@ export const PERSONAL_BRAND_HUMOUR_RULE =
 export const TOPIC_ORIGINALITY_RULE =
   "ORIGINALITY: every topic carries an angle only this client could take, grounded in their strategy, their facts or their calls (their opinion, their market, their way of working). A title any other agent could post unchanged is not a topic. Never use these title shapes: \"What X Actually ...\", \"Why X Matters More Than ...\", \"The ___ Nobody Talks About\", \"What I Do When ...\", and keep the word \"actually\" out of titles. Vary the openings across the bank: only a few titles may start with the same word (What, Why, The, How).";
 
+/**
+ * The SKIT CAST block (Oct 22 2026), right after SKIT_SCRIPT_BLOCK in a skit's
+ * prompt: the people the client confirmed may act in their skits, or the
+ * plain statement that nobody is, so the cast rule always has its list.
+ */
+export function skitCastBlock(cast: readonly SkitCastMember[] | null | undefined): string {
+  const list = (cast ?? []).filter((m) => m.role);
+  if (!list.length) return "SKIT CAST: nobody confirmed. The client is alone on camera; off-camera voices only.";
+  return [
+    "SKIT CAST (confirmed by the client; the only people besides the client who may appear on camera, one at most per skit, with few, short lines):",
+    ...list.map((m) => `- ${castMemberLabel(m)}${m.note ? `: ${m.note}` : ""}`),
+  ].join("\n");
+}
+
+/** What every skit concept must be, on a Skits account's bank and on a Mix account's skit concepts. */
+export const SKIT_CONCEPT_RULES = `- The title is the premise: a recognisable format or situation (for example "Shark Tank Listing Pitch", "The Postgame Closing Interview", "Nature Documentary: The First-Time Buyer").
+- The description is one sentence naming the real takeaway the skit delivers: what the viewer learns, or why they trust the agent. The intended message is that takeaway.
+- Every concept can be filmed by the client alone: they play every role or talk to an off-camera voice. A concept may use one cast member the client confirmed (SKIT CAST in the client's context), never anyone else. Never a stranger, an actor or an invented character.
+- No concept rests on impersonating a real, named person, or on a voice or accent that plays on race, ethnicity, religion, disability or any other protected characteristic.
+- The value or trust point is delivered inside the joke, never instead of it. The personal brand pillar's concepts are the funniest.`;
+
 /** A SKITS account's topic bank: every topic is a skit concept the client can film alone. */
 export const SKIT_TOPIC_RULE = `VIDEO STYLE: SKITS (this client's account is set to Skits). Every topic is a creative skit concept.
-- The title is the premise: a recognisable format or situation (for example "Shark Tank Listing Pitch", "The Postgame Closing Interview", "Nature Documentary: The First-Time Buyer").
-- The description is one sentence naming the real takeaway the skit delivers: what the viewer learns, or why they trust the agent. The intended message is that takeaway.
-- Every concept can be filmed by the client alone: they play every role or talk to an off-camera voice. At most, rarely, a teammate or family member named in the client's facts. Never a stranger, an actor or an invented character.
-- The value or trust point is delivered inside the joke, never instead of it. The personal brand pillar's concepts are the funniest.`;
+${SKIT_CONCEPT_RULES}`;
+
+/**
+ * A MIX account's topic bank (Oct 22 2026): mostly talking-to-camera topics,
+ * plus skit concepts under the same rules as a Skits account's, each topic
+ * marked with its format. Skits are good for attention and personality; too
+ * many and the agent looks like they are only playing around (Jordan).
+ */
+export function mixTopicRule(skitsPerMonth: number | null | undefined): string {
+  const n = skitsPerMonth && skitsPerMonth > 0 ? skitsPerMonth : 2;
+  return `VIDEO STYLE: MIX (this client films mostly talking-to-camera videos plus about ${n} skit${n === 1 ? "" : "s"} a month). Mark every topic's format.
+- Most topics are talking to camera (format "DIRECT"), written exactly as for any direct account.
+- About a quarter of the topics, and never fewer than ${n * 2} across the bank, are skit concepts (format "SKIT"), spread over the pillars with the most on the personal brand pillar. Skits bring attention and personality; a bank of nothing but skits makes the agent look like they are only playing around.
+- Each skit concept follows these rules:
+${SKIT_CONCEPT_RULES}`;
+}
+
+/** The bank's output schema for a MIX account: every topic carries its format. Other accounts keep the base schema. */
+export function topicBankSchemaFor(style: VideoStyle | null | undefined): JsonSchema {
+  if (asVideoStyle(style) !== "MIX") return TOPIC_BANK_OUTPUT_SCHEMA;
+  const props = TOPIC_BANK_OUTPUT_SCHEMA.properties as Record<string, Record<string, unknown>>;
+  const pillarItems = (props.pillars.items as Record<string, unknown>);
+  const pillarProps = pillarItems.properties as Record<string, Record<string, unknown>>;
+  const topicItems = pillarProps.topics.items as { required: string[]; properties: Record<string, unknown> } & Record<string, unknown>;
+  return {
+    ...TOPIC_BANK_OUTPUT_SCHEMA,
+    properties: {
+      ...props,
+      pillars: {
+        ...props.pillars,
+        items: {
+          ...pillarItems,
+          properties: {
+            ...pillarProps,
+            topics: { ...pillarProps.topics, items: { ...topicItems, required: [...topicItems.required, "format"], properties: { ...topicItems.properties, format: { type: "string", enum: ["DIRECT", "SKIT"], description: "DIRECT = talking to camera; SKIT = a skit concept." } } } },
+          },
+        },
+      },
+    },
+  };
+}
 
 /** The script output schema for a SKITS account: the same fields, with the spoken-line descriptions written for a scene. */
 function skitScriptSchema(): JsonSchema {
@@ -521,7 +593,8 @@ export function buildTopicBankPrompt(
     "",
     // Oct 13 2026: every account's personal brand topics a bit funnier; a SKITS account's topics are skit concepts.
     PERSONAL_BRAND_HUMOUR_RULE,
-    ...(asVideoStyle(ctx.videoStyle) === "SKITS" ? ["", SKIT_TOPIC_RULE] : []),
+    // Oct 22 2026: a MIX account's bank carries skit concepts beside its direct topics, each marked; both name the cast.
+    ...(asVideoStyle(ctx.videoStyle) === "SKITS" ? ["", SKIT_TOPIC_RULE, skitCastBlock(ctx.skitCast)] : asVideoStyle(ctx.videoStyle) === "MIX" ? ["", mixTopicRule(ctx.skitsPerMonth), skitCastBlock(ctx.skitCast)] : []),
     opts.refresh
       ? "REFRESH: the existing topics below stay in the client's bank on our side; return ONLY new ideas, never an existing topic again (not even word for word). Do not re-suggest an archived idea as new; do not rename the client's pillars. The existing topics already cover their subjects: spend every new idea on a focus area, story or angle none of them covers yet."
       : "",
@@ -538,7 +611,7 @@ export function buildTopicBankPrompt(
   ]
     .filter(Boolean)
     .join("\n");
-  return { name: "topic-bank", system, user, outputSchema: TOPIC_BANK_OUTPUT_SCHEMA, stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
+  return { name: "topic-bank", system, user, outputSchema: topicBankSchemaFor(ctx.videoStyle), stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
 }
 
 // ---------------------------------------------------------------------------
@@ -717,8 +790,9 @@ export function buildScriptPrompt(ctx: ClientContext, source: ScriptPromptSource
   assertClientScoped(ctx, topic);
   const t = GENERATION_POLICY.timing;
   const captionExamples = ctx.strategy?.document?.captionCtaExamples?.items ?? [];
-  // Oct 13 2026: a SKITS account gets the skit block (same framework, a scene inside it).
-  const skit = asVideoStyle(ctx.videoStyle) === "SKITS";
+  // Oct 13 2026: a skit gets the skit block (same framework, a scene inside it).
+  // Oct 22 2026: decided by THIS video's format, not the account's, with the cast after it.
+  const skit = scriptFormatOf(ctx) === "SKIT";
   const system = [
     systemHeader("You are writing ONE personal-branding video script for a Realtour Pilot client's monthly content."),
     "",
@@ -737,7 +811,7 @@ export function buildScriptPrompt(ctx: ClientContext, source: ScriptPromptSource
       : `PART BUDGETS (spoken words): hook ≤${SCRIPT_PART_BUDGETS.hookWords} (one sentence); each talking point ≤${SCRIPT_PART_BUDGETS.pointWords}; close ≤${SCRIPT_PART_BUDGETS.closeWords}; the whole spoken script never above ${t.heuristicWords[1]}. When in doubt, cut: a shorter draft is easier to review than a long one is to trim.`,
     "EVIDENCE, NOT COPY: the client's answers and any call excerpts are evidence, not copy. Choose ONE concrete detail per point and say it plainly; do not compress everything they said into the script.",
     `PUNCTUATION: ${GENERATION_POLICY.punctuation.rule}`,
-    ...(skit ? ["", SKIT_SCRIPT_BLOCK, ""] : []),
+    ...(skit ? ["", SKIT_SCRIPT_BLOCK, "", skitCastBlock(ctx.skitCast), ""] : []),
     captionExamples.length ? `CAPTION CTA: write one in the style of the strategy's Caption CTA Examples:\n${captionExamples.map((c) => `- ${c}`).join("\n")}` : "CAPTION CTA: the strategy lists no Caption CTA Examples; write one only if the client supplied a next step, otherwise null.",
     "",
     SPEAKER_ATTRIBUTION_RULE,
@@ -812,7 +886,7 @@ export const JUDGE_CRITERIA_TEXT: Record<JudgeCriterion, string> = {
   close: "The close completes the hook's thought and satisfies without a forced sales line.",
   voice: "It sounds like this client (their brand voice and creative identity), not a generic agent: no other agent could read it word for word. It is personal branding about the agent, not a listing-style ad (no property-tour narration, price or feature talk, or private-tour sales close).",
   truth: "No invented facts: every story, number, result, credential or client event in it is supported by the sources.",
-  skit: "It is actually funny, safe as an acted scene (never presented as a real client event, never mocks buyers, sellers or anyone in a vulnerable moment, never makes the agent look careless or untrustworthy), and filmable by the client alone.",
+  skit: "It is actually funny, safe as an acted scene (never presented as a real client event, never mocks buyers, sellers or anyone in a vulnerable moment, never makes the agent look careless or untrustworthy), and filmable by the client alone or with one cast member the client confirmed, whose lines are few and short.",
 };
 
 export const JUDGE_OUTPUT_SCHEMA: JsonSchema = {
@@ -843,7 +917,7 @@ export function buildScriptJudgePrompt(
   script: { body: string; angle?: Partial<ScriptAngle> | null; gaps?: { kind: string; text: string }[] },
 ): PromptBundle {
   assertClientScoped(ctx, scriptTopicOf(source));
-  const skit = asVideoStyle(ctx.videoStyle) === "SKITS";
+  const skit = scriptFormatOf(ctx) === "SKIT";
   const keys = judgeCriteriaFor(skit);
   const system = [
     "You are the quality judge for ONE monthly personal-brand video script written for a Realtour Pilot client. You judge; you do not rewrite.",
@@ -857,7 +931,7 @@ export function buildScriptJudgePrompt(
     AUDIENCE_PSYCHOLOGY_BLOCK,
     "",
     scriptSectionRules(),
-    ...(skit ? ["", "This account is set to Skits: the script is an acted scene inside the same five sections, with the client alone on camera."] : []),
+    ...(skit ? ["", "This video is a skit: an acted scene inside the same five sections, with the client alone on camera or with one cast member the client confirmed (nobody else).", skitCastBlock(ctx.skitCast)] : []),
     "",
     "OUTPUT: one JSON object matching the schema.",
   ].join("\n");

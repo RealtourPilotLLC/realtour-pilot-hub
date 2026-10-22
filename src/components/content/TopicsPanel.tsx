@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
-import { AlertTriangle, Ban, Check, ClipboardCopy, FileText, History, Lightbulb, Loader2, MessageSquare, PauseCircle, Pencil, Plus, RefreshCw, Sparkles, Star, Undo2, X } from "lucide-react";
+import { AlertTriangle, ArrowLeftRight, Ban, Check, ClipboardCopy, Drama, FileText, History, Lightbulb, Loader2, MessageSquare, PauseCircle, Pencil, Plus, RefreshCw, Sparkles, Star, Undo2, X } from "lucide-react";
 import type { PillarStock } from "@/lib/contentTopics";
 import type { QueueItemUi } from "@/lib/aiQueue";
 import { Section } from "@/components/ui/Section";
@@ -11,9 +11,10 @@ import { useToast } from "@/components/ui/Toast";
 import { TOPIC_STATUS_WORDS } from "@/lib/contentStatus";
 import { contentHref } from "@/lib/contentNav";
 import { topicSourceIsCall, topicSourceNeedsApproval } from "@/lib/contentPolicy/topicBank";
+import { VIDEO_FORMAT_LABEL, splitSkitSection, skitTargetFor, type VideoFormat, type VideoStyle } from "@/lib/contentPolicy/videoFormat";
 import {
   addTopic, answerFollowUpLinkAction, carryNowAction, discussTopicAction, editTopic, queueScriptDraftAction, reconcileTopicSelection, runTopicRefresh, setTopicStatus, setTopicsPerPillarAction,
-  setTopicAnswerRouteAction, suggestionAction, topicDecision, undeclineTopicAction,
+  setTopicAnswerRouteAction, setTopicFormatAction, suggestionAction, topicDecision, undeclineTopicAction,
   suggestionBulkAction, releaseSuggestionHoldAction, setSuggestionReasonAction,
 } from "@/app/content/actions";
 import { InterviewPanel, type InterviewUi } from "./InterviewPanel";
@@ -44,6 +45,12 @@ import { useAiQueueWatch } from "./useAiQueueWatch";
 // other button stays live, and the page polls until it turns into "Script
 // drafted → View" or "Drafting failed — Try again" with the reason. "Refresh
 // topics" runs in the background the same way.
+//
+// Oct 22 2026 (Bernadette Rabel's call): every topic card says "Skit" or
+// "Talking to camera", and that label is the one control that switches it.
+// When the bank holds both, or the account is Mix, its skits are listed
+// together under "Skits" above the pillars; a Mix month shows "1 of 2 skits
+// picked" beside its plan, never blocking anything.
 // ---------------------------------------------------------------------------
 
 export type TopicUi = {
@@ -53,10 +60,13 @@ export type TopicUi = {
   carriedFrom?: string | null;
   /** The internal alignment note on a client's own idea — never shown to them, never a block. */
   alignment?: string | null;
+  /** Oct 22 2026: the topic's format (its own, else the account's default), and whether it is its own. */
+  format: VideoFormat;
+  formatOwn: boolean;
 };
 export type GroupUi = { pillarId: string | null; pillarName: string; topics: TopicUi[] };
 export type ProposedUi = { topic: TopicUi; evidence: { speaker: string; text: string }[]; clientSpoken: boolean; overflow: boolean };
-export type SuggestionUi = { id: string; kind: string; rank: number | null; title: string; description: string | null; pillarName: string | null; audienceNeed: string | null; businessGoal: string | null; intendedMessage: string | null; rationale: string | null; whyNow: string | null; linkedGoal: string | null; priorContentRelation: string | null; relatedTopicId: string | null; runSummary: string | null; clientReason?: string | null };
+export type SuggestionUi = { id: string; kind: string; rank: number | null; title: string; description: string | null; pillarName: string | null; audienceNeed: string | null; businessGoal: string | null; intendedMessage: string | null; rationale: string | null; whyNow: string | null; linkedGoal: string | null; priorContentRelation: string | null; relatedTopicId: string | null; runSummary: string | null; clientReason?: string | null; /** Oct 22 2026: Skit or Talking to camera. */ format?: VideoFormat };
 export type RunUi = { id: string; kind: string; status: string; createdAt: string; changeSummary: string | null; missing: string[]; requestedBy: string | null };
 export type EventUi = { kind: string; actorKind: string; note: string | null; createdAt: string; monthKey: string | null };
 
@@ -67,7 +77,7 @@ const fmt = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZon
 /** A click whose server answer has not been rendered yet: "pending" while the call is out, then the run it queued. */
 type SentDraft = { runId: string | null };
 
-export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, monthTopics, suggestions, recommended, runs, interviews, histories, pillars, topicsPerPillar, isOwner, archivedCount, declined = [], stock = [], held = [], drafts = {}, queueActive = [] }: {
+export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, monthTopics, suggestions, recommended, runs, interviews, histories, pillars, topicsPerPillar, isOwner, archivedCount, declined = [], stock = [], held = [], drafts = {}, queueActive = [], videoStyle = "DIRECT", skitsPerMonth = null }: {
   enrollmentId: string; month: { id: string; label: string; short: string; key?: string | null } | null; capacity: { owed: number; selected: number; overflow: number } | null;
   groups: GroupUi[]; proposed: ProposedUi[]; monthTopics: TopicUi[]; suggestions: SuggestionUi[]; recommended: SuggestionUi[]; runs: RunUi[];
   interviews: Record<string, InterviewUi>; histories: Record<string, EventUi[]>; pillars: { id: string; name: string }[]; topicsPerPillar: number; isOwner: boolean; archivedCount: number;
@@ -78,6 +88,9 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
   drafts?: Record<string, QueueItemUi>;
   /** The run ids still queued or running (drafts and a background refresh) — what the poll watches. */
   queueActive?: string[];
+  /** Oct 22 2026: the account's video style, and a Mix account's skits a month. */
+  videoStyle?: VideoStyle;
+  skitsPerMonth?: number | null;
 }) {
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
@@ -115,6 +128,9 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const toggle = (id: string) => setPicked((cur) => { const next = new Set(cur); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   const bulk = (action: "ACCEPT" | "HOLD" | "REGENERATE", ids: string[]) => run(async () => { const r = await suggestionBulkAction(ids, action); if (r.ok) setPicked(new Set()); return r; });
+  // Oct 22 2026: the bank's Skits section, and a Mix month's skit count.
+  const bank = splitSkitSection(groups, (t) => t.format, { always: videoStyle === "MIX" });
+  const skitCount = month ? skitTargetFor(monthTopics.map((t) => t.format), skitsPerMonth) : null;
 
   return (
     <div className="space-y-5">
@@ -146,6 +162,7 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
         <Section icon={Lightbulb} title={`${month.short}'s video plan`} count={`${capacity.selected + capacity.overflow}/${capacity.owed}`} flush
           action={
             <span className="flex items-center gap-2">
+              {skitCount && <span className={`text-[12px] ${skitCount.met ? "text-success" : "text-muted"}`} title="The Mix target for this account. Nothing is blocked either way.">{skitCount.line}</span>}
               {capacity.overflow > 0 ? <span className="text-[12px] text-warning">{capacity.overflow} over capacity — kept, not deleted</span> : capacity.selected >= capacity.owed && capacity.owed > 0 ? <span className="text-[12px] text-success">at capacity</span> : null}
               {/* The carry-over, by hand: always a dry run first. */}
               {carryPreview ? (
@@ -279,7 +296,14 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
       <Section icon={Lightbulb} title="Video Topics — the bank" count={groups.reduce((n2, g) => n2 + g.topics.length, 0)} flush
         action={<span className="text-[11px] text-muted-2">{archivedCount} rejected/archived (kept, never re-suggested)</span>}>
         <AddTopic enrollmentId={enrollmentId} pillars={pillars} busy={busy} run={run} />
-        {groups.map((g) => (
+        {bank.show && (
+          <div>
+            <div className="flex items-center gap-1.5 border-y border-border bg-surface-2/50 px-5 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted"><Drama className="size-3" aria-hidden /> Skits · {bank.skits.length}</div>
+            {bank.skits.map((t, i) => <TopicRow key={t.id} t={t} idx={i + 1} busy={busy} month={month} pillars={pillars} history={histories[t.id] ?? []} interview={interviews[t.id] ?? null} run={run} showPillar />)}
+            {bank.skits.length === 0 && <p className="px-5 py-2 text-[12px] text-muted-2">No skit ideas yet. Mark a topic as a skit on its card, or refresh topics for skit concepts.</p>}
+          </div>
+        )}
+        {bank.groups.map((g) => (
           <div key={g.pillarId ?? "none"}>
             <div className="border-y border-border bg-surface-2/50 px-5 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">{g.pillarName} · {g.topics.length}</div>
             {g.topics.map((t, i) => <TopicRow key={t.id} t={t} idx={i + 1} busy={busy} month={month} pillars={pillars} history={histories[t.id] ?? []} interview={interviews[t.id] ?? null} run={run} />)}
@@ -328,7 +352,7 @@ function DraftButton({ t, draft }: { t: TopicUi; draft: DraftCtl }) {
   return <button onClick={draft.onDraft} className={`${btn} inline-flex items-center bg-brand-action text-white`}><Sparkles className="mr-1 size-3" />Draft script</button>;
 }
 
-function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, run, draft }: { t: TopicUi; idx?: number; busy: boolean; month: { id: string; short: string } | null; pillars: { id: string; name: string }[]; history: EventUi[]; interview: InterviewUi | null; inMonth?: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void; draft?: DraftCtl }) {
+function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, run, draft, showPillar }: { t: TopicUi; idx?: number; busy: boolean; month: { id: string; short: string } | null; pillars: { id: string; name: string }[]; history: EventUi[]; interview: InterviewUi | null; inMonth?: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void; draft?: DraftCtl; /** In the Skits section: the pillar it belongs to. */ showPillar?: boolean }) {
   const [open, setOpen] = useState<"none" | "edit" | "history" | "discuss" | "interview">(interview && inMonth ? "interview" : "none");
   const [form, setForm] = useState({ title: t.title, concept: t.concept ?? "", pillarId: t.pillarId ?? "", audienceNeed: t.audienceNeed ?? "", businessGoal: t.businessGoal ?? "", intendedMessage: t.intendedMessage ?? "" });
   const [disc, setDisc] = useState("");
@@ -349,6 +373,8 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
           <div className="flex flex-wrap items-center gap-2">
             {idx != null && <span className="text-[12px] text-muted-2">{idx}.</span>}
             <span className="text-[15px] font-medium">{t.title}</span>
+            <FormatChip t={t} busy={busy} run={run} />
+            {showPillar && (pillars.find((p) => p.id === t.pillarId)?.name ?? t.pillarLabel) && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{pillars.find((p) => p.id === t.pillarId)?.name ?? t.pillarLabel}</span>}
             {!["SAVED", "RECOMMENDED", "IDEA"].includes(t.status) && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{TOPIC_STATUS_WORDS[t.status] ?? t.status.toLowerCase()}</span>}
             {t.approvalState === "APPROVED" && <span className="text-[11px] text-success">approved</span>}
             {t.proposedState && <span className="text-[11px] text-warning">{topicSourceIsCall(t.source) ? `declined on the call — ${t.proposedState === "REJECTED" ? "reject it to confirm" : "unconfirmed"}` : `import mark says ${t.proposedState.toLowerCase()} — unconfirmed`}</span>}
@@ -413,6 +439,22 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
   );
 }
 
+/**
+ * Oct 22 2026: the topic's format, and the ONE control that switches it.
+ * "Skit" or "Talking to camera"; a press flips it for the next draft or
+ * revision (the script on file stays as written).
+ */
+function FormatChip({ t, busy, run }: { t: TopicUi; busy: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void }) {
+  const other: VideoFormat = t.format === "SKIT" ? "DIRECT" : "SKIT";
+  return (
+    <button type="button" disabled={busy} onClick={() => run(() => setTopicFormatAction(t.id, other))}
+      title={`${t.formatOwn ? "Set on this topic" : "The account's default"}. Switch to ${VIDEO_FORMAT_LABEL[other]}.`} aria-label={`${VIDEO_FORMAT_LABEL[t.format]}. Switch to ${VIDEO_FORMAT_LABEL[other]}`}
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium disabled:opacity-50 ${t.format === "SKIT" ? "bg-brand-soft text-brand" : "bg-surface-2 text-muted"} hover:ring-1 hover:ring-brand/40`}>
+      {VIDEO_FORMAT_LABEL[t.format]} <ArrowLeftRight className="size-3" aria-hidden />
+    </button>
+  );
+}
+
 /** The one line the CLIENT reads beside a recommended topic — shown, and editable in place. */
 function ClientReason({ s, busy, run }: { s: SuggestionUi; busy: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void }) {
   const [editing, setEditing] = useState(false);
@@ -437,7 +479,7 @@ function SuggestionRow({ s, busy, monthId, run }: { s: SuggestionUi; busy: boole
   const [f, setF] = useState({ title: s.title, description: s.description ?? "", audienceNeed: s.audienceNeed ?? "", businessGoal: s.businessGoal ?? "", intendedMessage: s.intendedMessage ?? "" });
   return (
     <div className="px-5 py-3">
-      <div className="flex flex-wrap items-center gap-2">{s.pillarName && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{s.pillarName}</span>}<span className="text-[15px] font-medium">{s.title}</span></div>
+      <div className="flex flex-wrap items-center gap-2">{s.pillarName && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{s.pillarName}</span>}<span className="text-[15px] font-medium">{s.title}</span>{s.format && <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${s.format === "SKIT" ? "bg-brand-soft text-brand" : "bg-surface-2 text-muted"}`}>{VIDEO_FORMAT_LABEL[s.format]}</span>}</div>
       {s.description && <p className="text-[13px] text-muted">{s.description}</p>}
       <p className="text-[11px] text-muted-2">{[s.audienceNeed && `need: ${s.audienceNeed}`, s.businessGoal && `goal: ${s.businessGoal}`, s.intendedMessage && `message: ${s.intendedMessage}`, s.rationale].filter(Boolean).join(" · ")}</p>
       {edit && (
