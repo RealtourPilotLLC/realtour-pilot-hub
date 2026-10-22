@@ -100,6 +100,23 @@ export function ZoomStage({
     onZoomedChange?.(zoomed);
   }, [zoomed, onZoomedChange]);
 
+  // The fitted size changed (a window resized, a phone turned, the side panel
+  // opened): the old position no longer lines up, so start fitted again
+  // rather than leave the photo hanging off one side.
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    let last = `${el.offsetWidth}x${el.offsetHeight}`;
+    const ro = new ResizeObserver(() => {
+      const now = `${el.offsetWidth}x${el.offsetHeight}`;
+      if (now === last) return;
+      last = now;
+      if (viewRef.current.z > 1.001) apply(FIT);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [apply]);
+
   // The wheel has to be a native, non-passive listener: React's is passive, and
   // a Ctrl+wheel (a trackpad pinch) would otherwise zoom the whole browser page.
   useEffect(() => {
