@@ -514,6 +514,25 @@ async function main() {
     c.ok("13:01: it reaches him, once", dms(S.james, s1).length === 1 && /Waiting on you — 80 Choice Ct/.test(dms(S.james, s1)[0].text));
   }
 
+  c.head("9 · EVERYTHING ON SLACK (Oct 22 2026): Jordan's switch DMs him every bell row, texts unchanged");
+  {
+    setClock(edt(10, 8, 15, 0));
+    const before = slack.length;
+    const textsBefore = texts.length;
+    // Off: an unclassified kind addressed to him, and an OWNER broadcast, stay bell-only.
+    await notify.notifyInApp({ kind: "drill_unclassified", title: "Drill: off", body: "x", href: "/", targets: [{ roles: ["OWNER"], userKey: `tm:${jordan.id}` }], dedupeKey: "drill-allslack-off-1" });
+    await notify.notifyInApp({ kind: "error_report", title: "Drill: broadcast off", body: "x", href: "/settings/errors", targets: [{ roles: ["OWNER"] }], dedupeKey: "drill-allslack-off-2" });
+    c.ok("switch off: neither reaches his Slack", dms(S.jordan, before).length === 0, JSON.stringify(dms(S.jordan, before)));
+    await putSetting(prefs.allSlackKey(jordan.id), { on: true });
+    c.ok("the switch reads on", await prefs.wantsAllSlack(jordan.id));
+    await notify.notifyInApp({ kind: "drill_unclassified", title: "Drill: on", body: "x", href: "/", targets: [{ roles: ["OWNER"], userKey: `tm:${jordan.id}` }], dedupeKey: "drill-allslack-on-1" });
+    c.ok("on: an unclassified kind addressed to him is a Slack DM", dms(S.jordan, before).some((m) => /Drill: on/.test(m.text)));
+    await notify.notifyInApp({ kind: "error_report", title: "Drill: broadcast on", body: "x", href: "/settings/errors", targets: [{ roles: ["OWNER"] }], dedupeKey: "drill-allslack-on-2" });
+    c.ok("on: an OWNER broadcast reaches his Slack too, once", dms(S.jordan, before).filter((m) => /Drill: broadcast on/.test(m.text)).length === 1);
+    c.ok("…and no extra texts came from the switch", texts.length === textsBefore, `${texts.length - textsBefore} texts`);
+    c.ok("Kyle's Slack is untouched by Jordan's switch", dms(S.kyle, before).every((m) => !/Drill: (on|broadcast on)/.test(m.text)));
+  }
+
   c.ok("nothing left the machine but the fakes", fence.blocked.length === 0, fence.blocked.join(", "));
   quiet.restore();
   c.summary();

@@ -1742,6 +1742,16 @@ export async function notifyInApp(n: {
               delivered,
             );
           }
+          // Oct 22 2026: a broadcast the owner sees in his bell also reaches his
+          // Slack when he asked for every notification there (DM only).
+          if (!tmId && !editorKey && rowRoles.includes("OWNER")) {
+            try {
+              const { allSlackOwnerIds } = await import("@/lib/notifyPrefs");
+              for (const ownerId of await allSlackOwnerIds()) {
+                await bridgePerson(n.kind, t, { tmId: ownerId, editorKey: null, title, href, notificationId: row.id, slackOnly: true }, delivered);
+              }
+            } catch (err) { console.warn("all-slack owner copy failed", n.kind, err); }
+          }
           // A NEW editor-addressed bell row with no login to see it → nudge Jordan
           // once (deduped inside) to send that editor their Hub invite.
           if (editorKey) {
@@ -1922,6 +1932,10 @@ async function bridgePerson(
      *  and the bell leg is not logged again (the row and its "bell/sent" line
      *  were written on the first pass). */
     retry?: boolean;
+    /** Oct 22 2026: a broadcast row copied to a person who asked for EVERY
+     *  notification on Slack (wantsAllSlack). The DM only: a broadcast never
+     *  texted anyone, and this must not start to. */
+    slackOnly?: boolean;
   },
   delivered: Map<string, Delivery>,
 ): Promise<Delivery> {
@@ -1989,9 +2003,16 @@ async function bridgePerson(
       await logDelivery({ notificationId: ctx.notificationId, teamMemberId: personId, kind, channel: "bell", status: "sent" });
     }
     const event = eventForKind(kind);
-    if (!event) return state; // an unclassified kind is bell-only
-    if (SENTENCE_EVENTS.has(event) && !t.slackDm) return state; // a self-tag
-    const want = (await notifyPrefsFor(personId))[event];
+    // EVERYTHING ON SLACK (Oct 22 2026, Jordan: "please make sure I get all
+    // notifications via slack"). A person with the switch on gets a DM for
+    // every bell row addressed to them, classified or not; their text
+    // switches are untouched.
+    const { wantsAllSlack } = await import("@/lib/notifyPrefs");
+    const allSlack = await wantsAllSlack(personId);
+    if (!event && !allSlack) return state; // an unclassified kind is bell-only
+    if (event && SENTENCE_EVENTS.has(event) && !t.slackDm) return state; // a self-tag
+    const saved = event ? (await notifyPrefsFor(personId))[event] : { slack: false, sms: false };
+    const want = { slack: saved.slack || allSlack, sms: saved.sms && !ctx.slackOnly };
     if (!want.slack && !want.sms) return state;
     const link = `${appBase()}${ctx.href}`;
     const meta = { kind, notificationId: ctx.notificationId };
