@@ -11,6 +11,12 @@
 //      check a client booking makes runs (gate, address plan, drive, Aryeo
 //      recheck before any order).
 // Dry run by default (reads only, Aryeo GETs only); --apply does all three.
+// --override-drive (Jordan, Oct 22 2026: "Do 8:30am for 4hrs this one time"):
+// James has a 1:00 PM appointment 42 minutes away, so the drive check refuses
+// 8:30-12:30. This ONE booking runs with the travel buffer lowered just enough
+// (-15 minutes) for the adapter's own fresh recheck to pass; every other check
+// and the whole booking path are unchanged, and the override is written on the
+// request's notes and travel evidence.
 // ---------------------------------------------------------------------------
 import { installNextStubs, interceptModule } from "../_drill/_harness";
 
@@ -86,14 +92,16 @@ async function main() {
   const endISO = new Date(picked.getTime() + hours * 3600_000).toISOString();
   const { travelFit, travelEvidence } = await import("../../src/lib/sessionTravel");
   const fit = await travelFit({ creativeTeamMemberId: james.teamMemberId, start: picked, end: new Date(endISO), dest: { lat: plan!.latitude!, lng: plan!.longitude! } });
-  if (fit.fits === false) refuse("no room for the drive from James's other shoot that day");
-  const travel = { check: (fit.fits ? "HUB_DRIVE" : "UNCHECKED") as "HUB_DRIVE" | "UNCHECKED", evidenceJson: travelEvidence(fit, { at: "request", checkedAt: new Date().toISOString() }) };
+  const override = process.argv.includes("--override-drive");
+  if (fit.fits === false && !override) refuse("no room for the drive from James's other shoot that day");
+  const overrideNote = override && fit.fits === false ? `Owner override (Jordan, Oct 22 2026: "Do 8:30am for 4hrs this one time"): ${fit.reason}.` : null;
+  const travel = { check: (fit.fits === null ? "UNCHECKED" : "HUB_DRIVE") as "HUB_DRIVE" | "UNCHECKED", evidenceJson: travelEvidence(fit, { at: "request", checkedAt: new Date().toISOString(), ...(overrideNote ? { override: overrideNote } : {}) }) };
   const g = gate.preparation;
   const gateSnap = g ? { route: g.route, anchorRef: g.anchor?.ref ?? null, anchorAt: g.anchor?.at ?? null, windowHours: g.windowHours, earliestAt: g.earliest } : null;
   const { createSessionRequest } = await import("../../src/lib/sessionRequests");
   const made = await createSessionRequest({
     enrollmentId: ENROLLMENT, monthId: MONTH,
-    slot: { startISO: SLOT, endISO, timezone: null, when: null, locationText: "", notes: "Booked by Jordan Spackman for the client (set up by Claude on his instruction, Oct 22 2026), with James Livingston." },
+    slot: { startISO: SLOT, endISO, timezone: null, when: null, locationText: "", notes: `Booked by Jordan Spackman for the client (set up by Claude on his instruction, Oct 22 2026), with James Livingston.${overrideNote ? ` ${overrideNote} James may arrive late to his 1:00 PM.` : ""}` },
     actor: { kind: "STAFF", userId: owner.id },
     creative: { teamMemberId: james.teamMemberId, name: james.name },
     sessionIndex: gate.sessionIndex, gate: gateSnap as never,
@@ -104,7 +112,13 @@ async function main() {
   if (made.ok && !(made as { duplicate?: boolean }).duplicate) {
     const row = await prisma.programSessionRequest.findUnique({ where: { id: (made as { id: string }).id }, select: { bookingState: true } });
     console.log(`booking state after request: ${row?.bookingState}`);
-    if (row?.bookingState === "QUEUED") console.log(`book: ${JSON.stringify(await SB.bookSessionRequest((made as { id: string }).id, { worker: "claude-oct22", budgetMs: 120_000 }).catch((e) => String(e)))}`.slice(0, 600));
+    if (row?.bookingState === "QUEUED") {
+      const { automationConfig } = await import("../../src/lib/programAutomation");
+      const live = await automationConfig("session_booking", SB.BOOKING_DEFAULTS);
+      if (!live) refuse("session_booking automation is off");
+      const cfg = overrideNote ? { ...live!, travelBufferMinutes: -15 } : live!;
+      console.log(`book: ${JSON.stringify(await SB.bookSessionRequest((made as { id: string }).id, { worker: "claude-oct22", budgetMs: 120_000, cfg }).catch((e) => String(e)))}`.slice(0, 700));
+    }
   }
   const latest = await prisma.programSessionRequest.findFirst({ where: { enrollmentId: ENROLLMENT, monthId: MONTH }, orderBy: { createdAt: "desc" }, select: { id: true, status: true, bookingState: true, slotStart: true, creativeTeamMemberId: true, aryeoOrderId: true, aryeoAppointmentId: true, lastError: true } as never });
   console.log(`request now: ${JSON.stringify(latest)}`);
