@@ -134,7 +134,8 @@ async function main() {
   const rb = await import("@/lib/revisionBrief");
   const { actualFolderPaths } = await import("@/lib/dropboxFolders");
   const { getQcStats } = await import("@/lib/qc");
-  const { scoreQuarterRoster } = await import("@/lib/kpi");
+  // Oct 22 2026: the bonus engine is the compensation terms' scorecard now (scorePeriodRoster).
+  const { scorePeriodRoster: scoreQuarterRoster } = await import("@/lib/kpi");
   const baseFiles = writeBaseCopies();
   const base = {
     rc: (await import(baseFiles.reviewCuts)) as typeof rc,

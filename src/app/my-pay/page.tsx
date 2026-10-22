@@ -3,9 +3,11 @@ import { redirect } from "next/navigation";
 import { Camera, Car, Wallet, ChevronRight, SlidersHorizontal, Receipt, History, TrendingUp, Upload } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { PayFlag } from "@/components/mypay/PayFlag";
-import { QuarterScoreCard } from "@/components/mypay/QuarterScoreCard";
+import { DisputeQueue, QuarterScoreCard, type PeriodSummary } from "@/components/mypay/QuarterScoreCard";
+import { PtoCard } from "@/components/mypay/PtoCard";
 import { prisma } from "@/lib/prisma";
-import { quarterFor, scoreQuarter } from "@/lib/kpi";
+import { openDisputesFor, periodFor, scoreLegacyQuarter, scorePeriod } from "@/lib/kpi";
+import { ptoBalance } from "@/lib/pto";
 import { usd } from "@/lib/money";
 import { payPeriodFor, periodBounds, shiftPeriod } from "@/lib/payroll";
 import { payHistoryFor } from "@/lib/payHistory";
@@ -77,7 +79,7 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
   // to. A "view as" preview follows the previewed person (payHiddenFor reads
   // the previewed role), so previewing Harrison shows Harrison's page.
   const { payHiddenFor } = await import("@/lib/settings");
-  if (await payHiddenFor(me)) return <MyPerformance memberId={me?.teamMemberId ?? null} />;
+  if (await payHiddenFor(me)) return <MyPerformance memberId={me?.teamMemberId ?? null} preview={!!me?.impersonating} reviewer={me?.role === "CREATIVE_MANAGER"} />;
 
   // Past the gate the viewer IS the owner. Jordan shoots too (on a pay rate), so
   // My Pay is Jordan's own pay; the whole-team payroll stays on Finance → Payroll, and
@@ -118,13 +120,11 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
   const todayKey = etDayKey(new Date());
   const prevAwaitingPayout = prev.payoutKey >= todayKey;
 
-  // The quarterly bonus scorecard rides along with the payroll pass rather than
-  // after it — payroll is network-bound (OSRM), so a serial second wait would
-  // show up as a slower page for nothing. Prior quarter too: "track their
-  // progress" needs something to have progressed FROM. A failure in either
-  // scoring pass must never take the pay page down — pay is what they came for.
-  const thisQuarter = quarterFor();
-  const lastQuarter = quarterFor(undefined, 1);
+  // The KPI scorecard rides along with the payroll pass rather than after it:
+  // payroll is network-bound (OSRM), so a serial second wait would show up as
+  // a slower page for nothing. The previous period too: "track their progress"
+  // needs something to have progressed FROM. A failure in either scoring pass
+  // must never take the pay page down; pay is what they came for.
   const [history, member, flags, kpi, kpiPrev] = await Promise.all([
     payHistoryFor(memberId),
     prisma.teamMember.findUnique({ where: { id: memberId }, select: { name: true } }),
@@ -132,8 +132,8 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
       where: { dedupeKey: { startsWith: `payflag-${memberId}-` }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
       select: { dedupeKey: true },
     }),
-    scoreQuarter({ memberId, quarter: thisQuarter }).catch(() => null),
-    scoreQuarter({ memberId, quarter: lastQuarter }).catch(() => null),
+    scorePeriod({ memberId }).catch(() => null),
+    previousSummary(memberId),
   ]);
   const person = history.person;
 
@@ -204,7 +204,7 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
             Sits under the year total because it is the OTHER money question a
             photographer has, and above the period detail because it is about
             the quarter, not this fortnight. */}
-        {kpi && <QuarterScoreCard card={kpi} previous={kpiPrev} />}
+        {kpi && <QuarterScoreCard card={kpi} previous={kpiPrev} viewer="preview" />}
 
         {/* Period switch: the payout awaiting its payday (when there is one),
             the accruing period, and a peek at next. */}
@@ -431,16 +431,35 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
 // Harrison and James. They should not be seeing their pay anymore on the
 // shoot page or on the my pay page. It should just be their performance
 // tracking page. And tracking their bonus." For every login but the owner
-// (permanent since Oct 21 2026) this page is the quarterly scorecard (the KPI
-// areas and the bonus it is tracking toward, from kpi.ts, the same figure
-// Finance → Bonus pays), this quarter and last, and nothing about shoot pay or
-// mileage. Payroll still runs behind it and the owner still sees every number.
+// (permanent since Oct 21 2026) this page is the KPI scorecard from the
+// compensation terms (lib/kpi, the same card Finance → Bonus pays from, Oct
+// 22 2026): every category, weight, target, the evidence entries with a
+// Dispute button on each, the monthly check-in, and the bonus it is tracking
+// (earned and possible), this period and the last one. Nothing about shoot
+// pay, mileage or the service fee. The creative manager also gets the
+// disputes on a creative specialist's card that are theirs to decide.
 // ---------------------------------------------------------------------------
-async function MyPerformance({ memberId }: { memberId: string | null }) {
+
+/** The previous bonus period in one line: the old scorecard when it predates the terms. */
+async function previousSummary(memberId: string): Promise<PeriodSummary | null> {
+  const prev = periodFor(undefined, 1);
+  try {
+    if (prev.legacy) {
+      const c = await scoreLegacyQuarter(memberId, prev);
+      return c.shoots > 0 ? { key: prev.key, label: prev.label, score: c.score, bonus: c.bonus, showDollars: true, note: "the old scorecard, before the terms" } : null;
+    }
+    const c = await scorePeriod({ memberId, period: prev });
+    return c.shoots > 0 ? { key: prev.key, label: prev.label, score: c.score, bonus: c.bonus, showDollars: true } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function MyPerformance({ memberId, preview, reviewer }: { memberId: string | null; preview: boolean; reviewer: boolean }) {
   if (!memberId) {
     return (
       <div>
-        <PageHeader title="My Performance" subtitle="Your quarterly scorecard and bonus" />
+        <PageHeader title="My Performance" subtitle="Your KPI scorecard and bonus" />
         <div className="p-6">
           <p className="rounded-2xl border border-dashed border-border bg-surface px-4 py-8 text-center text-sm text-muted">
             Your login isn&apos;t linked to a team member yet. Ask Jordan to connect it and your scorecard will show up here.
@@ -449,25 +468,30 @@ async function MyPerformance({ memberId }: { memberId: string | null }) {
       </div>
     );
   }
-  const thisQuarter = quarterFor();
-  const lastQuarter = quarterFor(undefined, 1);
-  const [member, kpi, kpiPrev] = await Promise.all([
-    prisma.teamMember.findUnique({ where: { id: memberId }, select: { name: true } }),
-    scoreQuarter({ memberId, quarter: thisQuarter }).catch(() => null),
-    scoreQuarter({ memberId, quarter: lastQuarter }).catch(() => null),
+  const todayKey = etDayKey(new Date());
+  const [member, kpi, kpiPrev, disputes] = await Promise.all([
+    prisma.teamMember.findUnique({ where: { id: memberId }, select: { name: true, active: true } }),
+    scorePeriod({ memberId }).catch(() => null),
+    previousSummary(memberId),
+    reviewer ? openDisputesFor(memberId).catch(() => []) : Promise.resolve([]),
   ]);
+  // Paid time off: their own bank and days, for the people on the terms only (lib/pto).
+  const { fixedPayFor } = await import("@/lib/payStructure");
+  const pto = member && fixedPayFor(member) ? await ptoBalance(memberId, member.name, todayKey).catch(() => null) : null;
   const first = member?.name?.split(" ")[0];
   return (
     <div>
-      <PageHeader eyebrow="Eastern time" title="My Performance" subtitle={`${first ? `${first}'s` : "Your"} quarterly scorecard and the bonus it is tracking toward`} />
+      <PageHeader eyebrow="Eastern time" title="My Performance" subtitle={`${first ? `${first}'s` : "Your"} KPI scorecard and the bonus it is tracking toward`} />
       <div className="mx-auto max-w-3xl space-y-4 p-4 sm:p-6">
+        <DisputeQueue items={disputes} />
         {kpi ? (
-          <QuarterScoreCard card={kpi} previous={kpiPrev} />
+          <QuarterScoreCard card={kpi} previous={kpiPrev} viewer={preview ? "preview" : "self"} />
         ) : (
           <p className="rounded-2xl border border-dashed border-border bg-surface px-4 py-8 text-center text-sm text-muted">
             Your scorecard couldn&apos;t be loaded just now. Try again in a minute.
           </p>
         )}
+        {pto && <PtoCard bal={pto} viewer="self" todayKey={todayKey} />}
       </div>
     </div>
   );

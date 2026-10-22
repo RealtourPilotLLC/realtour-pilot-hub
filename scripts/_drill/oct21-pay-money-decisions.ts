@@ -91,6 +91,9 @@ async function main() {
     const { prisma } = await import("@/lib/prisma");
     const { setSession } = await import("@/lib/auth/session");
     const kpi = await import("@/lib/kpi");
+    // Oct 22 2026: Q3 2026 began before the compensation terms, so it is the
+    // frozen seven-area scorecard (lib/kpiLegacy) that scores and pays it.
+    const legacy = await import("@/lib/kpiLegacy");
     const { payQuarterlyBonus } = await import("@/app/sales/bonusActions");
     const { default: FinancePage } = await import("@/app/sales/page");
     const { default: MyPayPage } = await import("@/app/my-pay/page");
@@ -150,7 +153,7 @@ async function main() {
     // =======================================================================
     const Q3 = kpi.quarterFromKey("2026-Q3")!;
     const before = await oldBonus.quarterBonus(oldBonus.quarterFromKey("2026-Q3"));
-    const roster = await kpi.scoreQuarterRoster(Q3);
+    const roster = await legacy.scoreQuarterRoster(Q3);
     const after = Object.fromEntries(roster.map((r) => [r.memberId, r]));
     console.log("\n  Q3 2026, same fixture, BEFORE (retired lib/bonus.ts at 1e33905) vs AFTER (kpi.ts scorecard bands):");
     console.log(`    retired pool: ${usd(before.pool.pool)} (${before.pool.why})`);
@@ -174,7 +177,7 @@ async function main() {
     const finance = async (sp: Record<string, string>) => {
       const el = await FinancePage({ searchParams: Promise.resolve(sp) });
       if (!isValidElement<Props>(el)) throw new Error("Finance did not render a tab");
-      return expand(await (el.type as (p: Props) => unknown)(el.props), new Set(["BillingCard"]));
+      return expand(await (el.type as (p: Props) => unknown)(el.props), new Set(["BillingCard", "LegacyPeriod", "ContractPeriod", "PersonCard", "JamesTerms"]));
     };
     const bonusTab = await finance({ tab: "bonus", back: String(back) });
     const payButtons = elements(bonusTab, "PayBonusButton");
@@ -186,11 +189,14 @@ async function main() {
     const perfEl = await MyPayPage({ searchParams: Promise.resolve({}) });
     const perf = isValidElement<Props>(perfEl) ? await (perfEl.type as (p: Props) => unknown)(perfEl.props) : null;
     const cards = elements(perf, "QuarterScoreCard");
-    const lastQ = cards[0]?.previous as { quarter: { key: string }; bonus: number } | null | undefined;
-    const lastQExpected = (await kpi.scoreQuarter({ memberId: harrison.id, quarter: kpi.quarterFor(undefined, 1) })).bonus;
+    const lastQ = cards[0]?.previous as { key: string; bonus: number } | null | undefined;
+    const prevPeriod = kpi.periodFor(undefined, 1);
+    const lastQExpected = prevPeriod.legacy
+      ? (await legacy.scoreQuarter({ memberId: harrison.id, quarter: legacy.quarterFromKey(prevPeriod.key) ?? undefined })).bonus
+      : (await kpi.scorePeriod({ memberId: harrison.id, period: prevPeriod })).bonus;
     c.ok("My Performance (not My Pay) shows Harrison the scorecard Finance pays from: last quarter's card is the same figure (Q3 2026: $600)",
-      typeName(isValidElement(perfEl) ? perfEl.type : null) === "MyPerformance" && lastQ != null && lastQ.bonus === lastQExpected && (lastQ.quarter.key !== "2026-Q3" || lastQ.bonus === 600),
-      lastQ ? `${lastQ.quarter.key} ${lastQ.bonus}` : "no previous card");
+      typeName(isValidElement(perfEl) ? perfEl.type : null) === "MyPerformance" && lastQ != null && lastQ.bonus === lastQExpected && (lastQ.key !== "2026-Q3" || lastQ.bonus === 600),
+      lastQ ? `${lastQ.key} ${lastQ.bonus}` : "no previous card");
 
     // The Pay button's server-side recompute, and every refusal it keeps.
     await signIn(kyle);

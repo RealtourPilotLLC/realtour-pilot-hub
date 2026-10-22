@@ -125,7 +125,11 @@ async function main() {
   const { UPLOAD_COMPLETED_BODY } = await import("@/lib/uploadSummary");
   const { videoHalfDueAt, videoHalfClock } = await import("@/lib/handoff");
   const digest = await import("@/lib/uploadDigest");
-  const { scoreQuarter } = await import("@/lib/kpi");
+  // Oct 22 2026: the 8:00 AM-after-the-photos rule this drill checks is the
+  // frozen pre-terms scorecard's (lib/kpiLegacy, Q3 2026 and earlier). The
+  // compensation terms' scorecard (lib/kpi) judges the video half by 9:00 AM
+  // the morning after the shoot day: oct22-kpi-contract.ts.
+  const { scoreQuarter } = await import("@/lib/kpiLegacy");
   const base = writeBaseCopies();
   const oldActions = (await import(base.actions)) as { finalizeUpload: (id: string, data: unknown) => Promise<Record<string, unknown>> };
   const oldDigest = (await import(base.digest)) as { nagText: (first: string, streets: string[]) => string };
