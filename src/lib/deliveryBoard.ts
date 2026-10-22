@@ -279,14 +279,22 @@ export const reopenSettledKey = (projectId: string) => `${REOPEN_SETTLED_PREFIX}
 
 /** An extra shoot still owed: the portal stamped its promise, and its cut has
  *  not been approved (the same end the editor queue's rail uses,
- *  uploadHistory.UNFINISHED_ADDITIONAL_SHOOT_WHERE), sent, waived or removed. */
+ *  uploadHistory.UNFINISHED_ADDITIONAL_SHOOT_WHERE), sent, waived or removed.
+ *
+ *  …AND A VIDEO RELEASED FROM A SECOND SHOOT (Oct 22 2026, lib/secondShoot):
+ *  the same shape of work, a video with its own clock from its own shoot, so a
+ *  DELIVERED job owing one is live again with that video's date. Ended per
+ *  video (its own approval), since it can be one slot of a row whose other
+ *  slots were approved long ago. */
 export const OPEN_EXTRA_SHOOT_OUTPUT_WHERE = {
-  promiseSource: "additional-shoot",
   promisedAt: { not: null },
   deliveredAt: null,
   waivedAt: null,
   removedFromOrderAt: null,
-  deliverable: { removedFromOrderAt: null, waivedAt: null, reviewSubmissions: { none: { status: "APPROVED" } } },
+  OR: [
+    { promiseSource: "additional-shoot", deliverable: { removedFromOrderAt: null, waivedAt: null, reviewSubmissions: { none: { status: "APPROVED" } } } },
+    { promiseSource: "second-shoot", approvedAt: null, deliverable: { removedFromOrderAt: null, waivedAt: null } },
+  ],
 } satisfies Prisma.DeliverableOutputWhereInput;
 
 export type OpenReopenClock = {
