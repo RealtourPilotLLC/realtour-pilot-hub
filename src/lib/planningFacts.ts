@@ -197,7 +197,7 @@ export async function planningFactsForMonths(monthIdsIn: string[], opts: { now?:
     prisma.contentScript.findMany({
       where: { monthId: { in: monthIds }, topicId: { in: topicIds } },
       orderBy: { updatedAt: "desc" },
-      select: { id: true, topicId: true, monthId: true, status: true, historical: true, releaseState: true, sharedVersionId: true },
+      select: { id: true, topicId: true, monthId: true, status: true, historical: true, releaseState: true, sharedVersionId: true, videoId: true },
     }),
     prisma.contentVideo.findMany({ where: { topicId: { in: topicIds }, OR: [{ filmedConfirmedAt: { not: null } }, { status: { in: FOOTAGE_VIDEO_STATUSES } }] }, select: { topicId: true } }),
     prisma.contentTopicEvent.findMany({
@@ -209,7 +209,7 @@ export async function planningFactsForMonths(monthIdsIn: string[], opts: { now?:
 
   const hub = scripts.filter((s) => !s.historical);
   const sharedIds = [...new Set(hub.map((s) => s.sharedVersionId).filter((x): x is string => !!x))];
-  const [{ currentScriptDecision }, { scriptVisibility }, { otherClientScrubbers }, ledger] = await Promise.all([
+  const [{ currentScriptDecision }, { scriptVisibility }, { otherClientScrubbers }, ledger, filmedScripts] = await Promise.all([
     import("@/lib/scriptDecisions"),
     import("@/lib/postingKit"),
     import("@/lib/contentGeneration"),
@@ -217,6 +217,9 @@ export async function planningFactsForMonths(monthIdsIn: string[], opts: { now?:
       where: { scriptId: { in: hub.map((s) => s.id) }, scriptVersionId: { in: sharedIds }, action: { in: ["CLIENT_APPROVED", "CLIENT_CHANGES"] } },
       select: { id: true, scriptId: true, action: true, createdAt: true, scriptVersionId: true, actorEmail: true },
     }),
+    // Oct 22 2026: the script's own filmed answer (lib/scriptFilmed), so a
+    // topic step and the script card can never disagree about "filmed".
+    import("@/lib/scriptFilmed").then((m) => m.readScriptsFilmed(hub)),
   ]);
 
   const enrollmentOf = new Map(enrollments.map((e) => [e.id, e]));
@@ -307,7 +310,7 @@ export async function planningFactsForMonths(monthIdsIn: string[], opts: { now?:
         selectionStatus: entry.status,
         rank: entry.rank ?? null,
         selectedAt: entry.createdAt ?? null,
-        filmed: filmedTopics.has(entry.topicId),
+        filmed: filmedTopics.has(entry.topicId) || (!!hubScript && filmedScripts.has(hubScript.id)),
         script: hubScript || imported
           ? {
               importedHere: imported,

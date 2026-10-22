@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCheck, Download, Loader2, MessageSquare, PencilLine } from "lucide-react";
+import { CheckCheck, Clapperboard, Download, Loader2, MessageSquare, PencilLine } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { portalApproveScript, portalEditApprovedScript, portalRequestScriptChanges, portalScriptPdfLink, portalSendPartChanges } from "@/app/portal/actions";
 import { ScriptWordsEditor, type EditableParts } from "@/components/script/ScriptWordsEditor";
@@ -239,9 +239,27 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
     </div>
   );
 
+  // FILMED, NEVER APPROVED (Oct 22 2026, Jordan: "he shouldn't have to approve
+  // it. It should just show up as filmed."). Read-only: no approve, no change
+  // request, no edit. Filmed is not their sign-off, so nothing says they gave one.
+  const filmedOnly = !!script.filmed && script.decision !== "APPROVED";
+  const filmedOn = script.filmed?.atISO ? new Date(script.filmed.atISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : null;
+
   return (
-    <div className={cn("mt-3 border-t border-border pt-3", large && "space-y-2", inlineParts && !script.decision && "border-t-0 pt-0")}>
-      {script.decision === "APPROVED" ? (
+    <div className={cn("mt-3 border-t border-border pt-3", large && "space-y-2", inlineParts && !script.decision && !filmedOnly && "border-t-0 pt-0")}>
+      {filmedOnly ? (
+        <>
+          <p className="flex items-center gap-1.5 text-[11px] font-semibold text-success"><Clapperboard className="size-3.5" aria-hidden /> Filmed{filmedOn ? ` on ${filmedOn}` : ""}.</p>
+          <p className="mt-1 text-[11px] text-muted">
+            {script.decision === "CHANGES_REQUESTED"
+              ? <>We filmed this one, so there&rsquo;s nothing for you to approve. {READER} has the changes you asked for. You can still read it and download it as a PDF.</>
+              : <>We filmed this one, so there&rsquo;s nothing for you to approve. You can still read it and download it as a PDF.</>}
+          </p>
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            <button type="button" onClick={downloadPdf} disabled={pdfBusy || busy} className={pill}>{pdfBusy ? <Loader2 className="size-3 animate-spin" /> : <Download className="size-3" />} Download PDF</button>
+          </div>
+        </>
+      ) : script.decision === "APPROVED" ? (
         <>
           <p className="flex items-center gap-1.5 text-[11px] font-semibold text-success"><CheckCheck className="size-3.5" /> You signed off on this one{script.decidedAtISO ? ` on ${new Date(script.decidedAtISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}` : ""}.</p>
           <p className="mt-1 text-[11px] text-muted">It&rsquo;s yours now: you can change the wording yourself any time before we film, and download it as a PDF to practice with.</p>

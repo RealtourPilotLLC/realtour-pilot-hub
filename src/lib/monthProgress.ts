@@ -161,6 +161,8 @@ export type MonthProgress = {
   scripts: {
     total: number; drafting: number; needsJordan: number; ready: number;
     releasedAwaitingClient: number; clientApproved: number; changesRequested: number; openSuggestions: number;
+    /** Oct 22 2026: released, never approved by the client, and filmed (lib/scriptFilmed): done, not waiting on them. */
+    releasedFilmed: number;
   };
   sessions: {
     required: number;
@@ -395,7 +397,7 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
     // counted as a UNION with the selection rows, keyed by topic id.
     monthIds.length ? prisma.contentTopic.findMany({ where: { monthId: { in: monthIds }, status: { in: TOPIC_ON_MONTH } }, select: { id: true, monthId: true } }) : Promise.resolve([]),
     monthIds.length
-      ? prisma.contentScript.findMany({ where: { monthId: { in: monthIds } }, select: { id: true, monthId: true, enrollmentId: true, status: true, historical: true, currentVersionId: true, approvedVersionId: true, sharedVersionId: true, releaseState: true } })
+      ? prisma.contentScript.findMany({ where: { monthId: { in: monthIds } }, select: { id: true, monthId: true, enrollmentId: true, topicId: true, videoId: true, status: true, historical: true, currentVersionId: true, approvedVersionId: true, sharedVersionId: true, releaseState: true } })
       : Promise.resolve([]),
     opts.owners === false ? Promise.resolve(new Map<string, OwnerMap>()) : ownersForMany(pairs.map((p) => ({ enrollmentId: p.enrollmentId, monthId: p.monthId }))),
   ]);
@@ -419,7 +421,7 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
   const { currentScriptDecision } = await import("@/lib/scriptDecisions");
   const { entitlementsForVideos } = await import("@/lib/cutEntitlement");
 
-  const [reports, subs, versions, ledger, suggestions, entitlements] = await Promise.all([
+  const [reports, subs, versions, ledger, suggestions, entitlements, filmedScripts] = await Promise.all([
     projectIds.length
       ? prisma.contentFilmingReport.findMany({ where: { projectId: { in: projectIds } }, orderBy: { createdAt: "asc" }, select: { projectId: true, appointmentId: true, state: true, createdAt: true } })
       : Promise.resolve([]),
@@ -440,6 +442,11 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
     // CP-01's release rule, batched — DOWNLOADABLE is its answer, not ours.
     // A failure here is an UNKNOWN on the month, not a zero.
     entitlementsForVideos(videos).then((m) => m as Map<string, Entitlement>, () => null),
+    // Oct 22 2026: which shared scripts are filmed (lib/scriptFilmed) — a
+    // filmed one the client never approved is no longer waiting on them.
+    sharedIds.length
+      ? import("@/lib/scriptFilmed").then((m) => m.readScriptsFilmed(scripts.filter((s) => s.releaseState === "released" && !!s.sharedVersionId)))
+      : Promise.resolve(new Map<string, import("@/lib/scriptFilmed").ScriptFilmed>()),
   ]);
   const subOf = new Map(subs.map((s) => [s.id, s]));
   const versionOf = new Map(versions.map((v) => [v.id, v]));
@@ -478,7 +485,7 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
     }
 
     // ---- scripts -----------------------------------------------------------
-    const sc = { total: 0, drafting: 0, needsJordan: 0, ready: 0, releasedAwaitingClient: 0, clientApproved: 0, changesRequested: 0, openSuggestions: 0 };
+    const sc = { total: 0, drafting: 0, needsJordan: 0, ready: 0, releasedAwaitingClient: 0, releasedFilmed: 0, clientApproved: 0, changesRequested: 0, openSuggestions: 0 };
     for (const s of scripts) {
       if (s.monthId !== mid || !mid) continue;
       sc.openSuggestions += suggestionsOf.get(s.id) ?? 0;
@@ -497,7 +504,10 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
       if (s.releaseState === "released" && s.sharedVersionId) {
         const d = currentScriptDecision(s.sharedVersionId, ledger.filter((r) => r.scriptId === s.id));
         if (d.decision === "APPROVED") sc.clientApproved++;
+        // A change request stays the office's to see, filmed or not.
         else if (d.decision === "CHANGES_REQUESTED") sc.changesRequested++;
+        // Filmed before they answered: done, never "waiting on the client".
+        else if (filmedScripts.has(s.id)) sc.releasedFilmed++;
         else sc.releasedAwaitingClient++;
       }
     }

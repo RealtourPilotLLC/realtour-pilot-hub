@@ -1228,6 +1228,13 @@ export type PortalTopic = {
     staleApproval: boolean;
     /** Oct 20 2026: the office's replies about this script (newest last, up to three). */
     replies?: { body: string; atISO: string; by: string }[];
+    /**
+     * Oct 22 2026 (Jordan): its video has been filmed (lib/scriptFilmed), and
+     * when, if the hub knows. NOT their approval: `decision` stays what they
+     * said. Filmed and never approved, the card reads "Filmed" and asks
+     * nothing; approved, it reads approved as always.
+     */
+    filmed?: { atISO: string | null } | null;
   } | null;
   /**
    * THE WORDS, when the client is allowed to read them. Null is the normal
@@ -1520,6 +1527,7 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
             decidedAtISO: decisions.get(sc.id)?.decidedAt ?? null,
             staleApproval: decisions.get(sc.id)?.staleApproval ?? false,
             replies: scriptReplies.filter((m) => m.refId === sc.id).slice(-3).map((m) => ({ body: replyText(m.body), atISO: m.createdAt.toISOString(), by: m.authorLabel })),
+            filmed: decisions.get(sc.id)?.filmed ? { atISO: decisions.get(sc.id)!.filmed!.atISO } : null,
           }
         : null,
       scriptText: topicScripts.get(t.id) ?? null,

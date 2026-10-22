@@ -303,7 +303,8 @@ export function yourMonthSteps(i: YourMonthInput): YourMonthStep[] {
   if (ready > 0) {
     steps.push({ key: "scripts", status: actSuggest ? "action" : "waiting", title: ready === 1 ? "A script is ready for your review" : `${ready} scripts are ready for your review`, detail: m.progress, cta: { label: CTA_WORDS.REVIEW, href: i.hrefs.scripts } });
   } else if (allApproved) {
-    steps.push({ key: "scripts", status: "done", title: `All ${plural(m.chosen, "script")} approved`, detail: null, cta: null });
+    // Oct 22 2026: filmed counts as done, and is not called "approved".
+    steps.push({ key: "scripts", status: "done", title: `All ${plural(m.chosen, "script")} approved${inTopics.some((t) => t.step === "FILMED") ? " or filmed" : ""}`, detail: null, cta: null });
   } else if (m.counts.CHANGES_REQUESTED + m.counts.WRITING + m.counts.TEAM_REVIEW > 0) {
     const doing = m.counts.CHANGES_REQUESTED > 0 ? "We're making the changes you asked for" : m.counts.WRITING > 0 ? "We're writing your scripts" : "Our team is reviewing your scripts";
     steps.push({ key: "scripts", status: "waiting", title: doing, detail: m.progress, cta: null });

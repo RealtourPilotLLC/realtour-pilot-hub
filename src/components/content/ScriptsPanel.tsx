@@ -52,7 +52,9 @@ export type OwedUi = { topicId: string; title: string; monthId: string; readines
 
 export type ScriptUi = { id: string; title: string; status: string; historical: boolean; releaseState: string | null; monthKey: string | null; pillarName: string | null; currentVersionId: string | null; approvedVersionId: string | null; sharedVersionId: string | null; approvedBy: string | null; approvedAt: string | null; sharedAt: string | null; versions: VersionUi[]; sourceFile: string | null; clientVerdict: "APPROVED" | "CHANGES_REQUESTED" | "STALE" | null; clientVerdictAt: string | null;
   /** 6.5: the client changed an answer after this script was drafted — nothing redrafts on its own. */
-  answersChanged?: boolean };
+  answersChanged?: boolean;
+  /** Oct 22 2026: its video is filmed (lib/scriptFilmed) — not the client's verdict, and the client is no longer asked. */
+  filmed?: { atISO: string | null; signal: string } | null };
 
 /** A version's status in words (audit D22: staff saw "internal_review"). */
 const VERSION_WORD: Record<string, string> = { DRAFT: "waiting for an OK", INTERNAL_REVIEW: "waiting for an OK", APPROVED: "approved", SHARED: "sent to the client", SUPERSEDED: "replaced", REJECTED: "rejected" };
@@ -249,8 +251,13 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
   const verdict =
     s.clientVerdict === "APPROVED" ? { label: "client signed off", cls: "bg-success-soft text-success" }
     : s.clientVerdict === "CHANGES_REQUESTED" ? { label: "client asked for changes", cls: "bg-warning-soft text-warning" }
-    : s.clientVerdict === "STALE" ? { label: "rewritten since they approved", cls: "bg-warning-soft text-warning" }
-    : releasedLive ? { label: "client hasn't answered yet", cls: "bg-surface-2 text-muted" }
+    : s.clientVerdict === "STALE" && !s.filmed ? { label: "rewritten since they approved", cls: "bg-warning-soft text-warning" }
+    // Oct 22 2026: filmed before they answered. The client is not asked any more.
+    : releasedLive && !s.filmed ? { label: "client hasn't answered yet", cls: "bg-surface-2 text-muted" }
+    : null;
+  // Filmed and never signed off by the client: its own chip, so nobody chases it.
+  const filmedChip = s.filmed && s.clientVerdict !== "APPROVED" && !s.historical
+    ? { label: `filmed${s.filmed.atISO ? ` ${new Date(s.filmed.atISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}` : ""}`, title: "Filmed. The client never approved it in the portal, and nothing asks them to now." }
     : null;
   return (
     <details className="group px-5 py-3" open={open}>
@@ -273,6 +280,7 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
         )}
         <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>{state}</span>
         {verdict && <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${verdict.cls}`} title={s.clientVerdictAt ? `on ${fmt(s.clientVerdictAt)}` : undefined}>{verdict.label}</span>}
+        {filmedChip && <span className="shrink-0 rounded-full bg-success-soft px-2 py-0.5 text-xs font-medium text-success" title={filmedChip.title}>{filmedChip.label}</span>}
         {s.answersChanged && <span className="shrink-0 rounded-full bg-warning-soft px-2 py-0.5 text-xs font-medium text-warning" title="The client edited an answer after this draft. Revise it, or draft again from the answers.">answers changed since this draft</span>}
         {revBusy && <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-brand-soft px-2 py-0.5 text-xs font-medium text-brand"><Loader2 className="size-3 animate-spin" />{rev?.server?.label === "tighten" ? "tightening…" : rev?.server?.label === "redraft" ? "redrafting…" : "revising…"}</span>}
       </summary>

@@ -739,15 +739,16 @@ export async function applyScriptUpload(input: {
 // ---------------------------------------------------------------------------
 // THE UPLOAD CARD — what each upload on a month looks like now.
 // ---------------------------------------------------------------------------
-export type UploadScriptUi = { id: string; title: string; extra: boolean; state: "review" | "approved" | "released" | "client_approved" | "changes" ; versionNo: number | null; sendable: boolean; problem: string | null };
+/** Oct 22 2026: "filmed" = released, never approved by the client, and filmed (lib/scriptFilmed): nothing is asked of them. */
+export type UploadScriptUi = { id: string; title: string; extra: boolean; state: "review" | "approved" | "released" | "client_approved" | "changes" | "filmed"; versionNo: number | null; sendable: boolean; problem: string | null };
 export type UploadBatchUi = {
   id: string; fileName: string; byName: string; atISO: string; parser: "house" | "ai";
   scripts: UploadScriptUi[]; removed: number;
-  counts: { review: number; approved: number; released: number; clientApproved: number; changes: number; extras: number };
+  counts: { review: number; approved: number; released: number; clientApproved: number; changes: number; extras: number; filmed: number };
   canSend: number; canUndo: boolean; undoWhy: string | null; routeChosen: boolean; lastError: string | null;
 };
 
-const SENT_STATES = new Set(["released", "client_approved", "changes"]);
+const SENT_STATES = new Set(["released", "client_approved", "changes", "filmed"]);
 
 export async function monthUploads(enrollmentId: string, monthId: string): Promise<{ batches: UploadBatchUi[]; monthHasScripts: boolean }> {
   const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { monthKey: true, videosOwed: true, enrollmentId: true } });
@@ -773,7 +774,8 @@ export async function monthUploads(enrollmentId: string, monthId: string): Promi
       const v = versions.find((x) => x.id === s.currentVersionId);
       const verdict = verdicts.get(s.id)?.decision ?? null;
       const released = !!s.sharedVersionId && s.releaseState === "released";
-      const state: UploadScriptUi["state"] = verdict === "APPROVED" ? "client_approved" : verdict === "CHANGES_REQUESTED" ? "changes" : released ? "released" : s.approvedVersionId ? "approved" : "review";
+      // A change request stays visible to the office; a filmed one nobody answered is not "to read".
+      const state: UploadScriptUi["state"] = verdict === "APPROVED" ? "client_approved" : verdict === "CHANGES_REQUESTED" ? "changes" : released && verdicts.get(s.id)?.filmed ? "filmed" : released ? "released" : s.approvedVersionId ? "approved" : "review";
       let problem: string | null = null;
       try {
         const val = v?.validationJson ? (JSON.parse(v.validationJson) as { findings: { severity: string; code: string; message: string }[] }) : null;
@@ -791,6 +793,7 @@ export async function monthUploads(enrollmentId: string, monthId: string): Promi
       counts: {
         review: ui.filter((s) => s.state === "review").length, approved: ui.filter((s) => s.state === "approved").length, released: ui.filter((s) => s.state === "released").length,
         clientApproved: ui.filter((s) => s.state === "client_approved").length, changes: ui.filter((s) => s.state === "changes").length, extras: ui.filter((s) => s.extra).length,
+        filmed: ui.filter((s) => s.state === "filmed").length,
       },
       canSend: ui.filter((s) => s.sendable).length,
       canUndo: !anySent, undoWhy: anySent ? "Some of these scripts are already on the client's portal." : null,

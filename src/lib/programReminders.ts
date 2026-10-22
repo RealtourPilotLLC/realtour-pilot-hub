@@ -17,6 +17,7 @@ import { catchUpInto, catchUpMonthName } from "@/lib/catchUp";
 import { lateMonthName, lateSessionOf } from "@/lib/lateSession";
 import { monthStarted } from "@/lib/forfeit";
 import { strategyGatesFor, type StrategyGate } from "@/lib/strategyGate";
+import { topicIsFilmed } from "@/lib/scriptFilmed";
 import {
   templateForAction, renderReminder, monthName, firstNameOf, reminderTemplate, DEFAULT_TEMPLATE_IDS, SIGN_OFF_FIRST_LINE,
   type ReminderAction, type TemplateVars,
@@ -2660,13 +2661,17 @@ export async function monthScriptApprovals(monthId: string): Promise<MonthScript
   );
   const titleOf = (id: string | null | undefined) => (id ? versionTitle.get(id) ?? null : null);
   for (const t of topics) {
-    if (["FILMED", "EDITING", "DELIVERED"].includes(t.status)) continue;
+    if (topicIsFilmed(t.status)) continue;
     // A script handled outside the hub's version flow is not ours to chase:
     // an import (history — the script lives in the client's own documents),
     // or a legacy released script with no version the client could approve.
     if (scripts.some((x) => x.topicId === t.id && x.historical)) continue;
     const sc = scripts.find((x) => x.topicId === t.id && !x.historical) ?? null;
     if (!sc) { out.notShared.push({ topicId: t.id, title: t.title, stage: "not drafted" }); continue; }
+    // Oct 22 2026 (Jordan): filmed (lib/scriptFilmed, read with the decisions)
+    // ends the chase: no approval email, no Kyle task, no owner bell. Nothing
+    // is recorded as their approval.
+    if (decisions.get(sc.id)?.filmed) continue;
     const released = scriptVisibility(sc) === "released";
     if (released && !sc.sharedVersionId) continue;
     if (!released) { out.notShared.push({ topicId: t.id, title: titleOf(sc.approvedVersionId) || titleOf(sc.currentVersionId) || sc.title || t.title, stage: sc.approvedVersionId && sc.releaseState === "withheld" ? "approved, not shared" : "in review" }); continue; }

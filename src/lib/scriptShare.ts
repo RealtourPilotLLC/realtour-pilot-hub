@@ -337,11 +337,20 @@ export async function drainShareNotices(opts: { now?: Date; max?: number; reques
     // What is still shared (a script pulled back to the queue drops out of the email).
     let titles: string[] = [];
     let updated: string[] = [];
+    /** Oct 22 2026: scripts left out because they are already filmed — their SHARE rows say so, never "Emailed". */
+    const filmedScriptIds: string[] = [];
     if (n.action === "SCRIPTS_READY") {
       const releases = await prisma.contentScriptRelease.findMany({ where: { reminderId: n.id, action: "SHARE" }, orderBy: { createdAt: "asc" } });
+      // Oct 22 2026 (Jordan): a script whose video is already filmed is not
+      // "ready for you to read before we film" — it drops out of the email.
+      const { readScriptsFilmed } = await import("@/lib/scriptFilmed");
+      const live = (await prisma.contentScript.findMany({ where: { id: { in: [...new Set(releases.map((r) => r.scriptId))] } }, select: { id: true, topicId: true, videoId: true, sharedVersionId: true, releaseState: true } }));
+      const filmed = await readScriptsFilmed(live);
+      let filmedOut = 0;
       for (const r of releases) {
-        const sc = await prisma.contentScript.findUnique({ where: { id: r.scriptId }, select: { sharedVersionId: true, releaseState: true } });
+        const sc = live.find((x) => x.id === r.scriptId);
         if (!sc || sc.sharedVersionId !== r.scriptVersionId || sc.releaseState !== "released") continue;
+        if (filmed.has(sc.id)) { filmedOut++; filmedScriptIds.push(sc.id); continue; }
         const v = await prisma.contentScriptVersion.findUnique({ where: { id: r.scriptVersionId }, select: { title: true } });
         if (!v) continue;
         const earlier = await prisma.contentScriptRelease.count({ where: { scriptId: r.scriptId, action: "SHARE", notificationState: "SENT", scriptVersionId: { not: r.scriptVersionId }, createdAt: { lt: r.createdAt } } });
@@ -349,8 +358,9 @@ export async function drainShareNotices(opts: { now?: Date; max?: number; reques
       }
       titles = [...new Set(titles)]; updated = [...new Set(updated)].filter((t) => !titles.includes(t));
       if (titles.length === 0 && updated.length === 0) {
-        record("cancel", "every script in this batch was pulled back before the email went out");
-        if (!dry) await prisma.programReminder.update({ where: { id: n.id }, data: { state: "CANCELLED", suppressionReason: "nothing_shared", lastError: "every script in this batch was pulled back before the email went out", leaseUntil: null, leaseBy: null } });
+        const why = filmedOut > 0 ? "every script in this batch was pulled back or already filmed before the email went out" : "every script in this batch was pulled back before the email went out";
+        record("cancel", why);
+        if (!dry) await prisma.programReminder.update({ where: { id: n.id }, data: { state: "CANCELLED", suppressionReason: "nothing_shared", lastError: why, leaseUntil: null, leaseBy: null } });
         out.notes.push(`${n.id}: cancelled (nothing left to share)`);
         continue;
       }
@@ -398,8 +408,14 @@ export async function drainShareNotices(opts: { now?: Date; max?: number; reques
     }
     const rec = await recordSendResult(n.id, r, now);
     const relState = rec.outcome === "sent" ? "SENT" : rec.outcome === "failed" ? "FAILED" : rec.outcome === "suppressed" ? "SUPPRESSED" : "QUEUED";
+    if (filmedScriptIds.length) {
+      await prisma.contentScriptRelease.updateMany({
+        where: { reminderId: n.id, scriptId: { in: filmedScriptIds } },
+        data: { notificationState: "SUPPRESSED", note: "Left out of the email: its video was already filmed, so there was nothing for the client to read before filming." },
+      });
+    }
     await prisma.contentScriptRelease.updateMany({
-      where: { reminderId: n.id },
+      where: { reminderId: n.id, ...(filmedScriptIds.length ? { scriptId: { notIn: filmedScriptIds } } : {}) },
       data: {
         notificationState: relState, outboxMessageId: r.id || null,
         note: rec.outcome === "sent"
