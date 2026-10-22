@@ -175,6 +175,7 @@ const JOB_SELECT = {
   photosHandoffAt: true,
   videoHandoffAt: true,
   videoInstructions: true,
+  instructionsDropboxPath: true, // Oct 22 2026: instructions as a Dropbox file
   editorBrief: true,
   reelScript: true,
   reelHook: true,

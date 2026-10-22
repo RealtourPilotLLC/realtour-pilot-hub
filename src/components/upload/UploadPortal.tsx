@@ -46,6 +46,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { MarkdownEditor } from "@/components/ui/MarkdownEditor";
 import { WhatYouSubmitted, type SubmittedItem } from "@/components/upload/WhatYouSubmitted";
 import { NoticeGroup, type Notice } from "@/components/upload/NoticeGroup";
+import { DropboxInstructions, type DropboxInstructionsView } from "@/components/upload/DropboxInstructions";
 import { parseUploadAttempt, uploadAttemptFingerprint, type UploadAttempt } from "@/lib/uploadReceipt";
 
 // ---------------------------------------------------------------------------
@@ -455,6 +456,8 @@ export function UploadPortal({
     videosFilmed: number | null;
     scriptConfirmedAt: string | null;
     scriptConfirmNote: string | null;
+    /** Oct 22 2026: "Instructions added to Dropbox" — the file, who, when (null = not said). */
+    instructionsDropbox?: DropboxInstructionsView;
   };
   deliverables: Deliverable[];
   specialRequests: string[];
@@ -786,9 +789,11 @@ export function UploadPortal({
   const isRequiredKey = (k: VidKey) =>
     (k === "intro" && spec.requireIntro) || (k === "vision" && fullFields) || (k === "editNotes" && notesRequired);
   const countAnswered = !spec.requireVideoCount || project.videosFilmed != null || (videosFilmedNum ?? 0) > 0;
+  // Oct 22 2026: instructions in a Dropbox file answer the typed ones.
+  const dropboxInstructions = project.instructionsDropbox ?? null;
   const vidAnswered =
     countAnswered &&
-    (hadPriorBrief ||
+    (hadPriorBrief || !!dropboxInstructions ||
     ((!spec.requireIntro || !!vidSections.intro.trim()) &&
       (!fullFields || (!!vidSections.vision.trim() && effectiveStyle !== null)) &&
       (!notesRequired || !!vidSections.editNotes.trim())));
@@ -2442,6 +2447,9 @@ export function UploadPortal({
             </div>
             {colorProfile === null && <p className="mt-1.5 text-xs text-muted-2">Pick one so the editor grades the footage the right way.</p>}
           </div>
+          {/* Oct 22 2026: "Instructions added to Dropbox" — the file stands in
+              for the typed flow and vision below. */}
+          <DropboxInstructions projectId={project.id} current={dropboxInstructions} />
           {/* §7.5: what the editor is told for each video, read here before
               the photographer writes their own instructions below. */}
           {briefs.length > 0 && <div className="mb-4 border-b border-border pb-3.5">{briefCard}</div>}

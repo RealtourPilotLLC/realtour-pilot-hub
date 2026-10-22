@@ -505,6 +505,10 @@ export default async function UploadProjectPage({
           videosFilmed: project.videosFilmed,
           scriptConfirmedAt: project.scriptConfirmedAt?.toISOString() ?? null,
           scriptConfirmNote: project.scriptConfirmNote,
+          // Oct 22 2026: the edit instructions as a file in the job's Dropbox folder.
+          instructionsDropbox: project.instructionsDropboxPath
+            ? { path: project.instructionsDropboxPath, name: project.instructionsDropboxName ?? project.instructionsDropboxPath.split("/").pop() ?? "instructions", atISO: project.instructionsDropboxAt?.toISOString() ?? null, by: project.instructionsDropboxBy }
+            : null,
         }}
         policy={{
           photosOrdered,

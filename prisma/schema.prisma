@@ -598,6 +598,15 @@ model Project {
   shotOrderNotes     String? // "Shot front to back." or the actual order + why (organizing unseen photos burns office time)
   removalNotes       String? // pets/cans/vehicles/clutter the editor must remove
   videoInstructions  String? // REQUIRED on video jobs: flow + vision for the editor
+  // Oct 22 2026 (Jordan: "add a section to the upload portal that says
+  // 'instructions added to Dropbox' so the editor knows and we know"). The
+  // photographer's edit instructions as a FILE in the job's Dropbox folder:
+  // counts as the flow and vision for the edit (lib/handoff instructionsInDropbox)
+  // and opens from the editor brief (/api/instructions/<projectId>).
+  instructionsDropboxPath String?
+  instructionsDropboxName String?
+  instructionsDropboxAt   DateTime?
+  instructionsDropboxBy   String?
   scriptConfirmedAt  DateTime? // photographer confirmed the shoot script (as-is or edited)
   scriptConfirmNote  String? // "as written" | "edited on site" + what changed
   // Edit instructions for THIS job, set by owner/admin on /edit/<id> and shown

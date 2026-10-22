@@ -83,6 +83,13 @@ export type HandoffInput = {
   spec?: VideoStepSpec;
   videoInstructions: string | null;
   editorBrief: string | null;
+  /**
+   * Oct 22 2026: the photographer said the edit instructions are a file in the
+   * job's Dropbox folder (Project.instructionsDropboxPath, set on the upload
+   * page). It answers what the typed instructions answer: the flow and vision
+   * for the edit, and (as the typed instructions always have) the intro gap.
+   */
+  instructionsInDropbox?: boolean;
   reelScript: string | null;
   reelHook: string | null;
   scriptConfirmedAt: Date | null;
@@ -130,7 +137,7 @@ export function handoffReadiness(p: HandoffInput): HandoffReadiness {
   // A plain reel earns "nothing demanded" — it is not a fallthrough. Everything
   // else owes at least the photographer's own words about the edit.
   if (!spec.minimalReel) {
-    if (!meaningfulBrief(p.videoInstructions) && !meaningfulBrief(p.editorBrief)) {
+    if (!meaningfulBrief(p.videoInstructions) && !meaningfulBrief(p.editorBrief) && !p.instructionsInDropbox) {
       gaps.push({
         key: "instructions",
         label: "the flow and vision for the edit",
@@ -145,7 +152,7 @@ export function handoffReadiness(p: HandoffInput): HandoffReadiness {
   }
 
   // An agent-intro package needs the intro typed exactly as it was delivered.
-  if (spec.requireIntro && !(p.reelScript ?? "").trim() && !meaningfulBrief(p.videoInstructions)) {
+  if (spec.requireIntro && !(p.reelScript ?? "").trim() && !meaningfulBrief(p.videoInstructions) && !p.instructionsInDropbox) {
     gaps.push({ key: "intro", label: "the agent's intro script, as delivered on camera", owedBy: "photographer" });
   }
 

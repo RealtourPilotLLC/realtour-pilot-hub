@@ -823,6 +823,10 @@ export default async function EditBriefPage({
     jobNote: canEditNotes ? project.notes : showJobNote,
     editorBrief: project.editorBrief,
     videoInstructions: project.videoInstructions,
+    // Oct 22 2026: the instructions as a file in the job's Dropbox folder (opened via /api/instructions).
+    instructionsFile: project.instructionsDropboxPath
+      ? { name: project.instructionsDropboxName ?? project.instructionsDropboxPath.split("/").pop() ?? "instructions", atISO: project.instructionsDropboxAt?.toISOString() ?? null, by: project.instructionsDropboxBy }
+      : null,
     // No shotOrderNotes: the photographers file their video into folders, so
     // the editor never needs the walk-through (Jordan, Sep 2, round 3). The
     // project page's shoot debrief still shows it to admins.

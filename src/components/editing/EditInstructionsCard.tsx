@@ -7,6 +7,7 @@ import { Section } from "@/components/ui/Section";
 import { JobNoteEditor } from "@/components/editing/JobNoteEditor";
 import { saveEditSpec } from "@/app/editing/actions";
 import { musicPickLine, type MusicPick } from "@/lib/musicPick";
+import { DropboxInstructionsFile } from "@/components/editing/DropboxInstructionsFile";
 
 // ---------------------------------------------------------------------------
 // ONE card for everything the editor is told to do (Jordan, Sep 2: "Edit
@@ -54,6 +55,8 @@ export type EditBrief = {
   /** Project.editorBrief — what the photographer wrote at upload. */
   editorBrief: string | null;
   videoInstructions: string | null;
+  /** Oct 22 2026: the photographer's instructions as a FILE in the job's Dropbox folder. */
+  instructionsFile?: { name: string; atISO: string | null; by: string | null } | null;
   // No shotOrderNotes and no removalNotes here on purpose — see the header.
   // The shot order is a folder walk the editor never needs; the retouch list
   // stays with QC (opsDay.ts → Ops Day "From the shoot", projects/[id] "Shoot
@@ -102,7 +105,7 @@ export function EditInstructionsCard({
   // Exactly what section 3 prints, nothing more — "videos filmed" is a fact in
   // section 1, so it does not keep an otherwise-empty shoot section alive.
   const shootEmpty =
-    !shootBrief && !brief.videoInstructions && !brief.scriptConfirmNote &&
+    !shootBrief && !brief.videoInstructions && !brief.instructionsFile && !brief.scriptConfirmNote &&
     brief.deliverableNotes.length === 0 && brief.specialRequests.length === 0;
   // The job note always renders for whoever may write it (it carries its own
   // "add a note" affordance), so "empty" is only about the read-only material
@@ -226,6 +229,7 @@ export function EditInstructionsCard({
               (Jordan, Sep 2), and Ops Day's QC card already carries it. */}
           {!shootEmpty && (
             <div className="space-y-3 border-t border-border pt-4">
+              {brief.instructionsFile && <DropboxInstructionsFile projectId={projectId} file={brief.instructionsFile} />}
               {shootBrief && (
                 <div>
                   <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">From the shoot</div>

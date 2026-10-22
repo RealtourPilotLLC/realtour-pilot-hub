@@ -487,6 +487,7 @@ export async function finalizeUpload(
       shotOrderNotes: true,
       removalNotes: true,
       videoInstructions: true,
+      instructionsDropboxPath: true, // Oct 22 2026: instructions as a Dropbox file
       videosFilmed: true,
       scriptConfirmedAt: true,
       scriptConfirmNote: true,
@@ -716,7 +717,10 @@ export async function finalizeUpload(
     }
     // A plain social reel demands no brief at all (Jordan: "if it's a standard
     // social reel, it doesn't need additional notes").
-    if (wantsVideoGate && !spec.minimalReel && !prior.videoInstructions) {
+    // Oct 22 2026: "Instructions added to Dropbox" answers the typed flow and
+    // vision (and, as the typed instructions always have, the intro).
+    const instructionsInDropbox = !!prior.instructionsDropboxPath?.trim();
+    if (wantsVideoGate && !spec.minimalReel && !prior.videoInstructions && !instructionsInDropbox) {
       // Strip the auto-added STYLE / COLOR PROFILE lines and section labels —
       // the gate demands the photographer's OWN words, not machine boilerplate
       // (review: the color-profile line vacuously satisfied a bare check).
@@ -755,7 +759,7 @@ export async function finalizeUpload(
       ) {
         return { blocked: "Tell us how many videos you filmed — the editor cuts to that count." };
       }
-      if (wantsVideoGate && spec.requireIntro && data.introScript === null) {
+      if (wantsVideoGate && spec.requireIntro && data.introScript === null && !instructionsInDropbox) {
         return { blocked: "The agent's intro script can't be left blank — type it exactly as it was delivered on camera." };
       }
     }

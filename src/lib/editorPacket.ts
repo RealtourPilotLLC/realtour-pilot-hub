@@ -99,6 +99,8 @@ export type PacketManifest = {
   videos: PacketVideo[];
   job: {
     instructions: string | null;
+    /** Oct 22 2026: the instructions are a FILE in the job's Dropbox folder ("<name> (Dropbox: <path>)"). */
+    instructionsFile?: string | null;
     photographerNotes: string | null;
     scriptStatus: string | null;
     studioScript: string | null;
@@ -143,7 +145,7 @@ export async function buildEditorPacket(projectId: string): Promise<EditorPacket
     where: { id: projectId },
     select: {
       id: true, title: true, addressLine: true, packageName: true, shootDate: true, createdAt: true, dropboxFolder: true,
-      contentMonthId: true, videoInstructions: true, editorBrief: true, scriptConfirmNote: true, scriptConfirmedAt: true,
+      contentMonthId: true, videoInstructions: true, instructionsDropboxPath: true, instructionsDropboxName: true, editorBrief: true, scriptConfirmNote: true, scriptConfirmedAt: true,
       reelScript: true, reelHook: true, videosFilmed: true, debriefSubmittedAt: true, editSpec: true, statusEvidence: true,
       // O05: the edit waits on the VIDEO half's own handoff, as the edit card does.
       videoHandoffAt: true,
@@ -216,6 +218,7 @@ export async function buildEditorPacket(projectId: string): Promise<EditorPacket
     videos,
     job: {
       instructions: scrub(p.videoInstructions),
+      instructionsFile: p.instructionsDropboxPath ? `${p.instructionsDropboxName ?? p.instructionsDropboxPath.split("/").pop()} (Dropbox: ${p.instructionsDropboxPath})` : null,
       photographerNotes: scrub(p.editorBrief),
       scriptStatus: scrub(p.scriptConfirmNote),
       studioScript: scrub([p.reelHook, p.reelScript].filter(Boolean).join("\n\n")),
@@ -658,8 +661,9 @@ export async function buildEditorPacketPdf(
     if (v.rawFolder) text(`Clips: ${v.rawFolder}`, { size: 9, x: M + 12 });
     if (v.dueISO) text(`Due: ${etDateTime(v.dueISO)}`, { size: 9, color: MUTED, x: M + 12 });
   }
-  if (manifest.job.instructions) {
+  if (manifest.job.instructions || manifest.job.instructionsFile) {
     heading(manifest.videos.length > 1 ? "Instructions from the shoot (all videos)" : "Instructions from the shoot");
+    if (manifest.job.instructionsFile) text(`Instructions in Dropbox: ${manifest.job.instructionsFile}`);
     text(manifest.job.instructions);
   }
   if (manifest.job.photographerNotes) {

@@ -91,7 +91,7 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
       // SLA) is deliberately no longer read here — see THE PROMISE below.
       dueOverrideAt: true, videosOwedOverride: true, videosFilmed: true,
       revisionNote: true, revisionRequestedAt: true,
-      debriefSubmittedAt: true, videoInstructions: true, editorBrief: true,
+      debriefSubmittedAt: true, videoInstructions: true, instructionsDropboxPath: true, editorBrief: true,
       // O05: each half's own handoff (null on jobs submitted the old way).
       photosHandoffAt: true, videoHandoffAt: true,
       reelScript: true, reelHook: true, scriptConfirmedAt: true,
@@ -447,6 +447,7 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
         videoSubmittedAt: p.videoHandoffAt,
         videoInstructions: p.videoInstructions,
         editorBrief: p.editorBrief,
+        instructionsInDropbox: !!p.instructionsDropboxPath?.trim(),
         reelScript: p.reelScript,
         reelHook: p.reelHook,
         scriptConfirmedAt: p.scriptConfirmedAt,

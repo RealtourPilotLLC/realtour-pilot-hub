@@ -3842,6 +3842,8 @@ export async function handoffReadinessOf(p: {
   videoHandoffAt?: Date | null;
   videoInstructions: string | null;
   editorBrief: string | null;
+  /** Oct 22 2026: the instructions are a file in the job's Dropbox folder (optional: older selects leave it out). */
+  instructionsDropboxPath?: string | null;
   reelScript: string | null;
   reelHook: string | null;
   scriptConfirmedAt: Date | null;
@@ -3873,6 +3875,7 @@ export async function handoffReadinessOf(p: {
     videoSubmittedAt: p.videoHandoffAt ?? null,
     videoInstructions: p.videoInstructions,
     editorBrief: p.editorBrief,
+    instructionsInDropbox: !!p.instructionsDropboxPath?.trim(),
     reelScript: p.reelScript,
     reelHook: p.reelHook,
     scriptConfirmedAt: p.scriptConfirmedAt,
@@ -3910,6 +3913,7 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
       debriefSubmittedAt: true,
       videoHandoffAt: true, // O05 — the video half's own handoff
       videoInstructions: true,
+      instructionsDropboxPath: true, // Oct 22 2026: instructions as a Dropbox file
       editorBrief: true,
       reelScript: true,
       reelHook: true,
