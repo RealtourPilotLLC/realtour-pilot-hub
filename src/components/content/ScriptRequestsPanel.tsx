@@ -415,11 +415,13 @@ function RequestCard({ r, g }: { r: ScriptRequestView; g: ScriptRequestGroupView
         </details>
       )}
 
+      {/* Oct 22 2026: the script's thread. The office's replies and the client's own replies under the script, as they read it on their page. */}
       {r.replies.length > 0 && (
         <ul className="mt-2.5 space-y-1.5 border-t border-border pt-2">
-          {r.replies.map((m, i) => (
-            <li key={i} className="text-xs">
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-2">{m.by} replied · {day(m.atISO)}</span>
+          {r.replies.map((m) => (
+            <li key={m.id} className={cn("text-xs", m.from === "client" && "rounded-md border-l-2 border-brand/50 bg-surface-2/50 px-2 py-1")}>
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-2">{m.by} {m.from === "office" ? "replied" : "wrote under the script"} · {day(m.atISO)}</span>
+              {m.waiting && <span className="ml-1.5 rounded-md bg-warning-soft px-1.5 py-0.5 text-[10px] font-semibold text-warning">waiting</span>}
               <p className="whitespace-pre-wrap leading-relaxed">{m.body}</p>
             </li>
           ))}
@@ -427,12 +429,15 @@ function RequestCard({ r, g }: { r: ScriptRequestView; g: ScriptRequestGroupView
       )}
       {stage.k === "idle" && (
         <div className="mt-2.5 space-y-1.5">
-          <label htmlFor={`reply-${r.id}`} className="text-[11px] font-medium text-muted">Message to {first} on its own (no new version)</label>
+          <label htmlFor={`reply-${r.id}`} className="text-[11px] font-medium text-muted">Reply to {first} under this script (no new version)</label>
           <AutoTextarea id={`reply-${r.id}`} value={reply} onChange={(e) => setReply(e.target.value)} placeholder={`Reply to ${first} about this script…`} className={box} />
           {reply.trim().length > 1 && (
-            <button type="button" disabled={busy} onClick={() => run(async () => { const res = await replyToScriptRequestAction(r.id, reply); if (res.ok) { setReply(""); router.refresh(); } return res; })} className={primary}>
-              {busy ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />} Send the message only
-            </button>
+            <>
+              <button type="button" disabled={busy} onClick={() => run(async () => { const res = await replyToScriptRequestAction(r.id, reply); if (res.ok) { setReply(""); router.refresh(); } return res; })} className={primary}>
+                {busy ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />} Send the reply
+              </button>
+              <p className="text-[11px] text-muted-2">It shows under this script on their page, not in their Messages. The script itself does not change.</p>
+            </>
           )}
         </div>
       )}
@@ -465,11 +470,11 @@ function Preview({ s, first, readParts, busy, onBack, onSend }: { s: Extract<Sta
       {p.check.needsFix && <p className="text-[11px] text-muted">The check found something to fix. You can go back and edit, or send it as it is.</p>}
       <PartsView parts={parts} title={p.titleChanged ? p.title : null} mark={p.changed} />
       <label className="block">
-        <span className="text-[11px] font-semibold">Message to {first} <span className="font-normal text-muted">(under the script and in their Messages; optional)</span></span>
+        <span className="text-[11px] font-semibold">Message to {first} <span className="font-normal text-muted">(under the script on their page, not in their Messages; optional)</span></span>
         <AutoTextarea value={message} onChange={(e) => setMessage(e.target.value)} minRows={2} className={cn(box, "mt-0.5 text-sm")} placeholder="For example: Great hook, I used it as written. Take a look and let me know." />
       </label>
       {p.messageWarning && <p className="text-[11px] text-warning">{p.messageWarning}</p>}
-      <p className="text-[11px] text-muted-2">Send saves version {p.nextVersionNo} as a new version, shares it with {first} for their OK, and posts your message under the script and in their Messages. Their request stays on this card.</p>
+      <p className="text-[11px] text-muted-2">Send saves version {p.nextVersionNo} as a new version, shares it with {first} for their OK, and posts your message under the script on their page. Their request stays on this card.</p>
       <div className="flex flex-wrap gap-1.5">
         <button type="button" disabled={busy} onClick={() => onSend(message)} className={primary}>{busy ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />} Send version {p.nextVersionNo} to {first}</button>
         <button type="button" disabled={busy} onClick={onBack} className={quiet}>Back</button>
@@ -479,7 +484,9 @@ function Preview({ s, first, readParts, busy, onBack, onSend }: { s: Extract<Sta
 }
 
 export function ScriptRequestsPanel({ groups }: { groups: ScriptRequestGroupView[] }) {
-  const openCount = groups.reduce((n, g) => n + g.requests.filter((r) => r.status === "OPEN" || r.status === "APPLYING").length, 0);
+  // Oct 22 2026: a client's reply under a script waits here too (and on Messages).
+  const waitingCount = groups.reduce((n, g) => n + g.requests.reduce((k, r) => k + r.replies.filter((m) => m.waiting).length, 0), 0);
+  const openCount = groups.reduce((n, g) => n + g.requests.filter((r) => r.status === "OPEN" || r.status === "APPLYING").length, 0) + waitingCount;
   if (groups.length === 0) return null;
   return (
     <Section icon={FileText} title="The client asked for changes" count={openCount}
@@ -488,13 +495,14 @@ export function ScriptRequestsPanel({ groups }: { groups: ScriptRequestGroupView
         {groups.map((g) => {
           const open = g.requests.filter((r) => r.status === "OPEN" || r.status === "APPLYING");
           const handled = g.requests.filter((r) => !(r.status === "OPEN" || r.status === "APPLYING"));
+          const replyWaiting = handled.some((r) => r.replies.some((m) => m.waiting));
           return (
-            <div key={g.scriptId}>
+            <div key={g.scriptId} id={`script-requests-${g.scriptId}`} className="scroll-mt-24">
               <p className="mb-1.5 text-[13px] font-semibold">{g.title}{g.versionNo != null && <span className="ml-1.5 text-[11px] font-normal text-muted-2">now v{g.versionNo}</span>}</p>
               <div className="space-y-2">
                 {open.map((r) => <RequestCard key={r.id} r={r} g={g} />)}
                 {handled.length > 0 && (
-                  <details open={open.length === 0 && handled.length === 1}>
+                  <details open={(open.length === 0 && handled.length === 1) || replyWaiting}>
                     <summary className="min-h-9 cursor-pointer py-1 text-xs font-medium text-muted hover:text-foreground">Handled request{handled.length === 1 ? "" : "s"} ({handled.length})</summary>
                     <div className="mt-1.5 space-y-2">{handled.map((r) => <RequestCard key={r.id} r={r} g={g} />)}</div>
                   </details>

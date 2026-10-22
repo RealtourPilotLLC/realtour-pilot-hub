@@ -84,6 +84,27 @@ export const VIDEO_CHANGES_HINT =
 
 export type ProgramMessageRef = { kind: "TOPIC" | "SCRIPT" | "VIDEO"; id: string };
 type Result = { ok: boolean; message: string; id?: string };
+
+/**
+ * UNDER A SCRIPT (Oct 22 2026). Jordan: "Can the replies to the script
+ * changes not go to the messages but under the scripts?" A message stored
+ * with this refKind (refId = the script) lives in that script's own thread:
+ * under the script on the portal (lib/scriptThread), on its change-request
+ * card in the office (lib/scriptRequests). Written with `placement: "script"`.
+ *   · The client's Messages tab never shows one, and its unread badge never
+ *     counts one; their own badge is on Your Month (unreadScriptReplies).
+ *   · The office's replies under a script are not in the office's Messages
+ *     thread either. A CLIENT's message under a script IS, labelled with the
+ *     script and a link to its card, and it reaches the office exactly like
+ *     any client message (the MESSAGES owner, the desk task, the bell, the
+ *     Slack post and the text), so the office cannot miss it.
+ * Rows from before Oct 22 carry refKind "SCRIPT" and stay where they were.
+ */
+export const SCRIPT_THREAD = "SCRIPT_THREAD" as const;
+/** The program conversation: every message but those that live under a script. A bare `not` would drop the NULL refKinds. */
+const IN_CONVERSATION = [{ refKind: null }, { refKind: { not: SCRIPT_THREAD } }];
+/** The read mark a reader moves on the Scripts view (`cu:<id>:scripts`), beside their Messages one. */
+export const scriptsReaderKey = (readerKey: string) => `${readerKey}:scripts`;
 const fail = (message: string): Result => ({ ok: false, message });
 
 /**
@@ -140,7 +161,13 @@ export async function markThreadRead(enrollmentId: string, readerKey: string, at
 /** STAFF messages this reader has not seen — the client's unread count. */
 export async function unreadForReader(enrollmentId: string, readerKey: string): Promise<number> {
   const seen = await watermark(enrollmentId, readerKey);
-  return prisma.programMessage.count({ where: { enrollmentId, authorKind: "STAFF", ...(seen ? { createdAt: { gt: seen } } : {}) } });
+  return prisma.programMessage.count({ where: { enrollmentId, authorKind: "STAFF", OR: IN_CONVERSATION, ...(seen ? { createdAt: { gt: seen } } : {}) } });
+}
+
+/** The office's replies under a script this reader has not seen on the Scripts view (Oct 22 2026). */
+export async function unreadScriptReplies(enrollmentId: string, readerKey: string): Promise<number> {
+  const seen = await watermark(enrollmentId, scriptsReaderKey(readerKey));
+  return prisma.programMessage.count({ where: { enrollmentId, authorKind: "STAFF", refKind: SCRIPT_THREAD, ...(seen ? { createdAt: { gt: seen } } : {}) } });
 }
 
 /** CLIENT messages nobody has answered or set aside — the staff badge. */
@@ -295,18 +322,22 @@ async function raiseThreadTask(e: { id: string; clientId: string; clientName: st
   const open = await prisma.programMessage.findMany({
     where: { enrollmentId: e.id, authorKind: "CLIENT", handledAt: null },
     orderBy: { createdAt: "asc" },
-    select: { authorLabel: true, body: true, createdAt: true },
+    select: { authorLabel: true, body: true, createdAt: true, refKind: true, refId: true },
     take: 6,
   });
   if (!open.length) return;
   const dedupeKey = `${PROGRAM_MESSAGE_TASK_PREFIX}${e.id}`;
   const title = `Reply to ${e.clientName || "a program client"}'s message`.slice(0, 140);
+  // Oct 22 2026: a reply written under a script says which script, and where it is answered.
+  const titles = await scriptTitles(open.filter((m) => m.refKind === SCRIPT_THREAD).map((m) => m.refId));
+  const underScript = open.some((m) => m.refKind === SCRIPT_THREAD);
   const description = [
     `${open.length === 1 ? "A message is" : `${open.length} messages are`} waiting on the program conversation.`,
     "",
-    ...open.map((m) => `• ${m.authorLabel}: ${clip(m.body.replace(/\s+/g, " "), 220)}`),
+    ...open.map((m) => `• ${m.authorLabel}${m.refKind === SCRIPT_THREAD ? ` (under the script "${titles.get(m.refId ?? "") ?? "a script"}")` : ""}: ${clip(m.body.replace(/\s+/g, " "), 220)}`),
     "",
     "Reply on Content Program → Messages. This closes itself when you reply there, or when you mark the thread “No reply needed”.",
+    ...(underScript ? ["A message under a script is answered under that script: Content Program → Plan → Scripts, on its change request card."] : []),
   ].join("\n");
   // No owner on file ("unassigned") falls to Kyle, the desk's default — never
   // a task assigned to the word "unassigned".
@@ -352,29 +383,71 @@ async function closeRun(enrollmentId: string, by: string, at: Date): Promise<num
 }
 
 /**
+ * A reply under a script answers the client's messages under THAT script,
+ * and nothing else they wrote (audit D3's rule: a booking question elsewhere
+ * stays waiting). The desk task closes when nothing is left; otherwise it is
+ * refreshed to list what still waits.
+ */
+async function closeScriptRun(enrollmentId: string, scriptId: string, by: string, at: Date): Promise<number> {
+  const r = await prisma.programMessage.updateMany({ where: { enrollmentId, authorKind: "CLIENT", handledAt: null, refKind: SCRIPT_THREAD, refId: scriptId }, data: { handledAt: at, handledBy: by } });
+  if (!r.count) return 0;
+  if ((await unansweredCount(enrollmentId)) === 0) {
+    await prisma.smartTask.updateMany({
+      where: { dedupeKey: `${PROGRAM_MESSAGE_TASK_PREFIX}${enrollmentId}`, status: { notIn: TASK_DONE } },
+      data: { status: "COMPLETED", completedAt: at },
+    });
+  } else {
+    const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { id: true, clientId: true } });
+    const c = e ? await prisma.client.findUnique({ where: { id: e.clientId }, select: { name: true } }) : null;
+    if (e) await raiseThreadTask({ id: e.id, clientId: e.clientId, clientName: c?.name ?? "" }, (await ownersFor(e.id)).MESSAGES, at).catch((err) => console.error("[programMessages] task refresh", err));
+  }
+  return r.count;
+}
+
+/** Script titles by id, for the lines that name the script a message is under. */
+async function scriptTitles(ids: (string | null | undefined)[]): Promise<Map<string, string>> {
+  const want = [...new Set(ids.filter((x): x is string => !!x))];
+  if (!want.length) return new Map();
+  const rows = await prisma.contentScript.findMany({ where: { id: { in: want } }, select: { id: true, title: true } }).catch(() => []);
+  return new Map(rows.map((s) => [s.id, s.title]));
+}
+
+/**
  * A client (or the shared link) writes on their program conversation. Staff
  * acting through the owner iframe are the office speaking — their words are
  * stored as STAFF, never as the client's.
  */
 export async function postClientMessage(
   viewer: PortalViewer,
-  input: { body: string; replyToId?: string | null; ref?: ProgramMessageRef | null },
+  /** `placement: "script"` (Oct 22 2026): written under a script (ref SCRIPT); it stays with that script (SCRIPT_THREAD). */
+  input: { body: string; replyToId?: string | null; ref?: ProgramMessageRef | null; placement?: "script" | null },
   opts: { now?: Date } = {},
 ): Promise<Result> {
   if (!can(viewer, "message")) return fail(refusalMessage(viewer, "message"));
   const a = viewer.actor;
+  const underScript = input.placement === "script";
+  if (underScript && input.ref?.kind !== "SCRIPT") return fail("That script isn't on your page.");
   if (a.kind === "STAFF") {
+    // Staff through the owner iframe write under the script as the office.
+    if (underScript) {
+      const ref = await verifyRef(viewer.enrollment, input.ref!);
+      if (!ref) return fail("That script isn't on your page.");
+      return postStaffMessage(viewer.enrollment.id, { id: a.staffUserId, name: a.staffName, email: null }, input.body, null, { ...opts, ref, placement: "script" });
+    }
     return postStaffMessage(viewer.enrollment.id, { id: a.staffUserId, name: a.staffName, email: null }, input.body, input.replyToId ?? null, opts);
   }
   const now = opts.now ?? new Date();
   const e = viewer.enrollment;
   const body = (input.body ?? "").trim();
-  if (body.length < 2) return fail("Write your message first.");
+  if (body.length < 2) return fail(underScript ? "Write your reply first." : "Write your message first.");
   const contact = await portalContact();
   const recent = await prisma.programMessage.count({ where: { enrollmentId: e.id, authorKind: "CLIENT", createdAt: { gte: new Date(now.getTime() - 86_400_000) } } });
   if (recent >= MESSAGE_DAILY_CAP) return fail(`That's a lot of messages for one day, and we'll catch up with you on them. If something is urgent, ${contactLine(contact)}.`);
   const ref = input.ref ? await verifyRef(e, input.ref) : null;
-  if (input.ref && !ref) return fail("That item isn't on your page.");
+  if (input.ref && !ref) return fail(underScript ? "That script isn't on your page." : "That item isn't on your page.");
+  // The office reads which script it is under on every line that carries it (task, bell, Slack, text).
+  const scriptTitle = underScript && ref ? (await scriptTitles([ref.id])).get(ref.id) ?? "a script" : null;
+  const officeBody = scriptTitle ? `(under the script "${scriptTitle}") ${body}` : body;
   const replyTo = input.replyToId && /^[a-z0-9]{10,40}$/i.test(input.replyToId)
     ? await prisma.programMessage.findFirst({ where: { id: input.replyToId, enrollmentId: e.id }, select: { id: true } })
     : null;
@@ -388,20 +461,22 @@ export async function postClientMessage(
       authorLabel: actorLabel(viewer).slice(0, 120),
       body: body.slice(0, MESSAGE_BODY_MAX),
       replyToId: replyTo?.id ?? null,
-      refKind: ref?.kind ?? null, refId: ref?.id ?? null,
+      refKind: underScript ? SCRIPT_THREAD : ref?.kind ?? null, refId: ref?.id ?? null,
       assignedAppUserId: owner.appUserId,
       createdAt: now,
     },
     select: { id: true },
   });
-  // Writing is reading: whoever sent this has seen the thread up to now.
-  await markThreadRead(e.id, readerKeyFor(viewer), now).catch(() => {});
+  // Writing is reading: whoever sent this has seen the thread up to now (under a script: that thread).
+  await markThreadRead(e.id, underScript ? scriptsReaderKey(readerKeyFor(viewer)) : readerKeyFor(viewer), now).catch(() => {});
   await raiseThreadTask({ id: e.id, clientId: e.clientId, clientName: e.clientName }, owner, now).catch((err) => console.error("[programMessages] task", err));
   if (wasQuiet) {
     const first = await prisma.programMessage.findFirst({ where: { enrollmentId: e.id, authorKind: "CLIENT", handledAt: null }, orderBy: { createdAt: "asc" }, select: { id: true } });
-    await announce({ id: e.id, clientName: e.clientName }, owner, first?.id ?? row.id, clip(body.replace(/\s+/g, " "), 120));
+    await announce({ id: e.id, clientName: e.clientName }, owner, first?.id ?? row.id, clip(officeBody.replace(/\s+/g, " "), 120));
   }
-  await alertOffice({ id: e.id, clientName: e.clientName }, owner, body, now).catch((err) => console.error("[programMessages] text/Slack alert", err));
+  await alertOffice({ id: e.id, clientName: e.clientName }, owner, officeBody, now).catch((err) => console.error("[programMessages] text/Slack alert", err));
+  // A reply under a script is about the script: it never reopens a video (rule 2).
+  if (underScript) return { ok: true, id: row.id, message: "Sent. We'll reply right here, under the script." };
   const { classifyComm, askMedium } = await import("@/lib/comms");
   const looksLikeChange = classifyComm(body).isRevision;
   const who = owner.label && owner.label !== "unassigned" ? owner.label.split(/\s+/)[0] : "The team";
@@ -446,14 +521,21 @@ export async function postStaffMessage(
   bodyRaw: string,
   replyToId: string | null = null,
   /** Oct 20 2026: `ref` marks what the reply is about (a script the client asked to change).
-   *  `closeRun: false` (audit D3): a reply about one item does not answer the client's other messages. */
-  opts: { now?: Date; ref?: ProgramMessageRef | null; closeRun?: boolean } = {},
+   *  `closeRun: false` (audit D3): a reply about one item does not answer the client's other messages.
+   *  `placement: "script"` (Oct 22 2026): the reply lives UNDER the script (ref SCRIPT), not in the
+   *  program conversation; it answers the client's messages under that script and nothing else. */
+  opts: { now?: Date; ref?: ProgramMessageRef | null; closeRun?: boolean; placement?: "script" | null } = {},
 ): Promise<Result> {
   const now = opts.now ?? new Date();
   const body = (bodyRaw ?? "").trim();
   if (body.length < 1) return fail("Write the reply first.");
   const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { id: true, clientId: true } });
   if (!e) return fail("Program not found.");
+  const underScript = opts.placement === "script";
+  if (underScript) {
+    const s = opts.ref?.kind === "SCRIPT" ? await prisma.contentScript.findUnique({ where: { id: opts.ref.id }, select: { enrollmentId: true } }) : null;
+    if (!s || s.enrollmentId !== enrollmentId) return fail("That script isn't on this program.");
+  }
   const replyTo = replyToId && /^[a-z0-9]{10,40}$/i.test(replyToId)
     ? await prisma.programMessage.findFirst({ where: { id: replyToId, enrollmentId }, select: { id: true } })
     : null;
@@ -465,12 +547,13 @@ export async function postStaffMessage(
       staffUserId: me.id, authorLabel: label,
       body: body.slice(0, MESSAGE_BODY_MAX),
       replyToId: replyTo?.id ?? null,
-      refKind: opts.ref?.kind ?? null, refId: opts.ref?.id ?? null,
+      refKind: underScript ? SCRIPT_THREAD : opts.ref?.kind ?? null, refId: opts.ref?.id ?? null,
       createdAt: now,
     },
     select: { id: true },
   });
-  const handled = opts.closeRun === false ? 0 : await closeRun(enrollmentId, me.email ?? me.id ?? "staff", now);
+  const by = me.email ?? me.id ?? "staff";
+  const handled = underScript ? await closeScriptRun(enrollmentId, opts.ref!.id, by, now) : opts.closeRun === false ? 0 : await closeRun(enrollmentId, by, now);
   if (me.id) await markThreadRead(enrollmentId, `au:${me.id}`, now).catch(() => {});
   // Best-effort and switch-gated inside: the hourly sweep is the floor.
   await sweepProgramMessageNotices({ now, enrollmentId }).catch((err) => console.error("[programMessages] notice", err));
@@ -501,6 +584,8 @@ export type ThreadMessage = {
   handled: boolean;
   /** Staff view only: classifyComm reads it as a video change — a chip, never a re-route. */
   looksLikeVideoChange: boolean;
+  /** Staff view only (Oct 22 2026): a client message written UNDER this script, and its change-request card. */
+  script?: { id: string; title: string; href: string } | null;
 };
 
 export type ThreadView = {
@@ -517,13 +602,26 @@ export type ThreadView = {
  * has rendered what it counted.
  */
 export async function threadFor(enrollmentId: string, readerKey: string, opts: { audience: "client" | "staff"; limit?: number }): Promise<ThreadView> {
+  const clientSide = opts.audience === "client";
+  // Oct 22 2026: what lives under a script is not in the conversation. The
+  // office still sees a CLIENT's message under a script here, labelled, so a
+  // client's words are never missed; its own replies under a script are not.
+  const where = clientSide ? { enrollmentId, OR: IN_CONVERSATION } : { enrollmentId, OR: [...IN_CONVERSATION, { authorKind: "CLIENT" }] };
   const [rows, seen, owners] = await Promise.all([
-    prisma.programMessage.findMany({ where: { enrollmentId }, orderBy: { createdAt: "desc" }, take: opts.limit ?? 200 }),
+    prisma.programMessage.findMany({ where, orderBy: { createdAt: "desc" }, take: opts.limit ?? 200 }),
     watermark(enrollmentId, readerKey),
     ownersFor(enrollmentId),
   ]);
   const { classifyComm } = await import("@/lib/comms");
-  const clientSide = opts.audience === "client";
+  const under = clientSide ? [] : rows.filter((m) => m.refKind === SCRIPT_THREAD && m.refId);
+  const scripts = under.length
+    ? await prisma.contentScript.findMany({ where: { id: { in: [...new Set(under.map((m) => m.refId!))] }, enrollmentId }, select: { id: true, title: true, monthId: true } }).catch(() => [])
+    : [];
+  const monthKeys = scripts.length
+    ? new Map((await prisma.contentMonth.findMany({ where: { id: { in: [...new Set(scripts.map((s) => s.monthId).filter((x): x is string => !!x))] } }, select: { id: true, monthKey: true } }).catch(() => [])).map((m) => [m.id, m.monthKey]))
+    : new Map<string, string>();
+  const { contentHref } = await import("@/lib/contentNav");
+  const scriptOf = new Map(scripts.map((s) => [s.id, { id: s.id, title: s.title, href: contentHref(enrollmentId, { tab: "plan", view: "scripts", month: s.monthId ? monthKeys.get(s.monthId) : undefined, anchor: `script-requests-${s.id}` }) }]));
   const messages: ThreadMessage[] = rows.reverse().map((m) => ({
     id: m.id,
     authorKind: m.authorKind === "STAFF" ? "STAFF" : "CLIENT",
@@ -535,7 +633,8 @@ export async function threadFor(enrollmentId: string, readerKey: string, opts: {
     // What was answered and how the office read a message are the office's
     // business; the client's copy carries neither.
     handled: clientSide ? false : !!m.handledAt,
-    looksLikeVideoChange: clientSide ? false : m.authorKind === "CLIENT" && classifyComm(m.body).isRevision,
+    looksLikeVideoChange: clientSide ? false : m.authorKind === "CLIENT" && m.refKind !== SCRIPT_THREAD && classifyComm(m.body).isRevision,
+    script: !clientSide && m.refKind === SCRIPT_THREAD && m.refId ? scriptOf.get(m.refId) ?? { id: m.refId, title: "a script", href: contentHref(enrollmentId, { tab: "plan", view: "scripts" }) } : null,
   }));
   const unread = rows.filter((m) => (clientSide ? m.authorKind === "STAFF" : m.authorKind === "CLIENT") && (!seen || m.createdAt > seen)).length;
   const o = owners.MESSAGES;
@@ -574,11 +673,41 @@ export type StaffMessagesTab = NonNullable<Awaited<ReturnType<typeof staffMessag
 // emailed at Jordan's verified inbox, and anything else is refused loudly.
 // ---------------------------------------------------------------------------
 
-export const programMessageNoticeKey = (messageId: string, clientUserId: string) => `program_message:${messageId}:${clientUserId}`;
+// UNDER A SCRIPT (Oct 22 2026): a reply under a script is emailed the same
+// way, through this same sweep, switch, rollout, client hours and TEST floor.
+// Its email names the script and links to it on the Scripts view, scrolled to
+// the reply (…?tab=plan&pv=scripts#reply-<id>), not to Messages. The two are
+// separate runs: a script reply's "seen" is the seat's Scripts read mark
+// (scriptsReaderKey), and a notice queued for one never covers the other. Its
+// key ends ":script", which also gives it its own subject (outbox.subjectFor).
 
-export function composeReplyNotice(input: { name: string | null; staffName: string; body: string }): string {
+export const programMessageNoticeKey = (messageId: string, clientUserId: string, underScript = false) => `program_message:${messageId}:${clientUserId}${underScript ? ":script" : ""}`;
+const isScriptNoticeKey = (k: string | null | undefined) => !!k && k.startsWith("program_message:") && k.endsWith(":script");
+
+/** Where a reply under a script opens on the portal: the Scripts view, at the reply. */
+export function scriptReplyLink(enrollmentId: string, messageId: string): string {
+  return `${appBase()}/portal/me?e=${encodeURIComponent(enrollmentId)}&tab=plan&pv=scripts#reply-${messageId}`;
+}
+
+export function composeReplyNotice(input: { name: string | null; staffName: string; body: string; script?: { title: string; link: string } | null }): string {
   const first = (input.name ?? "").trim().split(/\s+/)[0] || "there";
   const staffFirst = input.staffName.trim().split(/\s+/)[0] || "The team";
+  const plain = (t: string) => t.replace(/\s*[—–]\s*/g, ", ");
+  if (input.script) {
+    return [
+      `Hi ${first},`,
+      "",
+      `${staffFirst} replied about your script "${plain(input.script.title)}":`,
+      "",
+      `"${clip(plain(input.body), 600)}"`,
+      "",
+      `Read it and reply under the script: ${input.script.link}`,
+      "",
+      "If you're asked to sign in, we'll email you a one-time link, so there's no password to remember. Your scripts are in Your Month, under Scripts.",
+      "",
+      "The Realtour Pilot team",
+    ].join("\n");
+  }
   return [
     `Hi ${first},`,
     "",
@@ -624,11 +753,19 @@ export async function sweepProgramMessageNotices(opts: { now?: Date; enrollmentI
     orderBy: { createdAt: "desc" },
     take: 200,
   });
+  // The newest reply of each run: the program conversation, and (Oct 22 2026)
+  // each script's own thread, so a reply under a script is never hidden behind
+  // a later message in the conversation, or the other way round.
   const latest = new Map<string, (typeof recent)[number]>();
-  for (const m of recent) if (!latest.has(m.enrollmentId)) latest.set(m.enrollmentId, m);
+  for (const m of recent) {
+    const lane = m.refKind === SCRIPT_THREAD && m.refId ? `${m.enrollmentId}|script:${m.refId}` : m.enrollmentId;
+    if (!latest.has(lane)) latest.set(lane, m);
+  }
+  const titles = await scriptTitles([...latest.values()].filter((m) => m.refKind === SCRIPT_THREAD).map((m) => m.refId));
   const { sendThroughOutbox, maskToRef } = await import("@/lib/outbox");
   const { programReach } = await import("@/lib/programRollout");
   for (const m of latest.values()) {
+    const underScript = m.refKind === SCRIPT_THREAD && !!m.refId;
     const e = await prisma.contentEnrollment.findUnique({ where: { id: m.enrollmentId }, select: { status: true, clientId: true } });
     if (!e || e.status !== "ACTIVE") continue;
     const clientName = (await prisma.client.findUnique({ where: { id: e.clientId }, select: { name: true } }).catch(() => null))?.name ?? "?";
@@ -648,12 +785,14 @@ export async function sweepProgramMessageNotices(opts: { now?: Date; enrollmentI
       if (d.since && m.createdAt < d.since) { skip("the reply was written before this client joined the rollout"); continue; }
       if (!(await isAutomationEnabled(NOTICE_KEY))) { skip(`${NOTICE_KEY} is off`); continue; }
       if (!windowOpen) { skip("outside the client hours (Mon to Fri, before 4:30pm ET)"); continue; }
-      const seen = await watermark(m.enrollmentId, `cu:${seat.clientUserId}`);
-      if (seen && seen >= m.createdAt) { skip("they read it on the portal already"); continue; }
-      const priors = await prisma.outboxMessage.findMany({
+      // A reply under a script is read on the Scripts view, and has a read mark of its own there.
+      const seenKey = underScript ? scriptsReaderKey(`cu:${seat.clientUserId}`) : `cu:${seat.clientUserId}`;
+      const seen = await watermark(m.enrollmentId, seenKey);
+      if (seen && seen >= m.createdAt) { skip(underScript ? "they read it under the script already" : "they read it on the portal already"); continue; }
+      const priors = (await prisma.outboxMessage.findMany({
         where: { clientId: e.clientId, toRef: person.email, requestedBy: NOTICE_BY, createdAt: { gt: seen ?? new Date(0) } },
-        select: { state: true },
-      });
+        select: { state: true, dedupeKey: true },
+      })).filter((p) => isScriptNoticeKey(p.dedupeKey) === underScript);
       if (priors.some((p) => p.state !== "failed")) { skip("a notice is already queued or sent"); continue; } // never twice
       if (priors.length >= NOTICE_MAX_TRIES) { skip(`${priors.length} notices failed; not retrying`); out.notes.push(`${person.email}: ${priors.length} notices failed; not retrying`); continue; }
       // THE TEST FLOOR, here too (review fix, Sep 28 2026). A TEST client is
@@ -674,8 +813,8 @@ export async function sweepProgramMessageNotices(opts: { now?: Date; enrollmentI
       try {
         const r = await sendThroughOutbox({
           channel: "email", toRef: person.email,
-          body: composeReplyNotice({ name: person.name, staffName: m.authorLabel, body: m.body }),
-          dedupeKey: programMessageNoticeKey(m.id, seat.clientUserId),
+          body: composeReplyNotice({ name: person.name, staffName: m.authorLabel, body: m.body, script: underScript ? { title: titles.get(m.refId!) ?? "your script", link: scriptReplyLink(m.enrollmentId, m.id) } : null }),
+          dedupeKey: programMessageNoticeKey(m.id, seat.clientUserId, underScript),
           clientId: e.clientId, requestedBy: NOTICE_BY,
         });
         if (r.outcome === "accepted") { out.sent++; row.decision = "send"; row.reason = "sent"; out.preview.push(row); }

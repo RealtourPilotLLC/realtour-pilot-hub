@@ -63,7 +63,7 @@ export async function previewScriptRequestAction(suggestionId: string, how: Send
   return { ok: true, message: "", preview: p };
 }
 
-/** Send: a new version, shared for their OK, with the message under the script and in their Messages. */
+/** Send: a new version, shared for their OK, with the message under the script (Oct 22 2026: not in their Messages). */
 export async function sendScriptRequestAction(suggestionId: string, how: SendHow, input: { words?: EditedWords | null; title?: string | null; draftRunId?: string | null; message?: string | null; startedFrom?: "theirs" | "ours" | "draft" | null }): Promise<Result & { versionNo?: number }> {
   try { await requireCreativeLead(); } catch (e) { return fail(e); }
   const me = await actor();

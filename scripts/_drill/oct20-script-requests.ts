@@ -22,8 +22,8 @@
 //      APPLIED as HERS with the version it became.
 //   5. Edit and use: the office's words; a one-part note changes only that part.
 //   6. A plain note cannot be "used as is"; Dismiss keeps it on the card.
-//   7. A reply: in their Messages about that script, on the office card, and
-//      under the script on their page without the "About your script" prefix.
+//   7. A reply: on the office card and under the script on their page
+//      (Oct 22 2026: under the script, no longer in their Messages).
 //   8. The month's scripts as one PDF: refused until every one is approved,
 //      then one page each; a token for another client does not open it.
 //
@@ -162,13 +162,14 @@ async function main() {
     c.head("7 · a reply");
     const rep = await req.replyToScriptRequest(gB.requests[0].id, "Loved this. I tightened nothing, it's yours as written.", { id: owner.id, name: "Jordan", email: owner.email });
     const msg = await prisma.programMessage.findFirst({ where: { enrollmentId: F.enrollmentId, authorKind: "STAFF" }, orderBy: { createdAt: "desc" } });
-    c.ok("it lands in their Messages, about that script", rep.ok && msg?.refKind === "SCRIPT" && msg.refId === B.scriptId && /^About your script "Repairs That Protect":/.test(msg.body), rep.message);
+    c.ok("it lands under that script (Oct 22 2026), not in their Messages", rep.ok && msg?.refKind === "SCRIPT_THREAD" && msg.refId === B.scriptId && msg.body.startsWith("Loved this."), rep.message);
     const withReply = (await req.loadScriptRequestsForMonth(F.monthId)).find((g) => g.scriptId === B.scriptId)!;
     c.ok("…on the office card under the request, without the prefix", withReply.requests[0].replies.length === 1 && withReply.requests[0].replies[0].body.startsWith("Loved this."));
     const { portalTopics } = await import("@/lib/portal");
     const page = await portalTopics({ id: F.enrollmentId, clientId: F.clientId });
     const tB = page.groups.flatMap((g) => g.topics).find((t) => t.script?.id === B.scriptId);
-    c.ok("…and under the script on their page", tB?.script?.replies?.length === 1 && tB.script.replies[0].body.startsWith("Loved this.") && tB.script.replies[0].by === "Jordan");
+    const officeSaid = (tB?.script?.thread ?? []).filter((m) => m.from === "office");
+    c.ok("…and under the script on their page", officeSaid.length === 1 && officeSaid[0].body.startsWith("Loved this.") && officeSaid[0].by === "Jordan");
 
     // ======================================================================
     c.head("8 · the month's scripts as one PDF");

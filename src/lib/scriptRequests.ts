@@ -548,11 +548,11 @@ export async function sendRequestVersion(suggestionId: string, how: SendHow, inp
     // which also queues the client's "script ready" email when that is switched on.
     const { shareApprovedScript } = await import("@/lib/scriptShare");
     await shareApprovedScript(v.versionId, actor, { note: summary });
-    // The message, under the script and in their Messages.
+    // The message, under the script (Oct 22 2026: no longer in their Messages).
     let messageId: string | null = null;
     if (message) {
       const { postStaffMessage } = await import("@/lib/programMessages");
-      const posted = await postStaffMessage(l.script.enrollmentId, { id: actor.appUserId, name: actor.name ?? null, email: actor.email }, `About your script "${c.title}":\n\n${message}`, null, { ref: { kind: "SCRIPT", id: l.script.id }, closeRun: false });
+      const posted = await postStaffMessage(l.script.enrollmentId, { id: actor.appUserId, name: actor.name ?? null, email: actor.email }, message, null, { ref: { kind: "SCRIPT", id: l.script.id }, placement: "script" });
       messageId = posted.ok ? posted.id ?? null : null;
     }
     const k = how === "AI" || how === "AI_EDITED" ? { kept: draft?.kept ?? [], leftOut: draft?.leftOut ?? [] } : await keptOf(l, finalParts);
@@ -579,7 +579,7 @@ export async function sendRequestVersion(suggestionId: string, how: SendHow, inp
       const { setRunDisposition } = await import("@/lib/aiRuns");
       await setRunDisposition(l.env.office.draft.runId, "REJECTED", actor.email);
     }
-    return { ok: true, versionNo: v.versionNo, versionId: v.versionId, message: `Saved as v${v.versionNo} and shared with ${l.first} for their OK.${message ? " Your message is under the script and in their Messages." : ""}` };
+    return { ok: true, versionNo: v.versionNo, versionId: v.versionId, message: `Saved as v${v.versionNo} and shared with ${l.first} for their OK.${message ? " Your message is under the script on their page." : ""}` };
   } catch (e) {
     await prisma.scriptSuggestion.updateMany({ where: { id: l.sugg.id, status: "APPLYING" }, data: { status: "OPEN", resolvedAt: null } }).catch(() => {});
     return { ok: false, message: e instanceof Error ? e.message : "That didn't save. Try again." };
@@ -754,18 +754,27 @@ export async function clientMessageRequest(viewer: import("@/lib/portal").Portal
   return r.ok ? { ok: true, message: r.duplicate ? r.message : "Sent. Jordan replies right here and sends you an updated version for your OK." } : { ok: false, message: r.message, stale: "stale" in r ? r.stale : undefined };
 }
 
-/** A reply to the client about their request: their Messages, marked as about that script. */
+/**
+ * A reply to the client about their request. Oct 22 2026 (Jordan: "Can the
+ * replies to the script changes not go to the messages but under the
+ * scripts?"): it lives UNDER the script, on their page and on this card, and
+ * no longer in their Messages. It answers their messages under this script and
+ * nothing else they wrote (audit D3: a booking question stays waiting). They
+ * are emailed a link to it by the same "the office replied" email
+ * (programMessages, switch program_message_notice). The script itself is
+ * never changed by a reply.
+ */
 export async function replyToScriptRequest(suggestionId: string, bodyRaw: string, me: { id: string | null; name: string | null; email: string | null }): Promise<{ ok: boolean; message: string }> {
   const body = await cleanMessage(bodyRaw);
   if (body.length < 2) return { ok: false, message: "Write the reply first." };
   const sugg = await prisma.scriptSuggestion.findUnique({ where: { id: suggestionId }, select: { scriptId: true, enrollmentId: true } });
   if (!sugg) return { ok: false, message: "That request is gone." };
-  const script = await prisma.contentScript.findUnique({ where: { id: sugg.scriptId }, select: { title: true } });
-  const { postStaffMessage } = await import("@/lib/programMessages");
-  // closeRun false (audit D3): this answers the request, not the client's other
-  // unanswered messages (booking, billing …), which stay on Messages.
-  const r = await postStaffMessage(sugg.enrollmentId, me, `About your script "${script?.title ?? "your script"}":\n\n${body}`, null, { ref: { kind: "SCRIPT", id: sugg.scriptId }, closeRun: false });
-  return r.ok ? { ok: true, message: `Sent to their Messages, and shown under the script on their page.` } : { ok: false, message: r.message };
+  const { postStaffMessage, NOTICE_KEY } = await import("@/lib/programMessages");
+  const r = await postStaffMessage(sugg.enrollmentId, me, body, null, { ref: { kind: "SCRIPT", id: sugg.scriptId }, placement: "script" });
+  if (!r.ok) return { ok: false, message: r.message };
+  const { isAutomationEnabled } = await import("@/lib/programAutomation");
+  const emailed = await isAutomationEnabled(NOTICE_KEY).catch(() => false);
+  return { ok: true, message: emailed ? "Sent. It's under the script on their page, and they get an email with a link to it." : "Sent. It's under the script on their page. The reply email is off, so they see it next time they open their scripts." };
 }
 
 /** "About your script "…":" off the front of a reply, for showing it under that script. */
@@ -789,7 +798,8 @@ export type ScriptRequestView = {
   readVersionNo: number | null; readParts: RequestParts | null; readTitle: string | null;
   merged: { parts: RequestParts; full: boolean; changed: RequestPart[] } | null;
   edited: boolean;
-  replies: { body: string; atISO: string; by: string }[];
+  /** The script's thread after this request (Oct 22 2026): the office's replies and, written under the script, the client's; `waiting` = a client's words nobody has answered yet. */
+  replies: { id: string; body: string; atISO: string; by: string; from: "office" | "client"; waiting: boolean }[];
   /** Oct 22 2026: how they asked. A request from before today: an in-place edit reads as PARTS, a note as MESSAGE. */
   kind: RequestKind;
   legacy: boolean;
@@ -829,8 +839,19 @@ export async function loadScriptRequestsForMonth(monthId: string): Promise<Scrip
       await prisma.scriptSuggestion.updateMany({ where: { id: { in: dead }, status: "APPLYING" }, data: { status: "OPEN", resolvedAt: null } }).catch(() => {});
     }
   }
+  // Oct 22 2026: the script's own thread. The office's replies (under the
+  // script from today; in Messages, marked with the script, before), and the
+  // client's replies written under the script, which also wait on Messages.
+  const { SCRIPT_THREAD } = await import("@/lib/programMessages");
+  const replies = await prisma.programMessage.findMany({
+    where: { refId: { in: scripts.map((s) => s.id) }, OR: [{ refKind: SCRIPT_THREAD }, { refKind: "SCRIPT", authorKind: "STAFF" }] },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, refId: true, body: true, createdAt: true, authorLabel: true, authorKind: true, handledAt: true },
+  });
+  // A script whose client wrote under it lately keeps its card, however old the request.
+  const talkedOn = [...new Set(replies.filter((m) => m.authorKind === "CLIENT" && (!m.handledAt || m.createdAt >= since)).map((m) => m.refId).filter((x): x is string => !!x))];
   const reqs = await prisma.scriptSuggestion.findMany({
-    where: { scriptId: { in: scripts.map((s) => s.id) }, OR: [{ status: { in: ["OPEN", "APPLYING"] } }, { resolvedAt: { gte: since } }, { createdAt: { gte: since } }] },
+    where: { scriptId: { in: scripts.map((s) => s.id) }, OR: [{ status: { in: ["OPEN", "APPLYING"] } }, { resolvedAt: { gte: since } }, { createdAt: { gte: since } }, ...(talkedOn.length ? [{ scriptId: { in: talkedOn } }] : [])] },
     orderBy: { createdAt: "asc" },
   });
   if (!reqs.length) return [];
@@ -838,7 +859,6 @@ export async function loadScriptRequestsForMonth(monthId: string): Promise<Scrip
   const versions = await prisma.contentScriptVersion.findMany({ where: { id: { in: versionIds } } });
   const vById = new Map(versions.map((v) => [v.id, v]));
   const { partsFromVersionRow } = await import("@/lib/contentScripts");
-  const replies = await prisma.programMessage.findMany({ where: { refKind: "SCRIPT", refId: { in: scripts.map((s) => s.id) }, authorKind: "STAFF" }, orderBy: { createdAt: "asc" }, select: { refId: true, body: true, createdAt: true, authorLabel: true } });
   const client = await prisma.client.findUnique({ where: { id: scripts[0].clientId }, select: { name: true } }).catch(() => null);
   const clientFirst = (client?.name ?? "").split(" ")[0] || "the client";
   const lastNo = await prisma.contentScriptVersion.groupBy({ by: ["scriptId"], where: { scriptId: { in: scripts.map((s) => s.id) } }, _max: { versionNo: true } }).catch(() => []);
@@ -869,7 +889,11 @@ export async function loadScriptRequestsForMonth(monthId: string): Promise<Scrip
         appliedHow: r.appliedHow, appliedVersionNo: r.appliedVersionId ? vById.get(r.appliedVersionId)?.versionNo ?? null : null,
         resolvedAtISO: r.resolvedAt?.toISOString() ?? null, resolvedBy: r.resolvedBy,
         readVersionNo: readRow?.versionNo ?? null, readParts, readTitle: readRow?.title ?? null, merged, edited,
-        replies: replies.filter((m) => m.refId === s.id && m.createdAt >= r.createdAt && (!next || m.createdAt < next)).map((m) => ({ body: replyText(m.body), atISO: m.createdAt.toISOString(), by: m.authorLabel })),
+        // Everything after this request and before the next one.
+        replies: replies.filter((m) => m.refId === s.id && m.createdAt >= r.createdAt && (!next || m.createdAt < next)).map((m) => {
+          const office = m.authorKind === "STAFF";
+          return { id: m.id, body: office ? replyText(m.body) : m.body, atISO: m.createdAt.toISOString(), by: m.authorLabel, from: office ? "office" as const : "client" as const, waiting: !office && !m.handledAt };
+        }),
         kind: env.kind ?? (edited ? "PARTS" : "MESSAGE"), legacy: !env.kind,
         notes: env.notes ?? {}, about: (env.about ?? []).map((a) => ABOUT_LABEL[a]).filter(Boolean),
         theirWords: merged && (merged.full || edited) ? spokenWords(merged.parts) : null,

@@ -1465,3 +1465,21 @@ export async function portalPostMessage(
   }
   return r;
 }
+
+/**
+ * Oct 22 2026: a reply written UNDER a script. It stays with that script
+ * (never in the Messages conversation) and reaches the office the way any
+ * message does: the MESSAGES owner's task, bell, Slack post and text, each
+ * naming the script (lib/programMessages, placement "script"). It never
+ * changes the script.
+ */
+export async function portalReplyUnderScript(auth: PortalAuth, scriptId: string, body: string): Promise<RId> {
+  const v = await viewerFor(auth, "message");
+  if (typeof v === "string") return fail(v);
+  const { postClientMessage } = await import("@/lib/programMessages");
+  const r = await postClientMessage(v, { body: String(body ?? ""), ref: { kind: "SCRIPT", id: String(scriptId ?? "") }, placement: "script" });
+  if (r.ok) {
+    try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+  }
+  return r;
+}

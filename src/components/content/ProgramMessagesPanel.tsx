@@ -36,7 +36,8 @@ export function ProgramMessagesPanel({ d }: { d: StaffMessagesTab }) {
   const [showTexts, setShowTexts] = useState(false);
   const [showEmails, setShowEmails] = useState(false);
   const msgs = d.thread.messages;
-  const lastClient = [...msgs].reverse().find((m) => m.authorKind === "CLIENT") ?? null;
+  // A reply here answers the conversation; a message written under a script is answered under that script.
+  const lastClient = [...msgs].reverse().find((m) => m.authorKind === "CLIENT" && !m.script) ?? null;
 
   const reply = () => start(async () => {
     const r = await postProgramMessageAction(d.enrollmentId, body, lastClient?.id ?? null).catch(() => ({ ok: false, message: "That didn't send." }));
@@ -55,6 +56,7 @@ export function ProgramMessagesPanel({ d }: { d: StaffMessagesTab }) {
         <p className="text-[13px] text-muted">
           Owner: <span className="font-medium text-foreground">{d.thread.owner.label}</span> (client messages — change it on Settings).
           {" "}The client sees this thread on their portal&rsquo;s Messages tab.{d.noticeOn ? " They are emailed when you reply." : " They are not emailed about replies while “Email clients when the office replies” is off; they see them next time they open the portal."}
+          {" "}Replies about a script go under that script (Plan, Scripts), not here; a client&rsquo;s reply under a script shows here too, so it is never missed.
         </p>
         {msgs.length === 0 ? (
           <p className="mt-4 text-sm text-muted">No messages on this program yet.</p>
@@ -76,7 +78,11 @@ export function ProgramMessagesPanel({ d }: { d: StaffMessagesTab }) {
                         <Clapperboard className="size-3" /> looks like a video change
                       </span>
                     )}
-                    {m.ref && <span className="rounded-md bg-surface-2 px-1.5 py-0.5">about a {m.ref.kind.toLowerCase()}</span>}
+                    {m.script ? (
+                      <Link href={m.script.href} className="rounded-md bg-brand-soft px-1.5 py-0.5 font-semibold text-brand hover:underline">
+                        under the script &ldquo;{m.script.title}&rdquo;: answer it there
+                      </Link>
+                    ) : m.ref && <span className="rounded-md bg-surface-2 px-1.5 py-0.5">about a {m.ref.kind.toLowerCase()}</span>}
                   </div>
                 </li>
               );

@@ -16,7 +16,7 @@
 //   2. Office: the AI read (classification) comes before any rewrite.
 //   3. Use their change: the check, then the preview, then Send makes a NEW
 //      version; the shared one is never edited; the message posts under the
-//      script and in their Messages; the decision is recorded.
+//      script (Oct 22 2026: not in their Messages); the decision is recorded.
 //   4. Edit their change starts from their wording.
 //   5. Rewrite with AI on a part change: a draft with kept / left out / a
 //      message; Redo; edit the draft; send. Nothing reaches the client before.
@@ -199,7 +199,7 @@ async function main() {
     c.ok("…no em dash in the new version, and the office's notes carried over", !EM.test(`${v2A.title} ${v2A.hook} ${v2A.pointsJson} ${v2A.close} ${v2A.body}`) && v2A.filmingNotes === "Office note kept.");
     c.ok("…no sign-off made up for them", !scrA.clientApprovedVersionId && (await scriptDecisionsFor(F.enrollmentId, [A.scriptId])).get(A.scriptId)?.decision === null);
     const msgA = await prisma.programMessage.findFirst({ where: { enrollmentId: F.enrollmentId, authorKind: "STAFF", refId: A.scriptId } });
-    c.ok("…the message is in their Messages, about that script, with no em dash", !!msgA && msgA.refKind === "SCRIPT" && /^About your script "Repairs That Protect Your Sale":/.test(msgA.body) && msgA.body.includes("I used your hook as written") && !EM.test(msgA.body), msgA?.body);
+    c.ok("…the message is under that script (Oct 22 2026: not in their Messages), with no em dash", !!msgA && msgA.refKind === "SCRIPT_THREAD" && msgA.body.startsWith("Thank you. I used your hook as written") && !EM.test(msgA.body), msgA?.body);
     const qA = await prisma.scriptSuggestion.findUniqueOrThrow({ where: { id: sA.id } });
     const dA = req.envelopeOf(qA.editedPartsJson).office?.decision;
     c.ok("…the request is kept, APPLIED as theirs, with the version it became", qA.status === "APPLIED" && qA.appliedHow === "HERS" && qA.appliedVersionId === v2A.id && qA.resolvedBy === owner.email && qA.body === sA.body && req.envelopeOf(qA.editedPartsJson).hook === HOOK_A);
@@ -329,7 +329,7 @@ async function main() {
     c.ok("…with the message on top, from Jordan, initials for the avatar", uA?.message?.by === "Jordan" && uA.message.initials === "JS" && uA.message.body.startsWith("Thank you. I used your hook"), JSON.stringify(uA?.message));
     const pageAfter = await portalTopics({ id: F.enrollmentId, clientId: F.clientId });
     const tA = pageAfter.groups.flatMap((g) => g.topics).find((t) => t.script?.id === A.scriptId);
-    c.ok("their page now shows v2 and the message under the script", tA?.scriptText?.versionLabel === "v2" && tA.script?.replies?.some((m) => m.body.startsWith("Thank you. I used your hook")) === true);
+    c.ok("their page now shows v2 and the message under the script", tA?.scriptText?.versionLabel === "v2" && tA.script?.thread?.some((m) => m.from === "office" && m.body.startsWith("Thank you. I used your hook")) === true);
     c.ok("the AI-rewritten one comes back too", ups[B.scriptId]?.versionNo === 2 && (ups[B.scriptId]?.changed.length ?? 0) >= 3);
 
     // ======================================================================

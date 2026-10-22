@@ -9,6 +9,7 @@ import { Card, Empty, LoadFailed, StatusChip, SubNav, fmtShort } from "@/compone
 import { TopicBank } from "@/components/portal/TopicBank";
 import { InterviewFlow } from "@/components/portal/InterviewFlow";
 import { ScriptApprovalCard } from "@/components/portal/ScriptApprovalCard";
+import { ScriptThread } from "@/components/portal/ScriptThread";
 import { MonthScriptsPdfButton } from "@/components/portal/MonthScriptsPdfButton";
 import { ScriptBody } from "@/components/portal/ScriptBody";
 import { StrategyTab } from "@/components/portal/tabs/StrategyTab";
@@ -157,6 +158,12 @@ export function PlanTab({ d }: { d: PlanTabData }) {
   );
 }
 
+/** Oct 22 2026: a folded script opens while our reply under it is the last word (for two weeks). */
+function freshReply(t: { script: { thread?: { from: string; atISO: string }[] } | null }, now: number = Date.now()): boolean {
+  const last = t.script?.thread?.at(-1);
+  return !!last && last.from === "office" && now - Date.parse(last.atISO) < 14 * 86_400_000;
+}
+
 /** Scripts waiting on the client's read, the words in full, the two answers beside them. */
 function ScriptsView({ plan, canAct, canApprove, readOnly, monthHref, pdfs, updates }: { plan: ReturnType<typeof planModel>; canAct: boolean; canApprove: boolean; readOnly: boolean; monthHref: string; pdfs: { monthKey: string; label: string; count: number }[]; updates: Record<string, PortalScriptUpdate> }) {
   // A script answered a moment ago stays a card, in the same keyed list, so
@@ -242,7 +249,7 @@ function ScriptsView({ plan, canAct, canApprove, readOnly, monthHref, pdfs, upda
           <h2 id="approved-scripts" className="text-sm font-semibold">Your approved scripts ({approvedEarlier.length})</h2>
           <p className="text-xs text-muted">Open one to read it, change the wording yourself, or download it as a PDF.</p>
           {approvedEarlier.map((t) => (
-            <details key={t.id} id={`script-${t.id}`} className="scroll-mt-24 rounded-2xl border border-border bg-surface/70 p-3 text-sm">
+            <details key={t.id} id={`script-${t.id}`} open={freshReply(t)} className="scroll-mt-24 rounded-2xl border border-border bg-surface/70 p-3 text-sm">
               <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-1.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
                 <span className="min-w-0 flex-1 basis-40 break-words font-medium">{t.title}<span className="ml-1 text-xs font-normal text-muted">· {t.selection ? monthLabel(t.selection.monthKey) : "No month assigned"}{t.scriptText?.versionLabel ? ` · script ${t.scriptText.versionLabel}` : ""}{t.script?.format === "SKIT" ? " · Skit" : ""}</span></span>
                 <StatusChip word={SCRIPT_WORDS.APPROVED} />
@@ -271,15 +278,20 @@ function ScriptsView({ plan, canAct, canApprove, readOnly, monthHref, pdfs, upda
           ))}
         </section>
       )}
+      {/* Oct 22 2026: each one with its thread (their request, our replies), so a reply
+          about a script is read under it, not in Messages. Open while our reply is the last word. */}
       {otherEarlier.length > 0 && (
-        <details className="rounded-2xl border border-border bg-surface/70 p-4 text-sm">
+        <details open={otherEarlier.some((t) => freshReply(t))} className="rounded-2xl border border-border bg-surface/70 p-4 text-sm">
           <summary className="flex min-h-11 cursor-pointer items-center text-xs font-semibold text-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Scripts you asked us to change ({otherEarlier.length})</summary>
-          <ul className="mt-2 space-y-1.5">
+          <ul className="mt-2 space-y-3">
             {otherEarlier.map((t) => (
-              <li key={t.id} className="flex flex-wrap items-center gap-1.5">
-                <span className="min-w-0 flex-1 basis-40 break-words">{t.title}<span className="ml-1 text-xs text-muted">· {t.selection ? monthLabel(t.selection.monthKey) : "No month assigned"}</span></span>
-                {t.script?.decision === "APPROVED" ? <StatusChip word={SCRIPT_WORDS.APPROVED} /> : <StatusChip word={SCRIPT_WORDS.CHANGES_REQUESTED} />}
-                {t.script?.decidedAtISO && <span className="text-[11px] text-muted-2">{fmtShort(t.script.decidedAtISO)}</span>}
+              <li key={t.id} id={`script-${t.id}`} className="scroll-mt-24">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="min-w-0 flex-1 basis-40 break-words">{t.title}<span className="ml-1 text-xs text-muted">· {t.selection ? monthLabel(t.selection.monthKey) : "No month assigned"}</span></span>
+                  {t.script?.decision === "APPROVED" ? <StatusChip word={SCRIPT_WORDS.APPROVED} /> : <StatusChip word={SCRIPT_WORDS.CHANGES_REQUESTED} />}
+                  {t.script?.decidedAtISO && <span className="text-[11px] text-muted-2">{fmtShort(t.script.decidedAtISO)}</span>}
+                </div>
+                {t.script && <ScriptThread scriptId={t.script.id} items={t.script.thread ?? []} canReply={canAct && !readOnly} large />}
               </li>
             ))}
           </ul>

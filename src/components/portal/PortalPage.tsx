@@ -356,6 +356,12 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   const canMessage = can(viewer, "message");
   const readerKey = pm.readerKeyFor(viewer);
   const messagesUnread = dataTab === "messages" ? 0 : await pm.unreadForReader(enrollment.id, readerKey).catch(() => 0);
+  // Oct 22 2026: replies about a script live under the script, not in Messages.
+  // Their unread count rides on Your Month (for a seat that can answer them);
+  // opening the Scripts view, where they are, marks them read.
+  const onScripts = route.dest === "plan" && route.planView === "scripts";
+  const scriptRepliesUnread = onScripts ? 0 : await pm.unreadScriptReplies(enrollment.id, readerKey).catch(() => 0);
+  if (onScripts) await pm.markThreadRead(enrollment.id, pm.scriptsReaderKey(readerKey)).catch(() => {});
   let messagesRes: { ok: true; data: MessagesTabData } | { ok: false } | null = null;
   if (dataTab === "messages") {
     messagesRes = await attempt("messages", async () => {
@@ -440,7 +446,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   ]);
   const plan = topicsAll?.ok ? planModel(topicsAll.data, monthKey) : null;
   const published = guides.ok ? guides.data.reduce((n, g) => n + g.resources.length, 0) : 0;
-  const nav = portalNav({ publishedResources: published, badges: { plan: badgePlan ? plan?.scripts.length : 0, library: attn?.ok ? attn.data.needReview : 0, messages: messagesUnread } });
+  const nav = portalNav({ publishedResources: published, badges: { plan: badgePlan ? (plan?.scripts.length ?? 0) + scriptRepliesUnread : 0, library: attn?.ok ? attn.data.needReview : 0, messages: messagesUnread } });
   const navHref = (i: { dest: Parameters<typeof portalHref>[1]; anchor?: string | null }) => `${portalHref(contextBase, i.dest)}${i.anchor ? `#${i.anchor}` : ""}`;
   const linked = { primary: nav.primary.map((i) => ({ ...i, href: navHref(i) })), more: nav.more.map((i) => ({ ...i, href: navHref(i) })) };
 
