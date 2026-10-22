@@ -514,7 +514,12 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
   let awaitingVisit = false;
   if (split && floor && hubNew.length === 0 && listing && listing.entries.length > 0) {
     const since = await prisma.photoIntakeBatch.findMany({ where: { projectId: job.projectId, seenAt: { gte: floor }, state: { not: "FAILED" } }, select: { state: true } });
-    awaitingVisit = since.length === 0 || since.some((b) => !["DONE", "LINKED"].includes(b.state));
+    // A later visit that uploads no photos (a video-only return) is not waited
+    // on forever (Oct 22 2026, Jordan: a split job's photos "depend on what was
+    // uploaded to Dropbox / submitted in the upload portal"): with nothing seen
+    // a day after the visit started, the earlier visit's delivery stands.
+    const quietDay = !!visits.start && now.getTime() - visits.start.getTime() > 24 * 60 * MIN;
+    awaitingVisit = since.length === 0 ? !quietDay : since.some((b) => !["DONE", "LINKED"].includes(b.state));
   }
   let newVisit = false;
   // DELIVERED BESIDE THE NEW VISIT (Oct 22 2026, Jordan on 615 Cliff Ln: "show

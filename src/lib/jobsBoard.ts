@@ -621,7 +621,8 @@ export async function jobDeliverables(projectId: string, now: Date = new Date())
   // ---- photos ----
   const [photoCount, flagged] = photoJob
     ? await Promise.all([
-        prisma.photoAsset.count({ where: { jobId: photoJob.id, status: "ACTIVE" } }),
+        // Oct 22 2026: a split job counts the photos already on the listing too (59 on 615 Cliff Ln, not 35).
+        prisma.photoAsset.count({ where: { jobId: photoJob.id, status: { in: ["ACTIVE", "ON_LISTING"] } } }),
         (async () => {
           // "Flagged" = photos with an open QC issue, counted the photo job page's way (qc/verdict.groupFindings):
           // the display floor, checks switched off house-wide or for this client left out, add-on suggestions too.

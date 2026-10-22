@@ -176,6 +176,21 @@ async function main() {
       c.ok("…once photos from the return visit are uploaded, the clock moves to it", v2?.toISOString() === "2026-10-21T15:00:00.000Z", v2?.toISOString());
     }
 
+    c.head("7 · a video-only return visit is not waited on forever (Oct 22 2026)");
+    {
+      const p5 = await prisma.project.create({ data: { title: "5 Video Return Ln, Malvern, PA", addressLine: "5 Video Return Ln", clientId: client.id, aryeoListingId: "LV", shootDate: T("2026-10-20T15:00:00Z"), status: "SCHEDULED" } });
+      await prisma.appointment.create({ data: { aryeoId: "ap-vr-1", projectId: p5.id, startAt: T("2026-10-14T15:00:00Z"), status: "SCHEDULED" } });
+      await prisma.appointment.create({ data: { aryeoId: "ap-vr-2", projectId: p5.id, startAt: T("2026-10-20T15:00:00Z"), status: "SCHEDULED" } });
+      listings.set("LV", { delivery_status: "DELIVERED", images: Array.from({ length: 5 }, (_, k) => img(`vr${k + 1}`, `5 Video Return Ln (${k + 1} of 5).jpg`, k)), floor_plans: [] });
+      const j5 = await prisma.photoJob.create({ data: { projectId: p5.id, stage: "EDITING", nextCheckAt: T("2026-10-20T20:00:00Z") } });
+      await jobs.syncJobFinals(j5.id, T("2026-10-20T20:00:00Z"));
+      const w5 = await prisma.photoJob.findUniqueOrThrow({ where: { id: j5.id } });
+      c.ok("five hours after the return visit, nothing uploaded yet: it still waits for that visit's photos", w5.stage === "EDITING", w5.stage);
+      await jobs.syncJobFinals(j5.id, T("2026-10-21T16:00:00Z"));
+      const d5 = await prisma.photoJob.findUniqueOrThrow({ where: { id: j5.id } });
+      c.ok("a day on with no photos uploaded (a video-only return): the earlier visit's delivery stands", ["DELIVERING", "DELIVERED", "DELIVERY_MISMATCH"].includes(d5.stage), d5.stage);
+    }
+
     c.head("isolation");
     c.ok("nothing left the fakes but Dropbox (unconnected)", fence.blocked.every((u) => /dropbox/.test(u)), fence.blocked.slice(0, 3).join(", "));
     c.summary();
