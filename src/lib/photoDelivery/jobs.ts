@@ -449,10 +449,20 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
         const known = new Set(earlier.map((r) => r.sourceRef!));
         const fresh = listing.entries.filter((e) => !e.sourceRef || !known.has(e.sourceRef));
         const partial = fresh.length > 0 && fresh.length < hubNew.length && fresh.every((e) => Number(N_OF_M.exec(e.name)?.[2]) === hubNew.length);
-        const adopted = fresh.length > 0 && !partial ? await adoptListing(jobId, fresh, { besideEarlierVisit: true }) : "no";
+        // Oct 22 2026 (615 Cliff Ln, 1:04 PM): Kyle put ONE photo he re-edited
+        // by hand on the listing while the other 35 still waited for his
+        // approval; that one unknown photo made the listing read as this
+        // visit's delivery and the job vanished into Delivered. A photo or two
+        // added by hand is not the visit: the listing counts as this visit's
+        // delivery only once it holds at least as many new photos as the visit
+        // has (the ones a person excluded do not count).
+        const excluded = await prisma.photoAsset.count({ where: { jobId, sourceKind: "AUTOHDR", status: "EXCLUDED", autohdrImageUuid: { in: uuids } } });
+        const owed = Math.max(1, hubNew.length - excluded);
+        const tooFew = fresh.length > 0 && fresh.length < owed && !partial;
+        const adopted = fresh.length > 0 && !partial && !tooFew ? await adoptListing(jobId, fresh, { besideEarlierVisit: true }) : "no";
         // "adopted": this visit is on the listing now, read below as usual.
         // "no" with photos it doesn't recognise: the usual listing read.
-        newVisit = fresh.length === 0 || partial || adopted === "uploading";
+        newVisit = fresh.length === 0 || partial || tooFew || adopted === "uploading";
       }
     }
   }

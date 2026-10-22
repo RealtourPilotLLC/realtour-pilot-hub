@@ -93,6 +93,18 @@ async function main() {
     j = await prisma.photoJob.findUniqueOrThrow({ where: { id: job.id } });
     c.ok("settled: EDITED, ready for the free check (the listing's old 'delivered' never pulls it back)", j.stage === "EDITED" && r2.source === "autohdr", `${j.stage} ${r2.source}`);
 
+    c.head("2b · Kyle adds ONE photo by hand (Oct 22, 1:04 PM): the job stays his");
+    await prisma.photoJob.update({ where: { id: job.id }, data: { stage: "QC_REVIEW" } });
+    await prisma.photoAsset.updateMany({ where: { jobId: job.id, autohdrImageUuid: "u36" }, data: { status: "EXCLUDED", excludeReason: "Adding this one manually" } });
+    listings.set("LC", { delivery_status: "DELIVERED", images: [...earlier, img("manual1", "DSC07999.jpg", 23)], floor_plans: [] });
+    const rM = await jobs.syncJobFinals(job.id, T("2026-10-22T13:04:03Z"));
+    j = await prisma.photoJob.findUniqueOrThrow({ where: { id: job.id } });
+    c.ok("one hand-added photo is not the visit's delivery: still the AutoHDR gallery, still in review", rM.source === "autohdr" && j.stage === "QC_REVIEW", `${rM.source} ${j.stage}`);
+    c.ok("…the 35 still to approve stay on the job, the excluded one stays excluded", (await prisma.photoAsset.count({ where: { jobId: job.id, sourceKind: "AUTOHDR", status: "ACTIVE" } })) === N - 1 && (await prisma.photoAsset.count({ where: { jobId: job.id, sourceKind: "AUTOHDR", status: "EXCLUDED" } })) === 1);
+    listings.set("LC", { delivery_status: "DELIVERED", images: earlier, floor_plans: [] });
+    await prisma.photoAsset.updateMany({ where: { jobId: job.id, autohdrImageUuid: "u36" }, data: { status: "ACTIVE", excludeReason: null } });
+    await jobs.syncJobFinals(job.id, T("2026-10-22T13:05:00Z"));
+
     c.head("3 · Kyle's push lands");
     await prisma.photoJob.update({ where: { id: job.id }, data: { stage: "READY" } });
     const part = Array.from({ length: 10 }, (_, k) => img(`new${k + 1}`, `615 Cliff Ln (${k + 1} of ${N}).jpg`, 23 + k));
