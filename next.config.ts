@@ -62,6 +62,10 @@ const nextConfig: NextConfig = {
   // Ask-the-Hub photo/file attachments ride through a server action as base64;
   // the 1MB default would reject a single phone photo.
   experimental: {
+    // Turbopack's own ceiling (bytes): above it, it evicts its caches instead
+    // of growing until the 8 GB build machine kills it or grinds for half an
+    // hour on "Creating an optimized production build" (both seen Oct 22 2026).
+    turbopackMemoryLimit: 5 * 1024 * 1024 * 1024,
     serverActions: {
       bodySizeLimit: "8mb",
     },
