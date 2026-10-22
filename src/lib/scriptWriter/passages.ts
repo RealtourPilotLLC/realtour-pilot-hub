@@ -124,19 +124,52 @@ export function locateQuote(lines: TranscriptLine[], quote: string): { first: nu
   return null;
 }
 
+/** "Mhm.", "Right.", "Yeah, absolutely." : a listener's short reply that does not end the speaker's turn. */
+export function isInterjection(l: TranscriptLine | undefined): boolean {
+  if (!l) return false;
+  const said = l.speaker ? l.text.slice(l.text.indexOf(":") + 1).trim() : l.text.trim();
+  return said.length <= 30 && said.split(/\s+/).length <= 5;
+}
+
 /**
- * The passage with the lines around it, as one block of text: at least
- * `before` / `after` lines each side, and more (up to `maxLines`) while a side
- * holds under `minChars`, because a Gemini transcript is full of one-word
- * turns ("Right.", "Mhm.") and three of them are no context at all.
+ * The passage with the lines around it, as one block of text.
+ *   before: at least `before` lines, more (up to `maxLines`) while that side
+ *     holds under `minChars` (a Gemini transcript is full of one-word turns),
+ *     so the question she was answering is there;
+ *   after (Oct 22 2026, v2.1): her thought is FINISHED first: her lines
+ *     continue through the listener's "Mhm." / "Right." up to the next
+ *     substantial turn by someone else, and that following turn is included
+ *     with the start of her answer to it. The seniors retro test lost its central line
+ *     ("every bit as scary ... as a senior moving out of a home ... sixty
+ *     years") because the passage stopped one sentence before it.
  */
-export function contextAround(lines: TranscriptLine[], range: { first: number; last: number }, before = 3, after = 3, maxChars = 2200, minChars = 500, maxLines = 8): string {
+export function contextAround(lines: TranscriptLine[], range: { first: number; last: number }, before = 3, after = 3, maxChars = 3500, minChars = 500, maxLines = 8): string {
   let from = Math.max(0, range.first - before), to = Math.min(lines.length - 1, range.last + after);
   const chars = (a: number, b: number) => lines.slice(a, b + 1).reduce((n, l) => n + l.text.length, 0);
   while (from > 0 && range.first - from < maxLines && chars(from, range.first - 1) < minChars) from--;
   while (to < lines.length - 1 && to - range.last < maxLines && chars(range.last + 1, to) < minChars) to++;
+  const who = lines[range.last]?.speaker ?? null;
+  if (who) {
+    // Finish her thought: her own lines and the listener's interjections.
+    let k = range.last + 1;
+    while (k < lines.length && k - range.last <= 24 && (lines[k].speaker === who || isInterjection(lines[k]) || !lines[k].speaker)) k++;
+    // The following turn (someone else's substantial line) and the start of her answer to it (two lines at most).
+    if (k < lines.length && k - range.last <= 24) {
+      k++;
+      const stop = k + 2;
+      while (k < lines.length && k < stop && (lines[k].speaker === who || isInterjection(lines[k]))) k++;
+    }
+    to = Math.max(to, Math.min(lines.length - 1, k - 1));
+  }
   // The lines around it never carry our internal talk (the passage's own lines are kept whole).
-  const text = lines.slice(from, to + 1).filter((l) => (l.i >= range.first && l.i <= range.last) || !isInternalTalk(l.text)).map((l) => l.text).join("\n");
+  const around = (a: number, b: number) => lines.slice(a, b).filter((l) => !isInternalTalk(l.text)).map((l) => l.text);
+  const ahead = around(from, range.first);
+  const mid = lines.slice(range.first, range.last + 1).map((l) => l.text);
+  const behind = around(range.last + 1, to + 1);
+  const join = () => [...ahead, ...mid, ...behind].join("\n");
+  // Over the limit: the lines BEFORE give way first; the finished thought after it is what matters.
+  let text = join();
+  while (text.length > maxChars && ahead.length > 1) { ahead.shift(); text = join(); }
   return text.length > maxChars ? `${text.slice(0, maxChars)} ...` : text;
 }
 

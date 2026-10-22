@@ -51,15 +51,28 @@ export type JudgeRecord = {
   checks?: ReviewCheckResult[];
   hard?: HardFinding[];
   words?: number;
+  /** The trim pass for the 110-word cap ran. */
   trimmed?: boolean;
   summary?: string | null;
+  /**
+   * Oct 22 2026 (v2.1): the ONE trim pass toward 75 to 80 for a passing draft
+   * over 85 ran (aimTrimmed); on the version it produced, aimTrimOf names the
+   * version it was trimmed from, so a trim that lost a must-keep point is
+   * undone; trimKind says which trim a "trimming" state owes.
+   */
+  aimTrimmed?: boolean;
+  aimTrimOf?: string | null;
+  trimKind?: "cap" | "aim";
 };
 
 /** Two automatic fix rounds at most (Jordan, Oct 14 2026). */
 export const MAX_FIX_ROUNDS = 2;
 
-export function pendingJudge(fixRounds = 0, opts: { writer?: boolean; trimmed?: boolean } = {}): JudgeRecord {
-  return { state: "pending", fixRounds, criteria: [], issues: [], fixInstruction: null, checkedAt: null, runId: null, attempts: 0, error: null, ...(opts.writer ? { writer: 2 as const, checks: [], hard: [], trimmed: !!opts.trimmed } : {}) };
+export function pendingJudge(fixRounds = 0, opts: { writer?: boolean; trimmed?: boolean; aimTrimmed?: boolean; aimTrimOf?: string | null } = {}): JudgeRecord {
+  return {
+    state: "pending", fixRounds, criteria: [], issues: [], fixInstruction: null, checkedAt: null, runId: null, attempts: 0, error: null,
+    ...(opts.writer ? { writer: 2 as const, checks: [], hard: [], trimmed: !!opts.trimmed, aimTrimmed: !!opts.aimTrimmed, aimTrimOf: opts.aimTrimOf ?? null } : {}),
+  };
 }
 
 /** The judge record in a version's validationJson, or null (a person's version, or one from before Oct 14 2026). */
@@ -81,7 +94,10 @@ export function readJudge(validationJson: string | null | undefined): JudgeRecor
       error: typeof j.error === "string" ? j.error : null,
       keptVersionNo: typeof j.keptVersionNo === "number" ? j.keptVersionNo : null,
       ...(j.writer === 2
-        ? { writer: 2 as const, checks: Array.isArray(j.checks) ? j.checks : [], hard: Array.isArray(j.hard) ? j.hard : [], words: Number(j.words) || 0, trimmed: j.trimmed === true, summary: typeof j.summary === "string" ? j.summary : null }
+        ? {
+            writer: 2 as const, checks: Array.isArray(j.checks) ? j.checks : [], hard: Array.isArray(j.hard) ? j.hard : [], words: Number(j.words) || 0, trimmed: j.trimmed === true, summary: typeof j.summary === "string" ? j.summary : null,
+            aimTrimmed: j.aimTrimmed === true, aimTrimOf: typeof j.aimTrimOf === "string" ? j.aimTrimOf : null, ...(j.trimKind === "aim" || j.trimKind === "cap" ? { trimKind: j.trimKind } : {}),
+          }
         : {}),
     };
   } catch { return null; }
