@@ -64,7 +64,8 @@ export type JudgeRecord = {
    */
   aimTrimmed?: boolean;
   aimTrimOf?: string | null;
-  trimKind?: "cap" | "aim";
+  /** v2.4: "first" = the aim trim of a draft BEFORE its first review (nothing reviewed to go back to). */
+  trimKind?: "cap" | "aim" | "first";
 };
 
 /** Two automatic fix rounds at most (Jordan, Oct 14 2026). */
@@ -98,7 +99,7 @@ export function readJudge(validationJson: string | null | undefined): JudgeRecor
       ...(j.writer === 2
         ? {
             writer: 2 as const, checks: Array.isArray(j.checks) ? j.checks : [], hard: Array.isArray(j.hard) ? j.hard : [], words: Number(j.words) || 0, trimmed: j.trimmed === true, summary: typeof j.summary === "string" ? j.summary : null, craft: j.craft && typeof j.craft === "object" ? j.craft : null,
-            aimTrimmed: j.aimTrimmed === true, aimTrimOf: typeof j.aimTrimOf === "string" ? j.aimTrimOf : null, ...(j.trimKind === "aim" || j.trimKind === "cap" ? { trimKind: j.trimKind } : {}),
+            aimTrimmed: j.aimTrimmed === true, aimTrimOf: typeof j.aimTrimOf === "string" ? j.aimTrimOf : null, ...(j.trimKind === "aim" || j.trimKind === "cap" || j.trimKind === "first" ? { trimKind: j.trimKind } : {}),
           }
         : {}),
     };

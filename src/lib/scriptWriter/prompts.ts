@@ -137,6 +137,12 @@ const TARGET_LINE = `TARGET LENGTH: about ${WRITER_LENGTH.target} spoken words (
 
 /** The draft's closing line (Oct 22 2026, v2.1): the number, plainly, and what must survive it. */
 export const DRAFT_LENGTH_ASK = `Write the script in about ${WRITER_LENGTH.target} spoken words (${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]}; ${WRITER_LENGTH.cap} is the hard cap). The brief's must-keep points are the only things that must survive; optional material, a second example and extra setup go first. Never dry or incomplete. Count the spoken words before you answer.`;
+/** v2.4: a told personal story may use up to the cap (Jordan's own story finals run 94 to 110). */
+export const DRAFT_LENGTH_ASK_STORY = `This is her told personal story: tell it in order, in about ${WRITER_LENGTH.storyTarget} spoken words and never more than ${WRITER_LENGTH.cap} (the hard cap); never pad it to reach a number. The brief's must-keep beats are the only things that must survive. Never dry or incomplete. Count the spoken words before you answer.`;
+/** The draft's closing length line for this brief (v2.4). */
+export function draftLengthAsk(brief: Pick<TopicBrief, "videoType">): string {
+  return brief.videoType === "story" ? DRAFT_LENGTH_ASK_STORY : DRAFT_LENGTH_ASK;
+}
 
 // ---------------------------------------------------------------------------
 // 1. Retrieval
@@ -214,6 +220,7 @@ Decide:
 - whatSheSaid: the passage ids (P1, P2 ...) that carry her actual words on this, most important first.
 - mustKeep: the POINTS the script cannot lose and still be true and complete, each written as a short point in plain words (its meaning, NOT a quote of her sentence), with its source (a passage id, or "call at 01:09:23"). For a personal story these are the story's beats in order (where she was and what she loved, her real reason for the change, what she expected, the turn, what the viewer needs that she gives, how she helps now), at most ${BRIEF_MUST_KEEP_MAX.story}. For an educational video at most ${BRIEF_MUST_KEEP_MAX.educational}, most important first: the belief, the proof (her real moment, when she told one), and how she helps (how she helps appears once, in the payoff or the close, never both). The invitation and what the viewer should do next are never must-keep: they belong to the close. With the hook and the close they have to fit in about ${WRITER_LENGTH.target} spoken words; everything else good goes in optional. inProgress is true for a point about a deal still in progress.
 - NEVER A LIVE DEAL: an offer she just wrote, a listing she is negotiating now, a client's sale still in progress, or anything that identifies a specific listing or a person, is never must-keep. Put it in excluded (or in optional, in general terms only).
+- A story she has already told on camera is never this video's proof. Her earlier scripts are listed below: when her moment is one of them, choose another moment she told, or let the insight be the proof.
 - herPhrases: up to five SHORT phrases of hers (a few words each) that are strong and natural on camera and worth saying exactly (her own vocabulary, a few words that carry feeling or a picture). Never a rambling spoken sentence, and never an industry term a homeowner would not say: her phrases never override plain words.
 - optional: good material that can go if length needs it.
 - excluded: what stays out and why (internal talk, background reasoning she did not present as her message, a second topic, job duties and side facts that would make it a biography, anything private). Her actual reason for a career change is never excluded as "biography": it is the heart of that story. A format agreed on the call for this video is never internal talk and never excluded.
@@ -431,7 +438,7 @@ function writerUser(ctx: WriterContext, brief: TopicBrief, passages: WriterPassa
 
 export function buildDraftPrompt(ctx: WriterContext, brief: TopicBrief, passages: WriterPassage[], chosen: { text: string; rehook: string } | null): StepPrompt {
   const u = writerUser(ctx, brief, passages, chosen);
-  return segmented(WRITER_SYSTEM, DRAFT_SCHEMA, [u.stable], [u.chosen, DRAFT_LENGTH_ASK]);
+  return segmented(WRITER_SYSTEM, DRAFT_SCHEMA, [u.stable], [u.chosen, draftLengthAsk(brief)]);
 }
 
 /** A fix round, the trim pass, or a person's revision: the same writer, the current version and the instruction (kept whole). */
@@ -452,20 +459,24 @@ export function buildReviseWriterPrompt(ctx: WriterContext, brief: TopicBrief, p
 
 /**
  * A fix round that starts again from the RUNNER-UP hook (Oct 22 2026, the
- * listening fix): the review failed the hook or the re-hook, so the round is a
- * fresh draft from the next hook and its re-hook, carrying the review's notes,
- * instead of a patch around a locked opening (the seniors draft kept "It
- * should." for two rounds and broke its story to fit it). Same system prompt
- * and schema as every draft.
+ * listening fix): the review failed the hook, so the round is a fresh draft
+ * from the next hook, carrying the review's notes. Same system prompt and
+ * schema as every draft. v2.4 (keep the good hook): the runner-up's HOOK
+ * only, never its re-hook (unreviewed, it carried new claims in during the
+ * retest), and `keep` names the parts that passed, kept word for word (code
+ * copies them back).
  */
-export function buildRedraftPrompt(ctx: WriterContext, brief: TopicBrief, passages: WriterPassage[], hook: { text: string; rehook: string }, previous: { versionNo: number; body: string }, instruction: string): StepPrompt {
-  const u = writerUser(ctx, brief, passages, hook);
+export function buildRedraftPrompt(ctx: WriterContext, brief: TopicBrief, passages: WriterPassage[], hook: { text: string }, previous: { versionNo: number; body: string }, instruction: string, opts: { keep?: string[] } = {}): StepPrompt {
+  const u = writerUser(ctx, brief, passages, null);
   return segmented(WRITER_SYSTEM, DRAFT_SCHEMA, [u.stable], [
-    u.chosen,
-    `THE PREVIOUS VERSION (v${previous.versionNo}), which failed the review on its hook or re-hook:\n${previous.body}`,
+    `THE CHOSEN HOOK (use it word for word): ${hook.text}`,
+    `THE PREVIOUS VERSION (v${previous.versionNo}), which failed the review on its hook:\n${previous.body}`,
     `THE INDEPENDENT REVIEW'S FIX INSTRUCTION:\n${instruction.trim()}`,
-    "REDRAFT RULES: this round starts again from THE CHOSEN HOOK above (the next-best hook, not the one that failed): use it word for word, build a new re-hook from its re-hook, and write the rest fresh from the brief so every beat follows from the new opening. Keep a line of the previous version only where it still fits. Fix everything else the review names. Return the whole script, the rationale for this version and any gaps.",
-    DRAFT_LENGTH_ASK,
+    [
+      "REDRAFT RULES: this round starts again from THE CHOSEN HOOK above (the next-best hook, not the one that failed): use it word for word, write a re-hook that adds a fact, a turn or a stake this hook does not have (from her sources only), and write the rest so every beat follows from the new opening. Keep a line of the previous version only where it still fits. Fix everything else the review names. Return the whole script, the rationale for this version and any gaps.",
+      ...(opts.keep?.length ? [`KEEP EXACTLY (these passed the review; copied back word for word after you answer; return them unchanged): ${opts.keep.join(", ")}.`] : []),
+    ].join("\n"),
+    draftLengthAsk(brief),
   ]);
 }
 
@@ -485,7 +496,7 @@ HOW TO JUDGE
 - substance: every must-keep POINT of the brief is present in meaning (a faithful plain version counts), and so is the insight; how she helps appears once, in the payoff or the close, never both. Missing one fails. When she told a story about this topic (her answer when the interviewer asked for an example, or the brief's proof when it is her story), a script that leaves it out fails, and a restated opinion in its place is not the proof. A script under ${WRITER_LENGTH.aim[0]} words passes only if nothing must-keep is missing and it is not dry or incomplete.
 - payoff: it answers the hook's question in one line the viewer could repeat, and lands why it matters to the viewer. A "My job" or credential line that does not answer the hook fails, and a fun fact about her (who her favorite clients are, a hobby, an award) is not a payoff.
 - claims: each factual line traces to something she said ANYWHERE in the full call, a passage (a passage from one of her earlier calls is hers too), a client fact, her written answers or her approved strategy; a faithful paraphrase is supported. The topic description, intended message, audience need, business goal, anything marked "our assumption" and a reader's summary at the top of a call do not count. A market statement she did not make fails.
-- close: at most two beats: first a line that calls back a concrete word or image from the hook, then, with a service angle, a warm invitation that names this video's specific next step in her voice. "Let's talk" as the whole invitation, an invitation that opens "Thinking about X?", a close with nothing from the hook, a slogan or an aphorism fails. A callback alone passes only for a story with no service angle.
+- close: at most two beats: first a line that calls back a concrete word or image from the hook (or from the re-hook), then, with a service angle, a warm invitation that names this video's specific next step in her voice. "Let's talk" as the whole invitation, an invitation that opens "Thinking about X?", a close with nothing from the hook, a slogan or an aphorism fails. A callback alone passes only for a story with no service angle.
 - her_voice: it sounds like her at her best on camera: her vocabulary and her strongest short phrases in tight, natural, polished spoken sentences. Her transcript sentences pasted in (rambling, filler, restarts) fail; so do industry terms spoken to homeowners ("buyer avatar", "comps", "CMA"), even when they are a phrase of hers, and opening by naming the audience ("Sellers, ...").
 - length: counted by code and given to you; judge only whether the words are well spent (that is check 12). Over ${WRITER_LENGTH.cap} words is must-fix; ${WRITER_LENGTH.aim[1] + 1} to ${WRITER_LENGTH.cap} is advice only.
 - A format agreed on the call (word association, two voices, a trend alert) is a creative decision the script follows; following it is never a fault.
@@ -493,9 +504,11 @@ HOW TO JUDGE
 
 CRAFT (check 13, the craft block): the checks above ask whether the script complies; the craft block asks whether it WORKS on a viewer. Score each part 1 to 5 with one line on the psychology behind it:
 ${CRAFT_PARTS.map((p) => `- ${p.key}: ${p.asks}.`).join("\n")}
-5 is a part the creative director would film as written; 4 he would keep; 3 or under he would send back. Any part under 4 is must-fix; a hook or re-hook under 4 sends the script back to a different hook. Reading smoothly, or repeating her words, is not craft. Score what is on the page, never what it could become.
+5 is a part the creative director would film as written; 4 he would keep; 3 works but could be stronger (a flag, not a reason to send it back); 2 or under he would send back. The craft check passes on a total of 19 or more with no part at 2 or under. Reading smoothly, or repeating her words, is not craft. Score what is on the page, never what it could become.
+TENSION is more than a cost said out loud. An implied stake (what the viewer stands to lose, left unsaid), a surprise (a turn the viewer did not see coming) and humor in a comedic format agreed on the call (a deadpan line that turns on its own words) all carry tension: score them as tension, not as its absence.
+A build-up is one beat in full spoken sentences (what happened, then what changed); a list after a colon or a run of fragments is weaker than the same beat told.
 
-fixInstruction: when any check fails or any craft part is under 4, one instruction to the writer saying exactly what to change, using only the sources (and, over the cap, what to cut). An empty string when everything passes. summary: one sentence on the script overall.
+fixInstruction: when any check fails or any craft part is 3 or under, one instruction to the writer saying exactly what to change, using only the sources (and, over the cap, what to cut). An empty string when everything passes. summary: one sentence on the script overall.
 
 ${WORDING_RULE}
 ${HOUSE_CRAFT_RULES}`;
@@ -529,7 +542,7 @@ export function buildReviewPrompt(ctx: WriterContext, brief: TopicBrief, passage
   ], [
     `SCRIPT TO REVIEW:\n${script.body}`,
     `THE WRITER SAYS THE CLOSE IS: ${script.closeType ?? "not stated"}`,
-    `COUNTED BY CODE: ${numbers.words} spoken words, about ${numbers.seconds} seconds; hook ${numbers.hookWords} words.${numbers.hard.length ? ` Hard checks that failed: ${numbers.hard.join(" ")}` : " Hard checks: no greeting, no dash, no duration, no unsupported figure, no transcript sentence pasted in, no hedge or echo in the re-hook, a close that calls back the hook."}`,
+    `COUNTED BY CODE: ${numbers.words} spoken words, about ${numbers.seconds} seconds; hook ${numbers.hookWords} words.${numbers.hard.length ? ` Hard checks that failed: ${numbers.hard.join(" ")}` : " Hard checks: no greeting, no dash, no duration, no unsupported figure, no transcript sentence pasted in, no hedge or echo in the re-hook, a close that calls back the hook or the re-hook, every part inside its budget, a build-up in full sentences."}`,
     "Review it: all twelve checks, and the craft block (the five parts scored 1 to 5, a psychology note each).",
   ]);
 }
