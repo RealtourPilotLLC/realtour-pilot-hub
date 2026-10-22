@@ -121,6 +121,8 @@ export const OPERATIONAL_CORE = [
   // Oct 19 2026: the client's open asks (special requests and scheduling)
   // Kyle confirms before a job goes out. Operational, like the reply tasks.
   "ClientAsk",
+  // Oct 21 2026: a shoot's second shooter (upload-page access only).
+  "ProjectCrew",
 ] as const;
 
 /** Schema models in neither list, and listed names the schema does not have. */
