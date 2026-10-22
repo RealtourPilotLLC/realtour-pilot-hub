@@ -439,6 +439,20 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
     await prisma.photoJob.update({ where: { id: jobId }, data: { slaDueAt: due } });
     await logJobEvent(jobId, "sync", `deadline moved to the latest visit's: ${due.toISOString()}${job.slaDueAt ? ` (was ${job.slaDueAt.toISOString()}, an earlier visit's)` : ""}`);
   }
+  // WAITING ON THE LATEST VISIT (Oct 22 2026, Jordan on 615 Cliff Ln: "it
+  // says delivered… we didn't even deliver the interior photos because only
+  // exteriors were shot at the first appointment"). On a split job whose
+  // latest visit has started, the earlier visit's delivered listing is not
+  // the job's delivery while that visit's photos are still on their way (no
+  // raws seen since the visit's day, or a batch not back from AutoHDR yet):
+  // the earlier photos are still read as rows below, but the job stays in
+  // Editing, says what it waits for, and nothing reads the listing's
+  // "delivered" as the job's (handled after the gallery is written).
+  let awaitingVisit = false;
+  if (split && floor && hubNew.length === 0 && listing && listing.entries.length > 0) {
+    const since = await prisma.photoIntakeBatch.findMany({ where: { projectId: job.projectId, seenAt: { gte: floor }, state: { not: "FAILED" } }, select: { state: true } });
+    awaitingVisit = since.length === 0 || since.some((b) => !["DONE", "LINKED"].includes(b.state));
+  }
   let newVisit = false;
   if (hubNew.length > 0 && listing && listing.entries.length > 0) {
     const uuids = hubNew.map((e) => e.autohdrImageUuid).filter((u): u is string => !!u);
@@ -611,8 +625,21 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
     const earlier = await prisma.photoAsset.count({ where: { jobId, sourceKind: "ARYEO" } });
     await setStage(jobId, ["DELIVERING", "DELIVERY_MISMATCH", "DELIVERED"], "EDITING", "sync", {
       why: `a new visit: ${hubNew.length} photo${hubNew.length === 1 ? "" : "s"} back from AutoHDR. The earlier visit's ${earlier} stay on the listing and join these once they are delivered`,
-      extra: { deliveryDiffJson: null, deliveryCheckNote: null },
+      extra: { deliveryDiffJson: null, deliveryCheckNote: null, deliveredAt: null, deliveredBy: null },
     });
+  }
+
+  if (awaitingVisit) {
+    const visitDay = visits.start ? visits.start.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "the latest visit";
+    const why = `split job: waiting for the photos from ${visitDay}; the listing's delivery is the earlier visit's`;
+    const cur = (await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true } }))?.stage ?? job.stage;
+    if (["DELIVERING", "DELIVERY_MISMATCH", "DELIVERED"].includes(cur)) {
+      await setStage(jobId, ["DELIVERING", "DELIVERY_MISMATCH", "DELIVERED"], "EDITING", "sync", { why, extra: { deliveryDiffJson: null, deliveryCheckNote: null, deliveredAt: null, deliveredBy: null } });
+    } else if (!(await prisma.photoJobEvent.count({ where: { jobId, action: why } }))) {
+      await logJobEvent(jobId, "sync", why);
+    }
+    await prisma.photoJob.update({ where: { id: jobId }, data: { nextCheckAt: new Date(now.getTime() + 15 * MIN) } });
+    return { changed, count: entries?.length ?? null, stage: "EDITING", source: "waiting-for-visit" };
   }
 
   // EDITING → EDITED once the gallery has landed and stopped changing.

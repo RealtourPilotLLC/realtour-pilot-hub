@@ -72,7 +72,9 @@ async function main() {
     // The listing as the hub first saw it: the earlier visit, delivered.
     await jobs.syncJobFinals(job.id, T("2026-10-21T20:18:30Z"));
     let j = await prisma.photoJob.findUniqueOrThrow({ where: { id: job.id } });
-    c.ok("before the new visit's photos: the earlier delivery verifies (23 on the listing)", j.stage === "DELIVERED" && (await prisma.photoAsset.count({ where: { jobId: job.id, sourceKind: "ARYEO", status: "ACTIVE" } })) === 23, j.stage);
+    c.ok("before the new visit's photos: NOT delivered, the job waits in Editing for them (the listing's delivery is the earlier visit's)", j.stage === "EDITING" && !j.deliveredAt, j.stage);
+    const wEv = await prisma.photoJobEvent.findFirst({ where: { jobId: job.id, action: { contains: "waiting for the photos from" } } });
+    c.ok("…and says what it waits for", !!wEv, wEv?.action);
     await prisma.photoJob.update({ where: { id: job.id }, data: { stage: "DELIVERY_MISMATCH" } }); // the floor-plan mismatch it really sat in
 
     // Batch 1: the old raws re-sent by mistake, stopped. Batch 2: the interiors, done.
