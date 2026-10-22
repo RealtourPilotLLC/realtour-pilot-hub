@@ -129,7 +129,8 @@ async function main() {
     const hrefs = (html: string) => [...html.matchAll(/<a\b[^>]*\shref="([^"]+)"/g)].map((m) => m[1]);
     const section = (html: string, id: string) => html.match(new RegExp(`<section[^>]*data-sidebar-group="${id}"[^>]*>([\\s\\S]*?)</section>`))?.[1] ?? "";
     const jamesMenu = menu({ name: "James Livingston", email: "james@cm.invalid", role: "CREATIVE_MANAGER" });
-    c.ok("six doors: Dashboard, Shoots, Videos, Editing Room, Content, Schedule", hrefs(section(jamesMenu, "work")).join() === "/,/jobs,/review,/editing,/content,/schedule", hrefs(section(jamesMenu, "work")).join());
+    // Oct 22 2026 (Jordan's approved role menus).
+    c.ok("his doors: Dashboard, Videos, Editing Room, Monthly Content, Uploads, Shoots, My Performance", hrefs(section(jamesMenu, "work")).join() === "/,/review,/editing,/content,/upload,/jobs,/my-pay", hrefs(section(jamesMenu, "work")).join());
     const all = hrefs(jamesMenu);
     c.ok("no client inbox, no Photo delivery, no Your list, no People, no Settings, no Finance, no Trends", !["/communications", "/ops/photo-delivery", "/ops/checklist", "/users", "/settings", "/sales", "/trends", "/day", "/connections", "/coaching", "/catalog"].some((h) => all.includes(h)), all.join(" "));
     c.ok("under More: Tasks, Clients, Client activity, My Shoots, Upload Portal, Team feedback, Training, Ask the Hub, Report a hub problem", ["/tasks", "/clients", "/content/activity", "/shoot", "/upload", "/quality", "/training", "/assistant", "/feedback"].every((h) => all.includes(h)), all.join(" "));
@@ -137,9 +138,9 @@ async function main() {
     c.ok("an override shows its door (the inbox) and hides one (Videos)", hrefs(menu({ name: "J", email: "j@x", role: "CREATIVE_MANAGER", permissions: JSON.stringify({ communications: true }) })).includes("/communications") && !hrefs(menu({ name: "J", email: "j@x", role: "CREATIVE_MANAGER", permissions: JSON.stringify({ review: false }) })).includes("/review"));
     c.ok("…an ops override still shows no Photos door (its pages admit the office only)", !hrefs(menu({ name: "J", email: "j@x", role: "CREATIVE_MANAGER", permissions: JSON.stringify({ ops: true }) })).some((h) => h.startsWith("/ops/")));
     const kyleMenu = menu({ name: "Kyle", email: "kyle@cm.invalid", role: "ADMIN" });
-    c.ok("Kyle's six doors are unchanged (Photos and Messages)", hrefs(section(kyleMenu, "work")).join() === "/,/jobs,/ops/photo-delivery,/review,/communications,/schedule");
+    c.ok("Kyle's doors are his own (Your list, Messages, Photos, Ready to send)", hrefs(section(kyleMenu, "work")).join() === "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs");
     c.ok("the role shows its label in the menu", jamesMenu.includes("Creative manager"));
-    c.ok("the creative menu is a list of its own, the office's untouched", nav.CREATIVE_MENU.map((d) => d.href).join() === "/,/jobs,/review,/editing,/content,/schedule" && nav.usesOfficeMenu("CREATIVE_MANAGER") && nav.OFFICE_MENU.map((d) => d.href).join() === "/,/jobs,/ops/photo-delivery,/review,/communications,/schedule");
+    c.ok("the creative menu is a list of its own, the office's its own", nav.CREATIVE_MENU.map((d) => d.href).join() === "/,/review,/editing,/content,/upload,/jobs,/my-pay" && nav.usesRoleMenu("CREATIVE_MANAGER") && nav.OFFICE_MENU.map((d) => d.href).join() === "/,/ops/checklist,/communications,/ops/photo-delivery,/review,/editing,/jobs");
 
     // =====================================================================
     c.head("§3 · the guards, on a live session");
@@ -260,7 +261,9 @@ async function main() {
       ["src/lib/behindAlert.ts", /kind === "video"[\s\S]{0,600}"CREATIVE_MANAGER"/],
       ["src/lib/fieldIssues.ts", /"OWNER", "ADMIN", "CREATIVE_MANAGER"/],
       ["src/lib/selfCheckStore.ts", /"OWNER", "ADMIN", "CREATIVE_MANAGER"\], href/],
-      ["src/lib/reviewCuts.ts", /roles: \["OWNER", "ADMIN", "CREATIVE_MANAGER"\],\s*ownerSms/],
+      // Oct 22 2026 (Jordan approved the alert routing): a cut in review with
+      // no seat rings the owner and the creative manager, not the office.
+      ["src/lib/reviewCuts.ts", /roles: \["OWNER", "CREATIVE_MANAGER"\],\s*ownerSms/],
       ["src/app/review/actions.ts", /"OWNER", "ADMIN", "CREATIVE_MANAGER"\], href: `\/review\/\$\{input\.projectId\}\?cut=/],
       ["src/app/api/portal/upload/route.ts", /kind: "portal_asset"[\s\S]{0,400}"CREATIVE_MANAGER"/],
     ];
@@ -293,7 +296,8 @@ async function main() {
     const jHtml = renderToStaticMarkup(expand(jDash) as Parameters<typeof renderToStaticMarkup>[0]);
     c.ok("they land on the dashboard (no redirect)", elements(jDash, "HealthStrip").length === 1);
     c.ok("no Kyle's day, no problems board, no week, no money", ["KylesDayCard", "KylesDaySection", "CaughtProblems", "OwnerWeekCard", "MoneyStat", "OwnerBusiness", "ShootIssuesCard"].every((n) => elements(jDash, n).length === 0) && !jHtml.includes("Kyle’s day") && !/\$\d/.test(jHtml));
-    c.ok("no Clients waiting tile; Shoots on time, Special requests and QC & review stay", !jHtml.includes("Clients waiting") && jHtml.includes("Shoots on time") && jHtml.includes("Special requests") && jHtml.includes("QC &amp; review"));
+    // Oct 22 2026: his review tile reads "Videos to review" and leads the strip.
+    c.ok("no Clients waiting tile; Videos to review first, then Shoots on time and Special requests", !jHtml.includes("Clients waiting") && jHtml.includes("Shoots on time") && jHtml.includes("Special requests") && jHtml.includes("Videos to review") && jHtml.indexOf("Videos to review") < jHtml.indexOf("Shoots on time"));
     c.ok("the monthly content card is theirs (Jordan's and the creative manager's)", jHtml.includes("data-content-actions") || elements(jDash, "ContentActionsCard").length === 1);
     const att = elements(jDash, "NeedsAttention")[0]?.attention as Dashboard["attention"] | undefined;
     c.ok("Needs attention keeps the creative lines only (no clients waiting, no sending, no owners to give)", !!att && att.items.every((i) => !/^(clients|send:|needs-owner|requests-no-job|old-ops|todos)/.test(i.key)) && !att.unavailable.includes("client messages"), JSON.stringify(att?.items.map((i) => i.key)));

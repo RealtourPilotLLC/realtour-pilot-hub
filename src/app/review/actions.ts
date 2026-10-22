@@ -179,18 +179,25 @@ function afterVerdict(work: () => Promise<void>): Promise<void> {
  */
 async function reviewSeatTargets(skip: (string | null | undefined)[], href: string): Promise<NotifyTarget[]> {
   const { reviewerChain } = await import("@/lib/reviewerAssignment");
-  const { ownerTeamMemberIds } = await import("@/lib/smsPrefs");
-  const [chain, owners] = await Promise.all([
+  const { ownerTeamMemberIds, officeTeamMemberIds } = await import("@/lib/smsPrefs");
+  const [chain, owners, office] = await Promise.all([
     reviewerChain().catch(() => null),
     ownerTeamMemberIds().catch(() => [] as string[]),
+    officeTeamMemberIds().catch(() => [] as string[]),
   ]);
   const people = new Map<string, "OWNER" | "ADMIN">();
   for (const id of owners) people.set(id, "OWNER");
   for (const m of chain?.members ?? []) if (!people.has(m.teamMemberId)) people.set(m.teamMemberId, m.isOwner ? "OWNER" : "ADMIN");
   for (const id of skip) if (id) people.delete(id);
+  // Oct 22 2026 (Jordan approved the alert routing): a verdict on a cut is the
+  // creative manager's and Jordan's news. The office (Kyle, a backup seat on
+  // the chain) is told only when a verdict gives it work: the relay row above
+  // for an outside editor's changes, and the ready-to-send ping once the file
+  // can go out (deliveryReadyNotify).
+  for (const id of office) if (!owners.includes(id)) people.delete(id);
   const targets: NotifyTarget[] = [...people].map(([id, role]) => ({ roles: [role], userKey: `tm:${id}`, href }));
-  // No seat named: the office and the creative manager (Oct 21 2026) keep the broadcast.
-  if (!chain?.configured) targets.push({ roles: ["ADMIN", "CREATIVE_MANAGER"], href });
+  // No seat named: the creative manager keeps the broadcast (Oct 22 2026: not the office).
+  if (!chain?.configured) targets.push({ roles: ["CREATIVE_MANAGER"], href });
   if (owners.length === 0) targets.push({ roles: ["OWNER"], href });
   return targets;
 }
@@ -1866,21 +1873,13 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
         repairedBy: "no sweep — the round is already on the edit card and the job's timeline, and the job sits in Revisions",
         run: async () => {
           const targets: NotifyTarget[] = [];
-          // The shooter hears this verdict too (Sep 18) — the cut they watched
-          // is going back round, and a capture note in the bundle may be theirs
-          // to answer. Their href is the Room, never /edit/<id>: that page
-          // redirects a photographer straight back to /shoot/<id>.
-          const { photographerNotifyTarget } = await import("@/lib/projectPhotographer");
-          const shooter = await photographerNotifyTarget(submission.projectId, {
-            href: `/review/${submission.projectId}?cut=${submissionId}`,
-            slackDm: `↩︎ Changes requested on the cut from your shoot at ${street}${authorName ? ` by ${authorName}` : ""} — ${open.length} note${s}.`,
-            skipMemberId: ruler?.teamMemberId ?? null,
-          }).catch(() => null);
-          if (shooter) targets.push(shooter);
-          const shooterId = shooter?.userKey?.startsWith("tm:") ? shooter.userKey.slice(3) : null;
+          // The shooter heard this verdict too from Sep 18. Oct 22 2026 (Jordan
+          // approved the alert routing): no longer; a photographer hears once,
+          // when the cut from their shoot is approved, and the notes stay on
+          // their Videos page.
           // Jordan and the review seats by person. The office has its own row
           // above when it has something to DO (relay it, or pick an editor).
-          targets.push(...(await reviewSeatTargets([ruler?.teamMemberId, shooterId, ...office.map((o) => o.id)], editHref)));
+          targets.push(...(await reviewSeatTargets([ruler?.teamMemberId, ...office.map((o) => o.id)], editHref)));
           if (targets.length === 0) return;
           await notifyInApp({
             kind: "review_changes",

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { ArrowRight, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -70,12 +71,15 @@ function Tile({ name, label, value, sub, tone, href }: { name: string; label: st
 
 /** The four numbers that say whether we are delivering on time, answering
  *  clients, handling special requests and keeping QC and reviews moving. */
-export function HealthStrip({ health, includeTest = false, doors = ALL_DOORS, creative = false }: {
+export function HealthStrip({ health, includeTest = false, doors = ALL_DOORS, creative = false, office = false }: {
   health: DashboardHealth;
   includeTest?: boolean;
   doors?: Doors;
   /** Oct 21 2026: the creative manager's strip has no Clients waiting tile (Kyle's inbox). */
   creative?: boolean;
+  /** Oct 22 2026 (Jordan's approved dashboards): the office reads Clients
+   *  waiting first, then photos and videos to send (the QC tile). */
+  office?: boolean;
 }) {
   const h = health;
   const href = (to: string) => (opens(to, doors) ? homeRecordHref(to, includeTest) : null);
@@ -84,11 +88,14 @@ export function HealthStrip({ health, includeTest = false, doors = ALL_DOORS, cr
   // to review, else photo sets in QC; "All clear" when nothing is. It used to
   // read "0 ready" over five cuts waiting on a verdict (audit A13). The line
   // under it names the rest and never repeats the big number.
-  const qcParts = !q ? [] : [
+  const qcAll = !q ? [] : [
     { key: "ready", n: q.readyToSend, big: (n: number) => `${n} ready`, line: (n: number) => `${plural(n, "video")} ready to send`, failed: "videos couldn't load" },
     { key: "review", n: q.toReview, big: (n: number) => `${n} to review`, line: (n: number) => `${plural(n, "cut")} to review`, failed: "cuts couldn't load" },
     { key: "photos", n: q.photosInQc, big: (n: number) => `${n} in QC`, line: (n: number) => `${plural(n, "photo set")} in QC`, failed: "photos couldn't load" },
   ];
+  // The creative manager's big number is the cuts waiting on a verdict (his
+  // work), not the videos ready to send (Kyle's) (Oct 22 2026).
+  const qcParts = creative ? [...qcAll.filter((x) => x.key === "review"), ...qcAll.filter((x) => x.key !== "review")] : qcAll;
   const lead = qcParts.find((x) => (x.n ?? 0) > 0) ?? null;
   // "All clear" only when every source was read: nothing found in a part that
   // could not be read is "couldn't load", never a reassuring all-clear.
@@ -97,7 +104,11 @@ export function HealthStrip({ health, includeTest = false, doors = ALL_DOORS, cr
     <section id="health" aria-label="How we're doing right now" data-health-strip className="scroll-mt-32 md:scroll-mt-28">
       <span id="behind" aria-hidden className="block scroll-mt-32 md:scroll-mt-28" />
       <div className={cn("grid grid-cols-2 gap-2.5 sm:gap-3", creative ? "lg:grid-cols-3" : "lg:grid-cols-4")}>
-        <Tile
+        {/* Each reader's first tile is their own work (Oct 22 2026): the
+            office's clients waiting, the creative manager's cuts to review;
+            the owner keeps the original order. */}
+        {order((creative ? ["qc", "on-time", "requests"] : office ? ["clients", "qc", "requests", "on-time"] : ["on-time", "clients", "requests", "qc"]), {
+        "on-time": <Tile key="on-time"
           // "Shoots" in the label (audit A23): the red line above counts videos
           // and photo jobs, this tile counts shoots.
           name="on-time" label="Shoots on time" href={href("/jobs?f=late")} tone={o?.tone ?? null}
@@ -107,9 +118,9 @@ export function HealthStrip({ health, includeTest = false, doors = ALL_DOORS, cr
             `${o.dueTomorrow} due tomorrow`,
             o.late > 0 && o.oldestLateDays != null ? `oldest ${plural(o.oldestLateDays, "day")}` : null,
           ].filter(Boolean).join(" · ") : null}
-        />
-        {!creative && (
-          <Tile
+        />,
+        clients: creative ? null : (
+          <Tile key="clients"
             name="clients" label="Clients waiting" href={href("/communications")} tone={m?.tone ?? null}
             value={m ? String(m.waiting) : null}
             sub={m ? (m.waiting === 0 ? "nobody waiting on a reply" : [
@@ -117,8 +128,8 @@ export function HealthStrip({ health, includeTest = false, doors = ALL_DOORS, cr
               m.text === 0 ? "all email" : m.email === 0 ? "all text" : `${m.email} email, ${m.text} text`,
             ].filter(Boolean).join(" · ")) : null}
           />
-        )}
-        <Tile
+        ),
+        requests: <Tile key="requests"
           name="requests" label="Special requests" href={href("/jobs?f=requests")} tone={r?.tone ?? null}
           value={r ? `${r.open} open` : null}
           sub={r ? [
@@ -127,18 +138,24 @@ export function HealthStrip({ health, includeTest = false, doors = ALL_DOORS, cr
             r.behind > 0 ? `${r.behind} past due` : null,
             r.notOnJob ? `${r.notOnJob} not on a job` : null,
           ].filter(Boolean).join(" · ") : null}
-        />
-        <Tile
-          name="qc" label="QC & review" href={href(q?.href ?? "/review")} tone={q?.tone ?? null}
+        />,
+        qc: <Tile key="qc"
+          name="qc" label={creative ? "Videos to review" : office ? "Photos & videos to send" : "QC & review"} href={href(q?.href ?? "/review")} tone={q?.tone ?? null}
           value={qcValue}
           sub={q ? [
             ...qcParts.filter((x) => x !== lead).map((x) => (x.n == null ? x.failed : x.n > 0 ? x.line(x.n) : null)),
             q.late > 0 ? `${q.late} late` : null,
           ].filter(Boolean).join(" · ") || (lead ? null : "nothing waiting on QC or review") : null}
-        />
+        />,
+        })}
       </div>
     </section>
   );
+}
+
+/** The tiles in a reader's order (missing keys and null tiles are skipped). */
+function order(keys: string[], tiles: Record<string, ReactNode>): ReactNode[] {
+  return keys.map((k) => tiles[k]).filter((t) => t != null);
 }
 
 // ---- shoots in progress ---------------------------------------------------------------

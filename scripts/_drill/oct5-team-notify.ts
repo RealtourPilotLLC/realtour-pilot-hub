@@ -267,9 +267,13 @@ async function main() {
     c.ok("the cut is James's", sub.reviewerTeamMemberId === james.id);
     c.ok("James gets ONE Slack DM — 'Waiting on you' — at once", dms(S.james, s0).length === 1 && /Waiting on you — 12 Owner St/.test(dms(S.james, s0)[0].text), dms(S.james, s0).map((m) => m.text).join(" | "));
     c.ok("…and no text (the seat default is Slack only)", (await pendingFor(james.id)).length === jamesSms0);
-    c.ok("Kyle (backup) still gets his FYI DM", dms(S.kyle, s0).length === 1 && /James reviews it first/.test(dms(S.kyle, s0)[0].text), dms(S.kyle, s0).map((m) => m.text).join(" | "));
+    // Oct 22 2026 (Jordan approved the alert routing): a new cut is James's and
+    // Jordan's news. Kyle (the office, backup seat) hears when a video is
+    // ready to send, or when a cut waits past the cover line, not every cut.
+    c.ok("Kyle (the office, backup seat) gets no FYI for a new cut", dms(S.kyle, s0).length === 0, dms(S.kyle, s0).map((m) => m.text).join(" | "));
     c.ok("Jordan (fallback) still gets his oversight DM", dms(S.jordan, s0).length === 1);
-    c.ok("Harrison (the shooter) hears it in the bell only — his switch is off", dms(S.harrison, s0).length === 0 && (await prisma.notification.count({ where: { userKey: `tm:${harrison.id}`, kind: "cut_ready" } })) === 1);
+    // Oct 22 2026: the shooter hears once, when the cut is approved.
+    c.ok("Harrison (the shooter) is not told about a cut in review (he hears it once approved)", dms(S.harrison, s0).length === 0 && (await prisma.notification.count({ where: { userKey: `tm:${harrison.id}`, kind: "cut_ready" } })) === 0);
   }
 
   // =========================================================================

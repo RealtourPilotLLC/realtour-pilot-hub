@@ -510,7 +510,10 @@ async function main() {
     const expectRows = [...boardRows].sort(opsHome.jobOrder).slice(0, opsHome.DASHBOARD_ROWS);
     c.ok("Shoots in progress: the board's first ten rows, late first (the monthly ones included in that order)", table.rows.map((r) => r.projectId).join() === expectRows.map((r) => r.projectId).join() && table.rows.slice(0, 3).every((r) => r.late) && table.total === board.counts.total, table.rows.map((r) => r.street).join(" | "));
     c.ok("…each row opens its job page; 'All shoots' opens /jobs; the rest are counted", expectRows.every((r) => dashHtml.includes(`href="/projects/${r.projectId}"`)) && dashHtml.includes('href="/jobs"') && dashHtml.includes(`${board.counts.total - opsHome.DASHBOARD_ROWS} more on the Shoots page`));
-    c.ok("…monthly rows sit under a 'Monthly content' divider, after the listing rows", ownerText.includes("Monthly content") && dashHtml.indexOf("Monthly content") > dashHtml.indexOf("2 Pine Rd") && dashHtml.indexOf("Monthly content") < dashHtml.indexOf("1033 Preserve Ln"));
+    // Oct 22 2026: the owner's Monthly content CARD now sits above Shoots in
+    // progress, so the divider is looked for inside that section only.
+    const inProgressHtml = dashHtml.slice(dashHtml.indexOf('aria-labelledby="in-progress-title"'));
+    c.ok("…monthly rows sit under a 'Monthly content' divider, after the listing rows", ownerText.includes("Monthly content") && inProgressHtml.indexOf("Monthly content") > inProgressHtml.indexOf("2 Pine Rd") && inProgressHtml.indexOf("Monthly content") < inProgressHtml.indexOf("1033 Preserve Ln"));
     c.ok("…with the photos chip, the video chip ('Changes · John') and the requests chip ('2 photo · no owner')", ["Changes · John", "In QC", "2 photo · no owner", "1 video", "Not ordered"].every((w) => dashHtml.includes(w)));
 
     // ---- needs attention now ----
@@ -560,7 +563,10 @@ async function main() {
     }
     const oorder = namesOf(ownerTree);
     const at = (n: string) => oorder.indexOf(n);
-    c.ok("order (no flagged banner since Oct 19: flags live on the shoot): the red line slot, the tiles, today's shoots and shoots in progress, needs attention, Kyle's day, shoot issues, then this week and money last", at("FlaggedBanner") === -1 && at("BehindLine") < at("HealthStrip") && at("HealthStrip") < at("ShootsInProgress") && at("ShootsInProgress") < at("NeedsAttention") && at("NeedsAttention") < at("KylesDayCard") && at("KylesDayCard") < at("ShootIssuesCard") && at("ShootIssuesCard") < at("OwnerWeekCard") && at("OwnerWeekCard") < at("MoneyStat"), oorder.filter((n) => ["FlaggedBanner", "BehindLine", "HealthStrip", "ShootsInProgress", "NeedsAttention", "KylesDayCard", "ShootIssuesCard", "OwnerWeekCard", "MoneyStat"].includes(n)).join(","));
+    // Oct 22 2026 (Jordan's approved dashboards): what needs him first, then
+    // shoot issues, then the shoots and Kyle's day; this week and the money
+    // strip last, with a one-line money summary above the tiles.
+    c.ok("owner order (Oct 22 2026): the red line, the money in one line, the tiles, needs attention, shoot issues, shoots in progress, Kyle's day, then this week and money last", at("FlaggedBanner") === -1 && at("BehindLine") < at("OwnerMoneyLine") && at("OwnerMoneyLine") < at("HealthStrip") && at("HealthStrip") < at("NeedsAttention") && at("NeedsAttention") < at("ShootIssuesCard") && at("ShootIssuesCard") < at("ShootsInProgress") && at("ShootsInProgress") < at("KylesDayCard") && at("KylesDayCard") < at("OwnerWeekCard") && at("OwnerWeekCard") < at("MoneyStat"), oorder.filter((n) => ["FlaggedBanner", "BehindLine", "OwnerMoneyLine", "HealthStrip", "ShootsInProgress", "NeedsAttention", "KylesDayCard", "ShootIssuesCard", "OwnerWeekCard", "MoneyStat"].includes(n)).join(","));
     c.ok("the old Home's duplicates are gone: no checklist, summary box, behind card, his list, needs wall, exceptions, stuck jobs", ["DailyChecklist", "SummaryBox", "BehindCard", "KylesDay", "QuickAdd", "NeedsToday", "ExceptionsCard", "StuckJobs", "NewClientCard", "ChecklistLinks"].every((n) => elements(ownerTree, n).length === 0) && elements(ownerTree, "PulseStrip").length <= 1);
     c.ok("the dashboard render writes nothing", dashBefore === JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } })) && await prisma.outboxMessage.count() === 0);
 
@@ -572,7 +578,11 @@ async function main() {
     const kHtml = renderToStaticMarkup(expand(kDash) as Parameters<typeof renderToStaticMarkup>[0]);
     const kHealth = elements(kDash, "HealthStrip")[0]?.health as Dashboard["health"];
     c.ok("Kyle's tiles are the same numbers as Jordan's (team-wide sources)", JSON.stringify(kHealth) === JSON.stringify(health), JSON.stringify(kHealth));
-    c.ok("Kyle sees the same shoots in progress", JSON.stringify((elements(kDash, "ShootsInProgress")[0]?.jobs as Dashboard["jobs"]).rows.map((r) => r.projectId)) === JSON.stringify(table.rows.map((r) => r.projectId)));
+    // Oct 22 2026: Kyle's dashboard leads with clients waiting, then photos and
+    // videos to send; Today's shoots and the Shoots door cover the shoots, so
+    // the Shoots in progress card is not on his.
+    const kNames = namesOf(kDash);
+    c.ok("Kyle's order (Oct 22 2026): Clients waiting is his first tile, then photos and videos to send; no Shoots in progress card", !kNames.includes("ShootsInProgress") && /data-health="clients"[\s\S]*data-health="qc"[\s\S]*data-health="requests"[\s\S]*data-health="on-time"/.test(kHtml), kNames.filter((n) => ["HealthStrip", "TodaysShoots", "NeedsAttention", "KylesDayCard", "ShootsInProgress"].includes(n)).join(","));
     const kAtt = elements(kDash, "NeedsAttention")[0]?.attention as Dashboard["attention"];
     const kItem = (key: string) => kAtt.items.find((i) => i.key.startsWith(key));
     c.ok("Needs attention speaks to Kyle: what he owns reads 'You'", kAtt.items.length <= opsHome.ATTENTION_MAX && kItem("clients")?.owner.startsWith("You · oldest") === true && kItem("send:")?.owner === "You · 1 client request" && kItem("needs-owner")?.owner.startsWith("You") === true, kAtt.items.map((i) => `${i.key}=${i.owner}`).join(" | "));
@@ -626,29 +636,35 @@ async function main() {
     c.ok("messagesBoard (the dashboard's clients waiting and the Messages screen): the clients waiting and the new leads", msgBoard.waiting.length === waitingNow.length && msgBoard.counts.open === msgBoard.waiting.length + msgBoard.leads.length && msgBoard.leads.some((l) => l.id === k7.id && l.behind) && msgBoard.leads.some((l) => l.id === leadToday.id) && msgBoard.leads.length === 2);
 
     // =====================================================================
-    c.head("§8 · the menu: six doors for the owner and the office, everything else under More");
+    c.head("§8 · the menu (Oct 22 2026, Jordan's approved role menus): each role's own doors, everything else under More");
     // =====================================================================
     const menu = (u: { name: string; email: string; role: string; permissions?: string | null }) => renderToStaticMarkup(createElement(Sidebar, { user: { name: u.name, email: u.email, role: u.role, permissions: u.permissions ?? null } }));
     const hrefs = (html: string) => [...html.matchAll(/<a\b[^>]*\shref="([^"]+)"/g)].map((m) => m[1]);
     const labels = (html: string) => [...html.matchAll(/<a\b[^>]*>[\s\S]*?<span class="flex-1">([^<]+)<\/span>/g)].map((m) => m[1]);
     const section = (html: string, id: string) => html.match(new RegExp(`<section[^>]*data-sidebar-group="${id}"[^>]*>([\\s\\S]*?)</section>`))?.[1] ?? "";
-    const DOORS = "/,/jobs,/ops/photo-delivery,/review,/communications,/schedule";
-    const DOOR_LABELS = "Dashboard,Shoots,Photos,Videos,Messages,Schedule";
-    for (const [who, u] of [["Jordan (owner)", { name: "Jordan", email: owner.email, role: "OWNER" }], ["Kyle (office)", { name: "Kyle Smith", email: kyle.email, role: "ADMIN" }], ["James (office)", { name: "James", email: james.email, role: "ADMIN" }]] as const) {
+    const ROLE_DOORS = [
+      ["Jordan (owner)", { name: "Jordan", email: owner.email, role: "OWNER" }, "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Videos,Editing Room,Monthly Content,Photos,Messages,Shoots", ["/tasks", "/clients", "/upload", "/settings", "/schedule", "/sales"]],
+      ["Kyle (office)", { name: "Kyle Smith", email: kyle.email, role: "ADMIN" }, "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs", "Dashboard,Your list,Messages,Photos,Ready to send,Editing Room,Shoots", ["/tasks", "/clients", "/content", "/upload", "/settings", "/schedule"]],
+      ["James (creative manager)", { name: "James", email: james.email, role: "CREATIVE_MANAGER" }, "/,/review,/editing,/content,/upload,/jobs,/my-pay", "Dashboard,Videos,Editing Room,Monthly Content,Uploads,Shoots,My Performance", ["/tasks", "/clients", "/shoot", "/schedule"]],
+    ] as const;
+    for (const [who, u, doors, doorLabels, more] of ROLE_DOORS) {
       const html = menu(u);
-      c.ok(`${who}: six doors in order, labelled Dashboard, Shoots, Photos, Videos, Messages, Schedule`, hrefs(section(html, "work")).join() === DOORS && labels(section(html, "work")).join() === DOOR_LABELS && !section(html, "work").includes("<details"), `${hrefs(section(html, "work")).join()} / ${labels(section(html, "work")).join()}`);
-      c.ok(`${who}: everything else folded under More, nothing removed (Tasks, Editing Room, Clients, Content Program…)`, section(html, "more").includes("<details") && ["/tasks", "/editing", "/clients", "/content", "/upload", "/settings"].every((h) => hrefs(section(html, "more")).includes(h)) && hrefs(html).length === new Set(hrefs(html)).size);
+      c.ok(`${who}: their doors in order, labelled ${doorLabels}`, hrefs(section(html, "work")).join() === doors && labels(section(html, "work")).join() === doorLabels && !section(html, "work").includes("<details"), `${hrefs(section(html, "work")).join()} / ${labels(section(html, "work")).join()}`);
+      c.ok(`${who}: everything else folded under More, nothing removed (${more.join(", ")})`, section(html, "more").includes("<details") && more.every((h) => hrefs(section(html, "more")).includes(h)) && hrefs(html).length === new Set(hrefs(html)).size, hrefs(section(html, "more")).join());
       c.ok(`${who}: the retired screens are no menu entry (/ops, /ops/messages, video delivery, requests, scheduling, old items)`, !["/ops", "/ops/messages", "/ops/video-delivery", "/ops/requests", "/ops/scheduling", "/ops/old"].some((h) => hrefs(html).includes(h)));
     }
     const ownerMenu = menu({ name: "Jordan", email: owner.email, role: "OWNER" });
     const kyleMenu = menu({ name: "Kyle Smith", email: kyle.email, role: "ADMIN" });
     const listsOf = (html: string) => html.match(/data-sidebar-subgroup="lists"[^>]*>([\s\S]*?)<\/div><\/div>/)?.[1] ?? "";
-    c.ok("Your list is the first door under More → Lists for the office (the owner's reads Daily checklist)", hrefs(listsOf(kyleMenu))[0] === "/ops/checklist" && labels(listsOf(kyleMenu))[0] === "Your list" && hrefs(listsOf(ownerMenu))[0] === "/ops/checklist" && labels(listsOf(ownerMenu))[0] === "Daily checklist", `${hrefs(listsOf(kyleMenu)).join()} / ${labels(listsOf(kyleMenu)).join()} / ${labels(listsOf(ownerMenu)).join()}`);
-    c.ok("money stays the owner's: Finance and Trends under the owner's More only; My Day too", ["/sales", "/trends", "/day"].every((h) => hrefs(section(ownerMenu, "more")).includes(h)) && !["/sales", "/trends", "/day"].some((h) => hrefs(kyleMenu).includes(h)));
+    const groupIds = (html: string) => [...section(html, "more").matchAll(/data-sidebar-subgroup="([^"]+)"/g)].map((m) => m[1]);
+    c.ok("Your list is a door of Kyle's own; the owner's checklist reads Daily checklist under More → Lists & schedule", hrefs(section(kyleMenu, "work"))[1] === "/ops/checklist" && hrefs(listsOf(ownerMenu))[0] === "/ops/checklist" && labels(listsOf(ownerMenu))[0] === "Daily checklist", `${labels(listsOf(ownerMenu)).join()}`);
+    c.ok("money stays the owner's and leads his More (Finance, Trends); My Day too", groupIds(ownerMenu)[0] === "money" && ["/sales", "/trends", "/day"].every((h) => hrefs(section(ownerMenu, "more")).includes(h)) && !["/sales", "/trends", "/day"].some((h) => hrefs(kyleMenu).includes(h)), groupIds(ownerMenu).join());
+    c.ok("Kyle's menu has no Style Guide or Communication coaching (still reachable by URL)", !hrefs(kyleMenu).includes("/resources/video-styles") && !hrefs(kyleMenu).includes("/coaching"));
     c.ok("reporting a hub issue stays one click away outside the fold", section(kyleMenu, "more").indexOf('href="/feedback"') > section(kyleMenu, "more").indexOf("</details>"));
     const editorMenu = menu({ name: "Kim", email: "kim@oct19.invalid", role: "EDITOR" });
     const photographerMenu = menu({ name: "Harrison", email: "harrison@oct19.invalid", role: "PHOTOGRAPHER" });
-    c.ok("editors and photographers keep their menus (groups, no dashboard, no six doors, 'Video Review Room' for the photographer)", [editorMenu, photographerMenu].every((html) => !html.includes('data-sidebar-group="work"') && !html.includes('data-sidebar-group="more"') && !hrefs(html).includes("/") && !hrefs(html).includes("/jobs")) && hrefs(editorMenu).includes("/editing") && hrefs(photographerMenu).includes("/shoot") && photographerMenu.includes("Video Review Room") && ![editorMenu, photographerMenu].some((html) => hrefs(html).includes("/ops/checklist")));
+    c.ok("editors keep their groups (no dashboard, no doors)", !editorMenu.includes('data-sidebar-group="work"') && !editorMenu.includes('data-sidebar-group="more"') && !hrefs(editorMenu).includes("/") && !hrefs(editorMenu).includes("/jobs") && hrefs(editorMenu).includes("/editing") && !hrefs(editorMenu).includes("/ops/checklist"));
+    c.ok("photographers get the field doors (My Shoots, Upload, My Videos, My Performance, Help) and no Editing Room, no office screens", hrefs(section(photographerMenu, "work")).join() === "/shoot,/upload,/review,/my-pay,/resources" && labels(section(photographerMenu, "work")).join() === "My Shoots,Upload,My Videos,My Performance,Help" && !hrefs(photographerMenu).includes("/editing") && !hrefs(photographerMenu).includes("/") && !hrefs(photographerMenu).includes("/jobs") && !hrefs(photographerMenu).includes("/ops/checklist"), `${hrefs(section(photographerMenu, "work")).join()} / ${labels(section(photographerMenu, "work")).join()}`);
     pathname = "/ops/checklist";
     // Oct 21 2026 (Jordan, audit A9): Your list has its own door under More → Lists.
     const onList = menu({ name: "Kyle Smith", email: kyle.email, role: "ADMIN" });
@@ -734,7 +750,10 @@ async function main() {
       await signIn(u);
       const html = ssr(await settle(await home({})));
       c.ok(`${who}'s dashboard: Monthly content ${who === "Kyle" ? "is not on it" : "is on it"} (Oct 20 2026: Jordan's and the creative manager's)`, who === "Kyle" ? !html.includes("data-content-actions") : html.includes("data-content-actions"));
-      c.ok(`${who}'s dashboard renders (tiles, shoots in progress, needs attention, the list card), no nested links, thumb-sized taps`, !html.startsWith("RENDER FAILED") && ["Shoots on time", "Clients waiting", "Special requests", "QC &amp; review", "Shoots in progress", "Needs attention now"].every((w) => html.includes(w)) && !nestedLink(html) && (html.match(/min-h-11/g) ?? []).length > 8, html.slice(0, 200));
+      // Oct 22 2026: the office's QC tile reads "Photos &amp; videos to send", and
+      // its dashboard has no Shoots in progress card.
+      const words = who === "Jordan" ? ["Shoots on time", "Clients waiting", "Special requests", "QC &amp; review", "Shoots in progress", "Needs attention now"] : ["Shoots on time", "Clients waiting", "Special requests", "Photos &amp; videos to send", "Needs attention now"];
+      c.ok(`${who}'s dashboard renders (tiles, needs attention, the list card; shoots in progress for the owner), no nested links, thumb-sized taps`, !html.startsWith("RENDER FAILED") && words.every((w) => html.includes(w)) && !nestedLink(html) && (html.match(/min-h-11/g) ?? []).length > (who === "Jordan" ? 8 : 5), `missing: ${words.filter((w) => !html.includes(w)).join(", ") || "none"} · nested ${nestedLink(html)} · taps ${(html.match(/min-h-11/g) ?? []).length}`);
       c.ok(`${who}'s dashboard: money only for the owner`, who === "Jordan" ? html.includes("Profit this month") && html.includes("This week") : !html.includes("Profit this month") && !html.includes("This week") && !/\$\d/.test(html));
     }
     await signIn(kyle);

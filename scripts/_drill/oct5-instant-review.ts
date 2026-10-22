@@ -294,12 +294,15 @@ async function main() {
     c.head("5 · the bells reach Jordan and the seats by person — never the one who pressed it");
     const byKey = (k: string) => b1.find((b) => b.userKey === k);
     c.ok("Jordan has his own row (his OWNER login could never see the ADMIN broadcast)", !!byKey(`tm:${jordan.id}`) && JSON.parse(byKey(`tm:${jordan.id}`)!.audience).includes("OWNER"));
-    c.ok("Kyle (backup seat) has his own row", !!byKey(`tm:${kyle.id}`));
+    // Oct 22 2026 (Jordan approved the alert routing): a verdict is the creative
+    // manager's and Jordan's news; Kyle (the office, backup seat) hears when the
+    // video is ready to send, not at approval.
+    c.ok("Kyle (the office, backup seat) has no row for the approval", !byKey(`tm:${kyle.id}`));
     c.ok("James pressed it — no row tells him about his own press", !byKey(`tm:${james.id}`));
     c.ok("the role-only ADMIN broadcast is gone (every seat is addressed by name)", !b1.some((b) => b.userKey === null));
     c.ok("Kim, who cut it, keeps her editor row", !!byKey("editor:kim"));
-    const kyleBell = byKey(`tm:${kyle.id}`)?.body ?? "";
-    c.ok("the seat's bell keeps its body: who approved it and the honest next step — no 'Ready to deliver.'", kyleBell.startsWith("Approved by James Livingston.") && /1080p pass running/.test(kyleBell) && !/Ready to deliver/.test(kyleBell), kyleBell);
+    const seatBell = byKey(`tm:${jordan.id}`)?.body ?? "";
+    c.ok("the seat's bell keeps its body: who approved it and the honest next step — no 'Ready to deliver.'", seatBell.startsWith("Approved by James Livingston.") && /1080p pass running/.test(seatBell) && !/Ready to deliver/.test(seatBell), seatBell);
     c.ok("no text was queued by any of it (bell rows only)", (await prisma.pendingSms.count()) === 0);
 
     // =========================================================================
@@ -392,8 +395,8 @@ async function main() {
     c.ok("…Kim's own bell row is written with the answer; the FYI bells wait for after()", afterQueue.length === 1 && JSON.stringify((await bells(`review-changes-${cut6}`)).map((b) => b.userKey)) === JSON.stringify(["editor:kim"]));
     await flush();
     const b6 = await bells(`review-changes-${cut6}`);
-    c.ok("after(): Kim's row, Jordan's and Kyle's — not James's own", !!b6.find((b) => b.userKey === "editor:kim") && !!b6.find((b) => b.userKey === `tm:${jordan.id}`) && !!b6.find((b) => b.userKey === `tm:${kyle.id}`) && !b6.find((b) => b.userKey === `tm:${james.id}`), JSON.stringify(b6.map((b) => b.userKey)));
-    c.ok("…the seats' rows name the sender", (b6.find((b) => b.userKey === `tm:${kyle.id}`)?.body ?? "").startsWith("James Livingston sent back 1 note"));
+    c.ok("after(): Kim's row and Jordan's — not James's own, not the office's (Oct 22 2026)", !!b6.find((b) => b.userKey === "editor:kim") && !!b6.find((b) => b.userKey === `tm:${jordan.id}`) && !b6.find((b) => b.userKey === `tm:${kyle.id}`) && !b6.find((b) => b.userKey === `tm:${james.id}`), JSON.stringify(b6.map((b) => b.userKey)));
+    c.ok("…the seat's row names the sender", (b6.find((b) => b.userKey === `tm:${jordan.id}`)?.body ?? "").startsWith("James Livingston sent back 1 note"));
 
     // An outside agency's round.
     const J7 = await mkJob("107 Agency Way");

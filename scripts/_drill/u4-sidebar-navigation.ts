@@ -29,7 +29,9 @@ const cases: [string, ShellUser | null][] = [
   ["photographer pay and upload revoked", user("PHOTOGRAPHER", { mypay: false, upload: false })],
   ["unknown role", user("UNKNOWN")],
 ];
-const hrefs = (html: string) => [...html.matchAll(/<a\b[^>]*\shref="([^"]+)"/g)].map((match) => match[1]).sort();
+// A door that opens a section of its page (Kyle's "Ready to send" →
+// /review#ready-to-send, Oct 22 2026) is still that destination.
+const hrefs = (html: string) => [...html.matchAll(/<a\b[^>]*\shref="([^"]+)"/g)].map((match) => match[1].replace(/#.*$/, "")).sort();
 const group = (html: string, id: string) => html.match(new RegExp(`<section[^>]*data-sidebar-group="${id}"[^>]*>([\\s\\S]*?)</section>`))?.[1] ?? "";
 let checked = 0;
 function check(label: string, condition: boolean) { assert.ok(condition, label); checked++; console.log(`PASS ${label}`); }
@@ -59,40 +61,51 @@ async function main() {
       // (merged into /communications) are no destinations any more. Oct 21
       // 2026: Your list (/ops/checklist, owner + office) under More → Lists.
       const ADDED = new Set(["/content/activity", "/ops/photo-delivery", "/jobs", "/day", "/ops/checklist"]);
-      check(`${name}: same authorized destinations as before grouping`, JSON.stringify(hrefs(before)) === JSON.stringify(hrefs(after).filter((h) => !ADDED.has(h))));
+      // Oct 22 2026 (Jordan's approved role menus): menu entries taken OFF a
+      // role (still reachable by URL, no permission changed): the Style Guide
+      // and Communication coaching for the office, the Editing Room for
+      // photographers.
+      const role = who?.role ?? null;
+      const REMOVED = new Set(role === "ADMIN" ? ["/resources/video-styles", "/coaching"] : role === "PHOTOGRAPHER" ? ["/editing"] : []);
+      check(`${name}: same authorized destinations as before grouping (less the entries the approved menus take off)`, JSON.stringify(hrefs(before).filter((h) => !REMOVED.has(h))) === JSON.stringify(hrefs(after).filter((h) => !ADDED.has(h))));
       check(`${name}: every destination still appears once`, hrefs(after).length === new Set(hrefs(after)).size);
     }
     const owner = render(Sidebar, user("OWNER"));
     const admin = render(Sidebar, user("ADMIN"));
     const editor = render(Sidebar, user("EDITOR"));
     const photographer = render(Sidebar, user("PHOTOGRAPHER"));
-    // Oct 19 2026 (night, Jordan): ONE dashboard and six doors for the owner
-    // and the office (ADMIN): Dashboard, Shoots, Photos, Videos, Messages,
-    // Schedule, and everything else folded under More. Editors and
-    // photographers keep their groups.
-    const DOORS = "/,/jobs,/ops/photo-delivery,/review,/communications,/schedule";
+    // Oct 22 2026 (Jordan: "The 4 menus and alerts are good"): each role its
+    // own doors, everything else folded under More; editors keep the groups.
+    const doorHrefs = (html: string) => [...group(html, "work").matchAll(/href="([^"]+)"/g)].map((m) => m[1]).join();
     const doorLabels = (html: string) => [...group(html, "work").matchAll(/<span class="flex-1">([^<]+)<\/span>/g)].map((m) => m[1]).join();
-    for (const [who, html] of [["owner", owner], ["ADMIN (Kyle, James)", admin], ["open development", render(Sidebar, null)]] as const) {
-      check(`${who}: six doors in order (Dashboard, Shoots, Photos, Videos, Messages, Schedule), then More`, [...html.matchAll(/data-sidebar-group="([^"]+)"/g)].map((match) => match[1]).join() === "work,more" && [...group(html, "work").matchAll(/href="([^"]+)"/g)].map((m) => m[1]).join() === DOORS && doorLabels(html) === "Dashboard,Shoots,Photos,Videos,Messages,Schedule" && !group(html, "work").includes("<details"));
+    const creative = render(Sidebar, user("CREATIVE_MANAGER"));
+    const MENUS: [string, string, string, string][] = [
+      ["owner", owner, "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Videos,Editing Room,Monthly Content,Photos,Messages,Shoots"],
+      ["open development", render(Sidebar, null), "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Videos,Editing Room,Monthly Content,Photos,Messages,Shoots"],
+      ["ADMIN (Kyle)", admin, "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs", "Dashboard,Your list,Messages,Photos,Ready to send,Editing Room,Shoots"],
+      ["CREATIVE_MANAGER (James)", creative, "/,/review,/editing,/content,/upload,/jobs,/my-pay", "Dashboard,Videos,Editing Room,Monthly Content,Uploads,Shoots,My Performance"],
+      ["PHOTOGRAPHER (Harrison)", photographer, "/shoot,/upload,/review,/my-pay,/resources", "My Shoots,Upload,My Videos,My Performance,Help"],
+    ];
+    for (const [who, html, hrefList, labelList] of MENUS) {
+      check(`${who}: own doors in order (${labelList}), then More`, [...html.matchAll(/data-sidebar-group="([^"]+)"/g)].map((match) => match[1]).join() === "work,more" && doorHrefs(html) === hrefList && doorLabels(html) === labelList && !group(html, "work").includes("<details"));
     }
-    check("ADMIN: More is folded and holds everything else the login can open (nothing removed)", group(admin, "more").includes("<details") && ["/tasks", "/editing", "/upload", "/content", "/content/activity", "/clients", "/users", "/quality", "/coaching", "/resources", "/training", "/assistant", "/settings"].every((h) => hrefs(group(admin, "more")).includes(h)));
-    check("owner: More holds the rest, money and My Day included", group(owner, "more").includes("<details") && ["/tasks", "/editing", "/clients", "/content", "/sales", "/trends", "/day", "/connections"].every((h) => hrefs(group(owner, "more")).includes(h)));
+    check("ADMIN: More is folded and holds everything else the login can open (nothing removed but Style Guide and coaching)", group(admin, "more").includes("<details") && ["/tasks", "/upload", "/content", "/content/activity", "/clients", "/users", "/quality", "/resources", "/training", "/assistant", "/settings", "/schedule"].every((h) => hrefs(group(admin, "more")).includes(h)) && !hrefs(admin).includes("/resources/video-styles") && !hrefs(admin).includes("/coaching"));
+    check("owner: More holds the rest, money first, My Day included", group(owner, "more").includes("<details") && ["/tasks", "/clients", "/sales", "/trends", "/day", "/connections", "/schedule"].every((h) => hrefs(group(owner, "more")).includes(h)) && [...group(owner, "more").matchAll(/data-sidebar-subgroup="([^"]+)"/g)].map((m) => m[1])[0] === "money");
     check("ADMIN: reporting a hub issue stays one click away outside the fold", group(admin, "more").indexOf('href="/feedback"') > group(admin, "more").indexOf("</details>"));
-    check("'Videos' for the owner and the office, 'Video Review Room' for the photographer; the retired screens are no menu entry for anyone", [owner, admin].every((html) => doorLabels(html).includes("Videos") && !html.includes("Video Review Room")) && photographer.includes("Video Review Room") && !/>Review Room</.test(photographer) && cases.every(([, who]) => !hrefs(render(Sidebar, who)).some((h) => ["/ops", "/ops/messages", "/ops/video-delivery", "/ops/requests", "/ops/scheduling", "/ops/old"].includes(h))));
-    check("office-only screens stay off creatives' menus (no dashboard, no Shoots, no Photos)", [editor, photographer].every((html) => !hrefs(html).some((h) => h.startsWith("/ops") || h === "/jobs" || h === "/")) && [editor, photographer].every((html) => !html.includes('data-sidebar-group="work"')));
-    check("editors and photographers keep their groups: Production stays directly visible", !group(editor, "production").includes("<details") && group(editor, "production").includes('href="/editing"') && !group(photographer, "production").includes("<details") && group(photographer, "production").includes('href="/shoot"'));
-    check("More starts collapsed for the owner and the office", [owner, admin].every((html) => group(html, "more").includes("<details") && !/<details[^>]*\sopen(?:[\s=>])/.test(group(html, "more"))));
-    // Oct 5 2026: Clients (Content Program + Clients) is open by default for the
-    // groups; the owner and the office find both under More since Oct 19.
-    check("Content Program and Clients are under More for the owner and the office", [owner, admin].every((html) => ["/content", "/clients"].every((h) => hrefs(group(html, "more")).includes(h))));
-    check("Client activity under More for the owner and the office, and nobody else", [owner, admin].every((html) => hrefs(group(html, "more")).includes("/content/activity")) && [editor, photographer].every((html) => !hrefs(html).includes("/content/activity")) && !hrefs(render(Sidebar, user("EDITOR", { content: true }))).includes("/content/activity"));
+    check("'Videos' everywhere for the review page (Kyle's door reads Ready to send, a photographer's My Videos); the retired screens are no menu entry for anyone", [owner, creative].every((html) => doorLabels(html).includes("Videos")) && !cases.some(([, who]) => render(Sidebar, who).includes("Video Review Room")) && cases.every(([, who]) => !hrefs(render(Sidebar, who)).some((h) => ["/ops", "/ops/messages", "/ops/video-delivery", "/ops/requests", "/ops/scheduling", "/ops/old"].includes(h))));
+    check("office-only screens stay off creatives' menus (no dashboard, no Shoots, no Photos)", [editor, photographer].every((html) => !hrefs(html).some((h) => h.startsWith("/ops") || h === "/jobs" || h === "/")) && !editor.includes('data-sidebar-group="work"'));
+    check("editors keep their groups: Production stays directly visible", !group(editor, "production").includes("<details") && group(editor, "production").includes('href="/editing"'));
+    check("photographers: no Editing Room door (their briefs open from the shoot)", !hrefs(photographer).includes("/editing"));
+    check("More starts collapsed for every role menu", [owner, admin, creative, photographer].every((html) => group(html, "more").includes("<details") && !/<details[^>]*\sopen(?:[\s=>])/.test(group(html, "more"))));
+    check("Monthly Content and Clients are under More for the office; Monthly Content is a door for the owner and the creative manager", ["/content", "/clients"].every((h) => hrefs(group(admin, "more")).includes(h)) && [owner, creative].every((html) => hrefs(group(html, "work")).includes("/content")));
+    check("Client activity under More for the owner, the office and the creative manager, and nobody else", [owner, admin, creative].every((html) => hrefs(group(html, "more")).includes("/content/activity")) && [editor, photographer].every((html) => !hrefs(html).includes("/content/activity")) && !hrefs(render(Sidebar, user("EDITOR", { content: true }))).includes("/content/activity"));
     check("disclosure summaries participate in the existing drawer focus selector", [...owner.matchAll(/<summary\b([^>]*)>/g)].every((match) => match[1].includes('tabindex="0"')));
     const both = renderToStaticMarkup(React.createElement(React.Fragment, null, React.createElement(Sidebar, { user: user("OWNER") }), React.createElement(Sidebar, { user: user("OWNER") })));
     const ids = [...both.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
     check("desktop and drawer instances have unique labelled group IDs", ids.length > 0 && ids.length === new Set(ids).size);
     check("issue report remains outside the collapsed More detail", group(owner, "more").indexOf('href="/feedback"') > group(owner, "more").indexOf("</details>") && owner.includes("Report a hub problem"));
     check("admin keeps operational destinations without default financial access", !hrefs(admin).includes("/sales") && !hrefs(admin).includes("/trends") && !hrefs(admin).includes("/my-pay") && !hrefs(admin).includes("/connections"));
-    check("photographer-specific exclusions and SOP label remain", !hrefs(photographer).includes("/resources/video-styles") && !hrefs(photographer).includes("/quality") && !hrefs(photographer).includes("/coaching") && photographer.includes("SOP Center") && hrefs(photographer).includes("/my-pay"));
+    check("photographer-specific exclusions remain; the SOP Center is their Help door", !hrefs(photographer).includes("/resources/video-styles") && !hrefs(photographer).includes("/quality") && !hrefs(photographer).includes("/coaching") && doorLabels(photographer).includes("Help") && hrefs(photographer).includes("/my-pay"));
     check("editor keeps appropriate reference and production doors", editor.includes("SOP Center") && hrefs(editor).includes("/resources/video-styles") && hrefs(editor).includes("/editing") && !hrefs(editor).includes("/upload"));
     check("Script Writing remains owner-only and configured-only", owner.includes("Script Writing") && !admin.includes("Script Writing") && !render(Sidebar, user("OWNER"), null).includes("Script Writing") && /href="https:\/\/scripts.example.invalid"[^>]*target="_blank"|target="_blank"[^>]*href="https:\/\/scripts.example.invalid"/.test(owner));
     check("theme, notices and sign-out footer stay present", owner.includes('action="/api/auth/logout"') && owner.includes('method="post"') && owner.includes('title="Sign out"') && owner.includes('title="Switch to light mode"') && owner.includes("Notifications"));
@@ -104,7 +117,9 @@ async function main() {
     const noWorkGrant = render(Sidebar, user("EDITOR", { editing: false }));
     check("revoked work access still leaves the first authorized drawer link visible", !group(noWorkGrant, "team").includes("<details") && !hrefs(noWorkGrant).includes("/editing"));
     pathname = "/content/client/month";
-    check("current client work opens More automatically (owner and office)", !group(render(Sidebar, user("OWNER")), "more").includes("<details") && !group(render(Sidebar, user("ADMIN")), "more").includes("<details"));
+    // Oct 22 2026: Monthly Content is the owner's own door now (lit, More
+    // stays folded); the office still finds it under More, which opens.
+    check("current client work lights the owner's Monthly Content door and opens the office's More", /<a[^>]*(?:aria-current="page"[^>]*href="\/content"|href="\/content"[^>]*aria-current="page")/.test(group(render(Sidebar, user("OWNER")), "work")) && !group(render(Sidebar, user("ADMIN")), "more").includes("<details"));
     pathname = "/jobs/123";
     check("a Shoots page lights the Shoots door", /<a[^>]*(?:aria-current="page"[^>]*href="\/jobs"|href="\/jobs"[^>]*aria-current="page")/.test(render(Sidebar, user("ADMIN"))));
     const destinations = [{ href: "/resources" }, { href: "/resources/video-styles" }, { href: "https://scripts.example.invalid", external: true }];

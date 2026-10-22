@@ -453,7 +453,9 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
         </Section>
 
         {/* ————— 2 · READY TO SEND ————— */}
+        {/* Kyle's "Ready to send" door lands here (Oct 22 2026, sidebarNavigation OFFICE_MENU). */}
         {board && (
+          <div id="ready-to-send" className="scroll-mt-24">
           <Section icon={Send} title="Ready to send" count={ready.length} flush action={deliveryDesk && sendAllIds.length >= 2 ? <SendAll submissionIds={sendAllIds} /> : undefined}>
             {ready.length ? (
               <ul className="divide-y divide-border">{ready.map((r) => <ReadyRow key={r.key} r={r} checks={checksFor.get(r.projectId) ?? null} sendDesk={deliveryDesk} />)}</ul>
@@ -492,6 +494,7 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
               </details>
             )}
           </Section>
+          </div>
         )}
 
         {/* ————— 3 · WITH THE EDITORS ————— */}

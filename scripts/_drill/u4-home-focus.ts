@@ -100,7 +100,7 @@ async function main() {
     failReviewRead = true;
     const failedQueueTree = await page({});
     failReviewRead = false;
-    c.ok("failed review read says so (never a reassuring zero) and keeps the rest of the dashboard", healthOf(failedQueueTree).qc?.toReview === null && attentionOf(failedQueueTree).unavailable.includes("the review queue") && !attentionOf(failedQueueTree).items.some((i) => i.key === "review-mine") && elements(failedQueueTree, "ShootsInProgress").length === 1);
+    c.ok("failed review read says so (never a reassuring zero) and keeps the rest of the dashboard", healthOf(failedQueueTree).qc?.toReview === null && attentionOf(failedQueueTree).unavailable.includes("the review queue") && !attentionOf(failedQueueTree).items.some((i) => i.key === "review-mine") && elements(failedQueueTree, "HealthStrip").length === 1 && elements(failedQueueTree, "NeedsAttention").length === 1);
     await signIn(kyle);
     const opsTree = await page({});
     c.ok("the backup reviewer (the office) gets the same dashboard, with the list one tap away", elements(opsTree, "HealthStrip").length === 1 && elements(opsTree, "KylesDayCard").length === 1 && elements(opsTree, "DailyChecklist").length === 0 && !textOf(opsTree).includes("Your creative review desk"));

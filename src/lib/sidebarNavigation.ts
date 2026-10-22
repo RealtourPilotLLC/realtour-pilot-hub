@@ -2,8 +2,8 @@
 const SIDEBAR_GROUPS = [
   // "/ops/checklist" is Your list (Oct 21 2026): first under More → Lists.
   { id: "daily", title: "Daily work", frequent: true, paths: ["/", "/ops/checklist", "/tasks", "/schedule", "/communications"] },
-  // Oct 19 2026: photo delivery and the Shoots board (owner and office). The
-  // office's own logins see these as doors of the six-door menu below.
+  // Oct 19 2026: photo delivery and the Shoots board (owner and office). Every
+  // role but editors reads these as doors of their role menu below.
   { id: "operations", title: "Operations", frequent: true, paths: ["/jobs", "/ops/photo-delivery", "/day"] },
   { id: "production", title: "Production", frequent: true, paths: ["/editing", "/review", "/upload", "/shoot"] },
   // Open by default (Oct 5 2026): the office is onboarding clients into the
@@ -38,62 +38,130 @@ export function groupSidebarDestinations<T extends Destination>(items: readonly 
 }
 
 // ---------------------------------------------------------------------------
-// THE OFFICE MENU (Jordan, Oct 19 2026, night: one dashboard, six doors). The
-// owner and every office login (ADMIN) get six doors, in this order and with
-// these labels, and everything else they can open folded under "More".
-// Nothing is removed: More holds every other authorized destination, in the
-// usual group order. Editors and photographers keep the groups above.
+// THE ROLE MENUS (Jordan, Oct 22 2026: "The 4 menus and alerts are good").
+// Each of the four people who live in the hub gets the doors of their own
+// day, in this order and with these labels, and everything else they can open
+// folded under "More" in plain groups. Built from what each person actually
+// opened in the 30 days before (People → Activity): Kyle never opened
+// Messages, Schedule, Shoots or his checklist from the old six doors while
+// the Editing Room (his most used page) sat under More; James's Upload Portal
+// and Jordan's Editing Room and Monthly Content were buried the same way.
+// Nothing is removed: a door is a label on a destination Sidebar already
+// authorized, never a permission. Editors keep the groups above.
+//
+// Oct 19 2026's six office doors (Dashboard, Shoots, Photos, Videos,
+// Messages, Schedule) were the first version of this; Schedule is now a tab
+// on Shoots (one door reaches both pages).
 // ---------------------------------------------------------------------------
 
-export const OFFICE_MENU = [
-  { href: "/", label: "Dashboard" },
-  { href: "/jobs", label: "Shoots" },
-  { href: "/ops/photo-delivery", label: "Photos" },
-  { href: "/review", label: "Videos" },
-  { href: "/communications", label: "Messages" },
-  { href: "/schedule", label: "Schedule" },
-] as const;
+/** One door: the destination it labels (`href`, what access and the active
+ *  state are read from) and, when the door opens a section of that page, the
+ *  link it actually follows (`link`). */
+export type MenuDoor = { href: string; label: string; link?: string };
 
-// THE CREATIVE MANAGER'S DOORS (Oct 21 2026). The office's shape without
-// the two office desks: Photos (photo delivery, Kyle's approval desk; the
-// creative manager reviews photos on each shoot's job page) and Messages (the
-// client inbox) give way to the Editing Room and the Content Program.
-export const CREATIVE_MENU = [
+/** Jordan: oversight first, money under More (Finance leads it). */
+export const OWNER_MENU: readonly MenuDoor[] = [
   { href: "/", label: "Dashboard" },
-  { href: "/jobs", label: "Shoots" },
   { href: "/review", label: "Videos" },
   { href: "/editing", label: "Editing Room" },
   { href: "/content", label: "Monthly Content" },
-  { href: "/schedule", label: "Schedule" },
+  { href: "/ops/photo-delivery", label: "Photos" },
+  { href: "/communications", label: "Messages" },
+  { href: "/jobs", label: "Shoots" },
+];
+
+/** Kyle (the office): his list, the client inbox, photo approvals, the videos
+ *  he sends (the Videos page opened at Ready to send), the Editing Room he
+ *  works in most, and Shoots. */
+export const OFFICE_MENU: readonly MenuDoor[] = [
+  { href: "/", label: "Dashboard" },
+  { href: "/ops/checklist", label: "Your list" },
+  { href: "/communications", label: "Messages" },
+  { href: "/ops/photo-delivery", label: "Photos" },
+  { href: "/review", label: "Ready to send", link: "/review#ready-to-send" },
+  { href: "/editing", label: "Editing Room" },
+  { href: "/jobs", label: "Shoots" },
+];
+
+/** James (the creative manager): the creative process end to end, his own
+ *  uploads (he still shoots) and his scorecard. No office desks, no money. */
+export const CREATIVE_MENU: readonly MenuDoor[] = [
+  { href: "/", label: "Dashboard" },
+  { href: "/review", label: "Videos" },
+  { href: "/editing", label: "Editing Room" },
+  { href: "/content", label: "Monthly Content" },
+  { href: "/upload", label: "Uploads" },
+  { href: "/jobs", label: "Shoots" },
+  { href: "/my-pay", label: "My Performance" },
+];
+
+/** Harrison and every photographer: the field day. The Editing Room is not a
+ *  door for them (a shoot's brief still opens from the shoot); Help is the
+ *  SOP Center, with Training, Ask the Hub and the problem report under More. */
+export const FIELD_MENU: readonly MenuDoor[] = [
+  { href: "/shoot", label: "My Shoots" },
+  { href: "/upload", label: "Upload" },
+  { href: "/review", label: "My Videos" },
+  { href: "/my-pay", label: "My Performance" },
+  { href: "/resources", label: "Help" },
+];
+
+/** The doors for a role; null = this role keeps the grouped menu (editors). */
+export function menuFor(role: string | null | undefined): readonly MenuDoor[] | null {
+  if (role == null || role === "OWNER") return OWNER_MENU;
+  if (role === "ADMIN") return OFFICE_MENU;
+  if (role === "CREATIVE_MANAGER") return CREATIVE_MENU;
+  if (role === "PHOTOGRAPHER") return FIELD_MENU;
+  return null;
+}
+
+/** Who gets a role menu (doors + More): everyone but editors (and unknown roles). */
+export const usesRoleMenu = (role: string | null | undefined) => menuFor(role) != null;
+/** @deprecated The Oct 19 name; every role menu, not only the office's. */
+export const usesOfficeMenu = usesRoleMenu;
+
+// MORE, IN PLAIN GROUPS (Oct 22 2026). The order puts each reader's next most
+// useful screens first: money leads for the owner (nobody else has it), then
+// lists and the schedule, the rest of the work, clients, the team, the
+// reader's own page, reference and help, then settings.
+const MORE_GROUPS = [
+  { id: "money", title: "Money", paths: ["/sales", "/trends"] },
+  { id: "lists", title: "Lists & schedule", paths: ["/ops/checklist", "/tasks", "/schedule", "/day"] },
+  { id: "work", title: "Work", paths: ["/", "/jobs", "/ops/photo-delivery", "/communications", "/review", "/editing", "/upload", "/shoot"] },
+  { id: "clients", title: "Clients", paths: ["/content", "/content/activity", "/clients"] },
+  { id: "team", title: "Team", paths: ["/users", "/quality", "/coaching", "/training"] },
+  { id: "me", title: "Me", paths: ["/my-pay"] },
+  { id: "reference", title: "Reference & help", paths: ["/resources/video-styles", "/resources", "/assistant"] },
+  { id: "administration", title: "Settings", paths: ["/settings", "/connections", "/feedback"] },
 ] as const;
 
-/** Who gets the six-door menu: the owner, the office (ADMIN), the creative
- *  manager (their own doors, CREATIVE_MENU) and open local dev. */
-export const usesOfficeMenu = (role: string | null | undefined) =>
-  role == null || role === "OWNER" || role === "ADMIN" || role === "CREATIVE_MANAGER";
-
-export function officeMenuDestinations<T extends Destination & { label: string }>(items: readonly T[], pathname: string, role?: string | null) {
+export function officeMenuDestinations<T extends Destination & { label: string; link?: string }>(items: readonly T[], pathname: string, role?: string | null) {
   const activeHref = activeSidebarHref(items, pathname);
   const primary: T[] = [];
-  const doors: readonly { href: string; label: string }[] = role === "CREATIVE_MANAGER" ? CREATIVE_MENU : OFFICE_MENU;
+  const doors = menuFor(role) ?? OWNER_MENU;
   for (const door of doors) {
     const item = items.find((i) => !i.external && i.href === door.href);
-    if (item) primary.push({ ...item, label: door.label as string });
+    if (item) primary.push({ ...item, label: door.label, ...(door.link ? { link: door.link } : {}) });
   }
   const isPrimary = (item: T) => primary.some((p) => p.href === item.href && !item.external);
-  // More keeps the usual groups (Jordan: "the menu should be organized still
-  // when you click more"): the same headings, in the same order, inside the fold.
-  // What is left of "Daily work" and "Operations" once the six doors are out
-  // (Your list, Tasks, My Day) reads as one "Lists" heading, first.
-  const grouped = groupSidebarDestinations(items.filter((item) => !isPrimary(item)), pathname);
-  const lists = grouped.filter((g) => g.id === "daily" || g.id === "operations").flatMap((g) => g.items);
-  const restGroups = [
-    ...(lists.length ? [{ id: "lists", title: "Lists", items: lists }] : []),
-    ...grouped.filter((g) => g.id !== "daily" && g.id !== "operations").map((group) => ({ id: group.id, title: group.title, items: group.items })),
-  ];
-  const rest = restGroups.flatMap((group) => group.items);
+  const rest = items.filter((item) => !isPrimary(item));
+  const groupOf = (item: Destination) => item.external ? "reference" : MORE_GROUPS.find((g) => g.paths.some((href) => href === item.href))?.id ?? "administration";
+  // More keeps its headings inside the fold (Jordan: "the menu should be
+  // organized still when you click more").
+  const restGroups = MORE_GROUPS.map((group) => ({
+    id: group.id,
+    title: group.title,
+    items: rest.filter((item) => groupOf(item) === group.id).sort((a, b) => {
+      const rank = (item: Destination) => {
+        const index = (group.paths as readonly string[]).findIndex((href) => href === item.href);
+        return index < 0 ? group.paths.length : index;
+      };
+      return rank(a) - rank(b);
+    }),
+  })).filter((group) => group.items.length > 0);
+  const ordered = restGroups.flatMap((group) => group.items);
   return [
     { id: "work", title: "Daily work", frequent: true, current: primary.some((item) => item.href === activeHref), activeHref, items: primary, subgroups: null },
-    { id: "more", title: "More", frequent: false, current: rest.some((item) => item.href === activeHref), activeHref, items: rest, subgroups: restGroups },
+    { id: "more", title: "More", frequent: false, current: ordered.some((item) => item.href === activeHref), activeHref, items: ordered, subgroups: restGroups },
   ].filter((group) => group.items.length > 0);
 }

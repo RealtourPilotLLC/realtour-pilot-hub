@@ -319,12 +319,18 @@ async function main() {
   await announce("sub-editor-1", false);
   console.log(`     Kyle DMs: ${dms("U-KYLE").length} · Jordan DMs: ${dms("U-JORDAN").length} · Harrison DMs: ${dms("U-HARRISON").length}`);
   if (dms("U-KYLE")[0]) console.log(`     Kyle's line: ${dms("U-KYLE")[0].text}`);
-  check("Kyle is Slacked", dms("U-KYLE").length === 1, `${dms("U-KYLE").length}`);
+  // Oct 22 2026 (Jordan approved the alert routing): a new cut is the creative
+  // manager's and Jordan's news, no longer the office's (Kyle hears a video
+  // when it is READY TO SEND), and a photographer hears once, at approval.
+  // The Sep 21 defect this drill pins (the broadcast leg silenced by the
+  // owner's own upload) is still asserted in section 2 through Jordan's
+  // logged skip: that row is written only when the bridge runs.
+  check("Kyle is NOT Slacked about a new cut (Oct 22 2026)", dms("U-KYLE").length === 0, `${dms("U-KYLE").length}`);
   check("…and the owner is too, on his own saved switch", dms("U-JORDAN").length === 1, `${dms("U-JORDAN").length}`);
   check("…and his text is queued, as it has been since Sep 11", (await texts(jordan.id)).length === 1);
-  check("the shooter hears about his own job", dms("U-HARRISON").length === 1, `${dms("U-HARRISON").length}`);
+  check("the shooter is not told about a cut in review (Oct 22 2026: he hears it once approved)", dms("U-HARRISON").length === 0, `${dms("U-HARRISON").length}`);
   check("…and is not texted — his default is the bell and Slack", (await texts(harrison.id)).length === 0);
-  check("Kyle's Slack leg is logged as sent", (await legs(kyle.id, "slack", "sent")) === 1);
+  check("…and Kyle has no Slack leg for it", (await legs(kyle.id, "slack", "sent")) === 0);
 
   // =========================================================================
   // 1b — THE DEFECT ITSELF, REPRODUCED
@@ -362,10 +368,8 @@ async function main() {
   await announce("sub-owner-1", true);
   console.log(`     Kyle DMs: ${dms("U-KYLE").length} · Jordan DMs: ${dms("U-JORDAN").length} · Harrison DMs: ${dms("U-HARRISON").length}`);
   if (dms("U-KYLE")[0]) console.log(`     Kyle's line: ${dms("U-KYLE")[0].text}`);
-  check("KYLE IS SLACKED — this is the line that never went", dms("U-KYLE").length === 1, `${dms("U-KYLE").length}`);
-  check("…and it is logged as sent", (await legs(kyle.id, "slack", "sent")) === kyleSlackBefore + 1);
-  check("…and it carries the Review Room link to the cut", (dms("U-KYLE")[0]?.text ?? "").includes(`/review/${job.id}?cut=sub-owner-1`));
-  check("the shooter still hears about his own job", dms("U-HARRISON").length === 1, `${dms("U-HARRISON").length}`);
+  check("Kyle is not Slacked about a new cut (Oct 22 2026), and nothing new is logged for him", dms("U-KYLE").length === 0 && (await legs(kyle.id, "slack", "sent")) === kyleSlackBefore, `${dms("U-KYLE").length}`);
+  check("the shooter is not told about a cut in review", dms("U-HARRISON").length === 0, `${dms("U-HARRISON").length}`);
 
   console.log("\n2a. AND THE SEP 11 CARVE-OUT SURVIVES INTACT");
   check(

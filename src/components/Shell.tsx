@@ -7,6 +7,7 @@ import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { Sidebar, type ShellUser } from "@/components/Sidebar";
+import { BottomTabBar } from "@/components/BottomTabBar";
 import { FeedbackWidget } from "@/components/feedback/FeedbackWidget";
 import { ViewAsBanner } from "@/components/ViewAsBanner";
 import { cn } from "@/lib/utils";
@@ -192,6 +193,10 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
 
         {user?.impersonating && <ViewAsBanner name={user.name} />}
         <main id="staff-main" tabIndex={-1} className="relative min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-x-none overscroll-y-contain scroll-thin">{children}</main>
+        {/* Phones only: the creative manager's and the photographers' four
+            doors plus Menu (Oct 22 2026). Under main in the column, never
+            over it, so no page loses its last row. */}
+        <BottomTabBar user={user} onMenu={() => setOpen(true)} menuOpen={open} />
       </div>
 
       {/* Always-on feedback launcher (Kyle → review board) */}

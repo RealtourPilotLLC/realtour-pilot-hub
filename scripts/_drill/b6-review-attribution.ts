@@ -525,7 +525,9 @@ async function main() {
       c.ok("James approves: name + login on the verdict", r2.decidedBy === "James Rivera" && r2.decidedByUserId === uJames.id);
       const tl2 = await prisma.activity.findFirst({ where: { projectId: J2.id, body: { startsWith: "Cut approved in review (round 2)" } } });
       c.ok("…the timeline line names him", tl2?.body === "Cut approved in review (round 2) by James Rivera." && tl2.authorId === james.id, tl2?.body);
-      const bell2 = await prisma.notification.findFirst({ where: { kind: "review_approved", dedupeKey: { startsWith: `review-approved-${c2b}` }, audience: { contains: "ADMIN" } } });
+      // Oct 22 2026: the office is no longer on a verdict's bell (Jordan approved
+      // the alert routing), so the owner's row is read.
+      const bell2 = await prisma.notification.findFirst({ where: { kind: "review_approved", dedupeKey: { startsWith: `review-approved-${c2b}` }, audience: { contains: "OWNER" } } });
       c.ok("…and so does the bell", bell2?.body?.startsWith("Approved by James Rivera.") === true, bell2?.body ?? "none");
       const ws = await room.getCutWorkspace(J2.id, c2b);
       const v1 = ws?.submissions.find((s) => s.id === c2)?.verdict;

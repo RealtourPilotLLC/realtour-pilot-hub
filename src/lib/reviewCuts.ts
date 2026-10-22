@@ -166,13 +166,11 @@ export async function announceCutInReview(input: {
     // an index of their own. Their own line, not the ownerSms one: that field
     // is read only for an OWNER+ADMIN broadcast, and a person-addressed row's
     // sentence is `slackDm` (notify.ts bridgePerson). Money never enters it.
-    const { photographerNotifyTarget } = await import("@/lib/projectPhotographer");
-    const shooter = await photographerNotifyTarget(input.projectId, {
-      href,
-      slackDm: `🎬 A cut from your shoot is in review — ${input.street} (v${input.round}). Watch it and leave notes: ${appBase()}${href}`,
-      // James shooting a job he also reviews hears it once, as its reviewer.
-      skipMemberId: reviewer?.teamMemberId ?? null,
-    }).catch(() => null);
+    // Oct 22 2026 (Jordan approved the alert routing): no longer. A
+    // photographer hears about a cut from their shoot once, when it is
+    // approved (review/actions.ts, review_approved); the cuts are still in
+    // their Videos page (My Videos) whenever they want to watch or comment.
+    // Harrison had 18 of these texts in two weeks and opened the page once.
     await notifyInApp({
       kind: input.kind,
       title: `${input.round > 1 ? `Version ${input.round}` : "Cut"} ready to review — ${input.street}${input.fileName ? ` · ${input.fileName}` : ""}`,
@@ -181,7 +179,9 @@ export async function announceCutInReview(input: {
       targets: [
         ...(assigned ?? [
           {
-            roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"],
+            // Oct 22 2026: the owner and the creative manager, not the office
+            // (Kyle hears a video when it is ready to send).
+            roles: ["OWNER", "CREATIVE_MANAGER"],
             ownerSms: `Video in review — ${input.street} (${editor}, v${input.round}). ${appBase()}${href}`,
             // …and the owner's own upload takes his name off the fan-out inside
             // the bridge, one person at a time, instead of taking the sentence
@@ -189,7 +189,6 @@ export async function announceCutInReview(input: {
             ...(input.ownerActed ? { ownerActed: true } : {}),
           },
         ]),
-        ...(shooter && !assigned?.some((t) => t.userKey === shooter.userKey) ? [shooter] : []),
       ],
       dedupeKey: `cut-in-review-${input.submissionId}${input.dedupeSuffix ? `-${input.dedupeSuffix}` : ""}`,
     });

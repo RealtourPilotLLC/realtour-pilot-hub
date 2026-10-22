@@ -2,6 +2,8 @@ import Link from "next/link";
 import { requirePageAccess } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { PageHeader } from "@/components/PageHeader";
+import { ShootsScheduleTabs } from "@/components/jobs/ShootsScheduleTabs";
+import { canAccess } from "@/lib/auth/access";
 import { ShootsList } from "@/components/jobs/ShootsList";
 import { ProgramVideoWatch, type WatchViewRow } from "@/components/tracker/ProgramVideoWatch";
 import { SHOOT_FILTERS, filterShootRows, shootsBoard, type ShootFilter } from "@/lib/jobsBoard";
@@ -109,6 +111,7 @@ export default async function ShootsPage({ searchParams }: { searchParams: Promi
           </Link>
         }
       />
+      <ShootsScheduleTabs current="shoots" includeTest={includeTest} show={!me || canAccess(me, "schedule")} />
       <div className="mx-auto max-w-6xl space-y-4 p-4 pb-16 sm:p-6">
         <nav aria-label="Filter shoots" className="flex flex-wrap gap-2">
           {SHOOT_FILTERS.map((x) => {

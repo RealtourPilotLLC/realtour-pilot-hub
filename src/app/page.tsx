@@ -156,6 +156,22 @@ async function OwnerBusiness({ ownerP, topArP, includeTest }: { ownerP: Promise<
   );
 }
 
+// THE MONEY IN ONE LINE (Oct 22 2026, Jordan's approved dashboard): near the
+// top, so the owner sees where the business stands without scrolling past the
+// work; the full strip (and its two clocks) stays at the bottom.
+async function OwnerMoneyLine({ ownerP }: { ownerP: Promise<OwnerReads> }) {
+  const { money } = await ownerP;
+  if (!money) return null;
+  return (
+    <Link href="/sales" data-owner-money-line className="flex min-h-11 flex-wrap items-center gap-x-5 gap-y-1 rounded-xl border border-border bg-surface px-4 py-2 text-sm hover:bg-surface-2/60">
+      <span><span className="text-muted">Profit this month</span> <b className={cn("tabular-nums", money.profitMonth >= 0 ? "text-success" : "text-danger")}>{usd0(money.profitMonth)}</b></span>
+      <span><span className="text-muted">In the bank</span> <b className="tabular-nums">{money.bankBalance == null ? "—" : usd0(money.bankBalance)}</b></span>
+      <span><span className="text-muted">Owed to you</span> <b className="tabular-nums">{usd0(money.owedToYou)}</b></span>
+      <ArrowRight aria-hidden className="ml-auto size-4 text-muted-2" />
+    </Link>
+  );
+}
+
 // MONTHLY CONTENT, WHAT NEEDS YOU (Oct 20 2026): Jordan's and the creative manager's.
 async function ContentActionsSection({ contentP }: { contentP: Promise<ContentActions | null> }) {
   return <ContentActionsCard data={await contentP} />;
@@ -277,6 +293,15 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const firstName = me?.name?.split(" ")[0] ?? (isOwner ? "Jordan" : "there");
   // A per-user override can close a screen to this reader: its tile and actions show without the link.
   const doors = { review: !me || canAccess(me, "review"), ops: !me || canAccess(me, "ops"), communications: !me || canAccess(me, "communications"), pipeline: !me || canAccess(me, "pipeline"), tasks: !me || canAccess(me, "tasks") };
+  // Kyle and any other office login (Oct 22 2026): their own dashboard order.
+  const officeHome = !isOwner && !creativeHome;
+  // Today's shoots: the day's hard commitments in full (access, door code,
+  // weather, airspace, the last thing the client said).
+  const todays = (
+    <Suspense fallback={<SectionLoading label="Reading today’s shoots…" />}>
+      <TodaysShoots includeTest={includeTest} id="shoots" />
+    </Suspense>
+  );
   const testToggle = <Link href={includeTest ? "/" : "/?test=1"} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">{includeTest ? "Hide test records" : "Show test records"}</Link>;
 
   return (
@@ -302,25 +327,30 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
             top of the screen. Only flagged issues should show up on the shoot
             itself."): a shoot's flags show on its own page. */}
         <BehindLine state={behind} href={homeRecordHref("/jobs?f=late", includeTest)} />
-        <HealthStrip health={dash.health} includeTest={includeTest} doors={doors} creative={creativeHome} />
+        {/* The owner's money in one line near the top (Oct 22 2026); the full
+            strip stays last, below the work. */}
+        {ownerP && (
+          <Suspense fallback={null}>
+            <OwnerMoneyLine ownerP={ownerP} />
+          </Suspense>
+        )}
+        <HealthStrip health={dash.health} includeTest={includeTest} doors={doors} creative={creativeHome} office={officeHome} />
 
+        {/* EACH READER'S ORDER (Jordan, Oct 22 2026: "The 4 menus and alerts
+            are good", the dashboards with them). Same cards, each person's
+            own work first:
+              · Jordan: what needs him, monthly content, shoot issues; then
+                today's shoots, shoots in progress and Kyle's day; money last.
+              · Kyle: today's shoots; then what needs him and his list, and
+                the problems board. No Shoots in progress (Today's shoots and
+                the Shoots door cover it).
+              · James: what needs him (cuts to review, late videos) and the
+                monthly content; then today's shoots and the shoots in
+                progress (raws missing shows there). */}
         <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)]">
           <div className="min-w-0 space-y-4">
-            {/* Today's shoots: the day's hard commitments in full (access,
-                door code, weather, airspace, the last thing the client said). */}
-            <Suspense fallback={<SectionLoading label="Reading today’s shoots…" />}>
-              <TodaysShoots includeTest={includeTest} id="shoots" />
-            </Suspense>
-            <ShootsInProgress jobs={dash.jobs} includeTest={includeTest} doors={doors} />
-          </div>
-          <div className="min-w-0 space-y-4">
-            <NeedsAttention attention={dash.attention} includeTest={includeTest} doors={doors} />
-            {dayP && (
-              <Suspense fallback={<SectionLoading label={`Reading ${ops.name}’s day…`} />}>
-                <KylesDaySection dayP={dayP} includeTest={includeTest} doors={doors} />
-              </Suspense>
-            )}
-            {contentP && (
+            {officeHome ? todays : <NeedsAttention attention={dash.attention} includeTest={includeTest} doors={doors} />}
+            {!officeHome && contentP && (
               <Suspense fallback={<SectionLoading label="Reading the monthly content…" />}>
                 <ContentActionsSection contentP={contentP} />
               </Suspense>
@@ -328,6 +358,21 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
             {issuesP && (
               <Suspense fallback={<SectionLoading label="Reading shoot issues…" />}>
                 <OwnerShootIssues issuesP={issuesP} />
+              </Suspense>
+            )}
+          </div>
+          <div className="min-w-0 space-y-4">
+            {officeHome && <NeedsAttention attention={dash.attention} includeTest={includeTest} doors={doors} />}
+            {!officeHome && todays}
+            {!officeHome && <ShootsInProgress jobs={dash.jobs} includeTest={includeTest} doors={doors} />}
+            {dayP && (
+              <Suspense fallback={<SectionLoading label={`Reading ${ops.name}’s day…`} />}>
+                <KylesDaySection dayP={dayP} includeTest={includeTest} doors={doors} />
+              </Suspense>
+            )}
+            {officeHome && contentP && (
+              <Suspense fallback={<SectionLoading label="Reading the monthly content…" />}>
+                <ContentActionsSection contentP={contentP} />
               </Suspense>
             )}
             {caughtP && (

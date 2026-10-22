@@ -579,8 +579,14 @@ export async function reviewAnnounceTargets(input: {
     ...(input.ownerActed ? { ownerActed: true } : {}),
   });
   const seat = new Map(chain.members.map((m) => [m.teamMemberId, m]));
-  const fyi = [...new Set([...chain.members.map((m) => m.teamMemberId), ...office])].filter(
-    (id) => id !== input.reviewer!.teamMemberId && !owners.includes(id),
+  // Oct 22 2026 (Jordan approved the alert routing): a cut waiting on review
+  // is the creative manager's and Jordan's news, not the office's. Kyle hears
+  // about a video when it is READY TO SEND (deliveryReadyNotify, topaz_ready),
+  // and as the backup seat only when a cut has waited past the cover line
+  // (review_cover_offer); his FYI copy of every new cut is gone. When he IS
+  // the cut's reviewer (James away), the reviewer row above still reaches him.
+  const fyi = [...new Set(chain.members.map((m) => m.teamMemberId))].filter(
+    (id) => id !== input.reviewer!.teamMemberId && !owners.includes(id) && !office.includes(id),
   );
   // Kyle's copy says his part in it (Jordan: "Kyle should just know his role
   // and get notified as well as James"); an away seat's copy says who has it.

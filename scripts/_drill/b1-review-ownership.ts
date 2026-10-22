@@ -293,8 +293,11 @@ async function main() {
   await announce(J1, cut1);
   const r1 = await rowsFor(cut1);
   c.ok("no chain → no reviewer and no event", (await sub(cut1)).reviewerTeamMemberId === null && (await events(cut1)).length === 0);
-  c.ok("…the same office broadcast + the shooter's row", r1.length === 2 && r1.filter((r) => !r.userKey && r.audience.includes("ADMIN")).length === 1 && r1.some((r) => r.userKey === `tm:${harrison.id}`), JSON.stringify(r1));
-  c.ok("…Kyle still Slacked, Jordan Slacked and texted", dmsTo(kyle).length === 1 && dmsTo(jordan).length === 1 && (await smsFor(jordan)) === jordanSms1 + 1, `kyle ${dmsTo(kyle).length} jordan ${dmsTo(jordan).length}`);
+  // Oct 22 2026 (Jordan approved the alert routing): a new cut rings Jordan and
+  // the creative manager, never the office (Kyle hears a video when it is ready
+  // to send) and never the photographer (they hear once, when it is approved).
+  c.ok("…one broadcast to the owner and the creative manager, no office audience, no shooter row", r1.length === 1 && r1.filter((r) => !r.userKey && r.audience.includes("OWNER") && r.audience.includes("CREATIVE_MANAGER") && !r.audience.includes("ADMIN")).length === 1 && !r1.some((r) => r.userKey === `tm:${harrison.id}`), JSON.stringify(r1));
+  c.ok("…Kyle not Slacked; Jordan still reached on his own switches", dmsTo(kyle).length === 0 && dmsTo(jordan).length === 1 && (await smsFor(jordan)) === jordanSms1 + 1, `kyle ${dmsTo(kyle).length} jordan ${dmsTo(jordan).length}`);
 
   // =========================================================================
   c.head("2 · JAMES → KYLE → JORDAN: one reviewer per cut, assigned as it enters review");
@@ -326,11 +329,11 @@ async function main() {
   const r2 = await rowsFor(cut2);
   c.ok("James gets his OWN person row (not only an ADMIN bell)", r2.filter((r) => r.userKey === `tm:${james.id}`).length === 1, JSON.stringify(r2));
   c.ok("Jordan gets ONE oversight row (OWNER only, not assigned work)", r2.filter((r) => !r.userKey && r.audience === JSON.stringify(["OWNER"])).length === 1);
-  c.ok("Kyle gets ONE FYI person row", r2.filter((r) => r.userKey === `tm:${kyle.id}`).length === 1);
+  c.ok("Kyle (the office, backup seat) gets no FYI row for a new cut", r2.filter((r) => r.userKey === `tm:${kyle.id}`).length === 0);
   c.ok("the ADMIN role broadcast is gone — no second bell for the assignee", !r2.some((r) => !r.userKey && r.audience.includes("ADMIN")));
-  c.ok("the shooter still hears it", r2.some((r) => r.userKey === `tm:${harrison.id}`));
+  c.ok("the shooter is not told about a cut in review", !r2.some((r) => r.userKey === `tm:${harrison.id}`));
   // Jordan, Sep 25: all three are told; Kyle's copy names his part in it.
-  c.ok("Kyle's Slack DM is kept, and says James is first and Kyle may rule", dmsTo(kyle).length === 1 && /James reviews it first/.test(dmsTo(kyle)[0].text) && /approve it or send it back yourself/.test(dmsTo(kyle)[0].text), dmsTo(kyle)[0]?.text ?? "none");
+  c.ok("Kyle gets no Slack DM for a new cut", dmsTo(kyle).length === 0, dmsTo(kyle)[0]?.text ?? "none");
   c.ok("Jordan's oversight DM says James is first and he may approve any time, and his text is queued as before", dmsTo(jordan).length === 1 && /James reviews it first/.test(dmsTo(jordan)[0].text) && /approve it any time/.test(dmsTo(jordan)[0].text) && (await smsFor(jordan)) === jordanSmsBefore + 1, dmsTo(jordan)[0]?.text ?? "none");
   // Oct 5 2026: was "bell only — no DM, no text" (the seat default above).
   c.ok("James: ONE Slack DM saying it is waiting on him — and no text", dmsTo(james).length === 1 && /Waiting on you — 12 Owner St/.test(dmsTo(james)[0].text) && (await smsFor(james)) === 0, dmsTo(james).map((m) => m.text).join(" | ") || "none");
@@ -350,7 +353,7 @@ async function main() {
   const cut3 = await mkCut(J2);
   await Promise.all([announce(J2, cut3), announce(J2, cut3), ra.ensureCutReviewer(cut3)]);
   c.ok("a three-way race on entry writes ONE event", (await events(cut3)).length === 1 && (await sub(cut3)).reviewerTeamMemberId === james.id, String((await events(cut3)).length));
-  c.ok("…and one set of rows (4: James, Jordan, Kyle, shooter)", (await rowsFor(cut3)).length === 4, String((await rowsFor(cut3)).length));
+  c.ok("…and one set of rows (2: James, Jordan)", (await rowsFor(cut3)).length === 2, String((await rowsFor(cut3)).length));
   c.ok("a notification never moved the cut: still PENDING, still James's", (await sub(cut2)).status === "PENDING" && (await sub(cut2)).reviewerTeamMemberId === james.id);
   const Jshot = await mkJob("13 Shot By James", james.id);
   const cutShot = await mkCut(Jshot);
@@ -485,7 +488,7 @@ async function main() {
   const cut11 = await mkCut(J4);
   await announce(J4, cut11);
   const r11 = await rowsFor(cut11);
-  c.ok("all three away → nobody holds it and the office is rung the old way", (await sub(cut11)).reviewerTeamMemberId === null && r11.some((r) => !r.userKey && r.audience.includes("ADMIN")));
+  c.ok("all three away → nobody holds it and the broadcast rings the owner and the creative manager", (await sub(cut11)).reviewerTeamMemberId === null && r11.some((r) => !r.userKey && r.audience.includes("OWNER") && r.audience.includes("CREATIVE_MANAGER")));
   await actions.setCutReviewerAway(jordan.id, null);
   await actions.setCutReviewerAway(kyle.id, null);
   await actions.setCutReviewerAway(james.id, null);

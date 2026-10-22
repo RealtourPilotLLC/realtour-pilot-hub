@@ -1,9 +1,10 @@
 import { requirePageAccess } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
-import { isCreativeLead } from "@/lib/auth/access";
+import { canAccess, isCreativeLead } from "@/lib/auth/access";
 import Link from "next/link";
 import { CalendarDays, MapPin as MapPinIcon, Camera } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
+import { ShootsScheduleTabs } from "@/components/jobs/ShootsScheduleTabs";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
@@ -26,7 +27,7 @@ const WINDOW_DAYS = 60;
 const MAP_LOOKBACK_DAYS = 7;
 
 // ---- List view: appointments grouped by ET day, today onward -----------------
-async function ListView({ excludeClientIds, includeTest, office }: { excludeClientIds: string[]; includeTest: boolean; office: boolean }) {
+async function ListView({ excludeClientIds, includeTest, office, tabs }: { excludeClientIds: string[]; includeTest: boolean; office: boolean; tabs: boolean }) {
   const startToday = etDayStartUtc(new Date());
   const windowEnd = etDayStartUtc(etAddDays(new Date(), WINDOW_DAYS));
 
@@ -62,6 +63,7 @@ async function ListView({ excludeClientIds, includeTest, office }: { excludeClie
         subtitle={`${appts.length} upcoming shoot${appts.length === 1 ? "" : "s"} · next ${WINDOW_DAYS} days · ${includeTest ? "real and test records" : "test records hidden"}`}
         actions={<ScheduleViewToggle view="list" includeTest={includeTest} />}
       />
+      <ShootsScheduleTabs current="schedule" includeTest={includeTest} show={tabs} />
       <div className="space-y-6 p-4 sm:p-6">
         {appts.length === 0 && <p className="text-sm text-muted">No shoots scheduled in the next {WINDOW_DAYS} days.</p>}
         {[...groups.entries()].map(([day, items]) => (
@@ -126,7 +128,7 @@ async function ListView({ excludeClientIds, includeTest, office }: { excludeClie
 // ---- Map view: geocoded appointments on the interactive route map -------------
 // (Moved verbatim from the old /map route so the pins/day-picker/route logic is
 // unchanged — only the data window's forward end is now the shared WINDOW_DAYS.)
-async function MapView({ excludeClientIds, includeTest }: { excludeClientIds: string[]; includeTest: boolean }) {
+async function MapView({ excludeClientIds, includeTest, tabs }: { excludeClientIds: string[]; includeTest: boolean; tabs: boolean }) {
   const now = new Date();
   const from = new Date(now.getTime() - MAP_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
   const to = new Date(now.getTime() + WINDOW_DAYS * 24 * 60 * 60 * 1000);
@@ -204,6 +206,7 @@ async function MapView({ excludeClientIds, includeTest }: { excludeClientIds: st
         subtitle={`${days.length} shoot days · pick a day to see the route, weather & drive times · ${includeTest ? "real and test records" : "test records hidden"}`}
         actions={<ScheduleViewToggle view="map" includeTest={includeTest} />}
       />
+      <ShootsScheduleTabs current="schedule" includeTest={includeTest} show={tabs} />
       <div className="p-4 sm:p-6">
         {pins.length === 0 ? (
           <p className="text-sm text-muted">No upcoming shoots with locations yet.</p>
@@ -225,5 +228,7 @@ export default async function SchedulePage({ searchParams }: { searchParams: Pro
   const excludeClientIds = includeTest ? [] : await syntheticClientIds();
   // Each view early-returns its own query (communications pattern): the List
   // never runs the geocoded/map pull, the Map never runs the grouped-day pull.
-  return view === "map" ? <MapView excludeClientIds={excludeClientIds} includeTest={includeTest} /> : <ListView excludeClientIds={excludeClientIds} includeTest={includeTest} office={office} />;
+  // Shoots | Schedule (Oct 22 2026): the strip shows only to a reader who may open Shoots too.
+  const tabs = !me || canAccess(me, "pipeline");
+  return view === "map" ? <MapView excludeClientIds={excludeClientIds} includeTest={includeTest} tabs={tabs} /> : <ListView excludeClientIds={excludeClientIds} includeTest={includeTest} office={office} tabs={tabs} />;
 }

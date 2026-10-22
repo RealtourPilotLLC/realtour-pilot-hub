@@ -42,7 +42,7 @@ import { cn } from "@/lib/utils";
 import { canAccess, isCreativeLead, isOffice, parsePermissions, ROLE_LABEL, type PageKey } from "@/lib/auth/access";
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { groupSidebarDestinations, officeMenuDestinations, usesOfficeMenu } from "@/lib/sidebarNavigation";
+import { groupSidebarDestinations, officeMenuDestinations, usesRoleMenu } from "@/lib/sidebarNavigation";
 
 export type ShellUser = {
   name: string | null;
@@ -62,6 +62,10 @@ type NavItem = {
   key?: PageKey; // internal pages carry a PageKey for role-gating
   soon?: boolean;
   external?: boolean; // opens in a new tab (e.g. the Script Studio app)
+  /** Oct 22 2026: a role door that opens a section of its page (Kyle's
+   *  "Ready to send" → /review#ready-to-send). `href` stays the destination
+   *  that access and the active state are read from. */
+  link?: string;
 };
 
 type NavSection = {
@@ -104,7 +108,10 @@ const SECTIONS: NavSection[] = [
       // "Video Review Room" (Jordan, Oct 19 2026): the label only; the /review
       // route and the `review` PageKey keep their names. "Videos" in the
       // six-door menu (owner and office); photographers keep this label.
-      { label: "Video Review Room", href: "/review", icon: MonitorPlay, key: "review" },
+      // Oct 22 2026: "Videos" everywhere (the page went by three names); the
+      // role doors relabel it where a reader's day calls it something else
+      // (Kyle's "Ready to send", a photographer's "My Videos").
+      { label: "Videos", href: "/review", icon: MonitorPlay, key: "review" },
       // PHOTOS (Oct 14 2026, docs/photo-delivery): the queue, AI QC, the
       // AutoHDR Fix Cart and the delivery check. Rides the `ops` PageKey
       // (owner + office). Labelled "Photos" in the six-door menu.
@@ -254,11 +261,18 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
     // here for you" to five photographers is the dead door this filter exists
     // to prevent — and the Slack note a coached person receives carries the
     // link, so nobody who IS coached has to find it in a menu.
+    // Oct 22 2026 (Jordan's approved menus): the Editing Room is no door for a
+    // photographer either. Their read-only board is still there by URL, and a
+    // shoot's own page links its brief; the menu was leading with it.
     if (user && user.role === "PHOTOGRAPHER") {
       items = items.filter(
-        (i) => i.href !== "/resources/video-styles" && i.href !== "/quality" && i.href !== "/coaching",
+        (i) => i.href !== "/resources/video-styles" && i.href !== "/quality" && i.href !== "/coaching" && i.href !== "/editing",
       );
     }
+    // Oct 22 2026: the Style Guide (the editors' reference) and Communication
+    // coaching are off the office's menu; both stay reachable by URL, and the
+    // coaching note Kyle receives carries its own link.
+    if (user && user.role === "ADMIN") items = items.filter((i) => i.href !== "/resources/video-styles" && i.href !== "/coaching");
     // The creative manager (Oct 21 2026) keeps Client & Team Feedback (their
     // photographer and editor tabs) but not Communication coaching: that page
     // is about how the office answers clients on the company line.
@@ -294,11 +308,11 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
 
   // Group only AFTER the existing access rules and role exceptions. These
   // categories are navigation, never new permissions or replacement pages.
-  // The owner and the office (ADMIN) get the six doors with the rest folded
-  // under More (Jordan, Oct 19 2026, night); editors and photographers keep
-  // the groups.
+  // The owner, the office, the creative manager and photographers each get
+  // their own doors with the rest folded under More (sidebarNavigation's role
+  // menus, Oct 22 2026); editors keep the groups.
   const destinations = authorized.flatMap((section) => section.items);
-  const sections = usesOfficeMenu(user?.role) ? officeMenuDestinations(destinations, pathname, user?.role) : groupSidebarDestinations(destinations, pathname);
+  const sections = usesRoleMenu(user?.role) ? officeMenuDestinations(destinations, pathname, user?.role) : groupSidebarDestinations(destinations, pathname);
   const renderItem = (item: NavItem) => {
     const active = sections.some((section) => section.activeHref === item.href);
     const Icon = item.icon;
@@ -315,7 +329,7 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
     );
     return item.soon ? <div key={item.href} className={classes} title="Coming in a later milestone">{content}</div>
       : item.external ? <a key={item.href} href={item.href} target="_blank" rel="noopener noreferrer" className={classes} onClick={onNavigate}>{content}</a>
-      : <Link key={item.href} href={item.href} aria-current={active ? "page" : undefined} className={classes} onClick={onNavigate}>{content}</Link>;
+      : <Link key={item.href} href={item.link ?? item.href} aria-current={active ? "page" : undefined} className={classes} onClick={onNavigate}>{content}</Link>;
   };
 
   return (
