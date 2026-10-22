@@ -192,7 +192,9 @@ export const TEXT_TEMPLATES = {
     label: "10 PM upload chaser: pages not submitted",
     audience: "team",
     when: "At 10 PM, when a shoot from today still has no submitted upload page.",
-    body: "Still waiting on today's upload {pages}:\n{shootList}\n\nFinish tonight — files in Dropbox + the page submitted. The shoot is added to your payroll when you submit:\n{uploadLink}",
+    // Oct 22 2026 (comms audit, LOW): pay is fixed now and hidden from the
+    // team, so the chaser no longer says the shoot goes on their payroll.
+    body: "Still waiting on today's upload {pages}:\n{shootList}\n\nPlease finish tonight: files in Dropbox, then submit the page here:\n{uploadLink}",
     placeholders: [
       P("pages", "\"page\" for one shoot, \"pages\" for more", "pages"),
       P("shootList", "The shoots still waiting, numbered, one per line", "1. 123 Main St\n2. 45 Oak Ave"),

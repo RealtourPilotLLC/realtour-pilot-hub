@@ -30,6 +30,12 @@ export async function sendEmailReply(
   }
   const [, mailbox, threadId] = sd.split(":");
   if (!mailbox || !threadId) return { ok: false, message: "The email thread reference is incomplete." };
+  // Oct 22 2026 (comms audit H6): no "your time is set" while a booking conflict is open for this client.
+  {
+    const { staffConfirmationRefusal } = await import("@/lib/bookingConflictHold");
+    const refused = await staffConfirmationRefusal({ clientId: task.clientId, body: text });
+    if (refused) return { ok: false, message: refused };
+  }
 
   // Atomically CLAIM the task before sending — a stale second tab / double
   // press must never email the client twice. Reverted if the send fails.

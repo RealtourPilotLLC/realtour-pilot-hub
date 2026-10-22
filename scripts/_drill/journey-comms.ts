@@ -1196,7 +1196,11 @@ async function main() {
   await withClock(at(TUE_1000), () => oldRoute.processOpenPhoneEvent("call.completed", missedCall("CALL-N1", "6105550187")));
   check("OLD: the missed call files a callback task", (await openReply(nina.id)).length === 1);
   await withClock(at(TUE_1000) + 1000, () => oldRoute.processOpenPhoneEvent("message.delivered", msgEvent("MSG-GR-N1", "outgoing", "6105550187", GREETING_TEXT)));
-  check("OLD (17df024): the greeting CLOSED the callback a second later (Bety Pena, Sep 20)", (await openReply(nina.id)).length === 0);
+  // Oct 22 2026 (comms audit H4): the old route closes through TODAY's
+  // tasks.closeReplyForOutbound (its `@/` imports point at this tree), which
+  // refuses a holding line, and the greeting's "we'll get back to you shortly"
+  // is one. So the replay of 17df024 no longer closes it: on Sep 20 it did.
+  check("OLD (17df024) route, today's close: the greeting's 'we'll get back to you' is a holding line, so even the old route leaves the callback open (on Sep 20 it closed it: Bety Pena)", (await openReply(nina.id)).length === 1);
   const mike = await mkClient("Mike Flatley", "(610) 555-0188");
   const MIKE = "6105550188";
   await mkProject("9 Firethorn Ln, Malvern, PA 19355", mike.id, "DELIVERED");

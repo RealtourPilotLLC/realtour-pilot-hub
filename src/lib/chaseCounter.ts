@@ -185,3 +185,51 @@ export async function recordChase(input: {
     return { recorded: false, count: 0, escalated: "none", taskId: null, skipped: "failed" };
   }
 }
+
+/**
+ * A CHASE IS ANSWERED BY THE DELIVERY (Oct 22 2026, comms audit LOW). Bob
+ * Kelley's "has asked for an update 2 times: 1680 Bridle Path Dr" task was
+ * still open two days after the job was delivered: nothing closed it but a
+ * person. Every five minutes (the gmail cron's behindAlert step, beside the
+ * client asks closed on delivered jobs) an open chase task on a delivered job
+ * completes, with a line on the job, when the client's newest chase came
+ * before the delivery. A chase after the delivery ("I never got the video")
+ * is still a question, and stays. Never throws.
+ */
+export async function closeChasesOnDeliveredJobs(now: Date = new Date()): Promise<{ closed: number; ids: string[] }> {
+  const out = { closed: 0, ids: [] as string[] };
+  try {
+    const open = await prisma.smartTask.findMany({
+      where: { taskType: CHASE_TASK_TYPE, status: { notIn: ["COMPLETED", "CANCELLED"] }, projectId: { not: null } },
+      select: { id: true, clientId: true, projectId: true, createdAt: true },
+      take: 500,
+    });
+    if (!open.length) return out;
+    const projects = await prisma.project.findMany({
+      where: { id: { in: [...new Set(open.map((t) => t.projectId!))] } },
+      select: { id: true, status: true, deliveredAt: true, title: true },
+    });
+    const byId = new Map(projects.map((p) => [p.id, p]));
+    for (const t of open) {
+      const p = byId.get(t.projectId!);
+      if (!p || (p.status !== "DELIVERED" && !p.deliveredAt)) continue;
+      const deliveredAt = p.deliveredAt ?? now;
+      const asks = t.clientId ? await chasesFor(t.clientId, p.id, now) : [];
+      const newest = asks.length ? asks[asks.length - 1].at : t.createdAt;
+      if (newest.getTime() > deliveredAt.getTime()) continue;
+      const r = await prisma.smartTask.updateMany({
+        where: { id: t.id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        data: { status: "COMPLETED", completedAt: now },
+      });
+      if (!r.count) continue;
+      out.closed++;
+      out.ids.push(t.id);
+      await prisma.activity
+        .create({ data: { projectId: p.id, type: "SYSTEM", body: `Chase counter: the client's update request is answered by the delivery (${etDateTime(deliveredAt)} ET). Task closed.`.slice(0, 300) } })
+        .catch(() => {});
+    }
+  } catch (e) {
+    console.warn("closeChasesOnDeliveredJobs failed", e);
+  }
+  return out;
+}

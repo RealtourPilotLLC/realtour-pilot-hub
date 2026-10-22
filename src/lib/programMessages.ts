@@ -372,14 +372,43 @@ async function raiseThreadTask(e: { id: string; clientId: string; clientName: st
   }
 }
 
-/** The reply (or "No reply needed") closes the run: messages handled, task done. */
+/**
+ * The reply (or "No reply needed") closes the run: the client's messages IN
+ * THE CONVERSATION are handled, and the desk task is done when nothing else
+ * waits.
+ *
+ * Oct 22 2026 (comms audit C1): this used to mark EVERY unanswered client
+ * message on the program handled, with no conversation check. A one-off
+ * booking message to Erica Walker closed her 2:31 PM message (a booking
+ * question, a question about her scripts and a topic idea) and its task,
+ * and the same sweep closed the client's replies under a script. Now:
+ *   · only the main conversation (IN_CONVERSATION, the same filter the read
+ *     counts use): a client's message under a script is answered under that
+ *     script (closeScriptRun), never by a reply on the Messages tab;
+ *   · the desk task completes only when nothing is left; otherwise it is
+ *     refreshed to list what still waits (closeScriptRun's rule).
+ */
 async function closeRun(enrollmentId: string, by: string, at: Date): Promise<number> {
-  const r = await prisma.programMessage.updateMany({ where: { enrollmentId, authorKind: "CLIENT", handledAt: null }, data: { handledAt: at, handledBy: by } });
-  await prisma.smartTask.updateMany({
-    where: { dedupeKey: `${PROGRAM_MESSAGE_TASK_PREFIX}${enrollmentId}`, status: { notIn: TASK_DONE } },
-    data: { status: "COMPLETED", completedAt: at },
+  const r = await prisma.programMessage.updateMany({
+    where: { enrollmentId, authorKind: "CLIENT", handledAt: null, OR: IN_CONVERSATION },
+    data: { handledAt: at, handledBy: by },
   });
+  await settleDeskTask(enrollmentId, at);
   return r.count;
+}
+
+/** The desk task after a reply: done when nothing is left, otherwise refreshed to list what still waits. */
+async function settleDeskTask(enrollmentId: string, at: Date): Promise<void> {
+  if ((await unansweredCount(enrollmentId)) === 0) {
+    await prisma.smartTask.updateMany({
+      where: { dedupeKey: `${PROGRAM_MESSAGE_TASK_PREFIX}${enrollmentId}`, status: { notIn: TASK_DONE } },
+      data: { status: "COMPLETED", completedAt: at },
+    });
+    return;
+  }
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { id: true, clientId: true } });
+  const c = e ? await prisma.client.findUnique({ where: { id: e.clientId }, select: { name: true } }) : null;
+  if (e) await raiseThreadTask({ id: e.id, clientId: e.clientId, clientName: c?.name ?? "" }, (await ownersFor(e.id)).MESSAGES, at).catch((err) => console.error("[programMessages] task refresh", err));
 }
 
 /**
@@ -391,16 +420,7 @@ async function closeRun(enrollmentId: string, by: string, at: Date): Promise<num
 async function closeScriptRun(enrollmentId: string, scriptId: string, by: string, at: Date): Promise<number> {
   const r = await prisma.programMessage.updateMany({ where: { enrollmentId, authorKind: "CLIENT", handledAt: null, refKind: SCRIPT_THREAD, refId: scriptId }, data: { handledAt: at, handledBy: by } });
   if (!r.count) return 0;
-  if ((await unansweredCount(enrollmentId)) === 0) {
-    await prisma.smartTask.updateMany({
-      where: { dedupeKey: `${PROGRAM_MESSAGE_TASK_PREFIX}${enrollmentId}`, status: { notIn: TASK_DONE } },
-      data: { status: "COMPLETED", completedAt: at },
-    });
-  } else {
-    const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { id: true, clientId: true } });
-    const c = e ? await prisma.client.findUnique({ where: { id: e.clientId }, select: { name: true } }) : null;
-    if (e) await raiseThreadTask({ id: e.id, clientId: e.clientId, clientName: c?.name ?? "" }, (await ownersFor(e.id)).MESSAGES, at).catch((err) => console.error("[programMessages] task refresh", err));
-  }
+  await settleDeskTask(enrollmentId, at);
   return r.count;
 }
 
@@ -511,9 +531,12 @@ export async function postClientMessage(
 }
 
 /**
- * The office replies. Answers the whole unanswered run (a reply is to the
- * conversation, not to one line of it), closes the desk task, and — only when
- * the notice switch is on — lets the client know by email.
+ * The office replies. Answers the unanswered run IN THE CONVERSATION (a reply
+ * is to the conversation, not to one line of it; never the client's messages
+ * under a script, audit C1), closes the desk task when nothing else waits,
+ * and (only when the notice switch is on) lets the client know by email.
+ * A message that is not a reply (a one-off notice, a booking confirmation)
+ * passes `closeRun: false` and answers nothing.
  */
 export async function postStaffMessage(
   enrollmentId: string,
@@ -523,8 +546,10 @@ export async function postStaffMessage(
   /** Oct 20 2026: `ref` marks what the reply is about (a script the client asked to change).
    *  `closeRun: false` (audit D3): a reply about one item does not answer the client's other messages.
    *  `placement: "script"` (Oct 22 2026): the reply lives UNDER the script (ref SCRIPT), not in the
-   *  program conversation; it answers the client's messages under that script and nothing else. */
-  opts: { now?: Date; ref?: ProgramMessageRef | null; closeRun?: boolean; placement?: "script" | null } = {},
+   *  program conversation; it answers the client's messages under that script and nothing else.
+   *  `overrideConflict` (Oct 22 2026, comms audit H6): the person has settled the open booking
+   *  conflict and confirms the time anyway. */
+  opts: { now?: Date; ref?: ProgramMessageRef | null; closeRun?: boolean; placement?: "script" | null; overrideConflict?: boolean } = {},
 ): Promise<Result> {
   const now = opts.now ?? new Date();
   const body = (bodyRaw ?? "").trim();
@@ -535,6 +560,15 @@ export async function postStaffMessage(
   if (underScript) {
     const s = opts.ref?.kind === "SCRIPT" ? await prisma.contentScript.findUnique({ where: { id: opts.ref.id }, select: { enrollmentId: true } }) : null;
     if (!s || s.enrollmentId !== enrollmentId) return fail("That script isn't on this program.");
+  }
+  // NO "YOUR TIME IS SET" WHILE A BOOKING CONFLICT IS OPEN (Oct 22 2026, comms
+  // audit H6). Erica Walker's double-booked task opened at 5:20:05 PM and a
+  // message telling her the time was set went at 5:20:38 PM. A message that
+  // reads as a booking confirmation waits until the conflict task is closed.
+  if (!underScript) {
+    const { staffConfirmationRefusal } = await import("@/lib/bookingConflictHold");
+    const refused = await staffConfirmationRefusal({ clientId: e.clientId, body, overrideConflict: opts.overrideConflict });
+    if (refused) return fail(refused);
   }
   const replyTo = replyToId && /^[a-z0-9]{10,40}$/i.test(replyToId)
     ? await prisma.programMessage.findFirst({ where: { id: replyToId, enrollmentId }, select: { id: true } })
@@ -557,7 +591,7 @@ export async function postStaffMessage(
   if (me.id) await markThreadRead(enrollmentId, `au:${me.id}`, now).catch(() => {});
   // Best-effort and switch-gated inside: the hourly sweep is the floor.
   await sweepProgramMessageNotices({ now, enrollmentId }).catch((err) => console.error("[programMessages] notice", err));
-  return { ok: true, id: row.id, message: handled ? `Replied — ${handled} message${handled === 1 ? "" : "s"} answered.` : "Sent." };
+  return { ok: true, id: row.id, message: handled ? `Replied. ${handled} message${handled === 1 ? "" : "s"} answered.` : "Sent." };
 }
 
 /** "No reply needed" — the run is closed by a person, with no message. */

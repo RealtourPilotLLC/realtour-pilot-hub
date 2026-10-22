@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { emailSlaRules, emailSlaSince, findUnansweredInbound, type UnansweredInbound } from "@/lib/commsSla";
+import { emailSlaRules, emailSlaSince, findUnansweredInbound, pagerView, type UnansweredInbound } from "@/lib/commsSla";
 import { coverageRules, coveredHoursBetween } from "@/lib/coverage";
 import { notifyInApp, notifyStaffSms } from "@/lib/notify";
 
@@ -181,7 +181,10 @@ export async function sweepEmailFollowUps(now: Date = new Date()): Promise<Follo
   const cover = await coverageRules();
   const { appBase } = await import("@/lib/appUrl");
 
-  for (const w of held) {
+  // A holding line ("I'll get back to you", audit H4) is a follow-up only
+  // once its answer is due, counted from then (commsSla.pagerView). It still
+  // keeps an open follow-up open above: the thread is still waiting.
+  for (const w of pagerView(held, now)) {
     // The backlog — a wait that began before the email alerts were switched
     // on — is listed, never rung (the lane's own watermark).
     if (w.occurredAt.getTime() < since.getTime()) continue;

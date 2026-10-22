@@ -9,6 +9,7 @@ import { messagesHref, waitingReplyHref } from "@/components/comms/messagesNav";
 import { homeRecordHref } from "@/lib/homeRecordScope";
 import { waitedWords, type MessagesBoard, type WaitingClient } from "@/lib/opsHome";
 import { cn } from "@/lib/utils";
+import { etDateTime } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // MESSAGES · WAITING ON US (Oct 19 2026): the first view of the one inbox.
@@ -85,6 +86,19 @@ export function WaitingOnUs({ board, now, clean, includeTest, excludeClientIds, 
                         <span className={cn("rounded-full px-1.5 py-0.5 text-[11px] font-semibold", w.behind ? "bg-danger/15 text-danger" : "bg-surface-2 text-muted")}>waiting {waitedWords(w.group.oldestHours)}</span>
                       </p>
                       {latest && <p className="mt-0.5 truncate text-[13px] text-muted">&ldquo;{clean(latest.subject ? `${latest.subject}: ${latest.snippet}` : latest.snippet)}&rdquo;</p>}
+                      {/* Oct 22 2026 (audit H4): we said we would come back with the answer. */}
+                      {w.group.holding && (
+                        <p data-holding className={cn("mt-0.5 text-xs", w.group.holding.overdue ? "font-semibold text-danger" : "text-muted")}>
+                          We said &ldquo;{clean(w.group.holding.text.length > 90 ? `${w.group.holding.text.slice(0, 89)}…` : w.group.holding.text)}&rdquo; ({etDateTime(w.group.holding.atISO)}). {w.group.holding.overdue ? "The answer was due" : "Answer due by"} {etDateTime(w.group.holding.dueISO)}.
+                        </p>
+                      )}
+                      {w.group.schedulingAsks.length > 0 && (
+                        <p data-scheduling-asks className="mt-0.5 text-xs text-muted">
+                          Open scheduling request: {clean(w.group.schedulingAsks[w.group.schedulingAsks.length - 1])}
+                          {w.group.schedulingAsks.length > 1 ? ` (and ${w.group.schedulingAsks.length - 1} more)` : ""}.{" "}
+                          <Link href={scopeHref("/ops/scheduling")} className="font-medium text-brand underline">Scheduling to handle</Link>
+                        </p>
+                      )}
                     </div>
                     <Link href={waitingRowReplyHref(w, includeTest)} className="inline-flex min-h-11 shrink-0 items-center rounded-lg bg-brand-action px-3 text-sm font-semibold text-white hover:opacity-90">Reply</Link>
                     {/* Oct 21 2026: the Texts tab's Dismiss, with its reasons: one way to clear a waiting client. */}

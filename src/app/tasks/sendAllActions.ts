@@ -81,13 +81,18 @@ export async function listDraftedTexts(opts: { includeTest?: boolean } = {}): Pr
     tasks.map((t) => (byId.has(t.projectId!) ? keyFor(t, byId.get(t.projectId!)!.shootDate) : "")),
   );
 
+  const { openConflictFor } = await import("@/lib/bookingConflictHold");
   const rows: DraftedText[] = [];
   for (const t of tasks) {
     const p = byId.get(t.projectId!);
     if (!p) continue;
     const held = outboxState.get(keyFor(t, p.shootDate));
     const body = clientTextFor(t.taskType === "delivery_text" ? "delivery_text" : "confirmation_text", p, words);
-    const blocked = !p.client.phone
+    // Oct 22 2026 (comms audit H6): a booking conflict open on this job holds its confirmation.
+    const conflict = t.taskType === "confirmation_text" ? await openConflictFor({ projectId: p.id }) : null;
+    const blocked = conflict
+      ? `Held: a booking conflict is open (${conflict.title}). Settle it first.`
+      : !p.client.phone
       ? "No phone on file"
       : phoneKey(p.client.phone).length !== 10
         ? "Phone number looks invalid"
@@ -159,6 +164,13 @@ export async function sendDraftText(taskId: string, body: string): Promise<{ ok:
   }
   if (!task.projectId) return { ok: false, message: "No project linked." };
   if (task.status === "COMPLETED" || task.status === "CANCELLED") return { ok: false, message: "Already handled." };
+  // Oct 22 2026 (comms audit H6): no confirmation while a booking conflict
+  // (the double-booked post-check, a clash) is open on this job.
+  if (task.taskType === "confirmation_text") {
+    const { openConflictFor, conflictRefusal } = await import("@/lib/bookingConflictHold");
+    const conflict = await openConflictFor({ projectId: task.projectId });
+    if (conflict) return { ok: false, message: conflictRefusal(conflict) };
+  }
 
   const project = await prisma.project.findUnique({
     where: { id: task.projectId },

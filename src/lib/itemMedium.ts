@@ -19,10 +19,11 @@
 //            job's client asks, never the editor
 //   both     the same change on both
 //   unclear  nobody can tell: shown in both places, labelled
-// The model labels each item; this file is the floor under it: words that
-// name a photo mean the photos unless a video is named too, whatever the
-// model said. An item with no label at all (a row written before this
-// existed) is a video item, as it always was.
+// The model labels each item; this file is the floor under it, used only
+// when the model said "unclear" or gave no label: words that name a photo
+// mean the photos unless a video is named too. An item with no label and no
+// photo words (a row written before this existed) is a video item, as it
+// always was.
 // ---------------------------------------------------------------------------
 import { photoNumbers } from "@/lib/photoDelivery/careRules";
 
@@ -33,22 +34,24 @@ export const PHOTO_SHARED_KEY_PREFIX = "photo-shared:";
 export type ItemMedium = (typeof ITEM_MEDIA)[number];
 export const isItemMedium = (v: unknown): v is ItemMedium => typeof v === "string" && (ITEM_MEDIA as readonly string[]).includes(v);
 
-/** Words about the photos: a numbered photo ("pic 11", "photo #38"), the
- *  photos themselves, and the photo-only work (virtual staging, twilight, lot
- *  lines, floor plans, retouching). "shot" and "cut" are left out on purpose:
+/** Words about the photos, and only words that cannot mean anything else
+ *  (Oct 22 2026 audit C2): a numbered photo ("photo 4", "pic 11", "photo
+ *  #38", "image 12"), "photos" and "pics" / "pictures", "drone photo",
+ *  virtual staging, twilight, lot lines, a floor plan. Bare "still", "stage"
+ *  and "image" are NOT photo words: "The people are still a bit glitchy",
+ *  "Can you still add my logo at the end?" and "make my brand image pop in
+ *  the end card" are video changes, and reading them as photos sent them to
+ *  the photo desk instead of the editor. "shot" and "cut" are left out too:
  *  both are everyday video words ("the opening shot", "cut the intro"). */
 const PHOTO_WORDS = new RegExp(
   [
-    String.raw`\b(?:photo|pic|picture|image|still)s?\s*(?:#|no\.?\s*|number\s*)?\d{1,3}\b`,
-    String.raw`\b(?:photos?|pics?|pictures?|images?|stills?|headshots?|photograph(?:s|y)?)\b`,
+    String.raw`\b(?:photo|pic|picture|image)s?\s*(?:#|no\.?\s*|number\s*)?\d{1,3}\b`,
+    String.raw`\b(?:photos|pics?|pictures)\b`,
+    String.raw`\bdrone\s+(?:photo|pic|picture|image)s?\b`,
     String.raw`\bvirtual(?:ly)?[\s-]*stag\w*`,
-    String.raw`\bre-?stag\w*`,
-    String.raw`\bstag(?:e|ed|ing|er)\b`,
     String.raw`\btwilights?\b`,
-    String.raw`\b(?:lot|property|boundary)\s*lines?\b`,
+    String.raw`\b(?:lot|property|boundary)[\s-]*lines?\b`,
     String.raw`\bfloor\s*-?\s*plans?\b`,
-    String.raw`\bretouch\w*`,
-    String.raw`\bsky\s*replace\w*`,
   ].join("|"),
   "i",
 );
@@ -79,20 +82,25 @@ export const namesVideo = (text: string | null | undefined): boolean => VIDEO_WO
  * What one item (or one open question) is about. `words`: everything the item
  * says (the instruction, its detail, the client's quote). `model`: the
  * analyser's label, when it gave one. Pure.
- *   · photo words and no video named: photo, whatever the model said;
- *   · photo words and a video named: the model's label, else both;
- *   · a video named and no photo words: the model's label (a model "photo"
- *     against a named video reads as both);
- *   · neither: the model's label, else video (today's behaviour).
+ *
+ * The model's label wins whenever it gave one that decides (video, photo or
+ * both). The words are only the floor under a missing label or an "unclear"
+ * one (Oct 22 2026 audit C2: the backstop must never overrule the model):
+ *   · photo words and no video named: photo;
+ *   · photo words and a video named: both;
+ *   · a video named and no photo words: video;
+ *   · neither: the model's "unclear", else video (rows written before labels
+ *     existed stay video).
  */
 export function itemMediumOf(words: string | null | undefined, model?: unknown): ItemMedium {
-  const t = (words ?? "").replace(/\s+/g, " ");
   const said = isItemMedium(model) ? model : null;
+  if (said && said !== "unclear") return said;
+  const t = (words ?? "").replace(/\s+/g, " ");
   const photo = namesPhotos(t);
   const video = namesVideo(t);
   if (photo && !video) return "photo";
-  if (photo && video) return said ?? "both";
-  if (video) return said === "photo" ? "both" : said ?? "video";
+  if (photo && video) return "both";
+  if (video) return "video";
   return said ?? "video";
 }
 
@@ -118,7 +126,9 @@ export function mediumLabel(m: unknown): string | null {
   return null;
 }
 
-const VIRTUAL_STAGING = /\bvirtual(?:ly)?[\s-]*stag\w*|\bre-?stag\w*|\bstag(?:e|ed|ing)\b/i;
+/** Virtual staging, or redoing it. Bare "stage" is not (audit C2): "clone
+ *  out / stage out the stove" is a photo fix, not new staging work. */
+const VIRTUAL_STAGING = /\bvirtual(?:ly)?[\s-]*stag\w*|\bre-?stag\w*/i;
 
 /**
  * A photo item that is new work, not a fix: a scope or price question for the

@@ -54,6 +54,13 @@ export type CommsGroup = {
    *  raised on rather than the thread. The card should say so — there is no
    *  scrollback here, and the full conversation lives on the client page. */
   fromLedger: boolean;
+  /** HOLDING LINE (Oct 22 2026, audit H4): our last word was "I'll confirm
+   *  soon" / "let me check", so the answer is still owed, due at `dueISO`. */
+  holding: { text: string; atISO: string; dueISO: string; overdue: boolean } | null;
+  /** The client's open scheduling asks, one line each (audit H4). */
+  schedulingAsks: string[];
+  /** TRUE when the row is here only for an open scheduling ask. */
+  fromAsk: boolean;
 };
 
 function snippetOf(body: string): string {
@@ -118,6 +125,9 @@ async function commsBoardsFor(families: ("phone" | "email")[], now: Date, opts: 
     oldestHours: t.hoursWaiting,
     openTaskId: t.openTaskId,
     fromLedger: !!t.fromLedger,
+    holding: t.holding ? { text: t.holding.text, atISO: t.holding.at.toISOString(), dueISO: t.holding.dueAt.toISOString(), overdue: t.holding.dueAt.getTime() <= now.getTime() } : null,
+    schedulingAsks: (t.schedulingAsks ?? []).map((a) => a.summary),
+    fromAsk: !!t.fromAsk,
   }));
   return { phone: families.includes("phone") ? groups("phone") : [], email: families.includes("email") ? groups("email") : [] };
 }

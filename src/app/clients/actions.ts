@@ -60,6 +60,12 @@ export async function sendClientText(
   if (k.length !== 10) return { ok: false, message: "Client phone number looks invalid." };
   const from = await defaultOpenPhoneNumber();
   if (!from) return { ok: false, message: "OpenPhone isn't connected." };
+  // Oct 22 2026 (comms audit H6): no "your time is set" while a booking conflict is open for this client.
+  {
+    const { staffConfirmationRefusal } = await import("@/lib/bookingConflictHold");
+    const refused = await staffConfirmationRefusal({ clientId, body: text });
+    if (refused) return { ok: false, message: refused };
+  }
 
   const { getCurrentUser } = await import("@/lib/auth/user");
   const actor = await getCurrentUser().catch(() => null);

@@ -578,11 +578,17 @@ export async function portalRequestSession(
   // throws here — the request row is already written, so never let that
   // turn a successful request into an error.
   try { revalidatePath(`/content/${enrollment.id}`); } catch { /* not in a request */ }
-  const label = sessionRequestLabel(state.status, state.bookingState);
+  // Oct 22 2026 (comms audit H6): the hub's post-check found the creative
+  // already busy (a double-booked task, or a clash) — the booking stands, but
+  // a person is deciding, so the client is not told it is set.
+  const { openConflictFor, CONFIRMING_WITH_CREATIVE, CONFIRMING_LABEL } = await import("@/lib/bookingConflictHold");
+  const held = state.status === "CONFIRMED" && !r.duplicate ? await openConflictFor({ requestId: r.id }) : null;
+  const label = held ? CONFIRMING_LABEL : sessionRequestLabel(state.status, state.bookingState);
   return {
     ok: state.bookingState !== "CONFLICT",
     message: r.duplicate
       ? "We already have this request. It shows here as requested until it is on the calendar."
+      : held ? CONFIRMING_WITH_CREATIVE
       : state.status === "CONFIRMED" ? "Booked. Your session is on the calendar."
       : state.bookingState === "CONFLICT" ? label
       : r.message,
@@ -642,6 +648,12 @@ export async function portalRescheduleSession(
   const { requestReschedule } = await import("@/lib/sessionRequests");
   const out = await requestReschedule(r.id, { startISO: slot.toISOString(), endISO: new Date(slot.getTime() + hours * 3600_000).toISOString(), locationText: input.location ? clip(input.location.trim(), 300) : null }, creative, actor, { sessionIndex, gate: gateSnapshotOf(gate) });
   try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+  // Oct 22 2026 (comms audit H6): a hub move says "Moved. Your session is at
+  // the new time." Not while a conflict on this booking is open.
+  if (out.ok && /^Moved\b/.test(out.message)) {
+    const { openConflictFor, CONFIRMING_WITH_CREATIVE } = await import("@/lib/bookingConflictHold");
+    if (await openConflictFor({ requestId: out.id ?? r.id })) return { ...out, message: CONFIRMING_WITH_CREATIVE };
+  }
   return out;
 }
 

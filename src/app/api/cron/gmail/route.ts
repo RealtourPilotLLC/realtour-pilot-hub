@@ -63,6 +63,14 @@ export async function GET(req: NextRequest) {
   // Keep Slack comms memory near-live (channels + Jordan's DMs) every few
   // minutes via the user token. Small window; logComm dedups the overlap.
   await step("slack", () => syncSlackHistory({ sinceHours: 2 }), { maxMs: 30_000 });
+  // READ AGAIN WHAT THE AI REFUSED (Oct 22 2026, comms audit H5, lib/aiOutage):
+  // client texts and emails the comms router could not read during a spend
+  // limit or a refused key, oldest first, once the AI answers again. Stops at
+  // the first refusal (one call a tick while it lasts). Idle when nothing waits.
+  await step("aiRetry", async () => {
+    const { sweepAiRetries } = await import("@/lib/aiOutage");
+    return sweepAiRetries({ limit: 8 });
+  }, { maxMs: 40_000 });
   // Team-SMS digest flusher (batched pings for Harrison/James) + Kyle's 4 PM
   // Slack check-in — both cheap no-ops most runs.
   await step("smsFlush", async () => {
@@ -289,13 +297,16 @@ export async function GET(req: NextRequest) {
     const { closeAsksOnDeliveredJobs } = await import("@/lib/clientAsks");
     const { runBehindAlert } = await import("@/lib/behindAlert");
     const { closeShootFlagsOnDeliveredJobs } = await import("@/lib/shootIssues");
-    const { asks, flags, behind } = await runParts({
+    const { closeChasesOnDeliveredJobs } = await import("@/lib/chaseCounter");
+    const { asks, flags, chases, behind } = await runParts({
       asks: () => closeAsksOnDeliveredJobs(),
+      // Oct 22 2026: a "client chasing" task closes when the job is delivered.
+      chases: () => closeChasesOnDeliveredJobs(),
       // A shoot's flags clear once the job is delivered (Jordan, Oct 19 2026).
       flags: () => closeShootFlagsOnDeliveredJobs(),
       behind: () => runBehindAlert(),
     });
-    return { asksClosed: asks.closed, flagsClosed: flags.closed, behind };
+    return { asksClosed: asks.closed, flagsClosed: flags.closed, chasesClosed: chases.closed, behind };
   }, { maxMs: 30_000 });
 
   await finish();

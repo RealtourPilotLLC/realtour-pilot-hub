@@ -151,6 +151,8 @@ export function classifyComm(text: string): CommClassification {
 function dedupeKey(parts: (string | null | undefined)[]): string {
   return crypto.createHash("sha1").update(parts.filter(Boolean).join("|")).digest("hex").slice(0, 24);
 }
+/** The revision task's key on a job: the video / unclear card, or the photo card (raiseRevision's two lanes). */
+export const revisionTaskKey = (projectId: string, photo: boolean): string => dedupeKey(photo ? [projectId, "revision", "photo"] : [projectId, "revision"]);
 
 // Statuses where a "change" message means a real REVISION (work was delivered or
 // is in final QC). On earlier stages the same message is just a special request.
@@ -251,9 +253,17 @@ export async function recordClientCommunication(opts: {
   // "Open the conversation" link on a /quality row (Feedback.sourceRef).
   // Resolved by lookup when absent (see findSourceCommLog).
   commLogId?: string | null;
-}): Promise<{ replyTask: boolean; revision: boolean }> {
+  /** THE SECOND READ (Oct 22 2026, comms audit H5, lib/aiOutage): this message
+   *  was first read while the AI refused (a spend limit, a refused key) and is
+   *  being read again now. With no decision this time, nothing is done; with
+   *  one, only what needs the AI is filed (asks, special requests, the
+   *  revision when the first read raised none). The complaint row, the chase
+   *  count and the song note were already settled the first time. */
+  aiRetry?: { firstPass: { revision: boolean; replyTask: boolean } } | null;
+}): Promise<{ replyTask: boolean; revision: boolean; brain: "answered" | "unavailable" | "off" }> {
   // A "Liked …" / emoji reaction needs no reply — log nothing, make no task.
-  if (isReaction(opts.text)) return { replyTask: false, revision: false };
+  if (isReaction(opts.text)) return { replyTask: false, revision: false, brain: "off" };
+  const retry = opts.aiRetry ?? null;
 
   const cls = classifyComm(opts.text);
 
@@ -273,15 +283,30 @@ export async function recordClientCommunication(opts: {
   // it when the brain itself was unavailable.
   let fallbackNoAction = false;
 
-  const decision = opts.clientId
-    ? await routeCommTask({
+  // THE AI REFUSED (Oct 22 2026, comms audit H5): a spend limit or a refused
+  // key is not "no decision". The message is still filed the old way below
+  // (Kyle gets a to-do), and queued to be read again when the AI answers
+  // (lib/aiOutage sweepAiRetries), so its asks and special requests are filed
+  // then instead of never.
+  let aiDown = false;
+  let decision: Awaited<ReturnType<typeof routeCommTask>> = null;
+  if (opts.clientId) {
+    try {
+      decision = await routeCommTask({
         channel: opts.kind === "email" ? "email" : opts.kind === "text" ? "text" : "call",
         message: opts.text,
         clientId: opts.clientId,
         clientName: opts.clientName,
         senderIsClient: true,
-      })
-    : null;
+      });
+    } catch (e) {
+      const { isAiUnavailable } = await import("@/lib/aiOutage");
+      if (!isAiUnavailable(e)) throw e;
+      aiDown = true;
+    }
+  }
+  // A second read with still no decision changes nothing.
+  if (retry && !decision) return { replyTask: false, revision: false, brain: aiDown ? "unavailable" : "off" };
 
   // A router may start with a guessed project. Its explicit "unknown" must
   // clear that guess, and a named address may contradict either the guess or
@@ -414,7 +439,7 @@ export async function recordClientCommunication(opts: {
   // Kyle with the promise line, the 3rd rings the owner too. Once per message;
   // tasks and bells only, nothing to the client. A message whose job is in
   // doubt is counted on the client alone.
-  if (opts.clientId) {
+  if (opts.clientId && !retry) {
     const { isReadyQuestion } = await import("@/lib/promiseWatch");
     if (isReadyQuestion(opts.text)) {
       const { recordChase } = await import("@/lib/chaseCounter");
@@ -476,7 +501,7 @@ export async function recordClientCommunication(opts: {
   // timeline), separate from a revision. Filed AFTER the brain so its "no
   // action needed" can veto it, and stamped with the CommLog it came from so
   // /quality can open the conversation. See negativeFeedbackGate (Sep 16).
-  if (anchorProjectId && negativeWords) {
+  if (anchorProjectId && negativeWords && !retry) {
     const gate = negativeFeedbackGate({
       text: opts.text,
       projectStatus: anchorStatus,
@@ -504,7 +529,8 @@ export async function recordClientCommunication(opts: {
   }
 
   let revision = false;
-  if (revisionSignal && anchorProjectId) {
+  // A second read never raises the revision the first one already raised.
+  if (revisionSignal && anchorProjectId && !retry?.firstPass.revision) {
     if (anchorStatus && DELIVERED_ISH.has(anchorStatus)) {
       revision = await raiseRevision({
         projectId: anchorProjectId,
@@ -542,8 +568,10 @@ export async function recordClientCommunication(opts: {
       // brief. A song or music link in the ask goes on the video's music note
       // (lib/songRequests; a delivered job's ask does this through its brief).
       // Never throws.
-      const { noteSongRequestFromMessage } = await import("@/lib/songRequests");
-      await noteSongRequestFromMessage({ projectId: anchorProjectId, text: opts.text, source: opts.source ?? "comms", who: opts.contactName?.trim() || opts.clientName || null });
+      if (!retry) {
+        const { noteSongRequestFromMessage } = await import("@/lib/songRequests");
+        await noteSongRequestFromMessage({ projectId: anchorProjectId, text: opts.text, source: opts.source ?? "comms", who: opts.contactName?.trim() || opts.clientName || null });
+      }
     }
   }
 
@@ -571,7 +599,7 @@ export async function recordClientCommunication(opts: {
           defaultProjectId: checked.issue ? null : effProjectId,
           revisionProjectId: revision ? anchorProjectId : null,
         });
-      } else if (!decision) {
+      } else if (!decision && !retry) {
         // The brain was unavailable: a plain "we have to cancel" still reaches Kyle.
         const { fileSchedulingFallback } = await import("@/lib/clientAsks");
         await fileSchedulingFallback({ clientId: opts.clientId, clientName: opts.clientName, contactName: opts.contactName ?? null, message: opts.text, channel, projectId: checked.issue ? null : effProjectId, sourceRef: opts.commLogId ?? null });
@@ -638,7 +666,18 @@ export async function recordClientCommunication(opts: {
     }
   }
 
-  return { replyTask, revision };
+  // Read it again when the AI answers (comms audit H5). Keyed per message, so
+  // the same message logged twice is queued once.
+  if (aiDown && !retry && opts.clientId) {
+    const { queueAiRetry } = await import("@/lib/aiOutage");
+    const { aiRetry: _drop, ...input } = opts;
+    void _drop;
+    await queueAiRetry(
+      { kind: "comms", input: input as unknown as Record<string, unknown>, firstPass: { revision, replyTask } },
+      opts.commLogId ?? crypto.createHash("sha1").update([opts.clientId, opts.kind, opts.text].join("|")).digest("hex").slice(0, 24),
+    );
+  }
+  return { replyTask, revision, brain: decision ? "answered" : aiDown ? "unavailable" : "off" };
 }
 
 // Reopen a delivered job for changes: flag it, move DELIVERED → REVISION, and
@@ -660,7 +699,10 @@ export async function recordClientCommunication(opts: {
 // that frame with the standing version" (Georgiana) read as a PHOTO ask: the
 // words people use about a talking-head video now count as video words too.
 const VIDEO_WORDS = /\b(video|reel|clip|footage|(?:rough|final|first|new)\s+cut|re-?cut|music|audio|song|caption|subtitle|intro|outro|walk-?through|transition|b-?roll|speaking|talking|voice-?over|scene|frames?|on-?screen text|stabiliz\w*|zoom(?:ed|ing)? in|punch(?:ed)? in)\b/gi;
-const PHOTO_WORDS = /\b(photos?|pictures?|pics?|images?|shots?|stills?|headshots?|retouch\w*|edit(?:ed|ing)? (?:this|these|the)? ?(?:photo|picture|pic|image|shot)s?|twilight|floor ?plan|virtual(?:ly)? stag\w*)\b/gi;
+// Oct 22 2026 (audit C2): bare "still" and "image" are not photo words: "the
+// people are still a bit glitchy" and "make my brand image pop in the end
+// card" are video changes. The plurals ("the stills", "the images") still are.
+const PHOTO_WORDS = /\b(photos?|pictures?|pics?|images|shots?|stills|headshots?|retouch\w*|edit(?:ed|ing)? (?:this|these|the)? ?(?:photo|picture|pic|image|shot)s?|twilight|floor ?plan|virtual(?:ly)? stag\w*)\b/gi;
 const REQUEST_SENTENCE = /\b(can|could|would|will|are you able|is it possible|possible to|any chance|please|need|want|send me|resend|swap|replace|remove|add)\b|\?/i;
 
 export type AskMedium = "video" | "photo" | "unclear";
