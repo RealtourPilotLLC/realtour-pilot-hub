@@ -657,7 +657,7 @@ export type ReviseScriptOpts = {
    * "aim", v2.1: the one pass toward WRITER_LENGTH.trimTo of a passing draft, from version `aimTrimOf`); `trimmed` /
    * `aimTrimmed` = an earlier version already had that trim (carried forward).
    */
-  autoFix?: { round: number; trim?: boolean | "cap" | "aim"; trimmed?: boolean; aimTrimmed?: boolean; aimTrimOf?: string | null } | null;
+  autoFix?: { round: number; trim?: boolean | "cap" | "aim"; trimmed?: boolean; aimTrimmed?: boolean; aimTrimOf?: string | null; /** v2.4: the aim trim of a draft BEFORE its first review: nothing reviewed to go back to. */ preReview?: boolean } | null;
   /** Oct 21 2026 (audit H1): a sweep's clock (ms epoch); the model call ends by it. */
   deadline?: number | null;
 };
@@ -714,7 +714,11 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   let writerOut: import("@/lib/scriptWriter/prompts").DraftOut | null = null;
   if (w && writerRec) {
     const who = autoFix ? (autoFix.trim ? "trim" : "review") : personTrim ? "trim" : source === "CLIENT_REQUEST" ? "client" : "person";
-    const step = await w.writerRevisePrompt(s, writerRec, { versionNo: base.versionNo, body: base.body }, instructions, { lockedLabels: locks.map((k) => LOCKABLE_SECTION_LABEL[k]), who });
+    // v2.4 (keep the good hook): a review fix round reads the version's own review (checks, findings, craft) to decide
+    // between a redraft from the runner-up hook and a revision with the hook locked; the plan's locks are copied back below.
+    const reviewed = who === "review" ? readJudge(base.validationJson) : null;
+    const step = await w.writerRevisePrompt(s, writerRec, { versionNo: base.versionNo, body: base.body, hook: base.hook }, instructions, { lockedLabels: locks.map((k) => LOCKABLE_SECTION_LABEL[k]), who, review: reviewed ? { checks: reviewed.checks ?? null, hard: reviewed.hard ?? null, craft: reviewed.craft ?? null } : null });
+    for (const k of step.lock) if (!locks.includes(k)) locks.push(k);
     const r = await w.runWriterStep<import("@/lib/scriptWriter/prompts").DraftOut>("revise", step, {
       requestedBy, unattended: opts.unattended ?? false, deadline: opts.deadline ?? null, scope: { scriptId, basedOnVersionId: baseId, ...(autoFix ? { autoFixRound: autoFix.round, ...(autoFix.trim ? { trim: true } : {}) } : {}) },
       enrollmentId: s.enrollmentId, clientId: s.clientId, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, inputRefs: { ...instructionRefs, who, lockSections: locks, briefRunId: writerRec.runs.brief },
@@ -768,7 +772,7 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   const baseJudge = readJudge(base.validationJson);
   const aimTrim = autoFix?.trim === "aim" || personTrim;
   const owedJudge = autoFix
-    ? pendingJudge(autoFix.round, { writer: true, trimmed: autoFix.trim === true || autoFix.trim === "cap" || !!autoFix.trimmed, aimTrimmed: aimTrim || !!autoFix.aimTrimmed, aimTrimOf: autoFix.trim === "aim" ? autoFix.aimTrimOf ?? baseId : null })
+    ? pendingJudge(autoFix.round, { writer: true, trimmed: autoFix.trim === true || autoFix.trim === "cap" || !!autoFix.trimmed, aimTrimmed: aimTrim || !!autoFix.aimTrimmed, aimTrimOf: autoFix.trim === "aim" && !autoFix.preReview ? autoFix.aimTrimOf ?? baseId : null })
     : personTrim ? pendingJudge(baseJudge?.fixRounds ?? 0, { writer: true, trimmed: !!baseJudge?.trimmed, aimTrimmed: true, aimTrimOf: baseId }) : null;
   const bag = w && writerRec
     ? {
@@ -781,7 +785,9 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   // Oct 22 2026: the version records the format it was written in.
   (bag as Record<string, unknown>)[VERSION_FORMAT_KEY] = format;
   const { WRITER_LENGTH } = await import("@/lib/scriptWriter/rules");
-  const summary = aimTrim
+  const summary = autoFix?.preReview
+    ? `Trimmed toward ${WRITER_LENGTH.trimTo[0]} to ${WRITER_LENGTH.trimTo[1]} words by the creative review before its first review, must-keep points kept; reviewed next`
+    : aimTrim
     ? `Trimmed toward ${WRITER_LENGTH.trimTo[0]} to ${WRITER_LENGTH.trimTo[1]} words${personTrim ? "" : " by the creative review"}, must-keep points kept; reviewed again`
     : autoFix?.trim ? `Trimmed by the creative review to the ${WRITER_LENGTH.cap}-word cap`
     : autoFix ? `Auto-fixed after the ${writerRec ? "creative review" : "automatic check"} (round ${autoFix.round}): ${instructions.trim().slice(0, 160)}` : `${source === "CLIENT_REQUEST" ? "Client suggestion applied" : "Revised"}: ${instructions.trim().slice(0, 160)}`;

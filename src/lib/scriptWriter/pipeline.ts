@@ -6,7 +6,8 @@ import type { GeneratedScriptJson, Gap } from "@/lib/contentPolicy";
 import { gatherForTopic, withHerWords, type Gathered, type GatherOpts } from "./sources";
 import { buildRetrievalPrompt, buildBriefPrompt, buildHooksPrompt, buildDraftPrompt, buildReviewPrompt, buildReviseWriterPrompt, buildRedraftPrompt, type DraftOut, type StepPrompt, type WriterContext } from "./prompts";
 import { locateQuote, contextAround, timeOf, isInternalTalk } from "./passages";
-import { pickHook, hardNumbers, mergeReview, mustFixFailures, trimInstruction, spokenTextOf, runnerUpHook, hookInUse, hookFailed, readCraft, keptLongerConflicts, WRITER_LENGTH, WRITER_VERSION, BRIEF_MUST_KEEP_MAX, estimateSeconds, type CraftScores, type HookCandidate, type ReviewCheckResult, type HardFinding, type ScriptParts } from "./rules";
+import { pickHook, hardNumbers, mergeReview, mustFixFailures, trimInstruction, spokenTextOf, runnerUpHook, hookInUse, hookVerdict, hookIsBarPick, hookRank, readCraft, keptLongerConflicts, pickFinal, usedStory, partTextOf, trimAboveFor, WRITER_LENGTH, WRITER_VERSION, BRIEF_MUST_KEEP_MAX, CRAFT_FAIL_AT, CRAFT_PASS, CRAFT_PARTS, SCRIPT_PART_KEYS, CHECK_PARTS, estimateSeconds, type CraftScores, type HookCandidate, type ReviewCheckResult, type HardFinding, type ScriptParts, type ScriptPartKey } from "./rules";
+import { countSpokenWords } from "../contentPolicy/policy";
 import { readWriter, type TopicBrief, type WriterPassage, type WriterRecord, type WriterRationale } from "./record";
 
 // ---------------------------------------------------------------------------
@@ -188,6 +189,37 @@ export const INVITATION_RE = /\b(?:let'?s talk|reach out|call me|contact (?:me|h
 export const EXAMPLE_ASK_RE = /\b(?:have you ever|has (?:there|that) ever|a real example|an example|for example|give me an example|what was the outcome|how did (?:it|that) (?:end|turn out|go)|tell me about a time|what happened)\b/i;
 
 /**
+ * v2.4: a passage about a deal still in progress (Marcee's 2022 draft used a
+ * listing her buyer "just wrote an offer on"). Read on the proof's own
+ * passages (her quote), never on the lines around them.
+ */
+export const LIVE_DEAL_RE = /\b(?:just wrote an offer|made an offer|on the market for over|currently|under contract now)\b/i;
+
+/** The passages a brief's proof cites: by id (P3), or by the time it names ("call at 01:26:08"). Pure. */
+export function proofPassages(proof: { source?: string | null } | null | undefined, passages: readonly WriterPassage[]): WriterPassage[] {
+  const src = proof?.source ?? "";
+  const ids = new Set(src.match(/\bP\d+\b/g) ?? []);
+  const times = new Set(src.match(/\b\d{1,2}:\d{2}:\d{2}\b/g) ?? []);
+  return passages.filter((p) => ids.has(p.id) || (!!p.time && times.has(p.time)));
+}
+
+/**
+ * v2.4 (unsafe or used proofs, pure): why the brief's proof cannot be this
+ * video's proof, or null. A live deal on its passage (LIVE_DEAL_RE), or a
+ * story she already told in an approved or filmed script (rules.usedStory).
+ */
+export function proofProblem(proof: { text: string; source?: string | null } | null, passages: readonly WriterPassage[], onCamera: readonly { title: string; text: string }[] = []): { kind: "live" | "used"; reason: string; ids: string[]; figures: string[] } | null {
+  if (!proof?.text) return null;
+  const own = proofPassages(proof, passages);
+  const ids = own.map((p) => p.id);
+  const live = own.find((p) => LIVE_DEAL_RE.test(p.quote));
+  if (live) return { kind: "live", ids, figures: [], reason: `a deal still in progress (${live.id}: "${(LIVE_DEAL_RE.exec(live.quote)?.[0] ?? "").trim()}"): never this video's proof; at most a mention in general terms, never identifiable` };
+  const used = usedStory([proof.text, ...own.map((p) => p.quote)].join("\n"), onCamera);
+  if (used) return { kind: "used", ids, figures: used.figures, reason: `a story she has already told on camera ("${used.title}": ${used.figures.join(", ")}; ${used.words.slice(0, 5).join(", ")}): never this video's proof` };
+  return null;
+}
+
+/**
  * The brief as stored. Oct 22 2026 (the listening fix), held by code whatever
  * the model wrote: a point about a deal still in progress is never must-keep
  * (it goes to excluded); an educational video keeps at most three must-keep
@@ -195,17 +227,27 @@ export const EXAMPLE_ASK_RE = /\b(?:have you ever|has (?:there|that) ever|a real
  * optional. A brief without a video type is read as educational. v2.3: the
  * invitation is never must-keep (moved to optional); when the interviewer
  * asked for an example and whatWeAsked lost that question, code puts it back.
+ * v2.4: a proof whose passage is a live deal, or a story she already told on
+ * camera (`onCamera`: her approved or filmed scripts), is moved to excluded
+ * (isHerStory cleared), with every must-keep point that cites its passages or
+ * carries its figures; a told story's target is WRITER_LENGTH.storyTarget.
  */
-export function briefFrom(out: BriefOut, passages: WriterPassage[], asked: readonly { quote: string; time: string | null }[] = []): TopicBrief {
+export function briefFrom(out: BriefOut, passages: WriterPassage[], asked: readonly { quote: string; time: string | null }[] = [], opts: { onCamera?: readonly { title: string; text: string }[] } = {}): TopicBrief {
   const said = (Array.isArray(out.whatSheSaid) ? out.whatSheSaid : []).map((id) => passages.find((p) => p.id === String(id).trim())).filter((p): p is WriterPassage => !!p);
   const videoType = out.videoType === "story" ? "story" : "educational";
   const rawKeep = Array.isArray(out.mustKeep) ? out.mustKeep : [];
   const live = items(rawKeep.filter((m) => m?.inProgress === true));
-  const notLive = items(rawKeep.filter((m) => m?.inProgress !== true));
+  const notLive0 = items(rawKeep.filter((m) => m?.inProgress !== true));
+  const proofText0 = s400(out.proof?.text);
+  const problem = proofText0 ? proofProblem({ text: proofText0, source: s400(out.proof?.source) }, passages, opts.onCamera ?? []) : null;
+  // The must-keep points that are the same proof: they cite its passages, or tell the same story (a figure and three words of it).
+  const sameProof = (m: { text: string; source: string }) => !!problem && ((m.source.match(/\bP\d+\b/g) ?? []).some((id) => problem.ids.includes(id)) || usedStory(m.text, [{ title: "", text: proofText0 }]) !== null);
+  const unsafeKeep = notLive0.filter(sameProof);
+  const notLive = notLive0.filter((m) => !sameProof(m));
   const invites = notLive.filter((m) => INVITATION_RE.test(m.text));
   const keepAll = notLive.filter((m) => !INVITATION_RE.test(m.text));
   const cap = BRIEF_MUST_KEEP_MAX[videoType];
-  const proofText = s400(out.proof?.text);
+  const proofText = problem ? "" : proofText0;
   let whatWeAsked = s400(out.whatWeAsked);
   const flat = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   for (const a of asked) {
@@ -223,13 +265,18 @@ export function briefFrom(out: BriefOut, passages: WriterPassage[], asked: reado
       ...items(out.optional),
     ].slice(0, 14),
     excluded: [
+      // v2.4: the unsafe or used proof first, with the must-keep points that carried it.
+      ...(problem ? [{ text: `The proof: ${proofText0}`, reason: problem.reason }, ...unsafeKeep.map((m) => ({ text: m.text, reason: problem.reason }))] : []),
       ...live.map((m) => ({ text: m.text, reason: "a deal still in progress: never a must-keep; at most a mention in general terms, never identifiable" })),
       ...(Array.isArray(out.excluded) ? out.excluded : []).map((x) => ({ text: s400((x as { text?: unknown }).text), reason: s400((x as { reason?: unknown }).reason) })).filter((x) => x.text),
     ].slice(0, 14),
     contradictions: (Array.isArray(out.contradictions) ? out.contradictions : []).map((x) => ({ text: s400((x as { text?: unknown }).text), sources: s400((x as { sources?: unknown }).sources) })).filter((x) => x.text).slice(0, 8),
     verifiedFacts: items(out.verifiedFacts), opinions: items(out.opinions), creativeIdeas: items(out.creativeIdeas), ourAssumptions: items(out.ourAssumptions),
     closeType: out.closeType === "callback" ? "callback" : "cta", closeWhy: s400(out.closeWhy),
-    target: { aim: [WRITER_LENGTH.aim[0], WRITER_LENGTH.aim[1]], cap: WRITER_LENGTH.cap, seconds: [estimateSeconds(WRITER_LENGTH.aim[0]), estimateSeconds(WRITER_LENGTH.aim[1])], words: WRITER_LENGTH.target },
+    // v2.4: a told personal story may use up to the cap (Jordan's story finals run 94 to 110).
+    target: videoType === "story"
+      ? { aim: [WRITER_LENGTH.aim[0], WRITER_LENGTH.cap], cap: WRITER_LENGTH.cap, seconds: [estimateSeconds(WRITER_LENGTH.aim[0]), estimateSeconds(WRITER_LENGTH.cap)], words: WRITER_LENGTH.storyTarget }
+      : { aim: [WRITER_LENGTH.aim[0], WRITER_LENGTH.aim[1]], cap: WRITER_LENGTH.cap, seconds: [estimateSeconds(WRITER_LENGTH.aim[0]), estimateSeconds(WRITER_LENGTH.aim[1])], words: WRITER_LENGTH.target },
   };
 }
 
@@ -332,7 +379,8 @@ export async function prepareDraft(o: GatherOpts & { requestedBy: string; unatte
   const excluded = got.excluded;
   // v2.1: the brief checks against the whole call, not only the passages.
   const b = await runWriterStep<BriefOut>("brief", buildBriefPrompt(g.ctx, passages, excluded, overview, g.callText, got.asked), rc, { dedupeKey: key("brief") });
-  const brief = briefFrom(b.output, passages, got.asked);
+  // v2.4: her approved and filmed scripts (all of them, not only the same-subject ones): a story she already told on camera is never the proof.
+  const brief = briefFrom(b.output, passages, got.asked, { onCamera: (g.scriptCands ?? []).map((c) => ({ title: c.title, text: c.body })) });
   // v2.3: the month's other openings ride into the hooks step (variety), and her own moment wins a tie when the proof is her story.
   const siblingHooks = await siblingHooksFor({ topicId: o.topicId, monthId: o.monthId, enrollmentId: g.enrollmentId, asOf: o.asOf ?? null });
   const h = await runWriterStep<{ hooks?: Parameters<typeof pickHook>[0] }>("hooks", buildHooksPrompt(g.ctx, brief, { siblings: siblingHooks }), rc, { dedupeKey: key("hooks") });
@@ -382,8 +430,8 @@ export function writerRecordOf(p: Prepared, draft: { output: DraftOut; runId: st
 // ---------------------------------------------------------------------------
 
 type ReviewOut = { checks?: { key?: string; pass?: boolean; reason?: string }[]; craft?: unknown; fixInstruction?: string; summary?: string };
-/** `craft` (v2.3): the five parts scored 1 to 5 with a psychology note each (check 13 reads it). */
-export type ReviewResult = { checks: ReviewCheckResult[]; hard: HardFinding[]; mustFails: ReviewCheckResult[]; craft: CraftScores | null; fixInstruction: string | null; summary: string | null; words: number; seconds: number; runId: string };
+/** `craft` (v2.3): the five parts scored 1 to 5 with a psychology note each (check 13 reads it). `story` (v2.4): the brief marks a told personal story (it may use up to the cap). */
+export type ReviewResult = { checks: ReviewCheckResult[]; hard: HardFinding[]; mustFails: ReviewCheckResult[]; craft: CraftScores | null; fixInstruction: string | null; summary: string | null; words: number; seconds: number; runId: string; story?: boolean };
 
 /** What she said or approved, as the hard numbers read it (never our assumptions); v2.1: the whole call too. */
 export function clientTextOf(rec: Pick<WriterRecord, "passages" | "facts">, ctx: Pick<WriterContext, "answers" | "strategyText" | "relatedScripts">, callText = ""): string {
@@ -397,16 +445,18 @@ export function spokenSourceOf(rec: Pick<WriterRecord, "passages">, callText = "
 
 export async function reviewParts(ctx: WriterContext, rec: WriterRecord, parts: ScriptParts & { closeType?: string | null }, rc: RunCtx, opts: { dedupeKey?: string | null; callText?: string | null } = {}): Promise<ReviewResult> {
   const callText = opts.callText ?? "";
-  const numbers = hardNumbers(parts, clientTextOf(rec, ctx, callText), spokenSourceOf(rec, callText));
+  const story = rec.brief.videoType === "story";
+  const numbers = hardNumbers(parts, clientTextOf(rec, ctx, callText), spokenSourceOf(rec, callText), { story });
   const body = [`HOOK: ${parts.hook}`, ...parts.points.map((p, i) => `${["RE-HOOK", "BUILD-UP", "PAYOFF"][i] ?? "POINT"}: ${p.text}`), `CLOSE: ${parts.close}`].join("\n");
   const prompt = buildReviewPrompt({ ...ctx, facts: rec.facts }, rec.brief, rec.passages, { body, closeType: parts.closeType ?? null }, { words: numbers.words, seconds: numbers.seconds, hookWords: numbers.hookWords, hard: numbers.findings.map((f) => f.detail) }, callText);
   // Every version gets its own review run (never a reused verdict): the ledger shows each check.
   const r = await runWriterStep<ReviewOut>("review", prompt, rc, { dedupeKey: opts.dedupeKey ?? null, reuse: false });
   const craft = readCraft(r.output?.craft);
-  const checks = mergeReview(Array.isArray(r.output?.checks) ? r.output.checks : [], numbers.findings, numbers.words, craft);
+  // v2.4: the craft score of a hook still word for word a scored pick that met HOOK_BAR is advice.
+  const checks = mergeReview(Array.isArray(r.output?.checks) ? r.output.checks : [], numbers.findings, numbers.words, craft, { hookAdvisory: hookIsBarPick(rec.hooks, parts.hook), story });
   const mustFails = mustFixFailures(checks);
   const fix = typeof r.output?.fixInstruction === "string" ? r.output.fixInstruction.trim().slice(0, 3000) : "";
-  return { checks, hard: numbers.findings, mustFails, craft, fixInstruction: checks.some((c) => !c.pass) ? fix || null : null, summary: s400(r.output?.summary) || null, words: numbers.words, seconds: numbers.seconds, runId: r.runId };
+  return { checks, hard: numbers.findings, mustFails, craft, fixInstruction: checks.some((c) => !c.pass) ? fix || null : null, summary: s400(r.output?.summary) || null, words: numbers.words, seconds: numbers.seconds, runId: r.runId, story };
 }
 
 /**
@@ -426,11 +476,19 @@ export async function reviewParts(ctx: WriterContext, rec: WriterRecord, parts: 
  *   fix rounds left (two at most)         → a fix round (it trims too when over)
  *   still over the cap, no cap trim yet   → the cap trim
  *   otherwise                             → flagged for Jordan, never quietly passed
+ *
+ * v2.4 (the length fix): BEFORE the first review (`reviewed: false`), a draft
+ * over trimAbove gets the aim trim first and the trimmed version is reviewed
+ * ("aim-trim"), else the draft is reviewed ("review"). Sonnet drafted at 87
+ * words on average and the trim only ran after a passing review, so on none.
+ * A told personal story (`story`) is never aim-trimmed: it may use up to the cap.
  */
-export type WriterStep = "pass" | "trim" | "aim-trim" | "revert" | "fix" | "flag";
-export function nextWriterStep(o: { mustFails: ReviewCheckResult[]; words: number; fixRounds: number; trimmed: boolean; aimTrimmed?: boolean; isAimTrim?: boolean; maxFixRounds?: number }): WriterStep {
+export type WriterStep = "pass" | "trim" | "aim-trim" | "revert" | "fix" | "flag" | "review";
+export function nextWriterStep(o: { mustFails: ReviewCheckResult[]; words: number; fixRounds: number; trimmed: boolean; aimTrimmed?: boolean; isAimTrim?: boolean; maxFixRounds?: number; reviewed?: boolean; story?: boolean | null }): WriterStep {
+  const trimAbove = trimAboveFor(o.story);
+  if (o.reviewed === false) return !o.story && o.words > trimAbove && !o.aimTrimmed && !o.trimmed && !o.isAimTrim && !o.fixRounds ? "aim-trim" : "review";
   if (o.isAimTrim && o.mustFails.some((c) => c.key !== "length")) return "revert";
-  if (!o.mustFails.length) return o.words > WRITER_LENGTH.trimAbove && !o.aimTrimmed && !o.isAimTrim ? "aim-trim" : "pass";
+  if (!o.mustFails.length) return !o.story && o.words > trimAbove && !o.aimTrimmed && !o.isAimTrim ? "aim-trim" : "pass";
   if (o.mustFails.every((c) => c.key === "length") && !o.trimmed) return "trim";
   if (o.fixRounds < (o.maxFixRounds ?? 2)) return "fix";
   if (o.words > WRITER_LENGTH.cap && !o.trimmed) return "trim";
@@ -478,8 +536,13 @@ export function carryConflicts(keptChecks: readonly ReviewCheckResult[], trimChe
   });
 }
 
-/** What a fix round is told: every failing check (must-fix first), the reviewer's instruction, the trim when over the cap, and no invention. */
-export function writerFixInstruction(j: { checks?: ReviewCheckResult[]; hard?: HardFinding[]; fixInstruction?: string | null; words?: number }, mustKeep: readonly string[] = []): string {
+/**
+ * What a fix round is told: every failing check (must-fix first), the
+ * reviewer's instruction, the trim, and no invention. v2.4: the trim rides
+ * along whenever the version is over trimAbove (it was only over the cap, and
+ * fix rounds added words); a told story only over the cap.
+ */
+export function writerFixInstruction(j: { checks?: ReviewCheckResult[]; hard?: HardFinding[]; fixInstruction?: string | null; words?: number }, mustKeep: readonly string[] = [], opts: { story?: boolean | null } = {}): string {
   const checks = j.checks ?? [];
   const must = checks.filter((c) => !c.pass && c.level === "must-fix");
   const flags = checks.filter((c) => !c.pass && c.level === "flag");
@@ -488,7 +551,7 @@ export function writerFixInstruction(j: { checks?: ReviewCheckResult[]; hard?: H
     must.length ? `MUST FIX:\n${must.map((c) => `- ${c.n}. ${c.label}: ${c.reason}`).join("\n")}` : "",
     flags.length ? `ALSO IMPROVE IF YOU CAN WITHOUT LOSING ANYTHING:\n${flags.map((c) => `- ${c.n}. ${c.label}: ${c.reason}`).join("\n")}` : "",
     j.fixInstruction ? `THE REVIEWER'S INSTRUCTION: ${j.fixInstruction}` : "",
-    (j.words ?? 0) > WRITER_LENGTH.cap ? trimInstruction(j.words ?? 0, mustKeep) : "",
+    (j.words ?? 0) > trimAboveFor(opts.story) ? trimInstruction(j.words ?? 0, mustKeep, { story: opts.story }) : "",
     "Use only her sources. Anything they do not support stays a gap: never invent a story, number, result, reason or credential to fix a problem.",
   ].filter(Boolean).join("\n");
 }
@@ -538,29 +601,99 @@ export async function reviewVersion(versionId: string, o: { requestedBy: string;
   return { ...r, closeType };
 }
 
+/** What the review said, as a fix round reads it (v2.4): the checks, the code's findings and the craft block, or only the instruction. */
+export type ReviewSaid = { checks?: ReviewCheckResult[] | null; hard?: HardFinding[] | null; craft?: CraftScores | null; instruction?: string | null };
+
 /**
- * The hook a fix round starts again from (Oct 22 2026, the listening fix): when
- * the review failed the hook or the re-hook at must-fix level, the next-best
- * usable hook that neither the first draft nor the current version used; null
- * otherwise (or when every hook has been tried). Pure.
+ * The hook a fix round starts again from (Oct 22 2026, the listening fix),
+ * or null. v2.4 (keep the good hook): only when the HOOK failed, and only
+ * when it failed on accuracy, meaning or a hard finding (rules.hookVerdict),
+ * or the craft block scored it CRAFT_FAIL_AT or under and the runner-up ranks
+ * at least as high (rules.hookRank). Then the next-best usable hook that
+ * neither the first draft nor the current version used. A failed re-hook, or
+ * a hook the reviewer only liked less, keeps the hook (reviewRoundPlan locks
+ * it). Across the v2.3 retest, 9 of 20 swap rounds raised the must-fix count. Pure.
  */
-export function switchHookFor(rec: Pick<WriterRecord, "hooks" | "chosen" | "brief"> & Partial<Pick<WriterRecord, "passages">>, current: { body: string }, failed: { checks?: ReviewCheckResult[] | null; instruction?: string | null }): HookCandidate | null {
-  if (!rec.hooks.length || !hookFailed(failed)) return null;
-  const used = [rec.chosen >= 0 ? rec.hooks[rec.chosen]?.text ?? "" : "", hookInUse(current.body, rec.hooks) ?? ""].filter(Boolean);
+export function switchHookFor(rec: Pick<WriterRecord, "hooks" | "chosen" | "brief"> & Partial<Pick<WriterRecord, "passages">>, current: { body: string; hook?: string | null }, failed: ReviewSaid): HookCandidate | null {
+  if (!rec.hooks.length) return null;
+  const curText = current.hook ?? hookInUse(current.body, rec.hooks) ?? "";
+  const v = hookVerdict(failed, curText);
+  if (!v.hard && !(v.failed && v.craftHook != null && v.craftHook <= CRAFT_FAIL_AT)) return null;
+  const used = [rec.chosen >= 0 ? rec.hooks[rec.chosen]?.text ?? "" : "", hookInUse(current.body, rec.hooks) ?? "", curText].filter(Boolean);
   // v2.3: the same order the hook was picked in (eligible first, then the rank, her moment on a tie when the proof is her story).
-  return runnerUpHook(rec.hooks, used, { videoType: rec.brief.videoType ?? null, proofIsStory: proofIsHerStory(rec.brief, rec.passages ?? []) });
+  const next = runnerUpHook(rec.hooks, used, { videoType: rec.brief.videoType ?? null, proofIsStory: proofIsHerStory(rec.brief, rec.passages ?? []) });
+  if (!next || v.hard) return next;
+  // The craft path: only to a runner-up that ranks at least as high as the hook in use (a hook the writer made up ranks 0).
+  const cur = rec.hooks.find((h) => h.text && curText && h.text.replace(/\s+/g, " ").trim().toLowerCase() === curText.replace(/\s+/g, " ").trim().toLowerCase());
+  return hookRank(next) >= (cur ? hookRank(cur) : 0) ? next : null;
+}
+
+/**
+ * The parts a review passed (v2.4): no failing must-fix check names it, and
+ * the craft block scored it CRAFT_PASS or more when it scored it. When a
+ * must-fix failure names no part (Enough substance, Her meaning, the length),
+ * nothing counts as passed: any part may have to change to fix it. Pure.
+ */
+export function partsPassed(review: ReviewSaid): ScriptPartKey[] {
+  const failing = (review.checks ?? []).filter((c) => !c.pass && c.level === "must-fix");
+  if (!review.checks?.length) return [];
+  if (failing.some((c) => !(c.parts ?? CHECK_PARTS[c.key] ?? []).length)) return [];
+  return SCRIPT_PART_KEYS.filter((k) => {
+    if (failing.some((c) => (c.parts ?? CHECK_PARTS[c.key] ?? []).includes(k))) return false;
+    const s = review.craft?.[k]?.score;
+    return !review.craft || (typeof s === "number" && s >= CRAFT_PASS);
+  });
+}
+
+/**
+ * What a review fix round does (v2.4, pure): `switchTo` the runner-up hook
+ * (a redraft from its hook only, never its re-hook, every part that passed
+ * kept word for word), or revise with the hook LOCKED. The hook is left
+ * unlocked only when it failed on accuracy, meaning or a hard finding and no
+ * runner-up is left (it must change). `lock` is what code copies back.
+ */
+export function reviewRoundPlan(rec: Pick<WriterRecord, "hooks" | "chosen" | "brief"> & Partial<Pick<WriterRecord, "passages">>, current: { body: string; hook?: string | null }, review: ReviewSaid): { switchTo: HookCandidate | null; lock: ScriptPartKey[] } {
+  const switchTo = switchHookFor(rec, current, review);
+  if (switchTo) return { switchTo, lock: partsPassed(review).filter((k) => k !== "hook") };
+  const v = hookVerdict(review, current.hook ?? hookInUse(current.body, rec.hooks) ?? "");
+  return { switchTo: null, lock: v.hard ? [] : ["hook"] };
+}
+
+/** A part's label as the prompts name it (Hook, Re-hook, Build-up, Payoff, Close). */
+export const partLabel = (k: ScriptPartKey) => CRAFT_PARTS.find((p) => p.key === k)?.label ?? k;
+
+/** The new parts with the locked ones copied back from the old, word for word (pure). */
+export function withLocked(next: ScriptParts, prev: ScriptParts, lock: readonly ScriptPartKey[]): ScriptParts {
+  const out: ScriptParts = { hook: next.hook, points: next.points.map((p) => ({ ...p })), close: next.close };
+  for (const k of lock) {
+    if (k === "hook") out.hook = prev.hook;
+    else if (k === "close") out.close = prev.close;
+    else {
+      const i = k === "rehook" ? 0 : k === "buildup" ? 1 : 2;
+      const t = partTextOf(prev, k);
+      if (out.points[i]) out.points[i] = { ...out.points[i], text: t };
+      else out.points[i] = { role: ["re-hook", "build-up", "payoff"][i], text: t };
+    }
+  }
+  return out;
 }
 
 /**
  * The revise prompt for a script the writer drafted (fix rounds, the trim pass, a person's or a client's request).
- * A review fix round whose instruction fails the hook or the re-hook is a fresh draft from the runner-up hook
- * (switchHookFor); a locked hook, a trim or a person's request never switches.
+ * A review fix round follows reviewRoundPlan (v2.4): a redraft from the runner-up hook only when the hook itself
+ * failed on accuracy, meaning or a hard finding (or scored 2 or under against a runner-up as strong), else a
+ * revision with the hook locked. `review` is the version's judge record (its checks, findings and craft); without
+ * it the plan reads the instruction. `lock` names the parts code copies back. A person's request or a trim never switches.
  */
-export async function writerRevisePrompt(s: { id: string; topicId: string | null; monthId: string | null }, rec: WriterRecord, current: { versionNo: number; body: string }, instruction: string, opts: { lockedLabels?: string[]; who: "review" | "trim" | "person" | "client" }): Promise<StepPrompt> {
+export async function writerRevisePrompt(s: { id: string; topicId: string | null; monthId: string | null }, rec: WriterRecord, current: { versionNo: number; body: string; hook?: string | null }, instruction: string, opts: { lockedLabels?: string[]; who: "review" | "trim" | "person" | "client"; review?: ReviewSaid | null }): Promise<StepPrompt & { lock: ScriptPartKey[] }> {
   const { ctx } = await contextForScript(s, rec);
-  const next = opts.who === "review" && !(opts.lockedLabels ?? []).some((l) => /hook/i.test(l)) ? switchHookFor(rec, current, { instruction }) : null;
-  if (next) return buildRedraftPrompt(ctx, rec.brief, rec.passages, { text: next.text, rehook: next.rehook }, current, instruction);
-  return buildReviseWriterPrompt(ctx, rec.brief, rec.passages, current, instruction, opts);
+  const personLocked = (opts.lockedLabels ?? []).some((l) => /hook/i.test(l));
+  if (opts.who === "review" && !personLocked) {
+    const plan = reviewRoundPlan(rec, current, { ...(opts.review ?? {}), instruction });
+    if (plan.switchTo) return { ...buildRedraftPrompt(ctx, rec.brief, rec.passages, { text: plan.switchTo.text }, current, instruction, { keep: plan.lock.map(partLabel) }), lock: plan.lock };
+    return { ...buildReviseWriterPrompt(ctx, rec.brief, rec.passages, current, instruction, { ...opts, lockedLabels: [...new Set([...(opts.lockedLabels ?? []), ...plan.lock.map(partLabel)])] }), lock: plan.lock };
+  }
+  return { ...buildReviseWriterPrompt(ctx, rec.brief, rec.passages, current, instruction, opts), lock: [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -580,8 +713,17 @@ export async function draftOffline(o: { topicId: string; monthId: string | null;
   const rc: RunCtx = { requestedBy: o.requestedBy, unattended: false, scope, enrollmentId: p.g.enrollmentId, clientId: p.g.clientId, strategyVersionId: p.g.strategyVersionId, policyVersionId: p.g.policyVersionId };
   const attempts: OfflineAttempt[] = [];
   const mustKeep = mustKeepTexts(p.brief);
+  const story = p.brief.videoType === "story";
   let cur = toParts(draft.output, p.chosen >= 0 ? p.hooks[p.chosen].text : null);
   let fixRounds = 0, trimmed = false, aimTrimmed = false, label = "draft";
+  // v2.4 (the length fix): a draft over trimAbove is trimmed BEFORE its first review; the draft stays in the trail, unreviewed.
+  const draftWords = countSpokenWords(spokenTextOf(cur.parts));
+  if (nextWriterStep({ reviewed: false, mustFails: [], words: draftWords, fixRounds: 0, trimmed: false, story }) === "aim-trim") {
+    attempts.push({ label, parts: cur.parts, closeType: cur.closeType, words: draftWords, seconds: estimateSeconds(draftWords), review: null, note: `Trimmed toward ${WRITER_LENGTH.trimTo[0]} to ${WRITER_LENGTH.trimTo[1]} words before its first review.` });
+    const trimmedOut = await runWriterStep<DraftOut>("revise", buildReviseWriterPrompt(p.g.ctx, p.brief, p.passages, { versionNo: attempts.length, body: spokenTextOf(cur.parts) }, trimInstruction(draftWords, mustKeep), { who: "trim" }), rc);
+    cur = toParts(trimmedOut.output, null);
+    aimTrimmed = true; trimmed = draftWords > WRITER_LENGTH.cap; label = "trim to aim";
+  }
   // The passing attempt the aim trim started from, while the next review is of that trim.
   let aimFrom: OfflineAttempt | null = null;
   for (let guard = 0; guard < 7; guard++) {
@@ -589,7 +731,7 @@ export async function draftOffline(o: { topicId: string; monthId: string | null;
     const attempt: OfflineAttempt = { label, parts: cur.parts, closeType: cur.closeType, words: review.words, seconds: review.seconds, review };
     attempts.push(attempt);
     // The same order as the automatic check on the version trail (scriptJudge.ts).
-    const next = nextWriterStep({ mustFails: review.mustFails, words: review.words, fixRounds, trimmed, aimTrimmed, isAimTrim: !!aimFrom });
+    const next = nextWriterStep({ mustFails: review.mustFails, words: review.words, fixRounds, trimmed, aimTrimmed, isAimTrim: !!aimFrom, story });
     if (next === "revert" && aimFrom) {
       // v2.3: the kept version may not say the line the trim's review failed on; when it does, it is flagged.
       const conflicts = keptLongerConflicts({ parts: attempt.parts, checks: review.checks }, aimFrom.parts);
@@ -597,25 +739,27 @@ export async function draftOffline(o: { topicId: string; monthId: string | null;
       return { prepared: strip(p), record: rec, attempts, final: { ...aimFrom, review: keptReview, note: keptLongerNote(aimFrom.label, aimFrom.words, conflicts, review.mustFails) }, state: conflicts.length ? "flagged" : "passed", keptLonger: true };
     }
     if (next === "pass") return { prepared: strip(p), record: rec, attempts, final: attempt, state: "passed", keptLonger: false };
-    if (next === "flag" || next === "revert") break;
+    if (next === "flag" || next === "revert" || next === "review") break;
     let instruction: string, who: "review" | "trim";
     aimFrom = null;
-    if (next === "aim-trim") { instruction = trimInstruction(review.words, mustKeep); who = "trim"; aimTrimmed = true; aimFrom = attempt; label = "trim to aim"; }
-    else if (next === "trim") { instruction = trimInstruction(review.words, mustKeep); who = "trim"; trimmed = true; label = "trim"; }
-    else { instruction = writerFixInstruction({ checks: review.checks, hard: review.hard, fixInstruction: review.fixInstruction, words: review.words }, mustKeep); who = "review"; fixRounds++; label = `fix ${fixRounds}`; }
+    if (next === "aim-trim") { instruction = trimInstruction(review.words, mustKeep, { story }); who = "trim"; aimTrimmed = true; aimFrom = attempt; label = "trim to aim"; }
+    else if (next === "trim") { instruction = trimInstruction(review.words, mustKeep, { story }); who = "trim"; trimmed = true; label = "trim"; }
+    else { instruction = writerFixInstruction({ checks: review.checks, hard: review.hard, fixInstruction: review.fixInstruction, words: review.words }, mustKeep, { story }); who = "review"; fixRounds++; label = `fix ${fixRounds}`; }
     const body = spokenTextOf(cur.parts);
-    // Oct 22 2026 (the listening fix): a failed hook or re-hook starts again from the runner-up hook.
-    const switchTo = who === "review" ? switchHookFor(rec, { body }, { checks: review.checks }) : null;
-    const step = switchTo
-      ? buildRedraftPrompt(p.g.ctx, p.brief, p.passages, { text: switchTo.text, rehook: switchTo.rehook }, { versionNo: attempts.length, body }, instruction)
-      : buildReviseWriterPrompt(p.g.ctx, p.brief, p.passages, { versionNo: attempts.length, body }, instruction, { who });
-    if (switchTo) label = `${label} (runner-up hook)`;
+    // v2.4 (keep the good hook): a redraft from the runner-up hook only when the hook itself failed on accuracy,
+    // meaning or a hard finding (or scored 2 or under against a runner-up as strong); else the hook is locked.
+    const plan = who === "review" ? reviewRoundPlan(rec, { body, hook: cur.parts.hook }, { checks: review.checks, hard: review.hard, craft: review.craft }) : { switchTo: null, lock: [] as ScriptPartKey[] };
+    const step = plan.switchTo
+      ? buildRedraftPrompt(p.g.ctx, p.brief, p.passages, { text: plan.switchTo.text }, { versionNo: attempts.length, body }, instruction, { keep: plan.lock.map(partLabel) })
+      : buildReviseWriterPrompt(p.g.ctx, p.brief, p.passages, { versionNo: attempts.length, body }, instruction, { who, lockedLabels: plan.lock.map(partLabel) });
+    if (plan.switchTo) label = `${label} (runner-up hook)`;
     const revised = await runWriterStep<DraftOut>("revise", step, rc);
-    cur = toParts(revised.output, switchTo?.text ?? null);
+    const next2 = toParts(revised.output, plan.switchTo?.text ?? null);
+    cur = { ...next2, parts: withLocked(next2.parts, cur.parts, plan.lock) };
   }
-  const best = attempts.reduce((a, b) => (score(b) < score(a) ? b : a), attempts[0]);
+  // v2.4: never over the cap when a version at or under it exists; then craft (the hook twice); then fewest must-fixes; then words over 85.
+  const reviewed = attempts.filter((a) => a.review);
+  const best = reviewed[pickFinal(reviewed.map((a) => ({ words: a.words, craft: a.review?.craft ?? null, mustFix: a.review?.mustFails.length ?? 99 })))] ?? attempts[attempts.length - 1];
   return { prepared: strip(p), record: rec, attempts, final: best, state: "flagged", keptLonger: false };
 }
-
-const score = (a: OfflineAttempt) => (a.review ? a.review.mustFails.length * 100 + a.review.checks.filter((c) => !c.pass).length : 999);
 const strip = (p: Prepared): Omit<Prepared, "g"> => { const { g: _g, ...rest } = p; void _g; return rest; };
