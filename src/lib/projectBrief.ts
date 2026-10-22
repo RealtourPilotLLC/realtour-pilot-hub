@@ -436,8 +436,17 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
         isPremium: videoTier(p.deliverables.filter((d) => !d.notCompletedReason && !d.waivedAt)) === "premium",
       }).spec
     : undefined;
+  // Oct 22 2026: video 2 and on of a multi-video job need their own words (the
+  // same read the edit card's readiness makes, tasks.handoffReadinessOf).
+  const videoRowCount = p.deliverables.filter((d) => (d.type === "VIDEO" || d.type === "SOCIAL_REEL") && !d.notCompletedReason && !d.waivedAt).length;
+  const laterVideoGaps = owesVideo && videoRowCount > 1
+    ? await Promise.all([import("@/lib/deliverableOutputs"), import("@/lib/perVideoInstructions")])
+        .then(async ([m, pv]) => !pv.perVideoRuleApplies(p.videoHandoffAt ?? p.debriefSubmittedAt) ? [] : (await m.videoInstructionsFor(p.id)).map((r) => pv.laterVideoGap(r, { instructionsInDropbox: !!p.instructionsDropboxPath?.trim() })).filter((g): g is string => !!g))
+        .catch(() => [] as string[])
+    : [];
   const handoff = owesVideo
     ? handoffReadiness({
+        laterVideoGaps,
         titles,
         hasFullVideo: p.deliverables.some((d) => d.type === "VIDEO"),
         isMonthly: isMonthlyContentJob(p.deliverables, p.packageName),

@@ -13,7 +13,7 @@ import {
 import { BackLink } from "@/components/ui/BackLink";
 import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
-import { UploadPortal, type BriefNoteResult, type PortalOutputBrief } from "@/components/upload/UploadPortal";
+import { UploadPortal, type BriefNoteResult, type PortalOutputBrief, type PortalVideo } from "@/components/upload/UploadPortal";
 import type { OutputBrief } from "@/lib/deliverableOutputs";
 import type { VideoStyleKey } from "@/lib/videoStyles";
 import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
@@ -442,6 +442,28 @@ export default async function UploadProjectPage({
   // A preview writes nothing (the action refuses it too, enforced or not).
   const briefNoteBlocked = viewer?.impersonating ? "You're previewing as someone else, so notes can't be added from here." : null;
 
+  // TWO VIDEOS, TWO INSTRUCTION AREAS (Oct 22 2026, Jordan: "a separate
+  // instructions area for the upload portal so instructions can be added for
+  // both videos"). A listing job owing two or more videos names each one and
+  // gives video 2 and on an area of its own; a one-video job and a content
+  // session (one shared brief plus a note per topic) read as before.
+  const perVideo = videoOrderedRow && !session && !topicsUnavailable && !project.contentMonthId
+    ? await import("@/lib/deliverableOutputs").then((m) => m.videoInstructionsFor(project.id)).catch(() => [])
+    : [];
+  const { tierWords } = await import("@/lib/perVideoInstructions");
+  const dueOfKey = new Map(allBriefs.map((b) => [b.key, b.promisedAtISO]));
+  const portalVideo = (r: (typeof perVideo)[number]): PortalVideo => ({
+    key: r.key,
+    number: r.number,
+    total: perVideo.length,
+    label: r.label,
+    tier: tierWords(r.style),
+    shape: r.shape,
+    own: r.own,
+    dueISO: dueOfKey.get(r.key) ?? null,
+  });
+  const videos = perVideo.length > 1 ? { first: portalVideo(perVideo[0]), later: perVideo.slice(1).map(portalVideo) } : null;
+
   // Who else was on this shoot (Oct 21 2026): a second shooter, and for the
   // office the active photographers who could be added.
   const crew = await crewForProject(project.id);
@@ -560,6 +582,7 @@ export default async function UploadProjectPage({
         fieldReports={fieldReports}
         nowMs={renderedAt.getTime()}
         outputBriefs={shownBriefs.map(portalBriefOf)}
+        videos={videos}
         onBriefNote={addOnSiteBriefNote}
         briefNoteBlocked={briefNoteBlocked}
         briefNoteCap={ON_SITE_NOTE_CAP}

@@ -46,6 +46,8 @@ import { recordEditorPacketAckForm, recordEditorPacketSentForm, saveVideoBriefFo
 // §7.6: a limitation on one video's brief becomes missing work in one press.
 import { raiseGapFromBriefForm } from "@/app/editing/gapActions";
 import { etDate } from "@/lib/datetime";
+import { parseEditorBriefSections } from "@/lib/uploadSummary";
+import { tierWords } from "@/lib/perVideoInstructions";
 import { autoSyncScript } from "@/lib/scriptSync";
 import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { getVideoSlaStatus, videoTier } from "@/lib/projectStatus";
@@ -1016,14 +1018,47 @@ export default async function EditBriefPage({
   const ownFolder = selectedBrief?.folder ?? null;
   const footageUrl = ownFolder?.url ?? rawUrl;
   const footageCount = ownFolder ? null : folderCounts.raw > 0 ? `${folderCounts.raw} file${folderCounts.raw === 1 ? "" : "s"} in` : folderCounts.stale ? "not checked lately" : "nothing in yet";
+  // TWO VIDEOS ON ONE JOB, EACH ITS OWN SECTION (Oct 22 2026, Jordan: "Add
+  // two videos to the brief"). A listing job owing two or more videos lists
+  // every video up top (what it is, its tier, its due date, whether its own
+  // instructions are in, where its cut stands) and gives the video on this
+  // page its OWN instructions, never video 1's under its name. A one-video
+  // job and a content session read exactly as before.
+  const perVideo = isVideoJob && !project.contentMonthId
+    ? await import("@/lib/deliverableOutputs").then((m) => m.videoInstructionsFor(project.id)).catch(() => [])
+    : [];
+  const multiVideo = perVideo.length > 1;
+  const thisVideo = multiVideo ? perVideo.find((v) => v.key === selectedKey) ?? perVideo[0] : null;
+  const thisVideoText = thisVideo?.text ? (canSeeRaw ? thisVideo.text : stripMoneySentences(thisVideo.text)) : null;
+  const thisVideoBrief = parseEditorBriefSections(thisVideoText);
+  const videoRows = multiVideo
+    ? perVideo.map((v) => {
+        const brief = outputBriefs.find((o) => o.key === v.key) ?? null;
+        const latest = cutRows.find((row) => `${row.deliverableId}:${row.slot}` === v.key)?.latest;
+        const cut = latest ? (latest.status === "APPROVED" ? "Approved" : latest.status === "CHANGES_REQUESTED" ? `Changes asked on version ${latest.round}` : `Version ${latest.round} in review`) : "No cut yet";
+        const due = brief?.promisedAtISO ? new Date(brief.promisedAtISO) : null;
+        return {
+          key: v.key,
+          number: v.number,
+          label: v.label,
+          tier: tierWords(v.style),
+          due: due ? (deskTz === ET ? `${fmtDue(due, ET)} ET` : `${fmtDue(due, deskTz)} your time`) : null,
+          instructions: v.source === "own" ? "Instructions in" : v.number > 1 && v.source === "job" ? "No instructions of its own yet" : "No instructions yet",
+          cut,
+          outputId: brief?.outputId ?? null,
+          selected: v.key === thisVideo?.key,
+        };
+      })
+    : [];
   const shootNotes = [
-    selectedBrief?.note ? { label: "This video", text: selectedBrief.note } : null,
+    // On a multi-video job this video's own instructions have a section of their own (below).
+    !multiVideo && selectedBrief?.note ? { label: "This video", text: selectedBrief.note } : null,
     ...(["onSite", "footage", "limitations"] as const).map((k) => {
       const x = selectedBrief?.sections.find((y) => y.key === k);
       return x ? { label: x.label, text: x.text } : null;
     }),
     project.editorBrief?.trim() ? { label: "Photographer", text: project.editorBrief.trim() } : null,
-    project.videoInstructions?.trim() ? { label: "Video notes", text: project.videoInstructions.trim() } : null,
+    !multiVideo && project.videoInstructions?.trim() ? { label: "Video notes", text: project.videoInstructions.trim() } : null,
     ...deliverableNotes.map((d) => ({ label: refinedDeliverableLabel(d.type, d.label), text: canSeeRaw ? d.notes ?? "" : stripMoneySentences(d.notes ?? "") })),
   ].filter((x): x is { label: string; text: string } => !!x && !!x.text.trim());
 
@@ -1579,6 +1614,55 @@ export default async function EditBriefPage({
               </div>
             )}
           </header>
+
+          {/* THE JOB'S VIDEOS (Oct 22 2026): every video this job owes, each
+              its own row, so two videos never read as one. */}
+          {multiVideo && (
+            <section id="job-videos" data-brief-section="videos" data-video-count={videoRows.length} className={CARD}>
+              <h2 className={H2}>This job has {videoRows.length} videos</h2>
+              <p className="mt-0.5 text-sm text-muted">Each one is its own edit: its own instructions, due date, upload and review.</p>
+              <ol className="mt-3 space-y-2">
+                {videoRows.map((v) => (
+                  <li key={v.key} data-job-video={v.number} className={`rounded-xl border px-3.5 py-2.5 ${v.selected ? "border-brand bg-brand-soft/30" : "border-border"}`}>
+                    <p className="text-sm font-semibold">
+                      Video {v.number}: {v.label} <span className="font-normal text-muted">· {v.tier}</span>
+                    </p>
+                    <p className="mt-0.5 text-sm text-foreground/85">
+                      {v.due ? `Due ${v.due}` : "No due date yet"} · {v.instructions} · {v.cut}
+                    </p>
+                    {v.outputId && !v.selected && (
+                      <Link href={`/edit/${project.id}?output=${v.outputId}${carry}`} className="mt-1 inline-flex min-h-11 items-center text-sm font-medium text-brand hover:underline">Open video {v.number}</Link>
+                    )}
+                    {v.selected && <p className="mt-1 text-xs font-medium text-brand">You are on this video</p>}
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
+
+          {/* THIS VIDEO'S OWN INSTRUCTIONS (Oct 22 2026). */}
+          {multiVideo && thisVideo && (
+            <section id="video-instructions" data-brief-section="video-instructions" data-video-instructions={thisVideo.number} className={CARD}>
+              <h2 className={H2}>Instructions for video {thisVideo.number}: {thisVideo.label}</h2>
+              {thisVideo.source !== "own" && (
+                <p className="mt-1 rounded-lg bg-warning/10 px-3 py-2 text-sm text-warning">
+                  {thisVideo.source === "job"
+                    ? <>The photographer has not written instructions for this video yet. Video 1&apos;s instructions follow; {askKyle("ask Kyle")} if they do not fit this one.</>
+                    : "No instructions from the shoot yet."}
+                </p>
+              )}
+              {(thisVideoBrief.style || thisVideoBrief.colorProfile) && (
+                <p className="mt-2 text-sm text-muted">{[thisVideoBrief.style ? `Style: ${thisVideoBrief.style}` : null, thisVideoBrief.colorProfile ? `Color profile: ${thisVideoBrief.colorProfile}` : null].filter(Boolean).join(" · ")}</p>
+              )}
+              {thisVideoBrief.preface && <p className="mt-2 whitespace-pre-wrap text-sm text-foreground/90">{thisVideoBrief.preface}</p>}
+              {thisVideoBrief.sections.map((sec) => (
+                <div key={sec.label} className="mt-2.5">
+                  <p className={LABEL}>{sec.title}</p>
+                  <p className="mt-0.5 whitespace-pre-wrap text-sm text-foreground/90">{sec.text}</p>
+                </div>
+              ))}
+            </section>
+          )}
 
           {/* 2 · FIX THESE — only when the video came back. */}
           {cameBack && (

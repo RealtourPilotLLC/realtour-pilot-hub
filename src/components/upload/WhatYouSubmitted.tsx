@@ -42,6 +42,7 @@ export function WhatYouSubmitted({
   files,
   flags,
   halves,
+  laterVideos = [],
 }: {
   submittedAtISO: string | null;
   uploadedAtISO: string | null;
@@ -68,6 +69,8 @@ export function WhatYouSubmitted({
    * its 8:00 AM deadline). Absent or empty on a page submitted in one go.
    */
   halves?: { label: string; atISO: string; by: string | null; late?: boolean }[];
+  /** Oct 22 2026: video 2 and on of a job owing two or more videos, each with its own saved instructions. */
+  laterVideos?: { number: number; label: string; text: string | null }[];
 }) {
   const [showScript, setShowScript] = useState(false);
   const brief = parseEditorBriefSections(videoInstructions);
@@ -164,7 +167,7 @@ export function WhatYouSubmitted({
         )}
 
         {hasVideo && (
-          <Block title="Video">
+          <Block title={laterVideos.length ? "Video 1" : "Video"}>
             {videoFacts.length > 0 && <p className="text-xs text-muted">{videoFacts.join(" · ")}</p>}
             {brief.preface && <Verbatim text={brief.preface} className="mt-1.5" />}
             {brief.sections.map((s) => (
@@ -201,6 +204,25 @@ export function WhatYouSubmitted({
             )}
           </Block>
         )}
+
+        {/* Oct 22 2026: each later video's own instructions, after video 1's. */}
+        {laterVideos.map((v) => {
+          const b = parseEditorBriefSections(v.text);
+          const facts = [b.style ? `Style: ${b.style}` : null, b.colorProfile ? `Color profile: ${b.colorProfile}` : null].filter(Boolean) as string[];
+          return (
+            <Block key={v.number} title={`Video ${v.number}: ${v.label}`}>
+              {b.empty ? <p className="text-sm text-warning">No instructions for this video yet.</p> : null}
+              {facts.length > 0 && <p className="text-xs text-muted">{facts.join(" · ")}</p>}
+              {b.preface && <Verbatim text={b.preface} className="mt-1.5" />}
+              {b.sections.map((s) => (
+                <div key={s.label} className="mt-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">{s.title}</div>
+                  <Verbatim text={s.text} />
+                </div>
+              ))}
+            </Block>
+          );
+        })}
 
         {editorBrief?.trim() && <Block title="Anything else for the editor"><Verbatim text={editorBrief} /></Block>}
 

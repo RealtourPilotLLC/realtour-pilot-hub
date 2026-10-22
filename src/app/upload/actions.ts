@@ -386,6 +386,13 @@ export async function finalizeUpload(
     removalNotes?: string;
     nothingToRemove?: boolean;
     videoInstructions?: string;
+    /**
+     * Oct 22 2026: a job owing two or more videos sends video 2 and on's own
+     * instructions here, keyed `${deliverableId}:${slot}` (the cut key), each
+     * composed like videoInstructions (which stays video 1's). Absent on a
+     * one-video job and on a pre-update tab.
+     */
+    laterVideoInstructions?: Record<string, string>;
     scriptConfirm?: { state: "as-written" | "edited"; script?: string; note?: string } | null;
     /** whether the page the photographer submitted from actually SHOWED a script */
     sawScript?: boolean;
@@ -464,6 +471,8 @@ export async function finalizeUpload(
    * the page says so rather than reporting a success that has not happened.
    */
   topicsPending?: { count: number; message: string };
+  /** Oct 22 2026: the later videos' own instructions did not save (the rest of the submit did). */
+  laterVideosNotSaved?: string;
 }> {
   await requireUploadAccess(projectId);
   // First finalize or a re-submit? The debrief gates and the raws-landed
@@ -720,6 +729,31 @@ export async function finalizeUpload(
     // Oct 22 2026: "Instructions added to Dropbox" answers the typed flow and
     // vision (and, as the typed instructions always have, the intro).
     const instructionsInDropbox = !!prior.instructionsDropboxPath?.trim();
+    // TWO VIDEOS, TWO SETS OF INSTRUCTIONS (Oct 22 2026, Jordan: "a separate
+    // instructions area for the upload portal so instructions can be added for
+    // both videos"). Each later video needs its own color profile and what its
+    // style asks for (perVideoInstructions.laterVideoGap), the same answer the
+    // page asked for. Key ABSENT = a pre-update tab, never trapped; words a
+    // video already has count, as the first video's prior brief does.
+    if (wantsVideoGate && data.laterVideoInstructions && typeof data.laterVideoInstructions === "object") {
+      const [{ videoInstructionsFor }, pv] = await Promise.all([import("@/lib/deliverableOutputs"), import("@/lib/perVideoInstructions")]);
+      const later = (await videoInstructionsFor(projectId).catch(() => [])).filter((r) => r.number > 1);
+      for (const r of later) {
+        const incoming = typeof data.laterVideoInstructions[r.key] === "string" ? data.laterVideoInstructions[r.key].trim() : "";
+        const own = incoming || r.own || "";
+        const name = `video ${r.number} (${r.label})`;
+        if (!pv.COLOR_PROFILE_LINE_RE.test(own)) {
+          return { blocked: `Pick the color profile you shot ${name} in, so the editor grades it the right way.` };
+        }
+        if (pv.laterVideoGap({ ...r, own }, { instructionsInDropbox })) {
+          return {
+            blocked: r.shape === "agent_intro"
+              ? `Type the agent's intro script for ${name}, exactly as it was delivered on camera.`
+              : `Add the vision and the edit style for ${name}. Each video gets its own instructions.`,
+          };
+        }
+      }
+    }
     if (wantsVideoGate && !spec.minimalReel && !prior.videoInstructions && !instructionsInDropbox) {
       // Strip the auto-added STYLE / COLOR PROFILE lines and section labels —
       // the gate demands the photographer's OWN words, not machine boilerplate
@@ -733,7 +767,7 @@ export async function finalizeUpload(
         .filter((l) => {
           const t = l.trim();
           return t && !/^STYLE:/.test(t) && !/^COLOR PROFILE:/.test(t) &&
-            !["VISION FOR THE EDIT", "SUMMARY", "SHOTS THAT MUST BE SHOWN", "AREAS TO AVOID", "THINGS TO AVOID", "REALTOR REQUESTS", "ADDITIONAL NOTES", "INTRO SCRIPT", "EDITING NOTES"].includes(t);
+            !["VISION FOR THE EDIT", "SUMMARY", "SHOTS THAT MUST BE SHOWN", "AREAS TO AVOID", "THINGS TO AVOID", "REALTOR REQUESTS", "ADDITIONAL NOTES", "INTRO SCRIPT", "EDITING NOTES", "SCRIPT FOR THIS VIDEO", "SONG OR MUSIC"].includes(t);
         })
         .join("")
         .trim();
@@ -1051,6 +1085,22 @@ export async function finalizeUpload(
   } else {
     await prisma.project.update(projectWrite);
   }
+  // Oct 22 2026: video 2 and on keep their own instructions on their own video
+  // row (deliverableOutputs.saveLaterVideoInstructions). After the job's own
+  // write, so a refused submit saves nothing; a failure here is said, never
+  // swallowed, and the answers are still on the page to send again.
+  let laterVideosError: string | null = null;
+  if (videoPart && anyVideoOrdered && data.laterVideoInstructions && typeof data.laterVideoInstructions === "object") {
+    const clean = Object.fromEntries(
+      Object.entries(data.laterVideoInstructions)
+        .filter(([k, v]) => typeof k === "string" && k.length <= 120 && typeof v === "string")
+        .slice(0, 20),
+    );
+    await import("@/lib/deliverableOutputs")
+      .then((m) => m.saveLaterVideoInstructions(projectId, clean, submitterName))
+      .catch((e: unknown) => { laterVideosError = (e as Error)?.message ?? "unknown error"; });
+    if (laterVideosError) console.error(`[upload] ${projectId}: the later videos' instructions did not save: ${laterVideosError}`);
+  }
   try {
   await completeIfWhole();
   if (!scope) {
@@ -1306,6 +1356,8 @@ export async function finalizeUpload(
     attemptTerminal,
     pdfPath,
     ...(topicsPending ? { topicsPending } : {}),
+    // Oct 22 2026: said on the page, never swallowed.
+    ...(laterVideosError ? { laterVideosNotSaved: "Your answers went in, but the instructions for the other video did not save. Submit again, or tell the office." } : {}),
     ...(nextHash ? { baseHash: nextHash } : {}),
     handoff: {
       scope: scope ?? "all",

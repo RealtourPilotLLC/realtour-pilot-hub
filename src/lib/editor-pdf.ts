@@ -301,6 +301,10 @@ export async function buildEditorBriefPdf(
   // then each says whether it goes by the shared instructions below. A
   // one-video job with no brief of its own prints exactly as it always did.
   const outs = outputs ?? [];
+  const listingMulti = !project.contentMonthId && outs.length > 1;
+  // The job's field is video 1's once a later video has words of its own;
+  // until then (every job before Oct 22 2026) it is still the shared brief.
+  const firstOnly = listingMulti && outs.some((o) => o.index > 1 && !!o.note);
   if (outs.some((o) => o.directionSource === "own" || o.brandAsset || o.brandChoice === "none") || outs.length > 1) {
     heading("Each video's brief");
     for (const o of outs) {
@@ -308,6 +312,12 @@ export async function buildEditorBriefPdf(
       text(`${o.index}. ${o.label}${o.format !== o.label ? ` - ${o.format}` : ""}`, { size: 11, f: bold, gap: 2 });
       text(o.versionLabel, { size: 9, color: MUTED, x: MARGIN + 14, gap: 2 });
       for (const sec of o.sections) text(`${sec.label}: ${sec.text}`, { size: 10, x: MARGIN + 14, gap: 2 });
+      // Oct 22 2026: video 2 and on of a listing job carry their OWN shoot
+      // instructions (deliverableOutputs.videoInstructionsFor); video 1's are
+      // the job's, printed under their own heading below.
+      if (listingMulti && o.index > 1) {
+        text(o.note ? `Instructions from the shoot for this video:\n${o.note}` : "Instructions from the shoot for this video: none written yet.", { size: 10, x: MARGIN + 14, gap: 2 });
+      }
       text(`Chosen logo / branding card: ${o.brandAsset ? `${o.brandAsset.name}${o.brandAsset.versionNo ? ` v${o.brandAsset.versionNo}` : ""}${o.brandAsset.fileName ? ` - ${o.brandAsset.fileName}` : ""}${o.brandAsset.state !== "current" ? " - no longer current; confirm with Kyle" : ""}` : o.brandChoice === "none" ? "intentionally none for this video; editor acknowledgment required" : "not recorded for this video"}`, { size: 10, x: MARGIN + 14, gap: 2 });
       const due = o.promisedAtISO ? etDate(o.promisedAtISO) : null; // ET, not the server's clock
       const who = [o.reviewer ? `Reviewer: ${o.reviewer.name}${o.reviewer.from === "chain" ? " (first in line)" : ""}` : null, due ? `Due ${due}` : null].filter(Boolean).join("  ·  ");
@@ -315,7 +325,7 @@ export async function buildEditorBriefPdf(
     }
   }
   if (project.videoInstructions) {
-    heading(outs.length > 1 ? "Video - instructions from the shoot (all videos)" : "Video - instructions from the shoot");
+    heading(firstOnly ? `Video 1 (${outs[0]?.label ?? "the first video"}) - instructions from the shoot` : outs.length > 1 ? "Video - instructions from the shoot (all videos)" : "Video - instructions from the shoot");
     text(project.videoInstructions, { size: 11 });
   }
   if (project.scriptConfirmNote) {

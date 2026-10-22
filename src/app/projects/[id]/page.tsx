@@ -77,6 +77,7 @@ import { ReworkCostPanel } from "@/components/project/ReworkCostPanel";
 import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
 import { JobDeliverablesSection } from "@/components/jobs/JobDeliverables";
 import { ShootFlags } from "@/components/jobs/ShootFlags";
+import { VideoSetupNotice } from "@/components/jobs/VideoSetupNotice";
 
 export const dynamic = "force-dynamic";
 
@@ -337,6 +338,10 @@ export default async function ProjectPage({
           section below is unchanged. A failed read shows no cards, never the
           page's loss. */}
       <div className="mt-6 space-y-4">
+        {/* Oct 22 2026: more videos ordered than set up (lib/videoSetup). */}
+        <Suspense fallback={null}>
+          <VideoSetupNotice projectId={project.id} />
+        </Suspense>
         <Suspense fallback={null}>
           <ShootFlags projectId={project.id} />
         </Suspense>

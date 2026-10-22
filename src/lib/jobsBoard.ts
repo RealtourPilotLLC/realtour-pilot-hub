@@ -79,6 +79,8 @@ export type ShootRow = JobRow & {
   delivered: boolean;
   /** Due within the next 7 days (or late). */
   dueThisWeek: boolean;
+  /** Oct 22 2026: the order sells more videos than the job has set up ("2 videos ordered, 1 set up"); null when they agree. */
+  videoSetup: string | null;
 };
 
 const HOUR = 3_600_000;
@@ -352,6 +354,11 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
   const addOnsOpen = await import("@/lib/photoDelivery/addOns")
     .then((m) => m.openAddOnsByProject(ids))
     .catch(() => new Map<string, string[]>());
+  // Oct 22 2026 (Jordan, 538 Onward Ave): a video the order sells that the job
+  // never set up is said on the row, never shown as one video (lib/videoSetup).
+  const setupGaps = await import("@/lib/videoSetup")
+    .then((m) => m.videoSetupGaps(ids))
+    .catch(() => new Map<string, { words: string }>());
   const monthlyIds = new Set(extras.filter((p) => p.contentMonthId).map((p) => p.id));
   const photoStageBy = new Map(photoJobs.map((p) => [p.projectId, p.stage]));
   const asksBy = new Map<string, { medium: string | null; kind: string; askedAt: Date }[]>();
@@ -458,6 +465,7 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
       ].filter(Boolean).join(" · ") || null,
       delivered,
       dueThisWeek: !delivered && !!dueAt && dueAt.getTime() <= weekEnd,
+      videoSetup: delivered ? null : setupGaps.get(j.id)?.words ?? null,
       _rank: delivered ? 4 : late ? 0 : owedNoClock ? 1 : dueAt ? 2 : 3,
       _sort: delivered ? -(j.deliveredAt?.getTime() ?? 0) : dueAt?.getTime() ?? 0,
     });

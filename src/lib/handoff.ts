@@ -43,6 +43,8 @@ const BOILERPLATE_HEADINGS = new Set([
   "ADDITIONAL NOTES",
   "INTRO SCRIPT",
   "EDITING NOTES",
+  "SCRIPT FOR THIS VIDEO",
+  "SONG OR MUSIC",
 ]);
 
 /** The photographer's OWN words, with the machine's lines stripped out. */
@@ -94,6 +96,13 @@ export type HandoffInput = {
   reelHook: string | null;
   scriptConfirmedAt: Date | null;
   videosFilmed: number | null;
+  /**
+   * Oct 22 2026: what video 2 and on of a multi-video job are missing, already
+   * worded (perVideoInstructions.laterVideoGap: "the instructions for video 2
+   * (Standard Reel)"). Absent or empty on a one-video job, which reads exactly
+   * as before. Video 1 is the job's own field and is checked above.
+   */
+  laterVideoGaps?: string[];
   /** Who shot it — the person a missing brief is owed by. */
   photographerName?: string | null;
   photographerKey?: string | null;
@@ -144,6 +153,12 @@ export function handoffReadiness(p: HandoffInput): HandoffReadiness {
         owedBy: "photographer",
       });
     }
+  }
+
+  // TWO VIDEOS, TWO SETS OF INSTRUCTIONS (Oct 22 2026). A later video with no
+  // words of its own is missing them, even when video 1's are in.
+  for (const label of p.laterVideoGaps ?? []) {
+    gaps.push({ key: "instructions", label, owedBy: "photographer" });
   }
 
   // A premium package's script can never be blank — it is the product.

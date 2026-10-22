@@ -28,6 +28,8 @@ function Row({ r }: { r: ShootRow }) {
           </div>
           {r.client && <div className="truncate text-xs text-muted">{r.client}</div>}
           {r.holding && <div className="truncate text-xs text-warning" title={r.holding}>{r.holding}</div>}
+          {/* Oct 22 2026: the order sells more videos than the job has set up. */}
+          {r.videoSetup && <div className="truncate text-xs font-semibold text-danger" data-video-setup title={`${r.videoSetup}. Open the job to set up the missing video.`}>{r.videoSetup}</div>}
         </div>
         <div className={`hidden text-sm tabular-nums sm:block ${r.late ? "font-semibold text-danger" : "text-foreground/80"}`}>{r.dueWords}</div>
         <div className="flex min-w-0 items-center gap-2">

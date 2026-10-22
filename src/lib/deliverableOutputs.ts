@@ -7,6 +7,7 @@ import { unitCategoryFor } from "@/lib/evidenceUnits";
 import { stripMoneySentences } from "@/lib/text";
 import { shownVersionFormat, type VideoFormat } from "@/lib/contentPolicy/videoFormat";
 import { etDateTime, etMonthDay } from "@/lib/datetime";
+import { perVideoInstructions, type PerVideoRow } from "@/lib/perVideoInstructions";
 
 /** Rounds that are not a version of anything — the same list reviewCuts keeps. */
 const NOT_A_ROUND = ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] as const;
@@ -574,9 +575,11 @@ export async function outputsForProject(projectId: string): Promise<OutputRowVie
       // A waived or retired video is not owed, so it is not due: printing the
       // job's deadline beside "Not required on this job" would read as a
       // missed one.
-      promisedAt: isLive ? o.promisedAt ?? planning.promisedAt : o.promisedAt,
-      targetAt: isLive ? o.targetAt ?? planning.targetAt : o.targetAt,
-      promiseFromJob: isLive && !o.promisedAt && planning.promisedAt !== null,
+      // A video of another tier than the job's (the standard reel on a premium
+      // job, Oct 22 2026) is due on its OWN turnaround, not the premium one.
+      promisedAt: isLive ? o.promisedAt ?? planning.ownDueByDeliverable.get(o.deliverableId) ?? planning.promisedAt : o.promisedAt,
+      targetAt: isLive ? o.targetAt ?? (planning.ownDueByDeliverable.has(o.deliverableId) ? null : planning.targetAt) : o.targetAt,
+      promiseFromJob: isLive && !o.promisedAt && !planning.ownDueByDeliverable.has(o.deliverableId) && planning.promisedAt !== null,
       state,
       round: latest?.round ?? null,
       submissionId: latest?.id ?? null,
@@ -621,9 +624,13 @@ type JobPlanning = {
   editorName: string | null;
   /** where today's rules would send each video row, by deliverable id */
   routedNameByDeliverable: Map<string, string>;
+  /** Oct 22 2026: a video row whose tier is not the job's (a standard reel on a
+   *  premium job) is due on its own tier's turnaround. Empty on a one-tier job,
+   *  and whenever the office set a date or a tier for the whole job. */
+  ownDueByDeliverable: Map<string, Date>;
 };
 
-const NO_PLANNING: JobPlanning = { promisedAt: null, targetAt: null, editorName: null, routedNameByDeliverable: new Map() };
+const NO_PLANNING: JobPlanning = { promisedAt: null, targetAt: null, editorName: null, routedNameByDeliverable: new Map(), ownDueByDeliverable: new Map() };
 
 async function jobPlanningFor(projectId: string): Promise<JobPlanning> {
   try {
@@ -637,6 +644,8 @@ async function jobPlanningFor(projectId: string): Promise<JobPlanning> {
           where: { removedFromOrderAt: null, type: { in: ["VIDEO", "SOCIAL_REEL"] } },
           select: { id: true, type: true, label: true },
         },
+        status: true, tierOverride: true,
+        appointments: { select: { status: true, startAt: true } },
       },
     });
     if (!project) return NO_PLANNING;
@@ -678,7 +687,22 @@ async function jobPlanningFor(projectId: string): Promise<JobPlanning> {
         if (name) routedNameByDeliverable.set(d.id, name);
       }
     }
-    return { promisedAt, targetAt, editorName, routedNameByDeliverable };
+    // EACH VIDEO ON ITS OWN TURNAROUND (Oct 22 2026, 538 Onward Ave: a premium
+    // reel and a standard highlight reel on one order). The job's promise is
+    // the slowest video's; a row of a faster tier is dated by its own tier
+    // through the same engine (projectStatus.getVideoSlaStatus), from the same
+    // anchor. The office's date or tier for the job wins for every video.
+    const ownDueByDeliverable = new Map<string, Date>();
+    if (project.deliverables.length > 1 && !project.dueOverrideAt && !project.tierOverride && project.shootDate) {
+      const { videoTier, getVideoSlaStatus } = await import("@/lib/projectStatus");
+      const jobTier = videoTier(project.deliverables);
+      for (const d of project.deliverables) {
+        if (videoTier([d]) === jobTier) continue;
+        const own = getVideoSlaStatus({ shootDate: project.shootDate, status: project.status, deliverables: [d], appointments: project.appointments, packageName: null });
+        if (own) ownDueByDeliverable.set(d.id, own.due);
+      }
+    }
+    return { promisedAt, targetAt, editorName, routedNameByDeliverable, ownDueByDeliverable };
   } catch {
     // A lost lookup leaves the row rendering exactly as it did before this
     // existed — a missing owner, never a wrong one.
@@ -1606,6 +1630,76 @@ export async function outputBriefsFor(projectId: string, opts: { scrub?: boolean
       state: o.state,
     };
   });
+}
+
+// ===========================================================================
+// EACH VIDEO'S INSTRUCTIONS (Oct 22 2026, lib/perVideoInstructions.ts has the
+// rule and where the words live). Read-only: the editor's brief, the upload
+// page, the KPI check and the morning-after nudge all read this one list, so
+// they cannot disagree about which video has instructions and which does not.
+// ===========================================================================
+export async function videoInstructionsFor(projectId: string): Promise<PerVideoRow[]> {
+  const [slots, project, outputs] = await Promise.all([
+    cutSlots(projectId).catch(() => [] as CutSlot[]),
+    prisma.project.findUnique({
+      where: { id: projectId },
+      select: {
+        videoInstructions: true, contentMonthId: true, packageName: true,
+        deliverables: {
+          where: { removedFromOrderAt: null, type: { in: ["VIDEO", "SOCIAL_REEL"] } },
+          select: { id: true, type: true, label: true, videoStyle: true, productTitle: true, createdAt: true },
+        },
+      },
+    }),
+    prisma.deliverableOutput.findMany({
+      where: { projectId, removedFromOrderAt: null },
+      select: { id: true, deliverableId: true, slot: true, filmingNote: true },
+    }),
+  ]);
+  if (!project || slots.length === 0) return [];
+  const { isMonthlyContentJob } = await import("@/lib/pipeline");
+  const { videoTier } = await import("@/lib/projectStatus");
+  const { videoStyleFor } = await import("@/lib/videoStyles");
+  const monthly = !!project.contentMonthId || isMonthlyContentJob(project.deliverables, project.packageName);
+  const tier = videoTier(project.deliverables);
+  const rowOf = new Map(project.deliverables.map((d) => [d.id, d]));
+  return perVideoInstructions({
+    slots,
+    styleOf: (id) => videoStyleFor(rowOf.get(id) ?? { label: null }, { monthly, tier }).key,
+    outputs,
+    createdAtOf: (id) => rowOf.get(id)?.createdAt ?? null,
+    videoInstructions: project.videoInstructions,
+    monthly,
+  });
+}
+
+/**
+ * Save the instructions for video 2 and on (video 1's words stay in
+ * Project.videoInstructions, written by the upload page's submit as before).
+ * `byKey` is `${deliverableId}:${slot}` → the composed text; a key that is not
+ * one of THIS job's later videos is skipped, an empty text leaves the saved
+ * words alone. Materialises the job's video rows first, so a job whose rows
+ * were never made still has somewhere to keep them. Returns the keys saved.
+ * The caller owns the permission check.
+ */
+export async function saveLaterVideoInstructions(projectId: string, byKey: Record<string, string>, actor: string): Promise<string[]> {
+  const wanted = Object.entries(byKey ?? {}).filter(([, t]) => typeof t === "string" && t.trim());
+  if (!wanted.length) return [];
+  await ensureOutputsSafely(projectId, "video-instructions");
+  const rows = await videoInstructionsFor(projectId);
+  const saved: string[] = [];
+  for (const [key, text] of wanted) {
+    const row = rows.find((r) => r.key === key);
+    if (!row || row.number < 2 || !row.outputId) continue;
+    const next = text.replace(/\r\n/g, "\n").trim().slice(0, 6000);
+    if (next === (row.own ?? "")) continue;
+    await prisma.deliverableOutput.update({ where: { id: row.outputId }, data: { filmingNote: next } });
+    saved.push(key);
+    await prisma.activity
+      .create({ data: { projectId, type: "SYSTEM", body: `Video instructions for video ${row.number} (${row.label}) saved by ${(actor || "the photographer").slice(0, 120)}.` } })
+      .catch(() => {});
+  }
+  return saved;
 }
 
 // ===========================================================================
