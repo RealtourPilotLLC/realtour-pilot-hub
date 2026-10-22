@@ -10,6 +10,7 @@ import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import type { PortalTopic } from "@/lib/portal";
 import type { PortalScriptUpdate } from "@/lib/scriptRequests";
 import { CTA_WORDS } from "@/lib/portalWords";
+import { ScriptThread } from "@/components/portal/ScriptThread";
 
 // ---------------------------------------------------------------------------
 // THE CLIENT'S OWN VERDICT ON A SCRIPT (F09) — one component, lifted verbatim
@@ -71,7 +72,7 @@ const labelOf = (p: EditableParts, k: PartKey) => {
 const shortName = (k: PartKey) => (k === "hook" ? "hook" : k === "close" ? "close" : `talking point ${Number(k.slice(5))}`);
 const nameList = (xs: string[]) => (xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
 
-export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: parentBusy, large = false, canApprove = true, inlineParts = false, update = null }: {
+export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: parentBusy, large = false, canApprove = true, inlineParts = false, update = null, canReply = true }: {
   script: ScriptVerdict;
   /** Oct 20 2026 (audit E1): approving, and editing an approved script, are the
    *  account owner's. Everyone else may suggest wording and ask for changes. */
@@ -89,6 +90,8 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
   inlineParts?: boolean;
   /** Oct 22 2026: this version answered their request: the parts that changed are marked. */
   update?: PortalScriptUpdate | null;
+  /** Oct 22 2026: may reply under the script (the server checks the seat again). */
+  canReply?: boolean;
 }) {
   const router = useRouter();
   const [changing, setChanging] = useState(false);
@@ -160,7 +163,6 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
       if (r.ok) { setOpen([]); setDraft({}); setNotes({}); }
       done(r, sendParts);
     });
-  const replies = (script.replies ?? []).filter((m) => !(update?.message && m.atISO === update.message.atISO));
   const pill = cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn);
   const box = "mt-1 block w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-base leading-relaxed outline-none focus:border-brand sm:text-sm";
   const canChange = !!parts;
@@ -334,17 +336,8 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
           )}
         </>
       )}
-      {/* Oct 20 2026: what we wrote back about this script. */}
-      {replies.length > 0 && (
-        <ul className="mt-2 space-y-1.5 rounded-lg border border-border bg-surface-2/40 px-2.5 py-2">
-          {replies.map((m, i) => (
-            <li key={i} className="text-xs">
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-2">{m.by} · {new Date(m.atISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}</span>
-              <p className="whitespace-pre-wrap leading-relaxed">{m.body}</p>
-            </li>
-          ))}
-        </ul>
-      )}
+      {/* Oct 22 2026: the script's own thread (their requests, our replies, theirs), with a reply box. Not in Messages. */}
+      <ScriptThread scriptId={script.id} items={script.thread ?? []} canReply={canReply} large={large} noteAbove={update?.message ? { atISO: update.message.atISO, versionNo: update.versionNo } : null} />
       {/* Standing alone, the answer sits beside the buttons that produced it. */}
       {!onResult && own && (
         <p role="status" className={cn("mt-1.5 flex flex-wrap items-center gap-2 text-xs", own.ok ? "text-success" : "text-danger")}>

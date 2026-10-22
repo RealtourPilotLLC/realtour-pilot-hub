@@ -498,7 +498,8 @@ export function subjectFor(kind: OutboxKind | null, dedupeKey?: string | null): 
     case "script_share": return "Your scripts are ready in your Realtour Pilot portal";
     // Jordan's wording for the strategy notice (6.2, Sep 25 2026).
     case "strategy_ready": return "Your Content Strategy is Ready + Next Steps";
-    case "program_message": return "New reply in your Realtour Pilot portal";
+    // Oct 22 2026: a reply under a script (programMessages, key ending ":script") says so.
+    case "program_message": return dedupeKey?.endsWith(":script") ? "A reply about your script in your Realtour Pilot portal" : "New reply in your Realtour Pilot portal";
     // Oct 5 2026: the onboarding message names its own subject (its key carries it).
     case "onboarding": return onboardingSubject(dedupeKey);
     default: return "Realtour Pilot";

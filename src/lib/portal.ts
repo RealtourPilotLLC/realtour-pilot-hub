@@ -1227,8 +1227,8 @@ export type PortalTopic = {
     decidedAtISO: string | null;
     /** They approved an earlier version and the words have changed since. */
     staleApproval: boolean;
-    /** Oct 20 2026: the office's replies about this script (newest last, up to three). */
-    replies?: { body: string; atISO: string; by: string }[];
+    /** Oct 22 2026: the script's own thread (lib/scriptThread): their change requests and the replies about it, oldest first. */
+    thread?: import("@/lib/scriptThread").ScriptThreadItem[];
     /**
      * Oct 22 2026 (Jordan): its video has been filmed (lib/scriptFilmed), and
      * when, if the hub knows. NOT their approval: `decision` stays what they
@@ -1476,11 +1476,11 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
   // Their standing answer on each shared script (F09) — one batched read.
   const { scriptDecisionsFor } = await import("@/lib/scriptDecisions");
   const decisions = await scriptDecisionsFor(enrollment.id, scripts.map((s) => s.id)).catch(() => new Map());
-  // Oct 20 2026: the office's replies about a script, shown under it.
-  const { replyText } = await import("@/lib/scriptRequests");
-  const scriptReplies = scripts.length
-    ? await prisma.programMessage.findMany({ where: { enrollmentId: enrollment.id, authorKind: "STAFF", refKind: "SCRIPT", refId: { in: scripts.map((s) => s.id) } }, orderBy: { createdAt: "asc" }, select: { refId: true, body: true, createdAt: true, authorLabel: true } }).catch(() => [])
-    : [];
+  // Oct 20 2026: the office's replies about a script, shown under it. Oct 22
+  // 2026: the whole thread, their requests and the replies both ways (lib/scriptThread).
+  const scriptThreads = scripts.length
+    ? await import("@/lib/scriptThread").then((m) => m.scriptThreadsFor(enrollment.id, scripts.map((s) => s.id))).catch((e) => { console.error("[portal] script threads", e); return new Map<string, import("@/lib/scriptThread").ScriptThreadItem[]>(); })
+    : new Map<string, import("@/lib/scriptThread").ScriptThreadItem[]>();
   const monthKeyOf = new Map(monthsRaw.map((m) => [m.id, m.monthKey]));
   const lastKey = portalLastMonthKey();
   const openMonth = new Map(monthsRaw.map((m) => [m.id, !m.historical && m.monthKey >= etMonthKey() && m.monthKey <= lastKey]));
@@ -1539,7 +1539,7 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
             decision: decisions.get(sc.id)?.decision ?? null,
             decidedAtISO: decisions.get(sc.id)?.decidedAt ?? null,
             staleApproval: decisions.get(sc.id)?.staleApproval ?? false,
-            replies: scriptReplies.filter((m) => m.refId === sc.id).slice(-3).map((m) => ({ body: replyText(m.body), atISO: m.createdAt.toISOString(), by: m.authorLabel })),
+            thread: scriptThreads.get(sc.id) ?? [],
             filmed: decisions.get(sc.id)?.filmed ? { atISO: decisions.get(sc.id)!.filmed!.atISO } : null,
             format: scv ? versionFormats.get(scv.id) ?? "DIRECT" : undefined,
           }
