@@ -62,10 +62,17 @@ const nextConfig: NextConfig = {
   // Ask-the-Hub photo/file attachments ride through a server action as base64;
   // the 1MB default would reject a single phone photo.
   experimental: {
-    // Turbopack's own ceiling (bytes): above it, it evicts its caches instead
-    // of growing until the 8 GB build machine kills it or grinds for half an
-    // hour on "Creating an optimized production build" (both seen Oct 22 2026).
-    turbopackMemoryLimit: 5 * 1024 * 1024 * 1024,
+    // PRODUCTION BUILDS USE WEBPACK (Oct 22 2026). The Turbopack production
+    // build outgrew Vercel's 8 GB build machine: measured locally it peaked at
+    // 8.9 GB, and on Vercel every build that day either ground for half an hour
+    // on "Creating an optimized production build" or was killed out of memory
+    // (a 5 GB turbopackMemoryLimit did not help). The same code built with
+    // webpack peaks at 4.5 GB, compiles in about 40 seconds and produces the
+    // same routes, so the build script runs `next build --webpack` with
+    // webpack's memory optimizations on. `next dev` keeps Turbopack. Moving
+    // back to Turbopack for builds needs a bigger build machine (Vercel's
+    // Enhanced Builds) or a smaller graph.
+    webpackMemoryOptimizations: true,
     serverActions: {
       bodySizeLimit: "8mb",
     },
