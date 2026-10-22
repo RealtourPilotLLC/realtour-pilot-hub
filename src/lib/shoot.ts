@@ -770,6 +770,37 @@ export function ownsShootWhere(memberId: string) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// EXTRA CREW (Oct 21 2026, Jordan: "Harrison was on the shoot with James so
+// he needs access to the upload portal too"). A second shooter may open the
+// job's upload page and send what they shot. That is ALL a crew row does:
+// ownsShootWhere above stays the one ownership rule, so pay, KPIs, scorecards,
+// the shoot screen and notification routing never count the second shooter.
+// A read that fails (the table not pushed yet) reads as "no crew".
+// ---------------------------------------------------------------------------
+
+/** The shoots this photographer is extra crew on (project ids). */
+export async function crewProjectIds(memberId: string): Promise<string[]> {
+  const rows = await prisma.projectCrew.findMany({ where: { memberId }, select: { projectId: true } }).catch(() => []);
+  return rows.map((r) => r.projectId);
+}
+
+/** Who else is on this shoot (names, in the order they were added). */
+export async function crewForProject(projectId: string): Promise<{ memberId: string; name: string; role: string }[]> {
+  const rows = await prisma.projectCrew.findMany({ where: { projectId }, orderBy: { addedAt: "asc" }, select: { memberId: true, role: true } }).catch(() => []);
+  if (!rows.length) return [];
+  const members = await prisma.teamMember.findMany({ where: { id: { in: rows.map((r) => r.memberId) } }, select: { id: true, name: true } });
+  const nameOf = new Map(members.map((m) => [m.id, m.name]));
+  return rows.map((r) => ({ memberId: r.memberId, name: nameOf.get(r.memberId) ?? "A photographer", role: r.role }));
+}
+
+/** May this photographer use the job's upload page: their own shoot, or extra crew on it. */
+export async function photographerMayUpload(projectId: string, memberId: string): Promise<boolean> {
+  if (await photographerOwnsShoot(projectId, memberId)) return true;
+  const crew = await prisma.projectCrew.count({ where: { projectId, memberId } }).catch(() => 0);
+  return crew > 0;
+}
+
 export type ShootMapPin = { lat: number; lng: number; label: string; time: string | null; current: boolean };
 export type ShootMapData = {
   pins: ShootMapPin[];

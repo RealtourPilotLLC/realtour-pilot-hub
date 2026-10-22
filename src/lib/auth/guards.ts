@@ -300,6 +300,33 @@ export async function requireShootAccess(projectId: string): Promise<void> {
   throw new Error("You don't have access to that shoot.");
 }
 
+// The UPLOAD PAGE's gate (Oct 21 2026): requireShootAccess, plus a second
+// shooter added to the job (lib/shoot photographerMayUpload). Only the
+// /upload page and its actions use it; the shoot screen and everything else
+// stay on requireShootAccess, so extra crew never reaches them.
+export async function requireUploadAccess(projectId: string): Promise<void> {
+  if (!enforced()) return;
+  const u = await getCurrentUser();
+  if (!u) throw new Error("Please sign in to do that.");
+  if (u.impersonating) throw new Error("You're previewing another user — exit the preview to make changes.");
+  if (u.realRole === "OWNER" || u.realRole === "ADMIN" || u.realRole === "CREATIVE_MANAGER") return;
+  if (u.realRole === "PHOTOGRAPHER") {
+    const { photographerMemberId, photographerMayUpload } = await import("@/lib/shoot");
+    const mid = await photographerMemberId(u);
+    if (mid && (await photographerMayUpload(projectId, mid))) return;
+  }
+  throw new Error("You don't have access to that shoot.");
+}
+
+/** requireUploadAccess keyed by a deliverable id (the upload page's item toggles). */
+export async function requireUploadDeliverableAccess(deliverableId: string): Promise<void> {
+  if (!enforced()) return;
+  const { prisma } = await import("@/lib/prisma");
+  const d = await prisma.deliverable.findUnique({ where: { id: deliverableId }, select: { projectId: true } });
+  if (!d) throw new Error("That item no longer exists.");
+  return requireUploadAccess(d.projectId);
+}
+
 // Same as requireShootAccess but keyed by a deliverable / uploaded-file id —
 // resolves the owning project first.
 export async function requireDeliverableAccess(deliverableId: string): Promise<void> {

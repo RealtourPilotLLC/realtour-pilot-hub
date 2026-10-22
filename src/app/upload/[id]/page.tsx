@@ -3,7 +3,8 @@ import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { canAccess, homeFor } from "@/lib/auth/access";
-import { photographerMemberId, photographerOwnsShoot } from "@/lib/shoot";
+import { crewForProject, photographerMayUpload, photographerMemberId } from "@/lib/shoot";
+import { ShootCrew } from "./ShootCrew";
 import {
   Image as ImageIcon,
   Video,
@@ -74,7 +75,8 @@ export default async function UploadProjectPage({
       if (!ack) redirect(`/upload/welcome?next=${encodeURIComponent(`/upload/${id}`)}`);
     }
     const mine = await photographerMemberId(viewer);
-    if (!mine || !(await photographerOwnsShoot(id, mine))) redirect("/upload");
+    // Oct 21 2026: a second shooter added to the job may open it too.
+    if (!mine || !(await photographerMayUpload(id, mine))) redirect("/upload");
   }
 
   const project = await prisma.project.findUnique({
@@ -440,12 +442,28 @@ export default async function UploadProjectPage({
   // A preview writes nothing (the action refuses it too, enforced or not).
   const briefNoteBlocked = viewer?.impersonating ? "You're previewing as someone else, so notes can't be added from here." : null;
 
+  // Who else was on this shoot (Oct 21 2026): a second shooter, and for the
+  // office the active photographers who could be added.
+  const crew = await crewForProject(project.id);
+  const crewChoices = viewerIsOffice
+    ? (await prisma.teamMember.findMany({ where: { active: true, role: "PHOTOGRAPHER" }, orderBy: { name: "asc" }, select: { id: true, name: true } }))
+        .filter((m) => m.id !== project.photographerId && !crew.some((c) => c.memberId === m.id))
+        .map((m) => ({ memberId: m.id, name: m.name }))
+    : [];
+
   // The page's one clock reading, handed down (a render must not read the clock twice).
   const renderedAt = new Date();
 
   return (
     <div className="mx-auto max-w-3xl p-4 sm:p-6">
       <div className="mb-4"><BackLink href="/upload" label="All shoots" /></div>
+      <ShootCrew
+        projectId={project.id}
+        photographerName={crew.length ? project.photographer?.name ?? null : null}
+        crew={crew.map((c) => ({ memberId: c.memberId, name: c.name }))}
+        choices={crewChoices}
+        canEdit={viewerIsOffice && !viewer?.impersonating}
+      />
 
       <UploadPortal
         sessionTopics={sessionTopics}
@@ -589,8 +607,8 @@ function portalBriefOf(b: OutputBrief): PortalOutputBrief {
 
 // ---------------------------------------------------------------------------
 // §7.5 / §6.8 (Sep 28 2026): the photographer's on-site note on ONE video's
-// brief, from this page. Who may: the shoot's own photographer or the office
-// (requireShootAccess, fail-closed once auth is enforced); never a "view as"
+// brief, from this page. Who may: the shoot's own photographer, a second
+// shooter on it, or the office (requireUploadAccess, fail-closed once auth is enforced); never a "view as"
 // preview, enforced or not; never an editor. Signed with the person's display
 // name (lib/actorName: login name, then roster, then email) and added through
 // deliverableOutputs.addOnSiteNote, so it is a new version of that brief with
@@ -609,8 +627,8 @@ async function addOnSiteBriefNote(projectId: string, outputId: string, note: str
   const me = await getCurrentUser().catch(() => null);
   if (me?.impersonating) return refuse("You're previewing as someone else, so notes can't be added from here.");
   try {
-    const { requireShootAccess } = await import("@/lib/auth/guards");
-    await requireShootAccess(pid);
+    const { requireUploadAccess } = await import("@/lib/auth/guards");
+    await requireUploadAccess(pid);
   } catch (e) {
     return refuse((e as Error).message || "You don't have access to that shoot.");
   }

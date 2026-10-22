@@ -1,6 +1,6 @@
 "use server";
 
-import { deliverableInProject, requireDeliverableAccess, requireShootAccess } from "@/lib/auth/guards";
+import { deliverableInProject, requireUploadAccess, requireUploadDeliverableAccess } from "@/lib/auth/guards";
 
 import { prisma } from "@/lib/prisma";
 import { NOTHING_TO_REMOVE_SENTINEL, FRONT_TO_BACK_SENTINEL, INTERIOR_EXTERIOR_SENTINEL } from "@/lib/debrief";
@@ -41,7 +41,7 @@ const PROVIDED_ON_SITE = "Provided on site";
 /** Read-only evidence for the photographer's final handoff review. The page's
  * initial folder counts may be hours old by the time Submit is pressed. */
 export async function checkUploadRawFiles(projectId: string, scope?: "photos" | "video") {
-  await requireShootAccess(projectId);
+  await requireUploadAccess(projectId);
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: { title: true, addressLine: true, shootDate: true, createdAt: true, dropboxFolder: true, client: { select: { name: true } } },
@@ -61,7 +61,7 @@ export async function markDeliverableUploaded(
   deliverableId: string,
   uploaded: boolean,
 ): Promise<{ ok: boolean }> {
-  await requireDeliverableAccess(deliverableId);
+  await requireUploadDeliverableAccess(deliverableId);
   const d = await prisma.deliverable.findUnique({ where: { id: deliverableId }, select: { projectId: true, status: true, notCompletedReason: true } });
   if (!d) return { ok: false };
   await prisma.deliverable.update({
@@ -101,7 +101,7 @@ export async function markDeliverableNotCompleted(
   deliverableId: string,
   reason: string,
 ): Promise<{ ok: boolean; message?: string }> {
-  await requireDeliverableAccess(deliverableId);
+  await requireUploadDeliverableAccess(deliverableId);
   const d = await prisma.deliverable.findUnique({
     where: { id: deliverableId },
     select: { projectId: true, type: true, label: true, status: true, notCompletedReason: true },
@@ -198,7 +198,7 @@ export async function acknowledgeUploadProcess(): Promise<{ ok: boolean }> {
 // the Feedback & requests board the same way the floating widget does, as a
 // plain "feedback" row. Shoot problems go to the job — see flagIssue below.
 export async function submitUploadFeedback(projectId: string, body: string): Promise<{ ok: boolean }> {
-  await requireShootAccess(projectId);
+  await requireUploadAccess(projectId);
   const trimmed = body.trim().slice(0, 2000);
   if (!trimmed) return { ok: false };
   const project = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true } });
@@ -233,7 +233,7 @@ export async function setProjectSquareFeet(
   squareFeet: number | null,
   attempt?: { attemptId: string; payloadFingerprint: string },
 ): Promise<{ ok: boolean; message?: string; terminal?: boolean; pending?: boolean }> {
-  await requireShootAccess(projectId);
+  await requireUploadAccess(projectId);
   if (squareFeet != null && (!Number.isFinite(squareFeet) || squareFeet < 100 || squareFeet > 60_000)) {
     return { ok: false, message: "That doesn't look like a square footage — enter the finished living area, e.g. 2400." };
   }
@@ -282,7 +282,7 @@ export async function setProjectSquareFeet(
 
 /** Read-only recovery: neither a provider check nor a size write. */
 export async function readUploadSquareFeet(projectId: string, attemptId: string, payloadFingerprint: string) {
-  await requireShootAccess(projectId);
+  await requireUploadAccess(projectId);
   if (!uploadAttemptIdValid(attemptId) || !uploadFingerprintValid(payloadFingerprint)) throw new Error("That size receipt is invalid.");
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser();
@@ -297,7 +297,7 @@ export async function readUploadSquareFeet(projectId: string, attemptId: string,
 /** The atomic receipt proves saved answers, not completed notifications. A
  * nonterminal receipt must hold the next submit while its action still runs. */
 export async function readUploadAttempt(projectId: string, attemptId: string, payloadFingerprint: string) {
-  await requireShootAccess(projectId);
+  await requireUploadAccess(projectId);
   if (!uploadAttemptIdValid(attemptId) || !uploadFingerprintValid(payloadFingerprint)) throw new Error("That upload receipt is invalid.");
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser();
@@ -318,7 +318,7 @@ export async function readUploadAttempt(projectId: string, attemptId: string, pa
 }
 
 export async function flagIssue(projectId: string, body: string) {
-  await requireShootAccess(projectId);
+  await requireUploadAccess(projectId);
   const trimmed = body.trim();
   if (!trimmed) return;
   await prisma.activity.create({
@@ -337,7 +337,7 @@ export async function submitAppointmentFeedback(
   wentWell: boolean,
   note: string,
 ): Promise<{ ok: boolean; message: string }> {
-  await requireShootAccess(projectId);
+  await requireUploadAccess(projectId);
   const trimmed = note.trim();
   const body = `Shoot debrief — ${wentWell ? "went smoothly" : "had issues"}${trimmed ? `: ${trimmed}` : "."}`;
   await prisma.activity.create({
@@ -465,7 +465,7 @@ export async function finalizeUpload(
    */
   topicsPending?: { count: number; message: string };
 }> {
-  await requireShootAccess(projectId);
+  await requireUploadAccess(projectId);
   // First finalize or a re-submit? The debrief gates and the raws-landed
   // handoff below only fire on the FIRST human submit (the transition), never
   // on edits/re-submits — see `firstFinalize` under the query for what counts.
@@ -1355,7 +1355,7 @@ export async function addShootAddOn(
   // nothing. This action already speaks in {ok, message} — hand the guard's own
   // words back the same way (the pattern pingFeedbackOnSlack uses).
   try {
-    await requireShootAccess(projectId);
+    await requireUploadAccess(projectId);
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
   }
@@ -1502,7 +1502,7 @@ export async function removeShootAddOn(
   // Same as addShootAddOn: the guard's refusal comes back as a message the
   // photographer can read, not an unhandled rejection.
   try {
-    await requireShootAccess(projectId);
+    await requireUploadAccess(projectId);
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
   }
@@ -1563,7 +1563,7 @@ export async function reopenForAdditionalShoot(
   // Same shape as addShootAddOn: a guard that throws reaches the client as a
   // redacted error in production, which reads as a button that does nothing.
   try {
-    await requireShootAccess(projectId);
+    await requireUploadAccess(projectId);
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
   }
@@ -1838,7 +1838,7 @@ export async function withdrawAdditionalShoot(
   deliverableId: string,
 ): Promise<{ ok: boolean; message?: string }> {
   try {
-    await requireShootAccess(projectId);
+    await requireUploadAccess(projectId);
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
   }
@@ -1961,7 +1961,7 @@ export async function reportMissedShot(
   input: { what: string; reason: string },
 ): Promise<{ ok: boolean; message: string }> {
   try {
-    await requireShootAccess(projectId);
+    await requireUploadAccess(projectId);
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
   }
@@ -2044,7 +2044,7 @@ export async function recordFieldPreference(
   input: { body: string; basis: "client_said" | "observation"; scope: "project" | "client" },
 ): Promise<{ ok: boolean; message: string }> {
   try {
-    await requireShootAccess(projectId);
+    await requireUploadAccess(projectId);
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
   }
