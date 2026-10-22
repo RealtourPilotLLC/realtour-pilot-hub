@@ -135,6 +135,8 @@ export type VersionView = {
 export type HubEditView = {
   versionId: string;
   label: string;
+  /** Oct 22 2026: what made it (photoEdit.ts HubEditKind): straighten, lot lines, an upload, a photo added by hand. */
+  kind?: "straighten" | "lotLines" | "upload" | "added";
   params: { rotate: number; keystone: number; crop: { x: number; y: number; w: number; h: number }; aspect: "original" | "3:2" | "4:3" | "16:9" | "free" };
   /** The Aryeo listing still has the photo's old file: Update on Aryeo replaces it. */
   needsListingUpdate: boolean;

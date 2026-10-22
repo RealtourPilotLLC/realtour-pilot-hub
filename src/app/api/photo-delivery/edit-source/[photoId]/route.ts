@@ -55,7 +55,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ photoId: st
   try {
     const [{ editBaseBytes, editBaseOf }, D] = await Promise.all([import("@/lib/photoDelivery/photoEdit"), import("@/lib/photoDelivery/qc/derivatives")]);
     const base = await editBaseOf(photo);
-    const key = D.derivKey(photo.id, `editbase:${base.sourceHash ?? "none"}`, size);
+    // Oct 22 2026: an uploaded replacement is what the editor works on (photoEdit.ts editBaseOf fromHash).
+    const key = D.derivKey(photo.id, `editbase:${base.fromHash ?? base.sourceHash ?? "none"}`, size);
     const cached = size === "preview" ? D.derivCache.get(key) : undefined;
     if (cached) return new Response(new Uint8Array(cached), { status: 200, headers: { "content-type": "image/jpeg", "cache-control": "private, max-age=600", "x-content-type-options": "nosniff" } });
     const bytes = await editBaseBytes(photo);
