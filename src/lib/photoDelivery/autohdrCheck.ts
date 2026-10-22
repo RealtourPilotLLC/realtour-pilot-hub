@@ -63,11 +63,14 @@ const CHECK_RULES = [
   "EXT_YARD_TOOLS", "EXT_LADDERS_TEMP_EQUIPMENT", "EXT_LOOSE_GARBAGE_DEBRIS", "PREP_CROOKED_RUGS_FURNITURE_DECOR", "PREP_DOOR_MAT_CROOKED", "PREP_LEFTOVER_ITEM_VACANT",
   // ...and warped architecture (walls, doors, windows, cabinets; never furniture).
   "PERSP_EDIT_WARP",
+  // Oct 22 2026 (615 Cliff Ln, "the bedroom lamp floating in the one bedroom
+  // with a crib"): an object the edit left floating, cut off or doubled.
+  "AIEDIT_FLOATING_OBJECT",
 ] as const;
 
 const ALLOWED = new Set<string>(CHECK_RULES);
-/** 2: light + furnished (Oct 14 2026). 3: prep + features, "look for" words, the removable-things rule, warped architecture (Oct 15 2026). */
-export const CHECK_PROMPT_VERSION = 3;
+/** 2: light + furnished (Oct 14 2026). 3: prep + features, "look for" words, the removable-things rule, warped architecture (Oct 15 2026). 4: floating objects left by the edit (Oct 22 2026). */
+export const CHECK_PROMPT_VERSION = 4;
 const PER_PHOTO_TRIES = 3;
 const CONCURRENCY = 4;
 
@@ -127,6 +130,7 @@ export const LOOK_FOR: Partial<Record<(typeof CHECK_RULES)[number], string>> = {
   PERSP_CROOKED_HORIZON: "a tilted horizon outside",
   PERSP_AUTOHDR_ROOF_PEAKS_CROPPED: "outside: the top of the roof (peak, ridge or chimney) cut off by the top edge of the photo",
   PERSP_EDIT_WARP: "walls, door frames, windows or cabinets that look bent, curved or wedge-shaped (architecture only, never furniture)",
+  AIEDIT_FLOATING_OBJECT: "a lamp, piece of furniture or decor floating with nothing under it (no table, floor or shelf), an object cut off in mid-air, or the same object twice or as a faint ghost copy",
 };
 
 /** What the photo shows that the room coverage check needs (coverage.ts). */
@@ -145,6 +149,8 @@ export function checkPrompt(off: Set<string> = new Set()): string {
     `features: only these, when this photo shows them: ${CHECK_FEATURES.join(", ")}. shower or tub = it is a main subject of the photo; shower_in_background or tub_in_background = it only shows in the background, partly, or through a doorway.`,
     "Clutter and distractions: report only things a photographer could have moved out of the frame, never furniture, decor, appliances or anything built in. In an EMPTY room, any loose item left behind counts.",
     "Lines: report leaning or bent architecture only (walls, door frames, windows, cabinets, the house), never furniture.",
+    // A check switched off house-wide is never asked about, its explanation included.
+    ...(off.has("AIEDIT_FLOATING_OBJECT") ? [] : ["Editing mistakes: look at what every lamp, piece of furniture and decor item rests on. One that floats with nothing under it, ends in mid-air, or shows twice or as a ghost is AIEDIT_FLOATING_OBJECT, furniture and decor included. Never a pendant, chandelier, sconce, wall shelf or mounted TV."]),
     "Report only problems you can actually see in this photo. An empty list is a good answer.",
     "Ids:",
     ...lines,

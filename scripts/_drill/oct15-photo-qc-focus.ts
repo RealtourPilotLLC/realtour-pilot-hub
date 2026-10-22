@@ -191,7 +191,8 @@ async function main() {
     c.head("2 · the free check's question, v3");
     const off = house.disabledIn(await house.houseOverrides());
     const q = check.checkPrompt(off);
-    c.ok("version 3", check.CHECK_PROMPT_VERSION === 3);
+    // Oct 22 2026: v4 adds floating objects (oct22-delivery-holds); everything below is v3's and still holds.
+    c.ok("version 3 or later", check.CHECK_PROMPT_VERSION >= 3);
     c.ok("asks how ready each room looks, and what it shows", /"prep":"staged\|tidy\|lived_in\|cluttered\|empty"/.test(q) && /features: only these/.test(q) && /shower_in_background/.test(q));
     c.ok("names what to look for: the broom, the toilet seat, the door mat, shoes, remotes, cords, hoses, bins outside", ["broom, mop, dustpan", "toilet seat or lid left up", "door mat crooked", "shoes or boots", "TV remotes", "loose cords", "garden hose", "bins outside"].every((w) => q.includes(w)));
     c.ok("only what a photographer could have moved out of the frame", /only things a photographer could have moved out of the frame/.test(q));

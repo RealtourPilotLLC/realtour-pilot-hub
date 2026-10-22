@@ -347,6 +347,11 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
       : Promise.resolve(null),
   ]);
 
+  // Oct 22 2026 (Jordan, 58 Recreation Dr): add-on work on the order still to
+  // confirm before the photos go out ("Lot Lines needed"), from Photo Delivery.
+  const addOnsOpen = await import("@/lib/photoDelivery/addOns")
+    .then((m) => m.openAddOnsByProject(ids))
+    .catch(() => new Map<string, string[]>());
   const monthlyIds = new Set(extras.filter((p) => p.contentMonthId).map((p) => p.id));
   const photoStageBy = new Map(photoJobs.map((p) => [p.projectId, p.stage]));
   const asksBy = new Map<string, { medium: string | null; kind: string; askedAt: Date }[]>();
@@ -447,7 +452,10 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
       requests: countRequests(open, shootOver),
       monthly,
       href: `/projects/${j.id}`,
-      holding: HOLDING_KINDS.has(j.blocker) || j.reopenedUndated ? (j.reopenedUndated ? `${j.blockerLabel} · reopened, no date set` : j.blockerLabel) : null,
+      holding: [
+        HOLDING_KINDS.has(j.blocker) || j.reopenedUndated ? (j.reopenedUndated ? `${j.blockerLabel} · reopened, no date set` : j.blockerLabel) : null,
+        ...(delivered ? [] : addOnsOpen.get(j.id) ?? []),
+      ].filter(Boolean).join(" · ") || null,
       delivered,
       dueThisWeek: !delivered && !!dueAt && dueAt.getTime() <= weekEnd,
       _rank: delivered ? 4 : late ? 0 : owedNoClock ? 1 : dueAt ? 2 : 3,

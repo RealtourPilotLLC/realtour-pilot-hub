@@ -21,9 +21,12 @@ import seed from "./qc-rules.seed.json";
 // architecture (walls, doors, windows, cabinets; never furniture) and the
 // three free room-coverage findings (shot but not delivered, never shot,
 // photos lost in editing).
+// Oct 22 2026 (v1.3): a floating or unsupported object left by the edit (615
+// Cliff Ln: "the bedroom lamp floating in the one bedroom with a crib"), MAJOR,
+// asked by the paid QC, the free check and its second look.
 import addendum from "./qc-rules.autohdr-addendum.json";
 
-export const RULES_REGISTRY_VERSION = "v1.2-2026-10-15";
+export const RULES_REGISTRY_VERSION = "v1.3-2026-10-22";
 
 export const SEVERITIES = ["CRITICAL", "MAJOR", "MINOR"] as const;
 export type Severity = (typeof SEVERITIES)[number];

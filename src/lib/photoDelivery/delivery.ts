@@ -42,7 +42,11 @@ import { BY_HAND_LABEL, ON_LISTING, duplicateWords, listingDuplicates, listingIm
  *  `overridden` (the wrap-up only, `overridable`): a person typed why the
  *  photos may go out without it; the line is satisfied for a person, never
  *  for the hub's own delivery (`passed` stays false). `askId`: the ClientAsk
- *  the line is (Done / Answer on the job page). */
+ *  the line is (Done / Answer on the job page).
+ *  Oct 22 2026 (addOns.ts): `addOn` is add-on work on the order that must be
+ *  confirmed before delivery (Lot Lines needed, Virtual Staging needed), with
+ *  the agent's words; `personOnly`: the line never counts for the hub's own
+ *  same-day delivery, even once it is cleared (Kyle approves those jobs). */
 export type GateCheck = {
   key: string;
   label: string;
@@ -55,11 +59,30 @@ export type GateCheck = {
   overridable?: boolean;
   overridden?: string | null;
   askId?: string;
+  addOn?: GateAddOn;
+  /** Oct 22 2026: the photos the line is about (Update on Aryeo of photos edited in the hub). */
+  photoIds?: string[];
+  personOnly?: boolean;
+};
+/** The add-on behind a gate line: its key (the confirm button), the order line, the agent's words, and how it was cleared. */
+export type GateAddOn = {
+  key: string;
+  need: string;
+  done: string;
+  ordered: string;
+  quotes: { from: string; text: string }[];
+  cleared: { how: "version" | "confirmed"; by: string | null; atISO: string; note: string | null; photoName: string | null } | null;
 };
 /** `ignored`: the approve summary of the careful set-asides (clientAsked.ignoredCarefulSummary), shown before delivering, never a block. `holdsOpen`: hold lines still open. */
 export type GateResult = { checks: GateCheck[]; passed: boolean; advisory: boolean; canDeliver: boolean; overrideAllowed: boolean; blockedForOverride: string | null; holdsOpen: number; ignored: string | null };
 
-export async function deliveryGate(jobId: string): Promise<GateResult> {
+/**
+ * `sync: false` (the board's one-line summary, Oct 22 2026): read the job as
+ * it is, without filing the wrap-up's and the order's photo notes as items
+ * first, and without the approve summary.
+ */
+export async function deliveryGate(jobId: string, opts: { sync?: boolean } = {}): Promise<GateResult> {
+  const sync = opts.sync !== false;
   const [job, settings] = await Promise.all([
     prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, projectId: true, stage: true, lastQcRunId: true, finalsCount: true, coverageJson: true } }),
     photoDeliverySettings(),
@@ -113,12 +136,19 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
     // openPhotoFlags); here they are information only, never a hold on his
     // Approve and deliver.
     ...(await flagsCheck(job.projectId)),
+    // Oct 22 2026: a photo edited in the hub (Lot lines, Straighten, an upload)
+    // whose old file is still on the Aryeo listing: Update on Aryeo first.
+    ...(await listingUpdateCheck(job.id, job.stage)),
     // Oct 21 2026 (Jordan, 859 N Lawrence St): the photographer's wrap-up and
     // what the client asked, each a line that holds delivery (clientAsked.ts).
-    ...(await askedChecks(job)),
+    // Oct 22 2026 (Jordan, 58 Recreation Dr): lot lines, virtual staging: add-on
+    // work on the order holds delivery until it is confirmed added (addOns.ts),
+    // listed between the two (the order of holding.ts HOLDING_ORDER).
+    ...(await askedChecks(job, sync).then(async (asked) => [...asked.filter((c) => c.key === "wrapup"), ...(await addOnChecks(job)), ...asked.filter((c) => c.key !== "wrapup")])),
   ];
-  // An overridden line is a person's call: it never counts for the hub's own delivery.
-  const passed = checks.every((c) => (c.ok && !c.overridden) || c.advisory);
+  // An overridden line is a person's call, and a person-only line is Kyle's to
+  // approve: neither ever counts for the hub's own delivery.
+  const passed = checks.every((c) => (c.ok && !c.overridden && !c.personOnly) || c.advisory);
   // The house setting decides (audit, Oct 15): a job's own qcShadow only records
   // how its last check ran, and kept a job advisory after shadow mode was off.
   const advisory = settings.qcShadow;
@@ -137,8 +167,36 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
     overrideAllowed: !privacyOrWrong,
     blockedForOverride: privacyOrWrong ? "A privacy or wrong-property issue is open. That one has to be resolved, not overridden." : null,
     holdsOpen,
-    ignored: await import("./clientAsked").then((m) => m.ignoredCarefulSummary(jobId)).catch(() => null),
+    ignored: sync ? await import("./clientAsked").then((m) => m.ignoredCarefulSummary(jobId)).catch(() => null) : null,
   };
+}
+
+/**
+ * One HOLD line per add-on on the order (addOns.ts): "Lot Lines needed" with
+ * the agent's words, until a photo carries the work or Kyle confirms it by
+ * hand. Person-only: the hub's own same-day delivery never passes a job that
+ * has one. A read that fails is an open hold (the same rule as the others).
+ */
+async function addOnChecks(job: { id: string; projectId: string | null }): Promise<GateCheck[]> {
+  if (!job.projectId) return [];
+  try {
+    const { addOnStates } = await import("./addOns");
+    return (await addOnStates(job.projectId, job.id)).map((a) => ({
+      key: `addon:${a.key}`,
+      label: a.cleared ? a.done : a.need,
+      ok: !!a.cleared,
+      hold: true,
+      personOnly: true,
+      detail: a.cleared
+        ? a.cleared.how === "version"
+          ? `on ${a.cleared.photoName ?? "a photo"}${a.cleared.by ? `, by ${a.cleared.by}` : ""}`
+          : `confirmed by ${a.cleared.by ?? "staff"}${a.cleared.note ? `: ${a.cleared.note}` : ""}`
+        : `Ordered: ${a.ordered}`,
+      addOn: { key: a.key, need: a.need, done: a.done, ordered: a.ordered, quotes: a.quotes, cleared: a.cleared },
+    }));
+  } catch {
+    return [{ key: "addons", label: "Add-on work on the order (lot lines, virtual staging)", ok: false, hold: true, personOnly: true, detail: "could not be read just now, it is read again on the next pass" }];
+  }
 }
 
 /**
@@ -146,7 +204,7 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
  * read that fails is an open hold, never a pass: the hub's own delivery must
  * not go out on a check it couldn't make (the same rule as uploadCheck).
  */
-async function askedChecks(job: { id: string; projectId: string | null; stage: string }): Promise<GateCheck[]> {
+async function askedChecks(job: { id: string; projectId: string | null; stage: string }, sync = true): Promise<GateCheck[]> {
   if (!job.projectId) return [];
   const projectId = job.projectId;
   const m = await import("./clientAsked");
@@ -177,7 +235,7 @@ async function askedChecks(job: { id: string; projectId: string | null; stage: s
   try {
     // The wrap-up's removal notes and the order's photo notes become items to
     // tick off, before the photos go out (never after).
-    if (!["DELIVERED", "DELIVERING"].includes(job.stage)) await m.syncPhotoAsks(projectId);
+    if (sync && !["DELIVERED", "DELIVERING"].includes(job.stage)) await m.syncPhotoAsks(projectId);
     for (const it of await m.clientAskedItems(projectId)) {
       lines.push({ key: `ask:${it.id}`, label: it.label, ok: false, hold: it.holds, advisory: !it.holds, askId: it.id, detail: it.detail });
     }
@@ -199,6 +257,32 @@ async function uploadCheck(projectId: string | null): Promise<GateCheck[]> {
     return [{ key: "upload", label: "Everything ordered was uploaded", ok: false, detail: "the upload check could not be read, it runs again on the next pass" }];
   }
   return gaps ? [{ key: "upload", label: "Everything ordered was uploaded", ok: false, detail: gaps.words }] : [];
+}
+
+/**
+ * Photos edited in the hub whose old file is still on the Aryeo listing
+ * (holding.needsListingUpdate: read from the listing, or a split job's
+ * delivered photo): a HOLD line until Update on Aryeo replaces them, so the
+ * listing never goes out (or out again) with the file before the edit. The
+ * delivery itself only sends the photos it puts on the listing.
+ */
+async function listingUpdateCheck(jobId: string, stage: string): Promise<GateCheck[]> {
+  const { needsListingUpdate } = await import("./holding");
+  const rows = await prisma.photoAsset
+    .findMany({ where: { jobId, status: { in: ["ACTIVE", ON_LISTING] }, contentHash: { startsWith: "hub-" } }, orderBy: { sequence: "asc" }, select: { id: true, name: true, status: true, sourceKind: true, contentHash: true } })
+    .catch(() => null);
+  if (rows === null) return [{ key: "listing-update", label: "Photos edited in the hub, on the Aryeo listing", ok: false, hold: true, detail: "could not be read just now, it is read again on the next pass" }];
+  const due = rows.filter((p) => needsListingUpdate(p, stage));
+  if (!due.length) return [];
+  const n = due.length;
+  return [{
+    key: "listing-update",
+    label: `${n} photo${n === 1 ? "" : "s"} edited in the hub still ${n === 1 ? "has its" : "have their"} old file on the Aryeo listing: Update on Aryeo first`,
+    ok: false,
+    hold: true,
+    detail: due.slice(0, 4).map((p) => p.name).join(", ") + (n > 4 ? ", …" : ""),
+    photoIds: due.map((p) => p.id),
+  }];
 }
 
 async function flagsCheck(projectId: string | null): Promise<GateCheck[]> {
@@ -365,8 +449,10 @@ export async function startDelivery(jobId: string, by: string, opts: { override?
     if ((opts.override.reason ?? "").trim().length < 5) return { ok: false, message: "Write the reason for the override." };
   }
   const overridden = gate.checks.find((c) => c.overridden)?.overridden ?? null;
+  // Every line passes for a person (a person-only line, such as lot lines confirmed, included).
+  const allOk = gate.checks.every((c) => (c.ok && !c.overridden) || c.advisory);
   const moved = await setStage(jobId, ["READY", "QC_REVIEW", "EDITED", "DELIVERY_MISMATCH", "REVISION_REQUESTED"], "DELIVERING", by, {
-    why: opts.override ? `owner override: ${opts.override.reason.trim()}` : gate.passed ? "checklist passed" : overridden ? `without the photographer's wrap-up (${overridden})` : "advisory checklist (shadow mode)",
+    why: opts.override ? `owner override: ${opts.override.reason.trim()}` : gate.passed || allOk ? "checklist passed" : overridden ? `without the photographer's wrap-up (${overridden})` : "advisory checklist (shadow mode)",
     extra: { deliveryStartedAt: new Date() },
   });
   if (!moved) return { ok: false, message: "This job moved on in the meantime. Reload the page." };

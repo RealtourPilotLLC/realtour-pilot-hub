@@ -8,13 +8,15 @@ import { cn } from "@/lib/utils";
 import { etMonthDayTime } from "@/lib/datetime";
 import { CopyButton } from "@/components/ui/CopyButton";
 import {
-  clientAskedAnswerAction, clientAskedDoneAction, overrideDeliverAction, overrideWrapUpAction, restageForAryeoAction, startDeliveryAction, verifyDeliveryAction,
+  clientAskedAnswerAction, clientAskedDoneAction, confirmAddOnAction, overrideDeliverAction, overrideWrapUpAction, restageForAryeoAction, startDeliveryAction, verifyDeliveryAction,
 } from "@/app/ops/photo-delivery/actions";
+import { updateOnAryeoAction } from "@/app/ops/photo-delivery/editActions";
 import { PhotoImg } from "./PhotoImg";
 import { ReadyProgressBar, type ReadyBarState } from "./ReadyProgressBar";
 import { useJob } from "./JobContext";
 import { aryeoPushLine, aryeoPushNext, aryeoPushOn, useAryeoPushActions, useLivePush } from "./AryeoPushControls";
 import { VIEW_ONLY_NOTE } from "./types";
+import { holdingFor } from "@/lib/photoDelivery/holding";
 
 // ---------------------------------------------------------------------------
 // THE DELIVER PANEL (plan 9.6), sticky at the bottom of the job page.
@@ -157,8 +159,12 @@ export function DeliverPanel() {
   // With the hub's upload on, Kyle approves from Ready to review: open issues are decided first.
   const why = !canStage || (hubOn && stage === "QC_REVIEW") ? STAGE_WHY[stage] ?? null : startWhy;
   const lines: { text: string; tone: keyof typeof TONE }[] = [];
-  // What holds the photos comes first, so a phone shows it too.
-  if (openHolds.length && !delivered) lines.push({ text: `${openHolds[0].label}${openHolds.length > 1 ? ` (+${openHolds.length - 1} more to settle)` : ""}`, tone: "warn" });
+  // What holds the photos comes first, so a phone shows it too. Oct 22 2026:
+  // the first line of "What's holding this" at the top of the page (holding.ts),
+  // the same words and order as there and on the board card.
+  const holding = holdingFor({ ...data.holdingBase, stage, gate, gateError: data.gateError, push });
+  const firstHold = delivered ? null : holding.items[0] ?? null;
+  if (firstHold) lines.push({ text: `${firstHold.text}${holding.items.length > 1 ? ` (+${holding.items.length - 1} more, listed at the top)` : ""}`, tone: firstHold.waitingOn === "Waiting on Kyle" ? "warn" : "muted" });
   if (pushLine) lines.push(pushLine);
   else if (hubOn && push.sameDayAuto && !delivered) lines.push({ text: "Same-day order: the hub approves and delivers it by itself once every check passes.", tone: "muted" });
   if (why && !(delivered && pushLine)) lines.push({ text: why, tone: delivered ? "good" : "muted" });
@@ -206,6 +212,18 @@ export function DeliverPanel() {
     });
     if (note === null) return;
     await run(() => clientAskedAnswerAction(jobId, askId, note));
+  };
+  // Oct 22 2026: add-on work put on the photos outside the hub ("Lot lines added"), with a short note.
+  const addOnDone = async (key: string, label: string) => {
+    const note = await ask({
+      title: `${label}?`,
+      description: "Only once it is really on the photos. Write what was added and on which photos. It goes on the job's activity.",
+      required: true,
+      minLength: 5,
+      confirmLabel: label,
+    });
+    if (note === null) return;
+    await run(() => confirmAddOnAction(jobId, key, note));
   };
   // The photographer's wrap-up is not in: only with a typed reason.
   const withoutWrapUp = async () => {
@@ -415,7 +433,17 @@ export function DeliverPanel() {
                         <span className={cn(!c.ok && "font-medium")}>{c.label}</span>
                         {c.detail && <span className="block text-[12px] text-muted">{c.detail}{!c.hold && !c.ok ? ". Doesn't hold delivery." : ""}</span>}
                         {c.overridden && <span className="block text-[12px] text-muted">Going out without it: {c.overridden}</span>}
-                        {!c.ok && (c.href || (!readOnly && (c.askId || c.overridable))) && (
+                        {/* Oct 22 2026: Lot Lines needed (or Virtual Staging): the agent's own words under it. */}
+                        {!c.ok && c.addOn && c.addOn.quotes.length > 0 && (
+                          <span className="mt-1 block space-y-1">
+                            {c.addOn.quotes.map((q, i) => (
+                              <span key={i} className="block rounded-lg border border-border bg-surface-2/50 px-2 py-1 text-[12px]">
+                                &ldquo;{q.text}&rdquo; <span className="text-muted">({q.from})</span>
+                              </span>
+                            ))}
+                          </span>
+                        )}
+                        {!c.ok && (c.href || (!readOnly && (c.askId || c.overridable || c.addOn || c.photoIds?.length))) && (
                           <span className="mt-1 flex flex-wrap gap-2">
                             {c.href && (
                               <Link href={c.href} className={cn(cardBtn, secondary, "font-medium")}>
@@ -436,6 +464,16 @@ export function DeliverPanel() {
                             {c.overridable && !readOnly && (
                               <button type="button" disabled={pending} onClick={() => void withoutWrapUp()} className={cn(cardBtn, "border border-danger/50 text-danger hover:bg-danger-soft")}>
                                 Deliver without it
+                              </button>
+                            )}
+                            {!!c.photoIds?.length && !readOnly && hubOn && (
+                              <button type="button" disabled={pending} onClick={() => void run(() => updateOnAryeoAction(jobId, c.photoIds!))} className={cn(cardBtn, secondary)}>
+                                <UploadCloud aria-hidden className="size-4" /> Update on Aryeo
+                              </button>
+                            )}
+                            {c.addOn && !readOnly && (
+                              <button type="button" disabled={pending} onClick={() => void addOnDone(c.addOn!.key, c.addOn!.done)} className={cn(cardBtn, secondary)}>
+                                <CheckCircle2 aria-hidden className="size-4" /> {c.addOn.done}
                               </button>
                             )}
                           </span>
