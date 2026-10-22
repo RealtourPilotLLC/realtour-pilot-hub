@@ -392,7 +392,10 @@ async function autohdrGallery(projectId: string, sentSince: Date | null = null):
  */
 async function adoptListing(jobId: string, entries: GalleryEntry[], opts: { besideEarlierVisit?: boolean } = {}): Promise<"adopted" | "uploading" | "no"> {
   const rows = await prisma.photoAsset.findMany({ where: { jobId, sourceKind: "AUTOHDR", status: { in: ["ACTIVE", "EXCLUDED"] } }, orderBy: { sequence: "asc" }, select: { id: true, contentHash: true, inspectedHash: true, classifiedHash: true } });
-  if (!rows.length) return "no";
+  // Oct 22 2026 (hubFiles.ts): a photo Kyle added by hand goes out through
+  // 06-Ready-for-Aryeo with the rest, and carries over the same way.
+  const hand = await prisma.photoAsset.findMany({ where: { jobId, sourceKind: "UPLOAD", status: { in: ["ACTIVE", "EXCLUDED"] } }, select: { id: true, contentHash: true, inspectedHash: true, classifiedHash: true } });
+  if (!rows.length && !hand.length) return "no";
   // A split job's earlier visit is already ARYEO rows on the job; the caller
   // passes only the listing photos that are not theirs (Oct 22 2026).
   if (!opts.besideEarlierVisit && (await prisma.photoAsset.count({ where: { jobId, sourceKind: "ARYEO" } }))) return "no";
@@ -401,7 +404,7 @@ async function adoptListing(jobId: string, entries: GalleryEntry[], opts: { besi
   // of them, each carries over to its own AutoHDR photo, so its versions,
   // findings and AutoHDR link (Restore) stay with it after delivery.
   const ready = await (await import("./handoff")).readyNamesFor(jobId).catch(() => new Map<string, string>());
-  const byId = new Map(rows.map((r) => [r.id, r]));
+  const byId = new Map([...rows, ...hand].map((r) => [r.id, r]));
   const viaReady = entries.length > 0 && entries.every((e) => byId.has(ready.get(e.name.toLowerCase()) ?? "")) && new Set(entries.map((e) => ready.get(e.name.toLowerCase()))).size === entries.length;
   if (viaReady && entries.length < ready.size) return "uploading";
   if (!viaReady && rows.length !== entries.length) return "no";
@@ -654,6 +657,17 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
       const row = existing.find((r) => r.sourceKind === "AUTOHDR" && r.autohdrImageUuid === uuid);
       if (row) byHandRow.set(img.contentHash, row);
     }
+    // Oct 22 2026 (hubFiles.ts): a photo Kyle added to the gallery by hand
+    // that the hub's push put on the listing IS that listing image now: found
+    // by the name the push gave it, carried over in place (never a second row).
+    const pushedHand = new Map<string, (typeof existing)[number]>();
+    if (existing.some((e) => e.sourceKind === "UPLOAD")) {
+      const pushed = await import("./aryeoPush").then((m) => m.pushedNames(jobId)).catch(() => new Map<string, string>());
+      for (const [name, photoId] of pushed) {
+        const row = byId.get(photoId);
+        if (row?.sourceKind === "UPLOAD") pushedHand.set(name, row);
+      }
+    }
     const seen = new Set<string>();
     const revived: string[] = [];
     const handNotes: string[] = [];
@@ -661,7 +675,7 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
     let addedToDelivery = 0;
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i];
-      const prev = (e.sourceRef ? byRef.get(`${e.sourceKind}:${e.sourceRef}`) : undefined) ?? (e.sourceKind === "ARYEO" ? byHandRow.get(e.contentHash) : undefined) ?? byName.get(e.name);
+      const prev = (e.sourceRef ? byRef.get(`${e.sourceKind}:${e.sourceRef}`) : undefined) ?? (e.sourceKind === "ARYEO" ? byHandRow.get(e.contentHash) ?? pushedHand.get(e.name.toLowerCase()) : undefined) ?? byName.get(e.name);
       if (!prev) {
         // Two Aryeo images can share a filename: keep names unique per job.
         let name = e.name;
@@ -710,7 +724,15 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
         }
         // Oct 21 2026: the hub's own edit (straighten, crop) stays the photo while the listing still shows the file it was made from.
         const hubKeeps = !ownsVersion && !!prev.contentHash?.startsWith("hub-") && (await import("./photoEdit").then((m) => m.hubEditStillOn(prev, e.contentHash)).catch(() => false));
-        if (!ownsVersion && !hubKeeps && prev.contentHash !== e.contentHash) {
+        if (prev.sourceKind === "UPLOAD" && e.sourceKind === "ARYEO" && prev.contentHash !== e.contentHash) {
+          // Oct 22 2026: a photo added by hand, now on the listing (the hub sent it): the same file, so the same findings and checks.
+          const marks = await prisma.photoAsset.findUnique({ where: { id: prev.id }, select: { inspectedHash: true, classifiedHash: true } });
+          data.contentHash = e.contentHash;
+          if (prev.contentHash && marks?.inspectedHash === prev.contentHash) data.inspectedHash = e.contentHash;
+          if (prev.contentHash && marks?.classifiedHash === prev.contentHash) data.classifiedHash = e.contentHash;
+          if (prev.contentHash) await prisma.photoQcFinding.updateMany({ where: { photoId: prev.id, contentHash: prev.contentHash }, data: { contentHash: e.contentHash } });
+          await prisma.photoVersion.create({ data: { photoId: prev.id, label: "On the Aryeo listing (sent by the hub)", source: "HUB_EDIT_LISTED", contentHash: e.contentHash, bytes: e.bytes ?? undefined } });
+        } else if (!ownsVersion && !hubKeeps && prev.contentHash !== e.contentHash) {
           data.contentHash = e.contentHash;
           // Replaced outside the hub's fix flow (an editor's manual fix, a
           // re-import in Aryeo): a new version, and the old findings no longer
@@ -724,7 +746,8 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
     // EXCLUDED is a person's decision and survives; anything else no longer
     // in the gallery is GONE.
     // (Oct 22 2026: so is a photo kept as delivered that left the listing.)
-    const gone = existing.filter((e) => !seen.has(e.name) && (e.status === "ACTIVE" || e.status === ON_LISTING)).map((e) => e.id);
+    // (Oct 22 2026: a photo added by hand is not in any source's gallery until the hub sends it: never GONE for that.)
+    const gone = existing.filter((e) => !seen.has(e.name) && e.sourceKind !== "UPLOAD" && (e.status === "ACTIVE" || e.status === ON_LISTING)).map((e) => e.id);
     if (gone.length) await prisma.photoAsset.updateMany({ where: { id: { in: gone } }, data: { status: "GONE" } });
     // A photo back in the gallery gets back the open findings it had when it left.
     if (revived.length) await prisma.photoQcFinding.updateMany({ where: { jobId, photoId: { in: revived }, status: "SUPERSEDED", statusReason: { in: [GONE_REASON, ON_LISTING_REASON] } }, data: { status: "OPEN", statusReason: null } });

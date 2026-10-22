@@ -1150,8 +1150,10 @@ function hubEditView(
   return {
     versionId: row.id,
     label: row.label,
+    kind: m.hub.kind ?? "straighten",
     params: m.hub.params,
-    needsListingUpdate: p.sourceKind !== "AUTOHDR" || stage === "DELIVERED" || stage === "DELIVERY_MISMATCH",
+    // Oct 22 2026: a photo added by hand is on no listing until the delivery sends it.
+    needsListingUpdate: (p.sourceKind !== "AUTOHDR" && p.sourceKind !== "UPLOAD") || stage === "DELIVERED" || stage === "DELIVERY_MISMATCH",
     downloadUrl: m.file ? `/api/photo-fixes/${row.id}` : null,
   };
 }

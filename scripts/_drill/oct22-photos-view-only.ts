@@ -79,7 +79,11 @@ const text = (h: string) =>
   h.replace(/<[^>]+>/g, " ").replace(/&#x27;|&#39;|&rsquo;/g, "'").replace(/&amp;/g, "&").replace(/&quot;|&ldquo;|&rdquo;/g, '"').replace(/\s+/g, " ");
 /** The text of every button, link and menu summary on a page. */
 const controls = (h: string) => [...h.matchAll(/<(button|a|summary)\b[^>]*>([\s\S]*?)<\/\1>/g)].map((m) => text(m[2]).trim()).filter(Boolean);
-const forbiddenIn = (h: string) => controls(h).filter((t) => FORBIDDEN.test(t));
+// Oct 22 2026 (Jordan: "the creative manager's read-only desk shows Download only"): the
+// lightbox's full-size Download (/api/photo-delivery/download/, never a paid download) is the
+// one file control the view-only desk has; every other download is still forbidden.
+const fullSizeDownloads = (h: string) => h.replace(/<a\b[^>]*href="\/api\/photo-delivery\/download\/[^"]*"[^>]*>[\s\S]*?<\/a>/g, "");
+const forbiddenIn = (h: string) => controls(fullSizeDownloads(h)).filter((t) => FORBIDDEN.test(t));
 
 async function redirectOf(run: () => Promise<unknown>): Promise<string | null> {
   try {
