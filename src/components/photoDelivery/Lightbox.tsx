@@ -66,7 +66,7 @@ export function PhotoFacts({ photo }: { photo: PhotoView }) {
 }
 
 export function Lightbox() {
-  const { data, lightbox, openLightbox, findingsByPhoto, excludePhoto, makeHero, pending, promptOpen, shown, openEditor } = useJob();
+  const { data, lightbox, openLightbox, findingsByPhoto, excludePhoto, makeHero, pending, promptOpen, shown, openEditor, readOnly } = useJob();
   const photos = useMemo(() => data.photos.filter((p) => p.status !== "GONE"), [data.photos]);
   const idx = photos.findIndex((p) => p.id === lightbox);
   const photo = idx >= 0 ? photos[idx] : null;
@@ -181,18 +181,29 @@ export function Lightbox() {
           </div>
 
           <div className="mt-3 flex flex-wrap gap-1.5">
-            {!excluded && (
-              <button type="button" disabled={pending || isHero} onClick={() => void makeHero(photo)} aria-pressed={isHero} className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-60">
-                <Star aria-hidden className={cn("size-3.5", isHero && "fill-current text-brand")} /> {isHero ? "Hero" : "Make hero"}
-              </button>
+            {/* View only (Oct 22 2026): the hero and the delivery set are the office's calls; a viewer reads them. */}
+            {readOnly ? (
+              isHero && (
+                <span className="inline-flex min-h-10 items-center gap-1.5 px-1 text-[13px] font-medium">
+                  <Star aria-hidden className="size-3.5 fill-current text-brand" /> Hero
+                </span>
+              )
+            ) : (
+              <>
+                {!excluded && (
+                  <button type="button" disabled={pending || isHero} onClick={() => void makeHero(photo)} aria-pressed={isHero} className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-60">
+                    <Star aria-hidden className={cn("size-3.5", isHero && "fill-current text-brand")} /> {isHero ? "Hero" : "Make hero"}
+                  </button>
+                )}
+                <button type="button" disabled={pending} onClick={() => void excludePhoto(photo, !excluded)} className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-60">
+                  {excluded ? <Eye aria-hidden className="size-3.5" /> : <EyeOff aria-hidden className="size-3.5" />} {excluded ? "Put back" : "Leave out"}
+                </button>
+              </>
             )}
-            <button type="button" disabled={pending} onClick={() => void excludePhoto(photo, !excluded)} className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-60">
-              {excluded ? <Eye aria-hidden className="size-3.5" /> : <EyeOff aria-hidden className="size-3.5" />} {excluded ? "Put back" : "Leave out"}
-            </button>
             <button type="button" aria-pressed={overlays} onClick={() => setOverlays((v) => !v)} className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2">
               <Layers aria-hidden className="size-3.5" /> Boxes {overlays ? "on" : "off"} <kbd className="text-[11px] text-muted">O</kbd>
             </button>
-            {photo.status !== "GONE" && (
+            {photo.status !== "GONE" && !readOnly && (
               <button type="button" disabled={pending || photo.fixing} onClick={() => openEditor(photo.id)} title={photo.fixing ? "An AI fix is running on this photo" : "Straighten, fix the vertical perspective or crop (free, exact)"} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-brand/50 bg-brand-soft px-2.5 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-60">
                 <Crop aria-hidden className="size-3.5" /> Straighten and crop
               </button>
@@ -242,7 +253,8 @@ export function Lightbox() {
 
           <VersionsStrip photo={photo} showingId={showing?.id ?? null} currentId={current?.id ?? null} onShow={(id) => setView({ photoId: photo.id, versionId: id })} />
 
-          <ReeditBox photo={photo} />
+          {/* An AI re-edit spends credits: the office's (Oct 22 2026). */}
+          {!readOnly && <ReeditBox photo={photo} />}
 
           <PhotoFacts photo={photo} />
         </aside>
@@ -265,7 +277,7 @@ function versionName(v: VersionView, all: VersionView[]): string {
  * wrong. Sharpness is measured at one size, so a softer step is flagged.
  */
 function VersionsStrip({ photo, showingId, currentId, onShow }: { photo: PhotoView; showingId: string | null; currentId: string | null; onShow: (id: string | null) => void }) {
-  const { jobId, run, confirm, pending } = useJob();
+  const { jobId, run, confirm, pending, readOnly } = useJob();
   const versions = photo.versions;
   const sharpest = Math.max(0, ...versions.map((v) => v.sharpness ?? 0));
   const showing = showingId ? versions.find((v) => v.id === showingId) ?? null : null;
@@ -286,7 +298,7 @@ function VersionsStrip({ photo, showingId, currentId, onShow }: { photo: PhotoVi
     <section className="mt-4">
       <h3 className="text-[12px] font-semibold uppercase tracking-wide text-muted">Versions ({versions.length})</h3>
       <p className="mt-0.5 text-[12px] text-muted">
-        {photo.sourceKind === "AUTOHDR"
+        {photo.sourceKind === "AUTOHDR" || readOnly
           ? "Pick a version to compare. The current one is what gets delivered."
           : "Pick a version to compare. The current one is the file on the Aryeo listing; Restore puts its file under Replace these on the Aryeo listing."}
       </p>
@@ -321,7 +333,8 @@ function VersionsStrip({ photo, showingId, currentId, onShow }: { photo: PhotoVi
       )}
       {showing && !showing.current && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
-          {showing.inAutohdr || showing.restorable ? (
+          {/* Comparing is viewing; Restore changes what is delivered: the office's (Oct 22 2026). */}
+          {readOnly ? null : showing.inAutohdr || showing.restorable ? (
             <button type="button" disabled={pending} onClick={() => void restore(showing)} className="inline-flex min-h-10 items-center rounded-lg bg-brand-action px-3 text-[13px] font-semibold text-brand-fg hover:brightness-95 disabled:opacity-50">
               Restore this version
             </button>
@@ -334,7 +347,7 @@ function VersionsStrip({ photo, showingId, currentId, onShow }: { photo: PhotoVi
           <p className="w-full text-[12px] text-muted">Boxes describe the current version, so they are hidden while comparing.</p>
         </div>
       )}
-      {linked && (
+      {linked && !readOnly && (
         <button
           type="button"
           disabled={pending}

@@ -129,18 +129,20 @@ async function main() {
     const hrefs = (html: string) => [...html.matchAll(/<a\b[^>]*\shref="([^"]+)"/g)].map((m) => m[1]);
     const section = (html: string, id: string) => html.match(new RegExp(`<section[^>]*data-sidebar-group="${id}"[^>]*>([\\s\\S]*?)</section>`))?.[1] ?? "";
     const jamesMenu = menu({ name: "James Livingston", email: "james@cm.invalid", role: "CREATIVE_MANAGER" });
-    // Oct 22 2026 (Jordan's approved role menus).
-    c.ok("his doors: Dashboard, Videos, Editing Room, Monthly Content, Uploads, Shoots, My Performance", hrefs(section(jamesMenu, "work")).join() === "/,/review,/editing,/content,/upload,/jobs,/my-pay", hrefs(section(jamesMenu, "work")).join());
+    // Oct 22 2026 (Jordan's approved role menus; Photos, the view-only desk,
+    // the same day: drill oct22-photos-view-only).
+    c.ok("his doors: Dashboard, Videos, Editing Room, Monthly Content, Photos, Uploads, Shoots, My Performance", hrefs(section(jamesMenu, "work")).join() === "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay", hrefs(section(jamesMenu, "work")).join());
     const all = hrefs(jamesMenu);
-    c.ok("no client inbox, no Photo delivery, no Your list, no People, no Settings, no Finance, no Trends", !["/communications", "/ops/photo-delivery", "/ops/checklist", "/users", "/settings", "/sales", "/trends", "/day", "/connections", "/coaching", "/catalog"].some((h) => all.includes(h)), all.join(" "));
+    c.ok("no client inbox, no Your list, no People, no Settings, no Finance, no Trends", !["/communications", "/ops/checklist", "/users", "/settings", "/sales", "/trends", "/day", "/connections", "/coaching", "/catalog"].some((h) => all.includes(h)), all.join(" "));
     c.ok("under More: Tasks, Clients, Client activity, My Shoots, Upload Portal, Team feedback, Training, Ask the Hub, Report a hub problem", ["/tasks", "/clients", "/content/activity", "/shoot", "/upload", "/quality", "/training", "/assistant", "/feedback"].every((h) => all.includes(h)), all.join(" "));
     c.ok("My Pay reads My Performance (pay stays hidden)", jamesMenu.includes('href="/my-pay"') && jamesMenu.includes("My Performance") && !jamesMenu.includes(">My Pay<"));
     c.ok("an override shows its door (the inbox) and hides one (Videos)", hrefs(menu({ name: "J", email: "j@x", role: "CREATIVE_MANAGER", permissions: JSON.stringify({ communications: true }) })).includes("/communications") && !hrefs(menu({ name: "J", email: "j@x", role: "CREATIVE_MANAGER", permissions: JSON.stringify({ review: false }) })).includes("/review"));
-    c.ok("…an ops override still shows no Photos door (its pages admit the office only)", !hrefs(menu({ name: "J", email: "j@x", role: "CREATIVE_MANAGER", permissions: JSON.stringify({ ops: true }) })).some((h) => h.startsWith("/ops/")));
+    // Oct 22 2026: the Photos door is theirs now (view only); an ops override still opens no Your list.
+    c.ok("…an ops override still shows no Your list (its page admits the office only)", !hrefs(menu({ name: "J", email: "j@x", role: "CREATIVE_MANAGER", permissions: JSON.stringify({ ops: true }) })).includes("/ops/checklist"));
     const kyleMenu = menu({ name: "Kyle", email: "kyle@cm.invalid", role: "ADMIN" });
     c.ok("Kyle's doors are his own (Your list, Messages, Photos, Ready to send)", hrefs(section(kyleMenu, "work")).join() === "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs");
     c.ok("the role shows its label in the menu", jamesMenu.includes("Creative manager"));
-    c.ok("the creative menu is a list of its own, the office's its own", nav.CREATIVE_MENU.map((d) => d.href).join() === "/,/review,/editing,/content,/upload,/jobs,/my-pay" && nav.usesRoleMenu("CREATIVE_MANAGER") && nav.OFFICE_MENU.map((d) => d.href).join() === "/,/ops/checklist,/communications,/ops/photo-delivery,/review,/editing,/jobs");
+    c.ok("the creative menu is a list of its own, the office's its own", nav.CREATIVE_MENU.map((d) => d.href).join() === "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay" && nav.usesRoleMenu("CREATIVE_MANAGER") && nav.OFFICE_MENU.map((d) => d.href).join() === "/,/ops/checklist,/communications,/ops/photo-delivery,/review,/editing,/jobs");
 
     // =====================================================================
     c.head("§3 · the guards, on a live session");

@@ -55,9 +55,10 @@ export function ActivityPanel({ events }: { events: EventView[] }) {
 
 const SOURCE_LABEL: Record<string, string> = { ARYEO: "Aryeo listing", DROPBOX: "Dropbox", AUTOHDR: "AutoHDR" };
 
-type FilesProps = { header: JobHeaderView; photos: PhotoView[]; runs: RunView[]; batches: FixBatchView[]; canSeeMoney: boolean };
+/** `showCredits`: false for a view-only viewer (Oct 22 2026): the fix batches say what ran, never how many credits. */
+type FilesProps = { header: JobHeaderView; photos: PhotoView[]; runs: RunView[]; batches: FixBatchView[]; canSeeMoney: boolean; showCredits?: boolean };
 
-export function FilesPanel({ header, photos, runs, batches, canSeeMoney }: FilesProps) {
+export function FilesPanel({ header, photos, runs, batches, canSeeMoney, showCredits = true }: FilesProps) {
   const nameOf = new Map(photos.map((p) => [p.id, p.name]));
   const sources = [...new Set(photos.map((p) => p.sourceKind))];
   return (
@@ -152,7 +153,8 @@ export function FilesPanel({ header, photos, runs, batches, canSeeMoney }: Files
             {batches.map((b) => (
               <li key={b.id} className="rounded-xl border border-border p-2.5">
                 <p>
-                  <span className="font-medium">{prettyEnum(b.status)}</span> · {prettyEnum(b.mode)} · est. {b.estimatedCredits} credit{b.estimatedCredits === 1 ? "" : "s"}
+                  <span className="font-medium">{prettyEnum(b.status)}</span> · {prettyEnum(b.mode)}
+                  {showCredits ? ` · est. ${b.estimatedCredits} credit${b.estimatedCredits === 1 ? "" : "s"}` : ""}
                   {canSeeMoney && b.estimatedUsd != null ? ` (${usd(b.estimatedUsd)})` : ""}
                 </p>
                 <p className="text-[12px] text-muted">Approved by {b.approvedBy}, {etDateTime(b.approvedAt)}</p>
@@ -161,7 +163,7 @@ export function FilesPanel({ header, photos, runs, batches, canSeeMoney }: Files
                     {b.operations.map((o) => (
                       <li key={o.id}>
                         {nameOf.get(o.photoId) ?? "Photo"}: {STRATEGY_LABEL[o.strategy] ?? o.strategy} · {prettyEnum(o.status)}
-                        {o.chargedCredits != null ? ` · charged ${o.chargedCredits}` : ` · est. ${o.estimatedCredits}`}
+                        {!showCredits ? "" : o.chargedCredits != null ? ` · charged ${o.chargedCredits}` : ` · est. ${o.estimatedCredits}`}
                         {o.error && <span className="text-warning"> · {o.error}</span>}
                       </li>
                     ))}

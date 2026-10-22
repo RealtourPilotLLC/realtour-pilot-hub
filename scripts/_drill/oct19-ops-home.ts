@@ -645,7 +645,8 @@ async function main() {
     const ROLE_DOORS = [
       ["Jordan (owner)", { name: "Jordan", email: owner.email, role: "OWNER" }, "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Videos,Editing Room,Monthly Content,Photos,Messages,Shoots", ["/tasks", "/clients", "/upload", "/settings", "/schedule", "/sales"]],
       ["Kyle (office)", { name: "Kyle Smith", email: kyle.email, role: "ADMIN" }, "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs", "Dashboard,Your list,Messages,Photos,Ready to send,Editing Room,Shoots", ["/tasks", "/clients", "/content", "/upload", "/settings", "/schedule"]],
-      ["James (creative manager)", { name: "James", email: james.email, role: "CREATIVE_MANAGER" }, "/,/review,/editing,/content,/upload,/jobs,/my-pay", "Dashboard,Videos,Editing Room,Monthly Content,Uploads,Shoots,My Performance", ["/tasks", "/clients", "/shoot", "/schedule"]],
+      // Oct 22 2026: Photos, the view-only photo desk, joins James's doors.
+      ["James (creative manager)", { name: "James", email: james.email, role: "CREATIVE_MANAGER" }, "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay", "Dashboard,Videos,Editing Room,Monthly Content,Photos,Uploads,Shoots,My Performance", ["/tasks", "/clients", "/shoot", "/schedule"]],
     ] as const;
     for (const [who, u, doors, doorLabels, more] of ROLE_DOORS) {
       const html = menu(u);

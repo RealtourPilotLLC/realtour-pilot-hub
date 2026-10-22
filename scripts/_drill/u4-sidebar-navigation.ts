@@ -83,7 +83,8 @@ async function main() {
       ["owner", owner, "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Videos,Editing Room,Monthly Content,Photos,Messages,Shoots"],
       ["open development", render(Sidebar, null), "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Videos,Editing Room,Monthly Content,Photos,Messages,Shoots"],
       ["ADMIN (Kyle)", admin, "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs", "Dashboard,Your list,Messages,Photos,Ready to send,Editing Room,Shoots"],
-      ["CREATIVE_MANAGER (James)", creative, "/,/review,/editing,/content,/upload,/jobs,/my-pay", "Dashboard,Videos,Editing Room,Monthly Content,Uploads,Shoots,My Performance"],
+      // Oct 22 2026: Photos (the view-only desk) joins James's doors where the owner's menu has it.
+      ["CREATIVE_MANAGER (James)", creative, "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay", "Dashboard,Videos,Editing Room,Monthly Content,Photos,Uploads,Shoots,My Performance"],
       ["PHOTOGRAPHER (Harrison)", photographer, "/shoot,/upload,/review,/my-pay,/resources", "My Shoots,Upload,My Videos,My Performance,Help"],
     ];
     for (const [who, html, hrefList, labelList] of MENUS) {

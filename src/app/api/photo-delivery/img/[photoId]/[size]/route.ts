@@ -13,8 +13,9 @@ export const maxDuration = 60;
 //
 //   GET /api/photo-delivery/img/<photoId>/<thumb256|thumb768|qc1024|qc2048>?v=<hash>
 //
-// The photos are a client's unreleased listing images, so: OWNER and ADMIN
-// only (an owner previewing someone else may still look; nothing is written),
+// The photos are a client's unreleased listing images, so: OWNER and ADMIN,
+// and since Oct 22 2026 the CREATIVE_MANAGER (the view-only photo desk), only
+// (an owner previewing someone else may still look; nothing is written),
 // the bytes always come back THROUGH this route (no blob URL, no Dropbox or
 // Aryeo link, no token ever reaches the browser), and responses are
 // `Cache-Control: private` so no shared cache keeps a copy.
@@ -35,6 +36,16 @@ export const maxDuration = 60;
 // `v` is the photo's content hash: it changes when the photo does (for an
 // AutoHDR photo, when its version does), so the URL is cache-busted and the
 // long browser cache is safe.
+//
+// NEVER A PAID DOWNLOAD (Oct 22 2026, the creative manager's view-only desk;
+// true for every viewer). Opening a picture can cost nothing: an Aryeo or
+// Dropbox file is a plain read; an AutoHDR photo is fetched from the link the
+// hub stored when it bought the photo, or re-downloaded (free) through
+// display.freshAutohdrUrl, which refuses a photo the hub never downloaded
+// before asking AutoHDR anything ("still being brought over", 503). The first
+// (paid) download happens only in display.downloadForDisplay, behind the
+// owner's switch, never from here. Earlier versions come from the hub's kept
+// copies only (serveVersion).
 // ---------------------------------------------------------------------------
 
 const SIZES = new Set(["thumb256", "thumb768", "qc1024", "qc2048"]);
@@ -58,6 +69,23 @@ function release(): void {
   waiting.shift()?.();
 }
 
+/**
+ * The office always (requireRole has admitted them by their real role); the
+ * creative manager only while their login opens the photo desk, so taking
+ * the desk away (a `photos` override) also closes its pictures. A no-op with
+ * the gate off, like every guard.
+ */
+async function mayViewDesk(): Promise<boolean> {
+  const { authEnforced } = await import("@/lib/auth/guards");
+  if (!authEnforced()) return true;
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const u = await getCurrentUser().catch(() => null);
+  if (!u) return false;
+  if (u.realRole !== "CREATIVE_MANAGER") return true;
+  const { canAccess } = await import("@/lib/auth/access");
+  return canAccess({ role: u.realRole, permissions: u.permissions }, "photos");
+}
+
 function headers(etag: string, maxAge: number): Record<string, string> {
   return {
     "content-type": "image/jpeg",
@@ -72,9 +100,12 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ photoId: st
   const { photoId, size } = await ctx.params;
   if (!/^[a-z0-9]{10,40}$/i.test(photoId) || !SIZES.has(size)) return NextResponse.json({ error: "Not found" }, { status: 404 });
   try {
-    await requireRole(["OWNER", "ADMIN"], { allowImpersonation: true });
+    // Oct 22 2026: the creative manager too (the view-only photo desk), while
+    // their login holds the desk (a `photos` override can take it away).
+    await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER"], { allowImpersonation: true });
+    if (!(await mayViewDesk())) throw new Error("no photo desk");
   } catch {
-    return NextResponse.json({ error: "Office access required." }, { status: 403 });
+    return NextResponse.json({ error: "Staff access required." }, { status: 403 });
   }
 
   const photo = await prisma.photoAsset.findUnique({

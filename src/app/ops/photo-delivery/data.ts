@@ -4,7 +4,7 @@ import { cache } from "react";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { canSeeMoney } from "@/lib/auth/access";
+import { canSeeMoney, isOffice } from "@/lib/auth/access";
 import { STAGE_LABEL, type JobStage } from "@/lib/photoDelivery/jobState";
 import { photoDeliverySettings } from "@/lib/photoDelivery/settings";
 import { creditAlertState, creditView, type CreditView } from "@/lib/photoDelivery/credits";
@@ -35,6 +35,13 @@ import type {
 // Money rule (Jordan, Sep 2 2026, lib/auth/access canSeeMoney): dollars are
 // filled in for the OWNER only and are null for everyone else, so they never
 // reach a non-owner's browser. Credits are operational and shown to admins.
+//
+// VIEW ONLY (Oct 22 2026): the creative manager reads the desk (Viewer
+// `readOnly`). For them the loaders also leave out every credit amount (the
+// strip, the job's credits spent, the Fix Cart, the history's batches and
+// event lines), payment status, and the download links of fixed files, and
+// they skip the reads only an acting desk needs (the Fix Cart, which can ask
+// AutoHDR for its price list; the credit balance).
 // ---------------------------------------------------------------------------
 
 const HOUR = 3_600_000;
@@ -81,14 +88,37 @@ const overridesOf = (json: string | null | undefined): RuleOverride[] => (parse<
  * Authorization itself is requirePageAccess on the page and the guards in
  * actions.ts. Local dev with the gate off renders as the owner would see it,
  * exactly as the guards are no-ops there.
+ *
+ * `readOnly` (Oct 22 2026): everyone outside the office (owner and admin)
+ * reads the desk without a single control: the creative manager is the one
+ * such viewer the pages let in. It follows the EFFECTIVE role, so the owner
+ * previewing as James sees James's desk; the actions refuse a preview anyway.
  */
 export async function loadViewer(): Promise<Viewer | null> {
   const me = await getCurrentUser().catch(() => null);
   if (!me) {
     if (authEnforced()) return null;
-    return { role: "OWNER", name: "local dev", isOwner: true, canSeeMoney: true };
+    return { role: "OWNER", name: "local dev", isOwner: true, canSeeMoney: true, readOnly: false };
   }
-  return { role: me.role, name: me.name || me.email, isOwner: me.role === "OWNER", canSeeMoney: canSeeMoney(me.role) };
+  return { role: me.role, name: me.name || me.email, isOwner: me.role === "OWNER", canSeeMoney: canSeeMoney(me.role), readOnly: !isOffice(me.role) };
+}
+
+/**
+ * What a line of the job's history may say to this viewer (Oct 22 2026).
+ * Dollars are the owner's: a few automatic lines carry them ("3 credits
+ * ($1.50; target $5.00, max $8.00)"), and the office never sees money. Credit
+ * amounts are the office's: a view-only viewer reads neither.
+ */
+export function eventTextFor(text: string, viewer: Pick<Viewer, "canSeeMoney" | "readOnly">): string {
+  let t = text;
+  if (!viewer.canSeeMoney) t = t.replace(/\s*\(\$[^()]*\)/g, "").replace(/\$\s?\d[\d,]*(?:\.\d+)?/g, "an amount");
+  if (viewer.readOnly) {
+    t = t
+      .replace(/\s*\([^()]*\b\d[\d,]*\s+(?:AutoHDR\s+)?credits?\b[^()]*\)/gi, "")
+      .replace(/,\s*\d[\d,]*\s+(?:AutoHDR\s+)?credits?\b/gi, "")
+      .replace(/\b\d[\d,]*\s+(?:AutoHDR\s+)?credits?\b/gi, "credits");
+  }
+  return t;
 }
 
 // ---- global strip (plan 9.2) ---------------------------------------------------------------
@@ -111,8 +141,10 @@ export function creditStrip(v: CreditView, viewer: Pick<Viewer, "canSeeMoney">):
 }
 
 export async function loadStrip(viewer: Viewer): Promise<StripData> {
-  const [credit, settings] = await Promise.all([creditView().catch(() => null), photoDeliverySettings()]);
-  return { credit: credit ? creditStrip(credit, viewer) : null, qcShadow: settings.qcShadow, qcEnabled: settings.qcEnabled, isOwner: viewer.isOwner };
+  // A view-only viewer gets no credits at all (Oct 22 2026): not read, not sent.
+  const readOnly = !!viewer.readOnly;
+  const [credit, settings] = await Promise.all([readOnly ? null : creditView().catch(() => null), photoDeliverySettings()]);
+  return { credit: credit ? creditStrip(credit, viewer) : null, qcShadow: settings.qcShadow, qcEnabled: settings.qcEnabled, isOwner: viewer.isOwner, readOnly };
 }
 
 // ---- the queue (plan 9.3) --------------------------------------------------------------------
@@ -163,7 +195,8 @@ function fixStatusOf(batchStatus: string, ops: Map<string, number>): FixStatusVi
 /** What a queue card needs of its cover photo. */
 const COVER_FIELDS = { id: true, jobId: true, contentHash: true, sourceKind: true, sourceUrl: true, roomType: true } as const;
 
-export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilters> } = {}): Promise<QueueData> {
+/** `viewer`: a view-only viewer's cards carry no payment status (Oct 22 2026); without one, the office's board. */
+export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilters>; viewer?: Pick<Viewer, "readOnly"> } = {}): Promise<QueueData> {
   const now = opts.now ?? new Date();
   const filters: QueueFilters = { client: opts.filters?.client || null, photographer: opts.filters?.photographer || null, atRisk: !!opts.filters?.atRisk };
   const since = new Date(now.getTime() - 7 * DAY);
@@ -288,7 +321,7 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
       shadow: j.qcShadow,
       hero: hero ? { photoId: hero.id, hash: hero.contentHash, fallbackUrl: hero.sourceKind === "ARYEO" ? hero.sourceUrl : null, alt: `${streetOf(p)}: ${prettyRoom(hero.roomType)}` } : null,
       fix: batch ? fixStatusOf(batch.status, opsByBatch.get(batch.id) ?? new Map()) : null,
-      paymentStatus: p?.paymentStatus ?? null,
+      paymentStatus: opts.viewer?.readOnly ? null : p?.paymentStatus ?? null,
       // Plan 9.3: amber at 6 h left; "at risk" is anything inside that or late.
       atRisk: !delivered && left != null && left < 6 * HOUR,
       holdReason: j.holdReason,
@@ -416,6 +449,7 @@ const EVENT_LIMIT = 100;
 export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?: Date }): Promise<JobDetail | null> {
   const now = opts.now ?? new Date();
   const { viewer } = opts;
+  const readOnly = !!viewer.readOnly;
   const [job, settings] = await Promise.all([prisma.photoJob.findUnique({ where: { id: jobId } }), photoDeliverySettings()]);
   if (!job) return null;
 
@@ -450,8 +484,10 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     }),
     outcome(deliveryGate(jobId)),
     outcome(deliverySteps(jobId)),
-    outcome(buildFixCart(jobId)),
-    creditView().catch(() => null),
+    // A view-only viewer has no Fix Cart (it prices fixes, and may read
+    // AutoHDR's live price list to do it) and no credit balance (Oct 22 2026).
+    readOnly ? { v: null, e: null } : outcome(buildFixCart(jobId)),
+    readOnly ? null : creditView().catch(() => null),
     aryeoPushView(job.id),
     prisma.photoIntakeBatch
       .findMany({ where: { projectId: job.projectId }, orderBy: { batchNo: "asc" }, select: { batchNo: true, state: true, fileCount: true, expectedPhotos: true, sentAt: true, doneAt: true, imageCount: true, lastError: true } })
@@ -477,6 +513,8 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     if (list) list.push(v);
     else versionsByPhoto.set(v.photoId, [v]);
   }
+  // A view-only viewer reads that a photo was edited in the hub, never gets its file (Oct 22 2026).
+  const hubEditOf = (e: ReturnType<typeof hubEditView>) => (e && readOnly ? { ...e, downloadUrl: null } : e);
   const photoViews: PhotoView[] = photos.map((p) => ({
     id: p.id,
     name: p.name,
@@ -504,7 +542,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     position: p.status === "ACTIVE" ? position.get(p.id) ?? null : null,
     deliveryName: p.status === "ACTIVE" ? deliveryNameOf.get(p.id) ?? null : null,
     fixing: fixingPhotos.has(p.id),
-    hubEdit: hubEditView(versionsByPhoto.get(p.id) ?? [], p, job.stage),
+    hubEdit: hubEditOf(hubEditView(versionsByPhoto.get(p.id) ?? [], p, job.stage)),
   }));
   const rank = (p: PhotoView) => (p.status === "ACTIVE" ? p.position ?? 9_000 + p.sequence : p.status === "EXCLUDED" ? 20_000 + p.sequence : 40_000 + p.sequence);
   photoViews.sort((a, b) => rank(a) - rank(b));
@@ -581,16 +619,19 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       }
     : null;
   const gate: GateView | null = gateR.v ? { ...gateR.v, checks: gateR.v.checks.map((c) => ({ ...c })) } : null;
+  // A view-only viewer reads the delivery order and what is waiting to be
+  // swapped on the listing, never the office's files: no download of a fixed
+  // photo, no 06-Ready-for-Aryeo folder (Oct 22 2026).
   const steps: StepsView | null = stepsR.v
     ? {
-        replacements: (stepsR.v.replacements ?? []).map((r) => ({ ...r })),
+        replacements: (stepsR.v.replacements ?? []).map((r) => ({ ...r, downloadUrl: readOnly ? null : r.downloadUrl })),
         listingUrl: stepsR.v.listingUrl,
         orderUrl: stepsR.v.orderUrl,
-        folderPath: stepsR.v.folderPath,
+        folderPath: readOnly ? null : stepsR.v.folderPath,
         folderLabel: stepsR.v.folderLabel,
         order: stepsR.v.order,
         message: stepsR.v.message,
-        ready: stepsR.v.ready,
+        ready: readOnly ? null : stepsR.v.ready,
       }
     : null;
 
@@ -612,10 +653,12 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     };
   });
 
+  // Oct 22 2026: each line as this viewer may read it (eventTextFor); a
+  // view-only viewer gets no raw details (they carry credit counts and ids).
   const eventViews: EventView[] = events.map((e) => {
-    const data = parse<Record<string, unknown>>(e.dataJson);
-    const detail = data && typeof data === "object" && Object.keys(data).length ? JSON.stringify(data, null, 1).slice(0, 1200) : null;
-    return { id: e.id, at: e.at.toISOString(), actor: e.actor, action: e.action, detail };
+    const data = readOnly ? null : parse<Record<string, unknown>>(e.dataJson);
+    const detail = data && typeof data === "object" && Object.keys(data).length ? eventTextFor(JSON.stringify(data, null, 1).slice(0, 1200), viewer) : null;
+    return { id: e.id, at: e.at.toISOString(), actor: e.actor, action: eventTextFor(e.action, viewer), detail };
   });
 
   const opsByBatch = new Map<string, typeof ops>();
@@ -695,10 +738,10 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       qcVerdict: job.qcVerdict,
       qcShadow: job.qcShadow,
       qcRequestedAt: iso(job.qcRequestedAt),
-      creditsSpent: job.creditsSpent,
+      creditsSpent: readOnly ? null : job.creditsSpent,
       listingUrl: project?.aryeoListingId ? aryeoListingUrl(project.aryeoListingId) : null,
       orderUrl: project?.aryeoOrderId ? aryeoOrderUrl(project.aryeoOrderId) : null,
-      paymentStatus: project?.paymentStatus ?? null,
+      paymentStatus: readOnly ? null : project?.paymentStatus ?? null,
       lastError: job.lastError,
       autohdrPhotoshootId: job.autohdrPhotoshootId,
       autohdrShootName: job.autohdrShootName,

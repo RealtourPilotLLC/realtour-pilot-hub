@@ -113,14 +113,16 @@ const SECTIONS: NavSection[] = [
       // (Kyle's "Ready to send", a photographer's "My Videos").
       { label: "Videos", href: "/review", icon: MonitorPlay, key: "review" },
       // PHOTOS (Oct 14 2026, docs/photo-delivery): the queue, AI QC, the
-      // AutoHDR Fix Cart and the delivery check. Rides the `ops` PageKey
-      // (owner + office). Labelled "Photos" in the six-door menu.
+      // AutoHDR Fix Cart and the delivery check. Its own `photos` PageKey
+      // since Oct 22 2026 (it rode `ops` before): owner and office, and the
+      // creative manager, who reads the desk VIEW ONLY. Labelled "Photos" in
+      // the role menus.
       // Video delivery, Special requests, Scheduling and Old items stopped
       // being menu entries on Oct 19 2026 (Kyle's checklist holds them), and
       // so did Messages (/ops/messages, merged into Communications, which is
       // "Messages" in the six-door menu) and Shoots & exceptions (/ops, now
       // the dashboard) that night.
-      { label: "Photo delivery", href: "/ops/photo-delivery", icon: Images, key: "ops" },
+      { label: "Photo delivery", href: "/ops/photo-delivery", icon: Images, key: "photos" },
       // YOUR LIST (Jordan, Oct 21 2026; audit A9): the daily checklist
       // (/ops/checklist) gets a door of its own under More → Lists. Same key
       // the page checks (`ops`), and only for owner and office logins, who
@@ -276,10 +278,13 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
     // The creative manager (Oct 21 2026) keeps Client & Team Feedback (their
     // photographer and editor tabs) but not Communication coaching: that page
     // is about how the office answers clients on the company line.
-    // Photo delivery (/ops/*) is Kyle's desk, and its pages admit the owner
-    // and the office only, so even an `ops` override would be a door that
-    // bounces: it stays off their menu.
-    if (user && user.role === "CREATIVE_MANAGER") items = items.filter((i) => i.href !== "/coaching" && !i.href.startsWith("/ops/"));
+    // Oct 22 2026: Photos is one of their doors now (the desk, view only:
+    // its `photos` key); Your list stays off their menu (the filter below).
+    if (user && user.role === "CREATIVE_MANAGER") items = items.filter((i) => i.href !== "/coaching");
+    // The photo desk's pages admit the owner, the office and the creative
+    // manager only (Oct 22 2026), so a `photos` override on anyone else
+    // would be a door that bounces.
+    if (user && !isCreativeLead(user.role)) items = items.filter((i) => i.href !== "/ops/photo-delivery");
     // Client activity is the owner's, the admin's and the creative manager's
     // view of the content program (the page redirects anyone else).
     if (user && !isCreativeLead(user.role)) items = items.filter((i) => i.href !== "/content/activity");

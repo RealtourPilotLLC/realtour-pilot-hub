@@ -4,7 +4,7 @@ import { AlertTriangle, Camera, ExternalLink, PauseCircle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { BackLink } from "@/components/ui/BackLink";
 import { requirePageAccess } from "@/lib/auth/guards";
-import { homeFor } from "@/lib/auth/access";
+import { homeFor, isCreativeLead } from "@/lib/auth/access";
 import { etDateTime } from "@/lib/datetime";
 import { GlobalStrip } from "@/components/photoDelivery/GlobalStrip";
 import { SlaChip } from "@/components/photoDelivery/SlaChip";
@@ -35,12 +35,14 @@ const TABS = new Map<string, TabKey>([["issues", "issues"], ["cart", "cart"], ["
 const ID_RE = /^[A-Za-z0-9_-]{6,64}$/;
 
 export default async function PhotoJobPage({ params, searchParams }: { params: Promise<{ jobId: string }>; searchParams: Promise<{ tab?: string | string[]; photo?: string | string[] }> }) {
-  await requirePageAccess("ops");
+  await requirePageAccess("photos");
   const viewer = await loadViewer();
   const { jobId } = await params;
   if (!viewer) redirect(`/login?next=${encodeURIComponent(`/ops/photo-delivery/${jobId}`)}`);
-  if (viewer.role !== "OWNER" && viewer.role !== "ADMIN") redirect(homeFor(viewer.role));
+  // The office works the job; the creative manager reads it (viewer.readOnly, Oct 22 2026).
+  if (!isCreativeLead(viewer.role)) redirect(homeFor(viewer.role));
   if (!ID_RE.test(jobId)) notFound();
+  const readOnly = !!viewer.readOnly;
 
   const sp = await searchParams;
   const tabRaw = Array.isArray(sp.tab) ? sp.tab[0] : sp.tab;
@@ -67,7 +69,7 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
         title={h.street}
         subtitle={[h.clientName ?? "No client", h.cityLine].filter(Boolean).join(" · ")}
         sticky="desktop"
-        actions={<JobHeaderActions jobId={h.id} stage={h.stage} qcEnabled={data.qcEnabled} autohdr={!!h.autohdrPhotoshootId || data.photos.some((p) => p.sourceKind === "AUTOHDR")} />}
+        actions={<JobHeaderActions jobId={h.id} stage={h.stage} qcEnabled={data.qcEnabled} autohdr={!!h.autohdrPhotoshootId || data.photos.some((p) => p.sourceKind === "AUTOHDR")} readOnly={readOnly} />}
       />
       <div className="mx-auto max-w-[120rem] space-y-4 p-4 pb-0 sm:p-6 sm:pb-0">
         <GlobalStrip strip={strip} current="job" />
@@ -98,9 +100,12 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
             <Fact label="QC">
               {h.qcVerdict ? VERDICT_LABEL[h.qcVerdict] ?? h.qcVerdict : data.runs.length ? "No verdict yet" : "Not run yet"}
               <span className="block text-[13px] text-muted">
-                {h.creditsSpent.toLocaleString("en-US")} AutoHDR credit{h.creditsSpent === 1 ? "" : "s"} spent on this job
-                {viewer.canSeeMoney && h.lastRunCostUsd != null ? ` · last QC run ${usd(h.lastRunCostUsd)}` : ""}
-                {h.qcRequestedAt ? ` · new check requested ${etDateTime(h.qcRequestedAt)}` : ""}
+                {/* Credit amounts are the office's (Oct 22 2026: a view-only viewer gets null). */}
+                {[
+                  h.creditsSpent != null ? `${h.creditsSpent.toLocaleString("en-US")} AutoHDR credit${h.creditsSpent === 1 ? "" : "s"} spent on this job` : null,
+                  viewer.canSeeMoney && h.lastRunCostUsd != null ? `last QC run ${usd(h.lastRunCostUsd)}` : null,
+                  h.qcRequestedAt ? `new check requested ${etDateTime(h.qcRequestedAt)}` : null,
+                ].filter(Boolean).join(" · ")}
               </span>
             </Fact>
             <Fact label="Home">
@@ -137,7 +142,7 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
           viewer={viewer}
           initialTab={initialTab}
           initialPhoto={initialPhoto}
-          history={<HistoryPanel events={data.events} header={h} photos={data.photos} runs={data.runs} batches={data.batches} canSeeMoney={viewer.canSeeMoney} />}
+          history={<HistoryPanel events={data.events} header={h} photos={data.photos} runs={data.runs} batches={data.batches} canSeeMoney={viewer.canSeeMoney} showCredits={!readOnly} />}
         />
       </div>
     </div>

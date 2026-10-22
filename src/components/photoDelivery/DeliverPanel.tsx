@@ -14,6 +14,7 @@ import { PhotoImg } from "./PhotoImg";
 import { ReadyProgressBar, type ReadyBarState } from "./ReadyProgressBar";
 import { useJob } from "./JobContext";
 import { aryeoPushLine, aryeoPushNext, aryeoPushOn, useAryeoPushActions, useLivePush } from "./AryeoPushControls";
+import { VIEW_ONLY_NOTE } from "./types";
 
 // ---------------------------------------------------------------------------
 // THE DELIVER PANEL (plan 9.6), sticky at the bottom of the job page.
@@ -41,6 +42,10 @@ import { aryeoPushLine, aryeoPushNext, aryeoPushOn, useAryeoPushActions, useLive
 //     (Realtour Pilot Team voice) with Copy. With the hub's upload on they sit
 //     behind "Do it by hand instead".
 // The hub confirms on its own when Aryeo says the listing was delivered.
+//   · VIEW ONLY (Oct 22 2026, the creative manager): the checklist and where
+//     things stand, read only. No main button, no Download photos, no Done,
+//     Answer or Deliver without it, no Verify or Override, no steps by hand,
+//     no polling of the office's progress route.
 // ---------------------------------------------------------------------------
 
 const START_FROM = new Set(["READY", "QC_REVIEW", "EDITED", "DELIVERY_MISMATCH", "REVISION_REQUESTED"]);
@@ -63,7 +68,7 @@ const secondary = "border border-border-strong hover:bg-surface-2";
 const TONE = { muted: "text-muted", busy: "text-muted", good: "text-success", warn: "text-warning", bad: "text-danger" } as const;
 
 export function DeliverPanel() {
-  const { data, viewer, jobId, run, ask, confirm, pending, photoById, notify } = useJob();
+  const { data, viewer, jobId, run, ask, confirm, pending, photoById, notify, readOnly } = useJob();
   const [open, setOpen] = useState(false);
   const { gate, steps, header } = data;
   // Oct 14 2026: "Get them ready again" answers at once; the bar follows the copy.
@@ -104,8 +109,8 @@ export function DeliverPanel() {
       : !gate.canDeliver
         ? gate.blockedForOverride ?? (openHolds.length ? `${openHolds.length === 1 ? "One thing" : `${openHolds.length} things`} to settle before the photos go out (open this panel).` : "The checklist has open items.")
         : null;
-  const showOverride = viewer.isOwner && !!gate && canStage && !gate.canDeliver;
-  const showVerify = ["DELIVERING", "DELIVERY_MISMATCH", "DELIVERED"].includes(stage);
+  const showOverride = !readOnly && viewer.isOwner && !!gate && canStage && !gate.canDeliver;
+  const showVerify = !readOnly && ["DELIVERING", "DELIVERY_MISMATCH", "DELIVERED"].includes(stage);
   const replacements = steps?.replacements ?? [];
   const ready = steps?.ready ?? null;
 
@@ -139,11 +144,12 @@ export function DeliverPanel() {
   // Ready to review (or one already marked as delivering whose upload stopped).
   const canGoOn = canStart || stage === "DELIVERING";
   const approvable = hubOn && pushNext === "approve" && !preparing && !!steps?.listingUrl && (stage === "READY" || stage === "DELIVERING");
-  const next: "approve" | "deliver" | "mark" | null = hubOn ? (pushNext === "deliver" && canGoOn ? "deliver" : approvable ? "approve" : null) : canStart ? "mark" : null;
+  // VIEW ONLY (Oct 22 2026): no next step to press. Kyle approves and delivers.
+  const next: "approve" | "deliver" | "mark" | null = readOnly ? null : hubOn ? (pushNext === "deliver" && canGoOn ? "deliver" : approvable ? "approve" : null) : canStart ? "mark" : null;
   // Approve and deliver needs the checklist (the usual gate); Approve and upload only puts the photos up.
   const approveDeliver = next === "approve" && canGoOn;
   // Photos already up (a change came in, or more photos): Upload again sits inside.
-  const showResend = hubOn && pushNext === "deliver" && !preparing && !!steps?.listingUrl;
+  const showResend = !readOnly && hubOn && pushNext === "deliver" && !preparing && !!steps?.listingUrl;
 
   // What the bar says under the title. On a phone only the first line shows (all of them once the panel is open).
   // A delivered job: the bar says so (the checklist no longer matters), once.
@@ -161,7 +167,7 @@ export function DeliverPanel() {
   else if (!hubOn && !lines.length) lines.push({ text: "Steps for Aryeo inside", tone: "muted" });
   if (checkLine) lines.push({ text: checkLine.text, tone: checkLine.bad ? "bad" : "muted" });
   // Open photo flags, on the bar itself so Kyle sees them before he approves (they never hold his approval).
-  if (flags && !delivered) lines.push({ text: `${flagWords}. They don't hold your approval.`, tone: "warn" });
+  if (flags && !delivered) lines.push({ text: readOnly ? `${flagWords}.` : `${flagWords}. They don't hold your approval.`, tone: "warn" });
 
   const override = async () => {
     const reason = await ask({
@@ -302,7 +308,8 @@ export function DeliverPanel() {
 
   return (
     <section aria-label="Deliver" className="sticky bottom-0 z-20 mt-4 rounded-t-2xl border border-b-0 border-border bg-surface/95 shadow-[0_-12px_32px_-20px_rgba(0,0,0,0.7)] backdrop-blur-xl">
-      <ReadyProgressBar key={barKey} jobId={jobId} state={bar} setState={setBar} />
+      {/* The bar asks the office-only progress route (which also moves the copy on): never on a view-only page. */}
+      {!readOnly && <ReadyProgressBar key={barKey} jobId={jobId} state={bar} setState={setBar} />}
       <div className="flex items-center gap-2 px-3 py-2.5 sm:px-4">
         <button
           type="button"
@@ -329,7 +336,7 @@ export function DeliverPanel() {
         </button>
         <div className="ml-auto flex shrink-0 items-center gap-2">
           {/* Huddle finding 11: the one folder to upload from, always in reach (the only download button). */}
-          {ready && !preparing && (
+          {ready && !preparing && !readOnly && (
             <a
               href={ready.folderUrl}
               target="_blank"
@@ -408,14 +415,15 @@ export function DeliverPanel() {
                         <span className={cn(!c.ok && "font-medium")}>{c.label}</span>
                         {c.detail && <span className="block text-[12px] text-muted">{c.detail}{!c.hold && !c.ok ? ". Doesn't hold delivery." : ""}</span>}
                         {c.overridden && <span className="block text-[12px] text-muted">Going out without it: {c.overridden}</span>}
-                        {!c.ok && (c.href || c.askId || c.overridable) && (
+                        {!c.ok && (c.href || (!readOnly && (c.askId || c.overridable))) && (
                           <span className="mt-1 flex flex-wrap gap-2">
                             {c.href && (
                               <Link href={c.href} className={cn(cardBtn, secondary, "font-medium")}>
                                 {c.hrefLabel ?? "Open"}
                               </Link>
                             )}
-                            {c.askId && (
+                            {/* Done, Answer and Deliver without it settle the delivery: the office's (Oct 22 2026). */}
+                            {c.askId && !readOnly && (
                               <>
                                 <button type="button" disabled={pending} onClick={() => void settle(c.askId!, "done")} className={cn(cardBtn, secondary)}>
                                   <CheckCircle2 aria-hidden className="size-4" /> Done (fixed)
@@ -425,7 +433,7 @@ export function DeliverPanel() {
                                 </button>
                               </>
                             )}
-                            {c.overridable && (
+                            {c.overridable && !readOnly && (
                               <button type="button" disabled={pending} onClick={() => void withoutWrapUp()} className={cn(cardBtn, "border border-danger/50 text-danger hover:bg-danger-soft")}>
                                 Deliver without it
                               </button>
@@ -468,7 +476,11 @@ export function DeliverPanel() {
               <div className="rounded-xl border border-warning/40 bg-warning-soft/30 p-3">
                 <h3 className="text-sm font-semibold">Replace these on the Aryeo listing</h3>
                 <p className="mt-0.5 text-[13px] text-muted">
-                  {hubOn ? "Fixed after they went on the listing. Approve again (or Upload again), or download each and swap it in." : "Fixed after they went on the listing. Download each and swap it in on Aryeo."}
+                  {readOnly
+                    ? "Fixed after they went on the listing. Kyle swaps them in on Aryeo."
+                    : hubOn
+                      ? "Fixed after they went on the listing. Approve again (or Upload again), or download each and swap it in."
+                      : "Fixed after they went on the listing. Download each and swap it in on Aryeo."}
                 </p>
                 <ul className="mt-2 space-y-1.5">
                   {replacements.map((r) => {
@@ -482,9 +494,11 @@ export function DeliverPanel() {
                           <span className="block break-all font-medium">{r.photoName}</span>
                           <span className="block text-[12px] text-muted">{r.label} · {etMonthDayTime(r.at)}</span>
                         </span>
-                        <a href={r.downloadUrl} download className={cn(cardBtn, secondary, "shrink-0")} aria-label={`Download the fixed ${r.photoName}`}>
-                          <Download aria-hidden className="size-4" /> Download
-                        </a>
+                        {r.downloadUrl && !readOnly && (
+                          <a href={r.downloadUrl} download className={cn(cardBtn, secondary, "shrink-0")} aria-label={`Download the fixed ${r.photoName}`}>
+                            <Download aria-hidden className="size-4" /> Download
+                          </a>
+                        )}
                       </li>
                     );
                   })}
@@ -492,7 +506,10 @@ export function DeliverPanel() {
               </div>
             )}
 
-            {!steps ? (
+            {readOnly ? (
+              // The steps by hand, the folder and the uploads are Kyle's to run (Oct 22 2026).
+              <p className="text-[13px] text-muted">{VIEW_ONLY_NOTE}</p>
+            ) : !steps ? (
               <p className="text-[13px] text-warning">{data.stepsError ?? "The delivery steps could not be read."}</p>
             ) : hubOn ? (
               <>

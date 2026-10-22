@@ -17,7 +17,19 @@ export type Viewer = {
   isOwner: boolean;
   /** Only the OWNER sees dollars (canSeeMoney). Credits are fine for OWNER and ADMIN. */
   canSeeMoney: boolean;
+  /**
+   * VIEW ONLY (Oct 22 2026): the creative manager reads the desk (the board,
+   * the photos, the findings, the history) and acts on none of it: no
+   * approve or deliver, no Aryeo, no AutoHDR, no fixes or decisions, no
+   * credit amounts. Set once on the server (loadViewer: anyone outside the
+   * office) and read by every control; the server actions refuse them on
+   * their own (requireAdmin, requireOwner). Absent = the office's desk.
+   */
+  readOnly?: boolean;
 };
+
+/** The note a view-only viewer reads at the top of every photo desk page. */
+export const VIEW_ONLY_NOTE = "View only: Kyle approves and delivers photos.";
 
 /** One image the UI can draw: the hub's derivative route first, the Aryeo CDN as a fallback. */
 export type ThumbRef = { photoId: string; hash: string | null; fallbackUrl: string | null; alt: string };
@@ -45,6 +57,8 @@ export type StripData = {
   qcShadow: boolean;
   qcEnabled: boolean;
   isOwner: boolean;
+  /** Oct 22 2026: a view-only viewer: no credits chip or banner, no Credits or Settings tab, the view-only note instead. */
+  readOnly?: boolean;
 };
 
 // ---- queue (plan 9.3) ------------------------------------------------------------------
@@ -258,7 +272,8 @@ export type GateCheckView = {
 /** `ignored`: "You're delivering with 6 exterior issues ignored (…)", shown before delivering. */
 export type GateView = { checks: GateCheckView[]; passed: boolean; advisory: boolean; canDeliver: boolean; overrideAllowed: boolean; blockedForOverride: string | null; holdsOpen: number; ignored: string | null };
 
-export type ReplacementView = { photoId: string; photoName: string; versionId: string; downloadUrl: string; label: string; at: string };
+/** `downloadUrl`: null for a view-only viewer (Oct 22 2026: the fixed file is the office's to swap in). */
+export type ReplacementView = { photoId: string; photoName: string; versionId: string; downloadUrl: string | null; label: string; at: string };
 
 export type StepsView = {
   /** Photos fixed through AutoHDR that still need swapping on the Aryeo listing. */
@@ -326,7 +341,8 @@ export type JobHeaderView = {
   qcVerdict: string | null;
   qcShadow: boolean;
   qcRequestedAt: string | null;
-  creditsSpent: number;
+  /** AutoHDR credits spent on the job; null for a view-only viewer (no credit amounts). */
+  creditsSpent: number | null;
   listingUrl: string | null;
   orderUrl: string | null;
   paymentStatus: string | null;

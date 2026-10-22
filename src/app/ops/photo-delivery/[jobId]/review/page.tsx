@@ -1,6 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import { requirePageAccess } from "@/lib/auth/guards";
-import { homeFor } from "@/lib/auth/access";
+import { homeFor, isCreativeLead } from "@/lib/auth/access";
 import { ReviewMode } from "@/components/photoDelivery/ReviewMode";
 import { loadJobDetail, loadViewer } from "../../data";
 
@@ -16,16 +16,18 @@ export const dynamic = "force-dynamic";
 const ID_RE = /^[A-Za-z0-9_-]{6,64}$/;
 
 export default async function PhotoReviewPage({ params, searchParams }: { params: Promise<{ jobId: string }>; searchParams: Promise<{ photo?: string | string[] }> }) {
-  await requirePageAccess("ops");
+  await requirePageAccess("photos");
   const viewer = await loadViewer();
   const { jobId } = await params;
   if (!viewer) redirect(`/login?next=${encodeURIComponent(`/ops/photo-delivery/${jobId}/review`)}`);
-  if (viewer.role !== "OWNER" && viewer.role !== "ADMIN") redirect(homeFor(viewer.role));
+  // The office works it; the creative manager looks through it (viewer.readOnly, Oct 22 2026).
+  if (!isCreativeLead(viewer.role)) redirect(homeFor(viewer.role));
   if (!ID_RE.test(jobId)) notFound();
   const sp = await searchParams;
   const photoRaw = Array.isArray(sp.photo) ? sp.photo[0] : sp.photo;
   const data = await loadJobDetail(jobId, { viewer });
   if (!data) notFound();
   const initialPhoto = photoRaw && data.photos.some((p) => p.id === photoRaw && p.status !== "GONE") ? photoRaw : null;
-  return <ReviewMode data={data} viewer={viewer} initialPhoto={initialPhoto} />;
+  // Review mode reads neither the history nor the fix batches: they stay on the server (as on the job page).
+  return <ReviewMode data={{ ...data, events: [], batches: [] }} viewer={viewer} initialPhoto={initialPhoto} />;
 }

@@ -7,7 +7,8 @@ export type PageKey =
   | "dashboard" | "tasks" | "pipeline" | "schedule" | "map"
   | "communications" | "clients" | "team" | "upload" | "editing" | "sales"
   | "billing" | "catalog" | "payouts" | "resources" | "assistant"
-  | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay" | "review" | "trends" | "day" | "settings" | "content" | "ops";
+  | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay" | "review" | "trends" | "day" | "settings" | "content" | "ops"
+  | "photos";
 // NOTE: "map", "billing", "payouts", "team" survive in this type only so stored
 // per-user permission JSON keeps resolving and so canAccess() can treat them as
 // legacy grants on the pages they merged into (see canAccess). They no longer
@@ -51,11 +52,21 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   // deliberately have NO PageKey: any signed-in user may take the redirect hop,
   // and the destination page enforces access itself.
   { key: "tasks", label: "Tasks", href: "/tasks" },
+  // THE PHOTOS DESK (Oct 22 2026): /ops/photo-delivery and every page under
+  // it (the queue, each photo job, review mode, credits, settings). It rode
+  // the `ops` key until Jordan gave the creative manager a VIEW-ONLY desk
+  // ("so he can check photo quality across all jobs in one place"), which
+  // needs a key of its own: `ops` also opens Kyle's list, which stays his.
+  // MUST stay ahead of "ops" in this list: the proxy (pathKey) and the usage
+  // labels take the first entry whose href prefixes the path. Who may ACT on
+  // the desk is a separate question its pages and actions answer (isOffice;
+  // app/ops/photo-delivery/data loadViewer `readOnly`).
+  { key: "photos", label: "Photos", href: "/ops/photo-delivery" },
   // Kyle's guided operating day (Jordan's Daily Operations & Client Experience
   // Structure, Sep 1 2026): time-blocked control tower with live data per block.
-  // The menu doors on this key (Oct 21 2026): Photos (/ops/photo-delivery) and
-  // Your list (/ops/checklist, owner and office only). /ops itself redirects
-  // to the dashboard.
+  // The menu door on this key (Oct 21 2026): Your list (/ops/checklist, owner
+  // and office only). Photos moved to its own key above (Oct 22 2026). /ops
+  // itself redirects to the dashboard.
   { key: "ops", label: "Operations", href: "/ops" },
   // The Review Room — the owner's quality desk: cuts editors submitted, photo
   // sets in QC, and open feedback follow-through. Owner/admin see all of that;
@@ -128,8 +139,10 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   // in either direction (see canAccess), e.g. James's {"mypay":true}.
   // No "map"/"billing"/"payouts"/"team" here: those merged away and canAccess()
   // maps their legacy grants onto schedule/sales/users below.
+  // "photos" (Oct 22 2026) is the photo desk that rode "ops" until then: the
+  // office keeps it by default, exactly as before.
   ADMIN: [
-    "dashboard", "ops", "tasks", "review", "pipeline", "schedule", "shoot",
+    "dashboard", "ops", "photos", "tasks", "review", "pipeline", "schedule", "shoot",
     "communications", "clients", "content", "users", "upload", "editing",
     "catalog", "resources", "training", "assistant", "feedback", "settings",
   ],
@@ -173,14 +186,21 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   //   (resources, training, Ask the Hub at the ADMIN tier, the feedback
   //   board), and My Performance ("mypay": pay stays hidden for everyone but
   //   the owner, settings.payHiddenFor, so the page is the KPI scorecard).
+  //   "photos" (Jordan, Oct 22 2026: "give James a VIEW-ONLY Photos desk so
+  //   he can check photo quality across all jobs in one place"): the queue
+  //   and every photo job, READ ONLY. Approving, delivering, fixes, AutoHDR,
+  //   decisions on findings, credits and the desk's settings stay Kyle's and
+  //   Jordan's: the pages draw none of those controls for a viewer outside
+  //   the office, and every one of those server actions requires the office
+  //   (requireAdmin or requireOwner).
   //   NOT granted: "communications" (the client texts and email inbox Kyle
-  //   answers), "ops" (Photo delivery is Kyle's approval desk and Your list
-  //   is his checklist), "users", "settings", "catalog" (a price list),
-  //   "sales", "trends", "day", "connections". A per-user override still
-  //   opens or closes any of these in either direction (canAccess).
+  //   answers), "ops" (Your list is Kyle's checklist), "users", "settings",
+  //   "catalog" (a price list), "sales", "trends", "day", "connections". A
+  //   per-user override still opens or closes any of these in either
+  //   direction (canAccess).
   CREATIVE_MANAGER: [
     "dashboard", "tasks", "review", "pipeline", "schedule", "shoot", "mypay",
-    "clients", "content", "upload", "editing",
+    "clients", "content", "upload", "editing", "photos",
     "resources", "training", "assistant", "feedback",
   ],
 };
@@ -235,6 +255,10 @@ export function canAccess(user: AccessUser, key: PageKey): boolean {
   // (The legacy merged-key mapping — today/history/map/billing/payouts/team —
   // was removed Aug 25: a live scan found zero stored legacy grants.)
   if (key in perms) return !!perms[key];
+  // The photo desk rode the `ops` key until Oct 22 2026: a stored `ops`
+  // override keeps deciding it until someone sets a `photos` one, so nobody's
+  // access to it moved when it got a key of its own.
+  if (key === "photos" && "ops" in perms) return !!perms.ops;
   const role = (ROLE_PAGES[user.role as Role] ?? []) as PageKey[];
   return role.includes(key);
 }

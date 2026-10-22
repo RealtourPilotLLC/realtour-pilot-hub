@@ -4,7 +4,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { BackLink } from "@/components/ui/BackLink";
 import { Section } from "@/components/ui/Section";
 import { requirePageAccess } from "@/lib/auth/guards";
-import { homeFor } from "@/lib/auth/access";
+import { homeFor, isCreativeLead } from "@/lib/auth/access";
 import { etDayKey, etMonthDayTime } from "@/lib/datetime";
 import { houseRules } from "@/lib/photoDelivery/houseRules";
 import { ruleById } from "@/lib/photoDelivery/registry";
@@ -30,10 +30,11 @@ const summary = "flex min-h-12 cursor-pointer list-none items-center gap-2.5 px-
 // ---------------------------------------------------------------------------
 
 export default async function PhotoDeliverySettingsPage() {
-  await requirePageAccess("ops");
+  await requirePageAccess("photos");
   const viewer = await loadViewer();
   if (!viewer) redirect("/login?next=/ops/photo-delivery/settings");
-  if (!viewer.isOwner) redirect(viewer.role === "ADMIN" ? "/ops/photo-delivery" : homeFor(viewer.role));
+  // Kyle and the creative manager (view only, Oct 22 2026) go back to the queue.
+  if (!viewer.isOwner) redirect(isCreativeLead(viewer.role) ? "/ops/photo-delivery" : homeFor(viewer.role));
 
   const [strip, settings, profiles, off, learned, asIsClients] = await Promise.all([
     loadStrip(viewer),

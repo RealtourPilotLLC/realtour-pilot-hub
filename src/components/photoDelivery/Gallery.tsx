@@ -39,7 +39,7 @@ const iconBtn =
   "inline-flex size-10 items-center justify-center rounded-lg bg-black/55 text-white backdrop-blur hover:bg-black/75 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50";
 
 export function Gallery() {
-  const { data, jobId, findingsByPhoto, openLightbox, excludePhoto, makeHero, run, pending, shown } = useJob();
+  const { data, jobId, findingsByPhoto, openLightbox, excludePhoto, makeHero, run, pending, shown, readOnly } = useJob();
   const active = useMemo(() => data.photos.filter((p) => p.status === "ACTIVE"), [data.photos]);
   const excluded = useMemo(() => data.photos.filter((p) => p.status === "EXCLUDED"), [data.photos]);
   const serverKey = active.map((p) => p.id).join(",");
@@ -146,9 +146,9 @@ export function Gallery() {
     return (
       <li
         key={p.id}
-        draggable={!isExcluded && !pending}
+        draggable={!readOnly && !isExcluded && !pending}
         onDragStart={(e) => {
-          if (isExcluded) return;
+          if (readOnly || isExcluded) return;
           setDragId(p.id);
           e.dataTransfer.effectAllowed = "move";
           e.dataTransfer.setData("text/plain", p.id);
@@ -252,10 +252,10 @@ export function Gallery() {
           </div>
         )}
 
-        {/* bottom row: room label + actions (hidden while reordering: the toolbar moves photos then) */}
-        <div className={cn("flex items-center gap-1 p-1.5", p.description && "lg:group-hover:invisible")}>
+        {/* bottom row: room label + actions (hidden while reordering: the toolbar moves photos then; none on a view-only page) */}
+        <div className={cn("flex items-center gap-1 p-1.5", p.description && "lg:group-hover:invisible", readOnly && "min-h-10")}>
           <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-muted" title={p.name}>{p.roomLabel}</span>
-          {!reorder && !isExcluded && (
+          {!readOnly && !reorder && !isExcluded && (
             <button
               type="button"
               className={cn(iconBtn, isHero && "text-brand")}
@@ -268,7 +268,7 @@ export function Gallery() {
               <Star aria-hidden className={cn("size-4", isHero && "fill-current")} />
             </button>
           )}
-          {!reorder && (
+          {!readOnly && !reorder && (
             <button
               type="button"
               className={iconBtn}
@@ -292,22 +292,24 @@ export function Gallery() {
         <span className="text-[13px] text-muted">
           {active.length} in the delivery{excluded.length ? ` · ${excluded.length} left out` : ""}
         </span>
-        <div className="ml-auto flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            aria-pressed={reorder}
-            onClick={() => {
-              setReorder((v) => !v);
-              setPicked(new Set());
-            }}
-            className={cn("inline-flex min-h-11 items-center gap-1.5 rounded-xl border px-3 text-sm font-medium", reorder ? "border-brand bg-brand-soft" : "border-border-strong hover:bg-surface-2")}
-          >
-            <GripVertical aria-hidden className="size-4" /> {reorder ? "Done reordering" : "Reorder"}
-          </button>
-        </div>
+        {!readOnly && (
+          <div className="ml-auto flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              aria-pressed={reorder}
+              onClick={() => {
+                setReorder((v) => !v);
+                setPicked(new Set());
+              }}
+              className={cn("inline-flex min-h-11 items-center gap-1.5 rounded-xl border px-3 text-sm font-medium", reorder ? "border-brand bg-brand-soft" : "border-border-strong hover:bg-surface-2")}
+            >
+              <GripVertical aria-hidden className="size-4" /> {reorder ? "Done reordering" : "Reorder"}
+            </button>
+          </div>
+        )}
       </div>
-      <p className="mb-2 text-[12px] text-muted">Drag to reorder. The hero always goes first.</p>
-      {reorder && (
+      <p className="mb-2 text-[12px] text-muted">{readOnly ? "In delivery order. The hero goes first." : "Drag to reorder. The hero always goes first."}</p>
+      {reorder && !readOnly && (
         <div className="sticky top-2 z-10 mb-2 flex flex-wrap items-center gap-1.5 rounded-xl border border-border bg-surface/95 p-2 text-sm backdrop-blur" role="toolbar" aria-label="Move the selected photos">
           <span className="px-1 font-medium">{chosen.length ? `${chosen.length} selected` : "Tick photos to move them together"}</span>
           <button type="button" disabled={pending || !chosen.length} onClick={() => void moveChosenTo(0)} className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 hover:bg-surface-2 disabled:opacity-50">
