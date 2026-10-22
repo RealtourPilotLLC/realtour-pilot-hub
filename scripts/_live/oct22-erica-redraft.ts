@@ -19,7 +19,9 @@
 import fs from "node:fs";
 
 const WHO = process.argv[2] ?? "Erica";
-const OUT = `/private/tmp/claude-501/-Users-jordanspackman-Realtour-Pilot-POT-Dashboard/8965ab24-8365-44d5-af17-c1b185a8a42d/scratchpad/erica/redraft-${WHO.toLowerCase().replace(/\W+/g, "-")}.json`;
+/** Optional: only the first N scripts (the retest uses John's first four, the same set the review scored). */
+const LIMIT = Number(process.argv[3] ?? 0) || Infinity;
+const OUT = `/private/tmp/claude-501/-Users-jordanspackman-Realtour-Pilot-POT-Dashboard/8965ab24-8365-44d5-af17-c1b185a8a42d/scratchpad/erica/${process.env.RETEST_TAG ?? "redraft"}-${WHO.toLowerCase().replace(/\W+/g, "-")}.json`;
 
 async function main() {
   const { prisma } = await import("../../src/lib/prisma");
@@ -28,6 +30,7 @@ async function main() {
   const words = (t: string) => t.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
   const clients = await prisma.client.findMany({ where: { name: { contains: WHO, mode: "insensitive" } }, select: { id: true, name: true } });
   const scripts = await prisma.contentScript.findMany({ where: { clientId: { in: clients.map((c) => c.id) }, createdAt: { gte: new Date("2026-10-01") } }, orderBy: { createdAt: "asc" }, select: { id: true, title: true, topicId: true, monthId: true, callRecordId: true, currentVersionId: true, sharedAt: true, clientId: true } });
+  scripts.splice(LIMIT);
   console.log(`${scripts.length} scripts for ${clients.map((c) => c.name).join(", ")}`);
   const out: unknown[] = [];
   for (const s of scripts) {
