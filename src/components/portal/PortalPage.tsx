@@ -611,6 +611,10 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
           scriptPdfs: route.planView === "scripts" && !bulkView
             ? (await import("@/lib/scriptPdfLinks").then((m) => m.monthsReadyForPdf(enrollment.id)).catch(() => [])).map((m) => ({ ...m, label: monthLabel(m.monthKey) }))
             : [],
+          // Oct 22 2026: a version that answered their change request comes back marked, with the message sent with it.
+          scriptUpdates: route.planView === "scripts" && !bulkView && topicsAll?.ok
+            ? await import("@/lib/scriptRequests").then((m) => m.portalScriptUpdates(enrollment.id, topicsAll.data.groups.flatMap((g) => g.topics).map((t) => t.script?.id).filter((x): x is string => !!x))).catch(() => ({}))
+            : {},
           clientPlanned: yourMonth?.planning?.clientPlanned ?? (await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { clientSuppliesTopics: true } }).catch(() => null))?.clientSuppliesTopics ?? false,
         }} />
       )}

@@ -17,6 +17,7 @@ import type { PortalStrategyGate } from "@/lib/yourMonth";
 import { portalMonthHref } from "@/lib/portalScheduling";
 import type { PortalBulkView } from "@/lib/portalBulk";
 import { BulkSessions } from "@/components/portal/BulkSessions";
+import type { PortalScriptUpdate } from "@/lib/scriptRequests";
 
 // ---------------------------------------------------------------------------
 // MY PLAN — the v2 layout (UI-01, Sep 24 2026). What used to be one long
@@ -68,6 +69,8 @@ export type PlanTabData = {
   yourMonth?: Omit<YourMonthData, "topics" | "readOnly" | "filter" | "hrefs"> | null;
   /** Oct 21 2026 (lib/strategyGate): closed = the Strategy page's empty state shows the discovery call; null = open. */
   strategyGate?: PortalStrategyGate | null;
+  /** Oct 22 2026: scripts whose shared version answered their change request (scriptRequests.portalScriptUpdates), by script id. */
+  scriptUpdates?: Record<string, PortalScriptUpdate>;
 };
 
 export function PlanTab({ d }: { d: PlanTabData }) {
@@ -117,7 +120,7 @@ export function PlanTab({ d }: { d: PlanTabData }) {
       ) : d.topicsFailed ? (
         <LoadFailed what="your plan" />
       ) : !d.topics || !plan ? null : d.view === "scripts" ? (
-        <ScriptsView plan={plan} canAct={d.canAct} canApprove={!!d.canApprove} readOnly={d.readOnly} monthHref={d.hrefs.month} pdfs={d.scriptPdfs ?? []} />
+        <ScriptsView plan={plan} canAct={d.canAct} canApprove={!!d.canApprove} readOnly={d.readOnly} monthHref={d.hrefs.month} pdfs={d.scriptPdfs ?? []} updates={d.scriptUpdates ?? {}} />
       ) : d.view === "month" && d.yourMonth ? (
         <YourMonth d={{
           ...d.yourMonth, topics: d.topics, readOnly: d.readOnly, filter: d.filter,
@@ -155,7 +158,7 @@ export function PlanTab({ d }: { d: PlanTabData }) {
 }
 
 /** Scripts waiting on the client's read, the words in full, the two answers beside them. */
-function ScriptsView({ plan, canAct, canApprove, readOnly, monthHref, pdfs }: { plan: ReturnType<typeof planModel>; canAct: boolean; canApprove: boolean; readOnly: boolean; monthHref: string; pdfs: { monthKey: string; label: string; count: number }[] }) {
+function ScriptsView({ plan, canAct, canApprove, readOnly, monthHref, pdfs, updates }: { plan: ReturnType<typeof planModel>; canAct: boolean; canApprove: boolean; readOnly: boolean; monthHref: string; pdfs: { monthKey: string; label: string; count: number }[]; updates: Record<string, PortalScriptUpdate> }) {
   // A script answered a moment ago stays a card, in the same keyed list, so
   // the ScriptApprovalCard that sent the answer keeps its result line (Sep 24).
   const just = new Set(plan.justDecided.map((t) => t.id));
@@ -178,26 +181,56 @@ function ScriptsView({ plan, canAct, canApprove, readOnly, monthHref, pdfs }: { 
           No scripts are waiting on you. When we share one, it lands here for your read-through. <Link href={monthHref} className="font-medium text-brand hover:underline">See this month&rsquo;s topics</Link>.
         </Empty>
       ) : (
-        cards.map((t) => (
-          <section key={t.id} id={`script-${t.id}`} aria-labelledby={`script-title-${t.id}`} className="scroll-mt-24">
-            <Card tone="brand">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <h2 id={`script-title-${t.id}`} className="min-w-0 flex-1 basis-48 break-words text-lg font-semibold">{t.title}</h2>
-                <StatusChip word={t.script?.decision === "APPROVED" ? SCRIPT_WORDS.APPROVED : t.script?.decision ? SCRIPT_WORDS.CHANGES_REQUESTED : SCRIPT_WORDS.AWAITING} />
-              </div>
-              <p className="mt-1 text-sm text-muted">
-                {t.selection ? `For ${monthLabel(t.selection.monthKey)}` : `No month assigned · ${t.pillarName}`}
-                {t.scriptText?.versionLabel ? ` · script ${t.scriptText.versionLabel}` : ""}
-              </p>
-              {t.scriptText && <div className="mt-3 rounded-xl border border-border bg-surface-2/40 px-4 py-4"><div className="max-w-[70ch]"><ScriptBody body={t.scriptText.body} size="lg" /></div></div>}
-              {canAct && !readOnly && t.script ? (
-                <ScriptApprovalCard script={t.script} parts={t.scriptText?.parts ?? null} large canApprove={canApprove} />
-              ) : (
-                <p className="mt-2 text-xs text-muted">{readOnly ? "Scripts can’t be approved while your program is paused or ended." : "The program owner approves scripts on this account."}</p>
-              )}
-            </Card>
-          </section>
-        ))
+        cards.map((t) => {
+          // Oct 22 2026 (Main / Portal-Updated boards): a script waiting on
+          // them shows its parts with "Change this part" on each; a version
+          // that answered their request says so, with the message on top.
+          const actHere = canAct && !readOnly && !!t.script;
+          const inline = actHere && !t.script?.decision && !!t.scriptText?.parts;
+          const up = t.script ? updates[t.script.id] ?? null : null;
+          const fresh = up && !t.script?.decision ? up : null;
+          return (
+            <section key={t.id} id={`script-${t.id}`} aria-labelledby={`script-title-${t.id}`} className="scroll-mt-24">
+              <Card tone="brand">
+                {fresh && <p className="text-[11px] font-bold uppercase tracking-wider text-brand">Updated version</p>}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <h2 id={`script-title-${t.id}`} className="min-w-0 flex-1 basis-48 break-words text-lg font-semibold">{fresh?.changed.includes("title") ? fresh.title : t.title}</h2>
+                  <StatusChip word={t.script?.decision === "APPROVED" ? SCRIPT_WORDS.APPROVED : t.script?.decision ? SCRIPT_WORDS.CHANGES_REQUESTED : SCRIPT_WORDS.AWAITING} />
+                </div>
+                <p className="mt-1 text-sm text-muted">
+                  {t.selection ? `For ${monthLabel(t.selection.monthKey)}` : `No month assigned · ${t.pillarName}`}
+                  {fresh ? ` · version ${fresh.versionNo} · from your change on ${fmtShort(fresh.requestedAtISO)}` : t.scriptText?.versionLabel ? ` · script ${t.scriptText.versionLabel}` : ""}
+                </p>
+                {fresh?.message && (
+                  <div className="mt-3 flex gap-2.5 rounded-xl border border-brand/20 bg-brand-soft/30 px-3 py-2.5">
+                    <span aria-hidden className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand-action text-xs font-bold text-white">{fresh.message.initials}</span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold">{fresh.message.by} · {fmtShort(fresh.message.atISO)}</p>
+                      <p className="whitespace-pre-wrap text-sm leading-relaxed">{fresh.message.body}</p>
+                    </div>
+                  </div>
+                )}
+                {fresh?.previous && fresh.fromVersionNo != null && (
+                  <details className="mt-2 text-sm">
+                    <summary className="flex min-h-11 cursor-pointer items-center text-xs font-medium text-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Compare with version {fresh.fromVersionNo}</summary>
+                    <div className="mt-1 space-y-1 rounded-xl border border-border bg-surface-2/40 px-3 py-2 text-sm text-muted">
+                      {fresh.changed.includes("title") && <p><span className="text-[10.5px] font-bold uppercase tracking-wider">Title</span><br />{fresh.previous.title}</p>}
+                      <p><span className="text-[10.5px] font-bold uppercase tracking-wider">Hook</span><br />{fresh.previous.parts.hook}</p>
+                      {fresh.previous.parts.points.map((p, i) => <p key={i}><span className="text-[10.5px] font-bold uppercase tracking-wider">Talking point {i + 1}</span><br />{p.text}</p>)}
+                      <p><span className="text-[10.5px] font-bold uppercase tracking-wider">Close</span><br />{fresh.previous.parts.close}</p>
+                    </div>
+                  </details>
+                )}
+                {t.scriptText && !inline && <div className="mt-3 rounded-xl border border-border bg-surface-2/40 px-4 py-4"><div className="max-w-[70ch]"><ScriptBody body={t.scriptText.body} size="lg" /></div></div>}
+                {actHere ? (
+                  <div className={inline ? "mt-3" : ""}><ScriptApprovalCard script={t.script!} parts={t.scriptText?.parts ?? null} large canApprove={canApprove} inlineParts={inline} update={fresh} /></div>
+                ) : (
+                  <p className="mt-2 text-xs text-muted">{readOnly ? "Scripts can’t be approved while your program is paused or ended." : "The program owner approves scripts on this account."}</p>
+                )}
+              </Card>
+            </section>
+          );
+        })
       )}
       {/* Oct 14 2026: an approved script stays theirs to read, edit and
           download (Jordan: "able to edit the scripts themselves after they

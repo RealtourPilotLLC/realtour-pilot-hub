@@ -161,14 +161,32 @@ export async function portalSuggestScriptEdit(auth: PortalAuth, scriptId: string
  * suggestion queue staff already work from — never an edit, never a model call
  * on the client's click.
  */
-export async function portalRequestScriptChanges(auth: PortalAuth, scriptId: string, note: string, readVersionId: string): Promise<R> {
+export async function portalRequestScriptChanges(auth: PortalAuth, scriptId: string, note: string, readVersionId: string, about: string[] = []): Promise<R> {
   const v = await viewerFor(auth, "suggest");
   if (typeof v === "string") return fail(v);
-  const { clientRequestScriptChanges } = await import("@/lib/scriptDecisions");
-  const r = await clientRequestScriptChanges(v, scriptId, note, readVersionId);
+  // Oct 22 2026: "Ask for a change in your own words": a message (a pasted
+  // rewrite welcome), about the whole script, the title, the hook or the close.
+  const { clientMessageRequest } = await import("@/lib/scriptRequests");
+  const r = await clientMessageRequest(v, scriptId, readVersionId, note, about);
   if (!r.ok) return fail(r.message);
   try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
   return { ok: true, message: r.message };
+}
+
+/**
+ * Oct 22 2026: "Change this part", on one or more parts in one request
+ * (Jordan's decision 6): each changed part's new words and an optional note.
+ * Filed for the office to read; nothing changes on the script until the
+ * office sends an updated version for their OK.
+ */
+export async function portalSendPartChanges(auth: PortalAuth, scriptId: string, readVersionId: string, changes: { part: string; text: string; note?: string | null }[]): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const { clientPartChangeRequest } = await import("@/lib/scriptRequests");
+  const r = await clientPartChangeRequest(v, scriptId, readVersionId, (Array.isArray(changes) ? changes : []).map((c) => ({ part: c?.part as never, text: String(c?.text ?? ""), note: c?.note == null ? null : String(c.note) })))
+    .catch(() => ({ ok: false, message: "That didn't send. Try again." }));
+  if (r.ok) { try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ } }
+  return { ok: r.ok, message: r.message };
 }
 
 /** Client drops a (timestamped) note on one of their cuts — or, with `parentId`, a reply under an existing note. */

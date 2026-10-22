@@ -623,7 +623,8 @@ async function main() {
     c.ok("Request changes needs words (a two-letter note is refused)", !short.ok, short.message);
     const NOTE = "Can the hook mention first-time sellers? And drop the kitchen line.";
     const ask = await portalActions.portalRequestScriptChanges(auth, repairs.id, NOTE, repairs.sharedVersionId!);
-    c.ok("Request changes + Submit: 'Sent. We'll rework it and share the new version here.' (no em dash, audit E7)", ask.ok && /^Sent\. We.ll rework it/.test(ask.message), ask.message);
+    // Oct 22 2026 (the approved design, Portal-Message): the message goes to Jordan, who replies on the page with an updated version.
+    c.ok("Request changes + Send: 'Sent. Jordan replies right here and sends you an updated version for your OK.' (no em dash, audit E7)", ask.ok && /^Sent\. Jordan replies right here/.test(ask.message) && !/[\u2013\u2014]/.test(ask.message), ask.message);
     const sugg = await prisma.scriptSuggestion.findMany({ where: { scriptId: repairs.id } });
     const ledgerAsk = await prisma.contentScriptRelease.findFirst({ where: { scriptId: repairs.id, action: "CLIENT_CHANGES" } });
     c.ok("…it lands with the office: a work item with their words, on the version they read", sugg.length === 1 && sugg[0].body === NOTE && sugg[0].scriptVersionId === repairs.sharedVersionId && sugg[0].status === "OPEN" && ledgerAsk?.note === NOTE);
@@ -647,7 +648,7 @@ async function main() {
     const plan3 = (await portal.portalPlanning(viewerA.enrollment))!;
     c.ok("reworked, re-sent and approved: 'All 4 scripts approved'", sent3.ok && yes2.ok && plan3.planning?.headline.text === "All 4 scripts approved", `${sent3.message} / ${plan3.planning?.headline.text}`);
     const card = fs.readFileSync(path.join(REPO, "src/components/portal/ScriptApprovalCard.tsx"), "utf8");
-    c.ok("the change box says what it's for and submits (label, box, Submit changes, Cancel)", /What would you like changed\?/.test(card) && />Submit changes</.test(card) && />Cancel</.test(card) && /portalRequestScriptChanges\(portalAuthFromLocation\(\), script\.id, changeNote, script\.sharedVersionId \?\? ""\)/.test(card));
+    c.ok("the change box says what it's for and sends (label, box, Send to Jordan, Cancel)", /What would you like changed\?/.test(card) && />Send to \{READER\}</.test(card) && />Cancel</.test(card) && /portalRequestScriptChanges\(portalAuthFromLocation\(\), script\.id, changeNote, script\.sharedVersionId \?\? ""(?:, about)?\)/.test(card));
 
     // =======================================================================
     c.head("§10 · a messy document: the AI reads it on upload (attended)");

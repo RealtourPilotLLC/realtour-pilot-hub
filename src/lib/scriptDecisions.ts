@@ -348,13 +348,18 @@ async function bellForChangeRequest(
  * lesson here — a revision instruction that lives only inside a generated
  * brief is an instruction that can be overwritten by the next one.
  */
-export async function clientRequestScriptChanges(viewer: PortalViewer, scriptId: string, note: string, readVersionId: string, opts: { editedParts?: { hook: string; points: string[]; close: string; captionCta?: string | null } | null } = {}): Promise<Outcome> {
+export async function clientRequestScriptChanges(viewer: PortalViewer, scriptId: string, note: string, readVersionId: string, opts: {
+  editedParts?: { hook: string; points: string[]; close: string; captionCta?: string | null } | null;
+  /** Oct 22 2026: how they asked, kept beside their words (scriptRequests: kind PARTS + changed + notes, or kind MESSAGE + about). */
+  extra?: Record<string, unknown> | null;
+} = {}): Promise<Outcome> {
   if (viewer.access !== "FULL") return { ok: false, message: `Your access is read-only right now. ${TEXT_KYLE_START} and we'll sort it.` };
   const s = await sharedScriptFor(viewer, scriptId);
   if (!s) return { ok: false, message: "That script isn't on your page." };
   // Oct 20 2026: the client's own edit of the words comes as the request,
   // with the parts kept exactly (the office can use them as written).
-  const editedPartsJson = opts.editedParts ? JSON.stringify(opts.editedParts) : null;
+  const editedPartsJson = opts.editedParts || opts.extra ? JSON.stringify({ ...(opts.extra ?? {}), ...(opts.editedParts ?? {}) }) : null;
+  // A message may carry a pasted rewrite (Oct 22), so it gets the longer cap too.
   const body = clip((note ?? "").trim(), editedPartsJson ? 6000 : 2000);
   if (body.length < 3) return { ok: false, message: "Tell us what to change: a line, a word, the whole angle." };
   const versionId = s.sharedVersionId!;

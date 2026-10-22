@@ -325,7 +325,8 @@ async function main() {
     c.ok("decided scripts are kept apart (the one they approved)", pm.decidedScripts.length === 1 && pm.decidedScripts[0].id === topic0);
     c.ok("bank = not on an open month's plan", pm.bank.length === 1 && pm.bank[0].id === topic2);
     const card = read("src/components/portal/ScriptApprovalCard.tsx");
-    c.ok("the decision is sent in ONE place, with script.sharedVersionId, for both answers", /portalApproveScript\(portalAuthFromLocation\(\), script\.id, script\.sharedVersionId \?\? ""\)/.test(card) && /portalRequestScriptChanges\(portalAuthFromLocation\(\), script\.id, changeNote, script\.sharedVersionId \?\? ""\)/.test(card) && !/portalApproveScript|portalRequestScriptChanges/.test(read("src/components/portal/TopicBank.tsx")));
+    // Oct 22 2026: the change request also says what it is about, and a part change carries the same version (portalSendPartChanges).
+    c.ok("the decision is sent in ONE place, with script.sharedVersionId, for both answers", /portalApproveScript\(portalAuthFromLocation\(\), script\.id, script\.sharedVersionId \?\? ""\)/.test(card) && /portalRequestScriptChanges\(portalAuthFromLocation\(\), script\.id, changeNote, script\.sharedVersionId \?\? ""(?:, about)?\)/.test(card) && /portalSendPartChanges\(portalAuthFromLocation\(\), script\.id, script\.sharedVersionId \?\? "",/.test(card) && !/portalApproveScript|portalRequestScriptChanges|portalSendPartChanges/.test(read("src/components/portal/TopicBank.tsx")));
     const planPage = await PortalPage({ viewer: testOwner, path: "/portal/[token]", query: { tab: "plan", pv: "scripts" } });
     const planTab = find(planPage, "PlanTab")[0];
     c.ok("?tab=plan&pv=scripts renders My Plan's Scripts view", planTab?.props.d.view === "scripts" && planTab.props.d.hrefs.bank === "?tab=plan&pv=bank");
