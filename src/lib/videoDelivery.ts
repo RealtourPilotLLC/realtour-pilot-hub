@@ -293,7 +293,10 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
   /** Why the hub cannot send this ready file itself (the row shows the hand path instead of the button). */
   const byHandWhy = (r: ReadyVideo): string | null => {
     if (r.listingMissing) return "This job has no Aryeo listing linked yet. Open the job and press Refresh from Aryeo, then send it.";
-    if (r.file.source !== "topaz-1080p") return `This is the editor's own file (the 1080p pass did not produce one${r.file.why ? `: ${scrubWhy(r.file.why).replace(/[.\s]+$/, "")}` : ""}), so it goes up by hand.`;
+    // The Settings rule's "already 1080p" original IS the checked file (Oct 22
+    // 2026, audit C2): the button sends it from the Final folder exactly as it
+    // sends a render (videoAryeoPush), so it keeps the button.
+    if (r.file.source !== "topaz-1080p" && !r.originalIsFinal) return `This is the editor's own file (the 1080p pass did not produce one${r.file.why ? `: ${scrubWhy(r.file.why).replace(/[.\s]+$/, "")}` : ""}), so it goes up by hand.`;
     if (!connected) return "The hub's Aryeo login is not set up yet, so this one goes up by hand. Jordan adds it on Connections, Aryeo hub login.";
     // A failed read of the upload status is not "never checked" (audit B12).
     if (r.pushUnknown) return null;
