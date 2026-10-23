@@ -651,7 +651,7 @@ async function main() {
     for (const [who, u, doors, doorLabels, more] of ROLE_DOORS) {
       const html = menu(u);
       c.ok(`${who}: their doors in order, labelled ${doorLabels}`, hrefs(section(html, "work")).join() === doors && labels(section(html, "work")).join() === doorLabels && !section(html, "work").includes("<details"), `${hrefs(section(html, "work")).join()} / ${labels(section(html, "work")).join()}`);
-      c.ok(`${who}: everything else folded under More, nothing removed (${more.join(", ")})`, section(html, "more").includes("<details") && more.every((h) => hrefs(section(html, "more")).includes(h)) && hrefs(html).length === new Set(hrefs(html)).size, hrefs(section(html, "more")).join());
+      c.ok(`${who}: everything else under More, open (Jordan, Oct 23 2026), nothing removed (${more.join(", ")})`, !section(html, "more").includes("<details") && more.every((h) => hrefs(section(html, "more")).includes(h)) && hrefs(html).length === new Set(hrefs(html)).size, hrefs(section(html, "more")).join());
       c.ok(`${who}: the retired screens are no menu entry (/ops, /ops/messages, video delivery, requests, scheduling, old items)`, !["/ops", "/ops/messages", "/ops/video-delivery", "/ops/requests", "/ops/scheduling", "/ops/old"].some((h) => hrefs(html).includes(h)));
     }
     const ownerMenu = menu({ name: "Jordan", email: owner.email, role: "OWNER" });
