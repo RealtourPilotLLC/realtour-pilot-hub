@@ -727,6 +727,15 @@ async function main() {
       W.rows.set(key, { model: "Notification", row: n as unknown as Row });
       W.decision.set(key, { kind: "delete", why: `links to removed ${hit}` });
       W.prov.set(key, new Set(settingIds.get(hit)));
+      // Its delivery log rows (plain notificationId, no relation) go with it
+      // (Oct 23: Cara TEST's removal rolled back on 10 of these).
+      for (const d of await prisma.notificationDelivery.findMany({ where: { notificationId: n.id } })) {
+        const dk = k("NotificationDelivery", d.id);
+        if (W.decision.has(dk)) continue;
+        W.rows.set(dk, { model: "NotificationDelivery", row: d as unknown as Row });
+        W.decision.set(dk, { kind: "delete", why: `delivery of removed bell item ${n.id}` });
+        W.prov.set(dk, new Set(settingIds.get(hit)));
+      }
     }
   }
 
