@@ -29,6 +29,8 @@
 export {};
 
 const APPLY = process.argv.includes("--apply");
+// --skip=<askId>[,<askId>]: leave these closed (Oct 22: 615 Cliff Ln's order note is scope, not a request).
+const SKIP = new Set((process.argv.find((a) => a.startsWith("--skip=")) ?? "").slice(7).split(",").filter(Boolean));
 if (!APPLY) {
   const u = process.env.DATABASE_URL ?? "";
   process.env.DATABASE_URL = u + (u.includes("?") ? "&" : "?") + "options=-c%20default_transaction_read_only%3Don";
@@ -68,7 +70,8 @@ const et = (d: Date | null | undefined) => (d ? d.toLocaleString("en-US", { time
     const hooksAfter = p?.aryeoListingId ? await listingDeliveredHooks(p.aryeoListingId, a.askedAt, a.doneAt ?? new Date()) : [];
     const revision = !!firstOut && a.askedAt > firstOut;
     let plan: Plan;
-    if (a.confirmNote === "the job was cancelled" || p?.status === "CANCELLED") plan = { id: a.id, action: "LEAVE", jobId: null, why: "the job was cancelled" };
+    if (SKIP.has(a.id)) plan = { id: a.id, action: "LEAVE", jobId: null, why: "left closed by hand (--skip)" };
+    else if (a.confirmNote === "the job was cancelled" || p?.status === "CANCELLED") plan = { id: a.id, action: "LEAVE", jobId: null, why: "the job was cancelled" };
     else if (!revision) plan = { id: a.id, action: "REOPEN", jobId: null, why: `asked ${et(a.askedAt)}, before the photos went out (${et(firstOut)}); delivered past it, nobody confirmed it` };
     else if (hooksAfter.length) plan = { id: a.id, action: "REOPEN (confirm)", jobId: null, why: `a revision asked ${et(a.askedAt)}; the listing was delivered again after it (${hooksAfter.map((d) => et(d)).join(", ")}): maybe done, Kyle confirms or answers` };
     else plan = { id: a.id, action: "REOPEN + REVISION", jobId: job && job.stage === "DELIVERED" ? job.id : null, why: `a revision asked ${et(a.askedAt)}; nothing was delivered after it: the hub's sticky read closed it${job && job.stage === "DELIVERED" ? "; the photo job goes back to Revision" : ""}` };
