@@ -384,7 +384,7 @@ export function InternalAlertSettings({
       <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
         <div>
           <p className="text-sm font-semibold">Night-before shoot brief</p>
-          <p className="text-[13px] text-muted">Around 6 PM, each photographer gets one message per shoot tomorrow: time, address, what was ordered, access and client notes, and the photo target. Missing access opens a task for Kyle.</p>
+          <p className="text-[13px] text-muted">Around 6 PM, each photographer gets one message per shoot tomorrow: time, address, what was ordered, access and client notes, and the photo target. Missing access opens a task for Kyle. While the Photographer brief below is on, it sends instead of this text (the access task stays).</p>
           <ReadBy k="photographerBrief" />
         </div>
         <Toggle on={r.photographerBrief.enabled} onChange={(v) => set({ photographerBrief: { enabled: v } })} label="Night-before shoot brief" />
@@ -393,7 +393,7 @@ export function InternalAlertSettings({
       <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
         <div>
           <p className="text-sm font-semibold">Special requests at the shoot</p>
-          <p className="text-[13px] text-muted">At each shoot&rsquo;s start time, the photographer or videographer on it gets one text from the company line with the job&rsquo;s special requests: the order&rsquo;s special instructions, the client&rsquo;s open requests and the requests the office added. Door codes and who&rsquo;s there are left out (they are on the shoot screen). No special requests, no text.</p>
+          <p className="text-[13px] text-muted">At each shoot&rsquo;s start time, the photographer or videographer on it gets one text from the company line with the job&rsquo;s special requests: the order&rsquo;s special instructions, the client&rsquo;s open requests and the requests the office added. Door codes and who&rsquo;s there are left out (they are on the shoot screen). No special requests, no text. While the Photographer brief below is on, a creative whose brief for the day went does not get this text too.</p>
           <ReadBy k="shootDayText" />
         </div>
         <Toggle on={r.shootDayText.enabled} onChange={(v) => set({ shootDayText: { enabled: v } })} label="Special requests at the shoot" />

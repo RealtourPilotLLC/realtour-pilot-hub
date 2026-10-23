@@ -20,6 +20,8 @@ import { topazDashboard } from "@/lib/topazJobs";
 import { TopazSettingsPanel, type TopazUsage } from "@/components/settings/TopazSettingsPanel";
 import { AutoTextSettings } from "@/components/settings/AutoTextSettings";
 import { TurnaroundSettings, InternalAlertSettings, ReviewRoomSettings } from "@/components/settings/OperatingRules";
+import { PhotographerBriefSettings } from "@/components/settings/PhotographerBriefSettings";
+import { photographerBriefSettings } from "@/lib/photographerBrief";
 import { TeamNotifications } from "@/components/settings/TeamNotifications";
 import { teamNotifyRows } from "@/lib/notifyPrefs";
 import { CalendlyMappingsPanel } from "@/components/settings/CalendlyMappingsPanel";
@@ -192,7 +194,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   // of six real people, and "0 of 0" automations against thirteen keys; null
   // prints the same honest note the reminders card has always used, and the
   // Section badge is left off rather than asserting a number nobody read.
-  const [rules, textRules, turns, alerts, eveningOff, textRows, reviewRoom, notifyRows, topaz, automations, reminders, coaching, emailMonitor] = await Promise.all([
+  const [rules, textRules, turns, alerts, eveningOff, textRows, reviewRoom, notifyRows, topaz, automations, reminders, coaching, emailMonitor, briefSettings] = await Promise.all([
     editorRouting(), autoTextRules(), turnaroundRules(), internalAlertRules(),
     // A saved evening hour the cron can't fire at (Oct 21 2026): the card
     // shows the real time it goes out and says what was saved.
@@ -221,6 +223,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     // Client email copies (Jordan, Oct 12). Never throws: an unreadable row
     // reads as the default (on, to info@), and the card says so.
     clientEmailMonitor(),
+    // The photographer brief (Oct 23 2026): its own row; unreadable reads as off.
+    photographerBriefSettings(),
   ]);
   // The payday text is about pay: the owner's alone, so Kyle's page never
   // carries it (he never sees dollar amounts).
@@ -281,6 +285,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     "internal-alerts": card("internal-alerts",
       <Section icon={BellRing} title="Internal alerts">
         <InternalAlertSettings initial={alerts} offSchedule={eveningOff} />
+        <PhotographerBriefSettings initial={briefSettings} />
       </Section>, "internal-alerts"),
 
     "team-notifications": card("team-notifications",
