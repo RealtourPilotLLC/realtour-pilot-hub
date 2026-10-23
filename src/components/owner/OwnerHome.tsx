@@ -9,6 +9,7 @@ import { AutoRefresh } from "@/components/ops/AutoRefresh";
 import { cn } from "@/lib/utils";
 import { etDate, etDateTime, etFullDate, etMinutesOfDay, etMonthDay, etTime } from "@/lib/datetime";
 import { listAssignees, type Assignee } from "@/lib/assignees";
+import { prisma } from "@/lib/prisma";
 import { syntheticClientIds } from "@/lib/syntheticClients";
 import {
   clientIssuesSection, financialPosition, productionHealth, teamCoverage, weeklyPerformance,
@@ -475,6 +476,8 @@ export async function OwnerHome({ me, includeTest = false, now: at }: {
   const people: RosterOption[] = roster.filter((a) => a.kind !== "vendor" && a.key !== "creative_director").map((a) => ({ key: a.key, name: a.name }));
   const exclude = includeTest ? [] : await syntheticClientIds().catch(() => [] as string[]);
   const ownerEmail = me?.email?.toLowerCase() ?? null;
+  // The owner signs in with more than one address; each is him.
+  const ownerEmails = [...new Set([...(await prisma.appUser.findMany({ where: { role: "OWNER", status: "ACTIVE" }, select: { email: true } }).catch(() => [] as { email: string }[])).map((u) => u.email.toLowerCase()), ...(ownerEmail ? [ownerEmail] : [])])];
   const soft = <T,>(what: string, p: Promise<T>): Promise<T | null> => p.catch((e: unknown) => { console.warn(`owner home: ${what} failed`, (e as Error)?.message); return null; });
 
   const financeP = soft("finance", financialPosition({ now, excludeClientIds: exclude }));
@@ -482,9 +485,9 @@ export async function OwnerHome({ me, includeTest = false, now: at }: {
   const issuesP = soft("client issues", clientIssuesSection({ now, excludeClientIds: exclude }));
   const teamP = soft("team", productionP.then((production) => teamCoverage({ now, includeTest, roster, production })));
   const meetingsP = soft("meetings", meetingsSection({ now, excludeClientIds: exclude }));
-  const creativeP = soft("creative", creativeDecisions({ now, excludeClientIds: exclude, ownerEmail }));
+  const creativeP = soft("creative", creativeDecisions({ now, excludeClientIds: exclude, ownerEmail, ownerEmails }));
   const emailP = soft("email", emailNeedingReply({ now, excludeClientIds: exclude }));
-  const delegatedP = soft("delegated", delegatedByMe({ now, email: ownerEmail }));
+  const delegatedP = soft("delegated", delegatedByMe({ now, email: ownerEmail, emails: ownerEmails }));
   const weeklyP = soft("weekly", weeklyPerformance({ now, excludeClientIds: exclude }));
 
   const minute = etMinutesOfDay(now);

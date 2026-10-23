@@ -105,7 +105,8 @@ async function main() {
     c.ok("#12 cash = the Business-tagged depository accounts only (the personal account is left out), named with its sync time", fig("cash").value === 1200 && /3002/.test(fig("cash").sub) && !/0942/.test(fig("cash").sub) && /synced/.test(fig("cash").sub), `${fig("cash").value} · ${fig("cash").sub}`);
     const { fixedPayment, FIXED_PAY } = await import("@/lib/payStructure");
     const perPayday = fixedPayment(FIXED_PAY.james).total + fixedPayment(FIXED_PAY.harrison).total;
-    const paydays = (fig("obligations").sub.match(/fixed pay [A-Z][a-z]{2} \d+/g) ?? []).length;
+    // A payday that is today reads "fixed pay today (…; may already be out of the bank)".
+    const paydays = (fig("obligations").sub.match(/fixed pay (?:today|[A-Z][a-z]{2} \d+)/g) ?? []).length;
     c.ok("#12 obligations = fixed team pay on the paydays inside 14 days (the pay terms' own figures), labelled 'recorded only'", paydays >= 1 && Math.abs((fig("obligations").value ?? 0) - perPayday * paydays) < 0.01 && /Recorded only/.test(fig("obligations").sub), `${fig("obligations").value} = ${perPayday} × ${paydays} · ${fig("obligations").sub}`);
     c.ok("#12 expected collections = the unpaid delivered work, minus the one QuickBooks already shows paid (never counted twice)", fig("collections").value === 750 && /1 more look paid in QuickBooks/.test(fig("collections").sub), `${fig("collections").value} · ${fig("collections").sub}`);
     c.ok("#12 the forecast is cash + collections − obligations, labelled a forecast", fig("forecast").tag === "forecast" && Math.abs((fig("forecast").value ?? 0) - (1200 + 750 - (fig("obligations").value ?? 0))) < 0.01, `${fig("forecast").value}`);

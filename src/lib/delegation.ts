@@ -292,12 +292,18 @@ export async function tasksAssignedTo(assigneeKey: string, opts: { scrub?: boole
  * open first, soonest due first. Filter on `state` for the open ones.
  */
 export async function tasksDelegatedBy(userEmail: string, opts: { scrub?: boolean; now?: Date } = {}): Promise<DelegatedTaskView[]> {
-  const email = (userEmail ?? "").trim().toLowerCase();
-  if (!email) return [];
+  return tasksDelegatedByAny([userEmail], opts);
+}
+
+/** tasksDelegatedBy for a person with more than one login (the owner signs in
+ *  as info@ and as a personal address): every one of their emails. */
+export async function tasksDelegatedByAny(userEmails: string[], opts: { scrub?: boolean; now?: Date } = {}): Promise<DelegatedTaskView[]> {
+  const emails = [...new Set(userEmails.map((e) => (e ?? "").trim().toLowerCase()).filter(Boolean))];
+  if (!emails.length) return [];
   const since = new Date((opts.now ?? new Date()).getTime() - CLOSED_VISIBLE_DAYS * 86_400_000);
   const [rows, roster] = await Promise.all([
     prisma.smartTask.findMany({
-      where: { delegatedBy: email, OR: [{ status: { notIn: CLOSED } }, { updatedAt: { gte: since } }] },
+      where: { delegatedBy: { in: emails }, OR: [{ status: { notIn: CLOSED } }, { updatedAt: { gte: since } }] },
       select: TASK_SELECT,
       take: 300,
     }),

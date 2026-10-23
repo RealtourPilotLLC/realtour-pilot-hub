@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etDateTime, etMonthDay, etTime, endOfBusinessDaysET } from "@/lib/datetime";
 import { firstName } from "@/lib/assignees";
-import { delegationFor, resurfaceOf, tasksDelegatedBy, STATE_WORDS, type DelegatedTaskView, type Resurface } from "@/lib/delegation";
+import { delegationFor, resurfaceOf, tasksDelegatedByAny, STATE_WORDS, type DelegatedTaskView, type Resurface } from "@/lib/delegation";
 import type { AssignSeed, Tone } from "@/lib/ownerDashboard";
 
 // ---------------------------------------------------------------------------
@@ -169,9 +169,12 @@ export type CreativeDecisions = { rows: CreativeRow[]; jordanOwns: number; other
 
 const CREATIVE_ITEMS = new Set(["topics", "write", "approve", "changes", "suggestions", "strategy", "proposals", "ideas"]);
 
-export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: string[]; ownerEmail?: string | null } = {}): Promise<CreativeDecisions> {
+export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: string[]; ownerEmail?: string | null; ownerEmails?: string[] } = {}): Promise<CreativeDecisions> {
   const now = opts.now ?? new Date();
   const ownerEmail = (opts.ownerEmail ?? OWNER_MAILBOX).toLowerCase();
+  // Every address the owner signs in with is him (info@ is the one the content
+  // program's owner assignments name).
+  const isOwnerEmail = (e: string | null | undefined) => !!e && [ownerEmail, OWNER_MAILBOX, ...(opts.ownerEmails ?? []).map((x) => x.toLowerCase())].includes(e.toLowerCase());
   const exclude = opts.excludeClientIds ?? [];
   const unavailable: string[] = [];
   const rows: CreativeRow[] = [];
@@ -203,7 +206,7 @@ export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: s
     const nameOfEmail = (e: string) => {
       const u = users.find((x) => x.email.toLowerCase() === e.toLowerCase());
       if (u?.name) return firstName(u.name);
-      if (e.toLowerCase() === ownerEmail || e.toLowerCase() === OWNER_MAILBOX) return ownerFirst0 ? firstName(ownerFirst0) : "Jordan";
+      if (isOwnerEmail(e)) return ownerFirst0 ? firstName(ownerFirst0) : "Jordan";
       return e.split("@")[0];
     };
     for (const r of creative) {
@@ -214,8 +217,8 @@ export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: s
       const strategyOwner = o?.STRATEGY;
       const scriptItems = r.items.filter((i) => ["write", "approve", "changes", "suggestions", "topics", "ideas"].includes(i.key));
       const strategyItems = r.items.filter((i) => i.key === "strategy" || i.key === "proposals");
-      const mineScripts = !!scriptOwner?.email && scriptOwner.email.toLowerCase() === ownerEmail;
-      const mineStrategy = !!strategyOwner?.email && strategyOwner.email.toLowerCase() === ownerEmail;
+      const mineScripts = isOwnerEmail(scriptOwner?.email);
+      const mineStrategy = isOwnerEmail(strategyOwner?.email);
       const items = [...(mineScripts ? scriptItems : []), ...(mineStrategy ? strategyItems : [])];
       if (!items.length) continue;
       const monthScripts = scripts.filter((s) => s.monthId === mid).map((s) => versions.find((v) => v.id === s.currentVersionId)).filter((v): v is { id: string; createdBy: string | null } => !!v);
@@ -399,10 +402,11 @@ export async function emailNeedingReply(opts: { now?: Date; excludeClientIds?: s
 export type DelegatedRow = DelegatedTaskView & { resurface: Resurface | null };
 export type DelegatedByMe = { rows: DelegatedRow[]; open: number; flagged: number; unavailable: string[] };
 
-export async function delegatedByMe(opts: { now?: Date; email: string | null }): Promise<DelegatedByMe> {
+export async function delegatedByMe(opts: { now?: Date; email: string | null; emails?: string[] }): Promise<DelegatedByMe> {
   const now = opts.now ?? new Date();
-  if (!opts.email) return { rows: [], open: 0, flagged: 0, unavailable: [] };
-  const list = await tasksDelegatedBy(opts.email, { now }).catch(warn("delegated"));
+  const emails = [...(opts.emails ?? []), ...(opts.email ? [opts.email] : [])];
+  if (!emails.length) return { rows: [], open: 0, flagged: 0, unavailable: [] };
+  const list = await tasksDelegatedByAny(emails, { now }).catch(warn("delegated"));
   if (!list) return { rows: [], open: 0, flagged: 0, unavailable: ["your assignments"] };
   const rows = list.map((d) => ({ ...d, resurface: resurfaceOf(d, now) }));
   rows.sort((a, b) => Number(!!b.resurface) - Number(!!a.resurface) || Number(b.state !== "COMPLETED" && b.state !== "CANCELLED") - Number(a.state !== "COMPLETED" && a.state !== "CANCELLED") || (a.dueAt ?? "9999").localeCompare(b.dueAt ?? "9999"));

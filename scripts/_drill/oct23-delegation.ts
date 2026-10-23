@@ -225,6 +225,13 @@ async function main() {
     c.ok("…it is Kyle's open assignment and Jordan's delegated one", (await lib.tasksAssignedTo("kyle")).some((d) => d.taskId === k1.id) && (await lib.tasksDelegatedBy("info@realtourpilot.com")).some((d) => d.taskId === k1.id));
     c.ok("…Kyle is told through his bell", (await bells(kyleTm.id)).some((b) => /Jordan assigned you: Confirm Tuesday's reshoot/.test(b.title)));
 
+    // ---- the owner's second login is still him ----
+    const ownerAlt = await user("Jordan Spackman", "jordan.personal@deleg.invalid", "OWNER", jordanTm.id);
+    await signIn(ownerAlt);
+    const alt = await A.assignTaskAction({ title: "Send the stager the floor plan", assigneeKey: "kyle" });
+    const both = await delegatedByMe({ email: "info@realtourpilot.com", emails: ["info@realtourpilot.com", "jordan.personal@deleg.invalid"] });
+    c.ok("Delegated by me reads every login the owner signs in with (info@ and his personal address)", alt.ok && both.rows.some((r) => r.title === "Send the stager the floor plan") && both.rows.some((r) => r.title === "Confirm Tuesday's reshoot"), alt.message);
+
     // ---- house rules ----
     const allWords = JSON.stringify(await prisma.notification.findMany({ select: { title: true, body: true } }));
     c.ok("no em dashes in anything delegation wrote", !/—/.test(allWords) && !/—/.test(JSON.stringify((await prisma.smartTask.findMany({ where: { delegatedAt: { not: null } }, select: { delegation: true } })).map((t) => t.delegation))));
