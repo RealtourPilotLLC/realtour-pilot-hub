@@ -59,6 +59,15 @@ export type TopicBrief = {
   closeWhy: string;
   /** `words` (Oct 22 2026, v2.1): what the draft writes toward; a brief written before it has none (75). */
   target: { aim: [number, number]; cap: number; seconds: [number, number]; words?: number };
+  /**
+   * v2.5: what code keeps out of the script, for code only (pipeline.briefFrom):
+   * a deal still in progress ("live": the proof, its points and its passages'
+   * words, with the passage ids) or a story she already told on camera
+   * ("used"). Never shown to the writer or the hooks step (briefText leaves
+   * it out; the excluded list names it); pickHook sets aside a hook that tells
+   * one, and the review fails a script that tells a live one (live_deal).
+   */
+  heldBack?: { kind: "live" | "used"; ids: string[]; text: string }[];
 };
 
 export type WriterRationale = { hook: string; takeaway: string; strategy: string };

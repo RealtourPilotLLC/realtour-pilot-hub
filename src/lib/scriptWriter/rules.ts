@@ -31,7 +31,7 @@ import { GENERATION_POLICY, BANNED_OPENERS, SCRIPT_PART_BUDGETS, countSpokenWord
  * to 80 that may drop nothing the brief marks must-keep, and is reviewed
  * again; when the trim loses substance, the longer passing version is kept.
  */
-export const WRITER_VERSION = "writer.v2.4-2026-10-22";
+export const WRITER_VERSION = "writer.v2.5-2026-10-22";
 // v2.2 (Oct 22 2026, the listening fix, LISTENING.md): Jordan's lines and her
 // older calls reach the writer (the other-client filter no longer takes them);
 // older calls are read by her words, in a second retrieval; accepted facts from
@@ -121,6 +121,38 @@ export const WRITER_VERSION = "writer.v2.4-2026-10-22";
 //      story she already told on camera (Erica's doorknob draft retold the
 //      $1,000 story she filmed in August) is moved to excluded by code
 //      (pipeline.briefFrom: LIVE_DEAL_RE, usedStory).
+// v2.5 (Oct 22 2026, the second calibration fix). An independent review of
+// the v2.4 retest (7 drafts: John Collins 4, Marcee 3) scored it 17.1 of 25
+// against the old writer's 15.3 to 15.7 (the bar is +2): hooks are kept now
+// and length mostly works. What was left, in its order:
+//   1. THE LIVE DEAL LEAKED. In Marcee's 2022 draft the proof was emptied,
+//      but the same deal stayed in the brief's verified facts and her passage
+//      stayed quoted, and the hook, re-hook and build-up were built on it. A
+//      live deal is now never in the script: briefFrom takes its passages out
+//      of what she said and drops every fact, option, opinion, phrase, idea
+//      and contradiction that cites them or tells the same story; the brief
+//      names it in excluded without its details; the writer's prompts leave
+//      its passages out; a hook whose hook and re-hook tell the excluded
+//      proof is set aside (pickHook); and a script that tells a live deal
+//      fails Every claim supported by code (live_deal), whatever the reviewer
+//      says.
+//   2. HOOK RANK. payoffConnection joins curiosity, tension and specificity.
+//      On a tie, her own moment wins only when it is scored fully accurate
+//      (a 4 says the hook already bends her story a little).
+//   3. LENGTH. The aim trim waits for a draft over 85 (it was 78: trims of
+//      drafts at 79 to 84 made fragments), and every trimmed sentence keeps
+//      its verb. The part budgets add up to 80. The final pick of a flagged
+//      educational script takes a version inside the aim over any version
+//      above 85, whatever the craft (pickFinal).
+//   4. THE GATE. A reviewer's fail of the re-hook, the payoff or the close,
+//      when it says nothing untrue and the craft block scored that part 3 or
+//      more, is a flag. A build-up that translates the hook's words in an
+//      agreed format (word association) is not a hook echo. "Offers" no
+//      longer reads as a verb, and "Step one: ... Step two: ..." is a list.
+//   5. THE BRIEF. When a contradiction says the proof does not support the
+//      message, the angle takes the message the proof supports.
+//   6. A third fix round runs when Enough substance is the only must-fix
+//      left (so the craft check passed).
 
 /** Words and seconds (Jordan, Oct 22 2026). Seconds are an estimate at the hub's speaking rate, never a measurement. */
 export const WRITER_LENGTH = {
@@ -130,8 +162,12 @@ export const WRITER_LENGTH = {
   target: 68,
   /** Where the trim pass aims (v2.3: 65 to 75). */
   trimTo: [65, 75] as const,
-  /** A passing draft over this many words gets the one aim trim (v2.3: 78; it was the aim's top, 85). */
-  trimAbove: 78,
+  /**
+   * A draft over this many words gets the one aim trim. v2.5: 85, the aim's
+   * top, again (v2.3 and v2.4: 78; the pre-review trim of drafts already at 79
+   * to 84 produced fragments).
+   */
+  trimAbove: 85,
   cap: 110,
   /**
    * v2.4: a told personal story (the brief's videoType "story") may use up to
@@ -149,11 +185,13 @@ export function trimAboveFor(story?: boolean | null): number {
 
 /**
  * v2.4 (the length fix): the most words each part should take. Over it is a
- * flag (part_length), never a must-fix. Together they come to 86, the top of
- * the aim. A told story's build-up and payoff carry its beats, so those two
- * budgets do not apply to a story.
+ * flag (part_length), never a must-fix. A told story's build-up and payoff
+ * carry its beats, so those two budgets do not apply to a story.
+ * v2.5: together they come to 80 (they came to 86, over the aim's top). The
+ * re-hook is one turn (Jordan's educational re-hooks run 10 to 13 words) and
+ * the close two short beats; the build-up keeps room for her one moment.
  */
-export const PART_WORDS: Record<"hook" | "rehook" | "buildup" | "payoff" | "close", number> = { hook: 14, rehook: 16, buildup: 22, payoff: 16, close: 18 };
+export const PART_WORDS: Record<"hook" | "rehook" | "buildup" | "payoff" | "close", number> = { hook: 14, rehook: 12, buildup: 22, payoff: 16, close: 16 };
 
 /**
  * How many must-keep points a brief may carry (Oct 22 2026, the listening
@@ -219,6 +257,8 @@ export function trimInstruction(words: number, mustKeep: readonly string[] = [],
       ? `These must-keep points from the brief survive, in substance: ${mustKeep.map((m) => `"${m.replace(/\s+/g, " ").trim()}"`).join("; ")}.`
       : "Every must-keep point in the topic brief survives, in substance (with no brief: her own process, her facts and the payoff).",
     "Cut optional material first: a second example that makes the same point, repeated setup, hedges, and any sentence that restates the one before it.",
+    // v2.5: trims of drafts already near the aim cut single words and left fragments.
+    "Cut whole sentences or clauses; every sentence keeps its verb.",
     "Never drop a must-keep point, her process or the payoff to hit the number: if the range cannot be reached without losing one, stop at the shortest version that keeps them all. Never make it dry or incomplete.",
     "Keep the hook unless it is the long part, exactly three talking points in the order Re-hook, Build up, Payoff, and the close.",
     "No em dash or en dash anywhere; never write a duration or a timing note into the script.",
@@ -318,7 +358,7 @@ export const REVIEW_CHECKS = [
   { key: "payoff", n: 7, label: "Payoff", level: "must-fix", passes: "Answers the hook's question in one line the viewer could repeat. A \"My job\" or credential line that does not answer the hook fails. How she helps appears once, in the payoff or the close, never both." },
   { key: "close", n: 8, label: "Close", level: "must-fix", passes: "At most two beats: a line that calls back a concrete word or image from the hook (or the re-hook), then, with a service angle, a warm invitation naming this video's specific next step in her voice (a callback alone only for a story with no service angle). \"Let's talk\" as the whole invitation, a \"Thinking about X?\" opener, a slogan or an aphorism fails." },
   { key: "her_voice", n: 9, label: "Sounds like her", level: "flag", passes: "Her voice at its best on camera: her vocabulary and her strongest short phrases in tight, natural, polished spoken sentences. No transcript sentences pasted in, none of her avoid-words, no industry terms spoken to homeowners (a phrase of hers included)." },
-  { key: "claims", n: 10, label: "Every claim supported", level: "must-fix", passes: "Each factual line traces to something she said (anywhere in the call) or approved; a faithful paraphrase counts. Topic descriptions and our assumptions do not count." },
+  { key: "claims", n: 10, label: "Every claim supported", level: "must-fix", passes: "Each factual line traces to something she said (anywhere in the call) or approved; a faithful paraphrase counts. Topic descriptions and our assumptions do not count. A deal still in progress is never in the script, not even in general terms." },
   { key: "length", n: 11, label: "Length", level: "must-fix", passes: `At most ${WRITER_LENGTH.cap} spoken words (the cap); ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]} is the aim. Seconds shown.` },
   { key: "nothing_extra", n: 12, label: "Nothing extra", level: "flag", passes: "Every sentence creates interest, builds understanding, delivers value, earns trust or moves the story." },
   { key: "craft", n: 13, label: "Craft", level: "must-fix", passes: "The craft block: hook, re-hook, build-up, payoff and close each scored 1 to 5 with a one-line psychology note. Passes on a total of 19 or more with no part at 2 or under; a part at 3 is a flag, not a must-fix." },
@@ -331,8 +371,8 @@ export const MODEL_CHECK_KEYS = REVIEW_CHECK_KEYS.filter((k) => k !== "craft");
 /** `parts` (v2.3): the script parts a failure is about, so a kept longer version can be checked for the same line. */
 export type ReviewCheckResult = { key: ReviewCheckKey; n: number; label: string; level: CheckLevel; pass: boolean; reason: string; parts?: ScriptPartKey[] };
 /** `check` and `part` (v2.3): a finding may name the check it counts against (else HARD_TO_CHECK) and the part it is about. */
-/** v2.4: part_length (a part over its PART_WORDS budget) and buildup_fragment (a colon list or a sentence with no verb in the build-up), both flags. */
-export type HardFinding = { key: "greeting" | "dash" | "duration" | "market_claim" | "jargon" | "hook_length" | "audience_vocative" | "pasted" | "hook_echo" | "generic_close" | "part_length" | "buildup_fragment"; level: CheckLevel; detail: string; check?: ReviewCheckKey; part?: ScriptPartKey };
+/** v2.4: part_length (a part over its PART_WORDS budget) and buildup_fragment (a colon list or a sentence with no verb in the build-up), both flags. v2.5: live_deal (the script tells a deal still in progress), must-fix under Every claim supported. */
+export type HardFinding = { key: "greeting" | "dash" | "duration" | "market_claim" | "jargon" | "hook_length" | "audience_vocative" | "pasted" | "hook_echo" | "generic_close" | "part_length" | "buildup_fragment" | "live_deal"; level: CheckLevel; detail: string; check?: ReviewCheckKey; part?: ScriptPartKey };
 
 // ---------------------------------------------------------------------------
 // Hard numbers, by code (never by the model).
@@ -432,8 +472,12 @@ export function sharedWithHook(hook: string, text: string): string[] {
  * that brings back no content word of the hook, or ends on the template "[a
  * question]? Let's talk.", or opens its invitation "Thinking about X?" fails
  * the close (must-fix). Pure.
+ * v2.5: `agreedFormat` (the brief's "Agreed format: ..."): a build-up that
+ * translates the hook's words in that format (two or more "X means Y" or
+ * "X? Y." beats, as in a word association) is the format working, not an
+ * echo, and is not flagged.
  */
-export function craftFindings(parts: ScriptParts): HardFinding[] {
+export function craftFindings(parts: ScriptParts, opts: { agreedFormat?: string | null } = {}): HardFinding[] {
   const out: HardFinding[] = [];
   const hook = parts.hook ?? "";
   const rehook = partTextOf(parts, "rehook");
@@ -448,7 +492,8 @@ export function craftFindings(parts: ScriptParts): HardFinding[] {
   }
   if (hook && buildup) {
     const shared = sharedWithHook(hook, buildup);
-    if (shared.length >= HOOK_ECHO_WORDS) out.push({ key: "hook_echo", level: "flag", check: "nothing_extra", part: "buildup", detail: `The build-up repeats the hook's words (${shared.slice(0, 6).join(", ")}): it should set up the payoff, not say the hook again.` });
+    const translates = !!opts.agreedFormat?.trim() && translationBeats(buildup) >= 2;
+    if (shared.length >= HOOK_ECHO_WORDS && !translates) out.push({ key: "hook_echo", level: "flag", check: "nothing_extra", part: "buildup", detail: `The build-up repeats the hook's words (${shared.slice(0, 6).join(", ")}): it should set up the payoff, not say the hook again.` });
   }
   const close = (parts.close ?? "").replace(/[‘’]/g, "'").replace(/\s+/g, " ").trim();
   if (close) {
@@ -466,9 +511,38 @@ export function craftFindings(parts: ScriptParts): HardFinding[] {
   return out;
 }
 
+/** v2.5: a beat that translates a word ("Cozy means small."). */
+const TRANSLATION_BEAT_RE = /\b(?:means|is code for|translates? (?:to|as))\b/i;
+/**
+ * How many beats of a text translate a word (v2.5, pure): a sentence that
+ * says "X means Y", or a short question (five words at most) answered by the
+ * next sentence ("Cozy? Small.").
+ */
+export function translationBeats(text: string): number {
+  const beats = (text ?? "").replace(/\s+/g, " ").trim().split(/(?<=[.?!])\s+/).filter(Boolean);
+  let n = 0;
+  for (let i = 0; i < beats.length; i++) {
+    if (TRANSLATION_BEAT_RE.test(beats[i])) n++;
+    else if (/\?["”']?$/.test(beats[i]) && beats[i].split(/\s+/).length <= 5 && beats[i + 1]) { n++; i++; }
+  }
+  return n;
+}
+
+/**
+ * The format agreed on the call for this video, as the brief records it
+ * (v2.5, pure): a creative idea or must-keep point that says "Agreed format"
+ * (or "agreed word-association format"), else null.
+ */
+export function agreedFormatOf(brief: { creativeIdeas?: readonly { text: string }[] | null; mustKeep?: readonly { text: string }[] | null } | null | undefined): string | null {
+  const all = [...(brief?.creativeIdeas ?? []), ...(brief?.mustKeep ?? [])];
+  return all.find((x) => /\bagreed\b[^.]{0,40}\bformat\b/i.test(x?.text ?? ""))?.text ?? null;
+}
+
 /** A sentence that carries a verb (v2.4, pure): an auxiliary or modal, a contraction, a common verb, a word ending in -ed or -ing, or "it sits". */
 const VERB_AUX_RE = /\b(?:am|is|are|was|were|be|been|being|has|have|had|do|does|did|can|could|will|would|should|shall|may|might|must)\b|\b\w+(?:'s|'re|'ve|'ll|'d|n't)\b/i;
-const COMMON_VERBS = new Set(("get gets got want wants need needs sell sells sold buy buys bought say says said tell tells told make makes made go goes went come comes came take takes took see sees saw know knows knew think thinks thought feel feels felt look looks ask asks lose loses lost pay pays paid put puts keep keeps kept show shows walk walks sit sits sat stay stays start starts find finds found give gives gave help helps try tries work works call calls write wrote let lets mean means cost costs matter matters fit fits win wins won hold holds held bring brings brought leave leaves left move moves run runs set sets turn turns wait waits watch watches love loves hate hates hope hopes plan plans decide decides choose chooses chose live lives own owns list lists price prices fix fixes check checks offer offers become became begin began build builds built grow grows grew fall falls fell happen happens").split(" "));
+const COMMON_VERBS = new Set(("get gets got want wants need needs sell sells sold buy buys bought say says said tell tells told make makes made go goes went come comes came take takes took see sees saw know knows knew think thinks thought feel feels felt look looks ask asks lose loses lost pay pays paid put puts keep keeps kept show shows walk walks sit sits sat stay stays start starts find finds found give gives gave help helps try tries work works call calls write wrote let lets mean means cost costs matter matters fit fits win wins won hold holds held bring brings brought leave leaves left move moves run runs set sets turn turns wait waits watch watches love loves hate hates hope hopes plan plans decide decides choose chooses chose live lives own owns list lists price prices fix fixes check checks offer become became begin began build builds built grow grows grew fall falls fell happen happens").split(" "));
+/** v2.5: a numbered step label in a build-up ("Step one:", "Step 2:"). */
+const STEP_LABEL_RE = /\b(?:step|part|phase|rule|tip|number)\s+(?:one|two|three|four|five|\d)\s*:/gi;
 /** A personal pronoun and the word after it ("we used the slope"): read as a subject and its verb. */
 const PRONOUN_VERB_RE = /\b(?:i|you|we|they|he|she|it)\s+(?:just\s+|never\s+|always\s+|really\s+|still\s+|only\s+|also\s+)?[a-z]+\b/i;
 export function hasVerb(sentence: string): boolean {
@@ -482,12 +556,17 @@ export function hasVerb(sentence: string): boolean {
  * ("Buyers are choosier: inspections, negotiating, an appraisal.") or a
  * sentence with no verb ("Different grade, different layout.") is flagged
  * against Story holds together. A flag, never a must-fix. Pure.
+ * v2.5: numbered steps ("Step one: ... Step two: ...") are a list too, and
+ * "offers" no longer reads as a verb ("No offers." has none).
  */
 export function buildupFragments(buildup: string): HardFinding[] {
   const text = (buildup ?? "").replace(/\s+/g, " ").trim();
   if (!text) return [];
   const out: HardFinding[] = [];
-  if (/:\s*[^.?!]*,[^.?!]*/.test(text)) out.push({ key: "buildup_fragment", level: "flag", check: "story", part: "buildup", detail: `The build-up runs a colon list ("${(/[^.?!:]*:\s*[^.?!]*/.exec(text)?.[0] ?? text).trim().slice(0, 120)}"): tell it as one beat in full spoken sentences, what happened and then what changed.` });
+  const colonList = /:\s*[^.?!]*,[^.?!]*/.test(text);
+  if (colonList) out.push({ key: "buildup_fragment", level: "flag", check: "story", part: "buildup", detail: `The build-up runs a colon list ("${(/[^.?!:]*:\s*[^.?!]*/.exec(text)?.[0] ?? text).trim().slice(0, 120)}"): tell it as one beat in full spoken sentences, what happened and then what changed.` });
+  const steps = text.match(STEP_LABEL_RE) ?? [];
+  if (!colonList && steps.length) out.push({ key: "buildup_fragment", level: "flag", check: "story", part: "buildup", detail: `The build-up runs numbered steps (${steps.slice(0, 3).map((s) => `"${s.trim()}"`).join(", ")}): tell it as one beat in full spoken sentences, what happened and then what changed.` });
   const verbless = text.split(/(?<=[.?!])\s+/).map((x) => x.trim()).filter((x) => x.split(/\s+/).length >= 2 && !hasVerb(x));
   if (verbless.length) out.push({ key: "buildup_fragment", level: "flag", check: "story", part: "buildup", detail: `The build-up has ${verbless.length === 1 ? "a sentence" : "sentences"} with no verb (${verbless.slice(0, 3).map((x) => `"${x.slice(0, 80)}"`).join(", ")}): say it in full spoken sentences.` });
   return out;
@@ -552,7 +631,16 @@ const norm = (s: string) => s.toLowerCase().replace(/[‘’]/g, "'").replace(/\
  * `sourceText` is everything the client said or approved that the writer read
  * (passages, answers, facts, her strategy), never our assumptions.
  */
-export function hardNumbers(parts: ScriptParts, sourceText: string, /** What she SAID (calls and passages), for the pasted-sentence check; default sourceText. */ spokenSourceText?: string, /** v2.4: a told personal story (the part budgets for its build-up and payoff do not apply). */ opts: { story?: boolean | null } = {}): { words: number; seconds: number; band: LengthBand; hookWords: number; findings: HardFinding[] } {
+export function hardNumbers(
+  parts: ScriptParts, sourceText: string, /** What she SAID (calls and passages), for the pasted-sentence check; default sourceText. */ spokenSourceText?: string,
+  /**
+   * v2.4: `story`, a told personal story (the part budgets for its build-up and payoff do not apply).
+   * v2.5: `liveDeal`, the deal still in progress the brief keeps out (its proof, points and passages), and
+   * `kept`, the brief's other material, for live_deal; `agreedFormat`, the format agreed on the call
+   * (craftFindings: a translating build-up is no echo).
+   */
+  opts: { story?: boolean | null; liveDeal?: string | null; kept?: string | null; agreedFormat?: string | null } = {},
+): { words: number; seconds: number; band: LengthBand; hookWords: number; findings: HardFinding[] } {
   const spoken = spokenTextOf(parts);
   const words = countSpokenWords(spoken);
   const hookWords = countSpokenWords(parts.hook);
@@ -570,6 +658,9 @@ export function hardNumbers(parts: ScriptParts, sourceText: string, /** What she
   if (unsupportedNumbers.length) findings.push({ key: "market_claim", level: "must-fix", ...inHook((t) => numberTokens(t).some((n) => unsupportedNumbers.includes(n))), detail: `Numbers the sources do not contain: ${unsupportedNumbers.slice(0, 5).join(", ")}.` });
   const unsupportedTerms = MARKET_TERMS.filter((t) => t.re.test(spoken) && !t.re.test(src));
   if (unsupportedTerms.length) findings.push({ key: "market_claim", level: "must-fix", ...inHook((h) => unsupportedTerms.some((t) => t.re.test(h))), detail: `Market statements she did not make: ${unsupportedTerms.map((t) => t.key).join(", ")}.` });
+  // v2.5: a deal still in progress is never in the script; code fails it under Every claim supported, whatever the reviewer says.
+  const live = liveDealFinding(parts, opts.liveDeal, opts.kept ?? "");
+  if (live) findings.push(live);
   const jargon = JARGON_RES.filter((j) => j.re.test(spoken));
   // Must-fix (Oct 22 2026): the independent review found "impervious coverage" passing as a flag because
   // it was one of "her phrases"; Jordan wants plain homeowner words, so an industry term fails the draft.
@@ -584,8 +675,35 @@ export function hardNumbers(parts: ScriptParts, sourceText: string, /** What she
   if (pastedLong.length) findings.push({ key: "pasted", level: "must-fix", detail: `Pasted from the call word for word: ${pastedLong.slice(0, 2).map((p) => `"${p}"`).join("; ")}. Keep her meaning and her best short phrases; write the sentence for camera.` });
   if (pastedMid.length) findings.push({ key: "pasted", level: "flag", detail: `Close to her words from the call: ${pastedMid.slice(0, 2).map((p) => `"${p}"`).join("; ")}. Keep it only if it is strong and natural on camera.` });
   // v2.3: the re-hook and build-up that say the hook again, a hedge opener, the template close.
-  findings.push(...craftFindings(parts));
+  findings.push(...craftFindings(parts, { agreedFormat: opts.agreedFormat }));
   return { words, seconds: estimateSeconds(words), band: lengthBand(words), hookWords, findings };
+}
+
+/** v2.5: words in a script that mark a deal as still in progress, whatever the brief says. */
+export const LIVE_DEAL_SCRIPT_RE = /\b(?:just wrote an offer|(?:is|are|it's|we're|they're) (?:still )?under contract (?:right )?now)\b/i;
+
+/**
+ * live_deal (v2.5, pure): the script tells the deal still in progress the
+ * brief keeps out (tellsHeldStory: a figure of it and USED_STORY_WORDS of its
+ * own words), or says a deal is still in progress in so many words. `kept` is
+ * the brief's other material: words it uses too (seller, price) say nothing
+ * about the deal, so her $20K result in another fact is not the live deal.
+ * Must-fix under Every claim supported; the part that carries the deal's
+ * figure (or the words) is named, so a hook that tells it is switched.
+ */
+export function liveDealFinding(parts: ScriptParts, liveDeal?: string | null, kept = ""): HardFinding | null {
+  const spoken = spokenTextOf(parts);
+  const told = liveDeal?.trim() ? tellsHeldStory(spoken, liveDeal, kept) : null;
+  const said = LIVE_DEAL_SCRIPT_RE.exec(spoken)?.[0] ?? null;
+  if (!told && !said) return null;
+  const figs = told?.figures ?? [];
+  const part = SCRIPT_PART_KEYS.find((k) => {
+    const t = partTextOf(parts, k);
+    return !!t && ((figs.length && storyFigures(t).some((f) => figs.includes(f))) || (!!said && LIVE_DEAL_SCRIPT_RE.test(t)));
+  });
+  const line = part ? partTextOf(parts, part).replace(/\s+/g, " ").trim().slice(0, 160) : "";
+  const why = told ? `the deal the brief keeps out (${figs.join(", ")}; ${told.words.slice(0, 5).join(", ")})` : `"${said}"`;
+  return { key: "live_deal", level: "must-fix", check: "claims", ...(part ? { part } : {}), detail: `A deal still in progress is told: ${why}${line ? `, in "${line}"` : ""}. It is never in the script, not even in general terms.` };
 }
 
 /** How many words in a row a script may share with the call before it reads as pasted, not written (Oct 22 2026, v2.1). */
@@ -617,12 +735,14 @@ export function pastedRuns(spoken: string, sourceText: string, min = PASTED_RUN_
 /** Which check a hard finding counts against (a finding's own `check` wins: a build-up echo is Nothing extra, not Re-hook). */
 export const HARD_TO_CHECK: Record<HardFinding["key"], ReviewCheckKey> = {
   greeting: "hook", audience_vocative: "hook", hook_length: "hook", dash: "nothing_extra", duration: "nothing_extra", market_claim: "claims", jargon: "her_voice", pasted: "her_voice",
-  hook_echo: "rehook", generic_close: "close", part_length: "nothing_extra", buildup_fragment: "story",
+  hook_echo: "rehook", generic_close: "close", part_length: "nothing_extra", buildup_fragment: "story", live_deal: "claims",
 };
 const checkOfFinding = (h: HardFinding): ReviewCheckKey => h.check ?? HARD_TO_CHECK[h.key];
 
 /** The script parts each check is about (v2.3): what a kept longer version is compared on. */
 export const CHECK_PARTS: Partial<Record<ReviewCheckKey, ScriptPartKey[]>> = { hook: ["hook"], rehook: ["rehook"], payoff: ["payoff"], close: ["close"] };
+/** v2.5: the checks (4, 7, 8) whose model fail is a flag when it says nothing untrue and the craft block scored their part 3 or more (mergeReview). */
+export const CRAFT_CALIBRATED: Partial<Record<ReviewCheckKey, ScriptPartKey>> = { rehook: "rehook", payoff: "payoff", close: "close" };
 
 // ---------------------------------------------------------------------------
 // v2.3: THE CRAFT BLOCK. The reviewer scores the five parts 1 to 5 with a
@@ -712,6 +832,13 @@ export type MergeOpts = { hookAdvisory?: boolean; story?: boolean | null };
  * craft could never be fixed, only burn rounds. A flag-level hard
  * finding fails a passing check at flag level (it used to keep the check's
  * own level, so a flag on a must-fix check read as a must-fix).
+ * v2.5 (the second calibration fix): the reviewer's own fail of the re-hook,
+ * the payoff or the close (checks 4, 7, 8, CRAFT_CALIBRATED) is a flag when
+ * its reason says nothing untrue (ACCURACY_RE) and the craft block scored
+ * that part CRAFT_FAIL_AT + 1 (3) or more: the reviewer's own score says the
+ * part works. John's Renovating re-hook, the shape of Jordan's own approved
+ * one, was failed at must-fix with a craft 3. A must-fix code finding on the
+ * part (a hedge opener, a live deal) still fails it at must-fix.
  */
 export function mergeReview(model: { key?: string; pass?: boolean; reason?: string }[], hard: HardFinding[], words: number, craft?: CraftScores | null, opts: MergeOpts = {}): ReviewCheckResult[] {
   const gate = craft ? craftGateScores(craft, opts) : null;
@@ -737,6 +864,12 @@ export function mergeReview(model: { key?: string; pass?: boolean; reason?: stri
     // v2.4: the scored pick, unchanged, is kept (locked) by the fix round, so the reviewer's own craft verdict on it
     // is advice too (a flag); a verdict that it is untrue to her or bent from what she said stays a must-fix.
     if (spec.key === "hook" && opts.hookAdvisory && got && !pass && !ACCURACY_RE.test(reason)) { level = "flag"; reason = `Advice (the scored hook, unchanged): ${reason}`; }
+    // v2.5: the reviewer's fail of the re-hook, payoff or close is a flag when it says nothing untrue and its own
+    // craft score for the part is 3 or more (a must-fix code finding below still makes it a must-fix).
+    const calibrated = CRAFT_CALIBRATED[spec.key];
+    const partScore = calibrated ? craft?.[calibrated]?.score ?? 0 : 0;
+    const demoted = !!calibrated && !!got && !pass && partScore > CRAFT_FAIL_AT && !ACCURACY_RE.test(reason);
+    if (demoted) level = "flag";
     const parts = new Set<ScriptPartKey>(CHECK_PARTS[spec.key] ?? []);
     for (const h of hard.filter((x) => checkOfFinding(x) === spec.key)) {
       // A must-fix hard finding fails the check at must-fix level whatever the
@@ -746,6 +879,7 @@ export function mergeReview(model: { key?: string; pass?: boolean; reason?: stri
       if (h.level === "must-fix") { pass = false; level = "must-fix"; reason = `${h.detail} ${modelSaid}`.trim(); }
       else if (pass) { pass = false; level = "flag"; reason = h.detail; }
     }
+    if (demoted && level === "flag") reason = `A flag (the craft block scored the ${CRAFT_PARTS.find((p) => p.key === calibrated)!.label.toLowerCase()} ${partScore} of 5): ${reason}`;
     // v2.3 → v2.4: a hook or re-hook the craft block scored 2 or under fails its own check at must-fix; at 3, as a flag.
     // A part not scored is check 13's to fail; an advisory hook's score fails nothing.
     const s = craft?.[spec.key as ScriptPartKey]?.score ?? 0;
@@ -832,8 +966,13 @@ const clampScore = (v: unknown) => (typeof v === "number" && Number.isFinite(v) 
 /** v2.3: a hook is eligible only with curiosity AND tension at these or more. */
 export const HOOK_BAR = { curiosity: 4, tension: 4 } as const;
 const scoreOf = (h: Pick<HookCandidate, "scores">, k: HookCriterion) => Number((h.scores as Record<string, unknown> | null | undefined)?.[k]) || 0;
-/** What a hook is ranked by (v2.3): curiosity + tension + specificity. The total only breaks a tie. */
-export const hookRank = (h: Pick<HookCandidate, "scores">) => scoreOf(h, "curiosity") + scoreOf(h, "tension") + scoreOf(h, "specificity");
+/**
+ * What a hook is ranked by: curiosity + tension + specificity (v2.3) +
+ * payoffConnection (v2.5: a hook the video's message answers; the v2.4
+ * retest picked a fence-story hook the "price, always" payoff could not
+ * answer). The total only breaks a tie.
+ */
+export const hookRank = (h: Pick<HookCandidate, "scores">) => scoreOf(h, "curiosity") + scoreOf(h, "tension") + scoreOf(h, "specificity") + scoreOf(h, "payoffConnection");
 /** Why a hook is below HOOK_BAR, or null when it reaches it. Pure. */
 export function hookWeakness(h: Pick<HookCandidate, "scores">): string | null {
   const low = (["curiosity", "tension"] as const).filter((k) => scoreOf(h, k) < HOOK_BAR[k]);
@@ -846,14 +985,17 @@ export function hookWeakness(h: Pick<HookCandidate, "scores">): string | null {
  * not; within each, for a personal story a hook that opens on HER moment
  * first (Oct 22 2026, the listening fix: the seniors pick was "Buying my
  * first home shouldn't feel this scary, right?", a viewer's line winning 31
- * to 29 over her own turn); then curiosity + tension + specificity; on a tie,
- * her moment when the brief's proof is a story she told; then the total; then
- * the earlier one. Self-scores cluster (28 to 34 in the offline test), so the
- * total no longer decides on its own. Pure.
+ * to 29 over her own turn); then curiosity + tension + specificity (v2.5:
+ * + payoffConnection, hookRank); on a tie, her moment when the brief's proof
+ * is a story she told; then the total; then the earlier one. Self-scores
+ * cluster (28 to 34 in the offline test), so the total no longer decides on
+ * its own. v2.5: her moment wins the tie only when it is scored fully
+ * accurate (5): a hook that retells her story at accuracy 4 already bends it
+ * a little (Marcee's Repairs balcony hook, 4, failed Her meaning). Pure.
  */
 export function hookOrder(hooks: HookCandidate[], opts: HookOrderOpts = {}): number[] {
   const storyFit = (h: HookCandidate) => (opts.videoType === "story" && h.fit === "her_moment" ? 1 : 0);
-  const herProof = (h: HookCandidate) => (opts.proofIsStory && h.fit === "her_moment" ? 1 : 0);
+  const herProof = (h: HookCandidate) => (opts.proofIsStory && h.fit === "her_moment" && scoreOf(h, "accuracy") >= 5 ? 1 : 0);
   const totalOf = (h: HookCandidate) => (typeof h.total === "number" ? h.total : HOOK_CRITERIA.reduce((n, k) => n + scoreOf(h, k), 0));
   const cmp = (a: { h: HookCandidate; i: number }, b: { h: HookCandidate; i: number }) =>
     storyFit(b.h) - storyFit(a.h) || hookRank(b.h) - hookRank(a.h) || herProof(b.h) - herProof(a.h) || totalOf(b.h) - totalOf(a.h) || a.i - b.i;
@@ -868,14 +1010,22 @@ export function hookOrder(hooks: HookCandidate[], opts: HookOrderOpts = {}): num
  * greeting, no audience vocative, no dash; curiosity and tension 4 or more;
  * then the rank. `fallback` says so when no hook reached the bar and the best
  * of the rest was used, or when every hook was set aside.
+ * v2.5: `avoid`, the proofs the brief excluded (a deal still in progress, a
+ * story she already told on camera; brief.heldBack): a hook whose text and
+ * re-hook together tell one of them (usedStory's test; tellsHeldStory, with
+ * `kept`, the brief's other material) is set aside. Marcee's 2022 hook,
+ * re-hook and build-up were built on the live deal the brief excluded.
  */
-export function pickHook(raw: { text?: unknown; rehook?: unknown; lever?: unknown; scores?: Record<string, unknown> | null; note?: unknown; fit?: unknown }[], opts: HookOrderOpts = {}): { hooks: HookCandidate[]; chosen: number; fallback: string | null } {
+export function pickHook(raw: { text?: unknown; rehook?: unknown; lever?: unknown; scores?: Record<string, unknown> | null; note?: unknown; fit?: unknown }[], opts: HookOrderOpts & { avoid?: readonly string[] | null; kept?: string | null } = {}): { hooks: HookCandidate[]; chosen: number; fallback: string | null } {
+  const avoid = (opts.avoid ?? []).filter((t) => !!t?.trim());
   const hooks: HookCandidate[] = (Array.isArray(raw) ? raw : []).slice(0, 5).map((h) => {
     const scores = Object.fromEntries(HOOK_CRITERIA.map((k) => [k, clampScore(h?.scores?.[k])])) as Record<HookCriterion, number>;
     const text = String(h?.text ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
-    const why = !text ? "empty" : scores.accuracy < 4 ? "accuracy under 4" : GREETING_RE.test(text) ? "opens with a greeting" : AUDIENCE_VOCATIVE_RE.test(text) ? "opens by naming the audience" : DASH_RE.test(text) ? "uses a dash" : null;
+    const rehook = String(h?.rehook ?? "").replace(/\s+/g, " ").trim().slice(0, 400);
+    const told = text ? avoid.map((held) => tellsHeldStory(`${text}\n${rehook}`, held, opts.kept ?? "")).find(Boolean) ?? null : null;
+    const why = !text ? "empty" : scores.accuracy < 4 ? "accuracy under 4" : GREETING_RE.test(text) ? "opens with a greeting" : AUDIENCE_VOCATIVE_RE.test(text) ? "opens by naming the audience" : DASH_RE.test(text) ? "uses a dash" : told ? `tells the excluded proof (${told.figures.join(", ")}; ${told.words.slice(0, 4).join(", ")})` : null;
     const fit = (HOOK_FITS as readonly string[]).includes(String(h?.fit)) ? (h.fit as HookFit) : undefined;
-    return { text, rehook: String(h?.rehook ?? "").replace(/\s+/g, " ").trim().slice(0, 400), lever: String(h?.lever ?? "").trim().slice(0, 80), scores, total: HOOK_CRITERIA.reduce((n, k) => n + scores[k], 0), note: String(h?.note ?? "").replace(/\s+/g, " ").trim().slice(0, 300), disqualified: why, weak: why ? null : hookWeakness({ scores }), ...(fit ? { fit } : {}) };
+    return { text, rehook, lever: String(h?.lever ?? "").trim().slice(0, 80), scores, total: HOOK_CRITERIA.reduce((n, k) => n + scores[k], 0), note: String(h?.note ?? "").replace(/\s+/g, " ").trim().slice(0, 300), disqualified: why, weak: why ? null : hookWeakness({ scores }), ...(fit ? { fit } : {}) };
   });
   let chosen = hookOrder(hooks, opts)[0] ?? -1;
   let fallback: string | null = null;
@@ -883,7 +1033,8 @@ export function pickHook(raw: { text?: unknown; rehook?: unknown; lever?: unknow
     fallback = `No hook reached curiosity ${HOOK_BAR.curiosity} and tension ${HOOK_BAR.tension}; the strongest of the rest was used (${hooks[chosen].weak}).`;
   } else if (chosen < 0) {
     // Every hook was disqualified: the most accurate non-empty one, so the draft can still be written and the review says what is wrong.
-    for (let i = 0; i < hooks.length; i++) if (hooks[i].text && (chosen < 0 || hooks[i].scores.accuracy * 100 + hooks[i].total > hooks[chosen].scores.accuracy * 100 + hooks[chosen].total)) chosen = i;
+    // v2.5: never one that tells the excluded proof (then the draft writes its own hook).
+    for (let i = 0; i < hooks.length; i++) if (hooks[i].text && !/^tells the excluded proof/.test(hooks[i].disqualified ?? "") && (chosen < 0 || hooks[i].scores.accuracy * 100 + hooks[i].total > hooks[chosen].scores.accuracy * 100 + hooks[chosen].total)) chosen = i;
     if (chosen >= 0) fallback = `Every hook was set aside; the most accurate one was used so the review can say what is wrong (${hooks[chosen].disqualified}).`;
   }
   return { hooks, chosen, fallback };
@@ -978,8 +1129,17 @@ export function hookFailed(from: { checks?: ReviewCheckResult[] | null; instruct
 // first-choice hooks. Now: never a version over the cap when one at or under
 // it exists; then the craft total with the hook counted twice; then the fewest
 // must-fixes; then the fewest words over 85.
+// v2.5: for an educational script, a version inside the aim (85 or fewer)
+// comes before any version over it, whatever its craft. Of the reviewer's two
+// options (this, or a last 1 to 5 word trim when the pick lands at 86 to 90)
+// this one: it is code, so it costs no model call and keeps no text that was
+// never reviewed (every version it chooses from has its own review), and the
+// v2.4 retest showed trims of drafts already near the aim leave fragments.
+// Jordan's aim is a line, not a slope: among versions inside it (or among
+// versions all over it) craft still decides, then must-fixes, then words. A
+// told story may use up to the cap, so it is never ranked on the aim.
 // ---------------------------------------------------------------------------
-export type PickCandidate = { words: number; craft?: CraftScores | null; mustFix: number };
+export type PickCandidate = { words: number; craft?: CraftScores | null; mustFix: number; /** v2.5: a told personal story (the aim does not rank it). */ story?: boolean | null };
 
 /** The craft total the final pick ranks by: the five scores, the hook counted twice (30 at most). Pure. */
 export function craftRankTotal(craft: CraftScores | null | undefined): number {
@@ -987,9 +1147,10 @@ export function craftRankTotal(craft: CraftScores | null | undefined): number {
   return SCRIPT_PART_KEYS.reduce((n, k) => n + (craft[k]?.score ?? 0) * (k === "hook" ? 2 : 1), 0);
 }
 
-/** The order the final pick compares by, lower first (pure). */
-export function finalPickKey(x: PickCandidate): [number, number, number, number] {
-  return [x.words > WRITER_LENGTH.cap ? 1 : 0, -craftRankTotal(x.craft), x.mustFix, Math.max(0, x.words - WRITER_LENGTH.aim[1])];
+/** The order the final pick compares by, lower first (pure). v2.5: an educational version over the aim (85) ranks after every version inside it, before craft. */
+export function finalPickKey(x: PickCandidate): [number, number, number, number, number] {
+  const overAim = Math.max(0, x.words - WRITER_LENGTH.aim[1]);
+  return [x.words > WRITER_LENGTH.cap ? 1 : 0, !x.story && overAim > 0 ? 1 : 0, -craftRankTotal(x.craft), x.mustFix, overAim];
 }
 
 /** The index of the version to keep (pickFinal order); on a full tie, the first in the list. -1 for an empty list. Pure. */
@@ -1051,4 +1212,21 @@ export function usedStory(story: string, scripts: readonly { title: string; text
     if (sharedWords.length >= USED_STORY_WORDS) return { title: s.title, figures: [...new Set(shared)], words: sharedWords.slice(0, 8) };
   }
   return null;
+}
+
+/**
+ * Does `text` tell the story the brief holds back (v2.5, pure)? usedStory's
+ * test (a shared figure and USED_STORY_WORDS shared content words), counting
+ * only the words the brief's `kept` material does not also use: "seller" or
+ * "price" belong to the whole topic, "fully updated" to the deal. With no
+ * `kept`, it reads exactly as usedStory.
+ */
+export function tellsHeldStory(text: string, held: string, kept = ""): { figures: string[]; words: string[] } | null {
+  const figs = new Set(storyFigures(held));
+  const figures = [...new Set(storyFigures(text))].filter((f) => figs.has(f));
+  if (!figures.length) return null;
+  const common = contentWordsOf(kept);
+  const heldWords = contentWordsOf(held);
+  const words = [...contentWordsOf(text)].filter((w) => !/^\d+$/.test(w) && heldWords.has(w) && !common.has(w));
+  return words.length >= USED_STORY_WORDS ? { figures, words: words.slice(0, 8) } : null;
 }
