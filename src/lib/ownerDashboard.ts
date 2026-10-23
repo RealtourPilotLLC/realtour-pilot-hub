@@ -161,7 +161,7 @@ export async function financialPosition(opts: { now?: Date; excludeClientIds?: s
   const recRec = recurring === "failed" ? null : recurring;
   const anyObligation = !!payRec || !!recRec;
   const obligationValue = anyObligation ? Math.round(((payRec?.total ?? 0) + (recRec?.total ?? 0)) * 100) / 100 : null;
-  const payWords = payRec ? (payRec.lines.length ? payRec.lines.map((l) => `fixed pay ${etMonthDay(new Date(`${l.dayKey}T12:00:00Z`))} (${l.names.join(", ")})`).join(", ") : "no fixed-pay payday in the window") : null;
+  const payWords = payRec ? (payRec.lines.length ? payRec.lines.map((l) => (l.dayKey === todayKey ? `fixed pay today (${l.names.join(", ")}; may already be out of the bank)` : `fixed pay ${etMonthDay(new Date(`${l.dayKey}T12:00:00Z`))} (${l.names.join(", ")})`)).join(", ") : "no fixed-pay payday in the window") : null;
   const obligations: Figure = obligationsFailed
     ? { key: "obligations", label: "Due next 14 days", value: null, display: "Couldn't load", sub: "The pay schedule or recurring costs didn't load", tag: null, tone: null, href: "/sales?tab=payroll" }
     : !anyObligation
@@ -623,11 +623,9 @@ export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?:
       orderBy: { createdAt: "desc" },
       take: 30,
     }).catch(warn("feedback")),
-    prisma.revisionBrief.groupBy({
-      by: ["projectId"],
+    prisma.revisionBrief.findMany({
       where: { createdAt: { gte: since }, OR: [{ requestedByKind: null }, { requestedByKind: { notIn: ["OFFICE", "SYSTEM"] } }] },
-      _count: { _all: true },
-      _max: { createdAt: true },
+      select: { projectId: true, createdAt: true },
     }).catch(warn("revisions")),
     prisma.activity.findMany({ where: { createdAt: { gte: since }, body: { startsWith: "Order canceled in Aryeo AFTER delivery" } }, select: { id: true, projectId: true, createdAt: true, body: true, project: { select: { title: true, clientId: true, client: { select: { name: true } } } } }, take: 20 }).catch(warn("cancellations")),
     prisma.stripeTransaction.findMany({ where: { createdAt: { gte: since }, type: { in: ["refund", "payment_refund"] } }, select: { id: true, gross: true, createdAt: true, customerName: true, projectId: true, description: true }, orderBy: { createdAt: "desc" }, take: 20 }).catch(warn("refunds")),
@@ -682,7 +680,16 @@ export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?:
       assign: { title: `Follow up on feedback: ${street(f.project.title)}`, outcome: "The client heard back and the cause is recorded", sourceHref: `/projects/${f.projectId}#feedback-${f.id}`, clientId: f.project.clientId, projectId: f.projectId },
     });
   }
-  const repeat = (revisions ?? []).filter((r) => r._count._all >= 2 && !coveredProjects.has(r.projectId));
+  // A round is a client ask on its own ET day: the same ask by text and by
+  // email the same day is one round, not two.
+  const rounds = new Map<string, { days: Set<string>; latest: Date }>();
+  for (const r of revisions ?? []) {
+    const cur = rounds.get(r.projectId) ?? { days: new Set<string>(), latest: r.createdAt };
+    cur.days.add(etDayKey(r.createdAt));
+    if (r.createdAt > cur.latest) cur.latest = r.createdAt;
+    rounds.set(r.projectId, cur);
+  }
+  const repeat = [...rounds.entries()].map(([projectId, v]) => ({ projectId, _count: { _all: v.days.size }, _max: { createdAt: v.latest } })).filter((r) => r._count._all >= 2 && !coveredProjects.has(r.projectId));
   if (repeat.length) {
     const ps = await prisma.project.findMany({ where: { id: { in: repeat.map((r) => r.projectId) } }, select: { id: true, title: true, clientId: true, client: { select: { name: true } } } }).catch(() => []);
     for (const r of repeat) {
@@ -690,7 +697,7 @@ export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?:
       if (!p || exclude.has(p.clientId)) continue;
       rows.push({
         id: `revisions:${r.projectId}`, kind: "revisions", client: p.client?.name ?? null, clientId: p.clientId, project: street(p.title), projectId: p.id,
-        title: `${r._count._all} revision rounds`, summary: `The client asked for changes ${r._count._all} times in 30 days, the latest ${etDateTime(r._max.createdAt)}.`,
+        title: `${r._count._all} revision rounds`, summary: `The client asked for changes on ${r._count._all} different days in 30 days, the latest ${etDateTime(r._max.createdAt)}.`,
         evidence: "Revision requests on the job", severity: r._count._all >= 3 ? "high" : "medium", severityWhy: "Repeated revisions",
         suggested: false, owner: null, lastClientUpdateISO: null, nextAction: "Correction plan", deadlineISO: null, decision: null,
         href: `/projects/${p.id}`, conversationHref: `/communications?client=${p.clientId}`,
@@ -852,7 +859,9 @@ export async function teamCoverage(opts: { now?: Date; includeTest?: boolean; ro
   });
   // Field: photographers with shoots coming up or uploads owed.
   const capture = stage("capture");
-  const field = roster.filter((a) => a.kind === "photographer" && a.teamMemberId);
+  const shooters = await prisma.teamMember.findMany({ where: { active: true, role: "PHOTOGRAPHER" }, select: { id: true } }).catch(() => [] as { id: string }[]);
+  const shooterIds = new Set(shooters.map((x) => x.id));
+  const field = roster.filter((a) => !!a.teamMemberId && shooterIds.has(a.teamMemberId));
   if (capture || field.length) {
     const owed = capture?.items.length ?? 0;
     push({ key: "field", person: field.map((f) => f.name).filter((n) => !/^jordan$/i.test(n)).join(", ") || "Photographers", personKey: null, area: "Field shoots & uploads", status: capture ? (owed ? `${plural(owed, "upload")} owed` : "Covered") : "Uploads couldn't load", tone: capture?.counts.overdue ? "bad" : owed ? "warn" : capture ? "ok" : "warn" });

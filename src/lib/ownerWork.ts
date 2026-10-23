@@ -193,11 +193,18 @@ export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: s
     const versions = scripts.length
       ? await prisma.contentScriptVersion.findMany({ where: { id: { in: scripts.map((s) => s.currentVersionId!) }, status: { in: ["DRAFT", "INTERNAL_REVIEW"] } }, select: { id: true, createdBy: true } }).catch(() => [])
       : [];
-    const authors = [...new Set(versions.map((v) => (v.createdBy ?? "").toLowerCase()).filter((x) => x.includes("@")))];
+    // createdBy is an email, often with a note ("info@… (via Claude: v2.4 restart)"),
+    // or a word for the system ("ai", "import", "migration", "cron").
+    const emailIn = (v: string | null) => (/[^\s@()]+@[^\s@()]+\.[a-z]{2,}/i.exec(v ?? "")?.[0] ?? null)?.toLowerCase() ?? null;
+    const authors = [...new Set(versions.map((v) => emailIn(v.createdBy)).filter((x): x is string => !!x))];
     const users = authors.length ? await prisma.appUser.findMany({ where: { email: { in: authors, mode: "insensitive" } }, select: { email: true, name: true } }).catch(() => []) : [];
+    // The owner's own mailbox is the owner (his login may be another address).
+    const ownerFirst0 = (await prisma.appUser.findFirst({ where: { email: { equals: ownerEmail, mode: "insensitive" } }, select: { name: true } }).catch(() => null))?.name;
     const nameOfEmail = (e: string) => {
       const u = users.find((x) => x.email.toLowerCase() === e.toLowerCase());
-      return u?.name ? firstName(u.name) : e.split("@")[0];
+      if (u?.name) return firstName(u.name);
+      if (e.toLowerCase() === ownerEmail || e.toLowerCase() === OWNER_MAILBOX) return ownerFirst0 ? firstName(ownerFirst0) : "Jordan";
+      return e.split("@")[0];
     };
     for (const r of creative) {
       const [enrollmentId, monthKey] = r.key.split(":");
@@ -212,9 +219,17 @@ export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: s
       const items = [...(mineScripts ? scriptItems : []), ...(mineStrategy ? strategyItems : [])];
       if (!items.length) continue;
       const monthScripts = scripts.filter((s) => s.monthId === mid).map((s) => versions.find((v) => v.id === s.currentVersionId)).filter((v): v is { id: string; createdBy: string | null } => !!v);
-      const writers = [...new Set(monthScripts.map((v) => (v.createdBy && v.createdBy.includes("@") ? nameOfEmail(v.createdBy) : v.createdBy === "ai" ? "AI draft" : v.createdBy === "import" ? "Imported" : null)).filter((x): x is string => !!x))];
+      const authorOf = (by: string | null): string | null => {
+        const email = emailIn(by);
+        if (email) return nameOfEmail(email);
+        if (by === "ai") return "AI draft";
+        if (by === "import" || by === "migration") return "Imported";
+        if (by === "cron") return "The hub";
+        return null;
+      };
+      const writers = [...new Set(monthScripts.map((v) => authorOf(v.createdBy)).filter((x): x is string => !!x))];
       const ownerFirst = firstName(scriptOwner?.label ?? "Jordan");
-      const drafted = writers.some((w) => w !== ownerFirst && w !== "AI draft" && w !== "Imported");
+      const drafted = writers.some((w) => w !== ownerFirst && w !== "AI draft" && w !== "Imported" && w !== "The hub");
       const monthLabel = new Date(`${monthKey}-15T12:00:00Z`).toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
       rows.push({
         id: `month:${r.key}`,
