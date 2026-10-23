@@ -85,15 +85,20 @@ async function main() {
     // =====================================================================
     const R = await job("3 Upload Rd");
     const own = await prisma.reviewSubmission.create({ data: { projectId: R.id, deliverableId: R.deliverables[0].id, slot: 1, round: 1, status: "PENDING", source: "upload", fileName: "mine.mp4", submittedByKey: null, selfCheckedAt: new Date() } });
-    const check = await prisma.cutSelfCheck.create({ data: { submissionId: own.id, projectId: R.id, deliverableId: R.deliverables[0].id, slot: 1, round: 1, editorKey: "john", actorUserId: jordan.id, actorName: "Jordan Drill", onBehalfOf: "john", checklistKey: "standard", itemsJson: "[]", state: "VALID" } });
+    const check = await prisma.cutSelfCheck.create({ data: { submissionId: own.id, projectId: R.id, deliverableId: R.deliverables[0].id, slot: 1, round: 1, editorKey: "john", actorUserId: james.id, actorName: "James Drill", onBehalfOf: "john", checklistKey: "standard", itemsJson: "[]", state: "VALID" } });
     await prisma.reviewSubmission.update({ where: { id: own.id }, data: { selfCheckId: check.id } });
-    await establishSession(jordan.id);
+    await establishSession(james.id);
     const refused = await actions.approveCut(own.id);
-    c.ok("Jordan uploaded it (no editor key on the row): his approval is refused", !refused.ok && refused.message === "You uploaded this version, so somebody else approves it.", refused.message);
+    c.ok("James uploaded it (no editor key on the row): his approval is refused", !refused.ok && refused.message === "You uploaded this version, so somebody else approves it.", refused.message);
     c.ok("…the cut is still waiting", (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: own.id } })).status === "PENDING");
     const { refuseOwnUpload } = await import("@/lib/reviewerAssignment");
-    c.ok("Kyle, who did not upload it, passes this check", (await refuseOwnUpload({ id: kyle.id, impersonating: false }, own.id)) === null);
-    c.ok("the creative manager's upload is the same rule (his login is on the check)", (await refuseOwnUpload({ id: james.id, impersonating: false }, own.id)) === null && /refuseOwnUpload\(meNow, submission\.id\)/.test(src));
+    c.ok("Kyle, who did not upload it, passes this check", (await refuseOwnUpload({ id: kyle.id, impersonating: false, role: "ADMIN" }, own.id)) === null);
+    c.ok("the approval reads the uploader's login (refuseOwnUpload on the action)", /refuseOwnUpload\(meNow, submission\.id\)/.test(src));
+    // The owner is exempt (Oct 22 2026): Jordan uploads on an editor's behalf
+    // and rules on those versions himself.
+    await prisma.cutSelfCheck.update({ where: { id: check.id }, data: { actorUserId: jordan.id, actorName: "Jordan Drill" } });
+    c.ok("Jordan (the owner) uploading on an editor's behalf may still rule on it", (await refuseOwnUpload({ id: jordan.id, impersonating: false, role: "OWNER" }, own.id)) === null);
+    c.ok("…an office login that is not the owner may not", (await refuseOwnUpload({ id: jordan.id, impersonating: false, role: "ADMIN" }, own.id)) !== null);
 
     // =====================================================================
     c.head("3 · The 4K over-spec override is office only");

@@ -323,10 +323,14 @@ export function refuseOwnWork(
  * dev has no login to compare and goes ahead, like every guard.
  */
 export async function refuseOwnUpload(
-  me: { id: string; impersonating: boolean } | null | undefined,
+  me: { id: string; impersonating: boolean; role?: string } | null | undefined,
   submissionId: string,
 ): Promise<string | null> {
   if (!me?.id || me.impersonating) return null;
+  // The owner is exempt (Oct 22 2026): Jordan uploads versions on an editor's
+  // behalf and rules on them himself; the rule is for the creative manager and
+  // the office, whose own uploads somebody else approves.
+  if (me.role === "OWNER") return null;
   const mine = await prisma.cutSelfCheck.findFirst({ where: { submissionId, actorUserId: me.id }, select: { id: true } });
   return mine ? "You uploaded this version, so somebody else approves it." : null;
 }
