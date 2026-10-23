@@ -453,7 +453,7 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
         </Section>
 
         {/* ————— 2 · READY TO SEND ————— */}
-        {/* Kyle's "Ready to send" door lands here (Oct 22 2026, sidebarNavigation OFFICE_MENU). */}
+        {/* Kyle's door lands here (Oct 22 2026, sidebarNavigation OFFICE_MENU; labelled Video Delivery since Oct 23). */}
         {board && (
           <div id="ready-to-send" className="scroll-mt-24">
           <Section icon={Send} title="Ready to send" count={ready.length} flush action={deliveryDesk && sendAllIds.length >= 2 ? <SendAll submissionIds={sendAllIds} /> : undefined}>

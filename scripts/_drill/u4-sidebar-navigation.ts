@@ -29,7 +29,7 @@ const cases: [string, ShellUser | null][] = [
   ["photographer pay and upload revoked", user("PHOTOGRAPHER", { mypay: false, upload: false })],
   ["unknown role", user("UNKNOWN")],
 ];
-// A door that opens a section of its page (Kyle's "Ready to send" →
+// A door that opens a section of its page (Kyle's Video Delivery →
 // /review#ready-to-send, Oct 22 2026) is still that destination.
 const hrefs = (html: string) => [...html.matchAll(/<a\b[^>]*\shref="([^"]+)"/g)].map((match) => match[1].replace(/#.*$/, "")).sort();
 const group = (html: string, id: string) => html.match(new RegExp(`<section[^>]*data-sidebar-group="${id}"[^>]*>([\\s\\S]*?)</section>`))?.[1] ?? "";
@@ -80,11 +80,13 @@ async function main() {
     const doorLabels = (html: string) => [...group(html, "work").matchAll(/<span class="flex-1">([^<]+)<\/span>/g)].map((m) => m[1]).join();
     const creative = render(Sidebar, user("CREATIVE_MANAGER"));
     const MENUS: [string, string, string, string][] = [
-      ["owner", owner, "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Videos,Editing Room,Monthly Content,Photos,Messages,Shoots"],
-      ["open development", render(Sidebar, null), "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Videos,Editing Room,Monthly Content,Photos,Messages,Shoots"],
-      ["ADMIN (Kyle)", admin, "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs", "Dashboard,Your list,Messages,Photos,Ready to send,Editing Room,Shoots"],
-      // Oct 22 2026: Photos (the view-only desk) joins James's doors where the owner's menu has it.
-      ["CREATIVE_MANAGER (James)", creative, "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay", "Dashboard,Videos,Editing Room,Monthly Content,Photos,Uploads,Shoots,My Performance"],
+      // Oct 23 2026 (Jordan): "Photo Delivery" and "Video Delivery" on every role menu that has them.
+      ["owner", owner, "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Messages,Shoots"],
+      ["open development", render(Sidebar, null), "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Messages,Shoots"],
+      // Kyle's door read "Ready to send": Video Delivery now, still opening that section.
+      ["ADMIN (Kyle)", admin, "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs", "Dashboard,Your list,Messages,Photo Delivery,Video Delivery,Editing Room,Shoots"],
+      // Oct 22 2026: Photo Delivery (the view-only desk) joins James's doors where the owner's menu has it.
+      ["CREATIVE_MANAGER (James)", creative, "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Uploads,Shoots,My Performance"],
       ["PHOTOGRAPHER (Harrison)", photographer, "/shoot,/upload,/review,/my-pay,/resources", "My Shoots,Upload,My Videos,My Performance,Help"],
     ];
     for (const [who, html, hrefList, labelList] of MENUS) {
@@ -93,7 +95,12 @@ async function main() {
     check("ADMIN: More is open (Jordan, Oct 23 2026) and holds everything else the login can open (nothing removed but Style Guide and coaching)", !group(admin, "more").includes("<details") && ["/tasks", "/upload", "/content", "/content/activity", "/clients", "/users", "/quality", "/resources", "/training", "/assistant", "/settings", "/schedule"].every((h) => hrefs(group(admin, "more")).includes(h)) && !hrefs(admin).includes("/resources/video-styles") && !hrefs(admin).includes("/coaching"));
     check("owner: More holds the rest, money first, My Day included", !group(owner, "more").includes("<details") && ["/tasks", "/clients", "/sales", "/trends", "/day", "/connections", "/schedule"].every((h) => hrefs(group(owner, "more")).includes(h)) && [...group(owner, "more").matchAll(/data-sidebar-subgroup="([^"]+)"/g)].map((m) => m[1])[0] === "money");
     check("ADMIN: reporting a hub issue is one click away in the open menu", group(admin, "more").includes('href="/feedback"'));
-    check("'Videos' everywhere for the review page (Kyle's door reads Ready to send, a photographer's My Videos); the retired screens are no menu entry for anyone", [owner, creative].every((html) => doorLabels(html).includes("Videos")) && !cases.some(([, who]) => render(Sidebar, who).includes("Video Review Room")) && cases.every(([, who]) => !hrefs(render(Sidebar, who)).some((h) => ["/ops", "/ops/messages", "/ops/video-delivery", "/ops/requests", "/ops/scheduling", "/ops/old"].includes(h))));
+    // Oct 23 2026 (Jordan: "Instead of Photo and Video, I want it to be Photo Delivery and Video Delivery").
+    const allLabels = (html: string) => [...html.matchAll(/<span class="flex-1">([^<]+)<\/span>/g)].map((m) => m[1]);
+    const doorList = (html: string) => doorLabels(html).split(",");
+    check("'Video Delivery' and 'Photo Delivery' on every role menu that has them (Kyle's door too); a photographer keeps My Videos", [owner, admin, creative].every((html) => doorList(html).includes("Video Delivery") && doorList(html).includes("Photo Delivery")) && doorList(photographer).includes("My Videos") && !doorList(photographer).includes("Video Delivery"));
+    check("…and no menu, for any login, still says Photos, Videos, Photo delivery or Ready to send", cases.every(([, who]) => !allLabels(render(Sidebar, who)).some((l) => ["Photos", "Videos", "Photo delivery", "Ready to send"].includes(l))) && allLabels(render(Sidebar, user("EDITOR", { review: true }))).includes("Video Delivery"));
+    check("the retired screens are no menu entry for anyone", !cases.some(([, who]) => render(Sidebar, who).includes("Video Review Room")) && cases.every(([, who]) => !hrefs(render(Sidebar, who)).some((h) => ["/ops", "/ops/messages", "/ops/video-delivery", "/ops/requests", "/ops/scheduling", "/ops/old"].includes(h))));
     check("office-only screens stay off creatives' menus (no dashboard, no Shoots, no Photos)", [editor, photographer].every((html) => !hrefs(html).some((h) => h.startsWith("/ops") || h === "/jobs" || h === "/")) && !editor.includes('data-sidebar-group="work"'));
     check("editors keep their groups: Production stays directly visible", !group(editor, "production").includes("<details") && group(editor, "production").includes('href="/editing"'));
     check("photographers: no Editing Room door (their briefs open from the shoot)", !hrefs(photographer).includes("/editing"));
