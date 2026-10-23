@@ -650,10 +650,11 @@ async function main() {
     const labels = (html: string) => [...html.matchAll(/<a\b[^>]*>[\s\S]*?<span class="flex-1">([^<]+)<\/span>/g)].map((m) => m[1]);
     const section = (html: string, id: string) => html.match(new RegExp(`<section[^>]*data-sidebar-group="${id}"[^>]*>([\\s\\S]*?)</section>`))?.[1] ?? "";
     const ROLE_DOORS = [
-      ["Jordan (owner)", { name: "Jordan", email: owner.email, role: "OWNER" }, "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Videos,Editing Room,Monthly Content,Photos,Messages,Shoots", ["/tasks", "/clients", "/upload", "/settings", "/schedule", "/sales"]],
-      ["Kyle (office)", { name: "Kyle Smith", email: kyle.email, role: "ADMIN" }, "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs", "Dashboard,Your list,Messages,Photos,Ready to send,Editing Room,Shoots", ["/tasks", "/clients", "/content", "/upload", "/settings", "/schedule"]],
-      // Oct 22 2026: Photos, the view-only photo desk, joins James's doors.
-      ["James (creative manager)", { name: "James", email: james.email, role: "CREATIVE_MANAGER" }, "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay", "Dashboard,Videos,Editing Room,Monthly Content,Photos,Uploads,Shoots,My Performance", ["/tasks", "/clients", "/shoot", "/schedule"]],
+      // Oct 23 2026 (Jordan): Photo Delivery and Video Delivery; Kyle's "Ready to send" door is Video Delivery too.
+      ["Jordan (owner)", { name: "Jordan", email: owner.email, role: "OWNER" }, "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Messages,Shoots", ["/tasks", "/clients", "/upload", "/settings", "/schedule", "/sales"]],
+      ["Kyle (office)", { name: "Kyle Smith", email: kyle.email, role: "ADMIN" }, "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs", "Dashboard,Your list,Messages,Photo Delivery,Video Delivery,Editing Room,Shoots", ["/tasks", "/clients", "/content", "/upload", "/settings", "/schedule"]],
+      // Oct 22 2026: Photo Delivery, the view-only photo desk, joins James's doors.
+      ["James (creative manager)", { name: "James", email: james.email, role: "CREATIVE_MANAGER" }, "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Uploads,Shoots,My Performance", ["/tasks", "/clients", "/shoot", "/schedule"]],
     ] as const;
     for (const [who, u, doors, doorLabels, more] of ROLE_DOORS) {
       const html = menu(u);

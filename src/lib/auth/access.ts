@@ -61,7 +61,9 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   // labels take the first entry whose href prefixes the path. Who may ACT on
   // the desk is a separate question its pages and actions answer (isOffice;
   // app/ops/photo-delivery/data loadViewer `readOnly`).
-  { key: "photos", label: "Photos", href: "/ops/photo-delivery" },
+  // Labelled as its menu door (Oct 23 2026: "Photo Delivery"), for People's
+  // access switches and the Activity tab.
+  { key: "photos", label: "Photo Delivery", href: "/ops/photo-delivery" },
   // Kyle's guided operating day (Jordan's Daily Operations & Client Experience
   // Structure, Sep 1 2026): time-blocked control tower with live data per block.
   // The menu door on this key (Oct 21 2026): Your list (/ops/checklist, owner
@@ -72,7 +74,8 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   // sets in QC, and open feedback follow-through. Owner/admin see all of that;
   // a PHOTOGRAPHER opening /review gets the same room narrowed to the jobs they
   // shot (Sep 18), and editors still receive their feedback on /edit.
-  { key: "review", label: "Videos", href: "/review" },
+  // "Video Delivery" as its menu door (Oct 23 2026).
+  { key: "review", label: "Video Delivery", href: "/review" },
   { key: "pipeline", label: "Shoots", href: "/jobs" },
   // Schedule now owns both the day-list and the Map (the ?view=map tab). /map is
   // a redirect stub → /schedule?view=map, so "map" no longer needs its own key.
