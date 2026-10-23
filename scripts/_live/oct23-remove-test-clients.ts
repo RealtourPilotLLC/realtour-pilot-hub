@@ -81,6 +81,10 @@ const APPLY = ARGS.includes("--apply");
 const ACCEPT_UNPLACED = ARGS.includes("--accept-unplaced");
 const WRITE_BACKUP = ARGS.includes("--write-backup") || APPLY;
 const argVal = (k: string): string | null => ARGS.find((a) => a.startsWith(`--${k}=`))?.slice(k.length + 3) ?? null;
+// --owner-approved=<clientId>[,…]: Jordan approved removing these despite the
+// real-business evidence (Oct 23: "Can remove Jordan Spackman shoot records.
+// I'm not a client."). The evidence is still printed.
+const OWNER_APPROVED = new Set((argVal("owner-approved") ?? "").split(",").filter(Boolean));
 const FULL_BACKUP = argVal("full-backup");
 const BACKUP_DIR = argVal("backup-dir") ?? "/private/tmp/claude-501/-Users-jordanspackman-Realtour-Pilot-POT-Dashboard/8965ab24-8365-44d5-af17-c1b185a8a42d/scratchpad/backups";
 const REPO = path.resolve(__dirname, "../..");
@@ -236,9 +240,10 @@ async function main() {
     }
     for (const e of entitlements as Row[]) if (e.clientId === t.id && /paid|stripe|invoice/i.test(JSON.stringify(e))) ev.push(`program entitlement ${String(e.id)} mentions payment`);
     for (const s of signups as Row[]) if (s.clientId === t.id) ev.push(`website program signup ${String(s.id)} (Stripe checkout)`);
-    if (ev.length) leftAlone.set(t.id, ev);
+    if (ev.length && OWNER_APPROVED.has(t.id)) ev.push("OWNER APPROVED its removal (--owner-approved)");
+    if (ev.length && !OWNER_APPROVED.has(t.id)) leftAlone.set(t.id, ev);
     if (notReal.length) consideredNotReal.set(t.id, notReal);
-    console.log(`  · "${t.name}" ${t.id}: ${ev.length ? "REAL BUSINESS — LEFT ALONE" : "no real business found — will be removed"}`);
+    console.log(`  · "${t.name}" ${t.id}: ${ev.length && !OWNER_APPROVED.has(t.id) ? "REAL BUSINESS — LEFT ALONE" : ev.length ? "real business evidence, OWNER APPROVED — will be removed" : "no real business found — will be removed"}`);
     for (const e of ev) console.log(`      evidence: ${e}`);
     for (const n of notReal) console.log(`      considered, not real: ${n}`);
   }
