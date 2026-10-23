@@ -146,6 +146,7 @@ async function effectiveClientWithProject(clientId: string, identified = false):
   clientName: string;
   project: { id: string; title: string; status: string } | null;
   senderName: string | null;
+  senderClientId: string | null;
 } | null> {
   const c = await prisma.client.findUnique({
     where: { id: clientId },
@@ -159,7 +160,7 @@ async function effectiveClientWithProject(clientId: string, identified = false):
     if (parent) targetName = parent.name;
   }
   const project = await mostRelevantProject(targetId);
-  return { clientId: targetId, clientName: targetName, project, senderName: identified ? c.name : null };
+  return { clientId: targetId, clientName: targetName, project, senderName: identified ? c.name : null, senderClientId: identified ? c.id : null };
 }
 
 // Resolve an inbound set of phone numbers to a client id, checking both client
@@ -172,11 +173,25 @@ async function effectiveClientWithProject(clientId: string, identified = false):
 // the phone pointed at exactly one client row: a number two rows share (or a
 // synced contact's alternate number) cannot say which person is typing, so it
 // is null and nobody is named rather than guessing the account holder.
-export async function resolveClientByPhones(phones: string[]): Promise<{
+//
+// A TEAM ASSISTANT'S TEXT OR CALL (Oct 23 2026, lib/teamRouting): with
+// `opts.text`, when the number is exactly one client row and that row is a
+// folded assistant or a team member, the message goes to the team agent whose
+// own job it names (house number and street, or its listing link), and
+// `projectNamed` says the job was named. Olivia Vecere's number folds onto
+// Mike Flatley; her text about Sharra Mercer's 1337 Carolannes Way is
+// Sharra's. With `opts.reply` (our own text TO that number) and no job named,
+// it stays in her conversation: the team agent her last text was filed on.
+// Nothing named: the fold, as before.
+export async function resolveClientByPhones(phones: string[], opts: { text?: string | null; reply?: boolean } = {}): Promise<{
   clientId: string;
   clientName: string;
   project: { id: string; title: string; status: string } | null;
   senderName: string | null;
+  /** the job was named in the message (team routing), not the router's guess */
+  projectNamed?: boolean;
+  /** the matched row's own id when the number is that one row (before the fold) */
+  senderClientId?: string | null;
 } | null> {
   const keys = new Set(phones.map((p) => phoneKey(p)).filter((k) => k.length === 10));
   if (keys.size === 0) return null;
@@ -209,6 +224,16 @@ export async function resolveClientByPhones(phones: string[]): Promise<{
   });
   const matches = clientCandidates.filter((c) => keys.has(phoneKey(c.phone)));
   const hit = rankClientRows(matches)[0];
+  if (hit && matches.length === 1 && (opts.text?.trim() || opts.reply)) {
+    const T = await import("@/lib/teamRouting");
+    const team = opts.text?.trim() ? await T.routeTeamMessage({ senderClientId: hit.id, body: opts.text }) : null;
+    if (team) return { clientId: team.clientId, clientName: team.clientName, project: team.project, senderName: hit.name, projectNamed: true, senderClientId: hit.id };
+    const cont = opts.reply ? await T.routeTeamReply({ recipientClientId: hit.id, channel: "text", body: opts.text ?? "", phone: phoneKey(hit.phone) }) : null;
+    if (cont) {
+      const p = cont.projectId ? await prisma.project.findUnique({ where: { id: cont.projectId }, select: { id: true, title: true, status: true } }) : null;
+      return { clientId: cont.clientId, clientName: cont.clientName, project: p ?? (await mostRelevantProject(cont.clientId)), senderName: hit.name, projectNamed: false, senderClientId: hit.id };
+    }
+  }
   if (hit) return effectiveClientWithProject(hit.id, matches.length === 1);
 
   // 2) Fall back to a synced contact's alternate number linked to a client —
@@ -321,7 +346,7 @@ const ACTIVE_PROJECT_STATUSES: ProjectStatus[] = [
 const STREET_SUFFIX =
   /\b(dr|drive|st|street|rd|road|ave|avenue|ln|lane|ct|court|blvd|boulevard|way|pl|place|cir|circle|ter|terrace|pkwy|hwy|sq|square|run|trl|trail|loop|pike|row)\.?$/i;
 
-function streetCore(addr: string): string {
+export function streetCore(addr: string): string {
   let s = (addr.split(",")[0] || "").trim().replace(/^\d+\s+/, ""); // drop house number
   s = s.replace(STREET_SUFFIX, "").trim(); // drop the suffix (Dr/St/Rd…)
   return s;

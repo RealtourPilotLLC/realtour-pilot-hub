@@ -1101,6 +1101,14 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
   // An assistant's email folds to their agent (where the orders live).
   const toAgent = (c: (typeof clients)[number]) => (c.parentClientId && clientById.get(c.parentClientId)) || c;
   const contactClientByEmail = new Map(contacts.filter((c) => c.email).map((c) => [c.email!.toLowerCase(), c.clientId!]));
+  // A team assistant's mail and our replies to her (lib/teamRouting, Oct 23
+  // 2026). The directory is read once per scan, and only when a folded
+  // assistant or a team member is on the mail.
+  const { routeTeamMessage, routeTeamReply, loadTeamDirectory } = await import("@/lib/teamRouting");
+  let teamDir: ReturnType<typeof loadTeamDirectory> | null = null;
+  const teamDirectory = () => (teamDir ??= loadTeamDirectory());
+  /** The sender's own client row for an address (before the fold): a client's email, else a synced contact's client. */
+  const ownClientIdOf = (address: string): string | null => clientByEmail.get(address)?.id ?? contactClientByEmail.get(address) ?? null;
 
   // OUR SIDE OF THE CONVERSATION, FROM EVERY INBOX (Oct 14 2026 — see
   // src/lib/staffEmail.ts). Who counts as staff, and which client an address
@@ -1135,8 +1143,13 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
   };
   /** Write one staff reply (see staffReplyRow). True when a new row landed. */
   const logStaffReply = async (row: NonNullable<ReturnType<typeof staffReplyRow>>): Promise<boolean> => {
-    const { to: _to, ...data } = row;
-    void _to;
+    const { to, ...data } = row;
+    // OUR REPLY TO A TEAM ASSISTANT (Oct 23 2026) stays in her conversation:
+    // the team agent our words name, else the one her mail on this thread
+    // was filed on. Without it Kyle's answer to Olivia about Sharra's job
+    // landed on Mike Flatley and Sharra's thread read as still waiting.
+    const team = await routeTeamReply({ recipientClientId: ownClientIdOf(to), channel: "email", subject: row.subject, body: row.body, threadKey: threadSubject(row.subject ?? ""), directory: teamDirectory });
+    if (team) return logComm({ ...data, clientId: team.clientId, clientName: team.clientName, projectId: team.projectId ?? (await projectForReply(team.clientId, row.subject ?? "")) });
     return logComm({ ...data, projectId: await projectForReply(row.clientId, row.subject ?? "") });
   };
 
@@ -1336,6 +1349,9 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
         const writerName = forwardedFrom && senderClient
           ? clientByEmail.get(forwardedFrom)?.name ?? senderClient.name ?? forwardedFrom
           : displayName ?? (fromStaff ? null : clientByEmail.get(email)?.name) ?? (email || null);
+        // The sender's OWN row, before the fold: a team assistant's mail goes
+        // to the team agent whose job it names (lib/teamRouting, Oct 23 2026).
+        const senderOwnId = senderClient?.id ?? null;
         if (senderClient) senderClient = toAgent(senderClient); // fold assistant → agent
 
         // Drop marketing / invoices / automated / vendor mail — but ONLY for senders
@@ -1363,7 +1379,21 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
         // filing; the fallbacks below are guesses, and project-scoped surfaces
         // (the /ops shoot-card comms chip) must know the difference.
         let projectNamed = false;
-        if (senderClient) {
+        // A FOLDED ASSISTANT OR TEAM MEMBER (Oct 23 2026, lib/teamRouting):
+        // Olivia Vecere folds onto Mike Flatley, but her mail about Sharra
+        // Mercer's 1337 Carolannes Way is Sharra's. The team agent whose own
+        // job the mail names (house number and street, or its listing link;
+        // subject, then her words, then the quoted thread) takes it, job and
+        // all. Nothing named: the fold below decides, as before.
+        const team = senderClient
+          ? await routeTeamMessage({ senderClientId: senderOwnId, subject, body: fullBody || snippet, directory: teamDirectory })
+          : null;
+        if (team) {
+          resolvedClientId = team.clientId;
+          resolvedClientName = team.clientName;
+          project = team.project;
+          projectNamed = true;
+        } else if (senderClient) {
           const named = await findClientProjectByText(senderClient.id, `${subject ?? ""} ${text}`);
           if (named) { project = named; projectNamed = true; }
         }
@@ -1514,6 +1544,7 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
             await fileAnsweredEmailAsks({
               clientId: resolvedClientId, clientName: resolvedClientName, contactName: writerName,
               message: text, projectId: project?.id ?? null, replyAt: sentReply?.at ?? null, mailbox: account.email, threadId, sentReplyId: sentReply?.id ?? null, inboundExternalId: `gmail-${dedupe}`,
+              senderClientId: senderOwnId,
             }).catch((e) => console.error("[gmail] filing an answered email's asks failed", e));
           }
           return 0; // logged above; don't create a task for handled mail
@@ -1534,6 +1565,8 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
             kind: "email",
             source: "gmail",
             threadRef,
+            // Her own row: an ask naming another team agent's job goes there (lib/teamRouting).
+            senderClientId: senderOwnId,
           });
           return 1;
         } else if (fromStaff) {

@@ -253,6 +253,10 @@ export async function recordClientCommunication(opts: {
   // "Open the conversation" link on a /quality row (Feedback.sourceRef).
   // Resolved by lookup when absent (see findSourceCommLog).
   commLogId?: string | null;
+  /** The sender's OWN client row, before the assistant → agent fold (Oct 23
+   *  2026, lib/teamRouting): an ask whose words name another team agent's
+   *  job is filed on that agent's job. Absent: every ask on `clientId`. */
+  senderClientId?: string | null;
   /** THE SECOND READ (Oct 22 2026, comms audit H5, lib/aiOutage): this message
    *  was first read while the AI refused (a spend limit, a refused key) and is
    *  being read again now. With no decision this time, nothing is done; with
@@ -598,6 +602,7 @@ export async function recordClientCommunication(opts: {
           asks: decision.asks,
           defaultProjectId: checked.issue ? null : effProjectId,
           revisionProjectId: revision ? anchorProjectId : null,
+          senderClientId: opts.senderClientId ?? null,
         });
       } else if (!decision && !retry) {
         // The brain was unavailable: a plain "we have to cancel" still reaches Kyle.
