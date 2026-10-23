@@ -355,7 +355,10 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
         {sections.map((section) => {
           // If overrides remove all normal work doors, the first authorized
           // group still provides a visible initial link for the mobile drawer.
-          const expanded = section.frequent || section.current || section === sections[0];
+          // Every section stays open (Oct 23 2026, Jordan: "remove the 'more'
+          // dropdown on the menu and just keep it open"). The fold below stays
+          // for a section a future menu marks folded on purpose.
+          const expanded: boolean = true;
           // Reporting a broken hub must remain one click away even when the
           // administrative pages are folded. Preserve its existing grant.
           const shortcut = !expanded ? section.items.filter((item) => item.href === "/feedback") : [];
