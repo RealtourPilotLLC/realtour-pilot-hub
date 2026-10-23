@@ -817,7 +817,7 @@ function newIdeaFormat(style: ReturnType<typeof asVideoStyle>, said: unknown): V
 }
 
 /** The AI half of a BANK / REFRESH run: prompt from the policy, validated, deduped against archived concepts, stored as PENDING suggestions. */
-export async function executeTopicRefreshRun(runId: string, opts: { unattended: boolean; pillarId?: string | null; count?: number | null; /** Keep only the top N new suggestions (single-suggestion regeneration = 1). */ keep?: number | null; /** Oct 21 2026 (audit H1): a sweep's clock (ms epoch); the model call ends by it. */ deadline?: number | null }): Promise<void> {
+export async function executeTopicRefreshRun(runId: string, opts: { unattended: boolean; pillarId?: string | null; count?: number | null; /** Keep only the top N new suggestions (single-suggestion regeneration = 1). */ keep?: number | null; /** Oct 21 2026 (audit H1): a sweep's clock (ms epoch); the model call ends by it. */ deadline?: number | null; /** Oct 22 2026 (audit M3): skit concepts only, `keep` of them in total (a Mix account's shortfall). */ skitsOnly?: boolean }): Promise<void> {
   const run = await prisma.contentTopicRefreshRun.findUnique({ where: { id: runId } });
   if (!run) throw new Error("Run not found.");
   const built = await buildClientContext(run.enrollmentId);
@@ -855,7 +855,9 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   // the validator below holds it to that count, not the full one.
   const pillarEmphasis: Record<string, string> = {};
   for (const p of pillars) for (const name of [p.name, ...p.aliases]) pillarEmphasis[name] = p.emphasis;
-  const bundle = buildTopicBankPrompt(ctx, { topicsPerPillar: Math.min(Math.max(perPillar, GENERATION_POLICY.topicsPerPillar.min), GENERATION_POLICY.topicsPerPillar.max), existingTopics: existing, refresh: run.kind === "REFRESH", pillarEmphasis });
+  // Oct 22 2026 (audit M3): a skit-only refresh asks for the shortfall in skit concepts, nothing else.
+  const skitsOnly = opts.skitsOnly === true ? Math.max(1, Math.min(opts.keep ?? 4, 12)) : null;
+  const bundle = buildTopicBankPrompt(ctx, { topicsPerPillar: Math.min(Math.max(perPillar, GENERATION_POLICY.topicsPerPillar.min), GENERATION_POLICY.topicsPerPillar.max), existingTopics: existing, refresh: run.kind === "REFRESH", pillarEmphasis, skitsOnly });
   const runRes = await runAiJson<BankOut>({
     kind: run.kind === "BANK" ? "topic_bank" : "topic_refresh", enrollmentId: run.enrollmentId, clientId: run.clientId, scope: { refreshRunId: runId, pillarId: opts.pillarId ?? null }, inputRefs: { ...built.inputRefs, existingTopics: existing.length },
     promptKey: "topic-bank", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: run.requestedBy ?? "system", unattended: opts.unattended, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 16_000, timeoutMs: timeoutBefore(opts.deadline, 16_000),
@@ -882,7 +884,8 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   // Oct 22 2026: each new idea's format, by its title, kept on the run until the idea is accepted.
   const style = asVideoStyle(built.ctx.videoStyle);
   const formatSaid = new Map<string, VideoFormat>();
-  for (const p of Array.isArray(out.pillars) ? out.pillars : []) for (const t of p.topics ?? []) { const f = newIdeaFormat(style, t.format); if (f && t.title) formatSaid.set(topicDedupeHash(t.title), f); }
+  // A skit-only refresh's ideas are skits (one the model marked DIRECT is dropped below).
+  for (const p of Array.isArray(out.pillars) ? out.pillars : []) for (const t of p.topics ?? []) { const f = skitsOnly ? (asVideoFormat(t.format) ?? "SKIT") : newIdeaFormat(style, t.format); if (f && t.title) formatSaid.set(topicDedupeHash(t.title), f); }
   const formats: Record<string, VideoFormat> = {};
   for (const p of Array.isArray(out.pillars) ? out.pillars : []) {
     const pillarId = await resolvePillarByLabel(run.enrollmentId, p.pillarName);
@@ -906,7 +909,10 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
       if (shape) { formulaic.push(`${t.title} (${shape})`); continue; }
       if (existingHashes.has(hash)) { duplicates++; continue; }
       { const near = nearOnFile(t.title, p.pillarId); if (near) { if (near.gone) resurfaced++; else duplicates++; continue; } }
-      if (opts.keep && rank >= opts.keep) { notKept++; continue; } // "regenerate ONE": the replacement is the first fresh idea, the rest are not stored
+      if (skitsOnly) {
+        // The shortfall is counted across the bank, and a talking-to-camera idea is not what was asked for.
+        if (formatSaid.get(hash) !== "SKIT" || created >= skitsOnly) { notKept++; continue; }
+      } else if (opts.keep && rank >= opts.keep) { notKept++; continue; } // "regenerate ONE": the replacement is the first fresh idea, the rest are not stored
       existingHashes.add(hash);
       rows.push({ refreshRunId: runId, enrollmentId: run.enrollmentId, clientId: run.clientId, pillarId: p.pillarId, kind: "BANK", rank: ++rank, title: t.title.slice(0, 200), description: t.description, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, rationale: t.sourceRef ? `Grounded in: ${t.sourceRef}` : "Inferred from the pillar's focus areas", dedupeHash: hash });
       { const f = formatSaid.get(hash); if (f) formats[hash] = f; }
@@ -933,7 +939,8 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   if (stopped.length) console.warn(`[topic bank] run ${runId}: dropped ${stopped.length} idea(s) naming a discontinued series: ${stopped.join(" | ").slice(0, 600)}`);
   await setRunOutputRef(runRes.runId, `ContentTopicRefreshRun:${runId}`);
   const unknownPillars = validation.findings.filter((f) => f.code === "pillar.unknown").map((f) => f.message);
-  const gaps = [...(Array.isArray(out.gaps) ? out.gaps : []), ...validation.gaps];
+  // A skit-only refresh asks for a total, not a per-pillar count: the per-pillar count gaps do not apply to it.
+  const gaps = [...(Array.isArray(out.gaps) ? out.gaps : []), ...(skitsOnly ? [] : validation.gaps)];
   const status = created === 0 ? "NEEDS_INPUT" : "SUCCEEDED";
   await finishRefreshRun(runId, {
     status, generatedCount: created, pillarCount: bank.pillars.length, aiRunId: runRes.runId,

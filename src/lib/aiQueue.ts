@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { lockAdvisory } from "@/lib/dbLocks";
-import { LEASE_MS, QUEUE_LEASE_PREFIX, assertQuota, expireStaleRuns, type AiRunKind, type ClaimedRun } from "@/lib/aiRuns";
+import { LEASE_MS, QUEUE_LEASE_PREFIX, assertQuota, expireStaleRuns, isOfflineRun, type AiRunKind, type ClaimedRun } from "@/lib/aiRuns";
 
 // ---------------------------------------------------------------------------
 // THE CONTENT AI QUEUE (Oct 12 2026). Jordan: "When I click Draft Script on a
@@ -113,7 +113,7 @@ export async function enqueueAiJob(o: { job: QueueJob; enrollmentId: string; cli
   // anyone else's is expired.
   await settleStaleRuns(now);
   try {
-    await assertQuota(kindOf(o.job), o.enrollmentId);
+    await assertQuota(kindOf(o.job), o.enrollmentId, null, { offline: isOfflineRun(o.requestedBy) });
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : String(e), runId: null };
   }

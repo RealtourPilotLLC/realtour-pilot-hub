@@ -550,6 +550,12 @@ export function buildTopicBankPrompt(
     refresh?: boolean;
     /** Oct 13 2026: pillar name → LEAD | NORMAL | LIGHT (ContentPillar.emphasis). Since Oct 20 every pillar asks for the same n (topicsForEmphasis). */
     pillarEmphasis?: Record<string, string>;
+    /**
+     * Oct 22 2026 (audit M3): a Mix account short of skit ideas. The refresh
+     * asks for this many skit concepts in total, spread over the pillars, and
+     * nothing else (the per-pillar count does not apply).
+     */
+    skitsOnly?: number | null;
   } = {},
 ): PromptBundle {
   assertClientScoped(ctx);
@@ -578,10 +584,18 @@ export function buildTopicBankPrompt(
   ]
     .filter(Boolean)
     .join(" ");
+  const skitsOnly = opts.skitsOnly && opts.skitsOnly > 0 ? Math.floor(opts.skitsOnly) : null;
+  const skitsOnlyLines = skitsOnly
+    ? [
+        `SKITS ONLY: this refresh is for skit concepts only (this client films about ${ctx.skitsPerMonth && ctx.skitsPerMonth > 0 ? ctx.skitsPerMonth : 2} skits a month and their bank is short of them). Return exactly ${skitsOnly} new skit concept${skitsOnly === 1 ? "" : "s"} in total, spread over the client's pillars with the most on the personal brand pillar; a pillar may get none. Every topic's format is "SKIT". No talking-to-camera topics.`,
+        SKIT_CONCEPT_RULES,
+        skitCastBlock(ctx.skitCast),
+      ]
+    : null;
   const system = [
     systemHeader("You are building (or refreshing) a client's Video Topic Bank for Realtour Pilot."),
     "",
-    countLine,
+    skitsOnly ? `COUNT: exactly ${skitsOnly} skit concept${skitsOnly === 1 ? "" : "s"} in total (see SKITS ONLY below). Never more, never padded. If the source context cannot support that many at the quality bar, return fewer and set complete=false.` : countLine,
     ...(emphasisLine ? [`EMPHASIS: ${emphasisLine}`] : []),
     "",
     "PRESENTATION (Arielle's bank): under each pillar heading, numbered from 1, a specific title plus one concrete sentence describing what the video would show or explain. Store audience need, business goal, intended message and source behind that simple view.",
@@ -594,7 +608,7 @@ export function buildTopicBankPrompt(
     // Oct 13 2026: every account's personal brand topics a bit funnier; a SKITS account's topics are skit concepts.
     PERSONAL_BRAND_HUMOUR_RULE,
     // Oct 22 2026: a MIX account's bank carries skit concepts beside its direct topics, each marked; both name the cast.
-    ...(asVideoStyle(ctx.videoStyle) === "SKITS" ? ["", SKIT_TOPIC_RULE, skitCastBlock(ctx.skitCast)] : asVideoStyle(ctx.videoStyle) === "MIX" ? ["", mixTopicRule(ctx.skitsPerMonth), skitCastBlock(ctx.skitCast)] : []),
+    ...(skitsOnlyLines ? ["", ...skitsOnlyLines] : asVideoStyle(ctx.videoStyle) === "SKITS" ? ["", SKIT_TOPIC_RULE, skitCastBlock(ctx.skitCast)] : asVideoStyle(ctx.videoStyle) === "MIX" ? ["", mixTopicRule(ctx.skitsPerMonth), skitCastBlock(ctx.skitCast)] : []),
     opts.refresh
       ? "REFRESH: the existing topics below stay in the client's bank on our side; return ONLY new ideas, never an existing topic again (not even word for word). Do not re-suggest an archived idea as new; do not rename the client's pillars. The existing topics already cover their subjects: spend every new idea on a focus area, story or angle none of them covers yet."
       : "",
@@ -611,7 +625,7 @@ export function buildTopicBankPrompt(
   ]
     .filter(Boolean)
     .join("\n");
-  return { name: "topic-bank", system, user, outputSchema: topicBankSchemaFor(ctx.videoStyle), stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
+  return { name: "topic-bank", system, user, outputSchema: topicBankSchemaFor(skitsOnly ? "MIX" : ctx.videoStyle), stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
 }
 
 // ---------------------------------------------------------------------------

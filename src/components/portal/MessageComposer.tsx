@@ -1,10 +1,11 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Send } from "lucide-react";
 import { portalPostMessage } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
+import { DRAFT_COPY, messageDraftKey, useDraft } from "@/components/portal/portalDraft";
 
 // The Messages tab's box (CP-13). One field and one button: the thread is a
 // conversation with the office, not a form. The server answers with a
@@ -16,7 +17,12 @@ export function MessageComposer({ replyToId, ownerFirst, hint, initialBody = "" 
   initialBody?: string;
 }) {
   const router = useRouter();
-  const [body, setBody] = useState(initialBody);
+  // Oct 22 2026: what they typed is kept on this device until it is sent
+  // (portalDraft). The key is this portal's own, read once the page is up.
+  const [draftKey, setDraftKey] = useState<string | null>(null);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- the location exists only in the browser
+  useEffect(() => { setDraftKey(messageDraftKey(window.location)); }, []);
+  const { text: body, setText: setBody, restored } = useDraft(draftKey, initialBody);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [pending, start] = useTransition();
   const box = useRef<HTMLTextAreaElement>(null);
@@ -32,6 +38,7 @@ export function MessageComposer({ replyToId, ownerFirst, hint, initialBody = "" 
   return (
     <div className="space-y-2">
       <label htmlFor="program-message" className="sr-only">Message {ownerFirst}</label>
+      {restored && <p className="text-xs font-medium text-warning">{DRAFT_COPY.restored}</p>}
       <textarea
         id="program-message" ref={box} value={body} onChange={(e) => setBody(e.target.value)} rows={4} maxLength={4000}
         placeholder={`Ask ${ownerFirst} anything about your program: topics, scheduling, your brand, the month ahead.`}

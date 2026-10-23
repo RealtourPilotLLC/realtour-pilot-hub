@@ -474,12 +474,18 @@ export async function GET(req: NextRequest) {
     // a result (`{ error }`), which read `ok`; now it fails the step, after
     // the month recalculation has run either way (Oct 20 2026, audit H6).
     const { reconcileAnswerGapTasks } = await import("@/lib/programDeskTasks");
-    const { months: r, answerGaps } = await runParts({
+    // Oct 22 2026 (audit M2): the reminder escalations, answer-gap follow-ups
+    // and discovery-booking tasks whose condition no longer holds are closed
+    // with a plain note (lib/programTaskCloser). Desk truth, contacts nobody;
+    // what does not fit its budget waits for the next hour.
+    const { closeResolvedProgramTasks } = await import("@/lib/programTaskCloser");
+    const { months: r, answerGaps, staleTasks } = await runParts({
       months: () => recalcOpenProgramMonths({ dryRun: !armed }),
       answerGaps: () => reconcileAnswerGapTasks(),
+      staleTasks: () => closeResolvedProgramTasks({ budgetMs: 10_000 }).then((x) => ({ checked: x.checked, closed: x.closed, kept: x.kept, outOfTime: x.outOfTime, closedTasks: x.verdicts.filter((v) => !v.holds).map((v) => `${v.title}: ${v.evidence}`).slice(0, 10) })),
     });
-    return { mode: armed ? "persisted" : "dry-run (no enabled Calendly mapping)", checked: r.checked, changed: r.changed, changes: r.changes.slice(0, 10), answerGaps };
-  }, { maxMs: 20_000 });
+    return { mode: armed ? "persisted" : "dry-run (no enabled Calendly mapping)", checked: r.checked, changed: r.changed, changes: r.changes.slice(0, 10), answerGaps, staleTasks };
+  }, { maxMs: 30_000 });
   // A25 (Sep 25 2026): a booked session whose call moved, was cancelled or was
   // a no-show — or whose answers were sent again — is Kyle's to reassess with
   // the client. Every persisted recalculation already checks its own month;

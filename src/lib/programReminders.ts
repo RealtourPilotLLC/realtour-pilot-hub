@@ -494,8 +494,35 @@ export function previousWeekdayKeyET(key: string): string {
 }
 
 /** Oct 21 2026 (strategyGate.ts): the PRIMARY-lane asks that wait for the client's content strategy. */
-const STRATEGY_GATED_ACTIONS: ReadonlySet<ReminderAction> = new Set<ReminderAction>(["CHOOSE_PATH", "BOOK_CALL", "COMPLETE_ANSWERS", "BOOK_SESSION"]);
+const STRATEGY_GATED_ACTIONS: ReadonlySet<ReminderAction> = new Set<ReminderAction>(["CHOOSE_PATH", "BOOK_CALL", "COMPLETE_ANSWERS", "BOOK_SESSION", "PICK_TOPICS"]);
 const STRATEGY_PENDING_WHY = "no content strategy is in the client's portal yet — no strategy call, planning or filming ask until it is";
+
+/**
+ * ANSWERS ONLY WHEN THERE ARE QUESTIONS (Oct 22 2026, audit M1). The answers
+ * ask (COMPLETE_ANSWERS) went to any written-route month without checking a
+ * topic existed: Arielle Roemer's October had 0 topics and she was sent it on
+ * Oct 14, 15, 19 and 22, and Jordan got an escalation for "the written
+ * preparation answers". It is sent now only when picked topics inside the
+ * allowance still owe answers (the planning reader's answersOwed). Otherwise
+ * the next step is picking the topics, and whose turn that is depends on the
+ * month's planning mode:
+ *   · WRITTEN, chosen by the client or for them → the client picks in their
+ *     portal (PICK_TOPICS, its own message);
+ *   · WRITTEN, planned by the office (an upload's `office:` stamp), or the
+ *     CALL route (the call chooses them) → ours; nothing is asked of the client;
+ *   · every topic picked and nothing owed → the scripts are ours.
+ * Pure: the caller reads the planning facts.
+ */
+export type PlanningAsk = { action: "COMPLETE_ANSWERS" | "PICK_TOPICS" | null; toPick: number; suppression: string | null; why: string };
+export function answersOrPickAsk(pl: { route: string; chosen: number; videosOwed: number; answersOwed: number; chosenBy: string | null; clientPlanned?: boolean }): PlanningAsk {
+  const toPick = Math.max(0, pl.videosOwed - pl.chosen);
+  if (pl.answersOwed > 0) return { action: "COMPLETE_ANSWERS", toPick, suppression: null, why: `${pl.answersOwed} picked topic(s) still owe answers` };
+  if (toPick === 0) return { action: null, toPick, suppression: "nothing_to_answer", why: "every topic is picked and no answers are owed: the scripts are ours" };
+  if (pl.clientPlanned) return { action: null, toPick, suppression: "topics_ours", why: "the client plans their own videos: no topics are asked of them" };
+  const officePlanned = (pl.chosenBy ?? "").startsWith("office:");
+  if (pl.route === "WRITTEN" && !officePlanned) return { action: "PICK_TOPICS", toPick, suppression: null, why: `${toPick} topic(s) still to pick in the portal (written route)` };
+  return { action: null, toPick, suppression: "topics_ours", why: pl.route === "CALL" ? "the topics come from the strategy call: picking them is ours, not the client's" : "the office planned this month: picking the topics is ours, not the client's" };
+}
 
 /**
  * A23 — THE SESSION GAP, AS A COUNT. Pure, so the acceptance drill can put a
@@ -606,6 +633,9 @@ export type EvaluatedState = {
   callUpcomingAt?: string | null;
   /** A24: the session a BOOK_SESSION reminder is about (the next index still to book). */
   nextSessionIndex?: number | null;
+  /** Oct 22 2026 (M1): what the planning reader said when the answers ask was weighed — topics still to pick, answers owed. */
+  topicsToPick?: number | null;
+  answersOwed?: number | null;
   /** Kept as they were so an old ledger row and a new one read the same way;
    *  every DECISION below now uses the counts underneath them. */
   sessionBooked: boolean;
@@ -1283,12 +1313,25 @@ async function evaluateMonth(
       if (hostLock) sessionShut = `${lateMonthName(month.monthKey, lateIn)} is filmed together with ${lateMonthName(lateIn)} in one session, and ${lateMonthName(lateIn)} isn't ready to film yet — no booking ask until it is`;
     }
   }
+  // Oct 22 2026 (audit M1): the answers ask only when picked topics owe
+  // answers; with nothing picked, the next step is picking (answersOrPickAsk).
+  let planningAsk: PlanningAsk | null = null;
+  if (action === "COMPLETE_ANSWERS") {
+    const pf = await import("@/lib/planningFacts").then((m) => m.planningForMonth(month.id, { now })).catch(() => null);
+    planningAsk = pf
+      ? answersOrPickAsk({ route: pf.route, chosen: pf.planning.chosen, videosOwed: pf.planning.videosOwed, answersOwed: pf.planning.answersOwed, chosenBy: pf.chosenBy, clientPlanned: pf.clientPlanned })
+      : { action: null, toPick: 0, suppression: "planning_unreadable", why: "the month's topics could not be read: nothing is asked until they can be" };
+    action = planningAsk.action;
+    if (action !== "COMPLETE_ANSWERS") answersStarted = false;
+    state.topicsToPick = planningAsk.toPick;
+    state.answersOwed = pf?.planning.answersOwed ?? null;
+  }
   if (action === "BOOK_SESSION") {
     state.nextSessionIndex = facts.nextSessionIndex;
     state.earliestSessionAt = preparationGate(d, facts.nextSessionIndex).earliest?.toISOString() ?? null;
   }
   if (callBooked && d.strategyCallAt && d.strategyCallAt > now) state.callUpcomingAt = d.strategyCallAt.toISOString();
-  const digestSession = !!action && ["CHOOSE_PATH", "BOOK_CALL", "COMPLETE_ANSWERS"].includes(action) && p.digestBothAppointments && facts.sessionsMissing > 0 && facts.pendingSessionRequests === 0;
+  const digestSession = !!action && ["CHOOSE_PATH", "BOOK_CALL", "COMPLETE_ANSWERS", "PICK_TOPICS"].includes(action) && p.digestBothAppointments && facts.sessionsMissing > 0 && facts.pendingSessionRequests === 0;
 
   // ---- suppression (spec §24), in the order a person would ask ----------------
   const sup = (reason: string, why: string, withAction: ReminderAction | null = action, extra: Partial<ReminderCandidate> = {}) =>
@@ -1312,6 +1355,7 @@ async function evaluateMonth(
   if (planningSuppression === "no_call_chosen") return sup("no_call_chosen", "this month's strategy call was skipped on purpose — we do not chase it", null);
   if (sessionSuppression) return sup(sessionSuppression, "a session request is waiting on the office, not the client", null);
   if (sessionShut) return sup("session_not_open", sessionShut, null);
+  if (planningAsk && !planningAsk.action) return sup(planningAsk.suppression ?? "nothing_to_answer", planningAsk.why, null);
   if (!action) {
     if (lane === "REVIEW") return out({ action: null, decision: "none", reason: "no released cut is waiting on this client" });
     // "already been filmed — nothing left to book" was read off sessionFilmed
@@ -1375,7 +1419,11 @@ async function evaluateMonth(
   // "how many times have we asked for THIS thing" is an action question.
   const monthRows = (await prisma.programReminder.findMany({ where: { enrollmentId: e.id, monthKey: month.monthKey }, orderBy: { attempt: "desc" } }))
     .filter((r) => r.id !== ignoreReminderId);
-  const prior = monthRows.filter((r) => r.action === action);
+  // Oct 22 2026 (M1): PICK_TOPICS shares the answers ask's cadence. Before it
+  // existed, a month with nothing picked was sent COMPLETE_ANSWERS ("the next
+  // step is choosing your video topics"), so those sends were this ask: a
+  // client chased four times is not started again at attempt 1.
+  const prior = monthRows.filter((r) => r.action === action || (action === "PICK_TOPICS" && r.action === "COMPLETE_ANSWERS"));
   const laneOf = (k: string | null) => ledgerLaneOf(k, e.id, month.monthKey, action);
   const sameSession = (k: string | null) => laneOf(k).sessionTag === sessionTag;
   const isCounted = (r: { state: string; leaseUntil: Date | null }) =>
@@ -1512,7 +1560,8 @@ async function evaluateMonth(
         : answerGap?.paragraph ?? null;
   // Oct 22 2026: the link opens the page the email is about (lib/portalLanding):
   // videos to review, or Your Month for the call, the route and filming.
-  const linkPath = answerGap?.path ?? (lane === "REVIEW" ? PORTAL_LANDING.reviewVideos : action === "BOOK_SESSION" || action === "BOOK_CALL" || action === "CHOOSE_PATH" || action === "COMPLETE_ANSWERS" ? PORTAL_LANDING.yourMonth : null);
+  // Oct 22 2026 (M1): the pick ask opens Your Month, where choosing the topics is the step.
+  const linkPath = answerGap?.path ?? (action === "PICK_TOPICS" ? PORTAL_LANDING.yourMonth : lane === "REVIEW" ? PORTAL_LANDING.reviewVideos : action === "BOOK_SESSION" || action === "BOOK_CALL" || action === "CHOOSE_PATH" || action === "COMPLETE_ANSWERS" ? PORTAL_LANDING.yourMonth : null);
 
   // §12/A28: the roll-over note is the one message that must never reach a
   // client in their first paid production cycle, or a client whose shortfall we
@@ -1725,6 +1774,7 @@ export function actionLabel(a: ReminderAction | null): string {
     case "CHOOSE_PATH": return "a planning path (call or written)";
     case "BOOK_CALL": return "a strategy call booking";
     case "COMPLETE_ANSWERS": return "the written preparation answers";
+    case "PICK_TOPICS": return "the month's topics picked in the portal";
     case "BOOK_SESSION": return "a content session booking";
     case "REVIEW_WORK": return "a review of the shared cuts";
     case "SCRIPTS_READY": return "scripts ready";
@@ -1857,7 +1907,7 @@ async function templateVarsFor(c: ReminderCandidate, e: EnrollmentRow, portalLin
     // call route opens filming when the call is BOOKED, the written route when
     // the answers are in — "once planned" was right for neither.
     sessionNote: c.digestSession
-      ? c.action === "COMPLETE_ANSWERS"
+      ? c.action === "COMPLETE_ANSWERS" || c.action === "PICK_TOPICS"
         ? `Once your answers are in you can book your ${month} filming session in the same portal, and we'll confirm it.`
         : `Once your strategy call is booked you can pick your ${month} filming time in the same portal right away, before the call.`
       : null,
@@ -1871,7 +1921,7 @@ async function templateVarsFor(c: ReminderCandidate, e: EnrollmentRow, portalLin
     sessionOrdinalWord: (fresh?.state.sessionsRequired ?? c.state.sessionsRequired) > 1 && fresh?.state.nextSessionIndex
       ? (["first", "second", "third", "fourth"][fresh.state.nextSessionIndex - 1] ?? null)
       : null,
-    itemCount: fresh?.state.releasedCutsAwaiting ?? c.state.releasedCutsAwaiting,
+    itemCount: c.action === "PICK_TOPICS" ? (fresh?.state.topicsToPick ?? c.state.topicsToPick ?? 0) : (fresh?.state.releasedCutsAwaiting ?? c.state.releasedCutsAwaiting),
     titles: [],
     updatedTitles: [],
     // THE QUOTED DATE, NEVER THE INTERNAL ONE. `deadlineAt` moves with the
@@ -3073,6 +3123,33 @@ export type ReminderPreview = {
   lanes: { lane: ReminderLane; candidate: ReminderCandidate; body: string | null }[];
   addressLane: AddressReminderPreview[];
 };
+
+/**
+ * DOES AN ESCALATED ASK STILL HOLD? (Oct 22 2026, audit M2.) An escalation
+ * task said "this month still needs <action>" and nothing but a forfeit, a
+ * catch-up or a late session ever closed it, so Erica's "book a session" stayed
+ * open after she booked. This asks the evaluator itself, the way the preview
+ * does (it writes nothing): the ask holds while the month's one action on that
+ * lane is still the same action, whatever the send decision (a snooze, a pause
+ * or a stale feed keep it open). Any other answer is the evidence for closing.
+ */
+export async function reminderAskStillOpen(monthId: string, action: string, opts: { now?: Date } = {}): Promise<{ holds: boolean; evidence: string }> {
+  const now = opts.now ?? new Date();
+  const exists = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { id: true } });
+  if (!exists) return { holds: false, evidence: "the month is no longer on file" };
+  const { month, e, policy, feeds, clientWindowOpen } = await loadForManual(monthId, now, { orDefaults: true });
+  const rollout = (await freshRollout()).rollout ?? { mode: "TEST_ONLY" as const, modeSince: null, pilot: null };
+  const lane: ReminderLane = action === "REVIEW_WORK" ? "REVIEW" : "PRIMARY";
+  const c = await evaluateMonth(e, month, now, policy, feeds, clientWindowOpen, lane, null, rollout);
+  const asked = actionLabel(action as ReminderAction);
+  if (c.action === action) return { holds: true, evidence: `${month.monthKey} still needs ${asked} (${c.decision}: ${c.reason})` };
+  return {
+    holds: false,
+    evidence: c.action
+      ? `${month.monthKey} no longer needs ${asked}; its next step is ${actionLabel(c.action)}`
+      : `${month.monthKey} no longer needs ${asked}: ${c.reason}`,
+  };
+}
 
 export async function previewReminders(monthId: string, opts: { now?: Date } = {}): Promise<ReminderPreview> {
   const now = opts.now ?? new Date();

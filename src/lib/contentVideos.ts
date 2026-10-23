@@ -1183,6 +1183,30 @@ export async function publicationFailuresFor(submissionIds: string[]): Promise<M
   return out;
 }
 
+/**
+ * STALE PUBLICATION FAILURES (Oct 22 2026, audit LOW). A cut's failure record
+ * was cleared only when its own publication retried and succeeded; a cut that
+ * reached the library another way (the hourly repair's rebuild, a later
+ * version's sync) kept its "did not publish" line on Kyle's delivery card. A
+ * record whose cut IS on its client's library now is stale. `dryRun` reports
+ * without deleting. The hourly repair (verifyApprovedCutsInLibrary) runs it.
+ */
+export async function clearStalePublicationFailures(opts: { dryRun?: boolean } = {}): Promise<{ key: string; submissionId: string; inLibrary: boolean; why: string; at: string | null; cleared: boolean }[]> {
+  const rows = await prisma.appSetting.findMany({ where: { key: { startsWith: "portal-publication-failure:" } }, select: { key: true, value: true }, take: 200 });
+  const out: { key: string; submissionId: string; inLibrary: boolean; why: string; at: string | null; cleared: boolean }[] = [];
+  for (const row of rows) {
+    const submissionId = row.key.slice("portal-publication-failure:".length);
+    let v: { at?: string; why?: string } = {};
+    try { v = JSON.parse(row.value) as { at?: string; why?: string }; } catch { v = {}; }
+    const enrollment = await enrollmentOfCut(submissionId).catch(() => null);
+    const inLibrary = !!enrollment && (await cutsMissingFromLibrary(enrollment.id, [submissionId])).length === 0;
+    let cleared = false;
+    if (inLibrary && !opts.dryRun) cleared = (await prisma.appSetting.deleteMany({ where: { key: row.key, value: row.value } })).count > 0;
+    out.push({ key: row.key, submissionId, inLibrary, why: v.why ?? "(unreadable)", at: v.at ?? null, cleared });
+  }
+  return out;
+}
+
 async function publishOnce(submissionId: string): Promise<{ published: boolean; why?: string; skipped?: boolean }> {
   try {
     const deliveryCut = await import("@/lib/finalRendition").then(m => m.loadCut(submissionId));
@@ -1277,6 +1301,8 @@ export async function verifyApprovedCutsInLibrary(opts: { sinceDays?: number; ma
       await clearLibraryFailure(enrollment.id);
     }
   }
+  // Oct 22 2026: a cut's own "did not publish" record goes once the cut is on the library.
+  await clearStalePublicationFailures().catch(() => []);
   return { checked: cuts.length, missing, repaired, failed, enrollments: touched };
 }
 

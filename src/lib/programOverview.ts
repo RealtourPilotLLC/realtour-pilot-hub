@@ -6,7 +6,7 @@ import { lateSessionOf, lateSessionsInto } from "@/lib/lateSession";
 import { callModeOf, deriveMonthState, enrollmentWindowOverrideHours, preparationGate, type CallMode, type PreparationStatus } from "@/lib/programMonths";
 import { ownersForMany, pairKey, UNASSIGNED_OWNERS, type OwnerMap } from "@/lib/programOwners";
 import { failedAutomationIndex, type FailedAutomation } from "@/lib/programMonitoring";
-import { monthProgressMany, progressKey, journeyInputFrom, hostJourney, type MonthProgress } from "@/lib/monthProgress";
+import { monthProgressMany, progressKey, journeyInputFrom, hostJourney, scriptsAwaitingWords, type MonthProgress } from "@/lib/monthProgress";
 import { contentHref, type StaffTab } from "@/lib/contentNav";
 import type { JourneyInput } from "@/lib/contentStatus";
 import { isSyntheticClientRow } from "@/lib/testClients";
@@ -700,7 +700,8 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     } else if (strategyReviewNeeded > 0) {
       next = { text: `A strategy version is waiting for ${owner.STRATEGY.label}`, owner: owner.STRATEGY.label, ownerDuty: "strategy approval", blocked: "us", deadlineISO: deadline, href: href("plan", "strategy"), cta: "Review the strategy" };
     } else if (reviewNeeded > 0 && !clientPlanned) {
-      next = { text: `${reviewNeeded} script${reviewNeeded === 1 ? "" : "s"} waiting for ${owner.SCRIPTS.label}`, owner: owner.SCRIPTS.label, ownerDuty: "script approval", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Review the scripts" };
+      // Oct 22 2026 (audit M5): the same words as the month's reader and the Dashboard card.
+      next = { text: scriptsAwaitingWords({ needsJordan: reviewNeeded - drafting, drafting }, `waiting for ${owner.SCRIPTS.label}`) ?? `${reviewNeeded} scripts waiting for ${owner.SCRIPTS.label}`, owner: owner.SCRIPTS.label, ownerDuty: "script approval", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Review the scripts" };
     } else if (!clientPlanned && approved < production.owed && myScripts.length < production.owed) {
       const notStarted = Math.max(0, production.owed - myScripts.length);
       next = { text: `${notStarted} script${notStarted === 1 ? "" : "s"} not started`, owner: owner.SCRIPTS.label, ownerDuty: "scripts", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Open scripts" };
