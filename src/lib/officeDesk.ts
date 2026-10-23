@@ -14,7 +14,7 @@ import { remindViewsFor, REMIND_GAP_MS, type RemindView } from "@/lib/remindPhot
 import { parseAccessBrief, type AccessInfo } from "@/lib/opsDay";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { briefStatusForAppointments, type BriefState } from "@/lib/photographerBrief";
-import { cronHealthByJob, type CronJobHealth } from "@/lib/cronHealth";
+import { expectedCrons, staleAfterMs, type CronJobHealth } from "@/lib/cronHealth";
 import { scrubMoney } from "@/lib/text";
 import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import { listAssignees, viewerAssigneeKey, type Assignee } from "@/lib/assignees";
@@ -431,6 +431,27 @@ async function prepRows(dayKeys: string[], excludeClientIds: string[]): Promise<
   ];
 }
 
+/** The newest run of each job the freshness line names: one indexed read per
+ *  job (not the whole CronRun table, every 90 seconds), judged by the same
+ *  rules as /connections (cronHealth: twice the cadence is late). */
+async function syncHealth(now: Date): Promise<(Pick<CronJobHealth, "lastRunAt" | "lastOk" | "stale" | "neverRecorded"> & { job: string })[]> {
+  const expected = expectedCrons();
+  return Promise.all(FRESH_JOBS.map(async ({ job }) => {
+    const r = await prisma.cronRun.findFirst({ where: { job }, orderBy: { startedAt: "desc" }, select: { startedAt: true, finishedAt: true, ok: true, summary: true } });
+    const cadence = expected.find((e) => e.job === job)?.cadenceMs ?? null;
+    if (!r) return { job, lastRunAt: null, lastOk: null, stale: false, neverRecorded: true };
+    // A mail scan that could not read one of the mailboxes is not a good run (cronHealth's rule).
+    const degraded = job === "gmail" && /\\?"degraded\\?":true/.test(r.summary ?? "");
+    return {
+      job,
+      lastRunAt: r.startedAt.toISOString(),
+      lastOk: r.finishedAt ? r.ok && !degraded : null,
+      stale: cadence != null && now.getTime() - r.startedAt.getTime() > staleAfterMs(cadence),
+      neverRecorded: false,
+    };
+  }));
+}
+
 // ---- the build ----------------------------------------------------------------------------
 
 /**
@@ -491,7 +512,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     }).catch(warn("photo asks")),
     prepRows(days, ex).catch(warn("shoot prep")),
     jobsBoard(now, { includeTest: !!opts.includeTest }).catch(warn("shoots board")) as Promise<JobsBoard | null>,
-    cronHealthByJob(1, now).catch(warn("sync health")) as Promise<CronJobHealth[] | null>,
+    syncHealth(now).catch(warn("sync health")),
     prisma.appSetting.findUnique({ where: { key: closeoutSettingKey(dayKey) } }).catch(warn("closeout")),
     prisma.appSetting.findMany({ where: { key: { startsWith: WAITING_PREFIX } }, take: 300 }).catch(warn("waiting notes")),
     prisma.teamMember.findFirst({ where: { creativeManager: true }, select: { id: true, name: true } }).catch(() => null),
