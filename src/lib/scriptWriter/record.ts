@@ -14,9 +14,10 @@
 //              verified facts, her opinions, her creative ideas and OUR
 //              assumptions kept apart
 //   passages   the call passages the brief was built from (verbatim, with the
-//              lines around them), so the reviewer and every fix round read
+//              lines around them), so the reviewer and the rewrite read
 //              exactly what the writer read
-//   hooks      the five hooks, scored; `chosen` is the winner's index
+//   hooks      v2.2 to v2.5: the five hooks, scored; `chosen` is the winner's
+//              index (v2.6 writes the hook in the draft: none, chosen -1)
 //   rationale  the short internal note for Jordan: the hook, the takeaway, how
 //              her strategy shaped it
 // ---------------------------------------------------------------------------

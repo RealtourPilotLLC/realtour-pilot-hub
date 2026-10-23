@@ -6,6 +6,7 @@ import { creativeGuardBlock, discontinuedHit, type CreativeGuard } from "@/lib/c
 import { segmentTranscript, topicKeywords, keywordHits, keywordWindows, isInternalTalk, herKeywords, transcriptBody, type TranscriptLine } from "./passages";
 import { TEAM_REVIEWER, DROP_NOTE_PREFIX } from "./factCleanup";
 import type { WriterContext, SourceDoc } from "./prompts";
+import { barExamplesFor } from "./barExamples";
 import type { WriterFact } from "./record";
 
 // ---------------------------------------------------------------------------
@@ -412,11 +413,16 @@ export async function gatherForTopic(o: GatherOpts): Promise<Gathered> {
   }
   let strategyText = doc ? renderStrategy(doc, { preserveSourceHeadings: true }) : null;
   if (strategyText && strategyText.length > 14_000) strategyText = `${strategyText.slice(0, 14_000)} ...`;
+  // v2.6: the bar: up to three scripts Jordan approved and sent to OTHER clients (never hers, never this topic).
+  const bar = await barExamplesFor({ enrollmentId: t.enrollmentId, topicTitle: t.title, asOf });
   const ctx: WriterContext = {
     clientName,
     speakerNames: names,
     strategyText,
     identityBlock: creativeIdentityBlock(built.ctx.creativeIdentity),
+    // v2.6: her boundaries on their own, for the writer's short prompt (the identity block is the brief's).
+    boundaries: (built.ctx.creativeIdentity?.boundaries ?? []).map((b) => b.text).filter(Boolean).slice(0, 8),
+    barExamples: bar.map(({ hook, rehook, buildup, payoff, close }) => ({ hook, rehook, buildup, payoff, close })),
     guardBlock: creativeGuardBlock(guard),
     monthPriorities: built.ctx.monthPriorities ?? [],
     topic: { title: t.title, pillar: pillarName, description: t.concept, intendedMessage: t.intendedMessage, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, whyChosen },
@@ -430,7 +436,7 @@ export async function gatherForTopic(o: GatherOpts): Promise<Gathered> {
   return assemble({
     ctx, enrollmentId: t.enrollmentId, clientId, pillarId: t.pillarId, strategyVersionId, policyVersionId: built.policyVersionId,
     sources, lines, keywords, holdBack, callLabels, answers: answers.length, picked, facts,
-    inputRefs: { writer: true, strategyVersionId, callRecordIds: [...seenCall], recordedExcerpts: recorded.length, interviewId, asOf: asOf?.toISOString() ?? null },
+    inputRefs: { writer: true, strategyVersionId, callRecordIds: [...seenCall], recordedExcerpts: recorded.length, interviewId, asOf: asOf?.toISOString() ?? null, barExampleScriptIds: bar.map((b) => b.scriptId) },
     videoStyle: built.ctx.videoStyle === "SKITS" ? "SKITS" : "DIRECT",
     olderDocs: older, factPool, scriptCands: cands, guard, herWords: [t.title, ...herWords],
   });

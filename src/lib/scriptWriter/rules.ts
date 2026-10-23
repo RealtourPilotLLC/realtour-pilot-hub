@@ -31,7 +31,7 @@ import { GENERATION_POLICY, BANNED_OPENERS, SCRIPT_PART_BUDGETS, countSpokenWord
  * to 80 that may drop nothing the brief marks must-keep, and is reviewed
  * again; when the trim loses substance, the longer passing version is kept.
  */
-export const WRITER_VERSION = "writer.v2.5-2026-10-22";
+export const WRITER_VERSION = "writer.v2.6-2026-10-23";
 // v2.2 (Oct 22 2026, the listening fix, LISTENING.md): Jordan's lines and her
 // older calls reach the writer (the other-client filter no longer takes them);
 // older calls are read by her words, in a second retrieval; accepted facts from
@@ -153,6 +153,38 @@ export const WRITER_VERSION = "writer.v2.5-2026-10-22";
 //      message, the angle takes the message the proof supports.
 //   6. A third fix round runs when Enough substance is the only must-fix
 //      left (so the craft check passed).
+// v2.6 (Oct 23 2026, ONE THOUGHT). Jordan on Erica's October scripts:
+// "Erica's scripts are awful... They make no sense", and on the Doorknob
+// script: "Door knobs hook doesnt land. It seems like it's not really
+// thinking about the topic, or the agent and what they said completely. Like
+// it's overanalyzing and overcompensating, maybe?" The writer was asked to
+// satisfy dozens of rules at once, a separate step chose the hook, and the
+// fix rounds then patched ONE part at a time (a new hook, a new re-hook, a
+// trimmed close). Each patch passed its own check and the script stopped
+// being one thought: Empty Nesters' hook in a client's voice while Erica
+// speaks, More Space contradicting itself, Backyard in fragments, and the
+// Doorknob hook quoting a seller ("I'm not replacing a doorknob for them")
+// though the brief said she told no doorknob story. So:
+//   1. ONE DRAFTING CALL writes all five parts together (no hooks step), from
+//      the brief's topic, angle, her proof and her own words, with a short
+//      prompt: the five parts and what each does, her voice, 55 to 85 words,
+//      the close, no dashes or durations, never invent or put words in
+//      anyone's mouth, her phrases where they fit; and, as the bar, up to
+//      three scripts Jordan approved and sent to OTHER clients, read from the
+//      hub at draft time (scriptWriter/barExamples: shape and voice, never
+//      content; none qualifying, none shown).
+//      Every other rule left the prompt for code (advice) or the brief.
+//   2. THE REVIEW READS IT AS A VIEWER FIRST: one thought, she would say it,
+//      the hook lands and the rest follows, nothing invented; then a 1 to 10
+//      read. A failure gets ONE WHOLE REWRITE with the reviewer's note, never
+//      a part patch, and the rewrite becomes current only when it reads
+//      better. No second rewrite, no trims, no fix rounds, no runner-up hook.
+//   3. CODE'S HARD CHECKS: the 110 cap, no dashes, no durations, no live
+//      deal, no number and no quotation her sources do not contain. A failure
+//      is a reason for the one rewrite; everything else code knows is advice.
+//   4. COST: four or five calls for a draft that passes (it was five at the
+//      least and about ten on Erica's drafts), six or seven when it is
+//      rewritten.
 
 /** Words and seconds (Jordan, Oct 22 2026). Seconds are an estimate at the hub's speaking rate, never a measurement. */
 export const WRITER_LENGTH = {
@@ -339,8 +371,14 @@ export const LENGTH_RULE = `LENGTH (Jordan, Oct 22 2026: "aim for 55 to 85 words
 export const NEITHER_WINS_RULE = "NEITHER VERSION WINS AUTOMATICALLY: when there is an earlier version, a client's rewrite or a reviewer's instruction, keep the strongest information and language from each while staying on the topic's one message. A client's longer rewrite is mined for its facts and phrases, not accepted for its length; our draft is not defended for being ours.";
 
 // ---------------------------------------------------------------------------
-// The independent review: Jordan's 12 checks (the plan's quality table), and
-// since v2.3 a 13th, the craft block, scored part by part.
+// v2.6 (Oct 23 2026): THE REVIEW READS IT AS A VIEWER FIRST. The reviewer
+// answers four questions before anything else (one thought, she would say it,
+// the hook lands and the rest follows from it, nothing invented); then code's
+// hard checks (the cap, no dashes, no durations, her numbers, her quotes, no
+// live deal). Every other house rule is code's advice: recorded with the
+// review, never a reason to rewrite. (v2.3 to v2.5 had thirteen checks and a
+// craft block scored part by part; a version reviewed then keeps its own
+// checks, labels and numbers on its record.)
 // ---------------------------------------------------------------------------
 
 /** The five parts of every script (HOOK, RE-HOOK, BUILD-UP, PAYOFF, CLOSE). */
@@ -349,30 +387,42 @@ export type ScriptPartKey = (typeof SCRIPT_PART_KEYS)[number];
 
 export type CheckLevel = "must-fix" | "flag";
 export const REVIEW_CHECKS = [
-  { key: "on_topic", n: 1, label: "On topic", level: "must-fix", passes: "It delivers the brief's one message; no new topic smuggled in." },
-  { key: "her_meaning", n: 2, label: "Her meaning", level: "must-fix", passes: "Nothing she said is bent; the chronology matches her account." },
-  { key: "hook", n: 3, label: "Hook", level: "must-fix", passes: "A relatable belief, contrast, question or real moment that carries its own tension (a cost, a reversal or an unanswered question). A bare wish or belief with nothing at stake fails. No \"Today I want to talk about\", no greeting, no naming the audience." },
-  { key: "rehook", n: 4, label: "Re-hook", level: "must-fix", passes: "Adds a fact, turn or stake that is not in the hook. Fails if it opens with a hedge (Maybe, Not exactly), restates the hook's subject in other words, or only explains why the hook is true." },
-  { key: "story", n: 5, label: "Story holds together", level: "must-fix", passes: "Each beat follows from the last. A personal story progresses in order: what she loved, her real reason for the change, what she expected, the turn, the insight, how she helps now." },
-  { key: "substance", n: 6, label: "Enough substance", level: "must-fix", passes: "Every must-keep point of the brief is there in meaning, with the insight; how she helps appears once, in the payoff or the close, never both. Fails when it leaves out the story she told about this topic (her answer when asked for an example, or the brief's proof when it is her story). Not dry, not incomplete." },
-  { key: "payoff", n: 7, label: "Payoff", level: "must-fix", passes: "Answers the hook's question in one line the viewer could repeat. A \"My job\" or credential line that does not answer the hook fails. How she helps appears once, in the payoff or the close, never both." },
-  { key: "close", n: 8, label: "Close", level: "must-fix", passes: "At most two beats: a line that calls back a concrete word or image from the hook (or the re-hook), then, with a service angle, a warm invitation naming this video's specific next step in her voice (a callback alone only for a story with no service angle). \"Let's talk\" as the whole invitation, a \"Thinking about X?\" opener, a slogan or an aphorism fails." },
-  { key: "her_voice", n: 9, label: "Sounds like her", level: "flag", passes: "Her voice at its best on camera: her vocabulary and her strongest short phrases in tight, natural, polished spoken sentences. No transcript sentences pasted in, none of her avoid-words, no industry terms spoken to homeowners (a phrase of hers included)." },
-  { key: "claims", n: 10, label: "Every claim supported", level: "must-fix", passes: "Each factual line traces to something she said (anywhere in the call) or approved; a faithful paraphrase counts. Topic descriptions and our assumptions do not count. A deal still in progress is never in the script, not even in general terms." },
-  { key: "length", n: 11, label: "Length", level: "must-fix", passes: `At most ${WRITER_LENGTH.cap} spoken words (the cap); ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]} is the aim. Seconds shown.` },
-  { key: "nothing_extra", n: 12, label: "Nothing extra", level: "flag", passes: "Every sentence creates interest, builds understanding, delivers value, earns trust or moves the story." },
-  { key: "craft", n: 13, label: "Craft", level: "must-fix", passes: "The craft block: hook, re-hook, build-up, payoff and close each scored 1 to 5 with a one-line psychology note. Passes on a total of 19 or more with no part at 2 or under; a part at 3 is a flag, not a must-fix." },
+  // The viewer's read (the reviewer).
+  { key: "sense", n: 1, label: "One thought", level: "must-fix", by: "viewer", passes: "It makes sense from start to finish as one thought: each line follows from the one before, nothing contradicts itself, no fragments a person would not say." },
+  { key: "voice", n: 2, label: "She would say it", level: "must-fix", by: "viewer", passes: "She is the one speaking, in the first person, in words she would use. A line in a client's or a viewer's voice that she would not say as herself fails." },
+  { key: "hook", n: 3, label: "The hook lands", level: "must-fix", by: "viewer", passes: "The first line lands on its own, and the re-hook, the build-up and the payoff follow from it: the payoff answers it." },
+  { key: "invented", n: 4, label: "Nothing invented", level: "must-fix", by: "viewer", passes: "Every fact, number, story and quote is in her sources (a faithful paraphrase counts), and nobody is given words they did not say." },
+  // Code's hard checks.
+  { key: "length", n: 5, label: "Length", level: "must-fix", by: "code", passes: `At most ${WRITER_LENGTH.cap} spoken words (the cap); ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]} is the aim. Seconds shown.` },
+  { key: "dashes", n: 6, label: "No dashes", level: "must-fix", by: "code", passes: "No em dash or en dash." },
+  { key: "durations", n: 7, label: "No durations", level: "must-fix", by: "code", passes: "No duration, timestamp or timing note in the script." },
+  { key: "numbers", n: 8, label: "Her numbers", level: "must-fix", by: "code", passes: "Every number is one her sources contain." },
+  { key: "quotes", n: 9, label: "Her quotes", level: "must-fix", by: "code", passes: "Every quotation is in her sources, word for word." },
+  { key: "live_deal", n: 10, label: "No live deal", level: "must-fix", by: "code", passes: "Nothing of a deal still in progress that the brief keeps out." },
+  { key: "advice", n: 11, label: "Advice", level: "flag", by: "code", passes: "Code's other house rules (a greeting, naming the audience, industry terms, a re-hook that repeats the hook, a template close, a part over its budget, a build-up in fragments, a sentence pasted from the call, a market statement she did not make): advice, never a reason to rewrite." },
 ] as const;
 export type ReviewCheckKey = (typeof REVIEW_CHECKS)[number]["key"];
 export const REVIEW_CHECK_KEYS = REVIEW_CHECKS.map((c) => c.key) as ReviewCheckKey[];
-/** The checks the reviewer answers pass or fail (craft is its own block, scored part by part; length is code's). */
-export const MODEL_CHECK_KEYS = REVIEW_CHECK_KEYS.filter((k) => k !== "craft");
+/** The four questions the reviewer answers (v2.6); the other checks are code's. */
+export const VIEWER_CHECK_KEYS = REVIEW_CHECKS.filter((c) => c.by === "viewer").map((c) => c.key) as ReviewCheckKey[];
+/**
+ * v2.6: the whole rewrites a draft may get from the automatic check: one,
+ * with the reviewer's note (and code's reasons), never a patch of one part.
+ * The rewrite becomes the current version only when it reads better.
+ */
+export const MAX_REWRITES = 1;
 
-/** `parts` (v2.3): the script parts a failure is about, so a kept longer version can be checked for the same line. */
+/** `parts`: the script parts a failure is about (checks stored before v2.6 may carry them). */
 export type ReviewCheckResult = { key: ReviewCheckKey; n: number; label: string; level: CheckLevel; pass: boolean; reason: string; parts?: ScriptPartKey[] };
-/** `check` and `part` (v2.3): a finding may name the check it counts against (else HARD_TO_CHECK) and the part it is about. */
-/** v2.4: part_length (a part over its PART_WORDS budget) and buildup_fragment (a colon list or a sentence with no verb in the build-up), both flags. v2.5: live_deal (the script tells a deal still in progress), must-fix under Every claim supported. */
-export type HardFinding = { key: "greeting" | "dash" | "duration" | "market_claim" | "jargon" | "hook_length" | "audience_vocative" | "pasted" | "hook_echo" | "generic_close" | "part_length" | "buildup_fragment" | "live_deal"; level: CheckLevel; detail: string; check?: ReviewCheckKey; part?: ScriptPartKey };
+
+/**
+ * A finding by code. `part`: the part it is in, when known. v2.6:
+ * invented_quote (a quotation her sources do not contain, must-fix) and
+ * market_term (a market statement she did not make, advice); every finding
+ * other than the hard rules (dash, duration, an unsupported number, an
+ * invented quote, a live deal) is a flag.
+ */
+export type HardFinding = { key: "greeting" | "dash" | "duration" | "market_claim" | "market_term" | "jargon" | "hook_length" | "audience_vocative" | "pasted" | "hook_echo" | "generic_close" | "part_length" | "buildup_fragment" | "live_deal" | "invented_quote"; level: CheckLevel; detail: string; part?: ScriptPartKey };
 
 // ---------------------------------------------------------------------------
 // Hard numbers, by code (never by the model).
@@ -383,6 +433,10 @@ export type ScriptParts = { hook: string; points: { role: string | null; text: s
 export const spokenTextOf = (p: ScriptParts) => [p.hook, ...p.points.map((x) => x.text), p.close].filter(Boolean).join("\n");
 
 const DASH_RE = /[‒–—―]|(?<!-)--(?!-)/;
+/** An em dash, an en dash or a double hyphen used as punctuation (pure). */
+export function hasDash(text: string): boolean {
+  return DASH_RE.test(text ?? "");
+}
 const DURATION_RES = [
   /[([]\s*~?\d+(?:\.\d+)?\s*(?:s|secs?|seconds?|mins?|minutes?)\s*[)\]]/i, // (10 seconds) [30s]
   /[([]\s*\d{1,2}:\d{2}\s*[)\]]/, // [0:15]
@@ -466,12 +520,12 @@ export function sharedWithHook(hook: string, text: string): string[] {
 }
 
 /**
- * hook_echo and generic_close (v2.3), by code. A re-hook that opens on a hedge
- * or repeats HOOK_ECHO_WORDS of the hook's content words fails the re-hook
- * (must-fix); a build-up that repeats them is a flag (Nothing extra). A close
- * that brings back no content word of the hook, or ends on the template "[a
- * question]? Let's talk.", or opens its invitation "Thinking about X?" fails
- * the close (must-fix). Pure.
+ * hook_echo and generic_close (v2.3), by code: a re-hook that opens on a hedge
+ * or repeats HOOK_ECHO_WORDS of the hook's content words; a build-up that
+ * repeats them; a close that brings back no content word of the hook (or the
+ * re-hook), ends on the template "[a question]? Let's talk.", or opens its
+ * invitation "Thinking about X?". v2.6: all advice (flags), never a reason
+ * to rewrite. Pure.
  * v2.5: `agreedFormat` (the brief's "Agreed format: ..."): a build-up that
  * translates the hook's words in that format (two or more "X means Y" or
  * "X? Y." beats, as in a word association) is the format working, not an
@@ -484,16 +538,16 @@ export function craftFindings(parts: ScriptParts, opts: { agreedFormat?: string 
   const buildup = partTextOf(parts, "buildup");
   if (rehook && HEDGE_OPENER_RE.test(rehook)) {
     const first = rehook.trim().split(/[.?!,]/)[0].trim().slice(0, 40);
-    out.push({ key: "hook_echo", level: "must-fix", check: "rehook", part: "rehook", detail: `The re-hook opens on a hedge ("${first}"): it backs away from the hook. Open on a fact, a turn or a stake the hook does not have.` });
+    out.push({ key: "hook_echo", level: "flag", part: "rehook", detail: `The re-hook opens on a hedge ("${first}"): it backs away from the hook. Open on a fact, a turn or a stake the hook does not have.` });
   }
   if (hook && rehook) {
     const shared = sharedWithHook(hook, rehook);
-    if (shared.length >= HOOK_ECHO_WORDS) out.push({ key: "hook_echo", level: "must-fix", check: "rehook", part: "rehook", detail: `The re-hook repeats the hook's words (${shared.slice(0, 6).join(", ")}): it restates the hook instead of adding a fact, a turn or a stake.` });
+    if (shared.length >= HOOK_ECHO_WORDS) out.push({ key: "hook_echo", level: "flag", part: "rehook", detail: `The re-hook repeats the hook's words (${shared.slice(0, 6).join(", ")}): it restates the hook instead of adding a fact, a turn or a stake.` });
   }
   if (hook && buildup) {
     const shared = sharedWithHook(hook, buildup);
     const translates = !!opts.agreedFormat?.trim() && translationBeats(buildup) >= 2;
-    if (shared.length >= HOOK_ECHO_WORDS && !translates) out.push({ key: "hook_echo", level: "flag", check: "nothing_extra", part: "buildup", detail: `The build-up repeats the hook's words (${shared.slice(0, 6).join(", ")}): it should set up the payoff, not say the hook again.` });
+    if (shared.length >= HOOK_ECHO_WORDS && !translates) out.push({ key: "hook_echo", level: "flag", part: "buildup", detail: `The build-up repeats the hook's words (${shared.slice(0, 6).join(", ")}): it should set up the payoff, not say the hook again.` });
   }
   const close = (parts.close ?? "").replace(/[‘’]/g, "'").replace(/\s+/g, " ").trim();
   if (close) {
@@ -506,7 +560,7 @@ export function craftFindings(parts: ScriptParts, opts: { agreedFormat?: string 
     if (template) why.push("it ends on a question and \"Let's talk.\" (name this video's own next step instead)");
     if (THINKING_ABOUT_RE.test(close)) why.push("its invitation opens \"Thinking about ...?\"");
     // v2.4: a flag, not a must-fix (the reviewer's own close check is still must-fix).
-    if (why.length) out.push({ key: "generic_close", level: "flag", check: "close", part: "close", detail: `The close is generic: ${why.join("; ")}.` });
+    if (why.length) out.push({ key: "generic_close", level: "flag", part: "close", detail: `The close is generic: ${why.join("; ")}.` });
   }
   return out;
 }
@@ -564,11 +618,11 @@ export function buildupFragments(buildup: string): HardFinding[] {
   if (!text) return [];
   const out: HardFinding[] = [];
   const colonList = /:\s*[^.?!]*,[^.?!]*/.test(text);
-  if (colonList) out.push({ key: "buildup_fragment", level: "flag", check: "story", part: "buildup", detail: `The build-up runs a colon list ("${(/[^.?!:]*:\s*[^.?!]*/.exec(text)?.[0] ?? text).trim().slice(0, 120)}"): tell it as one beat in full spoken sentences, what happened and then what changed.` });
+  if (colonList) out.push({ key: "buildup_fragment", level: "flag", part: "buildup", detail: `The build-up runs a colon list ("${(/[^.?!:]*:\s*[^.?!]*/.exec(text)?.[0] ?? text).trim().slice(0, 120)}"): tell it as one beat in full spoken sentences, what happened and then what changed.` });
   const steps = text.match(STEP_LABEL_RE) ?? [];
-  if (!colonList && steps.length) out.push({ key: "buildup_fragment", level: "flag", check: "story", part: "buildup", detail: `The build-up runs numbered steps (${steps.slice(0, 3).map((s) => `"${s.trim()}"`).join(", ")}): tell it as one beat in full spoken sentences, what happened and then what changed.` });
+  if (!colonList && steps.length) out.push({ key: "buildup_fragment", level: "flag", part: "buildup", detail: `The build-up runs numbered steps (${steps.slice(0, 3).map((s) => `"${s.trim()}"`).join(", ")}): tell it as one beat in full spoken sentences, what happened and then what changed.` });
   const verbless = text.split(/(?<=[.?!])\s+/).map((x) => x.trim()).filter((x) => x.split(/\s+/).length >= 2 && !hasVerb(x));
-  if (verbless.length) out.push({ key: "buildup_fragment", level: "flag", check: "story", part: "buildup", detail: `The build-up has ${verbless.length === 1 ? "a sentence" : "sentences"} with no verb (${verbless.slice(0, 3).map((x) => `"${x.slice(0, 80)}"`).join(", ")}): say it in full spoken sentences.` });
+  if (verbless.length) out.push({ key: "buildup_fragment", level: "flag", part: "buildup", detail: `The build-up has ${verbless.length === 1 ? "a sentence" : "sentences"} with no verb (${verbless.slice(0, 3).map((x) => `"${x.slice(0, 80)}"`).join(", ")}): say it in full spoken sentences.` });
   return out;
 }
 
@@ -579,7 +633,7 @@ export function partLengthFindings(parts: ScriptParts, opts: { story?: boolean |
     if (k === "hook" && opts.skipHook) continue;
     if (opts.story && (k === "buildup" || k === "payoff")) continue;
     const n = countSpokenWords(partTextOf(parts, k));
-    if (n > PART_WORDS[k]) out.push({ key: "part_length", level: "flag", check: "nothing_extra", part: k, detail: `The ${CRAFT_PARTS.find((p) => p.key === k)?.label.toLowerCase() ?? k} is ${n} words; its budget is ${PART_WORDS[k]}.` });
+    if (n > PART_WORDS[k]) out.push({ key: "part_length", level: "flag", part: k, detail: `The ${CRAFT_PARTS.find((p) => p.key === k)?.label.toLowerCase() ?? k} is ${n} words; its budget is ${PART_WORDS[k]}.` });
   }
   return out;
 }
@@ -625,11 +679,16 @@ export function numberTokens(text: string): string[] {
 const norm = (s: string) => s.toLowerCase().replace(/[‘’]/g, "'").replace(/\s+/g, " ");
 
 /**
- * The hard numbers (Oct 22 2026): word count and seconds, hook length, no
- * greeting opener, no audience vocative, no dashes, no durations noted, no
- * market claim or number the sources do not contain, no industry jargon.
+ * The hard numbers (Oct 22 2026): word count and seconds, and code's checks.
  * `sourceText` is everything the client said or approved that the writer read
- * (passages, answers, facts, her strategy), never our assumptions.
+ * (passages, answers, facts, her strategy, the call), never our assumptions.
+ * v2.6: the HARD rules (must-fix: a failure is a reason for the one whole
+ * rewrite) are no dash, no duration, no number her sources do not contain,
+ * no quotation her sources do not contain word for word, and no live deal.
+ * Everything else code knows (a greeting, naming the audience, the hook's
+ * length, industry terms, a market statement she did not make, a sentence
+ * pasted from the call, the part budgets, a build-up in fragments, a re-hook
+ * that repeats the hook, a template close) is advice: a flag on the record.
  */
 export function hardNumbers(
   parts: ScriptParts, sourceText: string, /** What she SAID (calls and passages), for the pasted-sentence check; default sourceText. */ spokenSourceText?: string,
@@ -645,10 +704,10 @@ export function hardNumbers(
   const words = countSpokenWords(spoken);
   const hookWords = countSpokenWords(parts.hook);
   const findings: HardFinding[] = [];
-  // v2.4: a must-fix finding IN the hook names the hook (part), so a fix round knows the hook itself failed (switchHookFor).
+  // A finding IN the hook names the hook (part).
   const inHook = (test: (t: string) => boolean): { part?: ScriptPartKey } => (parts.hook && test(parts.hook) ? { part: "hook" } : {});
-  if (GREETING_RE.test(parts.hook) || BANNED_OPENERS.some((b) => parts.hook.trim().toLowerCase().startsWith(b.toLowerCase()))) findings.push({ key: "greeting", level: "must-fix", part: "hook", detail: "The hook opens with a greeting or an introduction." });
-  if (AUDIENCE_VOCATIVE_RE.test(parts.hook)) findings.push({ key: "audience_vocative", level: "must-fix", part: "hook", detail: "The hook opens by naming the audience (\"Sellers, ...\"); open on a line the viewer would recognise instead." });
+  if (GREETING_RE.test(parts.hook) || BANNED_OPENERS.some((b) => parts.hook.trim().toLowerCase().startsWith(b.toLowerCase()))) findings.push({ key: "greeting", level: "flag", part: "hook", detail: "The hook opens with a greeting or an introduction." });
+  if (AUDIENCE_VOCATIVE_RE.test(parts.hook)) findings.push({ key: "audience_vocative", level: "flag", part: "hook", detail: "The hook opens by naming the audience (\"Sellers, ...\"); open on a line the viewer would recognise instead." });
   if (hookWords > SCRIPT_PART_BUDGETS.hookWords) findings.push({ key: "hook_length", level: "flag", part: "hook", detail: `The hook is ${hookWords} words; one breath is ${SCRIPT_PART_BUDGETS.hookWords} at most.` });
   if (DASH_RE.test(spoken)) findings.push({ key: "dash", level: "must-fix", ...inHook((t) => DASH_RE.test(t)), detail: "A dash is used as punctuation." });
   if (DURATION_RES.some((re) => re.test(spoken))) findings.push({ key: "duration", level: "must-fix", detail: "A duration or timing note is written into the script." });
@@ -656,23 +715,25 @@ export function hardNumbers(
   const srcNumbers = new Set(numberTokens(sourceText));
   const unsupportedNumbers = [...new Set(numberTokens(spoken))].filter((n) => !srcNumbers.has(n));
   if (unsupportedNumbers.length) findings.push({ key: "market_claim", level: "must-fix", ...inHook((t) => numberTokens(t).some((n) => unsupportedNumbers.includes(n))), detail: `Numbers the sources do not contain: ${unsupportedNumbers.slice(0, 5).join(", ")}.` });
+  // v2.6: a quotation is somebody's words: it must be in her sources word for word (the Doorknob hook gave a seller a line nobody said).
+  const quotes = inventedQuotes(spoken, sourceText);
+  if (quotes.length) findings.push({ key: "invented_quote", level: "must-fix", ...inHook((t) => inventedQuotes(t, sourceText).length > 0), detail: `A quotation her sources do not contain: ${quotes.slice(0, 2).map((q) => `"${q}"`).join("; ")}. Never put words in anyone's mouth.` });
   const unsupportedTerms = MARKET_TERMS.filter((t) => t.re.test(spoken) && !t.re.test(src));
-  if (unsupportedTerms.length) findings.push({ key: "market_claim", level: "must-fix", ...inHook((h) => unsupportedTerms.some((t) => t.re.test(h))), detail: `Market statements she did not make: ${unsupportedTerms.map((t) => t.key).join(", ")}.` });
-  // v2.5: a deal still in progress is never in the script; code fails it under Every claim supported, whatever the reviewer says.
+  if (unsupportedTerms.length) findings.push({ key: "market_term", level: "flag", ...inHook((h) => unsupportedTerms.some((t) => t.re.test(h))), detail: `Market statements she did not make: ${unsupportedTerms.map((t) => t.key).join(", ")}.` });
+  // v2.5: a deal still in progress is never in the script; code fails it, whatever the reviewer says.
   const live = liveDealFinding(parts, opts.liveDeal, opts.kept ?? "");
   if (live) findings.push(live);
   const jargon = JARGON_RES.filter((j) => j.re.test(spoken));
-  // Must-fix (Oct 22 2026): the independent review found "impervious coverage" passing as a flag because
-  // it was one of "her phrases"; Jordan wants plain homeowner words, so an industry term fails the draft.
-  if (jargon.length) findings.push({ key: "jargon", level: "must-fix", ...inHook((h) => jargon.some((j) => j.re.test(h))), detail: `Industry terms spoken to homeowners: ${jargon.map((j) => j.say).join(", ")}.` });
+  // v2.6: advice (it was must-fix from Oct 22; the brief still asks for plain homeowner words).
+  if (jargon.length) findings.push({ key: "jargon", level: "flag", ...inHook((h) => jargon.some((j) => j.re.test(h))), detail: `Industry terms spoken to homeowners: ${jargon.map((j) => j.say).join(", ")}.` });
   // v2.4 (the length fix and the build-up fix): a part over its budget, and a build-up in fragments, are flags.
   findings.push(...partLengthFindings(parts, { story: opts.story, skipHook: hookWords > SCRIPT_PART_BUDGETS.hookWords }));
   findings.push(...buildupFragments(partTextOf(parts, "buildup")));
-  // A long run is a transcript sentence stitched in (must-fix); a medium one may be a strong line of hers, so it is a flag to look at.
+  // A long run is a transcript sentence stitched in; a medium one may be a strong line of hers. v2.6: both advice.
   const spokenSrc = spokenSourceText ?? sourceText;
   const pastedLong = pastedRuns(spoken, spokenSrc, PASTED_MUST_FIX_WORDS);
   const pastedMid = pastedRuns(spoken, spokenSrc).filter((s) => !pastedLong.includes(s));
-  if (pastedLong.length) findings.push({ key: "pasted", level: "must-fix", detail: `Pasted from the call word for word: ${pastedLong.slice(0, 2).map((p) => `"${p}"`).join("; ")}. Keep her meaning and her best short phrases; write the sentence for camera.` });
+  if (pastedLong.length) findings.push({ key: "pasted", level: "flag", detail: `Pasted from the call word for word: ${pastedLong.slice(0, 2).map((p) => `"${p}"`).join("; ")}. Keep her meaning and her best short phrases; write the sentence for camera.` });
   if (pastedMid.length) findings.push({ key: "pasted", level: "flag", detail: `Close to her words from the call: ${pastedMid.slice(0, 2).map((p) => `"${p}"`).join("; ")}. Keep it only if it is strong and natural on camera.` });
   // v2.3: the re-hook and build-up that say the hook again, a hedge opener, the template close.
   findings.push(...craftFindings(parts, { agreedFormat: opts.agreedFormat }));
@@ -703,7 +764,7 @@ export function liveDealFinding(parts: ScriptParts, liveDeal?: string | null, ke
   });
   const line = part ? partTextOf(parts, part).replace(/\s+/g, " ").trim().slice(0, 160) : "";
   const why = told ? `the deal the brief keeps out (${figs.join(", ")}; ${told.words.slice(0, 5).join(", ")})` : `"${said}"`;
-  return { key: "live_deal", level: "must-fix", check: "claims", ...(part ? { part } : {}), detail: `A deal still in progress is told: ${why}${line ? `, in "${line}"` : ""}. It is never in the script, not even in general terms.` };
+  return { key: "live_deal", level: "must-fix", ...(part ? { part } : {}), detail: `A deal still in progress is told: ${why}${line ? `, in "${line}"` : ""}. It is never in the script, not even in general terms.` };
 }
 
 /** How many words in a row a script may share with the call before it reads as pasted, not written (Oct 22 2026, v2.1). */
@@ -732,33 +793,38 @@ export function pastedRuns(spoken: string, sourceText: string, min = PASTED_RUN_
   return out;
 }
 
-/** Which check a hard finding counts against (a finding's own `check` wins: a build-up echo is Nothing extra, not Re-hook). */
+/** v2.6: a quotation of this many words or more must be in her sources word for word (a two-word "scare quote" is not checked). */
+export const QUOTE_MIN_WORDS = 3;
+
+/** The quotations in a script (v2.6, pure): text inside double quotes, straight or curly, of QUOTE_MIN_WORDS words or more. */
+export function quotedSpans(text: string): string[] {
+  const out: string[] = [];
+  for (const m of (text ?? "").matchAll(/["“”]([^"“”\n]{2,400}?)["“”]/g)) {
+    const q = m[1].trim();
+    if (wordsOf(q).length >= QUOTE_MIN_WORDS) out.push(q);
+  }
+  return out;
+}
+
+/** The quotations her sources do not contain word for word (v2.6, pure): case and punctuation aside. */
+export function inventedQuotes(spoken: string, sourceText: string): string[] {
+  const src = ` ${wordsOf(sourceText ?? "").join(" ")} `;
+  return quotedSpans(spoken).filter((q) => !src.includes(` ${wordsOf(q).join(" ")} `));
+}
+
+/** Which check a hard finding counts against (v2.6): the hard rules their own check; every other house rule is advice. */
 export const HARD_TO_CHECK: Record<HardFinding["key"], ReviewCheckKey> = {
-  greeting: "hook", audience_vocative: "hook", hook_length: "hook", dash: "nothing_extra", duration: "nothing_extra", market_claim: "claims", jargon: "her_voice", pasted: "her_voice",
-  hook_echo: "rehook", generic_close: "close", part_length: "nothing_extra", buildup_fragment: "story", live_deal: "claims",
+  dash: "dashes", duration: "durations", market_claim: "numbers", invented_quote: "quotes", live_deal: "live_deal",
+  greeting: "advice", audience_vocative: "advice", hook_length: "advice", market_term: "advice", jargon: "advice", pasted: "advice", hook_echo: "advice", generic_close: "advice", part_length: "advice", buildup_fragment: "advice",
 };
-const checkOfFinding = (h: HardFinding): ReviewCheckKey => h.check ?? HARD_TO_CHECK[h.key];
-
-/** The script parts each check is about (v2.3): what a kept longer version is compared on. */
-export const CHECK_PARTS: Partial<Record<ReviewCheckKey, ScriptPartKey[]>> = { hook: ["hook"], rehook: ["rehook"], payoff: ["payoff"], close: ["close"] };
-/** v2.5: the checks (4, 7, 8) whose model fail is a flag when it says nothing untrue and the craft block scored their part 3 or more (mergeReview). */
-export const CRAFT_CALIBRATED: Partial<Record<ReviewCheckKey, ScriptPartKey>> = { rehook: "rehook", payoff: "payoff", close: "close" };
 
 // ---------------------------------------------------------------------------
-// v2.3: THE CRAFT BLOCK. The reviewer scores the five parts 1 to 5 with a
-// one-line psychology note each.
-// v2.4 (the calibration fix): check 13 passes on a total of CRAFT_TOTAL_PASS
-// (19) with no part at CRAFT_FAIL_AT (2) or under. A part at 3 is a flag: the
-// card shows it under CRAFT_PASS, and a hook or re-hook at 3 fails its own
-// check as a flag; at 2 or under, at must-fix. The craft score of a hook that
-// is still word for word the scored pick that met HOOK_BAR is advice only.
+// v2.3 to v2.5: THE CRAFT BLOCK (the five parts scored 1 to 5). v2.6 no
+// longer asks for it; a version reviewed before keeps it on its record, and
+// the card and the "never a worse version" rule still read it there.
 // ---------------------------------------------------------------------------
-/** A part scored under this is shown "under" on the card (v2.4: a flag at 3, a must-fix at CRAFT_FAIL_AT or under). */
+/** A part scored under this is shown "under" on the card. */
 export const CRAFT_PASS = 4;
-/** v2.4: a part scored this or under fails check 13 at must-fix. */
-export const CRAFT_FAIL_AT = 2;
-/** v2.4: check 13 passes on a craft total of this or more (of 25) with no part at CRAFT_FAIL_AT or under. */
-export const CRAFT_TOTAL_PASS = 19;
 export const CRAFT_PARTS: readonly { key: ScriptPartKey; label: string; asks: string }[] = [
   { key: "hook", label: "Hook", asks: "what lever it pulls (belief, contrast, question, her moment) and the tension it carries" },
   { key: "rehook", label: "Re-hook", asks: "how it escalates: the new fact, turn or stake it adds" },
@@ -769,29 +835,7 @@ export const CRAFT_PARTS: readonly { key: ScriptPartKey; label: string; asks: st
 /** A score of 0 means the reviewer did not score the part (a fail, never a pass). */
 export type CraftScores = Record<ScriptPartKey, { score: number; note: string }>;
 
-/** The reviewer's craft block, cleaned: a missing or unreadable part scores 0 (not scored). Null when there is no block at all. Pure. */
-export function readCraft(raw: unknown): CraftScores | null {
-  if (!raw || typeof raw !== "object") return null;
-  const r = raw as Record<string, { score?: unknown; note?: unknown } | null | undefined>;
-  return Object.fromEntries(SCRIPT_PART_KEYS.map((k) => {
-    const v = r[k];
-    const n = typeof v?.score === "number" && Number.isFinite(v.score) ? Math.max(1, Math.min(5, Math.round(v.score))) : 0;
-    return [k, { score: n, note: typeof v?.note === "string" ? v.note.replace(/\s+/g, " ").trim().slice(0, 160) : "" }];
-  })) as CraftScores;
-}
-
-/** The parts under CRAFT_PASS, in script order. Pure. */
-export function craftUnder(craft: CraftScores | null | undefined): ScriptPartKey[] {
-  return craft ? SCRIPT_PART_KEYS.filter((k) => (craft[k]?.score ?? 0) < CRAFT_PASS) : [];
-}
-
-const craftLine = (craft: CraftScores, k: ScriptPartKey) => {
-  const p = CRAFT_PARTS.find((x) => x.key === k)!;
-  const c = craft[k];
-  return `${p.label} ${c.score ? `${c.score} of 5` : "not scored"}${c.note ? `: ${c.note.replace(/[.\s]+$/, "")}` : ""}.`;
-};
-
-/** The length check (11), by code: over the cap fails (must-fix); 86 to 110 is advice (flag); the rest passes. v2.4: a told personal story may use up to the cap (no advice under it). */
+/** The length check, by code: over the cap fails (must-fix); 86 to 110 is advice (flag); the rest passes. v2.4: a told personal story may use up to the cap (no advice under it). */
 export function lengthCheck(words: number, opts: { story?: boolean | null } = {}): ReviewCheckResult {
   const spec = REVIEW_CHECKS.find((c) => c.key === "length")!;
   const band = lengthBand(words);
@@ -802,387 +846,77 @@ export function lengthCheck(words: number, opts: { story?: boolean | null } = {}
   return { key: "length", n: spec.n, label: spec.label, level: "must-fix", pass: true, reason: `${words} words, about ${seconds} seconds.` };
 }
 
-/** The craft total check 13 reads (v2.4): the five scores, an advisory hook counted as at least CRAFT_PASS. Pure. */
-export function craftGateScores(craft: CraftScores, opts: { hookAdvisory?: boolean } = {}): Record<ScriptPartKey, number> {
-  return Object.fromEntries(SCRIPT_PART_KEYS.map((k) => {
-    const s = craft[k]?.score ?? 0;
-    return [k, k === "hook" && opts.hookAdvisory ? Math.max(s, CRAFT_PASS) : s];
-  })) as Record<ScriptPartKey, number>;
-}
-
 /**
- * v2.4: how a review is merged. `hookAdvisory`: the hook is word for word a
- * scored pick that met HOOK_BAR (hookIsBarPick), so the reviewer's craft score
- * for it is advice only. `story`: a told personal story (lengthCheck).
+ * THE REVIEW AS STORED (v2.6, pure). The reviewer's four answers first (one
+ * thought, she would say it, the hook lands, nothing invented; a missing
+ * answer is a fail, never a pass), then code's checks: the length, and each
+ * hard rule failing on its own finding at must-fix; every other finding
+ * fails "Advice" as a flag, which never counts toward a rewrite.
  */
-export type MergeOpts = { hookAdvisory?: boolean; story?: boolean | null };
-
-/**
- * The model's 12 answers merged with what code knows: the length check is
- * always code's; a must-fix hard finding fails the check it belongs to; a
- * missing answer is a fail ("not scored"), never a pass. v2.3: check 13
- * (craft) is the craft block (no block at all is "not scored", a fail). A
- * failed check names the parts it is about (`parts`).
- * v2.4 (the calibration fix): check 13 passes on a total of CRAFT_TOTAL_PASS
- * with no part at CRAFT_FAIL_AT or under (a part not scored counts 0); a hook
- * or re-hook scored 3 fails its own check as a flag, at 2 or under at
- * must-fix; an advisory hook's craft score fails nothing, and the reviewer's
- * own check 3 failing it is a flag too unless it says the hook is untrue to
- * her (ACCURACY_RE): the fix round keeps that hook locked, so a must-fix on its
- * craft could never be fixed, only burn rounds. A flag-level hard
- * finding fails a passing check at flag level (it used to keep the check's
- * own level, so a flag on a must-fix check read as a must-fix).
- * v2.5 (the second calibration fix): the reviewer's own fail of the re-hook,
- * the payoff or the close (checks 4, 7, 8, CRAFT_CALIBRATED) is a flag when
- * its reason says nothing untrue (ACCURACY_RE) and the craft block scored
- * that part CRAFT_FAIL_AT + 1 (3) or more: the reviewer's own score says the
- * part works. John's Renovating re-hook, the shape of Jordan's own approved
- * one, was failed at must-fix with a craft 3. A must-fix code finding on the
- * part (a hedge opener, a live deal) still fails it at must-fix.
- */
-export function mergeReview(model: { key?: string; pass?: boolean; reason?: string }[], hard: HardFinding[], words: number, craft?: CraftScores | null, opts: MergeOpts = {}): ReviewCheckResult[] {
-  const gate = craft ? craftGateScores(craft, opts) : null;
+export function mergeViewerReview(model: { key?: string; pass?: boolean; reason?: string }[], hard: readonly HardFinding[], words: number, opts: { story?: boolean | null } = {}): ReviewCheckResult[] {
   return REVIEW_CHECKS.map((spec): ReviewCheckResult => {
-    if (spec.key === "length") return lengthCheck(words, { story: opts.story });
-    if (spec.key === "craft") {
-      if (!craft || !gate) return { key: spec.key, n: spec.n, label: spec.label, level: spec.level, pass: false, reason: "Not scored by the reviewer (no craft block)." };
-      const total = SCRIPT_PART_KEYS.reduce((n, k) => n + gate[k], 0);
-      const low = SCRIPT_PART_KEYS.filter((k) => gate[k] <= CRAFT_FAIL_AT);
-      const three = SCRIPT_PART_KEYS.filter((k) => gate[k] > CRAFT_FAIL_AT && gate[k] < CRAFT_PASS);
-      const pass = total >= CRAFT_TOTAL_PASS && !low.length;
-      const advice = opts.hookAdvisory && (craft.hook?.score ?? 0) < CRAFT_PASS ? ` The hook is the scored pick, unchanged: its craft score is advice (${craftLine(craft, "hook")})` : "";
-      const head = `Total ${total} of 25 (${CRAFT_TOTAL_PASS} or more, no part at ${CRAFT_FAIL_AT} or under, to pass).`;
-      const shown = pass ? SCRIPT_PART_KEYS.filter((k) => !(k === "hook" && advice)) : [...low, ...three];
-      const reason = `${head} ${shown.map((k) => (gate[k] > CRAFT_FAIL_AT && gate[k] < CRAFT_PASS ? craftLine(craft, k).replace(/\.$/, " (a flag).") : craftLine(craft, k))).join(" ")}${advice}`;
-      const failParts = total < CRAFT_TOTAL_PASS ? [...low, ...three] : low;
-      return { key: spec.key, n: spec.n, label: spec.label, level: spec.level, pass, reason: reason.replace(/\s+/g, " ").trim().slice(0, 700), ...(pass ? {} : { parts: failParts.length ? failParts : [...SCRIPT_PART_KEYS] }) };
+    const base = { key: spec.key as ReviewCheckKey, n: spec.n, label: spec.label };
+    if (spec.key === "length") return lengthCheck(words, opts);
+    if (spec.by === "viewer") {
+      const got = model.find((m) => m?.key === spec.key);
+      const pass = typeof got?.pass === "boolean" ? got.pass : false;
+      const reason = typeof got?.reason === "string" && got.reason.trim() ? got.reason.replace(/\s+/g, " ").trim().slice(0, 500) : got ? (pass ? "Passes." : "Did not pass.") : "Not answered by the reviewer.";
+      return { ...base, level: spec.level, pass, reason };
     }
-    const got = model.find((m) => m?.key === spec.key);
-    let pass = typeof got?.pass === "boolean" ? got.pass : false;
-    let reason = typeof got?.reason === "string" && got.reason.trim() ? got.reason.replace(/\s+/g, " ").trim().slice(0, 400) : got ? (pass ? "Passes." : "Did not pass.") : "Not scored by the reviewer.";
-    let level: CheckLevel = spec.level;
-    // v2.4: the scored pick, unchanged, is kept (locked) by the fix round, so the reviewer's own craft verdict on it
-    // is advice too (a flag); a verdict that it is untrue to her or bent from what she said stays a must-fix.
-    if (spec.key === "hook" && opts.hookAdvisory && got && !pass && !ACCURACY_RE.test(reason)) { level = "flag"; reason = `Advice (the scored hook, unchanged): ${reason}`; }
-    // v2.5: the reviewer's fail of the re-hook, payoff or close is a flag when it says nothing untrue and its own
-    // craft score for the part is 3 or more (a must-fix code finding below still makes it a must-fix).
-    const calibrated = CRAFT_CALIBRATED[spec.key];
-    const partScore = calibrated ? craft?.[calibrated]?.score ?? 0 : 0;
-    const demoted = !!calibrated && !!got && !pass && partScore > CRAFT_FAIL_AT && !ACCURACY_RE.test(reason);
-    if (demoted) level = "flag";
-    const parts = new Set<ScriptPartKey>(CHECK_PARTS[spec.key] ?? []);
-    for (const h of hard.filter((x) => checkOfFinding(x) === spec.key)) {
-      // A must-fix hard finding fails the check at must-fix level whatever the
-      // reviewer said; a flag-level one fails a passing check as a flag.
-      const modelSaid = pass ? "" : reason;
-      if (h.part) parts.add(h.part);
-      if (h.level === "must-fix") { pass = false; level = "must-fix"; reason = `${h.detail} ${modelSaid}`.trim(); }
-      else if (pass) { pass = false; level = "flag"; reason = h.detail; }
-    }
-    if (demoted && level === "flag") reason = `A flag (the craft block scored the ${CRAFT_PARTS.find((p) => p.key === calibrated)!.label.toLowerCase()} ${partScore} of 5): ${reason}`;
-    // v2.3 → v2.4: a hook or re-hook the craft block scored 2 or under fails its own check at must-fix; at 3, as a flag.
-    // A part not scored is check 13's to fail; an advisory hook's score fails nothing.
-    const s = craft?.[spec.key as ScriptPartKey]?.score ?? 0;
-    if (craft && (spec.key === "hook" || spec.key === "rehook") && s > 0 && s < CRAFT_PASS && !(spec.key === "hook" && opts.hookAdvisory)) {
-      const modelSaid = pass ? "" : reason;
-      if (s <= CRAFT_FAIL_AT) { pass = false; level = "must-fix"; reason = `Craft: ${craftLine(craft, spec.key)} ${modelSaid}`.trim(); }
-      else if (pass) { pass = false; level = "flag"; reason = `Craft: ${craftLine(craft, spec.key)} (a flag)`; }
-      else reason = `${reason} Craft: ${craftLine(craft, spec.key)}`;
-    }
-    return { key: spec.key, n: spec.n, label: spec.label, level, pass, reason: reason.slice(0, 500), ...(!pass && parts.size ? { parts: [...parts] } : {}) };
+    const mine = hard.filter((h) => HARD_TO_CHECK[h.key] === spec.key);
+    if (spec.key === "advice") return { ...base, level: "flag", pass: !mine.length, reason: mine.length ? mine.map((h) => h.detail).join(" ").slice(0, 700) : "Nothing to note." };
+    const must = mine.filter((h) => h.level === "must-fix");
+    return must.length ? { ...base, level: "must-fix", pass: false, reason: must.map((h) => h.detail).join(" ").slice(0, 500) } : { ...base, level: spec.level, pass: true, reason: "Passes." };
   });
 }
 
-// ---------------------------------------------------------------------------
-// v2.3: THE KEPT LONGER VERSION MAY NOT SAY THE LINE THE TRIM FAILED ON. When
-// the aim trim breaks a must-fix check, the longer passing version it came
-// from stands; but when the trim failed on a line the longer version says too
-// (the same close, the same hook), that line was never fine: the kept version
-// is flagged for a person instead of passed.
-// ---------------------------------------------------------------------------
-const lineKey = (s: string) => s.toLowerCase().replace(/[‘’]/g, "'").replace(/[“”]/g, "\"").replace(/[^a-z0-9' ]+/g, " ").replace(/\s+/g, " ").trim();
-
-/**
- * The trim's failed lines that the kept version says too: each must-fix
- * failure (not length, not Enough substance, the reason a trim is undone)
- * whose part reads the same in the kept version, or whose reason quotes a
- * line (three words or more) both versions say. Pure.
- */
-export function keptLongerConflicts(trim: { parts: ScriptParts; checks: readonly ReviewCheckResult[] }, kept: ScriptParts): { key: ReviewCheckKey; n: number; label: string; line: string }[] {
-  const keptAll = lineKey(spokenTextOf(kept));
-  const trimAll = lineKey(spokenTextOf(trim.parts));
-  const out: { key: ReviewCheckKey; n: number; label: string; line: string }[] = [];
-  const add = (c: ReviewCheckResult, line: string) => { if (!out.some((o) => o.key === c.key && lineKey(o.line) === lineKey(line))) out.push({ key: c.key, n: c.n, label: c.label, line: line.replace(/\s+/g, " ").trim().slice(0, 200) }); };
-  for (const c of trim.checks) {
-    if (c.pass || c.level !== "must-fix" || c.key === "length" || c.key === "substance") continue;
-    for (const part of c.parts ?? CHECK_PARTS[c.key] ?? []) {
-      const t = partTextOf(trim.parts, part);
-      const k = lineKey(t);
-      if (k.split(" ").length >= 2 && (k === lineKey(partTextOf(kept, part)) || keptAll.includes(k))) add(c, t);
-    }
-    for (const m of c.reason.matchAll(/["“]([^"”]{6,240})["”]/g)) {
-      const q = lineKey(m[1]);
-      if (q.split(" ").length >= 3 && trimAll.includes(q) && keptAll.includes(q)) add(c, m[1]);
-    }
-  }
-  return out;
-}
-
-export function mustFixFailures(checks: ReviewCheckResult[]): ReviewCheckResult[] {
+export function mustFixFailures(checks: readonly ReviewCheckResult[]): ReviewCheckResult[] {
   return checks.filter((c) => !c.pass && c.level === "must-fix");
 }
 
-/** "Creative review: 11 of 12 pass". */
+/** "Creative review: 10 of 11 pass". */
 export function reviewHeadline(checks: ReviewCheckResult[]): string {
   return `Creative review: ${checks.filter((c) => c.pass).length} of ${checks.length} pass`;
 }
 
 // ---------------------------------------------------------------------------
-// Five hooks, scored; the best one wins (by code).
+// The five scored hooks of v2.2 to v2.5 (a hooks step before the draft). v2.6
+// writes the hook in the draft, with the rest of the script; a version drafted
+// before keeps its hooks on its record, and the card's notes still list them.
 // ---------------------------------------------------------------------------
-
 export const HOOK_CRITERIA = ["relevance", "curiosity", "tension", "specificity", "naturalDelivery", "accuracy", "herVoice", "payoffConnection"] as const;
 export type HookCriterion = (typeof HOOK_CRITERIA)[number];
-/**
- * What the hook does for the video's job (Oct 22 2026, the listening fix):
- * "her_moment" opens on her own tension or turn; "viewer_line" is a line the
- * viewer would say or a question they are asking; "other" anything else.
- */
 export const HOOK_FITS = ["her_moment", "viewer_line", "other"] as const;
 export type HookFit = (typeof HOOK_FITS)[number];
-/**
- * `weak` (v2.3): why a usable hook is below HOOK_BAR (curiosity or tension
- * under 4); it is chosen only when no hook reaches the bar. A hook stored
- * before v2.3 has no tension score and reads as weak.
- */
 export type HookCandidate = { text: string; rehook: string; lever: string; scores: Record<HookCriterion, number>; total: number; note: string; disqualified: string | null; fit?: HookFit; weak?: string | null };
 /** The brief's reading of the video: a personal story (her background, why she does this work) or an educational one. */
 export type VideoType = "story" | "educational";
-/** How hooks are ordered: the video type, and whether the brief's proof is a story she told (v2.3). */
-export type HookOrderOpts = { videoType?: VideoType | null; proofIsStory?: boolean };
 
-const clampScore = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.max(1, Math.min(5, Math.round(v))) : 1);
-
-/** v2.3: a hook is eligible only with curiosity AND tension at these or more. */
-export const HOOK_BAR = { curiosity: 4, tension: 4 } as const;
-const scoreOf = (h: Pick<HookCandidate, "scores">, k: HookCriterion) => Number((h.scores as Record<string, unknown> | null | undefined)?.[k]) || 0;
-/**
- * What a hook is ranked by: curiosity + tension + specificity (v2.3) +
- * payoffConnection (v2.5: a hook the video's message answers; the v2.4
- * retest picked a fence-story hook the "price, always" payoff could not
- * answer). The total only breaks a tie.
- */
-export const hookRank = (h: Pick<HookCandidate, "scores">) => scoreOf(h, "curiosity") + scoreOf(h, "tension") + scoreOf(h, "specificity") + scoreOf(h, "payoffConnection");
-/** Why a hook is below HOOK_BAR, or null when it reaches it. Pure. */
-export function hookWeakness(h: Pick<HookCandidate, "scores">): string | null {
-  const low = (["curiosity", "tension"] as const).filter((k) => scoreOf(h, k) < HOOK_BAR[k]);
-  return low.length ? `${low.join(" and ")} under ${HOOK_BAR.curiosity}` : null;
-}
-
-/**
- * The order hooks are chosen in (v2.3): usable hooks only (never a
- * disqualified one); every hook that reaches HOOK_BAR before any that does
- * not; within each, for a personal story a hook that opens on HER moment
- * first (Oct 22 2026, the listening fix: the seniors pick was "Buying my
- * first home shouldn't feel this scary, right?", a viewer's line winning 31
- * to 29 over her own turn); then curiosity + tension + specificity (v2.5:
- * + payoffConnection, hookRank); on a tie, her moment when the brief's proof
- * is a story she told; then the total; then the earlier one. Self-scores
- * cluster (28 to 34 in the offline test), so the total no longer decides on
- * its own. v2.5: her moment wins the tie only when it is scored fully
- * accurate (5): a hook that retells her story at accuracy 4 already bends it
- * a little (Marcee's Repairs balcony hook, 4, failed Her meaning). Pure.
- */
-export function hookOrder(hooks: HookCandidate[], opts: HookOrderOpts = {}): number[] {
-  const storyFit = (h: HookCandidate) => (opts.videoType === "story" && h.fit === "her_moment" ? 1 : 0);
-  const herProof = (h: HookCandidate) => (opts.proofIsStory && h.fit === "her_moment" && scoreOf(h, "accuracy") >= 5 ? 1 : 0);
-  const totalOf = (h: HookCandidate) => (typeof h.total === "number" ? h.total : HOOK_CRITERIA.reduce((n, k) => n + scoreOf(h, k), 0));
-  const cmp = (a: { h: HookCandidate; i: number }, b: { h: HookCandidate; i: number }) =>
-    storyFit(b.h) - storyFit(a.h) || hookRank(b.h) - hookRank(a.h) || herProof(b.h) - herProof(a.h) || totalOf(b.h) - totalOf(a.h) || a.i - b.i;
-  const usable = hooks.map((h, i) => ({ h, i })).filter(({ h }) => !h.disqualified && !!h.text);
-  const strong = usable.filter(({ h }) => !hookWeakness(h)).sort(cmp);
-  const weak = usable.filter(({ h }) => !!hookWeakness(h)).sort(cmp);
-  return [...strong, ...weak].map(({ i }) => i);
-}
-
-/**
- * Clean the model's hooks and pick the winner (hookOrder): accurate (4+), no
- * greeting, no audience vocative, no dash; curiosity and tension 4 or more;
- * then the rank. `fallback` says so when no hook reached the bar and the best
- * of the rest was used, or when every hook was set aside.
- * v2.5: `avoid`, the proofs the brief excluded (a deal still in progress, a
- * story she already told on camera; brief.heldBack): a hook whose text and
- * re-hook together tell one of them (usedStory's test; tellsHeldStory, with
- * `kept`, the brief's other material) is set aside. Marcee's 2022 hook,
- * re-hook and build-up were built on the live deal the brief excluded.
- */
-export function pickHook(raw: { text?: unknown; rehook?: unknown; lever?: unknown; scores?: Record<string, unknown> | null; note?: unknown; fit?: unknown }[], opts: HookOrderOpts & { avoid?: readonly string[] | null; kept?: string | null } = {}): { hooks: HookCandidate[]; chosen: number; fallback: string | null } {
-  const avoid = (opts.avoid ?? []).filter((t) => !!t?.trim());
-  const hooks: HookCandidate[] = (Array.isArray(raw) ? raw : []).slice(0, 5).map((h) => {
-    const scores = Object.fromEntries(HOOK_CRITERIA.map((k) => [k, clampScore(h?.scores?.[k])])) as Record<HookCriterion, number>;
-    const text = String(h?.text ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
-    const rehook = String(h?.rehook ?? "").replace(/\s+/g, " ").trim().slice(0, 400);
-    const told = text ? avoid.map((held) => tellsHeldStory(`${text}\n${rehook}`, held, opts.kept ?? "")).find(Boolean) ?? null : null;
-    const why = !text ? "empty" : scores.accuracy < 4 ? "accuracy under 4" : GREETING_RE.test(text) ? "opens with a greeting" : AUDIENCE_VOCATIVE_RE.test(text) ? "opens by naming the audience" : DASH_RE.test(text) ? "uses a dash" : told ? `tells the excluded proof (${told.figures.join(", ")}; ${told.words.slice(0, 4).join(", ")})` : null;
-    const fit = (HOOK_FITS as readonly string[]).includes(String(h?.fit)) ? (h.fit as HookFit) : undefined;
-    return { text, rehook, lever: String(h?.lever ?? "").trim().slice(0, 80), scores, total: HOOK_CRITERIA.reduce((n, k) => n + scores[k], 0), note: String(h?.note ?? "").replace(/\s+/g, " ").trim().slice(0, 300), disqualified: why, weak: why ? null : hookWeakness({ scores }), ...(fit ? { fit } : {}) };
-  });
-  let chosen = hookOrder(hooks, opts)[0] ?? -1;
-  let fallback: string | null = null;
-  if (chosen >= 0 && hooks[chosen].weak) {
-    fallback = `No hook reached curiosity ${HOOK_BAR.curiosity} and tension ${HOOK_BAR.tension}; the strongest of the rest was used (${hooks[chosen].weak}).`;
-  } else if (chosen < 0) {
-    // Every hook was disqualified: the most accurate non-empty one, so the draft can still be written and the review says what is wrong.
-    // v2.5: never one that tells the excluded proof (then the draft writes its own hook).
-    for (let i = 0; i < hooks.length; i++) if (hooks[i].text && !/^tells the excluded proof/.test(hooks[i].disqualified ?? "") && (chosen < 0 || hooks[i].scores.accuracy * 100 + hooks[i].total > hooks[chosen].scores.accuracy * 100 + hooks[chosen].total)) chosen = i;
-    if (chosen >= 0) fallback = `Every hook was set aside; the most accurate one was used so the review can say what is wrong (${hooks[chosen].disqualified}).`;
-  }
-  return { hooks, chosen, fallback };
-}
-
-const hookKey = (s: string) => s.toLowerCase().replace(/[‘’]/g, "'").replace(/[^a-z0-9']+/g, " ").trim();
-
-/**
- * The next hook to try when the review fails the hook or the re-hook (Oct 22
- * 2026, the listening fix): the best usable hook, in the order pickHook
- * chose by, that has not been used yet. A failed re-hook used to be patched
- * around the locked hook for two rounds (the seniors draft broke its story to
- * keep "It should."); now the next round starts again from the runner-up.
- * Null when every usable hook has been tried. Pure.
- */
-export function runnerUpHook(hooks: HookCandidate[], used: readonly string[], opts?: HookOrderOpts | VideoType | null): HookCandidate | null {
-  const tried = new Set(used.map(hookKey).filter(Boolean));
-  const o: HookOrderOpts = typeof opts === "string" || opts == null ? { videoType: opts ?? null } : opts;
-  for (const i of hookOrder(hooks, o)) if (!tried.has(hookKey(hooks[i].text))) return hooks[i];
-  return null;
-}
-
-/** The hook of a script body: the candidate whose words it contains (the first one found), or null. */
-export function hookInUse(body: string, hooks: HookCandidate[]): string | null {
-  const b = hookKey(body);
-  return hooks.find((h) => h.text && b.includes(hookKey(h.text)))?.text ?? null;
-}
-
-/**
- * Review checks whose must-fix failure can send the next round back to a new
- * hook. v2.4: the hook only (it was the hook and the re-hook: Erica's strong
- * "$1.2 million, not $1.4" hook was thrown away because only its re-hook
- * failed). A failed re-hook is revised under the locked hook.
- */
-export const HOOK_SWITCH_CHECKS: readonly ReviewCheckKey[] = ["hook"];
-
-/**
- * Is this hook, word for word, one of the scored hooks that met HOOK_BAR (a
- * usable pick: not disqualified, curiosity and tension 4 or more)? Then the
- * reviewer's craft score for it is advice (v2.4, mergeReview). Pure.
- */
-export function hookIsBarPick(hooks: readonly HookCandidate[], hook: string): boolean {
-  const k = hookKey(hook ?? "");
-  return !!k && hooks.some((h) => !h.disqualified && !hookWeakness(h) && hookKey(h.text) === k);
-}
-
-/** A reason that says a line is untrue to her or bent from what she said (v2.4, the hook switch). */
-export const ACCURACY_RE = /\b(?:inaccura\w*|invent\w*|unsupported|not supported|never said|did not say|didn't say|not what she said|bends?|bent|misstat\w*|mislead\w*|misfram\w*|untrue|contradict\w*|her meaning)\b/i;
-
-/**
- * What the review said about the HOOK itself (v2.4, pure): did check 3 fail
- * at must-fix; did the hook fail on accuracy, meaning or a hard finding (a
- * must-fix code finding in the hook, check 3 failing for accuracy, or Her
- * meaning or Every claim failing on a line of the hook); and the craft block's
- * hook score (null when unknown). Read from the checks, or from a fix
- * instruction writerFixInstruction wrote when that is all there is.
- */
-export function hookVerdict(from: { checks?: readonly ReviewCheckResult[] | null; hard?: readonly HardFinding[] | null; craft?: CraftScores | null; instruction?: string | null }, hookText = ""): { failed: boolean; hard: boolean; craftHook: number | null } {
-  const hk = lineKey(hookText);
-  // Double quotes, or single quotes around a span that may hold an apostrophe ('We'll pick the lot first ...,').
-  const quoted = (reason: string) => [...reason.matchAll(/["“]([^"”]{6,240})["”]/g), ...reason.matchAll(/(?:^|[\s(])['‘](.{6,240}?)['’](?=[\s,.;:!?)]|$)/g)].map((m) => m[1]);
-  const quotesHook = (reason: string) => !!hk && quoted(reason).some((x) => { const q = lineKey(x); return q.split(" ").length >= 3 && hk.includes(q); });
-  if (from.checks?.length) {
-    const must = from.checks.filter((c) => !c.pass && c.level === "must-fix");
-    const hookCheck = must.find((c) => c.key === "hook");
-    const hardInHook = (from.hard ?? []).some((h) => h.level === "must-fix" && (h.part === "hook" || (h.check ?? HARD_TO_CHECK[h.key]) === "hook"));
-    const meaning = must.some((c) => (c.key === "her_meaning" || c.key === "claims") && ((c.parts ?? []).includes("hook") || quotesHook(c.reason)));
-    const s = from.craft?.hook?.score;
-    return { failed: !!hookCheck, hard: hardInHook || meaning || (!!hookCheck && ACCURACY_RE.test(hookCheck.reason)), craftHook: typeof s === "number" && s > 0 ? s : null };
-  }
-  const text = from.instruction ?? "";
-  const must = /MUST FIX:\n([\s\S]*?)(?:\n[A-Z][A-Z' ]+[:A-Z]|$)/.exec(text)?.[1] ?? "";
-  const label = REVIEW_CHECKS.find((c) => c.key === "hook")!;
-  const line = must.split("\n").find((l) => l.startsWith(`- ${label.n}. ${label.label}:`)) ?? "";
-  const craftHook = Number(/Craft: Hook (\d) of 5/.exec(line)?.[1] ?? 0) || null;
-  const meaningLine = must.split("\n").filter((l) => /^- (?:2\. Her meaning|10\. Every claim supported):/.test(l)).some((l) => quotesHook(l));
-  return { failed: !!line, hard: (!!line && (/opens with a greeting|naming the audience|Numbers the sources do not contain|Market statements she did not make/.test(line) || ACCURACY_RE.test(line))) || meaningLine, craftHook };
-}
-
-/** Did the review fail the hook or the re-hook at must-fix level? From the checks, or from a fix instruction writerFixInstruction wrote. Pure. */
-export function hookFailed(from: { checks?: ReviewCheckResult[] | null; instruction?: string | null }): boolean {
-  if (from.checks?.length) return from.checks.some((c) => !c.pass && c.level === "must-fix" && HOOK_SWITCH_CHECKS.includes(c.key));
-  const text = from.instruction ?? "";
-  const must = /MUST FIX:\n([\s\S]*?)(?:\n[A-Z][A-Z' ]+[:A-Z]|$)/.exec(text)?.[1] ?? "";
-  const labels = REVIEW_CHECKS.filter((c) => HOOK_SWITCH_CHECKS.includes(c.key)).map((c) => `${c.n}. ${c.label}:`);
-  return must.split("\n").some((l) => labels.some((x) => l.startsWith(`- ${x}`)));
-}
-
-// ---------------------------------------------------------------------------
-// v2.4: THE FINAL PICK of a script still flagged after its rounds. It used to
-// be "fewest failures"; the retest kept a 111-word version and dropped strong
-// first-choice hooks. Now: never a version over the cap when one at or under
-// it exists; then the craft total with the hook counted twice; then the fewest
-// must-fixes; then the fewest words over 85.
-// v2.5: for an educational script, a version inside the aim (85 or fewer)
-// comes before any version over it, whatever its craft. Of the reviewer's two
-// options (this, or a last 1 to 5 word trim when the pick lands at 86 to 90)
-// this one: it is code, so it costs no model call and keeps no text that was
-// never reviewed (every version it chooses from has its own review), and the
-// v2.4 retest showed trims of drafts already near the aim leave fragments.
-// Jordan's aim is a line, not a slope: among versions inside it (or among
-// versions all over it) craft still decides, then must-fixes, then words. A
-// told story may use up to the cap, so it is never ranked on the aim.
-// ---------------------------------------------------------------------------
-export type PickCandidate = { words: number; craft?: CraftScores | null; mustFix: number; /** v2.5: a told personal story (the aim does not rank it). */ story?: boolean | null };
-
-/** The craft total the final pick ranks by: the five scores, the hook counted twice (30 at most). Pure. */
+/** The craft total of a version reviewed before v2.6: the five scores, the hook counted twice (30 at most). Pure. */
 export function craftRankTotal(craft: CraftScores | null | undefined): number {
   if (!craft) return 0;
   return SCRIPT_PART_KEYS.reduce((n, k) => n + (craft[k]?.score ?? 0) * (k === "hook" ? 2 : 1), 0);
-}
-
-/** The order the final pick compares by, lower first (pure). v2.5: an educational version over the aim (85) ranks after every version inside it, before craft. */
-export function finalPickKey(x: PickCandidate): [number, number, number, number, number] {
-  const overAim = Math.max(0, x.words - WRITER_LENGTH.aim[1]);
-  return [x.words > WRITER_LENGTH.cap ? 1 : 0, !x.story && overAim > 0 ? 1 : 0, -craftRankTotal(x.craft), x.mustFix, overAim];
-}
-
-/** The index of the version to keep (pickFinal order); on a full tie, the first in the list. -1 for an empty list. Pure. */
-export function pickFinal(xs: readonly PickCandidate[]): number {
-  let best = -1;
-  for (let i = 0; i < xs.length; i++) {
-    if (best < 0) { best = i; continue; }
-    const a = finalPickKey(xs[i]), b = finalPickKey(xs[best]);
-    const d = a.map((v, j) => v - b[j]).find((v) => v !== 0) ?? 0;
-    if (d < 0) best = i;
-  }
-  return best;
 }
 
 // ---------------------------------------------------------------------------
 // NEVER A WORSE VERSION (Oct 23 2026). Jordan: "I don't need to see that it
 // needs fixes; I just need it to be fixed." Bernadette's Saturday script went
 // v10 → v11 → v12 and every fix round became the current version whether it
-// was better or not. Now an automatic fix round (and the cap trim) is written
-// into the history first and only becomes the current version when it is
-// BETTER than the version it was fixing, in this order:
+// was better or not. An automatic round (v2.6: the one whole rewrite) is
+// written into the history first and only becomes the current version when it
+// is BETTER than the version it was rewriting, in this order:
 //   1. fewer must-fix failures;
-//   2. a higher craft total (the five parts scored, the hook counted twice,
-//      as craftRankTotal: a weaker hook is the loss Jordan saw);
+//   2. it reads better: v2.6, the reviewer's 1 to 10 read as a viewer (times
+//      three); a version reviewed before v2.6, its craft total (the five parts
+//      scored, the hook counted twice, as craftRankTotal);
 //   3. inside the length rule: over the 110 cap is worst, then (not a told
 //      story) over the 85-word aim, then inside it.
 // A tie is not better: the version already current stays. The same order
-// picks the best of a chain still failing after its rounds (scriptJudge.
-// finishFlagged) and the dry run's proposals (scripts/_live/oct23-best-
-// version-current.ts). Pure.
+// picks the best of a chain still failing (scriptJudge.finishFlagged), the
+// offline run's result, and the dry run's proposals (scripts/_live/oct23-
+// best-version-current.ts). Pure.
 // ---------------------------------------------------------------------------
-export type AttemptScore = { mustFix: number; craft?: CraftScores | null; words: number; story?: boolean | null };
+export type AttemptScore = { mustFix: number; craft?: CraftScores | null; /** v2.6: the reviewer's 1 to 10 read as a viewer. */ reads?: number | null; words: number; story?: boolean | null };
 
 /** Where a word count sits against the length rule, lower is better: 0 inside it, 1 over the aim (not a story), 2 over the cap. Pure. */
 export function lengthMiss(words: number, story?: boolean | null): number {
@@ -1191,9 +925,14 @@ export function lengthMiss(words: number, story?: boolean | null): number {
   return 0;
 }
 
-/** The order an attempt is compared by, lower first: must-fix failures, then the craft total (negated), then the length rule. Pure. */
+/** How well a version reads, 0 to 30 (v2.6): the viewer's 1 to 10 read times three, else (reviewed before v2.6) its craft total. Pure. */
+export function qualityOf(x: Pick<AttemptScore, "craft" | "reads">): number {
+  return typeof x.reads === "number" && x.reads > 0 ? Math.min(10, Math.round(x.reads)) * 3 : craftRankTotal(x.craft);
+}
+
+/** The order an attempt is compared by, lower first: must-fix failures, then how well it reads (negated), then the length rule. Pure. */
 export function attemptKey(x: AttemptScore): [number, number, number] {
-  return [x.mustFix, -craftRankTotal(x.craft), lengthMiss(x.words, x.story)];
+  return [x.mustFix, -qualityOf(x), lengthMiss(x.words, x.story)];
 }
 
 /** Is `next` strictly better than `kept`? A tie keeps `kept`. Pure. */
