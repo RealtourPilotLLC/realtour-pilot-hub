@@ -272,10 +272,10 @@ async function main() {
     const sub = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: A.subId }, select: { finalPath: true } });
     c.ok("the editor's file in Final now says FINAL (editor export)", /FINAL \(editor export\)\.mp4$/.test(sub.finalPath ?? "") && FS.has(sub.finalPath!) && !FS.has(A.original), sub.finalPath ?? "");
     const bells = await prisma.notification.count({ where: { dedupeKey: { startsWith: `topaz-skipped-${jobId}` } } });
-    const act = await prisma.activity.findFirst({ where: { projectId: A.projectId, body: { startsWith: "1080p pass not needed" } } });
+    const act = await prisma.activity.findFirst({ where: { projectId: A.projectId, body: { startsWith: "Topaz pass not needed" } } });
     c.ok("quiet: no bell for the expected path, one timeline line", bells === 0 && !!act && /nothing was spent/i.test(act.body), act?.body ?? "");
     const view = await tj.topazJobForSubmission(A.subId);
-    c.ok("the 1080p lane's own view says it too", view?.says === orig.ALREADY_FINISHED_SAYS, view?.says ?? "");
+    c.ok("the Topaz pass's own view says it too", view?.says === orig.ALREADY_FINISHED_SAYS, view?.says ?? "");
 
     const H = await mkListing("12 HEVC Ln", { header: meta({ codec: "hvc1", width: 1920, height: 1080 }) });
     const hj = await queue(H.subId, H.projectId);
@@ -302,7 +302,7 @@ async function main() {
     const pj = await queue(P.subId, P.projectId);
     await tj.advanceTopazJob(pj);
     const pr = await jobOf(pj);
-    c.ok("PCM sound: the old skip (\"the 1080p pass loses it\"), NOT original-final", pr.state === "skipped" && pr.outputCheck == null && pr.resolution == null && /uncompressed \(PCM\)/.test(pr.skipReason ?? ""), pr.skipReason ?? "");
+    c.ok("PCM sound: the old skip (\"the Topaz pass loses it\"), NOT original-final", pr.state === "skipped" && pr.outputCheck == null && pr.resolution == null && /uncompressed \(PCM\)/.test(pr.skipReason ?? ""), pr.skipReason ?? "");
 
     const U = await mkListing("6 Unread Rd", { header: null });
     const uj = await queue(U.subId, U.projectId);
@@ -381,7 +381,7 @@ async function main() {
     });
     const mj = await prisma.topazJob.create({ data: { submissionId: mcut.id, projectId: M.projectId!, state: "skipped", skipReason: "This video's audio is uncompressed (PCM) …", finishedAt: at } });
     let snap = await monthlyFinalSnapshot(mcut.id);
-    c.ok("contrast: a plain skipped pass is still NOT portal-ready", !snap.ok && /checked 1080p file isn't ready/.test(snap.message), snap.ok ? "ok?" : snap.message);
+    c.ok("contrast: a plain skipped pass is still NOT portal-ready", !snap.ok && /checked Topaz file isn't ready/.test(snap.message), snap.ok ? "ok?" : snap.message);
     await prisma.topazJob.update({ where: { id: mj.id }, data: { outputCheck: "original-final", resolution: "already-finished", skipReason: orig.ALREADY_FINISHED_SAYS } });
     const files = await clientCutFiles([mcut.id]);
     c.ok("portal: the client's file is the ORIGINAL, not 'still finishing'", files.get(mcut.id)?.kind === "original", JSON.stringify(files.get(mcut.id)));
@@ -411,7 +411,7 @@ async function main() {
     const hcut = await prisma.reviewSubmission.create({ data: { projectId: M2.projectId!, deliverableId: M2.deliverableId, slot: 1, kind: "video", round: 1, status: "APPROVED", source: "upload", fileName: "Personal Branding Reel - v1.mp4", blobUrl: blobUrlFor("held.mp4"), sizeBytes: BYTES.length, decidedAt: at, decidedBy: "James", portalPublicationRequiredAt: at }, select: { id: true } });
     const hj = (await prisma.topazJob.create({ data: { submissionId: hcut.id, projectId: M2.projectId!, state: "held", heldPath: "/drill/unverified/held.mp4", heldAt: at, outputCheck: "unverified" } })).id;
     const kept = await tj.resolveHeldTopazJob(hj, "use-original", "James Drill");
-    c.ok("held portal video: 'keep the original' is still refused, as before", !kept.ok && /client only gets the checked 1080p file/.test(kept.message) && (await jobOf(hj)).state === "held", kept.message);
+    c.ok("held portal video: 'keep the original' is still refused, as before", !kept.ok && /client only gets the checked Topaz file/.test(kept.message) && (await jobOf(hj)).state === "held", kept.message);
     const L = await mkListing("26 Held Listing Rd");
     const heldFile = `${L.final}/unverified/Real Estate Video Tour - v1 (Topaz - unchecked).mp4`;
     put(heldFile);
@@ -547,7 +547,7 @@ async function main() {
     c.ok("the panel labels them starting points to test, not proven", /starting points to test, not proven settings/.test(panel) && /TOPAZ_STARTING_POINTS\.map/.test(panel));
     // The rendered page above the fold-away (from the JSX, not the imports).
     const top = panel.slice(panel.indexOf("  return ("), panel.indexOf("data-topaz-fine-tune"));
-    c.ok("set it and forget it: the switch and ONE plain line on top", /Videos the editor already exported at 1080p go out as they are; anything else gets the 1080p pass with the house setting\./.test(top) && /label="Run approved cuts through Topaz"/.test(top));
+    c.ok("set it and forget it: the switch and ONE plain line on top", /Videos the editor already exported at 1080p go out as they are; anything else gets the Topaz pass with the house setting\./.test(top) && /label="Run approved cuts through Topaz"/.test(top));
     const fine = panel.slice(panel.indexOf("<details"), panel.indexOf("</details>"));
     c.ok("…the test, the mode, the sliders and the starting points all inside ONE closed \"Fine-tune (optional)\"",
       /Fine-tune \(optional\)/.test(fine) && !/<details[^>]*\bopen\b/.test(panel) && /<TopazTestPanel/.test(fine) && /TOPAZ_MODE_OPTIONS/.test(fine) && /SLIDERS\.map/.test(fine) && /TOPAZ_STARTING_POINTS\.map/.test(fine) && !/TOPAZ_STARTING_POINTS|SLIDERS\.map|<TopazTestPanel/.test(top));

@@ -2028,7 +2028,7 @@ export async function sweepReadyToSendAgainstAryeo(opts?: {
 
     const cards = await closeKylesUploadCards(id, listing, null, { dryRun: opts?.dryRun }).catch(() => null);
     if (!cards) {
-      row("couldn't read this job's 1080p jobs — left alone");
+      row("couldn't read this job's Topaz jobs — left alone");
       continue;
     }
     const cuts = await stampCutsTheDeliveryCovers(id, listing, { dryRun: opts?.dryRun }).catch(

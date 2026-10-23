@@ -639,8 +639,8 @@ export async function setSmartTaskStatus(taskId: string, status: string): Promis
   if (t.dedupeKey?.startsWith("topaz-deliver-") && status === "COMPLETED") {
     const jobId = t.dedupeKey.slice("topaz-deliver-".length);
     const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { submissionId: true, taskId: true, deliveredAt: true, submission: { select: { status: true } } } });
-    if (!job) return { ok: false, message: "This delivery task has no matching 1080p job. Ask Kyle to reconcile it." };
-    if (job.taskId !== taskId) return { ok: false, message: "This task is no longer the 1080p job's delivery card. Ask Kyle to reconcile it." };
+    if (!job) return { ok: false, message: "This delivery task has no matching Topaz job. Ask Kyle to reconcile it." };
+    if (job.taskId !== taskId) return { ok: false, message: "This task is no longer the Topaz job's delivery card. Ask Kyle to reconcile it." };
     if (!job.deliveredAt) {
       const { uploadedForDelivery } = await import("@/lib/deliveryUploads");
       const checked = await uploadedForDelivery(job.submissionId);

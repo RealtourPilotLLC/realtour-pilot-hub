@@ -16,6 +16,7 @@ import { parseEvidence } from "@/lib/statusEvidence";
 import { briefStatusForAppointments, type BriefState } from "@/lib/photographerBrief";
 import { expectedCrons, staleAfterMs, type CronJobHealth } from "@/lib/cronHealth";
 import { scrubMoney } from "@/lib/text";
+import { RERUN_LABEL } from "@/lib/topazRerun";
 import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import { listAssignees, viewerAssigneeKey, type Assignee } from "@/lib/assignees";
 import { syntheticClientIds } from "@/lib/syntheticClients";
@@ -114,6 +115,8 @@ export type DeskAction =
   | { kind: "confirm"; taskId: string; outboxHref: string }
   /** the photographer brief's own "Send brief now" (one photographer, one ET day) */
   | { kind: "brief-send"; teamMemberId: string; day: string; name: string }
+  /** "Run Topaz again" (Oct 23 2026): a finished Topaz file not sent yet (readyToSend's offer) */
+  | { kind: "topaz-rerun"; jobId: string; street: string; credits: number | null; limit: number | null }
   | { kind: "link"; label: string; href: string };
 
 export type AssetLine = {
@@ -130,6 +133,9 @@ export type AssetLine = {
   /** context, never a checklist: what the free photo check found, who approved */
   note: string | null;
   action: DeskAction | null;
+  /** a second control for the same asset, after `action` in the side panel
+   *  (Oct 23 2026: "Run Topaz again" beside a video's send) */
+  more?: DeskAction[];
 };
 
 export type PrepVisit = {
@@ -628,7 +634,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     const approved = approvedBy ? `Approved by ${approvedBy}` : "Approved";
     const a: AssetLine = { id: `video:${r.key}`, kind: "video", label: clean(r.label), status: "", tone: "now", late: r.late, dueISO: r.promiseISO, who: null, note: approvedBy ? `${approved} (creative review). You send it.` : null, action: null };
     if (r.lane === "finishing") {
-      Object.assign(a, { tone: r.late ? "now" : "waiting", status: `${approved}, not sent: the 1080p pass is still running`, who: "the 1080p pass", action: r.late ? { kind: "link", label: "Open in Videos", href: "/review" } : null });
+      Object.assign(a, { tone: r.late ? "now" : "waiting", status: `${approved}, not sent: the Topaz pass is still running`, who: "the Topaz pass", action: r.late ? { kind: "link", label: "Open in Videos", href: "/review" } : null });
     } else if (r.lane === "held") {
       const canSend = !!(p?.canStart && s && !s.byHandWhy);
       Object.assign(a, {
@@ -660,6 +666,9 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
         if (s?.byHandWhy) a.status = `${approved}: ${clean(s.byHandWhy)}`;
       }
     }
+    // Run Topaz again (Jordan, Oct 23 2026) beside the video's send, wherever
+    // the board offers it: a finished or held Topaz file not sent yet.
+    if (r.rerun && a.tone !== "waiting") a.more = [{ kind: "topaz-rerun", jobId: r.rerun.jobId, street: clean(r.street), credits: r.rerun.credits, limit: r.rerun.limit }];
     const g = groupOf(r.projectId, r.street, r.clientName);
     g.aryeoUrl = g.aryeoUrl ?? r.aryeoUrl;
     g.assets.push(a);
@@ -745,7 +754,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       : (lead.kind === "floorplan" || lead.kind === "tour") && lead.late ? `Chase the ${lead.label.toLowerCase()} for ${g.street}`
       : `Check the ${lead.label.toLowerCase()} for ${g.street}`;
     const reason = g.assets.map((a) => `${a.label}: ${a.status}`).slice(0, 4).join(" · ");
-    const actions = g.assets.map((a) => a.action).filter((x): x is DeskAction => !!x);
+    const actions = g.assets.flatMap((a) => [a.action, ...(a.more ?? [])]).filter((x): x is DeskAction => !!x);
     const failed = g.assets.some((a) => a.tone === "failed");
     const dueToday = !!dueISO && Date.parse(dueISO) < endToday.getTime();
     push({
@@ -1311,6 +1320,7 @@ export function actionLabel(a: DeskAction): string {
     case "remind": return "Remind";
     case "confirm": return "Confirm";
     case "brief-send": return "Send brief now";
+    case "topaz-rerun": return RERUN_LABEL;
     case "link": return a.label;
   }
 }

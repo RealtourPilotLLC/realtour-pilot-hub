@@ -37,11 +37,11 @@ export type ListingFileVerdict = {
 };
 
 const mb = (n: number) => `${(n / 1_000_000).toFixed(1)} MB (${n.toLocaleString("en-US")} bytes)`;
-const DIFFERENT = "The listing has a different file, for example the editor's original instead of the 1080p file. Upload this exact file to the Aryeo listing, then mark it uploaded.";
+const DIFFERENT = "The listing has a different file, for example the editor's original instead of the Topaz file. Upload this exact file to the Aryeo listing, then mark it uploaded.";
 
 /** The verdict from what was read (pure). */
 export function judgeListingFile(file: RecordedFileFact, videos: ListingVideoFact[], undated = 0): ListingFileVerdict {
-  const fileWhen = `${file.kind === "1080p" ? "this 1080p file was saved" : "this version was uploaded"} (${etDateTime(file.readyAt)} ET)`;
+  const fileWhen = `${file.kind === "1080p" ? "this Topaz file was saved" : "this version was uploaded"} (${etDateTime(file.readyAt)} ET)`;
   if (!videos.length) {
     return undated
       ? { verdict: "unknown", message: "The listing's videos carry no upload time the hub can read." }
@@ -60,7 +60,7 @@ export function judgeListingFile(file: RecordedFileFact, videos: ListingVideoFac
   if (file.sizeBytes == null) return { verdict: "unknown", message: "This file's size could not be read, so only its time was checked." };
   if (after.every((v) => v.sizeBytes != null)) {
     const latest = after.reduce((a, b) => (a.at >= b.at ? a : b));
-    return { verdict: "mismatch", message: `The newest video on the Aryeo listing is ${mb(latest.sizeBytes!)}; ${file.kind === "1080p" ? "the 1080p file" : "this version"} is ${mb(file.sizeBytes)}. ${DIFFERENT}` };
+    return { verdict: "mismatch", message: `The newest video on the Aryeo listing is ${mb(latest.sizeBytes!)}; ${file.kind === "1080p" ? "the Topaz file" : "this version"} is ${mb(file.sizeBytes)}. ${DIFFERENT}` };
   }
   return { verdict: "unknown", message: "The listing video's size could not be read." };
 }

@@ -54,7 +54,7 @@ export function RetryRender({ jobId, street }: { jobId: string; street: string }
         type="button"
         onClick={press}
         disabled={busy}
-        aria-label={asking ? `Yes, run the 1080p pass again for ${street}` : `Run the 1080p pass again for ${street}`}
+        aria-label={asking ? `Yes, run the Topaz pass again for ${street}` : `Run the Topaz pass again for ${street}`}
         className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-[11px] font-semibold text-muted hover:bg-surface-2 disabled:opacity-50"
       >
         {busy ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}

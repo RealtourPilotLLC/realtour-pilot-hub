@@ -10,6 +10,7 @@ import type { AssetLine, DeskAction, DeskItem, DeskTabKey, OfficeDesk as Desk, P
 import { SendVideo } from "@/components/videoDelivery/SendVideo";
 import { PushControls } from "@/components/videoDelivery/PushControls";
 import { NotTold } from "@/components/ops/NotTold";
+import { RerunTopaz } from "@/components/ops/RerunTopaz";
 import { CommsDismissButton } from "@/components/tasks/ChecklistButtons";
 import { OldItemActions } from "@/components/home/OldItemActions";
 import { AskQuickActions } from "@/components/home/AskQuickActions";
@@ -485,6 +486,8 @@ function ActionControl({ a, item, creative, owner }: { a: DeskAction; item: Desk
       return <RemindPhotographerButton projectId={a.projectId} street={a.street} view={a.view} showMissing />;
     case "confirm":
       return <ConfirmControls taskId={a.taskId} outboxHref={a.outboxHref} />;
+    case "topaz-rerun":
+      return <RerunTopaz jobId={a.jobId} street={a.street} credits={a.credits} limit={a.limit} />;
     case "brief-send":
       return <BriefSend teamMemberId={a.teamMemberId} day={a.day} name={a.name} />;
     case "link":
