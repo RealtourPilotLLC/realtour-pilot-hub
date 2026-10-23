@@ -167,6 +167,7 @@ const ALERT_SWITCH_READERS: Record<keyof InternalAlertRules, { words: string; fi
   eveningPush: { words: "the 6 PM wrap, Monday to Saturday", files: ["src/lib/eveningPush.ts"] },
   photographerBrief: { words: "the 6 PM shoot briefs for tomorrow", files: ["src/lib/eveningPush.ts"] },
   shootDayText: { words: "the shoot start check, every 5 minutes", files: ["src/lib/shootDayText.ts"] },
+  sessionScriptsText: { words: "the content session check, every 5 minutes from 7 AM", files: ["src/lib/sessionScriptsText.ts"] },
   uploadGap: { words: "the upload check, every 5 minutes (each job at most every 15)", files: ["src/lib/uploadGaps.ts"] },
   missingInstructions: { words: "the morning instructions check, every 5 minutes from 10 AM", files: ["src/lib/missingInstructions.ts"] },
   promiseWatch: { words: "the promise check, every 5 minutes", files: ["src/lib/promiseWatch.ts"] },
@@ -396,6 +397,15 @@ export function InternalAlertSettings({
           <ReadBy k="shootDayText" />
         </div>
         <Toggle on={r.shootDayText.enabled} onChange={(v) => set({ shootDayText: { enabled: v } })} label="Special requests at the shoot" />
+      </div>
+
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+        <div>
+          <p className="text-sm font-semibold">Scripts link on session day</p>
+          <p className="text-[13px] text-muted">From 7 AM on the day of each monthly content session, the photographer or videographer on the appointment gets one text from the company line with the time, the address and a link to the session on their shoot page, where its topics and scripts are.</p>
+          <ReadBy k="sessionScriptsText" />
+        </div>
+        <Toggle on={r.sessionScriptsText.enabled} onChange={(v) => set({ sessionScriptsText: { enabled: v } })} label="Scripts link on session day" />
       </div>
 
       <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">

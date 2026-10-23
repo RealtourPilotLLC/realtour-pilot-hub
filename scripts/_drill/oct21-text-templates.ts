@@ -183,6 +183,12 @@ async function main() {
         const o = { street: "104 Carlton Ct", startAt: new Date("2026-10-21T18:30:00Z"), requests, link: `${APP}/shoot/p1` };
         same("shoot_day_requests", `${requests.length} request(s)`, OLD.shootDay.composeShootDayText(o), shootDay.composeShootDayText(o));
       }
+      {
+        // Oct 23 2026: new with its template (no older code to compare), so it is held to the words Jordan approved.
+        const sst = await import("@/lib/sessionScriptsText");
+        const o = { name: "Harrison Wells", client: "John Collins", startAt: new Date("2026-10-23T17:30:00Z"), street: "80 W Lancaster Ave", link: `${APP}/shoot/p1` };
+        same("session_scripts", "John's session", `⚙️ Realtour Hub: Hi Harrison, John's content session is today at 1:30 PM at 80 W Lancaster Ave. The scripts are on your shoot page: ${APP}/shoot/p1`, sst.composeSessionScriptsText(o));
+      }
       const counts = { groundPhotos: 0, dronePhotos: 45, droneClips: 4, footage: 0, newestAt: null };
       for (const [sure, alsoEmpty] of [[["ground_photos"], []], [["ground_photos", "drone"], ["footage"]], [["footage"], ["ground_photos", "drone"]]] as const) {
         const o = { firstName: "Harrison", street: "123 Main St", shotWhen: "yesterday", counts, sure: [...sure], alsoEmpty: [...alsoEmpty], link: `${APP}/upload/p1` };

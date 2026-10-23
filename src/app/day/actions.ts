@@ -451,6 +451,9 @@ export async function createTaskForKyle(input: {
       priority: "MEDIUM",
       dueAt: input.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(input.dueDate) ? etEndOfDay(input.dueDate) : null,
       ownerId: kyle?.id ?? null,
+      // Every screen that lists Kyle's work keys on assignedKey; ownerId alone
+      // read "unassigned" (Oct 23 2026, the Sep 8 chase-task bug again).
+      assignedKey: "kyle",
     },
     select: { id: true },
   });

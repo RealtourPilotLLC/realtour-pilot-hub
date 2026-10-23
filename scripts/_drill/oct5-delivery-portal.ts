@@ -295,7 +295,7 @@ async function main() {
     // =======================================================================
     const link = await pa.mintLoginLink(A.membershipId!, null, { emailed: true }); // as the reminder and script emails mint it
     const hours = (link.expiresAt.getTime() - Date.now()) / 3_600_000;
-    c.ok("an emailed link lasts 24 hours", hours > 23.9 && hours <= 24, hours.toFixed(2));
+    c.ok("an emailed link lasts 7 days (Oct 23 2026)", hours > 167.9 && hours <= 168, hours.toFixed(2));
     c.ok("a typed-email link (15 min) is the one a new request must not cut off", pa.holdsTypedLoginLink(new Date(Date.now() + 10 * 60_000)) && !pa.holdsTypedLoginLink(new Date(Date.now() + 23 * 3_600_000)));
     const raw7 = new URL(link.url).pathname.split("/").pop()!;
     const route = await import("@/app/portal/auth/[token]/route");

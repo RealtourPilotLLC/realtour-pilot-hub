@@ -12,16 +12,19 @@ import { requestPortalLoginLink, signOutPortal } from "@/app/portal/login/action
 // 200, no data). Same rules as the rest of the portal: no hub links, no
 // internal vocabulary, and no hint about WHICH account exists — the sentence
 // after "send" is identical for a client, a stranger and a typo.
-const REASONS: Record<string, string> = {
-  expired: "That link has expired. Sign in with your email to continue.",
-  rotated: "That link has been replaced with a newer one. Sign in with your email to continue.",
+// Oct 23 2026 (Arielle Roemer could not get in): a dead link says so in plain
+// words and says what to do, and that any address we have for them works.
+const NEW_LINK = "Type your email below and we'll send you a new one. Any email address we have for you works.";
+const REASONS: Record<string, { news: string; ask?: true }> = {
+  expired: { news: "That link has expired.", ask: true },
+  rotated: { news: "That link isn't working any more.", ask: true },
   // A token no enrollment carries: it may have been replaced, or it may never
   // have existed. We cannot tell, so we claim neither.
-  unknown: "That link isn't working any more. Sign in with your email to continue.",
-  invalid: "That sign-in link is no longer valid. Each link works once, for a limited time. Request a fresh one below.",
-  signedout: "You're signed out.",
-  noaccess: "This email doesn't have access to a program right now. Reply to any text or email from us and we'll sort it.",
-  revoked: "This portal is no longer available. Reply to any text or email from us if that's unexpected.",
+  unknown: { news: "That link isn't working any more.", ask: true },
+  invalid: { news: "That link has expired or was already used.", ask: true },
+  signedout: { news: "You're signed out." },
+  noaccess: { news: "This email doesn't have access to a program right now. Reply to any text or email from us and we'll sort it." },
+  revoked: { news: "This portal is no longer available. Reply to any text or email from us if that's unexpected." },
 };
 
 /** `signedIn`: the person the cookie names, when there is one. canEnter =
@@ -51,10 +54,10 @@ export function PortalSignIn({ reason, signedIn, emailSignIn = true }: { reason?
       attempt.finish(id, false);
     }
   }
-  // With the email form off, every "Sign in with your email to continue" is an
-  // instruction the page cannot honour — drop the clause, keep the news.
-  const raw = reason ? REASONS[reason] : null;
-  const note = raw && !emailSignIn ? raw.replace(" Sign in with your email to continue.", "").replace(" Request a fresh one below.", "") : raw;
+  // With the email form off, "type your email below" is an instruction the
+  // page cannot honour: keep the news, drop the ask.
+  const r = reason ? REASONS[reason] : null;
+  const note = r ? (r.ask && emailSignIn ? `${r.news} ${NEW_LINK}` : r.news) : null;
 
   return (
     <div className="portal-light fixed inset-0 flex items-center justify-center overflow-y-auto bg-background p-6 text-foreground">

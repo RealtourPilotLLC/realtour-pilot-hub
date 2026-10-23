@@ -130,6 +130,19 @@ async function clientGate(row: OutboxRow, kind: Exclude<RolloutKind, "portal_log
   return d.ok ? { ok: true } : fromReach(d);
 }
 
+/** Is `to` an address one of this person's (unrevoked) seats' clients is known by: Client.email, backupEmail, or a program "also" email? (Oct 23 2026) */
+async function knownClientAddressOf(personId: string, to: string): Promise<boolean> {
+  const seats = await prisma.clientMembership.findMany({ where: { clientUserId: personId, revokedAt: null }, select: { clientId: true, enrollmentId: true } });
+  if (!seats.length) return false;
+  const [clients, enrollments, { alsoEmailsFromOverrides }] = await Promise.all([
+    prisma.client.findMany({ where: { id: { in: seats.map((s) => s.clientId) } }, select: { email: true, backupEmail: true } }),
+    prisma.contentEnrollment.findMany({ where: { id: { in: seats.map((s) => s.enrollmentId) } }, select: { overridesJson: true } }),
+    import("@/lib/clientEmailMonitor"),
+  ]);
+  const known = [...clients.flatMap((c) => [c.email, c.backupEmail]), ...enrollments.flatMap((e) => alsoEmailsFromOverrides(e.overridesJson))];
+  return known.some((k) => !!k && sameEmail(k, to));
+}
+
 /** One seat, live the way portal.liveMemberships means it: not revoked, the program's access not revoked, and the seat's client the program's. */
 async function liveSeat(membershipId: string): Promise<{ clientId: string; email: string | null } | null> {
   if (!membershipId) return null;
@@ -153,7 +166,10 @@ async function loginGate(row: OutboxRow): Promise<GateVerdict> {
   const personId = segments(row.dedupeKey)[1] ?? "";
   const person = personId ? await prisma.clientUser.findUnique({ where: { id: personId }, select: { email: true, status: true } }) : null;
   if (!person || person.status === "DISABLED") return refuse("seat_mismatch", "the person asking to sign in no longer has an account");
-  if (!sameEmail(person.email, row.toRef)) return refuse("seat_mismatch", "the sign-in link's address is not the account's");
+  // Oct 23 2026 (portalAccess.requestLoginLink): a link asked for at an
+  // address we know for one of the person's clients (the client's email,
+  // backup email or a program "also" email) goes to that address.
+  if (!sameEmail(person.email, row.toRef) && !(await knownClientAddressOf(personId, row.toRef))) return refuse("seat_mismatch", "the sign-in link's address is not the account's");
   if (!(await isAutomationEnabled("portal_login_email"))) return refuse("switched_off", "portal_login_email is switched off");
 
   const seats = await prisma.clientMembership.findMany({ where: { clientUserId: personId, revokedAt: null }, select: { enrollmentId: true, clientId: true } });

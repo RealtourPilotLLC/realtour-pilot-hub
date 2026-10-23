@@ -98,7 +98,8 @@ async function main() {
   // (shootDayText, the special requests texted at the shoot); twelve since the
   // same night (uploadGap, missing from the upload); thirteen since Oct 21 2026
   // (missingInstructions, the morning-after nudge).
-  c.ok("InternalAlertRules parses into its thirteen keys", keys.length === 13, keys.join(", "));
+  // fourteen since Oct 23 2026 (sessionScriptsText, the scripts link on session day).
+  c.ok("InternalAlertRules parses into its fourteen keys", keys.length === 14, keys.join(", "));
 
   const files = walk("src").filter((f) => !NOT_READERS.has(f));
   const texts = new Map(files.map((f) => [f, code(read(f))]));
