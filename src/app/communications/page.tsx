@@ -173,10 +173,8 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
               <Link href={messagesHref("waiting", { test: includeTest })} className="inline-flex min-h-11 items-center font-medium text-brand underline">Back to Waiting on us</Link>
             </p>
           )}
-          <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted">
-            <span>{includeTest ? "Showing real and test records" : "Test records hidden"}</span>
-            <Link href={messagesHref("texts", { test: !includeTest })} className="inline-flex min-h-9 items-center rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">{includeTest ? "Hide test records" : "Show test records"}</Link>
-          </div>
+          {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden. */}
+          {includeTest && <p className="mb-3 text-xs text-muted">Showing real and test records</p>}
           <p className="mb-3 text-[13px] text-muted">
             Clients waiting on a reply are counted on <Link href={messagesHref("waiting", { test: includeTest })} className="font-medium text-brand underline">Waiting on us</Link>. This tab&rsquo;s number is texts from numbers we have not saved and from our own team.
           </p>
@@ -197,10 +195,8 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
         />
         <div className="p-4 sm:p-6">
           {tabBar()}
-          <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted">
-            <span>{includeTest ? "Showing real and test records" : "Showing real client drafts"}</span>
-            <Link href={messagesHref("outbox", { test: !includeTest })} className="inline-flex min-h-9 items-center rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">{includeTest ? "Hide test records" : "Show test records"}</Link>
-          </div>
+          {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients' drafts stay hidden. */}
+          {includeTest && <p className="mb-3 text-xs text-muted">Showing real and test records</p>}
           {/* The batch send-all lives HERE: the Outbox is the one home for
               drafted texts (it was also a panel on /tasks + a rollup card, three
               surfaces for the same rows, audit). */}
@@ -262,10 +258,8 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
               <Link href={messagesHref("waiting", { test: includeTest })} className="inline-flex min-h-11 items-center font-medium text-brand underline">Back to Waiting on us</Link>
             </p>
           )}
-          <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted">
-            <span>{includeTest ? "Showing real and test records" : "Test records hidden"}</span>
-            <Link href={messagesHref("email", { test: !includeTest })} className="inline-flex min-h-9 items-center rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">{includeTest ? "Hide test records" : "Show test records"}</Link>
-          </div>
+          {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden. */}
+          {includeTest && <p className="mb-3 text-xs text-muted">Showing real and test records</p>}
           <EmailThreadList key={match?.key ?? "all"} threads={ordered} focusKey={match?.key ?? null} />
         </div>
       </div>

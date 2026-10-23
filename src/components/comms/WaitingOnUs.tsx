@@ -53,12 +53,8 @@ export function WaitingOnUs({ board, now, clean, includeTest, excludeClientIds, 
   const scopeHref = (href: string) => homeRecordHref(href, includeTest);
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between gap-3 text-xs text-muted">
-        <span>{includeTest ? "Showing real and test records" : "Showing real clients"}</span>
-        <Link href={includeTest ? "/communications" : "/communications?test=1"} className="inline-flex min-h-11 items-center rounded-lg border border-border px-2.5 font-medium hover:bg-surface-2">
-          {includeTest ? "Hide test records" : "Show test records"}
-        </Link>
-      </div>
+      {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden. */}
+      {includeTest && <p className="text-xs text-muted">Showing real and test records</p>}
 
       {/* 1 · CLIENTS WAITING ON A REPLY */}
       <section aria-labelledby="waiting-title" className="panel-shadow rounded-2xl border border-border bg-surface p-4 sm:p-5">

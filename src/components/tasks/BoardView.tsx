@@ -330,14 +330,8 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
       />
       <div className="space-y-5 p-4 sm:p-6">
         {tabs}
-        {!editorScope && (
-          <div className="flex items-center justify-between gap-3 text-xs text-muted">
-            <span>{showTest ? "Showing real and test records" : "Showing real client work"}</span>
-            <Link href={taskWorkHref({ who: sp.who, showTest: !showTest, source: sp.source, type: sp.type })} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">
-              {showTest ? "Hide test records" : "Show test records"}
-            </Link>
-          </div>
-        )}
+        {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden. */}
+        {!editorScope && showTest && <p className="text-xs text-muted">Showing real and test records</p>}
         <AddTask assignees={assigneeChips} />
 
         {/* The signpost for everything that used to be on this tab. Rendered

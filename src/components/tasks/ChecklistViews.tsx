@@ -48,11 +48,7 @@ export async function RevisionsView({ tabs, excludeClientIds = [], showTest = fa
   const [groups, scrub] = await Promise.all([revisionsBoard(new Date(), { excludeClientIds }), moneyScrubber()]);
   return (
     <Shell tabs={tabs} title="Revisions" subtitle={`${showTest ? "Every open revision" : "Open revisions for real clients"}, grouped by who asked. A row clears itself when the corrected work is delivered.`}>
-      <div className="mb-4 flex justify-end">
-        <Link href={showTest ? "/tasks?tab=revisions" : "/tasks?tab=revisions&test=1"} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">
-          {showTest ? "Hide test records" : "Show test records"}
-        </Link>
-      </div>
+      {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden. */}
       {groups.length === 0 ? (
         <p className="flex items-center gap-2 rounded-2xl border border-success/20 bg-success/[0.05] px-5 py-4 text-[15px] text-success">
           <CheckCircle2 className="size-5" /> No revisions in flight.
@@ -123,12 +119,8 @@ export async function SlackView({ tabs, focusTaskId, excludeClientIds, showTest 
       : `${board.total} open${board.capped ? ` · showing ${rows.length}` : ""}${board.unassignedCount ? ` · ${board.unassignedCount} still need assigning` : ""}${board.overdueCount ? ` · ${board.overdueCount} overdue` : ""}. Unassigned and oldest first.`;
   return (
     <Shell tabs={tabs} title="Slack asks" subtitle={sub}>
-      <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted">
-        <span>{showTest ? "Showing real and test records" : focusTaskId ? "Real client work and the linked ask" : "Test records hidden from the board"}</span>
-        <Link href={showTest ? "/tasks?tab=slack" : "/tasks?tab=slack&test=1"} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">
-          {showTest ? "Hide test records" : "Show test records"}
-        </Link>
-      </div>
+      {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden. */}
+      {(showTest || focusTaskId) && <p className="mb-3 text-xs text-muted">{showTest ? "Showing real and test records" : "Real client work and the linked ask"}</p>}
       {rows.length === 0 ? (
         <p className="flex items-center gap-2 rounded-2xl border border-success/20 bg-success/[0.05] px-5 py-4 text-[15px] text-success">
           <CheckCircle2 className="size-5" /> Slack is clear.

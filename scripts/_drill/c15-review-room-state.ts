@@ -55,7 +55,9 @@ async function main() {
     }
     await as(kyle);
     const testHtml = renderToStaticMarkup(await page({ searchParams: Promise.resolve({ test: "1" }) }));
-    c.ok("explicit test view keeps its toggle (the synthetic media check moved to Photo Delivery with the rest)", testHtml.includes("Hide test records") && !testHtml.includes("Media checks to finish"));
+    // Oct 23 2026 (Jordan: "I don't need the show test records button anymore"): no toggle; a typed ?test=1 says what it shows.
+    const normalHtml = renderToStaticMarkup(await page({ searchParams: Promise.resolve({}) }));
+    c.ok("no test-records toggle on the Review Room; a typed test view says so (the synthetic media check moved to Photo Delivery with the rest)", !/Show test records|Hide test records/.test(testHtml + normalHtml) && testHtml.includes("Showing real and test records") && !normalHtml.includes("test records") && !testHtml.includes("Media checks to finish"));
     const { photoQcCards } = await import("@/lib/reviewRoom");
     c.ok("the media checks reader still keeps synthetic work for an explicit test view", (await photoQcCards({ includeTest: true })).some((t) => t.street === "Hidden fixture media job") && !(await photoQcCards({ includeTest: false })).some((t) => t.street === "Hidden fixture media job"));
     await clearSession();

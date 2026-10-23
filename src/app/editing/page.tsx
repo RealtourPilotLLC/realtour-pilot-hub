@@ -21,7 +21,6 @@ import { myDesk, workingNow } from "@/lib/editorWork";
 import { editorActivityToday, editorLines, rowEvidence } from "@/lib/editorActivity";
 import { prisma } from "@/lib/prisma";
 import { syntheticClientIds } from "@/lib/syntheticClients";
-import { editingQueueHref } from "@/lib/editingQueueUrl";
 
 export const dynamic = "force-dynamic";
 
@@ -154,9 +153,6 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
   const excludeClientIds = office && !includeTest ? await syntheticClientIds() : [];
   const excludeProjectIds = excludeClientIds.length ? (await prisma.project.findMany({ where: { clientId: { in: excludeClientIds } }, select: { id: true } })).map((project) => project.id) : [];
   const excludedProjects = new Set(excludeProjectIds);
-  const scopeParams = new URLSearchParams(Object.entries(sp).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
-  if (includeTest) scopeParams.delete("test"); else scopeParams.set("test", "1");
-  const scopeToggleHref = editingQueueHref(scopeParams);
   const { notDone, upcoming: upcomingRows, done } = await buildEditorQueue({ excludeClientIds });
   // WORKLOAD, NOT A ROW COUNT (R08, Sep 18). The open rows PLUS the upcoming
   // ones, because a job whose footage has not landed is a real thing on the
@@ -267,13 +263,13 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
         eyebrow="Video projects only"
         title="Editing Room"
         // What a person acts on, in one line (Oct 5): how much is open, how much
-        // of it is late, what is coming. The test-record toggle names itself.
+        // of it is late, what is coming. (Oct 23 2026, Jordan: no "Show test
+        // records" button any more; test clients stay hidden.)
         subtitle={`${notDone.length} open projects · ${lateCount} late · ${upcomingRows.length} upcoming${includeTest ? " · including test records" : ""}`}
         // Pop-up Style Guide — a draggable floating window (remembers where
         // you put it), so the guide can sit beside the queue while working.
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Link href={scopeToggleHref} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground"><span className="sm:hidden">{includeTest ? "Hide tests" : "Show tests"}</span><span className="hidden sm:inline">{includeTest ? "Hide test records" : "Show test records"}</span></Link>
             <MessagesButton unread={unread} />
             <FloatingStyleGuide />
           </div>

@@ -95,12 +95,8 @@ export async function DoneView({ tabs, excludeClientIds, showTest = false }: { t
       <PageHeader title="Tasks" subtitle="What happened, day by day — shoots, completed to-dos, and deliveries. Tap “Write a recap” for a plain-English summary." />
       <div className="mx-auto max-w-3xl space-y-6 p-4 sm:p-6">
         {tabs}
-        <div className="flex items-center justify-between gap-3 text-xs text-muted">
-          <span>{showTest ? "Showing real and test records" : "Test records hidden"}</span>
-          <Link href={showTest ? "/tasks?tab=done" : "/tasks?tab=done&test=1"} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">
-            {showTest ? "Hide test records" : "Show test records"}
-          </Link>
-        </div>
+        {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden. */}
+        {showTest && <p className="text-xs text-muted">Showing real and test records</p>}
         {orderedDays.length === 0 && (
           <div className="rounded-2xl border border-border bg-surface p-8 text-center text-sm text-muted">
             <History className="mx-auto mb-2 size-6 text-muted-2" />

@@ -164,10 +164,8 @@ export default async function QualityPage({
         {feed && <ClientTab feed={feed} />}
         {board && <PhotographerTab board={board} mod={mod} />}
         {editors && <>
-          <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted">
-            <span>{sp.test === "1" ? "Editor results include test records." : "Editor results exclude test records."}</span>
-            <Link href={sp.test === "1" ? "/quality?tab=editors" : "/quality?tab=editors&test=1"} className="inline-flex min-h-11 items-center text-brand underline underline-offset-4">{sp.test === "1" ? "Hide test records" : "Show test records"}</Link>
-          </div>
+          {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients stay out of the editor results. */}
+          {sp.test === "1" && <p className="text-sm text-muted">Editor results include test records.</p>}
           <EditorsTab data={editors} />
         </>}
       </div>

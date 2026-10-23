@@ -8,7 +8,7 @@ export function RevisionQualitySummary({ report }: { report: RevisionQuality }) 
         <strong>{report.confirmedIssues} of {report.applicableIssues}</strong> applicable revision issues have a reviewer-confirmed cause
         {report.awaitingClassification > 0 ? ` · ${report.awaitingClassification} awaiting classification` : ""}.
       </p>
-      <p className="text-muted">Last {report.windowDays} days, by issue creation date. {report.includeTest ? "Includes test records." : "Test records excluded."} Optional QC ticks do not contribute to these counts.</p>
+      <p className="text-muted">Last {report.windowDays} days, by issue creation date. {report.includeTest ? "Includes test records. " : ""}Optional QC ticks do not contribute to these counts.</p>
       {report.byCause.length > 0 ? (
         <ul className="grid gap-2 sm:grid-cols-2">
           {report.byCause.map((row) => <li key={row.cause} className="flex justify-between gap-3"><span>{row.label}</span><strong className="tabular-nums">{row.count}</strong></li>)}

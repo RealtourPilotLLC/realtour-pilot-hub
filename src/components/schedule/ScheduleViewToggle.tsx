@@ -20,7 +20,7 @@ export function ScheduleViewToggle({ view, includeTest = false }: { view: Schedu
         <MapPinned className="mr-1.5 inline size-3.5" />
         Map
       </Link>
-      <Link href={`/schedule${view === "map" ? `?view=map${includeTest ? "" : "&test=1"}` : includeTest ? "" : "?test=1"}`} className={idle}>{includeTest ? "Hide test records" : "Show test records"}</Link>
+      {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden. */}
     </div>
   );
 }

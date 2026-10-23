@@ -228,7 +228,8 @@ async function main() {
     c.ok("Texts = the reply queue (every unanswered text, a reply ready to write; test clients hidden)", texts.tab === "texts" && texts.title === "Messages" && (rq?.cards as unknown[]).length === kTextsReal.length);
     c.ok("…its header and the Everyone filter do not repeat the tab's number", !texts.html.includes("Everyone (") && !String(elements(texts.tree, "PageHeader")[0]?.subtitle).includes(`${kTextsReal.length} waiting`) && texts.html.includes(`Clients only (${kTextsReal.filter((card) => card.isClient).length})`));
     const textsTest = await view({ tab: "texts", test: "1" });
-    c.ok("…and ?test=1 brings the test client's text back (audit F24)", (elements(textsTest.tree, "ReplyQueue")[0]?.cards as unknown[]).length === kTexts.cards.length && textsTest.html.includes("Hide test records"));
+    // Oct 23 2026 (Jordan: "I don't need the show test records button anymore"): no toggle; a typed ?test=1 says what it shows.
+    c.ok("…and ?test=1 brings the test client's text back (audit F24), with no toggle either way", (elements(textsTest.tree, "ReplyQueue")[0]?.cards as unknown[]).length === kTexts.cards.length && textsTest.html.includes("Showing real and test records") && !/Show test records|Hide test records/.test(textsTest.html + texts.html));
     const legacy = await view({ tab: "replies" });
     c.ok("an old ?tab=replies link opens Texts", legacy.tab === "texts" && elements(legacy.tree, "ReplyQueue").length === 1);
     const focused = await view({ tab: "texts", focus: vipRow.group.groupKey });

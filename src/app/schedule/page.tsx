@@ -60,7 +60,7 @@ async function ListView({ excludeClientIds, includeTest, office, tabs }: { exclu
     <div>
       <PageHeader
         title="Schedule"
-        subtitle={`${appts.length} upcoming shoot${appts.length === 1 ? "" : "s"} · next ${WINDOW_DAYS} days · ${includeTest ? "real and test records" : "test records hidden"}`}
+        subtitle={`${appts.length} upcoming shoot${appts.length === 1 ? "" : "s"} · next ${WINDOW_DAYS} days${includeTest ? " · real and test records" : ""}`}
         actions={<ScheduleViewToggle view="list" includeTest={includeTest} />}
       />
       <ShootsScheduleTabs current="schedule" includeTest={includeTest} show={tabs} />
@@ -203,7 +203,7 @@ async function MapView({ excludeClientIds, includeTest, tabs }: { excludeClientI
     <div>
       <PageHeader
         title="Schedule"
-        subtitle={`${days.length} shoot days · pick a day to see the route, weather & drive times · ${includeTest ? "real and test records" : "test records hidden"}`}
+        subtitle={`${days.length} shoot days · pick a day to see the route, weather & drive times${includeTest ? " · real and test records" : ""}`}
         actions={<ScheduleViewToggle view="map" includeTest={includeTest} />}
       />
       <ShootsScheduleTabs current="schedule" includeTest={includeTest} show={tabs} />
