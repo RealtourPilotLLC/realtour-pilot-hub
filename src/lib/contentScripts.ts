@@ -47,6 +47,12 @@ export type NewVersionOpts = {
   /** Historical import: the script row is marked historical and never enters the review queue. */
   historical?: boolean;
   sourceFile?: string | null;
+  /**
+   * Oct 23 2026 (never a worse version): an automatic fix round is written
+   * into the history WITHOUT becoming the current version; scriptJudge makes
+   * it current (makeVersionCurrent) only when its review says it is better.
+   */
+  keepCurrent?: boolean;
 };
 
 export function canonicalFromParts(p: VersionParts, clientId: string | null = null): CanonicalScript {
@@ -163,6 +169,8 @@ export async function createScriptVersion(opts: NewVersionOpts): Promise<{ scrip
     },
     select: { id: true },
   });
+  // Oct 23 2026: a candidate (an automatic fix round) waits in the history; the current version stays.
+  if (opts.keepCurrent && opts.scriptId) return { scriptId, versionId: v.id, versionNo };
   await syncLegacyPointer(scriptId, v.id);
   // A new draft on an approved-but-unshared script puts the script back in
   // review: the month tab's "N need your OK" and the Scripts queue then agree.
@@ -170,6 +178,33 @@ export async function createScriptVersion(opts: NewVersionOpts): Promise<{ scrip
   // version; the queue lists the new draft through its version status.
   if (wasApprovedLive) await prisma.contentScript.update({ where: { id: scriptId }, data: { status: "INTERNAL_REVIEW" } });
   return { scriptId, versionId: v.id, versionNo };
+}
+
+/**
+ * MAKE A VERSION CURRENT (Oct 23 2026, never a worse version). The automatic
+ * check's own move: a candidate fix round that reviewed better than the
+ * version it fixed becomes the current version, or an earlier, better
+ * attempt of a still-failing chain becomes current again. Nothing is copied
+ * or deleted; the legacy body mirrors shared → approved → current as always.
+ *
+ * Compare-and-set: it moves only while the script's current version is still
+ * `expectCurrentId` and that version still waits for an OK (DRAFT or
+ * INTERNAL_REVIEW), so a person's approve or edit in between always wins.
+ * Never on a historical record. Returns whether it moved.
+ */
+export async function makeVersionCurrent(scriptId: string, versionId: string, opts: { expectCurrentId: string }): Promise<boolean> {
+  const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { historical: true, currentVersionId: true } });
+  if (!s || s.historical || s.currentVersionId !== opts.expectCurrentId) return false;
+  const [v, cur] = await Promise.all([
+    prisma.contentScriptVersion.findUnique({ where: { id: versionId }, select: { scriptId: true, status: true } }),
+    prisma.contentScriptVersion.findUnique({ where: { id: opts.expectCurrentId }, select: { status: true } }),
+  ]);
+  if (!v || v.scriptId !== scriptId || (v.status !== "DRAFT" && v.status !== "INTERNAL_REVIEW")) return false;
+  if (!cur || (cur.status !== "DRAFT" && cur.status !== "INTERNAL_REVIEW")) return false;
+  const moved = await prisma.contentScript.updateMany({ where: { id: scriptId, currentVersionId: opts.expectCurrentId }, data: { currentVersionId: versionId } });
+  if (!moved.count) return false;
+  await syncLegacyPointer(scriptId, versionId);
+  return true;
 }
 
 /**

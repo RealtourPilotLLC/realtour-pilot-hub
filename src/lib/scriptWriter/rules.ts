@@ -1166,6 +1166,51 @@ export function pickFinal(xs: readonly PickCandidate[]): number {
 }
 
 // ---------------------------------------------------------------------------
+// NEVER A WORSE VERSION (Oct 23 2026). Jordan: "I don't need to see that it
+// needs fixes; I just need it to be fixed." Bernadette's Saturday script went
+// v10 → v11 → v12 and every fix round became the current version whether it
+// was better or not. Now an automatic fix round (and the cap trim) is written
+// into the history first and only becomes the current version when it is
+// BETTER than the version it was fixing, in this order:
+//   1. fewer must-fix failures;
+//   2. a higher craft total (the five parts scored, the hook counted twice,
+//      as craftRankTotal: a weaker hook is the loss Jordan saw);
+//   3. inside the length rule: over the 110 cap is worst, then (not a told
+//      story) over the 85-word aim, then inside it.
+// A tie is not better: the version already current stays. The same order
+// picks the best of a chain still failing after its rounds (scriptJudge.
+// finishFlagged) and the dry run's proposals (scripts/_live/oct23-best-
+// version-current.ts). Pure.
+// ---------------------------------------------------------------------------
+export type AttemptScore = { mustFix: number; craft?: CraftScores | null; words: number; story?: boolean | null };
+
+/** Where a word count sits against the length rule, lower is better: 0 inside it, 1 over the aim (not a story), 2 over the cap. Pure. */
+export function lengthMiss(words: number, story?: boolean | null): number {
+  if (words > WRITER_LENGTH.cap) return 2;
+  if (!story && words > WRITER_LENGTH.aim[1]) return 1;
+  return 0;
+}
+
+/** The order an attempt is compared by, lower first: must-fix failures, then the craft total (negated), then the length rule. Pure. */
+export function attemptKey(x: AttemptScore): [number, number, number] {
+  return [x.mustFix, -craftRankTotal(x.craft), lengthMiss(x.words, x.story)];
+}
+
+/** Is `next` strictly better than `kept`? A tie keeps `kept`. Pure. */
+export function isBetterAttempt(next: AttemptScore, kept: AttemptScore): boolean {
+  const a = attemptKey(next), b = attemptKey(kept);
+  const d = a.map((v, j) => v - b[j]).find((v) => v !== 0) ?? 0;
+  return d < 0;
+}
+
+/** The index of the best attempt; on a tie the earlier in the list (list the version to keep first). -1 for an empty list. Pure. */
+export function bestAttempt(xs: readonly AttemptScore[]): number {
+  let best = -1;
+  for (let i = 0; i < xs.length; i++) if (best < 0 || isBetterAttempt(xs[i], xs[best])) best = i;
+  return best;
+}
+
+// ---------------------------------------------------------------------------
 // v2.4: A STORY SHE HAS ALREADY TOLD ON CAMERA is never a new video's proof.
 // Erica's doorknob draft retold the $1,000 story she filmed in August. The
 // check (pure): the proof shares a figure and at least USED_STORY_WORDS

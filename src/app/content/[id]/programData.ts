@@ -254,7 +254,9 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
   }
   // The review queue's count is the rows the panel lists under it (audit D15):
   // counted from the scripts already loaded, never every script of the client.
-  const queueCount = rows.filter((r) => !r.historical && (r.versions[0]?.status === "DRAFT" || r.versions[0]?.status === "INTERNAL_REVIEW")).length;
+  // Oct 23 2026: the CURRENT version (an automatic fix round set aside in the history can be newer than it).
+  const curOf = (r: ScriptUi) => r.versions.find((x) => x.id === r.currentVersionId) ?? r.versions[0];
+  const queueCount = rows.filter((r) => !r.historical && (curOf(r)?.status === "DRAFT" || curOf(r)?.status === "INTERNAL_REVIEW")).length;
   return { scripts: rows, queueCount, scriptOwner: owners.SCRIPTS.label, owed: owed.filter((o) => o.readiness !== "HAS_SCRIPT"), revising, drafting: aq.topics, queueActive: aq.active };
 }
 
