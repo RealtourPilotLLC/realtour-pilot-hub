@@ -21,6 +21,8 @@ import { myDesk, workingNow } from "@/lib/editorWork";
 import { editorActivityToday, editorLines, rowEvidence } from "@/lib/editorActivity";
 import { prisma } from "@/lib/prisma";
 import { syntheticClientIds } from "@/lib/syntheticClients";
+import { isCreativeLead } from "@/lib/auth/access";
+import { remindViewsFor, type RemindView } from "@/lib/remindPhotographer";
 
 export const dynamic = "force-dynamic";
 
@@ -246,11 +248,17 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
   // they're on (Start/Pause) and what they did today (evidence). Neither read
   // throws; each says so when it failed.
   const now = new Date();
-  const [unread, wn, act, workload, removedRows] = await Promise.all([
+  // REMIND PHOTOGRAPHER (Oct 23 2026, lib/remindPhotographer): which open rows
+  // are missing their video instructions, and their last reminder. Read only
+  // for the people who may press it (the office and the creative manager); a
+  // failed read leaves the button off, never the page.
+  const canRemind = !me || isCreativeLead(me.role);
+  const [unread, wn, act, workload, removedRows, reminders] = await Promise.all([
     unreadThreadCount(me?.id ?? null, [...notDone, ...upcomingRows, ...done].map((r) => r.id)),
     workingNow({ now, excludeProjectIds }), editorActivityToday({ now, excludeProjectIds }),
     editingWorkload(workloadRows([...notDone, ...upcomingRows])),
     recentlyRemovedFromQueue(),
+    canRemind ? remindViewsFor(notDone.map((r) => r.id), now).catch(() => new Map<string, RemindView>()) : new Map<string, RemindView>(),
   ]);
   const today = editorLines(wn, act, now);
   const capacityNow = Object.values(workload.capacity ?? {}).flatMap((windows) => windows.now);
@@ -299,7 +307,7 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
             {/* The manual handoff stays available beside its queue. */}
             <div className="contents [&>div]:basis-full"><AddToQueue /></div>
           </div>
-          <SimpleQueue notDone={notDone.map((r) => ({ ...r, lastAction: rowEvidence(r, act, now) }))} upcoming={upcomingRows} done={done} />
+          <SimpleQueue notDone={notDone.map((r) => ({ ...r, lastAction: rowEvidence(r, act, now), remind: reminders.get(r.id) ?? null }))} upcoming={upcomingRows} done={done} />
         </section>
         {/* The undo window for a job taken off the board, made visible. Renders
             nothing when nothing is in it. */}

@@ -280,6 +280,20 @@ export const TEXT_TEMPLATES = {
     required: ["missingList"],
     sender: "src/lib/missingInstructions.ts (composeManagerLine)",
   },
+  instructions_reminder_photographer: {
+    label: "Missing instructions: Remind photographer button",
+    audience: "team",
+    when: "When the office or the creative manager presses Remind photographer on a video job in the Editing Room whose instructions are missing.",
+    body: "Hi {firstName}, quick reminder: the instructions for {street} are missing and the editor is waiting on them. Still needed: {missingList}. You can add them here: {link}",
+    placeholders: [
+      P("firstName", "The photographer's first name", "Harrison"),
+      P("street", "The job's street", "123 Main St"),
+      P("missingList", "What is missing, naming the video when the job has more than one", "the flow and vision for video 1 (Premium Social Reel) and the instructions for video 2 (Standard Reel)"),
+      P("link", "The job's upload page", "https://hub.realtourpilot.com/upload/abc123"),
+    ],
+    required: ["missingList", "link"],
+    sender: "src/lib/remindPhotographer.ts (composeReminderText)",
+  },
 
   // ---- TO THE TEAM: shoots -----------------------------------------------------
   shoot_day_requests: {

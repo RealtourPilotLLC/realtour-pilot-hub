@@ -23,6 +23,7 @@ import { ActionMenu } from "@/components/ui/ActionMenu";
 import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 import { EditOverridesButton, OverrideChip, hasOverride } from "@/components/editing/EditOverridesDialog";
 import { RemoveFromQueueButton } from "@/components/editing/RemoveFromQueue";
+import { RemindPhotographerButton, type RemindView } from "@/components/editing/RemindPhotographer";
 import { EDIT_STATUS_LABELS, type EditComputedView, type EditOverrideView } from "@/lib/editOverrideDefaults";
 import { editingQueueFilters, editingQueueHref, type EditingDueFilter } from "@/lib/editingQueueUrl";
 import { EDITING_STAGES, matchesEditingStage, type EditingStageFilter } from "@/lib/editingQueueStage";
@@ -153,6 +154,10 @@ export type QueueRow = {
    *  word and its work chip still come from Start/Pause alone (§7.1). Office
    *  view only; absent everywhere else. */
   lastAction?: { name: string; words: string; at: string } | null;
+  /** "REMIND PHOTOGRAPHER" (Oct 23 2026, lib/remindPhotographer): set only on
+   *  an office row whose video instructions are missing, and only for a viewer
+   *  who may press it (owner, admin, creative manager). Absent everywhere else. */
+  remind?: RemindView | null;
 };
 
 const TIER = {
@@ -999,6 +1004,13 @@ export function SimpleQueue({
                           board quote too. */}
                       {r.blocker && (
                         <span className="block max-w-full basis-full break-words whitespace-normal text-xs leading-4 text-warning lg:mt-1">{r.blocker}</span>
+                      )}
+                      {/* REMIND PHOTOGRAPHER (Oct 23 2026): one text to the
+                          photographer with the upload page link, on a row
+                          whose video instructions are missing. Office view
+                          only; the server decides the rows and the press. */}
+                      {!hideEditor && view === "notdone" && r.remind && (
+                        <RemindPhotographerButton key={r.remind.last?.atISO ?? "never"} projectId={r.id} street={r.street} view={r.remind} showMissing={!r.blocker} />
                       )}
                       {/* TODAY'S EVIDENCE (Sep 28) — what an editor who is not
                           on this job right now DID to it today, labelled as

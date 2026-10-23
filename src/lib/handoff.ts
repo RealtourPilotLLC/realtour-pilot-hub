@@ -108,6 +108,11 @@ export type HandoffInput = {
   photographerKey?: string | null;
 };
 
+/** Video 1's own words missing (the job's videoInstructions field). On a job
+ *  owing two or more videos the Remind photographer text names the video
+ *  (lib/remindPhotographer); everywhere else it reads as it always has. */
+export const FLOW_AND_VISION_GAP = "the flow and vision for the edit";
+
 export type HandoffGap = {
   key: "debrief" | "instructions" | "script" | "intro" | "video-count";
   /** What is missing, in the words a person would use. */
@@ -149,7 +154,7 @@ export function handoffReadiness(p: HandoffInput): HandoffReadiness {
     if (!meaningfulBrief(p.videoInstructions) && !meaningfulBrief(p.editorBrief) && !p.instructionsInDropbox) {
       gaps.push({
         key: "instructions",
-        label: "the flow and vision for the edit",
+        label: FLOW_AND_VISION_GAP,
         owedBy: "photographer",
       });
     }
