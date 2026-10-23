@@ -39,7 +39,7 @@ const day = (d: Date) => d.toLocaleString("en-US", { timeZone: "America/New_York
 
 (async () => {
   const { prisma } = await import("@/lib/prisma");
-  const { streetMatchAllowed } = await import("@/lib/mailMatch");
+  const { streetMatchAllowed, sameSenderName } = await import("@/lib/mailMatch");
   const { staffAddressBook, isStaffAddress } = await import("@/lib/staffEmail");
   const { gmailSenderAddresses } = await import("@/lib/integrations/google");
   if (streetMatchAllowed({ mailbox: INFO, senderKnown: false })) throw new Error("the code rule still allows the street match for unknown info@ senders: not refiling");
@@ -66,6 +66,7 @@ const day = (d: Date) => d.toLocaleString("en-US", { timeZone: "America/New_York
   console.log(`read the sender of ${senders.size} message(s) from Gmail (read only)\n`);
 
   const wrong: typeof named = [];
+  const self: typeof named = [];
   const staff: typeof named = [];
   const unread: typeof named = [];
   const fromOf = new Map<string, string>();
@@ -74,14 +75,22 @@ const day = (d: Date) => d.toLocaleString("en-US", { timeZone: "America/New_York
     if (!from) { unread.push(r); continue; }
     fromOf.set(r.id, from);
     if (isStaffAddress(from, book)) { staff.push(r); continue; }
-    if (!knownAddresses.has(from.toLowerCase())) wrong.push(r);
+    if (knownAddresses.has(from.toLowerCase())) continue;
+    // The code's one exception: the client writing from an address the hub does not have.
+    if (sameSenderName(r.contactName, r.clientName)) { self.push(r); continue; }
+    wrong.push(r);
   }
   console.log(`from a sender the hub does not know (the street or town match): ${wrong.length} (${wrong.filter((r) => r.occurredAt >= cutoff).length} in the last 30 days)`);
-  console.log(`from a staff address (left for the H3 script): ${staff.length}; sender unreadable (left as they are): ${unread.length}\n`);
+  console.log(`from a staff address (left for the H3 script): ${staff.length}; sender unreadable (left as they are): ${unread.length}`);
+  console.log(`the client themself from an address the hub does not have (kept; add the address to the client): ${self.length}\n`);
   const projects = new Map((await prisma.project.findMany({ where: { id: { in: [...new Set(wrong.map((r) => r.projectId!))] } }, select: { id: true, title: true } })).map((p) => [p.id, p.title.split(",")[0]]));
   for (const r of wrong) {
     console.log(`  · ${r.id} ${day(r.occurredAt)} from ${fromOf.get(r.id)} ("${r.contactName ?? "?"}") "${(r.subject ?? "").slice(0, 70)}"`);
     console.log(`      filed to ${r.clientName} on ${projects.get(r.projectId!) ?? r.projectId} [${r.minRole}] → no client, no job, owner-only`);
+  }
+  if (self.length) {
+    console.log(`\nThe client themself, from an address not on file (kept as they are):`);
+    for (const a of [...new Map(self.map((r) => [`${r.clientName}|${fromOf.get(r.id)}`, r])).values()]) console.log(`  · ${a.clientName} writes from ${fromOf.get(a.id)} (${self.filter((r) => r.clientName === a.clientName && fromOf.get(r.id) === fromOf.get(a.id)).length} row(s))`);
   }
   if (staff.length) {
     console.log(`\nFrom a staff address (not changed here):`);

@@ -39,6 +39,21 @@ export function streetMatchAllowed(o: { mailbox: string; senderKnown: boolean })
   return o.senderKnown || !isPersonalMailbox(o.mailbox);
 }
 
+/**
+ * Is the name on the mail this client's own name? The one way an unknown
+ * address in info@ may still be matched by a street (H2): the client writing
+ * from an address the hub does not have ("Andrea Neff" from her team's
+ * domain about 632 Greenridge Rd). The same first and last name, ignoring
+ * case, punctuation and a middle name or suffix. Pure.
+ */
+export function sameSenderName(display: string | null | undefined, clientName: string | null | undefined): boolean {
+  const words = (s: string | null | undefined) => (s ?? "").toLowerCase().replace(/[^a-z\s'-]+/g, " ").split(/\s+/).filter((w) => w.length > 1 && !/^(jr|sr|ii|iii|iv)$/.test(w));
+  const a = words(display);
+  const b = words(clientName);
+  if (a.length < 2 || b.length < 2) return false;
+  return a[0] === b[0] && a[a.length - 1] === b[b.length - 1];
+}
+
 const EMAIL_RE = /[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
 
 /** Does this mail read as a forward? A "Fwd:" / "Fw:" subject, or a forwarded-message banner in the body. */

@@ -220,7 +220,8 @@ export async function readAiFailures(fromDay: string, toDay: string): Promise<{ 
 // ---------------------------------------------------------------------------
 // THE RETRY QUEUE. A WebhookEvent row per message (provider "ai-retry"): a
 // durable queue the hub already has, RECEIVED until the message is read
-// again, PROCESSED after, ERROR when it was given up on.
+// again, PROCESSED after, EXPIRED when it was given up on (never ERROR:
+// the webhook retry sweep and the Connections health strip read ERROR rows).
 // ---------------------------------------------------------------------------
 export const AI_RETRY_PROVIDER = "ai-retry";
 /** Tries that reached the AI and still got no decision, before a message is given up on. */
@@ -275,12 +276,12 @@ export async function sweepAiRetries(opts: { limit?: number; now?: Date } = {}):
     let p: CommsRetryPayload | null = null;
     try { p = JSON.parse(row.payload) as CommsRetryPayload; } catch { p = null; }
     if (!p || (p.kind !== "comms" && p.kind !== "answered-asks")) {
-      await prisma.webhookEvent.update({ where: { id: row.id }, data: { status: "ERROR", error: "unreadable retry row", processedAt: now } }).catch(() => null);
+      await prisma.webhookEvent.update({ where: { id: row.id }, data: { status: "EXPIRED", error: "unreadable retry row", processedAt: now } }).catch(() => null);
       out.gaveUp++;
       continue;
     }
     if (now.getTime() - row.createdAt.getTime() > RETRY_MAX_AGE_MS) {
-      await prisma.webhookEvent.update({ where: { id: row.id }, data: { status: "ERROR", error: "too old to read again", processedAt: now } }).catch(() => null);
+      await prisma.webhookEvent.update({ where: { id: row.id }, data: { status: "EXPIRED", error: "too old to read again", processedAt: now } }).catch(() => null);
       out.gaveUp++;
       continue;
     }
@@ -304,7 +305,7 @@ export async function sweepAiRetries(opts: { limit?: number; now?: Date } = {}):
       const tries = (p.tries ?? 0) + 1;
       await prisma.webhookEvent.update({
         where: { id: row.id },
-        data: tries >= MAX_TRIES ? { status: "ERROR", error: "no decision after retries", processedAt: now, payload: JSON.stringify({ ...p, tries }) } : { payload: JSON.stringify({ ...p, tries }) },
+        data: tries >= MAX_TRIES ? { status: "EXPIRED", error: "no decision after retries", processedAt: now, payload: JSON.stringify({ ...p, tries }) } : { payload: JSON.stringify({ ...p, tries }) },
       });
       if (tries >= MAX_TRIES) out.gaveUp++;
     } catch (e) {

@@ -269,9 +269,10 @@ export type NewAsk = {
 // with no job) asked within the window is looked for:
 //   · the same words (normalized), or one's words inside the other's: the
 //     same ask. The open one stays and takes the longer words;
-//   · a SCHEDULING ask in the same conversation (the window below): the same
-//     booking. The open one stays and the new words are added to it, so Kyle
-//     reads the whole exchange on one card;
+//   · a SCHEDULING ask with no job yet in the same conversation (the window
+//     below): the same booking being arranged. The open one stays and the new
+//     words are added to it, so Kyle reads the whole exchange on one card;
+//   · never across a job's delivery (the one asked before it closes with it);
 //   · a keyed photo-part ask (photo-office: / photo-shared:, lib/briefPhotoAsks)
 //     arriving after a plain message ask with the same words replaces it: the
 //     keyed one carries the office question and is what briefPhotoAsks reads
@@ -310,8 +311,12 @@ export function duplicateAskReason(
   const gap = Math.abs(incoming.askedAt.getTime() - existing.askedAt.getTime());
   if (gap <= ASK_DUPLICATE_WINDOW_MS && sameAskWords(existing.text, incoming.text)) return "same-words";
   // The same booking: both from the client's own texts, emails or calls.
+  // A booking still being arranged has no job yet (Nehemiah's "I have another
+  // listing ... can we do sooner"). An ask on a job keeps its own row: the
+  // job's delivery closes the ones asked before it (closeAsksOnDeliveredJobs),
+  // never one asked after.
   const theirs = (src: string | null | undefined) => src === "text" || src === "email" || src === "call";
-  if (incoming.kind === "SCHEDULING" && gap <= SCHEDULING_CONVERSATION_MS && theirs(existing.source) && theirs(incoming.source)) return "same-booking";
+  if (incoming.kind === "SCHEDULING" && !incoming.projectId && !existing.projectId && gap <= SCHEDULING_CONVERSATION_MS && theirs(existing.source) && theirs(incoming.source)) return "same-booking";
   return null;
 }
 
@@ -333,7 +338,14 @@ export async function createAsk(a: NewAsk): Promise<{ id: string; created: boole
     select: { id: true, clientId: true, kind: true, projectId: true, text: true, summary: true, askedAt: true, dedupeKey: true, historyJson: true, source: true },
   });
   const incoming = { clientId: a.clientId, kind, projectId, text, askedAt, source: String(a.source ?? "") };
-  const twin = open.map((o) => ({ o, why: duplicateAskReason(o, incoming) })).find((x) => x.why);
+  let twin = open.map((o) => ({ o, why: duplicateAskReason(o, incoming) })).find((x) => x.why);
+  if (twin && projectId) {
+    // Never across the job's delivery: the one asked before it closes with it.
+    const p = await prisma.project.findUnique({ where: { id: projectId }, select: { deliveredAt: true } });
+    const lo = Math.min(twin.o.askedAt.getTime(), askedAt.getTime());
+    const hi = Math.max(twin.o.askedAt.getTime(), askedAt.getTime());
+    if (p?.deliveredAt && p.deliveredAt.getTime() > lo && p.deliveredAt.getTime() <= hi) twin = undefined;
+  }
   const replacing = twin && isKeyedPhotoAsk(dedupeKey) && !isKeyedPhotoAsk(twin.o.dedupeKey) && twin.why === "same-words" ? twin.o : null;
   if (twin && !replacing) {
     const o = twin.o;

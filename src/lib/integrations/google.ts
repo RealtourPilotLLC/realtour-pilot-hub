@@ -4,7 +4,7 @@ import { getSecret } from "./connections";
 import { cleanText, clip, stripQuotedReply } from "@/lib/text";
 import { originOrBase } from "@/lib/appUrl";
 import { fetchWithTimeout } from "@/lib/http";
-import { forwardedSenderAddress, messageIdKey, streetMatchAllowed } from "@/lib/mailMatch";
+import { forwardedSenderAddress, messageIdKey, sameSenderName, streetMatchAllowed } from "@/lib/mailMatch";
 import { isHoldingReply } from "@/lib/holdingReply";
 
 // ---------------------------------------------------------------------------
@@ -1375,10 +1375,14 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
         // a known sender's mail onto someone else's job. Keep it on the real sender.
         // H2 (Oct 22 2026, lib/mailMatch): never for a sender we do not know
         // in Jordan's personal inbox. A memorial email or a refund notice that
-        // names a town is not a client's mail.
-        if (!project && streetMatchAllowed({ mailbox: account.email, senderKnown: !!senderClient })) {
+        // names a town is not a client's mail. The one exception is the client
+        // themself writing from an address the hub does not have yet: the
+        // name on the mail is the name of the client whose job it names.
+        const streetOk = streetMatchAllowed({ mailbox: account.email, senderKnown: !!senderClient });
+        if (!project && (streetOk || (!fromStaff && displayName))) {
           const gp = await findProjectByText(`${subject ?? ""} ${text}`);
-          if (gp && (!senderClient || gp.clientId === senderClient.id)) {
+          const gpName = gp ? clients.find((c) => c.id === gp.clientId)?.name ?? null : null;
+          if (gp && (!senderClient || gp.clientId === senderClient.id) && (streetOk || sameSenderName(displayName, gpName))) {
             project = { id: gp.id, title: gp.title, status: gp.status };
             projectNamed = true; // global match = the street was in the mail
             resolvedClientId = gp.clientId;
@@ -1427,13 +1431,17 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
             }).catch(() => null);
           }
         }
+        // A staff note that is not a forward (H3) is our own words: it is never
+        // logged as the client's message (the reply queue would read the client
+        // as waiting on us), only the to-do below goes on the client it names.
+        const staffNote = fromStaff && !forwardedFrom;
         await logComm({
           channel: "email",
           direction: "in",
           minRole: unknownOnPersonal ? "OWNER" : undefined,
-          clientId: resolvedClientId,
-          clientName: resolvedClientName,
-          projectId: project?.id ?? null,
+          clientId: staffNote ? null : resolvedClientId,
+          clientName: staffNote ? null : resolvedClientName,
+          projectId: staffNote ? null : project?.id ?? null,
           contactName: name || resolvedClientName || null,
           subject,
           // Full body (logComm caps at 6000) so the Hub + the task full-view

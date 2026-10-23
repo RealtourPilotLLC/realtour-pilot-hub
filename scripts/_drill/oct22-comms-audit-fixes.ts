@@ -211,6 +211,7 @@ async function main() {
   const inbox = (box: "info" | "hello", m: FakeMsg) => fakeGoogle.inbox[box].push(m);
   // info@: a family email naming a client's street (H2); one email to both inboxes (M3).
   inbox("info", { id: "i-memo", thread: "ti-memo", from: "Brent Spackman <brent@family.invalid>", to: "info@realtourpilot.com", subject: "Tyler's Memorial", body: "The service is Saturday at the hall on 12 Birchwood Lane in Exton. Love you all.", at: ago(30) });
+  inbox("info", { id: "i-bea", thread: "ti-bea", from: "Bea Birch <bea.other@gmail.invalid>", to: "info@realtourpilot.com", subject: "12 Birchwood Lane", body: "Can you resend the photos for 12 Birchwood Lane? I'm on my personal email.", at: ago(29) });
   const twice: Omit<FakeMsg, "id" | "thread"> = { from: "Mia Twice <mia@clients.invalid>", to: "info@realtourpilot.com, hello@realtourpilot.com", subject: "Twilight photos", body: "Can we add twilight photos to 40 Oak Hill Rd?", at: ago(25), messageId: "<mia-1@mail.invalid>" };
   inbox("info", { id: "i-mia", thread: "ti-mia", ...twice });
   inbox("hello", { id: "h-mia", thread: "th-mia", ...twice });
@@ -219,6 +220,7 @@ async function main() {
   // H3: Jordan's gmail forwards Alex's email, and writes Kyle a note.
   inbox("hello", { id: "h-fwd", thread: "th-fwd", from: "Jordan Spackman <jspackman215@gmail.com>", to: "hello@realtourpilot.com", subject: "Fwd: Pine Ford Zillow Showcase Photo Update", body: "Can you handle this?\n\n---------- Forwarded message ---------\nFrom: Alex Stack <alex@clients.invalid>\nDate: Mon, Sep 28\nSubject: Pine Ford Zillow Showcase Photo Update\n\nPlease swap photo 4 and photo 5 on the Pine Ford showcase.", at: ago(22) });
   inbox("hello", { id: "h-note", thread: "th-note", from: "Jordan Spackman <jspackman215@gmail.com>", to: "hello@realtourpilot.com", subject: "Note for Kyle", body: "Hey bro, please call the plumber tomorrow about the office sink.", at: ago(21) });
+  inbox("hello", { id: "h-stage", thread: "th-stage", from: "Jordan Spackman <jspackman215@gmail.com>", to: "hello@realtourpilot.com", subject: "Fwd: 12 Birchwood Lane", body: "Hey bro Bea wants some staging at 12 Birchwood Lane. We can apply her credits.", at: ago(21) });
   // M6: answered inside the scan. Sam's is settled by our reply; Tia's reply only holds.
   inbox("hello", { id: "h-sam", thread: "th-sam", from: "Sam Answered <sam@clients.invalid>", to: "hello@realtourpilot.com", subject: "Move the shoot", body: "Can we move Thursday's shoot at 9 Elm St to Friday at 10?", at: ago(20) });
   fakeGoogle.sent.hello.push({ id: "s-sam", thread: "th-sam", from: US, to: "Sam Answered <sam@clients.invalid>", subject: "Re: Move the shoot", body: "Yes, Friday at 10 works, you're all set.", at: ago(18), inReplyTo: "<sam-1@mail.invalid>" });
@@ -238,10 +240,13 @@ async function main() {
     c.ok("the memorial email that names 12 Birchwood Lane is logged with no client and no job", !!memo && memo.clientId === null && memo.projectId === null, JSON.stringify(memo && { c: memo.clientName, p: memo.projectId }));
     c.ok("…owner-only (Kyle cannot read it, the AI's client context never sees it)", memo?.minRole === "OWNER");
     c.ok("…and Bea Birch's record carries nothing of it", (await prisma.commLog.count({ where: { clientId: birch.id, body: { contains: "Tyler" } } })) === 0 && (await prisma.smartTask.count({ where: { clientId: birch.id, description: { contains: "Love you all" } } })) === 0);
+    const bea = (await rowsOf({ externalId: "gmail-info@realtourpilot.com:i-bea" }))[0];
+    c.ok("…but Bea herself, from an address the hub does not have, naming her own street, is still Bea's", bea?.clientId === birch.id && bea.minRole !== "OWNER", bea?.clientName ?? "none");
     const ned = (await rowsOf({ externalId: "gmail-hello@realtourpilot.com:h-neigh" }))[0];
     c.ok("hello@ is unchanged: a stranger naming the street is matched to that job there", ned?.clientId === birch.id, ned?.clientName ?? "none");
     const MM = await import("@/lib/mailMatch");
     c.ok("the rule, pure: info@ + unknown sender = no match; known sender or hello@ = allowed", !MM.streetMatchAllowed({ mailbox: "info@realtourpilot.com", senderKnown: false }) && MM.streetMatchAllowed({ mailbox: "INFO@realtourpilot.com", senderKnown: true }) && MM.streetMatchAllowed({ mailbox: "hello@realtourpilot.com", senderKnown: false }));
+    c.ok("the client's own name: first and last name, a middle name or suffix ignored; a relative is not the client", MM.sameSenderName("Andrea Neff", "Andrea Neff") && MM.sameSenderName("Rick Schultz III", "Rick Schultz") && MM.sameSenderName("Alex Stackhouse", "Alex  Ercole Stackhouse") && !MM.sameSenderName("C Brent Spackman", "Mike Flatley") && !MM.sameSenderName("GDNotifications", "Marcee McMullen") && !MM.sameSenderName("Brent Spackman", "Jordan Spackman"));
   }
 
   c.head("H3 · Jordan's own addresses are staff before any client lookup");
@@ -250,6 +255,9 @@ async function main() {
     c.ok("Jordan's forward of Alex's email is Alex's (read by the forwarded sender's address)", fwd?.clientId === alex.id, fwd?.clientName ?? "none");
     const note = (await rowsOf({ externalId: "gmail-hello@realtourpilot.com:h-note" }))[0];
     c.ok("Jordan's note to Kyle is nobody's (not the 'Jordan Spackman' client)", !!note && note.clientId === null, note?.clientName ?? "none");
+    const stage = (await rowsOf({ externalId: "gmail-hello@realtourpilot.com:h-stage" }))[0];
+    const stageTask = await prisma.smartTask.findFirst({ where: { clientId: birch.id, description: { contains: "apply her credits" } } });
+    c.ok("Jordan's note naming Bea's street: the to-do goes on Bea, but his words are not logged as hers", !!stage && stage.clientId === null && !!stageTask, `${stage?.clientName ?? "none"} task=${!!stageTask}`);
     c.ok("nothing at all is filed to the 'Jordan Spackman' client any more", (await prisma.commLog.count({ where: { clientId: jordanClient.id } })) === 0 && (await prisma.smartTask.count({ where: { clientId: jordanClient.id } })) === 0);
     c.ok("…and Jordan's own mail never becomes a lead", (await prisma.smartTask.count({ where: { taskType: "lead", dedupeKey: { contains: "spackman" } } })) === 0);
     const { staffAddressBook, isStaffAddress } = await import("@/lib/staffEmail");
