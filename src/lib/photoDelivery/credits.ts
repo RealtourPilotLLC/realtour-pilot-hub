@@ -22,9 +22,18 @@ import { alertOwnerAndKyle } from "./notifyOps";
 //     once per episode. Flags reset only after a real refill (threshold +
 //     reset buffer), so a small refund near a threshold never re-alerts.
 // The hub never buys credits: top-ups happen in the AutoHDR web app.
+//
+// THE PLAN SIZE (Oct 23 2026, Jordan and Kyle's huddle: AutoHDR upgraded to
+// 2,000 credits a month, from about 1,000). Before this the hub did not know
+// the plan at all; it is now `planCreditsPerMonth` beside the alert levels
+// (the owner sets it on the Credits page; the office reads it as credits,
+// never dollars). Changing it never moves the fix budget by itself: the
+// owner's spending limits stay his (scripts/_live/oct23-autohdr-plan-2000.ts
+// raises them in proportion, a dry run unless --apply).
 // ---------------------------------------------------------------------------
 
-export type CreditThresholds = { warn: number; critical: number; resetBuffer: number; usdPerCredit: number };
+/** `planCreditsPerMonth`: the AutoHDR plan's monthly allowance (null = not recorded). */
+export type CreditThresholds = { warn: number; critical: number; resetBuffer: number; usdPerCredit: number; planCreditsPerMonth: number | null };
 
 const SETTINGS_KEY = "photo_delivery:credits";
 const STATE_KEY = "photo_delivery:credit_alert_state";
@@ -39,6 +48,7 @@ export const DEFAULT_THRESHOLDS: CreditThresholds = {
   critical: envInt("CREDIT_ALERT_CRITICAL", 100),
   resetBuffer: envInt("CREDIT_ALERT_RESET_BUFFER", 50),
   usdPerCredit: Number(process.env.AUTOHDR_USD_PER_CREDIT) > 0 ? Number(process.env.AUTOHDR_USD_PER_CREDIT) : 0.5,
+  planCreditsPerMonth: null,
 };
 
 export async function creditThresholds(): Promise<CreditThresholds> {
@@ -51,6 +61,10 @@ export async function creditThresholds(): Promise<CreditThresholds> {
     critical,
     resetBuffer: pos(s.resetBuffer, 10_000) ?? DEFAULT_THRESHOLDS.resetBuffer,
     usdPerCredit: pos(s.usdPerCredit, 100) ?? DEFAULT_THRESHOLDS.usdPerCredit,
+    planCreditsPerMonth: (() => {
+      const plan = pos(s.planCreditsPerMonth, 1_000_000);
+      return plan != null ? Math.round(plan) : DEFAULT_THRESHOLDS.planCreditsPerMonth;
+    })(),
   };
 }
 

@@ -590,6 +590,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     switch (col) {
       case "editing":
         if (c.stage === "EDIT_FAILED") Object.assign(a, { tone: "failed", status: "Editing failed", action: open("Open photos") });
+        // Oct 23 2026 (huddle item 12): before the raws arrive it is the photographer's upload, never "Being edited".
+        else if (c.waitingForUpload) Object.assign(a, { tone: late ? "now" : "waiting", status: "Waiting for upload", who: "the photographer", action: late ? open("Open photos") : null });
         else Object.assign(a, { tone: late ? "now" : "waiting", status: late ? "Edits are late, not back from AutoHDR" : "Being edited", who: "AutoHDR", action: late ? open("Open photos") : null });
         break;
       case "qc":

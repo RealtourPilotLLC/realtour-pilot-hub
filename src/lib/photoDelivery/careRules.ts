@@ -22,7 +22,7 @@
 // ---------------------------------------------------------------------------
 
 /** The stock reasons the ignore prompt offers (format.IGNORE_PRESETS shows them). */
-export const STOCK_IGNORE_REASONS = ["Client preference", "Intentional staging", "Permanent feature", "Not worth a fix on this listing"] as const;
+export const STOCK_IGNORE_REASONS = ["Neighbor's property", "Barely visible", "Unfinished space (garage, basement)", "Part of the house", "Intentional staging", "Client preference", "Permanent feature", "Not worth a fix on this listing"] as const;
 /** How many characters of a person's own words a careful ignore needs. */
 export const MIN_OWN_WORDS = 10;
 

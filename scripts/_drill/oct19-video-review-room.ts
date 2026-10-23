@@ -299,7 +299,8 @@ async function main() {
     } catch (e) {
       ph = `ERROR ${String((e as Error)?.stack ?? e).slice(0, 400)}`;
     }
-    c.ok("Photo Delivery shows them (Media checks to finish, the job)", /Media checks to finish/.test(ph) && /11 Photo Check Rd/.test(ph), ph.slice(0, 300));
+    // Oct 23 2026 (huddle item 1): Kyle never used the block, so Photo Delivery dropped it too; the page itself still renders.
+    c.ok("Photo Delivery renders without the 'Media checks to finish' block (Oct 23 2026 huddle)", !ph.startsWith("ERROR") && /Photo Delivery/.test(ph) && !/Media checks to finish/.test(ph), ph.slice(0, 300));
     // Oct 20 2026 (audit H18): a next.config redirect now, not a page.
     const { configRedirect } = await import("./_configRedirect");
     const to = await configRedirect("/ops/video-delivery");

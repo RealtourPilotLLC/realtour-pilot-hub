@@ -10,9 +10,9 @@ import { photoDeliverySettings } from "@/lib/photoDelivery/settings";
 import { creditAlertState, creditView, type CreditView } from "@/lib/photoDelivery/credits";
 import { buildFixCart } from "@/lib/photoDelivery/fixes";
 import { houseOverrides, mergeOverrides } from "@/lib/photoDelivery/houseRules";
-import { ALWAYS_FIX } from "@/lib/photoDelivery/fixPolicy";
+import { ALWAYS_FIX, ALWAYS_FLAG } from "@/lib/photoDelivery/fixPolicy";
 import { deliveryGate, deliverySteps, type GateResult } from "@/lib/photoDelivery/delivery";
-import { holdingFor, needsListingUpdate, type HoldingBase } from "@/lib/photoDelivery/holding";
+import { WAITING_FOR_UPLOAD, holdingFor, needsListingUpdate, notUploadedYet, type HoldingBase } from "@/lib/photoDelivery/holding";
 import { checkEveryMs } from "@/lib/photoDelivery/verifySweep";
 import { RULES, isExteriorFinding, ruleById } from "@/lib/photoDelivery/registry";
 import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
@@ -186,6 +186,7 @@ export function creditStrip(v: CreditView, viewer: Pick<Viewer, "canSeeMoney">):
     resetBuffer: v.thresholds.resetBuffer,
     lastError: v.lastError,
     usdPerCredit: viewer.canSeeMoney ? v.thresholds.usdPerCredit : null,
+    planCreditsPerMonth: v.thresholds.planCreditsPerMonth ?? null,
   };
 }
 
@@ -259,7 +260,7 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
       where: {
         OR: [{ stage: { not: "DELIVERED" } }, { stage: "DELIVERED", OR: [{ deliveredAt: { gte: since } }, { deliveredAt: null, stageChangedAt: { gte: since } }] }],
       },
-      select: { id: true, projectId: true, stage: true, slaDueAt: true, qcShadow: true, heroPhotoId: true, holdReason: true, holdNote: true, lastError: true, deliveredAt: true, stageChangedAt: true, finalsCount: true, deliveryCheckNote: true },
+      select: { id: true, projectId: true, stage: true, slaDueAt: true, qcShadow: true, heroPhotoId: true, holdReason: true, holdNote: true, lastError: true, deliveredAt: true, stageChangedAt: true, finalsCount: true, deliveryCheckNote: true, autohdrPhotoshootId: true },
       orderBy: { slaDueAt: { sort: "asc", nulls: "last" } },
       take: 400,
     }),
@@ -307,6 +308,8 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
   const needFirst = jobs.filter((j) => (!ownHero(j) || statsByJob.get(j.id)?.listed) && statsByJob.get(j.id)?.first != null);
   const latestBatch = new Map<string, { id: string; status: string }>();
   for (const b of batches) if (!latestBatch.has(b.jobId)) latestBatch.set(b.jobId, b);
+  // Oct 23 2026 (huddle item 12): a job in Editing before its raws arrive reads "Waiting for upload".
+  const waitingUpload = await (await import("@/lib/photoDelivery/uploadState")).waitingForUploadOf(jobs).catch(() => new Set<string>());
   const clientIds = [...new Set(projects.map((p) => p.clientId))];
 
   // Open issues by severity, counted as TICKETS (one per rule and groupKey,
@@ -360,7 +363,8 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
       id: j.id,
       projectId: j.projectId,
       stage: j.stage,
-      stageLabel: stageLabel(j.stage),
+      stageLabel: waitingUpload.has(j.projectId) ? WAITING_FOR_UPLOAD : stageLabel(j.stage),
+      ...(waitingUpload.has(j.projectId) ? { waitingForUpload: true } : {}),
       street: streetOf(p),
       clientId: p?.clientId ?? null,
       clientName: p?.client?.name ?? null,
@@ -459,7 +463,7 @@ async function boardHolding(bases: HoldingBase[]): Promise<Map<string, { holding
   // Oct 22 2026 (photo audit M3): the raw uploads seen for each job in Editing (none: "Not uploaded yet").
   // A read that fails says nothing (null), never "not uploaded".
   const rawRows = editing.length
-    ? await prisma.photoIntakeBatch.groupBy({ by: ["projectId"], where: { projectId: { in: bases.filter((b) => b.stage === "EDITING").map((b) => b.projectId) } }, _count: { _all: true } }).catch(() => null)
+    ? await prisma.photoIntakeBatch.groupBy({ by: ["projectId"], where: { projectId: { in: bases.filter((b) => b.stage === "EDITING").map((b) => b.projectId) }, state: { not: "WAITING" } }, _count: { _all: true } }).catch(() => null)
     : [];
   const rawCounts = rawRows ? new Map(rawRows.map((r) => [r.projectId, r._count._all])) : null;
   const [settings, conn, runs, events, addOns, edited] = await Promise.all([
@@ -668,6 +672,8 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       .catch(() => null), // null: unreadable (never read as "not uploaded", photo audit M3)
   ]);
   const p4RawById = new Map(p4Raw.map((f) => [f.id, f.rawJson]));
+  // Oct 23 2026 (huddle item 12): the uploads that went on to AutoHDR (a batch past WAITING), or a shoot linked by hand.
+  const rawsIn = intake ? intake.filter((b) => b.state !== "WAITING").length + (job.autohdrPhotoshootId ? 1 : 0) : null;
   // Oct 15 2026: clutter set aside because the home or the room was not
   // prepared is never shown (prep.ts); the Issues tab says how many.
   const { GATE_BY, gatedBy } = await import("@/lib/photoDelivery/prep");
@@ -764,6 +770,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       statusReason: f.statusReason ? eventTextFor(f.statusReason, viewer) : f.statusReason,
       planNote: f.planNote ? eventTextFor(f.planNote, viewer) : f.planNote,
       alwaysFixed: ALWAYS_FIX.has(f.ruleId),
+      alwaysFlagged: ALWAYS_FLAG.has(f.ruleId),
       exterior: isExteriorFinding(f.ruleId, f.photoId ? roomOfPhoto.get(f.photoId) : null),
       clientAsk: askLinks.get(f.id) ?? null,
       decidedBy: f.decidedBy,
@@ -919,7 +926,8 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       slaDueAt: iso(job.slaDueAt),
       deliveredAt: iso(job.deliveredAt),
       stage: job.stage,
-      stageLabel: stageLabel(job.stage),
+      stageLabel: notUploadedYet(job.stage, rawsIn, job.finalsCount) ? WAITING_FOR_UPLOAD : stageLabel(job.stage),
+      waitingForUpload: notUploadedYet(job.stage, rawsIn, job.finalsCount),
       holdReason: job.holdReason,
       holdNote: job.holdNote,
       holdResumeStage: job.holdResumeStage,
@@ -968,7 +976,8 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       deliveryCheckNote: job.deliveryCheckNote,
       listingUpdates: listingUpdatesOf(photos, job.stage),
       // Oct 22 2026 (photo audit M3): no raws seen and no photos read: not uploaded yet (the photographer's, not AutoHDR's).
-      rawBatches: intake ? intake.length : null,
+      // Oct 23 2026 (huddle item 12): only uploads that went on to AutoHDR (or a shoot linked by hand) count; files still arriving do not.
+      rawBatches: rawsIn,
       photosRead: job.finalsCount,
     },
     runs: runViews,

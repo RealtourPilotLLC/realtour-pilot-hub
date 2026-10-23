@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { etMonthDayTime } from "@/lib/datetime";
 import { approveAryeoAction, deliverInAryeoAction } from "@/app/ops/photo-delivery/actions";
 import { UPLOAD_HELD_PREFIX, UPLOAD_OVERRIDE_MIN } from "@/lib/photoDelivery/holding";
+import { OPEN_ADDON_STEPS, addOnConfirmLines, addOnNextStep, type AddOnConfirmLine } from "@/lib/photoDelivery/addOnSteps";
 import { useJob } from "./JobContext";
 import type { AryeoPushView } from "./types";
 
@@ -108,17 +109,60 @@ function withWarning(warning: string | null | undefined, body: string) {
   );
 }
 
+/** Oct 23 2026 (huddle item 7): the special requests listed on top of a send's confirmation, each done or not. */
+function withAddOns(lines: AddOnConfirmLine[], body: ReactNode): ReactNode {
+  if (!lines.length) return body;
+  return (
+    <>
+      <span className="mb-2 block font-medium">Special requests on this order:</span>
+      <span className="mb-2 block space-y-0.5" data-addon-confirm>
+        {lines.map((l) => (
+          <span key={l.key} className="block">{l.done ? "Done: " : "Not done: "}{l.words}</span>
+        ))}
+      </span>
+      <span className="block">{body}</span>
+    </>
+  );
+}
+
 /** Kyle's presses, each with its confirm: Approve and deliver, Approve and upload to Aryeo (and "Upload anyway"), Deliver in Aryeo. `warning`: the approve summary. */
 export function useAryeoPushActions() {
-  const { jobId, run, confirm, ask, notify, readOnly } = useJob();
+  const { jobId, run, confirm, ask, notify, readOnly, data } = useJob();
+  // Oct 23 2026 (huddle item 7): before the photos go up or out, virtual
+  // staging and lot lines asked for or ordered are confirmed done. One not
+  // done stops the send here with the plain next step, and opens its steps at
+  // the top of the job (SpecialRequests).
+  const addOnLines = addOnConfirmLines(data.gate?.checks);
+  const addOnsReady = async (): Promise<boolean> => {
+    const open = addOnLines.filter((l) => !l.done);
+    if (!open.length) return true;
+    const go = await confirm({
+      title: `${open.map((l) => l.name).join(" and ")} not done yet`,
+      body: withAddOns(addOnLines, addOnNextStep(open.map((l) => l.name))),
+      confirmLabel: "Show me the steps",
+    });
+    if (go) {
+      document.getElementById("pd-special-requests")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      window.dispatchEvent(new CustomEvent(OPEN_ADDON_STEPS, { detail: open[0].key }));
+    }
+    return false;
+  };
   const approve = async (deliver: boolean, warning?: string | null) => {
     // Kyle approves (Oct 22 2026: a view-only page has no such press; the action refuses it too).
     if (readOnly) return;
+    if (!(await addOnsReady())) return;
     if (deliver) {
       const ok = await confirm({
         title: "Approve and deliver?",
-        body: withWarning(warning, "The hub puts the photos on the Aryeo listing in this order, then delivers it. The listing's customers get Aryeo's usual delivery email, and the hub checks the delivery afterwards."),
+        body: withAddOns(addOnLines, withWarning(warning, "The hub puts the photos on the Aryeo listing in this order, then delivers it. The listing's customers get Aryeo's usual delivery email, and the hub checks the delivery afterwards.")),
         confirmLabel: "Approve and deliver",
+      });
+      if (!ok) return;
+    } else if (addOnLines.length) {
+      const ok = await confirm({
+        title: "Approve and upload to Aryeo?",
+        body: withAddOns(addOnLines, "The hub puts the photos on the Aryeo listing in this order. They are not delivered until you press Deliver in Aryeo."),
+        confirmLabel: "Approve and upload",
       });
       if (!ok) return;
     }
@@ -146,9 +190,10 @@ export function useAryeoPushActions() {
     notify(r.ok ? "ok" : "err", r.message);
   };
   const deliver = async (warning?: string | null) => {
+    if (!(await addOnsReady())) return;
     const ok = await confirm({
       title: "Deliver this listing in Aryeo?",
-      body: withWarning(warning, "The hub presses Aryeo's Deliver Listing. The listing's customers get Aryeo's usual delivery email, and the hub checks the photo count afterwards."),
+      body: withAddOns(addOnLines, withWarning(warning, "The hub presses Aryeo's Deliver Listing. The listing's customers get Aryeo's usual delivery email, and the hub checks the photo count afterwards.")),
       confirmLabel: "Deliver in Aryeo",
     });
     if (ok) await run(() => deliverInAryeoAction(jobId));

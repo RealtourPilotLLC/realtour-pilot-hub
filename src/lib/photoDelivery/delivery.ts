@@ -67,6 +67,14 @@ export type GateCheck = {
   waitingOn?: string;
   doneLabel?: string;
   said?: { from: string; text: string } | null;
+  /**
+   * Oct 23 2026 (huddle item 9): never holds a person (it is `advisory` for
+   * Kyle), but the hub's own same-day delivery still waits for it: the
+   * photographer's wrap-up. `askNotes`: the line offers "Ask the photographer
+   * for notes" (askNotes.ts).
+   */
+  hubHold?: boolean;
+  askNotes?: boolean;
 };
 /** The add-on behind a gate line: its key (the confirm button), the order line, the agent's words, and how it was cleared. */
 export type GateAddOn = {
@@ -152,8 +160,9 @@ export async function deliveryGate(jobId: string, opts: { sync?: boolean } = {})
     ...(await askedChecks(job, sync).then(async (asked) => [...asked.filter((c) => c.key === "wrapup"), ...(await addOnChecks(job)), ...asked.filter((c) => c.key !== "wrapup")])),
   ];
   // An overridden line is a person's call, and a person-only line is Kyle's to
-  // approve: neither ever counts for the hub's own delivery.
-  const passed = checks.every((c) => (c.ok && !c.overridden && !c.personOnly) || c.advisory);
+  // approve: neither ever counts for the hub's own delivery. Nor does a line
+  // that only informs Kyle but holds the hub (hubHold: the wrap-up, Oct 23 2026).
+  const passed = checks.every((c) => (c.ok && !c.overridden && !c.personOnly) || (c.advisory && !c.hubHold));
   // The house setting decides (audit, Oct 15): a job's own qcShadow only records
   // how its last check ran, and kept a job advisory after shadow mode was off.
   const advisory = settings.qcShadow;
@@ -222,22 +231,29 @@ async function askedChecks(job: { id: string; projectId: string | null; stage: s
       const who = w.firstName ?? "The photographer";
       if (!w.missing) lines.push({ key: "wrapup", label: `${who}'s wrap-up is in`, ok: true, hold: true });
       else {
+        // Oct 23 2026 (Jordan and Kyle's huddle, item 9): missing notes NEVER
+        // hold Kyle ("continue without the photographer's wrap-up" every day:
+        // Harrison doesn't add notes). The line tells him and offers "Ask the
+        // photographer for notes" (askNotes.ts); only the hub's own same-day
+        // delivery still waits for it (hubHold), as it did.
         const parts = [!w.removal ? "removal notes not answered" : null, !w.cull ? "cull not confirmed" : null].filter(Boolean).join(", ");
         lines.push({
           key: "wrapup",
-          label: `${who} hasn't sent the wrap-up yet: what was promised to the client or must be removed is unknown.`,
+          label: `${who} hasn't sent the wrap-up yet (any notes for the photos are unknown).`,
           ok: !!w.override,
-          hold: true,
-          overridable: true,
+          advisory: true,
+          hubHold: true,
+          askNotes: true,
           overridden: w.override ? `${w.override.by}: ${w.override.reason}` : null,
-          detail: parts || undefined,
+          detail: parts || "not sent",
           href: w.href,
           hrefLabel: `Open ${w.firstName ? `${w.firstName}'s` : "the"} wrap-up`,
         });
       }
     }
   } catch {
-    lines.push({ key: "wrapup", label: "The photographer's wrap-up", ok: false, hold: true, detail: "could not be read just now, it is read again on the next pass" });
+    // A read that fails never passes the hub's own delivery, and never holds Kyle.
+    lines.push({ key: "wrapup", label: "The photographer's wrap-up", ok: false, advisory: true, hubHold: true, detail: "could not be read just now, it is read again on the next pass" });
   }
   try {
     // The wrap-up's removal notes and the order's photo notes become items to
@@ -328,23 +344,45 @@ const ROOM_WORDS: Record<string, string> = {
   AERIAL: "Aerial", COMMUNITY: "Community", DETAIL: "Detail",
 };
 
-// Plan §7.6: hero first (twilight if any, else the best front exterior by
-// hero score), then the sequence groups in this order; AutoHDR's walkthrough
-// order within a group; excluded photos drop out.
-const GROUP_ORDER = ["FRONT_EXTERIOR", "ENTRY", "MAIN_LIVING", "KITCHEN", "PRIMARY_SUITE", "BEDROOMS", "BATHROOMS", "FLEX", "LOWER_LEVEL", "UTILITY", "OUTDOOR_LIVING", "REAR_EXTERIOR", "AERIAL", "COMMUNITY", "DETAIL"];
+// THE HUB'S OWN ORDER (plan §7.6; Oct 23 2026, Jordan and Kyle's huddle: the
+// hero was a front door close-up). The way Kyle set 1316 Blair Cir by hand:
+//   1. the hero: the best, clearest WIDE shot of the front of the house (a
+//      twilight one first when there is one), never a close-up (a door, a
+//      fixture: the free check's view, autohdrCheck.heroScoreFrom);
+//   2. the other front exteriors (wide before close-ups), then aerials;
+//   3. the inside in walkthrough order: entry, living and dining, kitchen,
+//      the primary suite, bedrooms, bathrooms, the rest, the lower level,
+//      laundry and garage; AutoHDR's (the photographer's) order within each;
+//   4. the backyard and the rear of the house LAST (patio, pool, yard, rear).
+// Room labels come from the free check (autohdrCheck.labelRoom). A person's
+// order (PhotoJob.orderJson) or hero (heroPhotoId) always wins: the hub
+// never re-sorts what Kyle set by hand (deliveryOrderFor).
+export const GROUP_ORDER = ["FRONT_EXTERIOR", "AERIAL", "ENTRY", "MAIN_LIVING", "KITCHEN", "PRIMARY_SUITE", "BEDROOMS", "BATHROOMS", "FLEX", "LOWER_LEVEL", "UTILITY", "DETAIL", "COMMUNITY", "OUTDOOR_LIVING", "REAR_EXTERIOR"];
+/** At or under this hero score a front photo is a close-up (a door, a fixture): never the hero. */
+export const CLOSE_UP_SCORE = 30;
 
 type OrderablePhoto = { id: string; name: string; sequence: number; sequenceGroup: string | null; heroScore: number | null; isTwilight: boolean; roomType: string | null };
+
+const isFront = (p: OrderablePhoto) => p.sequenceGroup === "FRONT_EXTERIOR" || p.roomType === "EXTERIOR_FRONT" || p.roomType === "TWILIGHT_EXTERIOR";
+const isCloseUp = (p: OrderablePhoto) => p.heroScore != null && p.heroScore <= CLOSE_UP_SCORE;
+
+/** The hero the hub picks: the best wide front exterior (twilight first), never a close-up. Pure. */
+export function suggestedHeroOf(photos: OrderablePhoto[]): OrderablePhoto | null {
+  const best = (list: OrderablePhoto[]) => [...list].sort((a, b) => Number(b.isTwilight || b.roomType === "TWILIGHT_EXTERIOR") - Number(a.isTwilight || a.roomType === "TWILIGHT_EXTERIOR") || (b.heroScore ?? 0) - (a.heroScore ?? 0) || a.sequence - b.sequence)[0] ?? null;
+  const front = photos.filter((p) => isFront(p) && !isCloseUp(p));
+  if (front.length) return best(front);
+  // No wide front shot: an aerial, then any other wide outside shot, never a close-up.
+  const aerial = photos.filter((p) => (p.sequenceGroup === "AERIAL" || p.roomType === "AERIAL") && !isCloseUp(p));
+  return aerial.length ? best(aerial) : null;
+}
 
 export function suggestedOrder(photos: OrderablePhoto[], heroId: string | null): OrderablePhoto[] {
   if (!photos.some((p) => p.sequenceGroup)) return [...photos].sort((a, b) => a.sequence - b.sequence); // not classified yet
   const rank = (g: string | null) => (g && GROUP_ORDER.includes(g) ? GROUP_ORDER.indexOf(g) : GROUP_ORDER.length);
-  const sorted = [...photos].sort((a, b) => rank(a.sequenceGroup) - rank(b.sequenceGroup) || a.sequence - b.sequence);
-  let hero = heroId ? sorted.find((p) => p.id === heroId) : undefined;
-  if (!hero) {
-    const exteriors = sorted.filter((p) => p.sequenceGroup === "FRONT_EXTERIOR" || p.roomType === "TWILIGHT_EXTERIOR" || p.roomType === "AERIAL");
-    hero = exteriors.filter((p) => p.isTwilight).sort((a, b) => (b.heroScore ?? 0) - (a.heroScore ?? 0))[0] ?? exteriors.sort((a, b) => (b.heroScore ?? 0) - (a.heroScore ?? 0))[0];
-  }
-  return hero ? [hero, ...sorted.filter((p) => p.id !== hero!.id)] : sorted;
+  // Inside the front group, the wide shots before the close-ups.
+  const sorted = [...photos].sort((a, b) => rank(a.sequenceGroup) - rank(b.sequenceGroup) || (isFront(a) && isFront(b) ? Number(isCloseUp(a)) - Number(isCloseUp(b)) : 0) || a.sequence - b.sequence);
+  const hero = (heroId ? sorted.find((p) => p.id === heroId) : undefined) ?? suggestedHeroOf(sorted) ?? undefined;
+  return hero ? [hero, ...sorted.filter((p) => p.id !== hero.id)] : sorted;
 }
 
 /** Where a split job's new photos start: after every photo already on the listing, and after any number the hub already gave one there. Pure. 0 on a single visit. */

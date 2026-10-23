@@ -52,6 +52,8 @@ export type CreditStripView = {
   lastError: string | null;
   /** Owner only. */
   usdPerCredit: number | null;
+  /** Oct 23 2026: the AutoHDR plan's credits a month (credits, so the office sees it too); null = not recorded. */
+  planCreditsPerMonth: number | null;
 };
 
 export type StripData = {
@@ -98,6 +100,8 @@ export type QueueCard = {
    */
   holding?: { line: string; tone: "held" | "waiting" | "ready" | "done" } | null;
   addOns?: string[];
+  /** Oct 23 2026 (huddle item 12): in Editing before the raws arrived (uploadState.ts): reads "Waiting for upload". */
+  waitingForUpload?: boolean;
 };
 
 export type QueueColumn = { key: QueueColumnKey; label: string; hint: string; stages: string[]; cards: QueueCard[] };
@@ -222,6 +226,8 @@ export type FindingView = {
   planNote: string | null;
   /** House policy fixes it on every shoot (trash cans, cars, camera mistakes, lens distortion): never switched off house-wide (audit C19). */
   alwaysFixed?: boolean;
+  /** Oct 23 2026: Jordan always wants it flagged (fixPolicy.ALWAYS_FLAG): never "Stop flagging this", never learned away. */
+  alwaysFlagged?: boolean;
   /** About the outside of the house (an outside check, or a photo of the outside): a major one is set aside only with a typed reason (Oct 21 2026). */
   exterior?: boolean;
   /** The open client request it is about ("Client asked for this to be removed (order note)"): set aside only once that is answered (Oct 21 2026). */
@@ -291,6 +297,9 @@ export type GateCheckView = {
   personOnly?: boolean;
   /** Oct 22 2026: the photos the line is about (Update on Aryeo of photos edited in the hub). */
   photoIds?: string[];
+  /** Oct 23 2026 (huddle item 9): the hub's own delivery waits for it, Kyle never does (the wrap-up); `askNotes`: offer "Ask the photographer for notes". */
+  hubHold?: boolean;
+  askNotes?: boolean;
 };
 export type AddOnView = {
   key: string;
@@ -366,6 +375,8 @@ export type JobHeaderView = {
   deliveredAt: string | null;
   stage: string;
   stageLabel: string;
+  /** Oct 23 2026 (huddle item 12): in Editing before the raws arrived: the stepper's first step reads "Waiting for upload". */
+  waitingForUpload?: boolean;
   holdReason: string | null;
   holdNote: string | null;
   holdResumeStage: string | null;

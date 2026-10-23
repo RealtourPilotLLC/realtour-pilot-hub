@@ -93,8 +93,8 @@ async function main() {
     c.ok("…minutes kept when they matter ('Tue 5:30 PM'); the job page's line 'Due Oct 15, 4 days late'",
       jb.dueWordsFor(new Date("2026-10-20T21:30:00Z"), now0) === "Tue 5:30 PM" && jb.dueLineFor(new Date(now0.getTime() - 4 * DAY), now0) === "Due Oct 15, 4 days late");
     const ph = (o: Partial<Parameters<typeof jb.photoStageOf>[0]>) => jb.photoStageOf({ jobStage: null, shootOver: true, rawsIn: true, liveOnAryeo: false, late: false, ...o });
-    c.ok("photos: Not shot yet, Not uploaded, Editing, In QC, Ready to review, Revisions, Delivered",
-      ph({ shootOver: false, rawsIn: false }).label === "Not shot yet" && ph({ rawsIn: false }).label === "Not uploaded" && ph({}).label === "Editing" &&
+    c.ok("photos: Not shot yet, Waiting for upload (Oct 23 2026), Editing, In QC, Ready to review, Revisions, Delivered",
+      ph({ shootOver: false, rawsIn: false }).label === "Not shot yet" && ph({ rawsIn: false }).label === "Waiting for upload" && ph({}).label === "Editing" &&
       ph({ jobStage: "EDITING" }).label === "Editing" && ph({ jobStage: "QC_RUNNING" }).label === "In QC" && ph({ jobStage: "QC_REVIEW" }).label === "In QC" &&
       ph({ jobStage: "READY" }).label === "Ready to review" && ph({ jobStage: "REVISION_REQUESTED" }).label === "Revisions" && ph({ jobStage: "DELIVERED" }).label === "Delivered" &&
       ph({ liveOnAryeo: true }).label === "Delivered" && ph({ liveOnAryeo: true, reopened: true }).label === "Revisions");

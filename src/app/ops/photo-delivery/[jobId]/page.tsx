@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { AlertTriangle, Camera, CheckCircle2, ExternalLink, PauseCircle } from "lucide-react";
+import { AlertTriangle, Camera, ExternalLink, PauseCircle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { BackLink } from "@/components/ui/BackLink";
 import { requirePageAccess } from "@/lib/auth/guards";
@@ -61,7 +61,6 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
   const box = await loadBeforeYouSend(h.projectId, "photo");
   const initialTab = TABS.get(tabRaw ?? "") ?? "issues";
   const initialPhoto = photoRaw && data.photos.some((p) => p.id === photoRaw) ? photoRaw : null;
-  const addOns = (data.gate?.checks ?? []).filter((c) => !!c.addOn);
 
   return (
     <div>
@@ -90,7 +89,7 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
           history={<HistoryPanel events={data.events} header={h} photos={data.photos} runs={data.runs} batches={data.batches} canSeeMoney={viewer.canSeeMoney} showCredits={!readOnly} />}
           lead={<>
         <section aria-label="Job summary" className="panel-shadow space-y-3 rounded-2xl border border-border bg-surface p-4">
-          <StageStepper stage={h.stage} holdResumeStage={h.holdResumeStage} />
+          <StageStepper stage={h.stage} holdResumeStage={h.holdResumeStage} waitingForUpload={!!h.waitingForUpload} />
           <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2 xl:grid-cols-4">
             <Fact label="Due">
               {h.stage === "DELIVERED" ? `Delivered ${h.deliveredAt ? etDateTime(h.deliveredAt) : ""}` : <SlaChip dueAt={h.slaDueAt} serverNow={data.nowIso} />}
@@ -140,21 +139,7 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
               <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" /> {h.lastError}
             </p>
           )}
-          {/* Oct 22 2026 (addOns.ts): add-on work on the order, in the job's header: "Lot Lines needed" until it is confirmed added. */}
-          {addOns.length > 0 && (
-            <p className="flex flex-wrap gap-1.5" aria-label="Add-on work on the order">
-              {addOns.map((c) => (
-                <span
-                  key={c.key}
-                  data-addon={c.addOn!.key}
-                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[13px] font-semibold ring-1 ring-inset ${c.ok ? "bg-success/10 text-success ring-success/30" : "bg-warning-soft text-warning ring-warning/40"}`}
-                >
-                  {c.ok ? <CheckCircle2 aria-hidden className="size-3.5" /> : <AlertTriangle aria-hidden className="size-3.5" />}
-                  {c.ok ? c.addOn!.done : c.addOn!.need}
-                </span>
-              ))}
-            </p>
-          )}
+          {/* Oct 23 2026 (huddle item 7): the add-on chips that stood here moved to Special requests, at the top of the job. */}
         </section>
 
         {/* BEFORE YOU SEND (Oct 19 2026, lib/jobChecks): what was flagged at the

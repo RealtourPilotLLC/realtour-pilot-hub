@@ -121,18 +121,26 @@ export async function replaceWithUploadAction(input: { jobId: string; photoId: s
   }
 }
 
-/** Add the photos Kyle uploaded to the job's gallery, at the end of the delivery order. */
-export async function addPhotosAction(input: { jobId: string; files: { pathname: string; fileName: string }[] }): Promise<FileActionResult> {
+/**
+ * Add the photos Kyle uploaded to the job's gallery, at the end of the
+ * delivery order. Oct 23 2026 (huddle item 7): `addOn` + `nextTo`, the
+ * finished versions of virtual staging or lot lines done outside the hub,
+ * each right after its original (never replacing it).
+ */
+export async function addPhotosAction(input: { jobId: string; files: { pathname: string; fileName: string }[]; addOn?: string | null; nextTo?: (string | null)[] | null }): Promise<FileActionResult> {
   try {
     await requireAdmin();
   } catch (e) {
     return denied(e);
   }
   if (!input || !ID.test(String(input.jobId)) || !Array.isArray(input.files)) return { ok: false, message: "That job id is not valid." };
+  const addOn = input.addOn == null ? null : String(input.addOn);
+  if (addOn != null && !/^[a-z_]{3,40}$/.test(addOn)) return { ok: false, message: "That add-on is not one the hub knows." };
+  const nextTo = Array.isArray(input.nextTo) ? input.nextTo.slice(0, input.files.length).map((x) => (typeof x === "string" && ID.test(x) ? x : null)) : null;
   try {
     const by = await actor();
     const { addPhotosByHand } = await import("@/lib/photoDelivery/hubFiles");
-    const r = await addPhotosByHand({ jobId: input.jobId, files: input.files.map((f) => ({ pathname: String(f?.pathname ?? ""), fileName: String(f?.fileName ?? "") })), by });
+    const r = await addPhotosByHand({ jobId: input.jobId, files: input.files.map((f) => ({ pathname: String(f?.pathname ?? ""), fileName: String(f?.fileName ?? "") })), by, addOn, nextTo });
     if (r.ok) {
       refresh(input.jobId);
       refillReady(input.jobId, by);

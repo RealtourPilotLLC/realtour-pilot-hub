@@ -19,7 +19,7 @@ const STEPS: { key: string; label: string }[] = [
   { key: "DELIVERED", label: "Delivered" },
 ];
 
-export function StageStepper({ stage, holdResumeStage }: { stage: string; holdResumeStage: string | null }) {
+export function StageStepper({ stage, holdResumeStage, waitingForUpload = false }: { stage: string; holdResumeStage: string | null; waitingForUpload?: boolean }) {
   const side: Record<string, { at: string; label: string; bad: boolean }> = {
     ON_HOLD: { at: holdResumeStage && STEPS.some((s) => s.key === holdResumeStage) ? holdResumeStage : "QC_REVIEW", label: "On hold", bad: true },
     EDIT_FAILED: { at: "EDITING", label: "Edit failed", bad: true },
@@ -34,7 +34,8 @@ export function StageStepper({ stage, holdResumeStage }: { stage: string; holdRe
       {STEPS.map((step, i) => {
         const done = i < idx || (stage === "DELIVERED" && i === idx);
         const current = i === idx && stage !== "DELIVERED";
-        const label = current && s ? s.label : step.label;
+        // Oct 23 2026 (huddle item 12): before the raws arrive the first step is "Waiting for upload", not "Editing".
+        const label = current && s ? s.label : current && waitingForUpload && step.key === "EDITING" ? "Waiting for upload" : step.label;
         const named = i === idx; // the step the job is on (or Delivered), named on a phone too
         return (
           <li key={step.key} className="flex min-w-0 shrink-0 items-center gap-1" aria-current={current ? "step" : undefined}>

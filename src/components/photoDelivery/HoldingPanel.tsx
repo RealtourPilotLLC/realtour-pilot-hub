@@ -2,11 +2,11 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { CheckCircle2, ChevronDown, CircleAlert, Clock, ExternalLink, Quote, Send, UploadCloud } from "lucide-react";
+import { CheckCircle2, ChevronDown, CircleAlert, Clock, ExternalLink, MessageSquare, Quote, Send, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SETTLED_REASON_MIN, holdingFor, type HoldingAction, type HoldingItem } from "@/lib/photoDelivery/holding";
 import {
-  clientAskedAnswerAction, clientAskedDoneAction, confirmAddOnAction, overrideWrapUpAction, releaseHoldAction, requestQcAction, settleRevisionAction, startDeliveryAction, verifyDeliveryAction,
+  askPhotographerNotesAction, clientAskedAnswerAction, clientAskedDoneAction, confirmAddOnAction, overrideWrapUpAction, releaseHoldAction, requestQcAction, settleRevisionAction, startDeliveryAction, verifyDeliveryAction,
 } from "@/app/ops/photo-delivery/actions";
 import { updateOnAryeoAction } from "@/app/ops/photo-delivery/editActions";
 import { useJob } from "./JobContext";
@@ -169,6 +169,13 @@ export function HoldingPanel() {
         );
       case "settle":
         return <button type="button" disabled={pending} onClick={() => void settleRevision()} className={cls}>{a.label}</button>;
+      case "asknotes":
+        // Oct 23 2026 (huddle item 9): a text to the photographer; nothing waits for the answer.
+        return (
+          <button type="button" disabled={pending} onClick={() => void run(() => askPhotographerNotesAction(jobId))} className={cls} data-ask-notes>
+            <MessageSquare aria-hidden className="size-4" /> {a.label}
+          </button>
+        );
     }
   };
 

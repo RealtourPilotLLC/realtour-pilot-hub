@@ -502,12 +502,12 @@ async function main() {
     const nj = await prisma.photoJob.create({ data: { projectId: N.id, stage: "EDITING", slaDueAt: new Date(now0.getTime() - DAY) } });
     const nd = (await data.loadJobDetail(nj.id, { viewer: kyleView as never }))!;
     const nv = H.holdingFor({ ...nd.holdingBase, stage: nd.header.stage, gate: nd.gate, gateError: nd.gateError, push: nd.aryeoPush });
-    c.ok("the job page: 'Not uploaded yet', waiting on the photographer, the upload page (not AutoHDR's)", nd.holdingBase.rawBatches === 0 && nv.items[0]?.short === "Not uploaded yet" && /Waiting on the photographer/.test(nv.items[0].waitingOn) && (nv.items[0].action as { href?: string })?.href === `/upload/${N.id}`, JSON.stringify(nv.items[0]));
+    c.ok("the job page: 'Waiting for upload' (Oct 23 2026 wording), waiting on the photographer, the upload page (not AutoHDR's)", nd.holdingBase.rawBatches === 0 && nv.items[0]?.short === "Waiting for upload" && /Waiting on the photographer/.test(nv.items[0].waitingOn) && (nv.items[0].action as { href?: string })?.href === `/upload/${N.id}`, JSON.stringify(nv.items[0]));
     c.ok("…with a raw upload seen it is AutoHDR's again", H.holdingFor({ ...nd.holdingBase, rawBatches: 1, stage: "EDITING", gate: null, push: nd.aryeoPush }).items[0]?.waitingOn === "Waiting on AutoHDR");
     const card = (await data.loadQueue({ holding: true })).columns.flatMap((col) => col.cards).find((x) => x.id === nj.id);
-    c.ok("…the board card says 'Not uploaded yet'", card?.holding?.line === "Not uploaded yet", JSON.stringify(card?.holding));
+    c.ok("…the board card says 'Waiting for upload'", card?.holding?.line === "Waiting for upload", JSON.stringify(card?.holding));
     const { photoStageOf } = await import("@/lib/jobsBoard");
-    c.ok("the Shoots board's photo chip: 'Not uploaded', not 'Editing'", photoStageOf({ jobStage: "EDITING", shootOver: true, rawsIn: true, liveOnAryeo: false, late: false, noRawsSeen: true }).label === "Not uploaded" && photoStageOf({ jobStage: "EDITING", shootOver: true, rawsIn: true, liveOnAryeo: false, late: false }).label === "Editing");
+    c.ok("the Shoots board's photo chip: 'Waiting for upload', not 'Editing'", photoStageOf({ jobStage: "EDITING", shootOver: true, rawsIn: true, liveOnAryeo: false, late: false, noRawsSeen: true }).label === "Waiting for upload" && photoStageOf({ jobStage: "EDITING", shootOver: true, rawsIn: true, liveOnAryeo: false, late: false }).label === "Editing");
     const behind = await import("@/lib/behindAlert");
     const report = await behind.behindReport(new Date()).catch((e: unknown) => ({ items: [] as { projectId: string; who: string }[], err: String(e) }));
     const late = report.items.find((i) => i.projectId === N.id);
@@ -543,10 +543,10 @@ async function main() {
     const house = await import("@/lib/photoDelivery/houseRules");
     const kyleStop = await house.stopRule("AIEDIT_FLOATING_OBJECT", "too many", "Kyle", { role: "ADMIN" });
     const noRole = await house.stopRule("AIEDIT_FLOATING_OBJECT", "too many", "someone");
-    c.ok("switching it off for every shoot is refused for anyone but the owner", !kyleStop.ok && !noRole.ok && /Only Jordan/.test(kyleStop.message) && !(await house.houseRules()).some((r) => r.ruleId === "AIEDIT_FLOATING_OBJECT"), kyleStop.message);
+    c.ok("switching it off for every shoot is refused for anyone but the owner", !kyleStop.ok && !noRole.ok && !(await house.houseRules()).some((r) => r.ruleId === "AIEDIT_FLOATING_OBJECT"), kyleStop.message);
     const ownerStop = await house.stopRule("AIEDIT_FLOATING_OBJECT", "Jordan's call for the drill", "Jordan", { role: "OWNER" });
-    c.ok("…the owner can", ownerStop.ok && (await house.houseRules()).some((r) => r.ruleId === "AIEDIT_FLOATING_OBJECT"));
-    await house.resumeRule("AIEDIT_FLOATING_OBJECT", "Jordan");
+    // Oct 23 2026 (huddle item 3): an AI edit mistake is an always-flag now: nobody switches it off, the owner included.
+    c.ok("…and since Oct 23 2026 the owner can't either (always flagged)", !ownerStop.ok && /always wants it flagged/.test(ownerStop.message) && !(await house.houseRules()).some((r) => r.ruleId === "AIEDIT_FLOATING_OBJECT"), ownerStop.message);
 
     // ======================================================================
     c.head("M7 · no dollars for Kyle (credits are fine)");

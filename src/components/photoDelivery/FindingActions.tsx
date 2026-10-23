@@ -32,7 +32,7 @@ const NEXT_STEP: Record<string, string> = {
 };
 
 export function FindingActions({ findings, className, showFix = true }: { findings: FindingView[]; className?: string; showFix?: boolean }) {
-  const { data, decide, addToCart, cartLineByFinding, selected, pending, viewer, stopFlagging, readOnly } = useJob();
+  const { data, decide, addToCart, cartLineByFinding, queued, pending, viewer, stopFlagging, readOnly } = useJob();
   const ruleIds = [...new Set(findings.map((f) => f.ruleId))];
   const open = findings.filter((f) => f.status === "OPEN");
   const undoable = findings.filter((f) => UNDOABLE.has(f.status));
@@ -93,7 +93,17 @@ export function FindingActions({ findings, className, showFix = true }: { findin
     const l = cartLineByFinding.get(f.id);
     return !!l && !l.humanCall;
   });
-  const inCart = fixable.length > 0 && fixable.every((f) => selected.has(f.id));
+  // Oct 23 2026 (huddle item 6): Fix queues the fix where Kyle is (no jump to
+  // the cart, the lightbox stays), and moves on: the Issues tab folds the
+  // group into "Queued to fix" and the next issue takes the focus.
+  const inCart = fixable.length > 0 && fixable.every((f) => queued.has(f.id));
+  const fix = (e: React.MouseEvent<HTMLButtonElement>) => {
+    const here = e.currentTarget.closest<HTMLElement>("[data-issue-group]");
+    const next = (here?.nextElementSibling as HTMLElement | null) ?? null;
+    if (addToCart(fixable.map((f) => f.id), { stay: true }) && next?.matches("[data-issue-group]")) {
+      requestAnimationFrame(() => next.focus({ preventScroll: true }));
+    }
+  };
   const humanLine = lines.find((l) => l?.humanCall) ?? null;
   const humanWhy = humanLine?.humanCall ?? null;
   const damage = open.some((f) => f.ruleId === "FIX_DAMAGE_AI_EDIT");
@@ -118,7 +128,7 @@ export function FindingActions({ findings, className, showFix = true }: { findin
   const suffix = n > 1 ? ` (${n})` : "";
   // OTHER_DEFECT is the catch-all: switching it off would hide everything unnamed. An AI fix that changed the house is never switched off either,
   // nor a check the house always fixes, trash cans above all (audit C19, Oct 20 2026).
-  const canStopFlagging = viewer.isOwner && ruleIds.length === 1 && ruleIds[0] !== "OTHER_DEFECT" && ruleIds[0] !== "FIX_DAMAGE_AI_EDIT" && !findings.some((f) => f.alwaysFixed);
+  const canStopFlagging = viewer.isOwner && ruleIds.length === 1 && ruleIds[0] !== "OTHER_DEFECT" && ruleIds[0] !== "FIX_DAMAGE_AI_EDIT" && !findings.some((f) => f.alwaysFixed || f.alwaysFlagged);
   return (
     <div className={cn("flex flex-wrap gap-1.5", className)} role="group" aria-label="Decide">
       {askedLine}
@@ -127,10 +137,10 @@ export function FindingActions({ findings, className, showFix = true }: { findin
           type="button"
           className={cn(btn, !inCart && "border-brand/50 bg-brand-soft")}
           disabled={pending}
-          title={inCart ? "Already in the Fix Cart" : "Add the fix to the Fix Cart"}
-          onClick={() => addToCart(fixable.map((f) => f.id))}
+          title={inCart ? "Queued in the Fix Cart: run it from the Fix Cart tab" : "Queue the fix in the Fix Cart and move on to the next issue"}
+          onClick={fix}
         >
-          <Wrench aria-hidden className="size-3.5" /> {inCart ? "In cart" : `Fix${fixable.length > 1 ? ` (${fixable.length})` : ""}`}
+          <Wrench aria-hidden className="size-3.5" /> {inCart ? "Queued" : `Fix${fixable.length > 1 ? ` (${fixable.length})` : ""}`}
         </button>
       )}
       <button type="button" className={btn} disabled={pending} onClick={() => void decide(open, "IGNORED")} title="It is there, but not worth fixing here. After several of these, the hub stops fixing this kind of clutter on its own.">

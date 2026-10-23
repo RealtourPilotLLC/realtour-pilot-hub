@@ -18,7 +18,7 @@ import {
 } from "../registry";
 import { PAID_QC_OFF, PAID_QC_OFF_MESSAGE, photoDeliverySettings, type PhotoDeliverySettings, type QcModelSlot } from "../settings";
 import { claimJob, logJobEvent, releaseJob, setStage, type JobStage } from "../jobState";
-import { alertOwnerAndKyle, opsRecipients } from "../notifyOps";
+import { alertOwnerAndKyle, kyleRowKey, opsRecipients } from "../notifyOps";
 import { derivativePathname, derivativeStore, readDerivativeBytes, type StoredRef } from "../blob";
 import { QcCallError, runPass, type CallRecord, type QcImage } from "./claude";
 import {
@@ -1455,8 +1455,11 @@ export async function bellOnly(a: { kind: string; title: string; body?: string; 
   let n = 0;
   const { logDelivery } = await import("@/lib/notify");
   for (const p of people) {
+    // Oct 23 2026 (huddle item 11): Kyle's bell by his own rule: none for what he can't act on, one per job per state.
+    const key = p.role === "ADMIN" ? await kyleRowKey(a) : a.dedupeKey;
+    if (!key) continue;
     const row = await prisma.notification
-      .create({ data: { kind: a.kind, title: stripLongDashes(a.title).slice(0, 90), body: a.body ? stripLongDashes(a.body).slice(0, 140) : null, href: a.href, audience: JSON.stringify([p.role]), userKey: `tm:${p.id}`, dedupeKey: `${a.dedupeKey}-${p.slot}` }, select: { id: true } })
+      .create({ data: { kind: a.kind, title: stripLongDashes(a.title).slice(0, 90), body: a.body ? stripLongDashes(a.body).slice(0, 140) : null, href: a.href, audience: JSON.stringify([p.role]), userKey: `tm:${p.id}`, dedupeKey: `${key}-${p.slot}` }, select: { id: true } })
       .catch((e: unknown) => {
         if ((e as { code?: string } | null)?.code === "P2002") return null;
         throw e;

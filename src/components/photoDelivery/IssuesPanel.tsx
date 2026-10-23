@@ -9,7 +9,7 @@ import { PhotoImg } from "./PhotoImg";
 import { FindingActions } from "./FindingActions";
 import { StraightenButtons } from "./EditTools";
 import { photoTitle, useJob } from "./JobContext";
-import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, groupFindings, plural, type FindingGroup } from "./format";
+import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, groupFindings, isQueuedGroup, plural, type FindingGroup } from "./format";
 import type { FindingView } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ function GroupCard({ g, low = false }: { g: FindingGroup; low?: boolean }) {
   const first = g.findings[0];
   const single = g.findings.length === 1;
   return (
-    <li className={cn("rounded-xl border bg-surface p-3", g.severity === "CRITICAL" && g.openIds.length ? "border-danger/40" : "border-border")}>
+    <li data-issue-group={g.key} tabIndex={-1} className={cn("rounded-xl border bg-surface p-3 focus-visible:outline-2 focus-visible:outline-brand", g.severity === "CRITICAL" && g.openIds.length ? "border-danger/40" : "border-border")}>
       <div className="flex flex-wrap items-center gap-1.5">
         <span className={cn("rounded-full px-2 py-0.5 text-[12px] font-semibold ring-1 ring-inset", SEVERITY_CLASS[g.severity])}>{SEVERITY_LABEL[g.severity]}</span>
         <h3 className="min-w-0 break-words text-sm font-semibold">{g.title}</h3>
@@ -130,11 +130,16 @@ function FindingRow({ f }: { f: FindingView }) {
 }
 
 export function IssuesPanel() {
-  const { data, shown, jobId, run, confirm, pending, setTab, readOnly } = useJob();
+  const { data, shown, jobId, run, confirm, pending, setTab, readOnly, queued, unqueue, cartLineByFinding } = useJob();
   const visible = useMemo(() => data.findings.filter((f) => f.pass !== "P4_ORDER"), [data.findings]);
   const main = useMemo(() => groupFindings(visible.filter((f) => shown(f)), data.groupMeta), [visible, shown, data.groupMeta]);
   const low = useMemo(() => groupFindings(visible.filter((f) => !shown(f)), data.groupMeta), [visible, shown, data.groupMeta]);
-  const live = main.filter((g) => g.findings.some((f) => LIVE.has(f.status)));
+  // Oct 23 2026 (huddle item 6): a group whose fixes Kyle queued here (Fix)
+  // leaves the list like a decided one, so the next issue is where he is.
+  const isQueued = (g: FindingGroup) => isQueuedGroup(g, queued, (id) => !!cartLineByFinding.get(id) && !cartLineByFinding.get(id)!.humanCall);
+  const liveAll = main.filter((g) => g.findings.some((f) => LIVE.has(f.status)));
+  const queuedGroups = liveAll.filter(isQueued);
+  const live = liveAll.filter((g) => !isQueued(g));
   const decided = main.filter((g) => !g.findings.some((f) => LIVE.has(f.status)));
   const openCount = visible.filter((f) => f.status === "OPEN" && shown(f)).length;
   // Oct 15 2026: open room-coverage gaps live on the Coverage tab, but they hold the job too.
@@ -180,6 +185,29 @@ export function IssuesPanel() {
             ))}
           </ul>
         </>
+      )}
+      {queuedGroups.length > 0 && (
+        <details className="rounded-xl border border-brand/30" data-queued-fixes={queuedGroups.length}>
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-sm font-medium [&::-webkit-details-marker]:hidden">
+            <ChevronDown aria-hidden className="size-4" /> Queued to fix ({queuedGroups.length})
+            <span className="text-[12px] font-normal text-muted">They run when you press Run in the Fix Cart.</span>
+          </summary>
+          <ul className="space-y-1.5 border-t border-border p-2">
+            {queuedGroups.map((g) => (
+              <li key={g.key} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-surface-2/50 px-2.5 py-1.5 text-[13px]">
+                <span className="min-w-0 break-words">{g.title}{g.photoIds.length > 1 ? ` · ${plural(g.photoIds.length, "photo")}` : ""}</span>
+                <button type="button" onClick={() => unqueue(g.findings.map((f) => f.id))} className="inline-flex min-h-9 items-center rounded-lg border border-border-strong px-2.5 font-medium hover:bg-surface-2">
+                  Back to the list
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div className="border-t border-border p-2">
+            <button type="button" onClick={() => setTab("cart")} className="inline-flex min-h-10 items-center rounded-lg bg-brand-action px-3 text-[13px] font-semibold text-brand-fg hover:brightness-95">
+              Open the Fix Cart
+            </button>
+          </div>
+        </details>
       )}
       {coverageGaps > 0 && (
         <p className="text-[13px]">
