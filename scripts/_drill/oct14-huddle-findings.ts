@@ -491,6 +491,17 @@ async function main() {
     listings.set("LQ", "DELIVERED");
     await sweep.verifySoonAfterStart(jq.id);
     c.ok("Mark as delivering checks straight away", (await prisma.photoJob.findUniqueOrThrow({ where: { id: jq.id } })).stage === "DELIVERED");
+    // Oct 23 2026 (30 Caedman Dr, 850 Springbank Ln): a floor plan ordered but
+    // not on the listing yet never holds the photos' delivery; it is kept on
+    // the diff as still to come.
+    const projF = await prisma.project.create({ data: { title: "34 Plan St, Reading, PA", aryeoListingId: "LF", clientId: A.client.id } });
+    await prisma.deliverable.create({ data: { projectId: projF.id, type: "FLOORPLAN", label: "Floor Plan", quantity: 1 } });
+    const jf = await prisma.photoJob.create({ data: { projectId: projF.id, stage: "DELIVERING", deliveryStartedAt: new Date() } });
+    for (let k = 0; k < 2; k++) await prisma.photoAsset.create({ data: { jobId: jf.id, name: `f${k}.jpg`, sourceKind: "DROPBOX", contentHash: `f${k}`, sequence: k, status: "ACTIVE" } });
+    listings.set("LF", "DELIVERED");
+    const vf = await (await import("@/lib/photoDelivery/delivery")).verifyDelivery(jf.id, "drill");
+    const jfAfter = await prisma.photoJob.findUniqueOrThrow({ where: { id: jf.id } });
+    c.ok("photos delivered with the floor plan still to come: Delivered, not a mismatch; the plan stays on the diff", jfAfter.stage === "DELIVERED" && !!jfAfter.deliveredAt && JSON.parse(jfAfter.deliveryDiffJson ?? "{}").floorPlanMissing === true, `${jfAfter.stage} ${vf.message}`);
     // Backend audit #14: the hub's own guess (Project.deliveredAt) never stands in for Aryeo's word.
     const proj3 = await prisma.project.create({ data: { title: "32 Guess St, Reading, PA", aryeoListingId: "LG", clientId: A.client.id, deliveredAt: new Date() } });
     const jg = await prisma.photoJob.create({ data: { projectId: proj3.id, stage: "DELIVERING", deliveryStartedAt: new Date() } });

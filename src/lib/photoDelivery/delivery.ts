@@ -646,7 +646,12 @@ async function verifyDeliveryOnce(jobId: string, by: string): Promise<VerifyResu
   if (missing.length) problems.push(`${missing.length} approved photo${missing.length === 1 ? " is" : "s are"} not on the listing`);
   if (short) problems.push(`Aryeo shows ${aryeoCount} photos but ${approved} were approved`);
   if (excludedShown.length) problems.push(`${excludedShown.length} excluded photo${excludedShown.length === 1 ? " is" : "s are"} still shown`);
-  if (floorMissing) problems.push("a floor plan was ordered but is not on the listing");
+  // A FLOOR PLAN IS ITS OWN DELIVERABLE (Oct 23 2026, Jordan, about 30 Caedman
+  // Dr and 850 Springbank Ln: "these are saying this but they're sent"). The
+  // CubiCasa plan reaches the listing on its own schedule, so it never holds
+  // the photos' delivery or reads as a mismatch. It stays on the diff
+  // (floorPlanMissing), where the job page and Kyle's desk show it as still
+  // to come.
   if (duplicates.length) problems.push(`${duplicates.length === 1 ? "a photo is" : `${duplicates.length} photos are`} on the listing twice (${duplicateWords(duplicates)}): take the extra copy off in Aryeo, the hub never deletes there`);
   if (problems.length) {
     const line = problems.join("; ");

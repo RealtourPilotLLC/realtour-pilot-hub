@@ -143,15 +143,10 @@ async function main() {
     listings.set("LL", { delivery_status: "DELIVERED", images: imgs8, floor_plans: [] });
     await delivery.verifyDelivery(j2.id, "drill");
     s2 = await prisma.photoJob.findUniqueOrThrow({ where: { id: j2.id } });
-    c.ok("photos put back: the diff refreshes (0 missing) and the note matches it", s2.stage === "DELIVERY_MISMATCH" && JSON.parse(s2.deliveryDiffJson!).missing.length === 0 && !/approved photo/.test(s2.deliveryCheckNote ?? ""), s2.deliveryCheckNote ?? "");
+    // Oct 23 2026: a floor plan not on the listing yet no longer holds the
+    // photos' delivery (30 Caedman Dr, 850 Springbank Ln); it stays on the diff.
+    c.ok("photos put back: Delivered, 0 missing, the floor plan kept on the diff as still to come", s2.stage === "DELIVERED" && JSON.parse(s2.deliveryDiffJson!).missing.length === 0 && JSON.parse(s2.deliveryDiffJson!).floorPlanMissing === true, `${s2.stage} ${s2.deliveryCheckNote ?? ""}`);
     c.ok("…without a stage-change entry for each check", (await prisma.photoJobEvent.count({ where: { jobId: j2.id, action: { startsWith: "DELIVERY_MISMATCH → DELIVERY_MISMATCH" } } })) === 0);
-    listings.set("LL", { delivery_status: "DELIVERED", images: imgs8, floor_plans: [{ id: "fp" }] });
-    const sw1 = await sweep.verifyDeliveringJobs({ now: new Date(Date.now() + 10 * 60_000) });
-    s2 = await prisma.photoJob.findUniqueOrThrow({ where: { id: j2.id } });
-    c.ok("the sweep leaves a mismatch alone for an hour", s2.stage === "DELIVERY_MISMATCH" && sw1.notDue >= 1, JSON.stringify(sw1));
-    const sw2 = await sweep.verifyDeliveringJobs({ now: new Date(Date.now() + 61 * 60_000) });
-    s2 = await prisma.photoJob.findUniqueOrThrow({ where: { id: j2.id } });
-    c.ok("an hour on, the sweep re-checks it: floor plan added → DELIVERED", s2.stage === "DELIVERED" && sw2.verified >= 1, JSON.stringify(sw2));
 
     c.head("5 · a single-visit job reads as before");
     const p3 = await prisma.project.create({ data: { title: "12 Plain St, Reading, PA", addressLine: "12 Plain St", clientId: client.id, aryeoListingId: "LP", shootDate: T("2026-10-21T14:00:00Z"), promisedDueAt: T("2026-10-22T21:00:00Z"), deliveryDue: oct27 } });
