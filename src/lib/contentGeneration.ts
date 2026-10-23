@@ -279,8 +279,8 @@ function withFormat<T extends object>(bag: T, format: VideoFormat): T {
 }
 
 /** A new AI draft's validation record: the format check, the angle, and a judge still owed (scriptJudge.ts). */
-function draftValidation(validation: ReturnType<typeof validateNewScript>, angle: ScriptAngle | null, fixRounds = 0) {
-  return { ok: validation.ok, findings: validation.findings, angle, judge: pendingJudge(fixRounds) };
+function draftValidation(validation: ReturnType<typeof validateNewScript>, angle: ScriptAngle | null, fixRounds = 0, candidateOf: string | null = null) {
+  return { ok: validation.ok, findings: validation.findings, angle, judge: pendingJudge(fixRounds, { candidateOf }) };
 }
 
 async function policyTopic(topicId: string): Promise<{ topic: Topic; row: NonNullable<Awaited<ReturnType<typeof prisma.contentTopic.findUnique>>> }> {
@@ -657,7 +657,15 @@ export type ReviseScriptOpts = {
    * "aim", v2.1: the one pass toward WRITER_LENGTH.trimTo of a passing draft, from version `aimTrimOf`); `trimmed` /
    * `aimTrimmed` = an earlier version already had that trim (carried forward).
    */
-  autoFix?: { round: number; trim?: boolean | "cap" | "aim"; trimmed?: boolean; aimTrimmed?: boolean; aimTrimOf?: string | null; /** v2.4: the aim trim of a draft BEFORE its first review: nothing reviewed to go back to. */ preReview?: boolean } | null;
+  autoFix?: {
+    round: number; trim?: boolean | "cap" | "aim"; trimmed?: boolean; aimTrimmed?: boolean; aimTrimOf?: string | null; /** v2.4: the aim trim of a draft BEFORE its first review: nothing reviewed to go back to. */ preReview?: boolean;
+    /**
+     * Oct 23 2026 (never a worse version): written into the history as a
+     * candidate (judge.candidateOf = the version revised); the current version
+     * does not move until scriptJudge's review says this one is better.
+     */
+    candidate?: boolean;
+  } | null;
   /** Oct 21 2026 (audit H1): a sweep's clock (ms epoch); the model call ends by it. */
   deadline?: number | null;
 };
@@ -717,7 +725,9 @@ export async function reviseScript(scriptId: string, instructions: string, reque
     // v2.4 (keep the good hook): a review fix round reads the version's own review (checks, findings, craft) to decide
     // between a redraft from the runner-up hook and a revision with the hook locked; the plan's locks are copied back below.
     const reviewed = who === "review" ? readJudge(base.validationJson) : null;
-    const step = await w.writerRevisePrompt(s, writerRec, { versionNo: base.versionNo, body: base.body, hook: base.hook }, instructions, { lockedLabels: locks.map((k) => LOCKABLE_SECTION_LABEL[k]), who, review: reviewed ? { checks: reviewed.checks ?? null, hard: reviewed.hard ?? null, craft: reviewed.craft ?? null } : null });
+    // Oct 23 2026: a round set aside from this version (not better) already tried its hook; the next round never tries it again.
+    const tried = who === "review" && autoFix ? (await prisma.contentScriptVersion.findMany({ where: { scriptId, basedOnVersionId: baseId, validationJson: { contains: `"candidateOf":"${baseId}"` } }, select: { hook: true } })).map((x) => x.hook).filter(Boolean) : [];
+    const step = await w.writerRevisePrompt(s, writerRec, { versionNo: base.versionNo, body: base.body, hook: base.hook, tried }, instructions, { lockedLabels: locks.map((k) => LOCKABLE_SECTION_LABEL[k]), who, review: reviewed ? { checks: reviewed.checks ?? null, hard: reviewed.hard ?? null, craft: reviewed.craft ?? null } : null });
     for (const k of step.lock) if (!locks.includes(k)) locks.push(k);
     const r = await w.runWriterStep<import("@/lib/scriptWriter/prompts").DraftOut>("revise", step, {
       requestedBy, unattended: opts.unattended ?? false, deadline: opts.deadline ?? null, scope: { scriptId, basedOnVersionId: baseId, ...(autoFix ? { autoFixRound: autoFix.round, ...(autoFix.trim ? { trim: true } : {}) } : {}) },
@@ -771,8 +781,9 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   // or after a person's length trim.
   const baseJudge = readJudge(base.validationJson);
   const aimTrim = autoFix?.trim === "aim" || personTrim;
+  const candidateOf = autoFix?.candidate ? baseId : null;
   const owedJudge = autoFix
-    ? pendingJudge(autoFix.round, { writer: true, trimmed: autoFix.trim === true || autoFix.trim === "cap" || !!autoFix.trimmed, aimTrimmed: aimTrim || !!autoFix.aimTrimmed, aimTrimOf: autoFix.trim === "aim" && !autoFix.preReview ? autoFix.aimTrimOf ?? baseId : null })
+    ? pendingJudge(autoFix.round, { writer: true, trimmed: autoFix.trim === true || autoFix.trim === "cap" || !!autoFix.trimmed, aimTrimmed: aimTrim || !!autoFix.aimTrimmed, aimTrimOf: autoFix.trim === "aim" && !autoFix.preReview ? autoFix.aimTrimOf ?? baseId : null, candidateOf })
     : personTrim ? pendingJudge(baseJudge?.fixRounds ?? 0, { writer: true, trimmed: !!baseJudge?.trimmed, aimTrimmed: true, aimTrimOf: baseId }) : null;
   const bag = w && writerRec
     ? {
@@ -781,7 +792,7 @@ export async function reviseScript(scriptId: string, instructions: string, reque
         writer: { ...writerRec, rationale: w.rationaleOf(writerOut) ?? writerRec.rationale },
         ...(owedJudge ? { judge: owedJudge } : {}),
       }
-    : { ...(autoFix ? draftValidation(validation, angle, autoFix.round) : { ok: validation.ok, findings: validation.findings, angle }), instruction: instructions };
+    : { ...(autoFix ? draftValidation(validation, angle, autoFix.round, candidateOf) : { ok: validation.ok, findings: validation.findings, angle }), instruction: instructions };
   // Oct 22 2026: the version records the format it was written in.
   (bag as Record<string, unknown>)[VERSION_FORMAT_KEY] = format;
   const { WRITER_LENGTH } = await import("@/lib/scriptWriter/rules");
@@ -795,6 +806,8 @@ export async function reviseScript(scriptId: string, instructions: string, reque
     scriptId, enrollmentId: s.enrollmentId, monthId: s.monthId, topicId: s.topicId, parts, source: autoFix ? "AI" : source, basedOnVersionId: baseId, regeneratedSections: changed, createdBy: requestedBy, status: "INTERNAL_REVIEW",
     interviewId: s.interviewId, callRecordId: s.callRecordId, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: runId,
     validation: bag, gaps, changeSummary: summary,
+    // Oct 23 2026: a candidate round waits in the history; scriptJudge makes it current only when it reviews better.
+    keepCurrent: !!candidateOf,
   });
   await setRunOutputRef(runId, `ContentScriptVersion:${r.versionId}`);
   // A person's length trim is reviewed now, and undone if it lost a must-keep point (never on a shared script: autoCheckScript refuses those).

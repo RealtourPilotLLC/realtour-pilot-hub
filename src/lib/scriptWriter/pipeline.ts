@@ -683,12 +683,12 @@ export type ReviewSaid = { checks?: ReviewCheckResult[] | null; hard?: HardFindi
  * a hook the reviewer only liked less, keeps the hook (reviewRoundPlan locks
  * it). Across the v2.3 retest, 9 of 20 swap rounds raised the must-fix count. Pure.
  */
-export function switchHookFor(rec: Pick<WriterRecord, "hooks" | "chosen" | "brief"> & Partial<Pick<WriterRecord, "passages">>, current: { body: string; hook?: string | null }, failed: ReviewSaid): HookCandidate | null {
+export function switchHookFor(rec: Pick<WriterRecord, "hooks" | "chosen" | "brief"> & Partial<Pick<WriterRecord, "passages">>, current: { body: string; hook?: string | null; /** Oct 23 2026: hooks of rounds set aside from this version (never tried twice). */ tried?: readonly string[] }, failed: ReviewSaid): HookCandidate | null {
   if (!rec.hooks.length) return null;
   const curText = current.hook ?? hookInUse(current.body, rec.hooks) ?? "";
   const v = hookVerdict(failed, curText);
   if (!v.hard && !(v.failed && v.craftHook != null && v.craftHook <= CRAFT_FAIL_AT)) return null;
-  const used = [rec.chosen >= 0 ? rec.hooks[rec.chosen]?.text ?? "" : "", hookInUse(current.body, rec.hooks) ?? "", curText].filter(Boolean);
+  const used = [rec.chosen >= 0 ? rec.hooks[rec.chosen]?.text ?? "" : "", hookInUse(current.body, rec.hooks) ?? "", curText, ...(current.tried ?? [])].filter(Boolean);
   // v2.3: the same order the hook was picked in (eligible first, then the rank, her moment on a tie when the proof is her story).
   const next = runnerUpHook(rec.hooks, used, { videoType: rec.brief.videoType ?? null, proofIsStory: proofIsHerStory(rec.brief, rec.passages ?? []) });
   if (!next || v.hard) return next;
@@ -721,7 +721,7 @@ export function partsPassed(review: ReviewSaid): ScriptPartKey[] {
  * unlocked only when it failed on accuracy, meaning or a hard finding and no
  * runner-up is left (it must change). `lock` is what code copies back.
  */
-export function reviewRoundPlan(rec: Pick<WriterRecord, "hooks" | "chosen" | "brief"> & Partial<Pick<WriterRecord, "passages">>, current: { body: string; hook?: string | null }, review: ReviewSaid): { switchTo: HookCandidate | null; lock: ScriptPartKey[] } {
+export function reviewRoundPlan(rec: Pick<WriterRecord, "hooks" | "chosen" | "brief"> & Partial<Pick<WriterRecord, "passages">>, current: { body: string; hook?: string | null; tried?: readonly string[] }, review: ReviewSaid): { switchTo: HookCandidate | null; lock: ScriptPartKey[] } {
   const switchTo = switchHookFor(rec, current, review);
   if (switchTo) return { switchTo, lock: partsPassed(review).filter((k) => k !== "hook") };
   const v = hookVerdict(review, current.hook ?? hookInUse(current.body, rec.hooks) ?? "");
@@ -754,7 +754,7 @@ export function withLocked(next: ScriptParts, prev: ScriptParts, lock: readonly 
  * revision with the hook locked. `review` is the version's judge record (its checks, findings and craft); without
  * it the plan reads the instruction. `lock` names the parts code copies back. A person's request or a trim never switches.
  */
-export async function writerRevisePrompt(s: { id: string; topicId: string | null; monthId: string | null }, rec: WriterRecord, current: { versionNo: number; body: string; hook?: string | null }, instruction: string, opts: { lockedLabels?: string[]; who: "review" | "trim" | "person" | "client"; review?: ReviewSaid | null }): Promise<StepPrompt & { lock: ScriptPartKey[] }> {
+export async function writerRevisePrompt(s: { id: string; topicId: string | null; monthId: string | null }, rec: WriterRecord, current: { versionNo: number; body: string; hook?: string | null; tried?: readonly string[] }, instruction: string, opts: { lockedLabels?: string[]; who: "review" | "trim" | "person" | "client"; review?: ReviewSaid | null }): Promise<StepPrompt & { lock: ScriptPartKey[] }> {
   const { ctx } = await contextForScript(s, rec);
   const personLocked = (opts.lockedLabels ?? []).some((l) => /hook/i.test(l));
   if (opts.who === "review" && !personLocked) {

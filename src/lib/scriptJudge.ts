@@ -3,8 +3,9 @@ import { prisma } from "@/lib/prisma";
 import { runAiJson } from "@/lib/aiRuns";
 import { timeoutBefore } from "@/lib/integrations/ai";
 import { buildScriptJudgePrompt, judgeCriteriaFor, JUDGE_CRITERIA_TEXT, type JudgeCriterion, type ScriptAngle } from "@/lib/contentPolicy";
-import { MAX_FIX_ROUNDS, readJudge, readAngle, type JudgeRecord, type JudgeCriterionResult } from "@/lib/scriptJudgeRecord";
-import { pointsFromJson, createScriptVersion, type VersionParts } from "@/lib/contentScripts";
+import { MAX_FIX_ROUNDS, readJudge, readAngle, attemptScoreOf, type JudgeRecord, type JudgeCriterionResult } from "@/lib/scriptJudgeRecord";
+import { pointsFromJson, createScriptVersion, makeVersionCurrent, type VersionParts } from "@/lib/contentScripts";
+import { bestAttempt, isBetterAttempt, mustFixFailures, type AttemptScore } from "@/lib/scriptWriter/rules";
 
 // ---------------------------------------------------------------------------
 // THE AUTOMATIC CHECK AND FIX (Oct 14 2026). Jordan: "I want this to be as
@@ -26,8 +27,19 @@ import { pointsFromJson, createScriptVersion, type VersionParts } from "@/lib/co
 //   3. on a fail, the SAME revise path (reviseScript, the script's original
 //      source) runs with the judge's notes as the instruction, and the new
 //      version is judged again. Two fix rounds at most. Still failing: the
-//      better attempt is kept (copied forward when it was an earlier one) and
-//      marked flagged, which sorts it first in the review queue.
+//      better attempt is kept and marked flagged, which sorts it first in the
+//      review queue (the card says nothing about it: Oct 23 2026).
+//
+// NEVER A WORSE VERSION (Oct 23 2026). Jordan: "I don't need to see that it
+// needs fixes; I just need it to be fixed." Each fix round (and the new
+// writer's cap trim) is written into the history as a CANDIDATE: the
+// script's current version does not move. The candidate is judged, then
+// becomes current only when it is better (rules.isBetterAttempt: fewer
+// must-fix failures, then the craft total, then the length rule). Otherwise
+// it is set_aside, the version it was fixing stays current with the round
+// counted, and the next round starts from that better version again. When the
+// rounds run out still failing, the best version is the current one, flagged
+// quietly. Every round stays in the history.
 // Missing facts are never "fixed": the judge is told a gap is not a failure.
 // Approval and sharing are untouched: every version lands in Jordan's review
 // queue exactly as before. A failed judge call never blocks a draft: it
@@ -126,14 +138,21 @@ function partsOf(v: VersionRow): VersionParts {
 }
 
 /**
- * Still failing after the last round: keep the better attempt. The attempts
- * are this auto-check's chain (the draft and its fix rounds, each with its
- * judge record); fewer failed criteria wins, then fewer warnings, then the
- * newer. When an EARLIER attempt is better it is copied forward as the
- * script's newest version, so what Jordan opens first is the best one; every
- * attempt stays in the version trail.
+ * Still failing after the last round: the best attempt stays current. The
+ * attempts are this auto-check's chain (the current version and the versions
+ * it was fixed from, each with a review by the same reviewer), compared by
+ * rules.isBetterAttempt: fewer must-fix failures, then the craft total, then
+ * the length rule; a tie keeps the current one.
+ *
+ * Since Oct 23 2026 a fix round only becomes current when it is better, so the
+ * current version is already the best of its chain and this only marks it
+ * flagged (quietly: the card shows no warning). A chain from before that day
+ * may have a better EARLIER attempt: that version becomes the current one
+ * again (contentScripts.makeVersionCurrent, nothing copied or deleted), and
+ * the worse one is set aside in the history.
  */
 async function finishFlagged(current: VersionRow, record: JudgeRecord, requestedBy: string): Promise<string> {
+  void requestedBy;
   const chain: { v: VersionRow; j: JudgeRecord }[] = [{ v: current, j: record }];
   let cursor = current;
   // v2.5: room for the new writer's third fix round and its trims (the walk still stops at the draft).
@@ -141,41 +160,62 @@ async function finishFlagged(current: VersionRow, record: JudgeRecord, requested
     const prev = await prisma.contentScriptVersion.findUnique({ where: { id: cursor.basedOnVersionId } });
     const pj = prev ? readJudge(prev.validationJson) : null;
     if (!prev || !pj || !pj.criteria.length) break;
+    // Only versions the same reviewer judged are compared (the new writer's review and the old judge score differently).
+    if ((pj.writer === 2) !== (record.writer === 2)) break;
     chain.push({ v: prev, j: pj });
     // The new writer's trim pass keeps its round count: walk past it to the draft.
     if (pj.fixRounds === 0 && !pj.trimmed) break;
     cursor = prev;
   }
-  const warns = (v: VersionRow) => { try { return ((JSON.parse(v.validationJson ?? "{}") as { findings?: { severity: string }[] }).findings ?? []).filter((f) => f.severity !== "info").length; } catch { return 0; } };
-  const score = (x: { v: VersionRow; j: JudgeRecord }) => x.j.criteria.filter((c) => !c.pass).length * 100 + warns(x.v);
-  // v2.4 (the new writer): never a version over the cap when one at or under it exists; then craft with the
-  // hook counted twice; then the fewest must-fixes; then words over 85 (rules.pickFinal). Ties keep the newer.
-  // v2.5: an educational version inside the aim comes before any over it, ahead of craft (a told story is not ranked on the aim).
-  const { pickFinal } = await import("@/lib/scriptWriter/rules");
-  const writerChain = chain.every((x) => x.j.writer === 2 && x.j.checks?.length);
+  const writerChain = record.writer === 2;
   const story = writerChain ? (await (await import("@/lib/scriptWriter/pipeline")).latestWriterRecord(current.scriptId, current.id))?.brief.videoType === "story" : false;
-  const best = writerChain
-    ? chain[pickFinal(chain.map((x) => ({ words: x.j.words || x.v.spokenWordCount || 0, craft: x.j.craft ?? null, mustFix: (x.j.checks ?? []).filter((c) => !c.pass && c.level === "must-fix").length, story })))] ?? chain[0]
-    : chain.reduce((a, b) => (score(b) < score(a) ? b : a), chain[0]);
+  const NONE: AttemptScore = { mustFix: Number.MAX_SAFE_INTEGER, craft: null, words: Number.MAX_SAFE_INTEGER };
+  const best = chain[bestAttempt(chain.map((x) => attemptScoreOf(x.j, x.v.spokenWordCount, story) ?? NONE))] ?? chain[0];
   if (best.v.id === current.id) {
     await writeJudge(current.id, { ...record, state: "flagged" });
     return current.id;
   }
-  await writeJudge(current.id, { ...record, state: "flagged" });
-  const s = await prisma.contentScript.findUnique({ where: { id: current.scriptId } });
-  if (!s) return current.id;
-  let bag: Record<string, unknown> = {};
-  try { bag = best.v.validationJson ? (JSON.parse(best.v.validationJson) as Record<string, unknown>) : {}; } catch { bag = {}; }
-  let gaps: never[] | null = null;
-  try { gaps = best.v.gapsJson ? JSON.parse(best.v.gapsJson) : null; } catch { gaps = null; }
-  const r = await createScriptVersion({
-    scriptId: s.id, enrollmentId: s.enrollmentId, monthId: s.monthId, topicId: s.topicId, parts: partsOf(best.v), source: "AI", createdBy: requestedBy, status: "INTERNAL_REVIEW",
-    basedOnVersionId: current.id, interviewId: s.interviewId, callRecordId: s.callRecordId, strategyVersionId: best.v.strategyVersionId, policyVersionId: best.v.policyVersionId, aiRunId: best.v.aiRunId,
-    // The whole bag goes forward (the new writer's brief and close type with it); the judge record is the flagged one.
-    validation: { ...bag, ok: bag.ok !== false, findings: (bag.findings as never[]) ?? [], angle: bag.angle ?? null, judge: { ...best.j, state: "flagged", fixRounds: record.fixRounds, keptVersionNo: best.v.versionNo } },
-    gaps, changeSummary: `${record.writer === 2 ? "Creative review" : "Automatic check"}: kept v${best.v.versionNo}, the better of the attempts; still flagged for review.`,
+  // An earlier attempt is better: it is the current version again, carrying the rounds spent (a person's change in between wins).
+  const moved = await makeVersionCurrent(current.scriptId, best.v.id, { expectCurrentId: current.id });
+  if (!moved) {
+    await writeJudge(current.id, { ...record, state: "flagged" });
+    return current.id;
+  }
+  await writeJudge(best.v.id, { ...best.j, state: "flagged", fixRounds: Math.max(best.j.fixRounds, record.fixRounds), trimmed: !!(best.j.trimmed || record.trimmed), keptVersionNo: best.v.versionNo });
+  await writeJudge(current.id, { ...record, state: "set_aside", keptInstead: best.v.versionNo });
+  return best.v.id;
+}
+
+/**
+ * The candidate round still owed a review for `parentId`, or null (Oct 23
+ * 2026). The newest one: an earlier candidate of the same parent was settled
+ * before the next round ran.
+ */
+async function owedCandidate(scriptId: string, parentId: string): Promise<{ v: VersionRow; j: JudgeRecord } | null> {
+  const rows = await prisma.contentScriptVersion.findMany({
+    where: { scriptId, basedOnVersionId: parentId, validationJson: { contains: `"candidateOf":"${parentId}"` } },
+    orderBy: { versionNo: "desc" }, take: 3,
   });
-  return r.versionId;
+  for (const v of rows) {
+    const j = readJudge(v.validationJson);
+    if (j?.candidateOf === parentId && (j.state === "pending" || j.state === "not_checked")) return { v, j };
+    if (j?.candidateOf === parentId) return null;
+  }
+  return null;
+}
+
+/** Is the reviewed candidate better than the version it was fixing? A parent with no review to compare loses; a candidate with none never wins. */
+function candidateWins(cand: { v: VersionRow; j: JudgeRecord }, parent: { v: VersionRow; j: JudgeRecord }, story: boolean): boolean {
+  const c = attemptScoreOf(cand.j, cand.v.spokenWordCount, story);
+  if (!c) return false;
+  const p = attemptScoreOf(parent.j, parent.v.spokenWordCount, story);
+  return !p || isBetterAttempt(c, p);
+}
+
+/** Set a candidate aside (kept in the history, never current) and give its parent the round it spent. */
+async function setAside(cand: { v: VersionRow; j: JudgeRecord }, parent: { v: VersionRow; j: JudgeRecord }, why?: string): Promise<JudgeRecord> {
+  await writeJudge(cand.v.id, { ...cand.j, state: "set_aside", keptInstead: parent.v.versionNo, ...(why ? { error: why } : {}) });
+  return { ...parent.j, fixRounds: Math.max(parent.j.fixRounds, cand.j.fixRounds), trimmed: !!(parent.j.trimmed || cand.j.trimmed), aimTrimmed: !!(parent.j.aimTrimmed || cand.j.aimTrimmed) };
 }
 
 export type AutoCheckResult = {
@@ -293,6 +333,35 @@ async function writerReviewStep(
     }
   }
 
+  /** The review's answer as a judge record on top of `base` (the version's own owed record). */
+  const recordOf = (base: JudgeRecord, r: Awaited<ReturnType<typeof w.reviewVersion>>): JudgeRecord => {
+    const failing = r.checks.filter((c) => !c.pass);
+    return {
+      ...base, writer: 2, checks: r.checks, hard: r.hard, craft: r.craft, words: r.words, summary: r.summary, trimmed: !!base.trimmed,
+      criteria: r.checks.map((c) => ({ key: c.key, pass: c.pass, note: c.reason })), issues: failing.map((c) => `${c.n}. ${c.label}: ${c.reason}`),
+      fixInstruction: r.fixInstruction, checkedAt: new Date().toISOString(), runId: r.runId, error: null,
+    };
+  };
+  /** What a reviewed CURRENT version does next (pass, flag, a fix round, a trim). */
+  const settleCurrent = async (cv: VersionRow, record: JudgeRecord, next: ReturnType<typeof w.nextWriterStep>): Promise<AutoCheckResult | "continue"> => {
+    if (next === "revert") {
+      // Oct 22 2026 (v2.1): the aim trim dropped a must-keep point: the longer passing version stands.
+      // v2.3: flagged instead when it says the line the trim's review failed on.
+      const kept = await restoreBeforeTrim(cv, record, o.requestedBy);
+      return { state: kept.state, fixRounds: record.fixRounds, versionId: kept.versionId, reason: kept.state === "flagged" ? "the trim failed a must-fix check; the longer version is kept, flagged: it says the line the trim failed on" : "the trim failed a must-fix check; the longer version is kept" };
+    }
+    if (next === "pass") {
+      await writeJudge(cv.id, { ...record, state: "passed" });
+      return { state: "passed", fixRounds: record.fixRounds, versionId: cv.id };
+    }
+    if (next === "flag" || next === "review") {
+      const kept = await finishFlagged(cv, record, o.requestedBy);
+      return { state: "flagged", fixRounds: record.fixRounds, versionId: kept };
+    }
+    await writeJudge(cv.id, { ...record, state: next === "fix" ? "fixing" : "trimming", ...(next === "fix" ? {} : { trimKind: next === "aim-trim" ? ("aim" as const) : ("cap" as const) }) });
+    return "continue";
+  };
+
   if (j.state === "pending" || (j.state === "not_checked" && j.attempts < MAX_JUDGE_ATTEMPTS)) {
     if (!o.timeFor(JUDGE_MIN_START_MS)) return stay("out of time");
     let r: Awaited<ReturnType<typeof w.reviewVersion>>;
@@ -305,36 +374,53 @@ async function writerReviewStep(
       await writeJudge(v.id, { ...j, state: "not_checked", attempts: j.attempts + 1, error: msg.slice(0, 300), checkedAt: new Date().toISOString() });
       return { state: "not_checked", fixRounds: j.fixRounds, versionId: v.id, reason: msg };
     }
-    const failing = r.checks.filter((c) => !c.pass);
-    const record: JudgeRecord = {
-      ...j, writer: 2, checks: r.checks, hard: r.hard, craft: r.craft, words: r.words, summary: r.summary, trimmed: !!j.trimmed,
-      criteria: r.checks.map((c) => ({ key: c.key, pass: c.pass, note: c.reason })), issues: failing.map((c) => `${c.n}. ${c.label}: ${c.reason}`),
-      fixInstruction: r.fixInstruction, checkedAt: new Date().toISOString(), runId: r.runId, error: null,
-    };
-    const next = w.nextWriterStep({ mustFails: r.mustFails, words: r.words, fixRounds: j.fixRounds, trimmed: !!j.trimmed, aimTrimmed: !!j.aimTrimmed, isAimTrim: !!j.aimTrimOf, maxFixRounds: MAX_FIX_ROUNDS, story: r.story });
-    if (next === "revert") {
-      // Oct 22 2026 (v2.1): the aim trim dropped a must-keep point: the longer passing version stands.
-      // v2.3: flagged instead when it says the line the trim's review failed on.
-      const kept = await restoreBeforeTrim(v, record, o.requestedBy);
-      return { state: kept.state, fixRounds: j.fixRounds, versionId: kept.versionId, reason: kept.state === "flagged" ? "the trim failed a must-fix check; the longer version is kept, flagged: it says the line the trim failed on" : "the trim failed a must-fix check; the longer version is kept" };
-    }
-    if (next === "pass") {
-      await writeJudge(v.id, { ...record, state: "passed" });
-      return { state: "passed", fixRounds: j.fixRounds, versionId: v.id };
-    }
-    if (next === "flag") {
-      const kept = await finishFlagged(v, record, o.requestedBy);
-      return { state: "flagged", fixRounds: j.fixRounds, versionId: kept };
-    }
-    await writeJudge(v.id, { ...record, state: next === "fix" ? "fixing" : "trimming", ...(next === "fix" ? {} : { trimKind: next === "aim-trim" ? ("aim" as const) : ("cap" as const) }) });
-    return "continue";
+    const record = recordOf(j, r);
+    return settleCurrent(v, record, w.nextWriterStep({ mustFails: r.mustFails, words: r.words, fixRounds: j.fixRounds, trimmed: !!j.trimmed, aimTrimmed: !!j.aimTrimmed, isAimTrim: !!j.aimTrimOf, maxFixRounds: MAX_FIX_ROUNDS, story: r.story }));
   }
 
   if (j.state === "fixing" || j.state === "trimming") {
-    if (!o.timeFor(FIX_MIN_START_MS)) return stay("out of time");
     const trim = j.state === "trimming";
     const first = trim && j.trimKind === "first";
     const aim = trim && j.trimKind === "aim";
+    // Oct 23 2026 (never a worse version): a fix round and the cap trim are CANDIDATES. The aim trims keep their
+    // own rule: the pre-review one has nothing reviewed to compare, and one that loses a must-keep point is undone.
+    const candidateRound = !first && !aim;
+    if (candidateRound) {
+      const owed = await owedCandidate(scriptId, v.id);
+      if (owed) {
+        const parent = { v, j };
+        const story = (await w.latestWriterRecord(scriptId, v.id))?.brief.videoType === "story";
+        // A candidate whose review could not run after every retry is set aside: it can never be shown better.
+        if (owed.j.state === "not_checked" && owed.j.attempts >= MAX_JUDGE_ATTEMPTS) {
+          const pj = await setAside(owed, parent, owed.j.error ?? "The creative review could not run on this round.");
+          return settleCurrent(v, pj, w.nextWriterStep({ mustFails: mustFixFailures(pj.checks ?? []), words: pj.words || v.spokenWordCount || 0, fixRounds: pj.fixRounds, trimmed: !!pj.trimmed, aimTrimmed: !!pj.aimTrimmed, isAimTrim: false, maxFixRounds: MAX_FIX_ROUNDS, story }));
+        }
+        if (!o.timeFor(JUDGE_MIN_START_MS)) return stay("out of time");
+        let r: Awaited<ReturnType<typeof w.reviewVersion>>;
+        try {
+          r = await w.reviewVersion(owed.v.id, { requestedBy: o.requestedBy, unattended: o.unattended, deadline: o.deadline });
+        } catch (e) {
+          const known = pausedOrRefused(e);
+          if (known) return known;
+          const msg = e instanceof Error ? e.message : String(e);
+          await writeJudge(owed.v.id, { ...owed.j, state: "not_checked", attempts: owed.j.attempts + 1, error: msg.slice(0, 300), checkedAt: new Date().toISOString() });
+          return { state: "not_checked", fixRounds: j.fixRounds, versionId: v.id, reason: msg };
+        }
+        const cand = { v: owed.v, j: recordOf(owed.j, r) };
+        if (candidateWins(cand, parent, !!(r.story ?? story))) {
+          // Better: it becomes the current version (a person's approve or edit in between wins, and it is set aside).
+          if (!(await makeVersionCurrent(scriptId, cand.v.id, { expectCurrentId: v.id }))) {
+            await setAside(cand, parent, "The script changed while this round ran.");
+            return { state: "skipped", fixRounds: j.fixRounds, versionId: v.id, reason: "the script changed while the round ran" };
+          }
+          return settleCurrent(cand.v, cand.j, w.nextWriterStep({ mustFails: r.mustFails, words: r.words, fixRounds: cand.j.fixRounds, trimmed: !!cand.j.trimmed, aimTrimmed: !!cand.j.aimTrimmed, isAimTrim: false, maxFixRounds: MAX_FIX_ROUNDS, story: r.story }));
+        }
+        // Not better: it stays in the history; the version it was fixing stays current with the round counted.
+        const pj = await setAside(cand, parent);
+        return settleCurrent(v, pj, w.nextWriterStep({ mustFails: mustFixFailures(pj.checks ?? []), words: pj.words || v.spokenWordCount || 0, fixRounds: pj.fixRounds, trimmed: !!pj.trimmed, aimTrimmed: !!pj.aimTrimmed, isAimTrim: false, maxFixRounds: MAX_FIX_ROUNDS, story: r.story }));
+      }
+    }
+    if (!o.timeFor(FIX_MIN_START_MS)) return stay("out of time");
     try {
       const { reviseScript } = await import("@/lib/contentGeneration");
       const { WRITER_LENGTH } = await import("@/lib/scriptWriter/rules");
@@ -348,7 +434,7 @@ async function writerReviewStep(
           ? { round: 0, trim: "aim", preReview: true, trimmed: (j.words ?? 0) > WRITER_LENGTH.cap }
           : aim
           ? { round: j.fixRounds, trim: "aim", trimmed: !!j.trimmed, aimTrimOf: v.id }
-          : trim ? { round: j.fixRounds, trim: "cap", aimTrimmed: !!j.aimTrimmed } : { round: j.fixRounds + 1, trimmed: !!j.trimmed, aimTrimmed: !!j.aimTrimmed },
+          : trim ? { round: j.fixRounds, trim: "cap", aimTrimmed: !!j.aimTrimmed, candidate: true } : { round: j.fixRounds + 1, trimmed: !!j.trimmed, aimTrimmed: !!j.aimTrimmed, candidate: true },
         unattended: o.unattended, deadline: o.deadline,
       });
     } catch (e) {
@@ -423,10 +509,61 @@ export async function autoCheckScript(scriptId: string, opts: { requestedBy?: st
     }
 
     if (j.state === "fixing") {
+      // Oct 23 2026 (never a worse version): the fix round is a candidate; judged, it becomes current only when better.
+      const owed = await owedCandidate(scriptId, v.id);
+      if (owed) {
+        const parent = { v, j };
+        /** The version it was fixing stays current with the round counted: another round, or flagged when they are spent. */
+        const keepParent = async (pj: JudgeRecord): Promise<AutoCheckResult | "continue"> => {
+          if (pj.fixRounds >= MAX_FIX_ROUNDS) {
+            const kept = await finishFlagged(v, pj, requestedBy);
+            return { state: "flagged", fixRounds: pj.fixRounds, versionId: kept };
+          }
+          await writeJudge(v.id, { ...pj, state: "fixing" });
+          return "continue";
+        };
+        if (owed.j.state === "not_checked" && owed.j.attempts >= MAX_JUDGE_ATTEMPTS) {
+          const step = await keepParent(await setAside(owed, parent, owed.j.error ?? "The automatic check could not run on this round."));
+          if (step === "continue") continue;
+          return step;
+        }
+        if (!timeFor(JUDGE_MIN_START_MS)) return { state: j.state, fixRounds: j.fixRounds, versionId: v.id, reason: "out of time" };
+        let verdict: Awaited<ReturnType<typeof judgeVersion>>;
+        try {
+          verdict = await judgeVersion(owed.v.id, { requestedBy, unattended: opts.unattended, deadline: opts.deadline });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (/already running/i.test(msg)) return { state: j.state, fixRounds: j.fixRounds, versionId: v.id, reason: "judged elsewhere" };
+          const name = e instanceof Error ? e.name : "";
+          if (name === "AutomationDisabledError" || name === "QuotaExceededError") return { state: j.state, fixRounds: j.fixRounds, versionId: v.id, reason: name, ...(name === "QuotaExceededError" ? { quota: quotaOf(e) } : {}) };
+          await writeJudge(owed.v.id, { ...owed.j, state: "not_checked", attempts: owed.j.attempts + 1, error: msg.slice(0, 300), checkedAt: new Date().toISOString() });
+          return { state: "not_checked", fixRounds: j.fixRounds, versionId: v.id, reason: msg };
+        }
+        const cand = { v: owed.v, j: { ...owed.j, criteria: verdict.criteria, issues: verdict.failed.map(issueLine), fixInstruction: verdict.fixInstruction, checkedAt: new Date().toISOString(), runId: verdict.runId, error: null } as JudgeRecord };
+        if (candidateWins(cand, parent, false)) {
+          if (!(await makeVersionCurrent(scriptId, cand.v.id, { expectCurrentId: v.id }))) {
+            await setAside(cand, parent, "The script changed while this round ran.");
+            return { state: "skipped", fixRounds: j.fixRounds, versionId: v.id, reason: "the script changed while the round ran" };
+          }
+          if (!verdict.failed.length) {
+            await writeJudge(cand.v.id, { ...cand.j, state: "passed" });
+            return { state: "passed", fixRounds: cand.j.fixRounds, versionId: cand.v.id };
+          }
+          if (cand.j.fixRounds >= MAX_FIX_ROUNDS) {
+            const kept = await finishFlagged(cand.v, cand.j, requestedBy);
+            return { state: "flagged", fixRounds: cand.j.fixRounds, versionId: kept };
+          }
+          await writeJudge(cand.v.id, { ...cand.j, state: "fixing" });
+          continue;
+        }
+        const step = await keepParent(await setAside(cand, parent));
+        if (step === "continue") continue;
+        return step;
+      }
       if (!timeFor(FIX_MIN_START_MS)) return { state: "fixing", fixRounds: j.fixRounds, versionId: v.id, reason: "out of time" };
       try {
         const { reviseScript } = await import("@/lib/contentGeneration");
-        await reviseScript(scriptId, fixInstructionFrom(j), requestedBy, "REVISION", { autoFix: { round: j.fixRounds + 1 }, unattended: opts.unattended, deadline: opts.deadline });
+        await reviseScript(scriptId, fixInstructionFrom(j), requestedBy, "REVISION", { autoFix: { round: j.fixRounds + 1, candidate: true }, unattended: opts.unattended, deadline: opts.deadline });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (/already running/i.test(msg)) return { state: "fixing", fixRounds: j.fixRounds, versionId: v.id, reason: "a revision is running" };

@@ -360,22 +360,27 @@ async function main() {
     const dC = await gen.generateScriptForTopic({ topicId: D.topicIds[2], monthId: D.monthId, requestedBy: STAFF_EMAIL, unattended: false });
     const a7c = nCalls();
     const vsC = await prisma.contentScriptVersion.findMany({ where: { scriptId: dC.scriptId }, orderBy: { versionNo: "asc" } });
-    const jC = rec.readJudge(vsC.at(-1)?.validationJson);
+    // Oct 23 2026 (never a worse version): a round no better than v1 stays in the history; v1 stays current, the rounds counted on it.
+    const headC = await prisma.contentScript.findUniqueOrThrow({ where: { id: dC.scriptId } });
+    const jC = rec.readJudge(vsC.find((v) => v.id === headC.currentVersionId)?.validationJson);
     c.ok("max 2 rounds: 3 judge calls, 2 revisions, 3 versions", a7c.judge - b7c.judge === 3 && a7c.revise - b7c.revise === 2 && vsC.length === 3, JSON.stringify({ b7c, a7c, versions: vsC.length }));
-    c.ok("…the last is flagged with the remaining issue", jC?.state === "flagged" && jC.fixRounds === 2 && /Still flagged: rehook/.test(rec.judgeLine(jC)?.text ?? ""), rec.judgeLine(jC)?.text);
+    c.ok("…the current version is flagged with the remaining issue (v1: the rounds were no better, so they never became current)", headC.currentVersionId === vsC[0].id && jC?.state === "flagged" && jC.fixRounds === 2 && /Still flagged: rehook/.test(rec.judgeLine(jC)?.text ?? "") && vsC.slice(1).every((v) => rec.readJudge(v.validationJson)?.state === "set_aside"), rec.judgeLine(jC)?.text);
 
     // d) the better attempt is kept
     judgeQueue.push("fail", "fail3", "fail3");
     const dD = await gen.generateScriptForTopic({ topicId: D.topicIds[3], monthId: D.monthId, requestedBy: STAFF_EMAIL, unattended: false });
     const vsD = await prisma.contentScriptVersion.findMany({ where: { scriptId: dD.scriptId }, orderBy: { versionNo: "asc" } });
-    const jD = rec.readJudge(vsD.at(-1)?.validationJson);
-    c.ok("still failing, an EARLIER attempt was better: it is copied forward and flagged", vsD.length === 4 && jD?.state === "flagged" && jD.keptVersionNo === 1 && vsD[3].hook === vsD[0].hook && vsD[3].pointsJson === vsD[0].pointsJson, JSON.stringify({ n: vsD.length, kept: jD?.keptVersionNo }));
+    const headD = await prisma.contentScript.findUniqueOrThrow({ where: { id: dD.scriptId } });
+    const jD = rec.readJudge(vsD.find((v) => v.id === headD.currentVersionId)?.validationJson);
+    c.ok("still failing, the EARLIER attempt was better: it stays current, flagged; the worse rounds are in the history, nothing copied", vsD.length === 3 && headD.currentVersionId === vsD[0].id && jD?.state === "flagged" && vsD.slice(1).every((v) => rec.readJudge(v.validationJson)?.state === "set_aside" && rec.readJudge(v.validationJson)?.keptInstead === 1), JSON.stringify({ n: vsD.length, current: vsD.findIndex((v) => v.id === headD.currentVersionId) + 1 }));
     const queueRows = await scripts.scriptsAwaitingReview(D.enrollmentId);
     c.ok("flagged scripts sort first in the review queue", queueRows.length >= 4 && queueRows[0].judgeFlagged && queueRows[1].judgeFlagged && !queueRows.slice(2).some((r) => r.judgeFlagged), JSON.stringify(queueRows.map((r) => r.judgeFlagged)));
     const sweep7 = await judge.sweepScriptChecks({ max: 4, budgetMs: 60_000, minStartMs: 0 });
     c.ok("the cron sweep retries the not-checked draft", sweep7.checked >= 1 && rec.readJudge((await prisma.contentScriptVersion.findUnique({ where: { id: dB.versionId } }))?.validationJson)?.state === "passed", JSON.stringify(sweep7));
     const panel = fs.readFileSync(path.join(REPO, "src/components/content/ScriptsPanel.tsx"), "utf8");
-    c.ok("staff see the check line and a small Angle note above the script", /cur\.check/.test(panel) && /Angle:/.test(panel) && /Staff only/.test(panel));
+    // Oct 23 2026: the card shows the script, not the machinery. The angle stays for staff, in the closed Writer's notes fold at the bottom; the check line is gone.
+    const notesSrc = fs.readFileSync(path.join(REPO, "src/components/content/WriterNotes.tsx"), "utf8");
+    c.ok("staff see the writer's angle in the Writer's notes fold (closed, at the bottom), never the check line", !/cur\.check/.test(panel) && /angle=\{cur\.angle/.test(panel) && /ANGLE_LABELS/.test(notesSrc) && /Writer&rsquo;s notes/.test(notesSrc) && /Staff only/.test(panel));
     const portalSrc = ["src/lib/portal.ts", "src/lib/portalHome.ts", "src/lib/portalLibrary.ts"].map((f) => fs.existsSync(path.join(REPO, f)) ? fs.readFileSync(path.join(REPO, f), "utf8") : "").join("\n");
     c.ok("the portal never reads the angle or the judge (validationJson)", !/validationJson|readAngle|readJudge/.test(portalSrc));
 

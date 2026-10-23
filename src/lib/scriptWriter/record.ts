@@ -156,6 +156,8 @@ const REVIEW_STATE_NOTE: Record<JudgeRecord["state"], string | null> = {
   passed: null,
   flagged: "Still failing a must-fix check after the automatic fixes: read the failing checks before approving.",
   not_checked: "Not reviewed (the creative review could not run)",
+  // Oct 23 2026: a fix round that was not better than the version it fixed (kept in the history, never current).
+  set_aside: "Set aside: not better than the version it was fixing, which stayed current",
 };
 
 /** Everything the card shows from one version's validationJson, or null for a version the new writer did not make. */

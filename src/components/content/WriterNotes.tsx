@@ -1,31 +1,38 @@
 "use client";
 
-import { Scissors } from "lucide-react";
 import type { WriterCardUi } from "@/lib/scriptWriter/record";
-// rules.ts is pure (policy numbers only), so the card reads the same cap, aim
-// and trim instruction the writer and the reviewer use.
-import { lengthLabel, trimInstruction, WRITER_LENGTH } from "@/lib/scriptWriter/rules";
 
 // ---------------------------------------------------------------------------
-// WHAT THE NEW WRITER TELLS JORDAN, ON THE SCRIPT CARD (Oct 22 2026). Staff
-// only; nothing here reaches the portal.
+// WRITER'S NOTES (Oct 23 2026): the one small fold at the very bottom of the
+// office script card, closed by default, plain grey. Staff only; nothing here
+// reaches the portal.
 //
-//   length     every non-skit script: over 110 spoken words reads "A bit long:
-//              needs a fix" with a one-press AI fix (the trim instruction, a
-//              new version; this one is kept); 86 to 110 reads "Longer than the
-//              55 to 85 aim" as advice; the estimated seconds either way
-//   review     "Creative review: 12 of 13 pass", each failing check with its
-//              reason (must-fix or flag), the fix rounds and the trim; v2.3:
-//              the craft block (the five parts scored, a note each), folded
-//   rationale  the hook, the takeaway, how her strategy shaped it
-//   brief      the topic brief, folded: the one message, the viewer, why it
-//              was chosen, what she said (verbatim, with source and time),
-//              must-keep, optional, excluded, contradictions, facts, her
-//              opinions and ideas, our assumptions, the close type; and the
-//              five hooks with their scores
+// Jordan, Oct 23 2026: "For the scripting for the monthly content, I don't
+// need to see that it needs fixes; I just need it to be fixed. This is way
+// too much. I just want to come in and either make a quick edit or just
+// approve and send." So the card shows the script and two actions; the
+// review machinery (creative review results, craft scores, fix rounds, gaps,
+// word counts, red warnings) is gone from it. What is worth keeping is here,
+// in neutral words:
+//
+//   version    which version this is and how it was made (an automatic round
+//              reads "polished by the AI after its own review", never its
+//              review notes), the spoken length, approval and release dates
+//   heads-up   the client edited an answer since this draft; the topic's
+//              format changed since this version was written
+//   why        the writer's angle (the old writer) or rationale (the new one:
+//              the hook, the takeaway, how her strategy shaped it)
+//   brief      the new writer's topic brief: the message, the viewer, what she
+//              said, what is kept and left out, the hooks considered
+//   sources    what her sources did not cover (the writer's open questions)
+//
+// Nothing in it says a script needs fixes, failed a check, or was flagged:
+// the automatic check keeps the best version current on its own
+// (scriptJudge.ts, "never a worse version").
 // ---------------------------------------------------------------------------
 
 const LIST = "mt-0.5 space-y-0.5 pl-3";
+const ANGLE_LABELS: [string, string][] = [["viewer", "Viewer"], ["belief", "Belief"], ["stake", "Stake"], ["angle", "Angle"], ["clientTake", "Client's take"], ["payoff", "Payoff"]];
 
 function Items({ label, xs }: { label: string; xs: { text: string; source?: string; reason?: string; sources?: string }[] }) {
   if (!xs.length) return null;
@@ -46,116 +53,102 @@ function Items({ label, xs }: { label: string; xs: { text: string; source?: stri
   );
 }
 
-export function WriterNotes({ writer, words, skit, canFix, busy, onFix }: { writer: WriterCardUi | null | undefined; words: number | null; skit: boolean; canFix: boolean; busy: boolean; onFix: (instruction: string) => void }) {
-  const length = !skit && words != null ? lengthLabel(words) : null;
-  const showLength = !!length && (length.band === "over" || length.band === "long" || !!writer);
-  if (!writer && !showLength) return null;
-  const r = writer?.review ?? null;
-  // v2.1: the one press trims toward WRITER_LENGTH.trimTo and names the brief's must-keep points. Over the cap on
-  // any script; 86 to 110 only on a script the new writer drafted (its review undoes a trim that lost one).
-  const fixable = canFix && !!length && (length.band === "over" || (length.band === "long" && !!writer));
-  const mustKeep = (writer?.brief.mustKeep ?? []).map((m) => m.text);
+/** How a version was made, in neutral words: an automatic round never shows its review notes. */
+export function versionHow(changeSummary: string | null | undefined, source: string): string {
+  const s = (changeSummary ?? "").trim();
+  if (/^(Auto-fixed|Creative review:|Automatic check:|Trimmed)/i.test(s)) return "polished by the AI after its own review";
+  if (s) return s.replace(/\s+/g, " ").slice(0, 200);
+  return source.toLowerCase().replace(/_/g, " ");
+}
+
+export type WriterNotesProps = {
+  versionNo: number | null;
+  how: string | null;
+  madeAt: string | null;
+  madeBy: string | null;
+  words: number | null;
+  seconds: number | null;
+  skit: boolean;
+  approved: string | null;
+  released: string | null;
+  sourceFile: string | null;
+  answersChanged?: boolean;
+  formatNote?: string | null;
+  angle?: Record<string, string> | null;
+  writer?: WriterCardUi | null;
+  gaps?: { kind: string; text: string; question: string | null }[];
+};
+
+export function WriterNotes(p: WriterNotesProps) {
+  const w = p.writer ?? null;
   return (
-    <div className="mt-1.5 space-y-1 rounded-lg border border-border bg-surface-2/40 px-2.5 py-1.5 text-[11px]">
-      {showLength && length && (
-        <p className={`flex flex-wrap items-center gap-1.5 ${length.band === "over" ? "font-medium text-warning" : length.band === "long" ? "text-warning" : "text-muted"}`}>
-          <span>{length.text}</span>
-          {fixable && (
-            <button
-              disabled={busy}
-              onClick={() => onFix(trimInstruction(words!, mustKeep))}
-              title={`Asks the AI for a new version toward ${WRITER_LENGTH.trimTo[0]} to ${WRITER_LENGTH.trimTo[1]} words${length.band === "over" ? ` (${WRITER_LENGTH.cap} at most)` : ""}, dropping none of the brief's must-keep points. This version is kept${writer ? ", and comes back if the trim loses one" : ""}.`}
-              className="inline-flex min-h-7 items-center gap-1 rounded-md border border-warning/40 px-2 py-0.5 font-semibold text-warning hover:bg-warning/10 disabled:opacity-50"
-            >
-              <Scissors className="size-3" />{length.band === "over" ? "Fix with AI" : `Trim toward ${WRITER_LENGTH.trimTo[0]} to ${WRITER_LENGTH.trimTo[1]}`}
-            </button>
-          )}
+    <details data-writer-notes className="mt-3 border-t border-border pt-2 text-[11px] text-muted">
+      <summary className="cursor-pointer select-none text-muted-2 hover:text-muted">Writer&rsquo;s notes</summary>
+      <div className="mt-1.5 space-y-1">
+        <p>
+          {p.versionNo != null ? `Version ${p.versionNo}` : "Version"}{p.how ? ` · ${p.how}` : ""}{p.madeAt ? ` · ${p.madeAt}` : ""}{p.madeBy ? ` by ${p.madeBy}` : ""}
+          {p.approved ? ` · approved ${p.approved}` : ""}{p.released ? ` · sent ${p.released}` : ""}{p.sourceFile ? ` · from ${p.sourceFile}` : ""}
         </p>
-      )}
-      {writer?.lengthNote && <p className="text-muted">{writer.lengthNote}</p>}
-      {r && (
-        <div>
-          {r.note && <p className={r.state === "flagged" ? "font-medium text-warning" : "text-muted"}>{r.note}</p>}
-          {r.headline && (
-            <p className={r.failing.some((f) => f.level === "must-fix") ? "font-medium text-warning" : "text-success"}>
-              {r.headline}
-              {r.fixRounds ? ` · auto-fixed ${r.fixRounds} time${r.fixRounds === 1 ? "" : "s"}` : ""}
-              {r.trimmed ? " · trimmed" : ""}
-            </p>
-          )}
-          {r.failing.length > 0 && (
-            <ul className={LIST}>
-              {r.failing.map((f) => (
-                <li key={f.n} className={f.level === "must-fix" ? "text-warning" : "text-muted"}>
-                  {f.n}. {f.label} ({f.level === "must-fix" ? "must fix" : "flag"}): {f.reason}
-                </li>
-              ))}
-            </ul>
-          )}
-          {r.craft.length > 0 && (
-            <details className="mt-0.5">
-              <summary className="cursor-pointer text-muted">
-                <span className="font-semibold">Craft:</span> {r.craft.map((c) => `${c.label} ${c.score || "?"}`).join(" · ")}
-              </summary>
-              <ul className={LIST}>
-                {r.craft.map((c) => (
-                  <li key={c.label} className={c.under ? "text-warning" : "text-muted"}>
-                    {c.label} {c.score ? `${c.score} of 5` : "not scored"}{c.note ? `: ${c.note}` : ""}
-                  </li>
-                ))}
-              </ul>
-            </details>
-          )}
-        </div>
-      )}
-      {writer?.rationale && (
-        <div className="text-muted">
-          {writer.rationale.hook && <p><span className="font-semibold">Hook:</span> {writer.rationale.hook}</p>}
-          {writer.rationale.takeaway && <p><span className="font-semibold">Takeaway:</span> {writer.rationale.takeaway}</p>}
-          {writer.rationale.strategy && <p><span className="font-semibold">Her strategy:</span> {writer.rationale.strategy}</p>}
-        </div>
-      )}
-      {writer && (
-        <details>
-          <summary className="cursor-pointer text-muted"><span className="font-semibold">Topic brief:</span> {writer.brief.centralMessage}</summary>
-          <div className="mt-1 text-muted">
-            <p><span className="font-semibold">Viewer:</span> {writer.brief.viewer}</p>
-            <p><span className="font-semibold">Why chosen:</span> {writer.brief.whyChosen}</p>
-            {writer.brief.pillar && <p><span className="font-semibold">Pillar:</span> {writer.brief.pillar}</p>}
-            <p><span className="font-semibold">Close:</span> {writer.brief.closeType === "callback" ? "a callback to the hook" : "a warm invitation tied to the message"}{writer.brief.closeWhy ? `. ${writer.brief.closeWhy}` : ""}</p>
-            <p><span className="font-semibold">Target:</span> about {writer.brief.target.words ?? WRITER_LENGTH.target} words, inside {writer.brief.target.aim[0]} to {writer.brief.target.aim[1]} (about {writer.brief.target.seconds[0]} to {writer.brief.target.seconds[1]} seconds), {writer.brief.target.cap} at most</p>
-            {writer.brief.whatSheSaid.length > 0 && (
+        {p.words != null && <p>{p.words} spoken words, about {p.seconds ?? "?"} seconds{p.skit ? " (speakers and directions are not counted)" : ""}.</p>}
+        {p.answersChanged && <p>The client edited an answer after this draft. &ldquo;Ask AI to revise&rdquo; (under More) writes from the new answer.</p>}
+        {p.formatNote && <p>{p.formatNote}</p>}
+        {p.angle && (
+          <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+            {ANGLE_LABELS.filter(([k]) => p.angle?.[k]).map(([k, label]) => (
+              <div key={k} className="contents"><dt className="font-medium">{label}</dt><dd>{p.angle?.[k]}</dd></div>
+            ))}
+          </dl>
+        )}
+        {w?.rationale && (
+          <div>
+            {w.rationale.hook && <p><span className="font-semibold">Hook:</span> {w.rationale.hook}</p>}
+            {w.rationale.takeaway && <p><span className="font-semibold">Takeaway:</span> {w.rationale.takeaway}</p>}
+            {w.rationale.strategy && <p><span className="font-semibold">Her strategy:</span> {w.rationale.strategy}</p>}
+          </div>
+        )}
+        {w && (
+          <div>
+            <p><span className="font-semibold">The message:</span> {w.brief.centralMessage}</p>
+            <p><span className="font-semibold">Viewer:</span> {w.brief.viewer}</p>
+            <p><span className="font-semibold">Why this topic:</span> {w.brief.whyChosen}</p>
+            {w.brief.pillar && <p><span className="font-semibold">Pillar:</span> {w.brief.pillar}</p>}
+            <p><span className="font-semibold">Close:</span> {w.brief.closeType === "callback" ? "a callback to the hook" : "a warm invitation tied to the message"}{w.brief.closeWhy ? `. ${w.brief.closeWhy}` : ""}</p>
+            {w.brief.whatSheSaid.length > 0 && (
               <div className="mt-1">
                 <p className="font-semibold">What she said</p>
-                <ul className={LIST}>{writer.brief.whatSheSaid.map((q, i) => <li key={i}>&ldquo;{q.quote}&rdquo; <span className="text-muted-2">({q.source})</span></li>)}</ul>
+                <ul className={LIST}>{w.brief.whatSheSaid.map((q, i) => <li key={i}>&ldquo;{q.quote}&rdquo; <span className="text-muted-2">({q.source})</span></li>)}</ul>
               </div>
             )}
-            <Items label="Must keep (points)" xs={writer.brief.mustKeep} />
-            <Items label="Her phrases worth saying exactly" xs={writer.brief.herPhrases ?? []} />
-            <Items label="Optional" xs={writer.brief.optional} />
-            <Items label="Left out" xs={writer.brief.excluded} />
-            <Items label="Contradictions (flagged, not resolved)" xs={writer.brief.contradictions} />
-            <Items label="Verified facts" xs={writer.brief.verifiedFacts} />
-            <Items label="Her opinions" xs={writer.brief.opinions} />
-            <Items label="Her creative ideas" xs={writer.brief.creativeIdeas} />
-            <Items label="Our assumptions (never a claim source)" xs={writer.brief.ourAssumptions} />
-            {writer.hooks.length > 0 && (
+            <Items label="Kept (points)" xs={w.brief.mustKeep} />
+            <Items label="Her phrases worth saying exactly" xs={w.brief.herPhrases ?? []} />
+            <Items label="Optional" xs={w.brief.optional} />
+            <Items label="Left out" xs={w.brief.excluded} />
+            <Items label="Points that disagree" xs={w.brief.contradictions} />
+            <Items label="Facts" xs={w.brief.verifiedFacts} />
+            <Items label="Her opinions" xs={w.brief.opinions} />
+            <Items label="Her creative ideas" xs={w.brief.creativeIdeas} />
+            <Items label="Our assumptions (never a claim source)" xs={w.brief.ourAssumptions} />
+            {w.hooks.length > 0 && (
               <div className="mt-1">
                 <p className="font-semibold">Hooks considered</p>
                 <ul className={LIST}>
-                  {writer.hooks.map((h, i) => (
+                  {w.hooks.map((h, i) => (
                     <li key={i} className={h.chosen ? "font-medium text-foreground" : ""}>
-                      {h.chosen ? "Chosen: " : ""}{h.text} <span className="text-muted-2">({h.total}/{h.max}{h.disqualified ? `, set aside: ${h.disqualified}` : h.weak ? `, below the bar: ${h.weak}` : ""})</span>
+                      {h.chosen ? "Chosen: " : ""}{h.text} <span className="text-muted-2">({h.total}/{h.max}{h.disqualified ? `, set aside: ${h.disqualified}` : ""})</span>
                     </li>
                   ))}
                 </ul>
-                {writer.hookFallback && <p className="mt-0.5 text-warning">{writer.hookFallback}</p>}
               </div>
             )}
-            {r && r.passing.length > 0 && <p className="mt-1 text-muted-2">Passing checks: {r.passing.map((p) => `${p.n}. ${p.label}`).join(", ")}</p>}
           </div>
-        </details>
-      )}
-    </div>
+        )}
+        {(p.gaps ?? []).length > 0 && (
+          <div>
+            <p className="font-semibold">Not in her sources yet</p>
+            <ul className={LIST}>{(p.gaps ?? []).map((g, i) => <li key={i}>{g.text}{g.question ? ` (to ask: ${g.question})` : ""}</li>)}</ul>
+          </div>
+        )}
+      </div>
+    </details>
   );
 }

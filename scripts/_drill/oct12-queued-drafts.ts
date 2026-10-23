@@ -441,7 +441,7 @@ async function main() {
       await flushAfter();
       const sd2 = await loadScriptsTab(F.enrollmentId, { id: F.monthId });
       const html2 = renderToStaticMarkup(createElement(ScriptsPanel, ser({ enrollmentId: F.enrollmentId, scripts: sd2.scripts, queueCount: sd2.queueCount, scriptOwner: sd2.scriptOwner, owed: sd2.owed, revising: sd2.revising, drafting: sd2.drafting, queueActive: sd2.queueActive })));
-      c.ok("a failed revision: \"The revision failed: <reason>\" with Try again on that script", rev3.ok && sd2.revising[s1.id]?.state === "failed" && /The revision failed: 503 isolated fake model unavailable/.test(text(html2)) && /Try again/.test(html2));
+      c.ok("a failed revision says so in plain words, with the reason and Try again on that script (Oct 23 2026: grey, never red)", rev3.ok && sd2.revising[s1.id]?.state === "failed" && /The AI revision didn.t finish \(503 isolated fake model unavailable\)/.test(text(html2)) && /Try again/.test(html2));
       const retry = await A.retryAiJobAction(sd2.revising[s1.id].runId);
       await flushAfter();
       c.ok("…Try again re-asks the same instruction and writes v2", retry.ok && (await prisma.contentScriptVersion.count({ where: { scriptId: s1.id } })) === 2 && (await loadScriptsTab(F.enrollmentId, { id: F.monthId })).revising[s1.id] === undefined, retry.message);

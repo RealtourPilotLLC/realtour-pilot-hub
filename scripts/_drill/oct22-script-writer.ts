@@ -1166,8 +1166,10 @@ async function main() {
       const rQ = await gen.generateScriptForTopic({ topicId: tQ, monthId: f.monthId, requestedBy: STAFF, unattended: false, callRecordId: call.id });
       const vsQ = await prisma.contentScriptVersion.findMany({ where: { scriptId: rQ.scriptId }, orderBy: { versionNo: "asc" } });
       const headQ = await prisma.contentScript.findUniqueOrThrow({ where: { id: rQ.scriptId } });
-      const jQ = (await import("@/lib/scriptJudgeRecord")).readJudge(vsQ[vsQ.length - 1].validationJson);
-      c.ok("automatic check (finishFlagged): still flagged after two fix rounds, the draft with the best craft is copied forward as current (v2.3 kept the newest on a tie of failures)", vsQ.length === 4 && headQ.currentVersionId === vsQ[3].id && vsQ[3].body === vsQ[0].body && jQ?.state === "flagged" && jQ.keptVersionNo === 1 && /kept v1, the better of the attempts/.test(vsQ[3].changeSummary ?? ""), `${vsQ.map((v) => `v${v.versionNo}`).join(",")} · kept ${jQ?.keptVersionNo}`);
+      const jr = (await import("@/lib/scriptJudgeRecord")).readJudge;
+      const jQ = jr(vsQ.find((v) => v.id === headQ.currentVersionId)?.validationJson);
+      // Oct 23 2026 (never a worse version): a fix round that is no better never becomes current, so the draft simply stays (nothing copied).
+      c.ok("automatic check: still flagged after two fix rounds, the draft with the best craft STAYS current (the rounds were no better: in the history, never current; v2.3 kept the newest)", vsQ.length === 3 && headQ.currentVersionId === vsQ[0].id && jQ?.state === "flagged" && jQ.fixRounds === 2 && vsQ.slice(1).every((v) => jr(v.validationJson)?.state === "set_aside"), `${vsQ.map((v) => `v${v.versionNo}:${jr(v.validationJson)?.state}`).join(",")} · current v${vsQ.find((v) => v.id === headQ.currentVersionId)?.versionNo}`);
     }
 
     c.head("17.2 · v2.4 gate calibration: check 13 at a total of 19, a 3 a flag; the picked hook's craft score is advice; generic_close a flag with a re-hook callback; -ing and -ed stems; tension");
