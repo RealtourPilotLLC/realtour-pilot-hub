@@ -67,6 +67,7 @@ async function main() {
     const { setSession } = await import("@/lib/auth/session");
     const { default: home } = await import("@/app/page");
     const { OfficeDesk } = await import("@/components/desk/OfficeDesk");
+    const { AddTaskButton } = await import("@/components/desk/DeskControls");
     const { etAt, etDayKey } = await import("@/lib/datetime");
     const T = new Date();
     const at = (ms: number) => new Date(T.getTime() + ms);
@@ -101,9 +102,13 @@ async function main() {
       push: { mode: "live", state: null, says: "Not started", tone: "info", handledByHub: false, waitingForKyle: false, canStart: true, progress: null, canRetry: false, canDeliverNow: false, canRelease: false, canHold: false, updatedAtISO: null },
       send: { approvedBy: "James Livingston", fileSource: "cut", fileName: "v1.mp4", fileSays: "the approved cut", downloadHref: "/x", watchHref: "/x", uploadFingerprint: null, uploaded: null, listingMissing: false, listingWarning: null, openAsks: [], asksUnknown: false, byHandWhy: null, pushUnknown: false } } as unknown as VideoRow;
     videoLanes = { late: [], today: [], review: [], upcoming: [], sending: [vrow], held: [], finishing: [], delivered: [] };
+    await prisma.cronRun.create({ data: { job: "gmail", startedAt: at(-2 * 60_000), finishedAt: at(-60_000), ok: true, summary: JSON.stringify({ ms: { gmail: 100 } }) } });
+    const erica = await prisma.client.create({ data: { name: "Erica Walker", phone: "2155550111" } });
+    await prisma.smartTask.create({ data: { taskType: "program_message", source: "content_program", status: "OPEN", title: "Reply to Erica Walker's message", description: "A message is waiting.\n\n• Erica Walker: Can we swap the November topic?", dedupeKey: "program-message:enr-render", assignedKey: "kyle", clientId: erica.id, dueAt: at(5 * H) } });
+    await prisma.programMessage.create({ data: { enrollmentId: "enr-render", clientId: erica.id, authorKind: "CLIENT", authorLabel: "Erica Walker", body: "Can we swap the November topic?", createdAt: at(-H) } });
 
     // =====================================================================
-    c.head("§1 · Kyle's dashboard: the Daily checks, then four sections all visible");
+    c.head("§1 · Kyle's dashboard (revision 3): the Daily checks, four sections, the next business day, the closeout, completed today");
     // =====================================================================
     // Enough of Kyle's own tasks due today that a section has more rows than it shows.
     for (const n of [1, 2, 3, 4]) await prisma.smartTask.create({ data: { taskType: "todo", source: "manual", status: "OPEN", assignedKey: "kyle", title: `Due-today chore ${n}`, dueAt: etAt(etDayKey(T), 0, 5) } });
@@ -114,6 +119,10 @@ async function main() {
     const kDesk = elements(kTree, "OfficeDesk")[0]?.desk as Desk | undefined;
     c.ok("Kyle's '/' renders the desk: Daily checks and the four sections, in the mockup's order", !kHtml.startsWith("RENDER FAILED") && !!kDesk && kHtml.includes("data-office-desk") && kHtml.includes("Daily checks") && ["Morning review", "Midday review", "End-of-day review"].every((w) => kHtml.includes(w))
       && /Review &amp; Deliver[\s\S]*Client Communications[\s\S]*Today&#x27;s Shoots[\s\S]*Requests &amp; Follow-Ups/.test(kHtml), kHtml.slice(0, 200));
+    c.ok("the header: the greeting, 'Keep shoots prepared, clients informed, and media delivered.' and + Add task", kHtml.includes("Keep shoots prepared, clients informed, and media delivered.") && kHtml.includes("data-add-task") && />\s*Add task\s*</.test(kHtml.replace(/<svg[\s\S]*?<\/svg>/g, "")));
+    c.ok("each daily check says where it stands under its label", (kHtml.match(/data-check-state/g) ?? []).length === 3 && kHtml.includes("Not yet completed"));
+    c.ok("the new cards: Next business day (with Prepare), End-of-day closeout (Review & finish day), Completed today (logged automatically)", kHtml.includes(`Next business day · ${kDesk!.nextDay.dayName}`) && kHtml.includes(`Prepare ${kDesk!.nextDay.dayName}`) && kHtml.includes("Current visit instructions only") && kHtml.includes("End-of-day closeout") && kHtml.includes("Review &amp; finish day") && kHtml.includes("Completed today") && kHtml.includes("Completed actions are logged automatically."));
+    c.ok("…the Next business day card spans the grid's width; the closeout and Completed today sit side by side", /data-desk-card="next-day"[^>]*lg:col-span-2|lg:col-span-2[^"]*"[^>]*data-desk-card="next-day"/.test(kHtml) || /id="next-day"[^>]*class="[^"]*lg:col-span-2/.test(kHtml));
     c.ok("no Do next list, no paragraph of counts, no tabs", !kHtml.includes("Do next") && !kHtml.includes("data-status-line") && !kHtml.includes('role="tablist"') && !/items? need you, \d+ late/.test(kHtml));
     c.ok("the old cards are gone from HIS view (no banner beside a card, no tiles, no shoots card, no 'Kyle's day', no problems board)", ["BehindLine", "HealthStrip", "TodaysShoots", "NeedsAttention", "KylesDayCard", "KylesDaySection", "CaughtProblems", "ShootsInProgress", "OwnerBusiness"].every((n) => !kNames.includes(n)) && !kHtml.includes("done today by the office"), kNames.filter((n) => ["BehindLine", "HealthStrip", "NeedsAttention", "KylesDayCard", "CaughtProblems"].includes(n)).join());
     c.ok("a wide two-column grid on a desktop, one column on a phone", /data-desk-grid[^>]*class="[^"]*grid[^"]*lg:grid-cols-2/.test(kHtml) || /class="[^"]*grid[^"]*lg:grid-cols-2[^"]*"[^>]*data-desk-grid/.test(kHtml));
@@ -128,12 +137,13 @@ async function main() {
     c.ok("freshness says only what is wrong, in words (a missing sync), never a zero", kHtml.includes("data-freshness") && /data-fresh="aryeo" data-state="unknown"/.test(kHtml) && kHtml.includes("no sync recorded"));
     c.ok("each row's one button opens the side panel (no navigation)", !!kDesk && kDesk.sections.flatMap((s) => s.now.filter((i) => i.section !== "shoots" || i.day === "today").slice(0, 4)).every((i) => kHtml.includes(`data-open-panel="${i.id}"`)) && !/<a[^>]*data-open-panel/.test(kHtml));
     c.ok("Review & Deliver groups photos, floor plans & tours apart from approved videos; the photo row carries its thumbnail", kHtml.includes("Photos, floor plans &amp; tours") && kHtml.includes("Approved videos") && kHtml.includes("Approved by James, ready to send"));
-    c.ok("Client Communications: initials, channel and business time, the summary, Reply", kHtml.includes(">RA<") && /Text · (\d+ min|[0-9.]+ business (hours?|days?))/.test(kHtml) && kHtml.includes("[amount] invoice") && kHtml.includes(">Reply<") && kHtml.includes("Other conversations are up to date"), (kHtml.match(/Text · [^<]{0,30}/) ?? [""])[0]);
+    c.ok("Client Communications: initials, channel and business time, the summary, Reply", kHtml.includes(">RA<") && /Text · (\d+ min|[0-9.]+ business (hours?|days?))/.test(kHtml) && kHtml.includes("[amount] invoice") && kHtml.includes(">Reply<") && kHtml.includes("Create follow-up") && kHtml.includes("Other conversations are up to date.") && kHtml.includes("Content Program"), (kHtml.match(/Text · [^<]{0,30}/) ?? [""])[0]);
     c.ok("Today's Shoots: the Today / Next business day switch, View schedule", kHtml.includes('data-day="today"') && kHtml.includes('data-day="next"') && kHtml.includes("View schedule"));
     c.ok("no figures for Kyle anywhere on the page", !/\$\d/.test(kHtml), (kHtml.match(/.{40}\$\d.{40}/) ?? [""])[0]);
     c.ok("no em dashes in the desk", !/—/.test(kHtml.slice(kHtml.indexOf("data-office-desk"))));
     c.ok("phone-first: thumb-sized taps, no link inside a link", (kHtml.match(/min-h-11/g) ?? []).length >= 8 && !nestedLink(kHtml));
-    c.ok("no checkboxes until a review is opened (and never inside review)", !/type="checkbox"/.test(kHtml));
+    const eodManual = kDesk!.checks.groups.find((g) => g.key === "eod")!.lines.filter((l) => l.manual && l.auto !== true).length;
+    c.ok("checkboxes only for the closeout's own manual reviews (never inside review)", (kHtml.match(/type="checkbox"/g) ?? []).length === eodManual && eodManual >= 1);
     c.ok("the desk is not read-only for Kyle himself", kHtml.includes('data-readonly="false"') && !kHtml.includes("Preview: read-only"));
 
     // =====================================================================
@@ -155,8 +165,24 @@ async function main() {
     c.ok("a task: Done / Not needed / New date, and 'Waiting on someone' (James for creative, Jordan for business)", taskHtml.includes("Not needed") && taskHtml.includes("New date") && taskHtml.includes("Waiting on someone") && taskHtml.includes("James: a creative question") && taskHtml.includes("Jordan: a business or policy question"));
     const goneHtml = panel(kDesk!, "media:does-not-exist");
     c.ok("an item that left the list after an action says so in the panel (the page stays)", goneHtml.includes("it has left the list"));
-    const eodHtml = ssr(createElement(OfficeDesk, { desk: kDesk!, initialChecks: "eod" }));
-    c.ok("End-of-day review opens to its checks (manual reviews are checkboxes; evidence-only ones are not), Finish the day held until done, and the day's summary", ["Due deliveries confirmed, or exceptions documented", "Unresolved requests have owners and follow-up times", "Next business day&#x27;s shoots prepared"].every((w) => eodHtml.includes(w)) && (eodHtml.match(/type="checkbox"/g) ?? []).length === 1 && /data-control="finish-day"[^>]*disabled|disabled[^>]*data-control="finish-day"/.test(eodHtml) && eodHtml.includes("You completed") && eodHtml.includes("Still open") && eodHtml.includes("never closes the work"));
+    const eodHtml = ssr(createElement(OfficeDesk, { desk: kDesk!, initialOpen: "special:finish" }));
+    const finishPanel = eodHtml.slice(eodHtml.indexOf('data-side-panel="special:finish"'));
+    c.ok("Review & finish day opens the closeout's checks, Finish the day held until they are done, and the day's summary", ["Client messages reviewed", "Due deliveries completed or exceptions noted", "Open requests have owners and follow-up times", "Next business day prepared"].every((w) => finishPanel.includes(w)) && /data-control="finish-day"[^>]*disabled|disabled[^>]*data-control="finish-day"/.test(finishPanel) && finishPanel.includes("You completed") && finishPanel.includes("Still open"));
+    const prepHtml = ssr(createElement(OfficeDesk, { desk: kDesk!, initialOpen: "special:prepare" }));
+    const prepPanel = prepHtml.slice(prepHtml.indexOf('data-side-panel="special:prepare"'));
+    c.ok("Prepare <Day> lists what is missing for the next business day, or says it is ready", prepPanel.includes(`Prepare ${kDesk!.nextDay.dayName}`) && (kDesk!.nextDay.missing.length ? kDesk!.nextDay.missing.every((m) => prepPanel.includes(`data-missing="${m.visitId}"`)) : prepPanel.includes("is ready") || prepPanel.includes("No shoots on")));
+    const withBrief = { ...kDesk!, briefsPending: [{ visitId: `visit:${cliff2.id}`, day: "today" as const, street: "615 Cliff Ln", timeISO: at(3 * H).toISOString(), photographer: "Harrison Shoots", teamMemberId: harrison.id, dayKey: etDayKey(at(3 * H)), phone: "2155550199", state: "sent" as const }] };
+    const briefsHtml = ssr(createElement(OfficeDesk, { desk: withBrief, initialOpen: "special:briefs" }));
+    c.ok("Photographer briefs: Follow up resends the brief (Resend, since one went) or texts the photographer", briefsHtml.includes("Resend Harrison the brief") && briefsHtml.includes("Text back") && briefsHtml.includes("no Got it yet"));
+    const progItem = kDesk!.sections.find((t) => t.key === "comms")!.now.find((i) => i.id.startsWith("program:"))!;
+    const progHtml = ssr(createElement(OfficeDesk, { desk: kDesk!, initialOpen: progItem?.id ?? "x", initialDrafts: { [progItem?.id ?? "x"]: "Yes, we can swap it. I will update the plan today." } }));
+    c.ok("a Content Program message opens with its draft ready to send as is (or edit), on the program's own reply", !!progItem && progHtml.includes("Reply on Content Program") && progHtml.includes("Yes, we can swap it. I will update the plan today.") && progHtml.includes('data-mode="program"') && progHtml.includes("Can we swap the November topic?"));
+    const draftHtml = ssr(createElement(OfficeDesk, { desk: kDesk!, initialOpen: reply.id, initialDrafts: { [reply.id]: "Sending the invoice and floor plan now." } }));
+    c.ok("a text conversation opens with the reply engine's draft in the box, Send and New draft beside it", draftHtml.includes("Sending the invoice and floor plan now.") && draftHtml.includes('data-mode="text"') && draftHtml.includes("New draft"));
+    const followHtml = ssr(createElement(OfficeDesk, { desk: kDesk!, initialOpen: reply.id }));
+    c.ok("…and the panel offers Create a follow-up beside the reply", followHtml.includes("Create a follow-up"));
+    const addHtml = ssr(createElement(AddTaskButton, { people: [{ key: "kyle", name: "Kyle Smith" }, { key: "james", name: "James Livingston" }], me: "kyle", initialOpen: true }));
+    c.ok("+ Add task: for Kyle himself (his tasks) or someone else (assigned through delegation)", addHtml.includes("Me (Kyle Smith)") && addHtml.includes("James Livingston") && addHtml.includes("Add to my tasks"));
     const nextHtml = ssr(createElement(OfficeDesk, { desk: kDesk!, initialDay: "next" }));
     const shootRows = kDesk!.sections.find((s) => s.key === "shoots")!;
     const visits = [...shootRows.now, ...shootRows.waiting, ...shootRows.ok];

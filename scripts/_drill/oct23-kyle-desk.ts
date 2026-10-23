@@ -27,6 +27,10 @@ installNextStubs();
 const slack: { channel: string; text: string }[] = [];
 const json = (b: unknown) => new Response(JSON.stringify(b), { headers: { "content-type": "application/json" } });
 const fence = fenceFetch(async (url, init) => {
+  if (url === "https://api.anthropic.com/v1/messages") {
+    aiBodies.push(String(init?.body ?? ""));
+    return json({ id: "msg_drill", type: "message", role: "assistant", model: "drill", content: [{ type: "text", text: "Thanks for the note, we are on it today." }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } });
+  }
   if (!url.startsWith("https://slack.com/api/")) return null;
   const method = url.slice("https://slack.com/api/".length).split("?")[0];
   if (method === "chat.postMessage") {
@@ -52,6 +56,21 @@ let queueFails = false;
 interceptModule((r) => r === "@/app/ops/photo-delivery/data" || /src[\\/]app[\\/]ops[\\/]photo-delivery[\\/]data(?:\.ts)?$/.test(r), (loaded) => {
   const m = loaded as typeof import("../../src/app/ops/photo-delivery/data");
   return { ...m, loadQueue: (o?: Parameters<typeof m.loadQueue>[0]) => (queueFails ? Promise.reject(new Error("drill: photo queue down")) : m.loadQueue(o)) };
+});
+
+// The AI provider is faked at the fence (below): every draft request recorded, a fixed draft back.
+const aiBodies: string[] = [];
+// Delegation is another build's: driven here through its contract.
+let assignedToKyle: import("../../src/lib/delegation").DelegatedTask[] = [];
+interceptModule((r) => r === "@/lib/delegation" || /src[\\/]lib[\\/]delegation(?:\.ts)?$/.test(r), (loaded) => {
+  const m = loaded as typeof import("../../src/lib/delegation");
+  return { ...m, tasksAssignedTo: async (key: string) => (key === "kyle" ? assignedToKyle : []) };
+});
+// The photographer brief's states, driven when a check needs one that went.
+let briefOverride: Map<string, { state: import("../../src/lib/photographerBrief").BriefState; sentAt: string | null; ackAt: string | null; why: string | null }> | null = null;
+interceptModule((r) => r === "@/lib/photographerBrief" || /src[\\/]lib[\\/]photographerBrief(?:\.ts)?$/.test(r), (loaded) => {
+  const m = loaded as typeof import("../../src/lib/photographerBrief");
+  return { ...m, briefStatusForAppointments: (ids: string[]) => (briefOverride ? Promise.resolve(new Map(ids.map((id) => [id, briefOverride!.get(id) ?? { state: "off" as const, sentAt: null, ackAt: null, why: null }]))) : m.briefStatusForAppointments(ids)) };
 });
 
 const H = 3_600_000;
@@ -288,7 +307,7 @@ async function main() {
     c.ok("each item appears once, in one section", [...sectionOf.values()].every((v) => v.length === 1), [...sectionOf.entries()].filter(([, v]) => v.length > 1).map(([k]) => k).join());
 
     // ---- #1 ----
-    c.ok("#1 a new photo set in the free check is not a row yet: a quiet line says it is in progress", !media(d, pCheck.id) && sec(d, "deliver").quiet.some((q) => q.text.includes("in editing, checks or delivery")));
+    c.ok("#1 a new photo set in the free check is not Kyle's yet: folded under 'awaiting files', the hub's check running, with its promise", media(d, pCheck.id)?.state === "waiting" && sec(d, "deliver").waiting.some((x) => x.id === `media:${pCheck.id}`) && media(d, pCheck.id)?.line.includes("free check running") === true && media(d, pCheck.id)?.who === "the hub" && !sec(d, "deliver").now.some((x) => x.id === `media:${pCheck.id}`), JSON.stringify(media(d, pCheck.id)?.line));
     await prisma.photoJob.update({ where: { id: jCheck.id }, data: { stage: "QC_REVIEW" } });
     const run = await prisma.photoQcRun.create({ data: { jobId: jCheck.id, trigger: "INITIAL", status: "DONE", rulesVersion: "drill" } });
     await prisma.photoQcFinding.create({ data: { qcRunId: run.id, jobId: jCheck.id, ruleId: "R1", groupKey: "g1", pass: "P1_PHOTO", source: "AHDR", specificIssue: "Window blown out in the kitchen", explanation: "x", severity: "MAJOR", confidence: 0.9, responsibility: "EDITOR", fixStrategy: "REEDIT" } });
@@ -297,7 +316,7 @@ async function main() {
     c.ok("#1 …the free check fails: a Review & Deliver row with what it found as context (no checklist), button Decide", i?.state === "now" && i.line === "Free check found issues to decide" && i.panel.kind === "job" && i.panel.findings.some((f) => f.includes("Window blown out")) && i.primary?.label === "Decide", i?.line);
     await prisma.photoJob.update({ where: { id: jCheck.id }, data: { stage: "FIXING" } });
     d = await build();
-    c.ok("#1 …the correction is tracked: running in AutoHDR (quiet), not a row, not gone", !media(d, pCheck.id) && !find(d, `photos-late:${jCheck.id}`) && sec(d, "deliver").quiet.length > 0);
+    c.ok("#1 …the correction is tracked: awaiting files from AutoHDR, with its promise, not gone", media(d, pCheck.id)?.state === "waiting" && media(d, pCheck.id)?.line.includes("corrections running in AutoHDR") === true && media(d, pCheck.id)?.who === "AutoHDR" && media(d, pCheck.id)?.dueISO === at(5 * H).toISOString() && !find(d, `photos-late:${jCheck.id}`));
     const dLate = await build(at(6 * H));
     c.ok("#1 …once its promise passes it comes back as a production follow-up", find(dLate, `photos-late:${jCheck.id}`)?.state === "now" && find(dLate, `photos-late:${jCheck.id}`)?.tag === "production" && find(dLate, `photos-late:${jCheck.id}`)?.line === "Late from AutoHDR · Follow up");
 
@@ -305,7 +324,7 @@ async function main() {
     i = media(d, pReady.id);
     c.ok("ready photos: '11 Ready Rd · Photos ready', the client, due today, Review (Kyle's own Approve and deliver in the panel)", i?.state === "now" && i.group === "media" && i.title === "11 Ready Rd" && i.line === "Photos ready" && i.client === "Real Agent" && i.primary?.label === "Review" && i.primary.action.kind === "photo-approve" && i.dueWords?.startsWith("Due ") === true);
     c.ok("late edits are a production follow-up, never a delivery row", !media(d, pLate.id) && find(d, `photos-late:${(await prisma.photoJob.findFirstOrThrow({ where: { projectId: pLate.id } })).id}`)?.section === "followups");
-    c.ok("approved is not delivered: photos waiting on Aryeo are a quiet in-progress line, not 'done'", !media(d, pDelivering.id));
+    c.ok("approved is not delivered: photos waiting on Aryeo are awaiting confirmation, not 'done'", media(d, pDelivering.id)?.state === "waiting" && media(d, pDelivering.id)?.line.includes("approved, not delivered yet") === true);
     c.ok("a delivered job with nothing else open is not listed; a test client's job never is", !media(d, pDone.id) && !media(d, pTestPhotos.id));
     i = media(d, pHeld.id);
     c.ok("photos held by a client request say which request, with its check beside the approval", i?.line.startsWith('Ready, held by the client\'s request: "Trash cans out of the front shot"') === true && i.actions.some((a) => a.kind === "ask" && a.askId === heldAsk.id) && i.actions.some((a) => a.kind === "photo-approve"), i?.line);
@@ -339,7 +358,7 @@ async function main() {
     c.ok("#5 partial delivery: photos delivered, the floor plan still open past the promise, its own item", i?.state === "now" && asset(i, "photo:")?.tone === "done" && asset(i, "floorplan:")?.late === true && asset(i, "floorplan:")?.who === "CubiCasa" && i.primary?.label === "Chase CubiCasa" && asset(i, "tour:")?.status === "Done", JSON.stringify(i?.panel));
     await prisma.project.update({ where: { id: pPartial.id }, data: { promisedDueAt: at(D) } });
     const dPartial = await build();
-    c.ok("#5 …before its promise the open floor plan is on the way (quiet), not forgotten", !media(dPartial, pPartial.id) && sec(dPartial, "deliver").quiet.some((q) => q.text.includes("floor plan")));
+    c.ok("#5 …before its promise the open floor plan is awaiting files from CubiCasa, not forgotten", media(dPartial, pPartial.id)?.state === "waiting" && media(dPartial, pPartial.id)?.line.includes("Floor plan: on its way") === true && media(dPartial, pPartial.id)?.who === "CubiCasa");
     await prisma.deliverable.updateMany({ where: { projectId: pPartial.id, type: "FLOORPLAN" }, data: { status: "DONE" } });
     c.ok("#5 …and leaves once the last asset is done", !media(await build(), pPartial.id));
     await prisma.deliverable.updateMany({ where: { projectId: pPartial.id, type: "FLOORPLAN" }, data: { status: "PENDING" } });
@@ -457,7 +476,9 @@ async function main() {
     c.ok("…the tick records the review; the conversations it covers are still on the desk", sec(d, "comms").now.length > 0);
     const evidenceOnly = await actions.closeoutTickAction(today, "eod_owners", true);
     c.ok("an evidence-only check can't be ticked by hand", !evidenceOnly.ok && evidenceOnly.message.includes("ticked by the system"));
-    c.ok("the Daily checks are the three reviews with their checks", d.checks.groups.map((g) => `${g.key}:${g.lines.length}`).join() === "morning:3,midday:2,eod:3");
+    c.ok("the Daily checks are the three reviews with their checks (the end of the day: the closeout's four)", d.checks.groups.map((g) => `${g.key}:${g.lines.length}`).join() === "morning:3,midday:2,eod:4" && d.checks.groups.find((g) => g.key === "eod")!.lines.map((l) => l.label).join(" | ") === "Client messages reviewed | Due deliveries completed or exceptions noted | Open requests have owners and follow-up times | Next business day prepared");
+    const morning = d.checks.groups.find((g) => g.key === "morning")!;
+    c.ok("each review says when it was completed, or 'Not yet completed' (a completed review carries its last tick's time)", (morning.done ? !!morning.completedAtISO || morning.lines.every((l) => l.auto === true) : morning.completedAtISO === null) && d.checks.groups.find((g) => g.key === "eod")!.completedAtISO === null);
     c.ok("system evidence ticks what it can: 'next business day prepared' is open while a visit is not ready", d.checks.groups.find((g) => g.key === "eod")!.lines.find((l) => l.key === "eod_nextday")?.auto === false);
     const finishEarly = await actions.finishDayAction(today);
     c.ok("the day can't be finished while the end-of-day review is open", !finishEarly.ok && finishEarly.message.startsWith("Still open"));
@@ -483,7 +504,69 @@ async function main() {
     const words = JSON.stringify(everyItem(d).map((x) => [x.title, x.line, x.reason, x.panel.kind === "job" ? x.panel.assets.map((a) => a.status) : []]));
     c.ok("no em dashes in the desk's own words", !EM_DASH.test(words) && !EM_DASH.test(JSON.stringify(d.checks)) && !EM_DASH.test(JSON.stringify(d.urgent)));
     c.ok("product setup is Jordan's: nothing on Kyle's desk is about mapping a product", !/map(ping)? (the |a |an )?(unknown )?product|order line nobody defined/i.test(words));
-    c.ok("nothing left the box but faked Slack posts; no client message queued by the desk", fence.blocked.length === 0 && fence.faked.every((u) => u.startsWith("https://slack.com/api/")) && await prisma.outboxMessage.count() === 1, fence.blocked.join(", "));
+    // =====================================================================
+    c.head("§3 · revision 3: the new cards, reply drafts, Fixes done, delegation");
+    // =====================================================================
+    await signIn(kyle);
+    // Fixes done (the huddle): a job whose corrections came back and passed.
+    const pFixed = await project("34 Fixed Ct, Town", "SHOT", { shootDate: at(-D) });
+    const jFixed = await photoJob(pFixed.id, "READY", { slaDueAt: at(5 * H) });
+    await prisma.photoFixBatch.create({ data: { jobId: jFixed.id, mode: "ALL", approvedBy: "Kyle Smith", status: "DONE" } });
+    // A program message in the conversation (the Content Platform), for its draft.
+    await prisma.programMessage.create({ data: { enrollmentId: "enr-erica", clientId: erica.id, authorKind: "CLIENT", authorLabel: "Erica Walker", body: "Can we swap the November topic for the open house one?", createdAt: at(-3 * H) } });
+    // A task Jordan assigned Kyle through delegation, not accepted yet.
+    assignedToKyle = [{ taskId: k2.id, title: "Order lockbox keys for the Malvern listings", outcome: "Two spare keys in the office", assigneeKey: "kyle", assigneeName: "Kyle Smith", assignedBy: "Jordan Spackman", assignedAt: at(-2 * H).toISOString(), dueAt: at(5 * H).toISOString(), state: "ASSIGNED", needsVerification: false, latestUpdate: null, blocker: null, nextStep: null, clientId: null, projectId: null, sourceHref: null }];
+    await prisma.cronRun.create({ data: { job: "gmail", startedAt: at(-2 * 60_000), finishedAt: at(-60_000), ok: true, summary: JSON.stringify({ ms: { gmail: 100 } }) } });
+    d = await build();
+    i = media(d, pFixed.id);
+    c.ok("'Fixes done' shows in Review & Deliver: the corrections came back and passed, ready to review", i?.state === "now" && i.line === "Fixes done · ready to review" && i.primary?.label === "Review", i?.line);
+    const delegated = find(d, `task:${k2.id}`);
+    c.ok("a task Jordan assigned Kyle shows once, in Requests & Follow-Ups, 'From Jordan', not accepted yet, with Accept", delegated?.tag === "jordan" && delegated.line.startsWith("Not accepted yet") && delegated.primary?.label === "Accept" && delegated.actions[0]?.kind === "delegation" && everyItem(d).filter((x) => x.id === `task:${k2.id}`).length === 1);
+    assignedToKyle = [{ ...assignedToKyle[0], state: "IN_PROGRESS", latestUpdate: "Keys ordered" }];
+    const dAccepted = await build();
+    c.ok("…once accepted its button is Update", find(dAccepted, `task:${k2.id}`)?.primary?.label === "Update" && find(dAccepted, `task:${k2.id}`)?.line.startsWith("In progress") === true);
+    assignedToKyle = [];
+    const { acceptTaskAction } = await import("@/app/delegation/actions");
+    const stubbed = await acceptTaskAction(k2.id);
+    c.ok("until the delegation build merges, its actions say plainly that nothing was saved (never a pretend success)", !stubbed.ok && stubbed.message.includes("Nothing was saved"));
+    // The next business day card.
+    const nd = d.nextDay;
+    const nextVisitIds = sec(d, "shoots").now.concat(sec(d, "shoots").ok, sec(d, "shoots").waiting).filter((x) => x.day === "next").map((x) => x.id);
+    c.ok("Next business day: its name, appointments confirmed / pending, access and contacts, photographer instructions, all from the visit rows", nd.dayKey === nextKey && nd.dayName === new Date(`${nextKey}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" }) && nd.visits === nextVisitIds.length && nd.appointments.confirmed + nd.appointments.pending === nd.visits && nd.access.recorded + nd.access.missing === nd.visits && nd.instructions.ready + nd.instructions.review === nd.visits && nd.appointments.pending >= 1 && nd.access.missing >= 1, JSON.stringify(nd));
+    c.ok("Prepare <Day> lists what is missing, each pointing at its visit row (never a second item), with that row's action (Confirm sends the confirmation text)", nd.missing.length >= 2 && nd.missing.every((m) => nextVisitIds.includes(m.visitId)) && nd.missing.some((m) => m.visitId === `visit:${apNext.id}` && m.problem === "Not confirmed yet" && m.action?.kind === "confirm") && nd.missing.some((m) => m.visitId === `visit:${apNext.id}` && m.problem.startsWith("No access")));
+    // Photographer briefs still waiting on a Got it (driven brief states).
+    briefOverride = new Map([[apToday.id, { state: "sent", sentAt: at(-18 * H).toISOString(), ackAt: null, why: null }]]);
+    const dBriefs = await build();
+    briefOverride = null;
+    c.ok("a brief that went and still waits on its Got it: counted in 'Photographer briefs · 1 acknowledgment pending', the visit waiting on the photographer", dBriefs.briefsPending.length === 1 && dBriefs.briefsPending[0].visitId === `visit:${apToday.id}` && dBriefs.briefsPending[0].day === "today" && dBriefs.briefsPending[0].teamMemberId === harrison.id && visit(dBriefs, apToday.id)?.state === "waiting" && visit(dBriefs, apToday.id)?.chip?.label === "Waiting for Got it", JSON.stringify(dBriefs.briefsPending));
+    c.ok("…and none for a shoot already under way", !dBriefs.briefsPending.some((b) => b.visitId === `visit:${apStarted.id}`));
+    // Client Communications: the program message is a conversation with its own reply; fresh data says the rest are up to date.
+    const prog = find(d, `program:${program.id}`);
+    c.ok("a Content Program message opens as a conversation with the program's own reply (and a follow-up)", prog?.panel.kind === "thread" && prog.panel.messages.some((m) => m.text.includes("swap the November topic")) && prog.primary?.action.kind === "program-reply" && (prog.primary.action as { enrollmentId: string }).enrollmentId === "enr-erica" && prog.actions.some((a) => a.kind === "follow-up"));
+    c.ok("'Other conversations are up to date' only when the messages were read and the mail sync is fresh", d.commsFresh === true && dLate.commsFresh === false);
+    // Every conversation opens with a draft: the reply engine's own drafter (AI faked here), nothing sent.
+    await saveSecret("ai", "drill-not-a-real-ai-key");
+    const realReply = sec(d, "comms").now.find((x) => x.title === "Real Agent");
+    const replyAction = realReply?.primary?.action as { kind: string; threadKey: string } | undefined;
+    const { generateReply } = await import("@/app/communications/replyActions");
+    const textDraft = replyAction ? await generateReply(replyAction.threadKey) : null;
+    c.ok("a text conversation's draft comes from the reply engine (generateReply), with the client's words in its context", textDraft?.ok === true && textDraft.draft === "Thanks for the note, we are on it today." && aiBodies.some((b) => b.includes("still on for tomorrow")), JSON.stringify(textDraft));
+    const programDraft = await actions.draftProgramReplyAction("enr-erica");
+    c.ok("a Content Program message's draft comes from the same drafter, given the program conversation", programDraft.ok && programDraft.draft === "Thanks for the note, we are on it today." && aiBodies.some((b) => b.includes("open house")), JSON.stringify(programDraft));
+    c.ok("drafting sends nothing (no outbox row, no message logged)", await prisma.outboxMessage.count() === 1 && await prisma.commLog.count({ where: { direction: "out", occurredAt: { gte: at(-30 * 60_000) } } }) === 0);
+    await signIn(owner, kyle.id);
+    const previewDraft = await actions.draftProgramReplyAction("enr-erica");
+    c.ok("…and the owner's preview can't draft (read-only)", !previewDraft.ok);
+    await signIn(kyle);
+    // Completed today: real events only, each with its own time.
+    const act = d.checks.summary.activity;
+    c.ok("Completed today: Kyle's own events with their times (his video sent, his reply), newest first; Jordan's send is not his", act.some((a) => a.what === "Video sent · 30 Notice Ln" && a.atISO === at(-H).toISOString()) && act.some((a) => a.what === "Replied to Greenridge Client") && !act.some((a) => a.what.includes("33 Jordan Sent St")) && act.every((a, n) => n === 0 || act[n - 1].atISO >= a.atISO), JSON.stringify(act.map((a) => [a.atISO.slice(11, 16), a.what])));
+    c.ok("…nothing fabricated: every entry is one of the real event kinds", act.every((a) => /^(Photos approved|Video sent|Client told|Replied to|Replied on Content Program|Client request checked|Shoot confirmed|Task done|Task closed as not needed)/.test(a.what)));
+    // One item, one section; the counts are the rows, with the new cards in.
+    const ids3 = everyItem(d).map((y) => y.id);
+    c.ok("#10 with the new cards: one item per id, each section's count its rows, the awaiting-files rows uncounted", new Set(ids3).size === ids3.length && d.sections.every((t) => t.count === t.now.length) && sec(d, "deliver").waiting.every((x) => x.state === "waiting" && !sec(d, "deliver").now.includes(x)));
+
+    c.ok("nothing left the box but faked Slack posts and the faked AI drafter; no client message queued by the desk", fence.blocked.length === 0 && fence.faked.every((u) => u.startsWith("https://slack.com/api/") || u === "https://api.anthropic.com/v1/messages") && await prisma.outboxMessage.count() === 1, fence.blocked.join(", "));
     void cutN; void createRequire;
     c.summary();
   } finally { fence.restore(); await db.stop(); }
