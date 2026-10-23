@@ -1,10 +1,10 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { sha256 } from "@/lib/aiRuns";
-import { listPillars, resolvePillarByLabel } from "@/lib/contentPillars";
+import { listPillars, confirmedPillarIdFor } from "@/lib/contentPillars";
 import { canonicalFromParts, createScriptVersion, partsFromBody, STRUCTURAL_CODES, type VersionParts } from "@/lib/contentScripts";
 import { ALLOWANCE_SELECTION_STATUSES, createTopic, reconcileMonthExtras, recordTopicEvent, selectTopicForMonth, type Actor } from "@/lib/contentTopics";
-import { GENERATION_POLICY, normalizeTitle, renderScript, titleSimilarity, validateNewScript } from "@/lib/contentPolicy";
+import { GENERATION_POLICY, matchPillarLabel, normalizeTitle, renderScript, titleSimilarity, validateNewScript } from "@/lib/contentPolicy";
 import { checkAsWritten, hasScriptParts, locateScriptBlocks, pickPillarByWords, readUploadedScript, shapeProblems, splitUploadedScripts, type AsWrittenCheck, type ScriptFormat, type UploadPoint, type UploadSource } from "@/lib/scriptUploadParse";
 import { AS_WRITTEN_PROMPT_KEY, AS_WRITTEN_SCHEMA, AS_WRITTEN_SYSTEM, asWrittenPrompt, dimensionsRecord, itemsFromAsWritten, type AsWrittenOut, type PillarChoice, type PillarSource } from "@/lib/scriptUploadAi";
 
@@ -333,11 +333,10 @@ export async function buildUploadPreview(opts: {
     ? locateScriptBlocks(docText, raws.map((r, i) => ({ title: opts.extras?.get(i)?.titleAsWritten || r.title, hook: r.hook })))
     : [];
 
-  const optionByLabel = (label: string | null) => {
-    if (!label) return null;
-    const key = normalizeTitle(label.split(/\s+(?:\/|•|\||·)\s+/)[0]);
-    return options.find((o) => normalizeTitle(o.name) === key)?.id ?? null;
-  };
+  // Oct 23 2026: a Category line names one of the client's confirmed pillars
+  // by the one rule (pillarMatch: name, spelling, first matching part, else
+  // the closest), or none. The strategy's own names when no pillar rows exist.
+  const optionByLabel = (label: string | null) => (label ? matchPillarLabel(label, options)?.pillarId ?? null : null);
 
   const claimed = new Set<string>();
   const drafts: UploadDraft[] = [];
@@ -373,7 +372,7 @@ export async function buildUploadPreview(opts: {
     // closest by words.
     let pillarId: string | null = null;
     let pillarWhy: string | null = null;
-    const byCategory = r.categoryLabel ? (choices.source === "pillars" ? await resolvePillarByLabel(opts.enrollmentId, r.categoryLabel.split(/\s+(?:\/|•|\||·)\s+/)[0]) : null) ?? optionByLabel(r.categoryLabel) : null;
+    const byCategory = r.categoryLabel ? (choices.source === "pillars" ? await confirmedPillarIdFor(opts.enrollmentId, r.categoryLabel, { activeOnly: true }) : null) ?? optionByLabel(r.categoryLabel) : null;
     const wantedPillar = r.wantPillarId && options.some((o) => o.id === r.wantPillarId) ? r.wantPillarId : null;
     if (wantedPillar && !(extra && byCategory)) { pillarId = wantedPillar; pillarWhy = extra?.pillarWhy ? `Picked by AI: ${extra.pillarWhy}` : null; }
     if (!pillarId && byCategory) { pillarId = byCategory; pillarWhy = `The document says “${r.categoryLabel}”.`; }

@@ -250,9 +250,38 @@ export function mixTopicRule(skitsPerMonth: number | null | undefined): string {
 ${SKIT_CONCEPT_RULES}`;
 }
 
+/**
+ * The bank's output schema with each topic group's pillarName held to the
+ * client's CONFIRMED pillar names (Oct 23 2026, Jordan: "we should just stick
+ * to their confirmed pillars"): a JSON-schema enum, so the model cannot name
+ * another. No names = the schema as it was (the run stops earlier for a
+ * client with no pillars).
+ */
+export function withPillarNameEnum(schema: JsonSchema, pillarNames: readonly string[] | null | undefined): JsonSchema {
+  const names = [...new Set((pillarNames ?? []).map((n) => n.trim()).filter(Boolean))];
+  if (!names.length) return schema;
+  const props = schema.properties as Record<string, Record<string, unknown>>;
+  const pillarItems = props.pillars.items as Record<string, unknown>;
+  const pillarProps = pillarItems.properties as Record<string, Record<string, unknown>>;
+  return {
+    ...schema,
+    properties: {
+      ...props,
+      pillars: {
+        ...props.pillars,
+        items: { ...pillarItems, properties: { ...pillarProps, pillarName: { type: "string", enum: names, description: "Exactly one of the client's confirmed pillar names, verbatim. Never another name, never a new pillar." } } },
+      },
+    },
+  };
+}
+
 /** The bank's output schema for a MIX account: every topic carries its format. Other accounts keep the base schema. */
-export function topicBankSchemaFor(style: VideoStyle | null | undefined): JsonSchema {
-  if (asVideoStyle(style) !== "MIX") return TOPIC_BANK_OUTPUT_SCHEMA;
+export function topicBankSchemaFor(style: VideoStyle | null | undefined, pillarNames?: readonly string[] | null): JsonSchema {
+  if (asVideoStyle(style) !== "MIX") return withPillarNameEnum(TOPIC_BANK_OUTPUT_SCHEMA, pillarNames);
+  return withPillarNameEnum(mixTopicBankSchema(), pillarNames);
+}
+
+function mixTopicBankSchema(): JsonSchema {
   const props = TOPIC_BANK_OUTPUT_SCHEMA.properties as Record<string, Record<string, unknown>>;
   const pillarItems = (props.pillars.items as Record<string, unknown>);
   const pillarProps = pillarItems.properties as Record<string, Record<string, unknown>>;
@@ -556,6 +585,12 @@ export function buildTopicBankPrompt(
      * nothing else (the per-pillar count does not apply).
      */
     skitsOnly?: number | null;
+    /**
+     * Oct 23 2026: the client's CONFIRMED pillar names, exactly as stored.
+     * Every topic group names one of them (an enum on pillarName); unset =
+     * the strategy document's pillar names, as before.
+     */
+    pillarNames?: readonly string[] | null;
   } = {},
 ): PromptBundle {
   assertClientScoped(ctx);
@@ -564,6 +599,9 @@ export function buildTopicBankPrompt(
   if (!Number.isInteger(n) || n < cfg.min || n > cfg.max) throw new RangeError(`topicsPerPillar must be ${cfg.min}–${cfg.max}; got ${n}`);
   const pillars = ctx.strategy?.document?.contentPillars.pillars.map((p) => p.name) ?? [];
   const existing = opts.existingTopics ?? [];
+  // Oct 23 2026: the caller's confirmed pillars, by name (the strategy's
+  // pillars plus any added in the hub). The schema holds pillarName to them.
+  const confirmedNames = opts.pillarNames?.length ? [...opts.pillarNames] : pillars;
   // PER-PILLAR COUNTS (Oct 13 2026, Arielle Roemer's buyer-heavy bank): every
   // pillar used to be asked for the same n, so a supporting pillar filled as
   // much of the bank as the lead one. Each pillar now states its own count,
@@ -598,6 +636,8 @@ export function buildTopicBankPrompt(
     skitsOnly ? `COUNT: exactly ${skitsOnly} skit concept${skitsOnly === 1 ? "" : "s"} in total (see SKITS ONLY below). Never more, never padded. If the source context cannot support that many at the quality bar, return fewer and set complete=false.` : countLine,
     ...(emphasisLine ? [`EMPHASIS: ${emphasisLine}`] : []),
     "",
+    // Oct 23 2026 (Jordan): the client's pillars are exactly the confirmed ones.
+    ...(confirmedNames.length ? [`PILLARS: the client's confirmed pillars are exactly these: ${confirmedNames.map((n) => `"${n}"`).join("; ")}. Every topic goes under one of them, with pillarName written exactly as listed. Never another name, never a new pillar, never a pillar number in front of the name.`, ""] : []),
     "PRESENTATION (Arielle's bank): under each pillar heading, numbered from 1, a specific title plus one concrete sentence describing what the video would show or explain. Store audience need, business goal, intended message and source behind that simple view.",
     "",
     "QUALITY: every topic is specific, filmable, audience-relevant, aligned with brand voice and goals, and capable of supporting a strong hook. Weak, vague, repetitive or non-filmable discussion does not become a topic. A title variation of an existing concept is not a distinct idea.",
@@ -625,7 +665,7 @@ export function buildTopicBankPrompt(
   ]
     .filter(Boolean)
     .join("\n");
-  return { name: "topic-bank", system, user, outputSchema: topicBankSchemaFor(skitsOnly ? "MIX" : ctx.videoStyle), stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
+  return { name: "topic-bank", system, user, outputSchema: topicBankSchemaFor(skitsOnly ? "MIX" : ctx.videoStyle, confirmedNames), stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
 }
 
 // ---------------------------------------------------------------------------

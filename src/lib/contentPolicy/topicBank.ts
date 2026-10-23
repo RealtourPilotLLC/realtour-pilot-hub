@@ -467,7 +467,7 @@ export function validateTopicBank(bank: TopicBank, opts: ValidateTopicBankOption
       }
     }
     if (opts.strategyPillarNames && !opts.strategyPillarNames.some((n) => pillarKey(n) === pillarKey(p.name))) {
-      findings.push({ code: "pillar.unknown", severity: mode === "generated" ? "block" : "warn", message: `Pillar “${p.name}” is not one of the approved strategy's pillars (${opts.strategyPillarNames.join("; ")}). Map it by alias on import; never rename the client's pillars.`, path: `pillars[${pi}]` });
+      findings.push({ code: "pillar.unknown", severity: mode === "generated" ? "block" : "warn", message: `Pillar “${p.name}” is not one of the client's confirmed pillars (${opts.strategyPillarNames.join("; ")}). Its topics are dropped from a generated bank and kept with no pillar on an import; never a new pillar, never a rename.`, path: `pillars[${pi}]` });
     }
     p.topics.forEach((t, ti) => {
       const path = `pillars[${pi}].topics[${ti}]`;

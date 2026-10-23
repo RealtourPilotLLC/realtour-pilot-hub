@@ -4,7 +4,7 @@ import { sha256 } from "@/lib/aiRuns";
 import { createScriptVersion, partsFromBody } from "@/lib/contentScripts";
 import { createTopic, topicDedupeHash } from "@/lib/contentTopics";
 import { importStrategyVersion } from "@/lib/contentStrategy";
-import { resolvePillarByLabel } from "@/lib/contentPillars";
+import { listPillars, matchConfirmedPillar } from "@/lib/contentPillars";
 import { splitDeliveredScripts, parseDeliveredScript, parseTopicBankDocument, parseStrategyDocument, normalizeTitle } from "@/lib/contentPolicy";
 
 // ---------------------------------------------------------------------------
@@ -20,6 +20,13 @@ import { splitDeliveredScripts, parseDeliveredScript, parseTopicBankDocument, pa
 // The planning-month rule (Jordan: "April doc = May content") is a PROPOSAL
 // per client — document month → proposed month — that he confirms on the
 // preview; there is no bulk move anywhere.
+//
+// IMPORTS NEVER CREATE PILLARS (Oct 23 2026, Jordan). A document's pillar
+// label is matched to one of the client's confirmed pillars automatically
+// (contentPillars.matchConfirmedPillar: name or alias, spelling, the first
+// matching part, else the closest), and a label close to none leaves the item
+// with no pillar. Nobody is asked to map anything. A strategy document's
+// pillars are made only when that version is approved.
 // ---------------------------------------------------------------------------
 
 export type ImportKind = "SCRIPTS" | "TOPICS" | "STRATEGY";
@@ -28,13 +35,16 @@ export type ItemMode = "CREATE" | "LINK" | "UPDATE_PROPOSAL" | "CONFLICT" | "SKI
 export type PreviewItem = {
   ordinal: number; kind: "SCRIPT" | "TOPIC" | "STRATEGY_SECTION"; sourceHash: string; sourceText: string; title: string;
   parsed: Record<string, unknown>; proposedMode: ItemMode; targetKind: string | null; targetId: string | null; targetTitle: string | null;
-  pillarLabel: string | null; pillarId: string | null; importedMark: string | null; proposedState: string | null; conflictNote: string | null; warnings: string[];
+  pillarLabel: string | null; pillarId: string | null;
+  /** Oct 23 2026: the confirmed pillar the label matched and why ("same name", "closest by words…"), or why none did. Shown on the preview; nothing to map. */
+  pillarName: string | null; pillarWhy: string | null;
+  importedMark: string | null; proposedState: string | null; conflictNote: string | null; warnings: string[];
 };
 
 export type ImportPreview = {
   kind: ImportKind; enrollmentId: string; fileName: string; contentHash: string; existingBatchId: string | null; existingBatchMode: string | null;
   documentMonthKey: string | null; proposedMonthKey: string | null; monthRule: string;
-  items: PreviewItem[]; counts: Record<ItemMode, number>; unmappedPillarLabels: string[]; notes: string[];
+  items: PreviewItem[]; counts: Record<ItemMode, number>; notes: string[];
 };
 
 const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
@@ -65,7 +75,14 @@ export async function previewImport(opts: { kind: ImportKind; enrollmentId: stri
   const proposedMonthKey = documentMonthKey ? nextMonthKey(documentMonthKey) : null;
   const notes: string[] = [];
   const items: PreviewItem[] = [];
-  const unmapped = new Set<string>();
+  // Oct 23 2026: each label → a confirmed pillar or none, by the one rule. An
+  // import may name a retired pillar (the document is history).
+  const pillars = opts.kind === "STRATEGY" ? [] : await listPillars(opts.enrollmentId, { includeRetired: true });
+  const pillarOf = async (label: string | null): Promise<{ pillarId: string | null; pillarName: string | null; pillarWhy: string | null }> => {
+    if (!label?.trim()) return { pillarId: null, pillarName: null, pillarWhy: null };
+    const m = await matchConfirmedPillar(opts.enrollmentId, label, { pillars });
+    return m ? { pillarId: m.pillarId, pillarName: m.pillarName, pillarWhy: m.why } : { pillarId: null, pillarName: null, pillarWhy: pillars.length ? "no confirmed pillar is close: it is filed with no pillar" : "the client has no confirmed pillars yet: filed with no pillar" };
+  };
 
   if (opts.kind === "SCRIPTS") {
     const { preamble, scripts } = splitDeliveredScripts(text);
@@ -87,10 +104,9 @@ export async function previewImport(opts: { kind: ImportKind; enrollmentId: stri
       if (byPrior?.resultId || same) { mode = "LINK"; targetId = byPrior?.resultId ?? same!.id; targetTitle = same?.title ?? title; }
       else if (sameTitle) { mode = "UPDATE_PROPOSAL"; targetId = sameTitle.id; targetTitle = sameTitle.title; conflictNote = sameTitle.historical ? "A historical script with this title exists with different text — proposing it as a further import version of that record (its filmed text stays as is)." : "A LIVE script with this title exists with different text — the import is kept on this item as a proposal for a person to apply by hand; it never becomes a draft of the live script."; }
       const pillarLabel = parsed.pillarRef?.pillarName ?? null;
-      const pillarId = pillarLabel ? await resolvePillarByLabel(opts.enrollmentId, pillarLabel) : null;
-      if (pillarLabel && !pillarId) unmapped.add(pillarLabel);
+      const pillar = await pillarOf(pillarLabel);
       if (!parsed.hook && !parsed.points.length && !parsed.close) { mode = "SKIP"; conflictNote = "No HOOK / TALKING POINT / CLOSE labels — not a scripted piece (a header or an unscripted plan)."; }
-      items.push({ ordinal: i + 1, kind: "SCRIPT", sourceHash, sourceText: src, title, parsed: { number: parsed.number, points: parsed.points.length, category: parsed.pillarRef?.categoryAsDelivered ?? null, placeholders: parsed.internal.placeholders, warnings: parsed.parseWarnings }, proposedMode: mode, targetKind: targetId ? "ContentScript" : null, targetId, targetTitle, pillarLabel, pillarId, importedMark: null, proposedState: null, conflictNote, warnings: parsed.parseWarnings });
+      items.push({ ordinal: i + 1, kind: "SCRIPT", sourceHash, sourceText: src, title, parsed: { number: parsed.number, points: parsed.points.length, category: parsed.pillarRef?.categoryAsDelivered ?? null, placeholders: parsed.internal.placeholders, warnings: parsed.parseWarnings }, proposedMode: mode, targetKind: targetId ? "ContentScript" : null, targetId, targetTitle, pillarLabel, ...pillar, importedMark: null, proposedState: null, conflictNote, warnings: parsed.parseWarnings });
     }
   } else if (opts.kind === "TOPICS") {
     const bank = parseTopicBankDocument(text, { source: "IMPORTED", sourceRef: opts.fileName });
@@ -98,8 +114,7 @@ export async function previewImport(opts: { kind: ImportKind; enrollmentId: stri
     const existingTopics = await prisma.contentTopic.findMany({ where: { enrollmentId: opts.enrollmentId }, select: { id: true, title: true, dedupeHash: true, concept: true } });
     let ordinal = 0;
     for (const p of bank.pillars) {
-      const pillarId = await resolvePillarByLabel(opts.enrollmentId, p.name);
-      if (!pillarId) unmapped.add(p.name);
+      const pillar = await pillarOf(p.name);
       for (const t of p.topics) {
         ordinal++;
         const srcText = `${p.name}\n${t.title}${t.description ? `\n${t.description}` : ""}`;
@@ -109,7 +124,7 @@ export async function previewImport(opts: { kind: ImportKind; enrollmentId: stri
         let mode: ItemMode = "CREATE", conflictNote: string | null = null;
         if (same) { mode = t.description && same.concept && normalizeTitle(same.concept) !== normalizeTitle(t.description) ? "UPDATE_PROPOSAL" : "LINK"; if (mode === "UPDATE_PROPOSAL") conflictNote = "Same title, different description — proposing the description as an edit for confirmation."; }
         const mark = t.importedMark ?? null;
-        items.push({ ordinal, kind: "TOPIC", sourceHash, sourceText: srcText, title: t.title, parsed: { description: t.description, pillar: p.name }, proposedMode: mode, targetKind: same ? "ContentTopic" : null, targetId: same?.id ?? null, targetTitle: same?.title ?? null, pillarLabel: p.name, pillarId, importedMark: mark, proposedState: mark ? (/(red|bold-red)/i.test(mark) ? "SCRIPTED" : /green|bold/i.test(mark) ? "SELECTED" : /turquoise|cyan/i.test(mark) ? "PARKED" : null) : null, conflictNote, warnings: [] });
+        items.push({ ordinal, kind: "TOPIC", sourceHash, sourceText: srcText, title: t.title, parsed: { description: t.description, pillar: p.name }, proposedMode: mode, targetKind: same ? "ContentTopic" : null, targetId: same?.id ?? null, targetTitle: same?.title ?? null, pillarLabel: p.name, ...pillar, importedMark: mark, proposedState: mark ? (/(red|bold-red)/i.test(mark) ? "SCRIPTED" : /green|bold/i.test(mark) ? "SELECTED" : /turquoise|cyan/i.test(mark) ? "PARKED" : null) : null, conflictNote, warnings: [] });
       }
     }
   } else {
@@ -117,15 +132,16 @@ export async function previewImport(opts: { kind: ImportKind; enrollmentId: stri
     const sourceHash = sha256(normText(text));
     const existingV = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: opts.enrollmentId, contentHash: sha256(JSON.stringify(parsed.sections.map((s) => s.heading))) }, select: { id: true, versionNo: true } });
     const approved = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: opts.enrollmentId, status: "APPROVED" }, select: { id: true, versionNo: true } });
-    items.push({ ordinal: 1, kind: "STRATEGY_SECTION", sourceHash, sourceText: text, title: parsed.title || opts.fileName, parsed: { structureVersion: parsed.structureVersion, sections: parsed.sections.map((s) => s.heading), pillars: parsed.contentPillars.pillars.map((p) => p.name), warnings: parsed.warnings }, proposedMode: existingV ? "LINK" : approved ? "UPDATE_PROPOSAL" : "CREATE", targetKind: "ContentStrategy", targetId: existingV?.id ?? approved?.id ?? null, targetTitle: approved ? `approved v${approved.versionNo}` : null, pillarLabel: null, pillarId: null, importedMark: null, proposedState: null, conflictNote: approved ? "An approved strategy exists — this becomes a NEW version for approval; nothing is overwritten." : null, warnings: parsed.warnings });
-    for (const p of parsed.contentPillars.pillars) if (!(await resolvePillarByLabel(opts.enrollmentId, p.name))) unmapped.add(p.name);
+    items.push({ ordinal: 1, kind: "STRATEGY_SECTION", sourceHash, sourceText: text, title: parsed.title || opts.fileName, parsed: { structureVersion: parsed.structureVersion, sections: parsed.sections.map((s) => s.heading), pillars: parsed.contentPillars.pillars.map((p) => p.name), warnings: parsed.warnings }, proposedMode: existingV ? "LINK" : approved ? "UPDATE_PROPOSAL" : "CREATE", targetKind: "ContentStrategy", targetId: existingV?.id ?? approved?.id ?? null, targetTitle: approved ? `approved v${approved.versionNo}` : null, pillarLabel: null, pillarId: null, pillarName: null, pillarWhy: null, importedMark: null, proposedState: null, conflictNote: approved ? "An approved strategy exists — this becomes a NEW version for approval; nothing is overwritten." : null, warnings: parsed.warnings });
+    // Its pillars become the client's pillars only when this version is approved (contentStrategy.approveStrategyVersion).
+    if (parsed.contentPillars.pillars.length) notes.push(`The document names ${parsed.contentPillars.pillars.length} pillar${parsed.contentPillars.pillars.length === 1 ? "" : "s"}; they become the client's pillars when this version is approved.`);
   }
   const counts: Record<ItemMode, number> = { CREATE: 0, LINK: 0, UPDATE_PROPOSAL: 0, CONFLICT: 0, SKIP: 0 };
   for (const it of items) counts[it.proposedMode]++;
   return {
     kind: opts.kind, enrollmentId: opts.enrollmentId, fileName: opts.fileName, contentHash, existingBatchId: existing?.id ?? null, existingBatchMode: existing?.mode ?? null,
     documentMonthKey, proposedMonthKey, monthRule: documentMonthKey ? `The document names ${documentMonthKey}; Jordan's rule files that content under the following month (${proposedMonthKey}). Confirm or change per client — nothing moves in bulk.` : "No month named in the document — pick the month the content belongs to.",
-    items, counts, unmappedPillarLabels: [...unmapped], notes,
+    items, counts, notes,
   };
 }
 
@@ -134,7 +150,7 @@ export async function previewImport(opts: { kind: ImportKind; enrollmentId: stri
  * keyed by (kind, contentHash), each item by (batchId, sourceHash); an item
  * already applied is not applied twice.
  */
-export async function applyImport(preview: ImportPreview, decisions: { monthKey: string | null; modes: Record<number, ItemMode>; pillarMap?: Record<string, string | null> }, by: string): Promise<{ batchId: string; created: number; linked: number; updated: number; skipped: number; conflicts: number }> {
+export async function applyImport(preview: ImportPreview, decisions: { monthKey: string | null; modes: Record<number, ItemMode> }, by: string): Promise<{ batchId: string; created: number; linked: number; updated: number; skipped: number; conflicts: number }> {
   const e = await prisma.contentEnrollment.findUnique({ where: { id: preview.enrollmentId }, select: { id: true, clientId: true, videosPerMonth: true, strategyCallRequired: true } });
   if (!e) throw new Error("Enrollment not found.");
   const batch = await prisma.contentImportBatch.upsert({
@@ -154,12 +170,15 @@ export async function applyImport(preview: ImportPreview, decisions: { monthKey:
     });
     monthId = m.id;
   }
+  const confirmed = preview.kind === "STRATEGY" ? [] : await listPillars(e.id, { includeRetired: true });
   let created = 0, linked = 0, updated = 0, skipped = 0, conflicts = 0;
   for (const it of preview.items) {
     const mode = decisions.modes[it.ordinal] ?? it.proposedMode;
     const existingItem = await prisma.contentImportItem.findUnique({ where: { batchId_sourceHash: { batchId: batch.id, sourceHash: it.sourceHash } }, select: { id: true, resultId: true, decidedMode: true } });
     if (existingItem?.decidedMode) { skipped++; continue; } // already applied in a previous run
-    const pillarId = decisions.pillarMap?.[it.pillarLabel ?? ""] ?? it.pillarId ?? null;
+    // The pillar is matched again here, by the same rule, from the label: the
+    // preview came back from the browser, and an id on it is not trusted.
+    const pillarId = it.pillarLabel ? (await matchConfirmedPillar(e.id, it.pillarLabel, { pillars: confirmed }))?.pillarId ?? null : null;
     const item = existingItem ?? await prisma.contentImportItem.create({
       data: { batchId: batch.id, ordinal: it.ordinal, kind: it.kind, sourceHash: it.sourceHash, sourceText: it.sourceText, parsedJson: JSON.stringify(it.parsed), proposedMode: it.proposedMode, targetKind: it.targetKind, targetId: it.targetId, proposedMonthKey: decisions.monthKey, importedMark: it.importedMark, proposedState: it.proposedState, pillarLabel: it.pillarLabel, conflictNote: it.conflictNote },
       select: { id: true, resultId: true, decidedMode: true },

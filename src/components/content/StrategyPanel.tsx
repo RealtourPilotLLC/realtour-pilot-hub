@@ -11,7 +11,7 @@ import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { StrategyDocView, type StrategyDocSection } from "@/components/content/StrategyDocView";
 import {
-  addPillar, approveStrategy, confirmPillarMappingAction, createPillarsFromStrategy, dismissPillarLabelAction, queueStrategyDraftAction, editStrategySection, previewStrategyBackfill, rejectStrategy, releaseStrategy,
+  addPillar, approveStrategy, createPillarsFromStrategy, queueStrategyDraftAction, editStrategySection, previewStrategyBackfill, rejectStrategy, releaseStrategy,
   renamePillarAction, resolveStrategyProposal, reviseStrategy, saveMonthPriorities, saveStrategyBackfill, setDutyOwner, waiveDiscoveryAction, type StrategyPreview,
 } from "@/app/content/actions";
 import { setPillarEmphasisAction } from "@/app/content/actions";
@@ -21,9 +21,15 @@ import { strategyInForceNo, strategyStaleDraft } from "@/lib/strategyAwaiting";
 // ---------------------------------------------------------------------------
 // Strategy tab (spec §3/§21): versions never overwrite; approve and release
 // are two separate, attributable acts; a call's proposal is accepted or
-// rejected with its source in view; pillars are stable identities and the
-// free-text pillar labels on old topics are mapped ONLY when Jordan confirms
-// each one. The month's priorities live apart from the brand foundation.
+// rejected with its source in view; pillars are stable identities. The
+// month's priorities live apart from the brand foundation.
+//
+// Oct 23 2026 (Jordan): a client's pillars are exactly the confirmed ones,
+// the approved strategy's plus any added here with "Add pillar" (a change
+// from a strategy call arrives as a version to approve). The "Pillar labels
+// to map" section is gone: a label from a document or a model is matched to
+// a confirmed pillar automatically (contentPillars.matchConfirmedPillar) or
+// keeps no pillar, and nobody is asked to map it.
 //
 // CP-11 (Sep 24 2026), reworked Oct 13 2026: a proposal shows the section it
 // names and what it says now; accepting writes the change into the NEWEST
@@ -62,7 +68,6 @@ export type DiscoveryUi = {
 export type ProposalRow = { id: string; kind: string; summary: string; impact: string | null; sourceKind: string; sourceRef: string | null; createdAt: string };
 /** `emphasis` (Oct 13 2026): LEAD | NORMAL | LIGHT, set with the Lead · Normal · Light control on PillarItem. */
 export type PillarRowUi = { id: string; name: string; purpose: string | null; focusAreas: string | null; aliases: string[]; status: string; emphasis: "LEAD" | "NORMAL" | "LIGHT" };
-export type MappingRowUi = { label: string; topicCount: number; sample: string[]; proposedPillarId: string | null; proposedPillarName: string | null; confidence: number; isQualityDimension: boolean };
 export type OwnerUi = { duty: string; label: string; scope: string; appUserId: string | null };
 /** CP-11: the section a proposal changes, as the strategy in force has it. */
 export type ProposalTargetUi = { heading: string | null; current: string | null; proposed: string; stale: boolean };
@@ -71,10 +76,10 @@ const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("en-
 const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2";
 
-export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapping, owners, staff, isOwner, month, targets = {}, sections = [], workingVersionNo = null, discovery = null, queueActive = [], creativeIdentity = null, hasApprovedStrategy = false }: {
+export function StrategyPanel({ enrollmentId, versions, proposals, pillars, owners, staff, isOwner, month, targets = {}, sections = [], workingVersionNo = null, discovery = null, queueActive = [], creativeIdentity = null, hasApprovedStrategy = false }: {
   /** Oct 14 2026: the auto-built creative identity card. */
   creativeIdentity?: CreativeIdentityUi | null; hasApprovedStrategy?: boolean;
-  enrollmentId: string; versions: VersionRow[]; proposals: ProposalRow[]; pillars: PillarRowUi[]; mapping: MappingRowUi[]; owners: OwnerUi[];
+  enrollmentId: string; versions: VersionRow[]; proposals: ProposalRow[]; pillars: PillarRowUi[]; owners: OwnerUi[];
   staff: { id: string; name: string }[]; isOwner: boolean; month: { id: string; label: string; priorities: string[]; sourceRef: string | null } | null;
   targets?: Record<string, ProposalTargetUi>; sections?: { id: string; heading: string }[]; workingVersionNo?: number | null; discovery?: DiscoveryUi | null;
   /** Oct 12: everything in flight for the client (aiQueue.activeQueueRuns) — polled until it changes. */
@@ -238,25 +243,14 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
       {/* This month's priorities (apart from the foundation) */}
       {month && <PrioritiesCard month={month} busy={busy} onSave={(t) => run(() => saveMonthPriorities(month.id, t))} />}
 
-      {/* Pillars + mapping proposal */}
-      <div className="grid items-start gap-5 lg:grid-cols-2">
-        <Section icon={Layers} title="Content pillars" count={pillars.length} flush action={approved ? <span className="text-[11px] text-muted-2">from v{approved.versionNo} + edits</span> : undefined}>
-          <div className="divide-y divide-border">
-            {pillars.map((p) => <PillarItem key={p.id} p={p} busy={busy} onRename={(n) => run(() => renamePillarAction(enrollmentId, p.id, n))} onEmphasis={(e) => run(() => setPillarEmphasisAction(enrollmentId, p.id, e))} />)}
-            {pillars.length === 0 && <p className="px-5 py-3 text-sm text-muted">No pillars yet — approving a strategy creates them from the document, or add one below.</p>}
-          </div>
-          <AddPillar busy={busy} onAdd={(n, pu, fa) => run(() => addPillar(enrollmentId, n, pu, fa))} />
-        </Section>
-        <Section icon={Layers} title="Pillar labels to map" count={mapping.length} flush
-          action={<span className="text-[11px] text-muted-2">free-text labels on old topics — confirm each</span>}>
-          <div className="divide-y divide-border">
-            {mapping.length === 0 && <p className="px-5 py-3 text-sm text-muted">Every topic label is linked to a pillar.</p>}
-            {mapping.map((m) => <MappingItem key={m.label} m={m} pillars={pillars} busy={busy}
-              onConfirm={(pid) => run(() => confirmPillarMappingAction(enrollmentId, m.label, pid))}
-              onDismiss={() => run(() => dismissPillarLabelAction(enrollmentId, m.label))} />)}
-          </div>
-        </Section>
-      </div>
+      {/* The confirmed pillars: the approved strategy's, plus any added here. Nothing else makes one. */}
+      <Section icon={Layers} title="Content pillars" count={pillars.length} flush action={approved ? <span className="text-[11px] text-muted-2">from v{approved.versionNo} + edits</span> : undefined}>
+        <div className="divide-y divide-border">
+          {pillars.map((p) => <PillarItem key={p.id} p={p} busy={busy} onRename={(n) => run(() => renamePillarAction(enrollmentId, p.id, n))} onEmphasis={(e) => run(() => setPillarEmphasisAction(enrollmentId, p.id, e))} />)}
+          {pillars.length === 0 && <p className="px-5 py-3 text-sm text-muted">No pillars yet — approving a strategy creates them from the document, or add one below.</p>}
+        </div>
+        <AddPillar busy={busy} onAdd={(n, pu, fa) => run(() => addPillar(enrollmentId, n, pu, fa))} />
+      </Section>
       {note && <p className="text-[12px] text-muted">{busy && <Loader2 className="mr-1 inline size-3 animate-spin" />}{note}</p>}
     </div>
   );
@@ -495,28 +489,6 @@ function AddPillar({ busy, onAdd }: { busy: boolean; onAdd: (n: string, purpose:
       <div className="flex gap-1.5">
         <button disabled={busy || !n.trim()} onClick={() => { onAdd(n, pu, fa); setN(""); setPu(""); setFa(""); setOpen(false); }} className={`${btn} bg-brand-action text-white`}>Add</button>
         <button onClick={() => setOpen(false)} className={quiet}>Cancel</button>
-      </div>
-    </div>
-  );
-}
-
-function MappingItem({ m, pillars, busy, onConfirm, onDismiss }: { m: MappingRowUi; pillars: PillarRowUi[]; busy: boolean; onConfirm: (pillarId: string) => void; onDismiss: () => void }) {
-  const [pick, setPick] = useState(m.proposedPillarId ?? "");
-  return (
-    <div className="px-5 py-2.5">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-sm font-medium">“{m.label}”</span>
-        <span className="rounded-full bg-surface-2 px-1.5 text-xs text-muted">{m.topicCount} topic{m.topicCount === 1 ? "" : "s"}</span>
-        {m.isQualityDimension && <span className="text-[11px] text-warning">a quality dimension, not a pillar</span>}
-      </div>
-      <p className="text-[11px] text-muted-2">e.g. {m.sample.join(" · ")}</p>
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        <select value={pick} onChange={(e) => setPick(e.target.value)} className="rounded border border-border bg-surface-2 px-2 py-1 text-xs">
-          <option value="">— choose a pillar —</option>
-          {pillars.map((p) => <option key={p.id} value={p.id}>{p.name}{p.id === m.proposedPillarId ? ` (proposed, ${Math.round(m.confidence * 100)}%)` : ""}</option>)}
-        </select>
-        <button disabled={busy || !pick} onClick={() => onConfirm(pick)} className={`${btn} bg-brand-action text-white`}>Confirm</button>
-        <button disabled={busy} onClick={onDismiss} className={quiet}>Not a pillar</button>
       </div>
     </div>
   );

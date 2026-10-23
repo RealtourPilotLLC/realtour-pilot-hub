@@ -12,7 +12,8 @@ import type { ImportKind, ImportPreview, ItemMode } from "@/lib/contentImport";
 // decisions (create / link / update proposal / skip) + the month PROPOSAL
 // Jordan confirms per client → apply, idempotent by content hash. Imported
 // records are history. Mis-filed records surface as review items — no
-// auto-fix anywhere.
+// auto-fix anywhere. Pillar labels are not asked about (Oct 23 2026): each
+// lands on a confirmed pillar or none, shown on the item.
 // ---------------------------------------------------------------------------
 
 export type BatchUi = { id: string; kind: string; fileName: string | null; mode: string; proposedMonthKey: string | null; appliedAt: string | null; appliedBy: string | null; created: number; linked: number; updated: number; conflicts: number; skipped: number };
@@ -21,12 +22,23 @@ const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2 disabled:opacity-50";
 const MODES: ItemMode[] = ["CREATE", "LINK", "UPDATE_PROPOSAL", "SKIP"];
 
+/**
+ * Oct 23 2026: an item's pillar as the import will file it. The document's
+ * label is matched to one of the client's confirmed pillars automatically
+ * (contentPillars.matchConfirmedPillar) or the item gets no pillar; there is
+ * nothing to map and no pillar is ever created by an import.
+ */
+function pillarChip(it: { pillarLabel: string | null; pillarId: string | null; pillarName?: string | null }, pillars: { id: string; name: string }[]): string {
+  const name = it.pillarName ?? (it.pillarId ? pillars.find((p) => p.id === it.pillarId)?.name ?? null : null);
+  if (!name) return `${it.pillarLabel} → no pillar`;
+  return it.pillarLabel && it.pillarLabel.trim().toLowerCase() === name.trim().toLowerCase() ? name : `${it.pillarLabel} → ${name}`;
+}
+
 export function ImportPanel({ enrollmentId, batches, reviewItems, pillars }: { enrollmentId: string; batches: BatchUi[]; reviewItems: ReviewUi[]; pillars: { id: string; name: string }[] }) {
   const [kind, setKind] = useState<ImportKind>("SCRIPTS");
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [monthKey, setMonthKey] = useState("");
   const [modes, setModes] = useState<Record<number, ItemMode>>({});
-  const [pillarMap, setPillarMap] = useState<Record<string, string | null>>({});
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -37,7 +49,7 @@ export function ImportPanel({ enrollmentId, batches, reviewItems, pillars }: { e
         <input ref={fileRef} type="file" accept=".pdf,.docx,.txt,.md" className="hidden" onChange={(e) => {
           const f = e.target.files?.[0]; if (!f) return;
           const fd = new FormData(); fd.append("file", f);
-          start(async () => { const p = await previewImportUpload(enrollmentId, kind, fd); if (!p.ok) { setNote(p.message); return; } setPreview(p.preview); setMonthKey(p.preview.proposedMonthKey ?? ""); setModes({}); setPillarMap({}); setNote(p.message); });
+          start(async () => { const p = await previewImportUpload(enrollmentId, kind, fd); if (!p.ok) { setNote(p.message); return; } setPreview(p.preview); setMonthKey(p.preview.proposedMonthKey ?? ""); setModes({}); setNote(p.message); });
           e.target.value = "";
         }} />
         <div className="flex flex-wrap items-center gap-2 px-5 py-3">
@@ -55,20 +67,12 @@ export function ImportPanel({ enrollmentId, batches, reviewItems, pillars }: { e
                 {preview.documentMonthKey && <button onClick={() => setMonthKey(preview.documentMonthKey!)} className="ml-2 text-[11px] text-muted hover:underline">use the document&rsquo;s own month ({preview.documentMonthKey}) instead</button>}
               </div>
             )}
-            {preview.unmappedPillarLabels.length > 0 && (
-              <div className="mt-2 text-[12px]">
-                <p className="text-muted">Pillar labels in the document with no pillar on this client — map them now or leave them queued:</p>
-                {preview.unmappedPillarLabels.map((l) => (
-                  <div key={l} className="mt-1 flex items-center gap-2"><span className="font-medium">“{l}”</span><select value={pillarMap[l] ?? ""} onChange={(e) => setPillarMap({ ...pillarMap, [l]: e.target.value || null })} className="rounded border border-border bg-surface-2 px-1.5 py-1 text-[11px]"><option value="">leave unmapped</option>{pillars.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
-                ))}
-              </div>
-            )}
             <div className="mt-2 max-h-96 divide-y divide-border overflow-y-auto rounded-lg border border-border">
               {preview.items.map((it) => (
                 <div key={it.ordinal} className="px-3 py-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-[12px] text-muted-2">#{it.ordinal}</span><span className="text-sm font-medium">{it.title}</span>
-                    {it.pillarLabel && <span className="rounded-full bg-surface-2 px-1.5 text-[11px] text-muted">{it.pillarLabel}{it.pillarId ? "" : " (unmapped)"}</span>}
+                    {it.pillarLabel && <span className="rounded-full bg-surface-2 px-1.5 text-[11px] text-muted" title={it.pillarWhy ?? undefined}>{pillarChip(it, pillars)}</span>}
                     {it.importedMark && <span className="text-[11px] text-warning">mark: {it.importedMark} → proposes {it.proposedState?.toLowerCase()}</span>}
                     <select value={modes[it.ordinal] ?? it.proposedMode} onChange={(e) => setModes({ ...modes, [it.ordinal]: e.target.value as ItemMode })} className="ml-auto rounded border border-border bg-surface-2 px-1.5 py-0.5 text-[11px]">
                       {[...new Set([it.proposedMode, ...MODES])].map((m) => <option key={m} value={m}>{m === "CREATE" ? "create" : m === "LINK" ? `link to existing${it.targetTitle ? ` (${it.targetTitle})` : ""}` : m === "UPDATE_PROPOSAL" ? "propose as update / new version" : m === "CONFLICT" ? "conflict — hold" : "skip"}</option>)}
@@ -81,7 +85,7 @@ export function ImportPanel({ enrollmentId, batches, reviewItems, pillars }: { e
               ))}
             </div>
             <div className="mt-2 flex gap-1.5">
-              <button disabled={busy || (preview.kind !== "STRATEGY" && !/^\d{4}-\d{2}$/.test(monthKey))} onClick={() => start(async () => { const r = await applyImportAction(preview, { monthKey: preview.kind === "STRATEGY" ? null : monthKey, modes, pillarMap }); setNote(r.message); if (r.ok) setPreview(null); })} className={`${btn} bg-brand-action text-white`}>Apply {preview.items.length} item{preview.items.length === 1 ? "" : "s"} as history</button>
+              <button disabled={busy || (preview.kind !== "STRATEGY" && !/^\d{4}-\d{2}$/.test(monthKey))} onClick={() => start(async () => { const r = await applyImportAction(preview, { monthKey: preview.kind === "STRATEGY" ? null : monthKey, modes }); setNote(r.message); if (r.ok) setPreview(null); })} className={`${btn} bg-brand-action text-white`}>Apply {preview.items.length} item{preview.items.length === 1 ? "" : "s"} as history</button>
               <button onClick={() => setPreview(null)} className={quiet}>Discard preview</button>
             </div>
           </div>

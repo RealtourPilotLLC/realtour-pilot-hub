@@ -4,7 +4,7 @@ import { monthLabel, ownersFor } from "@/lib/contentProgram";
 import { withCanonicalFrameworkSections, creativeIdentityFromOverrides } from "@/lib/contentPolicy";
 import type { CreativeIdentityUi } from "@/components/content/CreativeIdentityCard";
 import { parseStoredSections, openStrategyProposals, strategyVersions, monthPriorities } from "@/lib/contentStrategy";
-import { listPillars, pillarMappingProposal, dismissedPillarLabels } from "@/lib/contentPillars";
+import { listPillars } from "@/lib/contentPillars";
 import { topicBankByPillar, pendingSuggestions, refreshRuns, monthCapacity, bankStock, heldSuggestions, suggestionFormats } from "@/lib/contentTopics";
 import { videoStyleFromOverrides, skitsPerMonthFromOverrides, resolvedTopicFormat, versionFormatOf, topicFormatOf, defaultFormatFor } from "@/lib/contentPolicy/videoFormat";
 import { interviewState, interviewsForMonth, answersChangedSinceLastDraft } from "@/lib/contentInterview";
@@ -14,7 +14,7 @@ import { factsForReview, factCounts } from "@/lib/clientFacts";
 import { importBatches, importReviewItems } from "@/lib/contentImport";
 import { activePolicyVersion } from "@/lib/aiRuns";
 import { queueStateFor, type QueueItemUi } from "@/lib/aiQueue";
-import type { VersionRow, ProposalRow, PillarRowUi, MappingRowUi, OwnerUi, DiscoveryUi } from "@/components/content/StrategyPanel";
+import type { VersionRow, ProposalRow, PillarRowUi, OwnerUi, DiscoveryUi } from "@/components/content/StrategyPanel";
 import type { GroupUi, ProposedUi, SuggestionUi, RunUi, EventUi, TopicUi } from "@/components/content/TopicsPanel";
 import type { InterviewUi } from "@/components/content/InterviewPanel";
 import { interviewPlanningContext } from "@/lib/contentInterview";
@@ -30,8 +30,8 @@ import type { BatchUi, ReviewUi } from "@/components/content/ImportPanel";
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 
 export async function loadStrategyTab(enrollmentId: string, month: { id: string; monthKey: string; prioritiesJson: string | null; prioritiesSourceRef: string | null } | null) {
-  const [versions, proposals, pillars, mappingRaw, dismissed, owners, staff] = await Promise.all([
-    strategyVersions(enrollmentId), openStrategyProposals(enrollmentId), listPillars(enrollmentId), pillarMappingProposal(enrollmentId), dismissedPillarLabels(enrollmentId), ownersFor(enrollmentId, month?.id),
+  const [versions, proposals, pillars, owners, staff] = await Promise.all([
+    strategyVersions(enrollmentId), openStrategyProposals(enrollmentId), listPillars(enrollmentId), ownersFor(enrollmentId, month?.id),
     prisma.appUser.findMany({ where: { status: "ACTIVE", role: { in: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] } }, select: { id: true, name: true, email: true } }),
   ]);
   const vrows: VersionRow[] = versions.map((v) => {
@@ -53,7 +53,6 @@ export async function loadStrategyTab(enrollmentId: string, month: { id: string;
   if (discovery) discovery.drafting = strategyDraft;
   const prows: ProposalRow[] = proposals.map((p) => ({ id: p.id, kind: p.kind, summary: p.summary, impact: p.impact, sourceKind: p.sourceKind, sourceRef: p.sourceRef, createdAt: p.createdAt.toISOString() }));
   const pil: PillarRowUi[] = pillars.map((p) => ({ id: p.id, name: p.name, purpose: p.purpose, focusAreas: p.focusAreas, aliases: p.aliases, status: p.status, emphasis: p.emphasis }));
-  const mapping: MappingRowUi[] = mappingRaw.filter((m) => !dismissed.has(m.label));
   const ow: OwnerUi[] = Object.values(owners).map((o) => ({ duty: o.duty, label: o.label, scope: o.scope, appUserId: o.appUserId }));
   // Oct 14 2026: the auto-built creative identity, read-only, with the strategy version it was built from.
   const enr = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true } });
@@ -64,7 +63,7 @@ export async function loadStrategyTab(enrollmentId: string, month: { id: string;
     : null;
   return {
     discovery, queueActive: queue.active, creativeIdentity, hasApprovedStrategy: !!approvedNow,
-    versions: vrows, proposals: prows, pillars: pil, mapping, owners: ow, staff: staff.map((s) => ({ id: s.id, name: s.name ?? s.email })),
+    versions: vrows, proposals: prows, pillars: pil, owners: ow, staff: staff.map((s) => ({ id: s.id, name: s.name ?? s.email })),
     month: month ? { id: month.id, label: monthLabel(month.monthKey), priorities: monthPriorities(month.prioritiesJson), sourceRef: month.prioritiesSourceRef } : null,
   };
 }

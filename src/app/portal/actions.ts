@@ -818,7 +818,8 @@ export async function portalSuggestTopic(auth: PortalAuth, input: { title: strin
   const concept = clip((input.concept ?? "").trim(), 1000) || null;
   let pillarId: string | null = null;
   if (input.pillarId && /^[a-z0-9]{10,40}$/i.test(input.pillarId)) {
-    const p = await prisma.contentPillar.findFirst({ where: { id: input.pillarId, enrollmentId: v.enrollment.id }, select: { id: true } });
+    // One of their confirmed (current) pillars, or none (Oct 23 2026).
+    const p = await prisma.contentPillar.findFirst({ where: { id: input.pillarId, enrollmentId: v.enrollment.id, status: "ACTIVE" }, select: { id: true } });
     pillarId = p?.id ?? null;
   }
   const recent = await prisma.contentTopic.count({ where: { enrollmentId: v.enrollment.id, source: "client", createdAt: { gte: new Date(Date.now() - 86_400_000) } } });
