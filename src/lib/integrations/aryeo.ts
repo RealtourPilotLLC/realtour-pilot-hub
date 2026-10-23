@@ -4706,6 +4706,20 @@ type CuTeamMembership = {
 };
 type CuWithTeams = { email?: string; customer_team_memberships?: { data?: CuTeamMembership[] } | CuTeamMembership[] };
 
+export const CLIENT_TEAM_OVERRIDES_KEY = "client_team_overrides";
+
+/** {assistantClientId: agentClientId}, set by hand; read by the team fold. */
+export async function clientTeamOverrides(): Promise<Record<string, string>> {
+  const row = await prisma.appSetting.findUnique({ where: { key: CLIENT_TEAM_OVERRIDES_KEY } }).catch(() => null);
+  try {
+    const v = JSON.parse(row?.value ?? "{}") as unknown;
+    if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+    return Object.fromEntries(Object.entries(v as Record<string, unknown>).filter(([, to]) => typeof to === "string" && to.length > 0)) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
 export async function syncAryeoCustomerTeams(): Promise<{ teams: number; folded: number }> {
   const inc = "customer_team_memberships.customer_team";
   const teams = new Map<string, { name: string; emails: Set<string> }>();
@@ -4741,6 +4755,14 @@ export async function syncAryeoCustomerTeams(): Promise<{ teams: number; folded:
   const byEmail = new Map<string, (typeof clients)[number]>();
   for (const c of clients) if (c.email) byEmail.set(c.email.toLowerCase(), c);
 
+  // WHO AN ASSISTANT WORKS FOR, SET BY HAND (Oct 23 2026). On a team with
+  // several agents (the Gary Mercer Team) "the member with the most orders" is
+  // not every assistant's agent: Olivia Vecere assists Sharra Mercer but was
+  // folded under Mike Flatley, so her emails filed there. The setting
+  // client_team_overrides is {assistantClientId: agentClientId}; the fold
+  // never moves a client named in it.
+  const overrides = await clientTeamOverrides();
+
   let folded = 0;
   let realTeams = 0;
   for (const [teamId, { name, emails }] of teams) {
@@ -4756,7 +4778,7 @@ export async function syncAryeoCustomerTeams(): Promise<{ teams: number; folded:
       const isAgent = m.id === agent.id;
       // Fold ONLY teammates with no orders of their own (true assistants); a
       // co-agent with their own orders stays standalone but is still tagged.
-      const parentClientId = isAgent ? null : m._count.projects === 0 ? agent.id : null;
+      const parentClientId = m.id in overrides ? overrides[m.id] : isAgent ? null : m._count.projects === 0 ? agent.id : null;
       await prisma.client.update({
         where: { id: m.id },
         data: { aryeoTeamId: teamId, aryeoTeamName: name, parentClientId },
