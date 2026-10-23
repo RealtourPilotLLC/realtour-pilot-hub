@@ -96,9 +96,10 @@ export function PlanTab({ d }: { d: PlanTabData }) {
     { key: "month" as const, label: plan?.month ? `${monthLabel(plan.month.monthKey).split(" ")[0]}` : "This month", short: "Month" },
     { key: "scripts" as const, label: "Scripts", short: "Scripts", count: plan?.scripts.length ?? 0, countLabel: "waiting across all months" },
     { key: "bank" as const, label: "Topic bank", short: "Topics" },
-    // C14 (Oct 13 2026): no Strategy tab for clients. An old ?tab=strategy
-    // link still opens it, read-only, under its own tab here.
-    ...(d.view === "strategy" ? [{ key: "strategy" as const, label: "Strategy", short: "Strategy" }] : []),
+    // Oct 23 2026 (Jordan: "I just don't see Your Strategy anywhere on anyone's
+    // portal"): the Strategy tab is back for every client (C14, Oct 13, had
+    // hidden it). The strategy gate tells new clients it appears here.
+    { key: "strategy" as const, label: "Strategy", short: "Strategy" },
   ].filter((t) => !d.clientPlanned || t.key === "month" || t.key === d.view);
   const intro = {
     month: d.clientPlanned
