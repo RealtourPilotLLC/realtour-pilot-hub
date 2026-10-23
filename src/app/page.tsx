@@ -36,6 +36,8 @@ import { monthlyContentActions, type ContentActions } from "@/lib/contentActions
 import { officeDeskFor, type OfficeDesk as OfficeDeskData } from "@/lib/officeDesk";
 import { OfficeDesk } from "@/components/desk/OfficeDesk";
 import { AddTaskButton } from "@/components/desk/DeskControls";
+import { creativeDeskFor, type CreativeDesk as CreativeDeskData } from "@/lib/creativeDesk";
+import { CreativeDesk } from "@/components/creativeDesk/CreativeDesk";
 
 export const dynamic = "force-dynamic";
 
@@ -240,6 +242,20 @@ async function OfficeDeskSection({ deskP, includeTest }: { deskP: Promise<Office
 }
 
 // ---------------------------------------------------------------------------
+// THE CREATIVE MANAGER'S DASHBOARD (Oct 23 2026, Jordan's spec §6): James's
+// whole home. lib/creativeDesk builds it (A to H in the spec's order); the
+// review seat and Kyle's desk are untouched. Read-only while the owner
+// previews him.
+// ---------------------------------------------------------------------------
+async function CreativeDeskSection({ deskP, includeTest }: { deskP: Promise<CreativeDeskData | null>; includeTest: boolean }) {
+  const desk = await deskP;
+  if (!desk) {
+    return <p role="status" className="rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-muted">Your dashboard couldn&rsquo;t load. Refresh to try again.</p>;
+  }
+  return <CreativeDesk desk={desk} includeTest={includeTest} />;
+}
+
+// ---------------------------------------------------------------------------
 
 export default async function HomePage(props: { searchParams?: Promise<{ test?: string | string[] }> }) {
   const { searchParams } = props ?? {};
@@ -265,6 +281,33 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const creativeHome = me?.role === "CREATIVE_MANAGER";
   const includeTest = sp?.test === "1";
   const now0 = new Date();
+  // James (Oct 23 2026): his own dashboard, nothing else.
+  if (creativeHome && me) {
+    const nowMinC = etMinutes(now0);
+    const deskP = creativeDeskFor(me, { now: now0, includeTest }).catch((e: unknown) => { console.warn("creativeDesk failed", (e as Error).message); return null; });
+    return (
+      <div>
+        <AutoRefresh seconds={120} />
+        <HomeAnchorForward />
+        <PageHeader
+          eyebrow="Dashboard"
+          title={`${nowMinC < 12 * 60 ? "Good morning" : nowMinC < 18 * 60 ? "Good afternoon" : "Good evening"}, ${me.name?.split(" ")[0] ?? "there"}`}
+          subtitle={`Your shoots, creative quality, and team development. ${etFullDate(now0)} · updated ${etTime(now0)} ET`}
+          actions={<Link href="/schedule" className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-border-strong bg-surface px-3 text-sm font-semibold hover:bg-surface-2">View my schedule</Link>}
+        />
+        <div className="mx-auto max-w-7xl space-y-4 p-4 pb-16 sm:p-6">
+          {includeTest && (
+            <div role="status" className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm">
+              <p className="font-semibold">Showing real and test records on the dashboard</p>
+            </div>
+          )}
+          <Suspense fallback={<SectionLoading label="Reading your day…" />}>
+            <CreativeDeskSection deskP={deskP} includeTest={includeTest} />
+          </Suspense>
+        </div>
+      </div>
+    );
+  }
   // The creative manager keeps his dashboard whatever his login's role (the
   // TeamMember flag, as the monthly content card reads it).
   const creativeManager = !isOwner && !!me?.teamMemberId

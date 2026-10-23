@@ -154,6 +154,61 @@ model TeamMember {
   bonusAwards          BonusAward[]
 }
 
+// ---------------------------------------------------------------------------
+// TEAM DEVELOPMENT (Oct 23 2026, Jordan's dashboard spec §6 D and E): the
+// creative manager's coaching records and readiness assessments. Personnel
+// development, so only the owner and the creative manager read or write them
+// (lib/teamDevelopment). Additive: no relation, nothing else reads them, and
+// no field here changes a role, a seat, a schedule or pay. James assesses and
+// recommends; Jordan decides staffing and pay (a decision task, never a write).
+// ---------------------------------------------------------------------------
+model DevelopmentItem {
+  id            String    @id @default(cuid())
+  personId      String // -> TeamMember id, or "editor:<key>" for an editor with no roster row
+  personName    String // snapshot for display
+  group         String // FIELD | EDITOR | QC
+  skill         String // the specific skill or issue, in words
+  standard      String? // the expected standard
+  nextAction    String?
+  followUpAt    DateTime?
+  practice      String? // the practice activity (assigned for field creatives, recommended otherwise)
+  practiceDueAt DateTime?
+  status        String    @default("OPEN") // OPEN | VERIFIED | CLOSED
+  progress      String? // the latest progress or outcome, in words
+  evidenceJson  String    @default("[]") // [{label, href, at, source}] supporting examples, appended, never removed
+  logJson       String    @default("[]") // [{at, by, kind, note, ...}] every action, in order
+  createdBy     String
+  verifiedAt    DateTime?
+  verifiedBy    String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([status, followUpAt])
+  @@index([personId])
+}
+
+model ReadinessAssessment {
+  id                 String    @id @default(cuid())
+  personId           String // -> TeamMember
+  personName         String // snapshot for display
+  track              String // INDEPENDENT | PREMIUM | SKILL | SPECIALIST
+  skill              String? // the production skill, when track = SKILL
+  criteriaJson       String    @default("[]") // [{key, label, source: "kpi" | "james", met: "yes" | "no" | "unknown", evidence}]
+  gaps               String?
+  recommendation     String? // READY | READY_WITH_SUPPORT | NOT_YET (James's; never a decision)
+  recommendationNote String?
+  status             String    @default("DRAFT") // DRAFT | RECOMMENDED | WITHDRAWN
+  recommendedAt      DateTime?
+  recommendedBy      String?
+  logJson            String    @default("[]") // [{at, by, kind, note}] every change, in order
+  createdBy          String
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([personId])
+  @@index([status])
+}
+
 // How a team member is paid — see TeamMember.payType.
 enum PayType {
   PER_SHOOT // photographers: % of eligible invoice (computePayroll owns these)
