@@ -129,13 +129,7 @@ async function main() {
     const { raiseRevision, askMedium } = await import("@/lib/comms");
     c.ok("Georgiana's wording reads as video now (it was filed as a photo revision)", askMedium("Also I notice they kept the seated version of me speaking on the back deck and we talked about swapping that with the standing version if my leg couldn't be cropped. Can we swap that frame with the standing version please?") === "video");
     c.ok("…a photo ask still reads as photos", askMedium("Can you brighten the kitchen photos please?") === "photo");
-    // Oct 22 2026 (audit H4c, lib/cutReopen soleApprovedVideo): a text names no
-    // video, so only a job owing ONE video reopens it unasked. The fixture's
-    // Starter month owes two (one cut so far): pinned to one video here, and
-    // the two-owed shape is checked just below (filed for a person, nothing
-    // guessed).
     const T = await mk("Text Client TEST");
-    await prisma.project.update({ where: { id: T.f.projectId! }, data: { videosOwedOverride: 1 } });
     const t1 = T.cuts[0];
     const words = "Hi guys, is it possible to not have the start of the video on this frame of my face? Can we rewind it a bit more";
     const ok1 = await raiseRevision({ projectId: T.f.projectId!, clientId: T.f.clientId, clientName: T.f.clientName, note: words, source: "openphone", threadRef: "op-thread-1", requestedBy: { name: "Georgiana", kind: "TEXT" } });
@@ -150,11 +144,11 @@ async function main() {
     const briefs0 = await prisma.revisionBrief.count({ where: { projectId: T.f.projectId! } });
     await raiseRevision({ projectId: T.f.projectId!, clientId: T.f.clientId, clientName: T.f.clientName, note: words + " ", source: "openphone", threadRef: "op-thread-1", requestedBy: { name: "Georgiana", kind: "TEXT" } });
     c.ok("the same text sent again is one ask, not a second item", (await prisma.revisionBrief.count({ where: { projectId: T.f.projectId! } })) === briefs0);
-    // Two videos owed, one approved: the text could be about either, so nothing reopens and the ask is unpinned.
+    // Two videos owed, one approved (Oct 22 2026, audit H4c considered and not
+    // taken): the client has only seen the approved one, so her text reopens it.
     const T2 = await mk("Two Owed Text TEST");
     const ok2 = await raiseRevision({ projectId: T2.f.projectId!, clientId: T2.f.clientId, clientName: T2.f.clientName, note: words, source: "openphone", threadRef: "op-thread-2", requestedBy: { name: "Georgiana", kind: "TEXT" } });
-    const brief2 = await prisma.revisionBrief.findFirst({ where: { projectId: T2.f.projectId! }, orderBy: { createdAt: "desc" } });
-    c.ok("two videos owed, one approved: nothing is guessed (still approved, the ask filed unpinned for a person)", ok2 && (await statusOf(T2.cuts[0].id)) === "APPROVED" && !!brief2 && brief2.submissionId === null, JSON.stringify({ ok2, sub: brief2?.submissionId }));
+    c.ok("two videos owed, one approved: the text reopens the one she has seen", ok2 && (await statusOf(T2.cuts[0].id)) === "CHANGES_REQUESTED", JSON.stringify({ ok2, status: await statusOf(T2.cuts[0].id) }));
 
     // ======================================================================
     c.head("3 · a portal message about the approved video reopens it");

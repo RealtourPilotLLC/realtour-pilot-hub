@@ -192,12 +192,14 @@ async function main() {
     c.ok("the page asks the same: a video marked couldn't complete owes no instructions", /if \(notDone\[deliverableId\] \|\| deliverables\.some\(\(d\) => d\.id === deliverableId && d\.waivedAt\)\) return \[\];/.test(portal) && portal.indexOf("const laterMissing") > portal.indexOf("const [notDone, setNotDone]"));
 
     // =====================================================================
-    c.head("4 · A client text on a two-video job never guesses");
+    c.head("4 · A client text on a two-video job reopens the one video she has seen");
     // =====================================================================
     const { soleApprovedVideo } = await import("@/lib/cutReopen");
     const [s1] = await cutSlots(job);
-    await prisma.reviewSubmission.create({ data: { projectId: job, deliverableId: s1.deliverableId, slot: s1.slot, round: 1, status: "APPROVED", source: "upload", fileName: "premium.mp4", decidedAt: at("2026-10-22T20:00:00Z") } });
-    c.ok("two videos owed, one approved: no guess (null), the ask is filed for a person", (await soleApprovedVideo(job)) === null);
+    const prem = await prisma.reviewSubmission.create({ data: { projectId: job, deliverableId: s1.deliverableId, slot: s1.slot, round: 1, status: "APPROVED", source: "upload", fileName: "premium.mp4", decidedAt: at("2026-10-22T20:00:00Z") } });
+    // Audit H4c considered and not taken (Oct 22 2026): the client has only
+    // seen the approved video, and client texts go straight to the editor.
+    c.ok("two videos owed, one approved: that one (the only one she has seen)", (await soleApprovedVideo(job))?.submissionId === prem.id);
     const one = await joeJob("7 One Reel Rd");
     const [o1] = await cutSlots(one);
     const sub1 = await prisma.reviewSubmission.create({ data: { projectId: one, deliverableId: o1.deliverableId, slot: o1.slot, round: 1, status: "APPROVED", source: "upload", fileName: "one.mp4", decidedAt: at("2026-10-22T20:00:00Z") } });

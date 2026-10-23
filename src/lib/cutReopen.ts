@@ -194,17 +194,14 @@ export async function announceReplacement(submissionId: string): Promise<void> {
  * Several (a four-video batch) → null, and the brief's own reading of the
  * words picks, or the office does.
  *
- * VIDEOS OWED, NOT VIDEOS APPROVED (audit H4c, Oct 22 2026). On a two-video
- * job with one video approved and the other still with the editor, "the one
- * approved video" is not the one the client means just because it is the
- * only one approved: a text about the second video reopened the first. When
- * the job owes more than one video, nothing is guessed: null, and the ask is
- * filed for a person to pick (comms raises it unpinned; the team-chat button
- * lists the videos).
+ * The one APPROVED video, even when the job owes more (Oct 22 2026, audit
+ * H4c considered and not taken): the client has only seen approved videos,
+ * so a text naming none means the one they have, and Jordan's rule is that
+ * client texts go straight to the editor. A monthly job owes four; refusing
+ * whenever more than one is owed stopped every program text from reopening
+ * the video it was about.
  */
 export async function soleApprovedVideo(projectId: string): Promise<{ submissionId: string; outputId: string | null; cutKey: string | null; videoLabel: string } | null> {
-  const { cutSlots: owedSlots } = await import("@/lib/reviewCuts");
-  if ((await owedSlots(projectId).catch(() => [])).length > 1) return null;
   const approved = await prisma.reviewSubmission.findMany({
     where: { projectId, status: "APPROVED", deliverableId: { not: null } },
     orderBy: { round: "desc" },
