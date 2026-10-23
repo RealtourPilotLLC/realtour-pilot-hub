@@ -1,4 +1,9 @@
 // C14: explicit Home scope reaches the same operational lists and survives delivery return links.
+// Oct 23 2026: the owner's "/" is his own dashboard now (components/owner/
+// OwnerHome). The shared dashboard's scope checks (today's shoots, the tiles'
+// links, the banner) run on the review seat's home, which is that dashboard;
+// the owner's own view is checked for what it reads (the review stage) and
+// for keeping Finance's figures identical in both views.
 // Oct 19 2026 (night): "/" is ONE dashboard for the owner and the office, and
 // /ops redirects to it. The scope is checked on what replaced the old Homes:
 // the dashboard (Today's shoots, the tiles, Needs attention), Kyle's list
@@ -46,7 +51,7 @@ function hrefs(tree: unknown): string[] {
 // Oct 5: Home streams its secondary sections (Suspense around async server
 // components that await reads started with the page's own). Resolve those
 // named components so the checks read the page as it finishes composing.
-const STREAMED_HOME = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "OfficeDeskSection"]);
+const STREAMED_HOME = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "OfficeDeskSection", "OwnerHome", "FinanceSection", "ProductionSection", "ClientIssuesSection", "TeamSection", "MeetingsSection", "CreativeSection", "EmailSectionView", "DelegatedSection", "WeeklySection", "TaskOpen"]);
 async function settleHome(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settleHome));
   if (!isValidElement<Props>(tree)) return tree;
@@ -114,6 +119,9 @@ async function main() {
     try { await render("1"); } catch (error) { if (error instanceof Redirect) creative = error.href; else throw error; }
     c.ok("test flag does not grant editors the office Home", creative === "/editing");
     await signIn(owner);
+    const oNormal = await render();
+    const oAll = await render("1");
+    await signIn(admin);
     const normal = await render();
     const all = await render("1");
     await signIn(ops);
@@ -148,7 +156,11 @@ async function main() {
     c.ok("a retired page keeps the test scope when it redirects to the list", await (async () => { try { await requests({ searchParams: Promise.resolve({ test: "1" }) }); return null; } catch (e) { return e instanceof Redirect ? e.href : null; } })() === "/ops/checklist?test=1#requests");
     const slackRows = allLinks.filter((h) => h.startsWith("/tasks?tab=slack&task="));
     c.ok("synthetic Slack task deep links retain task ID and scope", slackRows.length >= 2 && slackRows.every((h) => h.endsWith("&test=1")));
-    c.ok("figures from the books and Finance routes retain their definitions", JSON.stringify(elements(normal, "MoneyStat")) === JSON.stringify(elements(all, "MoneyStat")) && allLinks.includes("/sales") && !allLinks.some((href) => href.startsWith("/sales?")));
+    const oHtml = (t: unknown) => renderToStaticMarkup(t as Parameters<typeof renderToStaticMarkup>[0]);
+    const figuresOf = (t: unknown) => [...oHtml(t).matchAll(/data-figure="([a-z]+)" data-value="([^"]+)"/g)].map((m) => `${m[1]}=${m[2]}`).join(",");
+    const reviewStage = (t: unknown) => (oHtml(t).match(/data-stage="review" data-count="[^"]+" data-total="([^"]+)"/) ?? [])[1];
+    c.ok("the owner's dashboard reads the explicit scope too (the review stage: 1 cut, 2 with test records) and says so only in the test view", reviewStage(oNormal) === "1" && reviewStage(oAll) === "2" && textOf(oAll).includes("Showing real and test records on the dashboard") && !textOf(oNormal).includes("Showing real and test records"), `${reviewStage(oNormal)}/${reviewStage(oAll)}`);
+    c.ok("figures from the books and Finance routes retain their definitions (the owner's five figures are identical in both views)", figuresOf(oNormal).length > 0 && figuresOf(oNormal) === figuresOf(oAll) && oHtml(oNormal).includes('href="/sales"') && elements(normal, "MoneyStat").length === 0, figuresOf(oNormal));
     await signIn(ops);
     c.ok("only scalar test=1 enables the scope", listOf(await renderList("true")).groups[1].lines.length === 1 && listOf(await renderList(["1", "1"])).groups[1].lines.length === 1);
     await signIn(admin);

@@ -499,7 +499,12 @@ export async function OwnerHome({ me, includeTest = false, now: at }: {
         actions={<PanelButton spec={{ kind: "assign", seed: { title: "" }, heading: "Assign a task" }} className={PRIMARY}><Plus aria-hidden className="size-4" /> Assign task</PanelButton>}
       />
       <div className="mx-auto max-w-7xl space-y-5 p-4 pb-16 sm:p-6">
-        {includeTest && <p role="status" className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm font-semibold">Showing real and test records on the dashboard</p>}
+        {includeTest && (
+          <div role="status" className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm">
+            <p className="font-semibold">Showing real and test records on the dashboard</p>
+            <p className="mt-1 text-muted">The lists you open from here show their own default view. Figures from the books keep Finance&rsquo;s existing definitions.</p>
+          </div>
+        )}
         <Suspense fallback={<Loading label="Reading the money…" />}><FinanceSection p={financeP} /></Suspense>
 
         <h2 className="pt-2 text-xl font-bold tracking-tight">Business oversight</h2>

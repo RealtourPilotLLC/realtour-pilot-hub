@@ -431,15 +431,15 @@ const clip = (s: string | null | undefined, n: number) => ((s ?? "").trim() ? (s
 
 export type AssignInput = {
   title: string;
-  outcome?: string;
+  outcome?: string | null;
   assigneeKey: string;
-  dueAt?: string;
+  dueAt?: string | null;
   needsVerification?: boolean;
-  sourceTaskId?: string;
-  clientId?: string;
-  projectId?: string;
-  sourceHref?: string;
-  note?: string;
+  sourceTaskId?: string | null;
+  clientId?: string | null;
+  projectId?: string | null;
+  sourceHref?: string | null;
+  note?: string | null;
 };
 
 /** "2026-10-24" (5 PM ET that day) or an ISO instant; null when absent or unreadable. */

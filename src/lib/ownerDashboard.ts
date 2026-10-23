@@ -14,6 +14,11 @@ import { getReviewQueue } from "@/lib/reviewRoom";
 import { loadQueue } from "@/app/ops/photo-delivery/data";
 import { opsExceptionsBoard } from "@/lib/opsExceptions";
 import { kylePerson, chipPerson, ownerWeek, etWeekStart, ON_TIME_MIN_JOBS } from "@/lib/opsHome";
+import { ownerShootIssues } from "@/lib/shootIssues";
+// The books: Finance's own engines (static, so the drills' seams reach them).
+import { revenueByProcessor } from "@/lib/bookkeeping";
+import { categoryBreakdown, railFreshness } from "@/lib/financeCategories";
+import { getBillingRows } from "@/lib/queries";
 
 // ---------------------------------------------------------------------------
 // JORDAN'S DASHBOARD, BUSINESS OVERSIGHT (Oct 23 2026, his spec §4 A–D, I).
@@ -123,11 +128,6 @@ export async function financialPosition(opts: { now?: Date; excludeClientIds?: s
   const monthStartKey = `${todayKey.slice(0, 7)}-01`;
   const horizon = new Date(now.getTime() + 14 * DAY);
   const horizonKey = etDayKey(horizon);
-  const [{ revenueByProcessor }, { categoryBreakdown, railFreshness }, { getBillingRows }] = await Promise.all([
-    import("@/lib/bookkeeping"),
-    import("@/lib/financeCategories"),
-    import("@/lib/queries"),
-  ]);
   const [banks, revenue, spend, ar, pay, recurring, fresh] = await Promise.all([
     prisma.plaidAccount.findMany({
       where: { isBusiness: true, type: "depository" },
@@ -335,7 +335,7 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
   const exclude = opts.excludeClientIds ?? (opts.includeTest ? [] : await syntheticClientIds());
   const current = Math.abs(now.getTime() - Date.now()) < 60_000;
 
-  const [jobs, video, review, photos, exceptions, visits, kyle] = await Promise.all([
+  const [jobs, video, review, photos, exceptions, visits, kyle, flags] = await Promise.all([
     jobsBoard(now, { includeTest: !!opts.includeTest }).catch(warn("shoots board")),
     videoDeliveryBoard(current ? {} : { now }).catch(warn("video board")),
     getReviewQueue({ includeTest: !!opts.includeTest }).catch(warn("review queue")),
@@ -351,6 +351,7 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
       select: { id: true, startAt: true, assignedToId: true, assignedTo: { select: { name: true } }, project: { select: { id: true, title: true, client: { select: { name: true } } } } },
     }).catch(warn("upcoming shoots")),
     kylePerson(roster).catch(() => null),
+    ownerShootIssues(now).catch(warn("shoot issues")),
   ]);
   const officeName = kyle?.name ?? "Kyle";
   const excluded = new Set(exclude);
@@ -455,7 +456,8 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
   ];
 
   // ---- bottlenecks requiring action -----------------------------------------
-  const bottlenecks = await bottlenecksFrom({ now, stages, roster, officeName, ownerEmail: opts.ownerEmail ?? null });
+  const bottlenecks = await bottlenecksFrom({ now, stages, roster, officeName, ownerEmail: opts.ownerEmail ?? null, flags: flags?.open ?? [] });
+  if (!flags) unavailable.push("shoot issues");
 
   return {
     stages,
@@ -465,7 +467,7 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
   };
 }
 
-async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee[]; officeName: string; ownerEmail: string | null }): Promise<Bottleneck[]> {
+async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee[]; officeName: string; ownerEmail: string | null; flags: { id: string; client: string; street: string | null; text: string; by: string | null; atISO: string; href: string }[] }): Promise<Bottleneck[]> {
   const { now, stages, roster } = o;
   const keyOfName = (name: string) => roster.find((a) => a.name.toLowerCase() === name.toLowerCase())?.key ?? null;
   type Cand = Bottleneck & { rank: number };
@@ -500,6 +502,24 @@ async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee
       },
       taskId: null,
       rank: (noOwner ? 0 : 10) + (i.late ? 0 : 5),
+    });
+  }
+  // Shoot issues a creative flagged for the owner (his own loop task, one per job).
+  for (const f of o.flags) {
+    cand.push({
+      id: `flag:${f.id}`,
+      issue: `${f.street ?? f.client}: ${f.text}`.slice(0, 160),
+      client: f.client,
+      commitment: `Flagged ${etDateTime(f.atISO)}${f.by ? ` by ${firstName(f.by)}` : ""}`,
+      owner: "You",
+      handledBy: null,
+      nextStep: "Decide, or hand it on",
+      clientUpdate: null,
+      tone: "warn",
+      href: f.href,
+      assign: { title: `Shoot issue: ${f.street ?? f.client}`, outcome: "Resolved, and the cause recorded", sourceTaskId: f.id },
+      taskId: null,
+      rank: 3,
     });
   }
   // Escalations and recommendations that wait on the owner.
@@ -565,7 +585,7 @@ async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee
 
 export type ClientIssueRow = {
   id: string;
-  kind: "complaint" | "feedback" | "revisions" | "cancellation" | "refund";
+  kind: "complaint" | "feedback" | "revisions" | "cancellation" | "refund" | "pattern";
   client: string | null;
   clientId: string | null;
   project: string | null;
@@ -595,7 +615,7 @@ export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?:
   const exclude = new Set(opts.excludeClientIds ?? []);
   const unavailable: string[] = [];
   const { listClientIssues } = await import("@/lib/clientIssues");
-  const [issues, feedback, revisions, cancels, refunds] = await Promise.all([
+  const [issues, feedback, revisions, cancels, refunds, flags] = await Promise.all([
     listClientIssues({ states: ["OPEN", "CORRECTED", "UNRESOLVED"], scrubMoney: false, take: 60 }).catch(warn("client issues")),
     prisma.feedback.findMany({
       where: { createdAt: { gte: since }, resolved: false, dismissedAt: null, OR: [{ sentiment: "NEGATIVE" }, { sentimentAuto: "NEGATIVE" }] },
@@ -611,6 +631,7 @@ export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?:
     }).catch(warn("revisions")),
     prisma.activity.findMany({ where: { createdAt: { gte: since }, body: { startsWith: "Order canceled in Aryeo AFTER delivery" } }, select: { id: true, projectId: true, createdAt: true, body: true, project: { select: { title: true, clientId: true, client: { select: { name: true } } } } }, take: 20 }).catch(warn("cancellations")),
     prisma.stripeTransaction.findMany({ where: { createdAt: { gte: since }, type: { in: ["refund", "payment_refund"] } }, select: { id: true, gross: true, createdAt: true, customerName: true, projectId: true, description: true }, orderBy: { createdAt: "desc" }, take: 20 }).catch(warn("refunds")),
+    ownerShootIssues(now).catch(warn("shoot issues")),
   ]);
   if (!issues) unavailable.push("complaints");
   if (!feedback) unavailable.push("feedback");
@@ -694,6 +715,17 @@ export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?:
       severity: "medium", severityWhy: "Money returned to a client", suggested: false, owner: null, lastClientUpdateISO: null,
       nextAction: "Confirm the reason is recorded", deadlineISO: null, decision: null, href: "/sales", conversationHref: null,
       assign: { title: `Refund reason: ${r.customerName ?? "a client"}`, outcome: "The reason for the refund is recorded", sourceHref: `/sales#refund-${r.id}`, projectId: r.projectId },
+    });
+  }
+  // What keeps happening on one client's shoots (the old Shoot issues card's
+  // "by client" line): two or more flags in 60 days.
+  for (const b of (flags?.byClient ?? []).filter((x) => x.count >= 2)) {
+    rows.push({
+      id: `pattern:${b.client}`, kind: "pattern", client: b.client, clientId: null, project: null, projectId: null,
+      title: "Shoot issues keep coming up", summary: `${b.count} issues flagged on ${b.client}'s shoots in the last 60 days.`, evidence: "Flags raised on shoots", severity: b.count >= 3 ? "medium" : "low", severityWhy: "A repeating pattern",
+      suggested: false, owner: null, lastClientUpdateISO: null, nextAction: "Look for the common cause", deadlineISO: null, decision: null,
+      href: "/jobs", conversationHref: null,
+      assign: { title: `Find the cause: ${b.client}'s shoot issues`, outcome: "The common cause named and a fix agreed", sourceHref: `/jobs#shoot-issues-${b.client.toLowerCase().replace(/[^a-z0-9]+/g, "-")}` },
     });
   }
   const sev = { high: 0, medium: 1, low: 2 } as const;

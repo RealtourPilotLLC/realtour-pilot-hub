@@ -29,7 +29,7 @@ const FIELD = "w-full rounded-lg border border-border-strong bg-surface px-3 py-
 type Ctx = { open: (p: PanelSpec) => void; roster: RosterOption[]; readOnly: boolean };
 const PanelCtx = createContext<Ctx>({ open: () => {}, roster: [], readOnly: true });
 
-export function OwnerShell({ roster, readOnly, initial = null, children }: { roster: RosterOption[]; readOnly: boolean; initial?: PanelSpec | null; children: ReactNode }) {
+export function OwnerShell({ roster, readOnly, initial = null, children }: { roster: RosterOption[]; readOnly: boolean; initial?: PanelSpec | null; children?: ReactNode }) {
   const [panel, setPanel] = useState<PanelSpec | null>(initial);
   useEffect(() => {
     if (!panel) return;

@@ -9,6 +9,7 @@
 // that tile, and the owner's private list lives on My Day.
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
 import { isValidElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { createRequire } from "node:module";
 import { bootDrillDb, installNextStubs, fenceFetch, interceptModule, makeChecker } from "./_harness";
 
@@ -34,7 +35,7 @@ function textOf(tree: unknown): string {
 // Oct 5: Home streams its secondary sections (Suspense around async server
 // components that await reads started with the page's own). Resolve those
 // named components so the checks read the page as it finishes composing.
-const STREAMED_HOME = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "OfficeDeskSection"]);
+const STREAMED_HOME = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "OfficeDeskSection", "OwnerHome", "FinanceSection", "ProductionSection", "ClientIssuesSection", "TeamSection", "MeetingsSection", "CreativeSection", "EmailSectionView", "DelegatedSection", "WeeklySection", "TaskOpen"]);
 async function settleHome(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settleHome));
   if (!isValidElement<Record<string, unknown>>(tree)) return tree;
@@ -42,7 +43,9 @@ async function settleHome(tree: unknown): Promise<unknown> {
   return { ...tree, props: Object.fromEntries(await Promise.all(Object.entries(tree.props).map(async ([key, value]) => [key, await settleHome(value)] as const))) };
 }
 class Redirect extends Error { constructor(readonly href: string) { super(href); } }
-const navigation = createRequire(__filename)("next/navigation") as { redirect: (href: string) => never };
+const navigation = createRequire(__filename)("next/navigation") as { redirect: (href: string) => never; useRouter: () => { refresh: () => void; push: () => void }; usePathname: () => string };
+navigation.useRouter = () => ({ refresh() {}, push() {} });
+navigation.usePathname = () => "/";
 navigation.redirect = (href) => { throw new Redirect(href); };
 
 async function main() {
@@ -118,10 +121,14 @@ async function main() {
     // Room); the dashboard's QC tile opens it and each video line its cut.
     const deliveryRows = opsDesk?.tabs.find((t) => t.key === "delivery");
     c.ok("delivery evidence/actions stay one tap away: every QC & Delivery row opens its job, every list video line its cut", !!deliveryRows && [...deliveryRows.now, ...deliveryRows.waiting].every((i) => !!i.href) && list.groups[0].lines.filter((l) => l.key.startsWith("video:")).every((l) => l.href.startsWith("/review/")));
+    // Oct 23 2026: the owner's "/" is his own dashboard (components/owner/
+    // OwnerHome): the office shows as a row of Team coverage, the week and the
+    // money as their own sections.
     await signIn(owner);
     const ownerTree = await page({});
-    c.ok("owner dashboard carries no checklist (Kyle's day reads his)", elements(ownerTree, "HomeRoutine").length === 0 && elements(ownerTree, "Block").length === 0 && elements(ownerTree, "DailyChecklist").length === 0 && elements(ownerTree, "KylesDayCard").length === 1);
-    c.ok("owner view keeps this week and the money (his private list lives on My Day)", elements(ownerTree, "OwnerWeekCard").length === 1 && elements(ownerTree, "MoneyStat").length > 0 && elements(ownerTree, "PulseStrip").length === 1 && elements(ownerTree, "QuickAdd").length === 0);
+    const ownerHtml = renderToStaticMarkup(ownerTree as Parameters<typeof renderToStaticMarkup>[0]);
+    c.ok("owner dashboard carries no checklist (the office is a row of Team coverage)", elements(ownerTree, "HomeRoutine").length === 0 && elements(ownerTree, "Block").length === 0 && elements(ownerTree, "DailyChecklist").length === 0 && ownerHtml.includes(`data-section="team"`) && ownerHtml.includes("data-coverage="));
+    c.ok("owner view keeps the week and the money (his private list lives on My Day)", ownerHtml.includes('data-section="weekly"') && (ownerHtml.match(/data-figure=/g) ?? []).length === 5 && elements(ownerTree, "QuickAdd").length === 0);
     c.ok("Home presentation never completes tasks or starts editing", (await prisma.smartTask.findUniqueOrThrow({ where: { id: task.id } })).status === "OPEN" && await prisma.editorWorkEvent.count() === 0);
     c.ok("Home checks reach no providers and send no client communication", fence.blocked.length === 0 && fence.faked.length === 0 && await prisma.outboxMessage.count() === 0);
     c.summary();
