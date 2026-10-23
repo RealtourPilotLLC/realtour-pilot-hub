@@ -34,6 +34,8 @@ installNextStubs();
 const MIN = 60_000;
 type DbxFile = { name: string; path: string; id: string; size: number; hash: string; at?: string };
 const dbx = new Map<string, DbxFile[]>(); // raw folder (lower case) → files
+const dirs = new Map<string, string[]>(); // job folder (lower case) → its top-level folder names (Oct 23 2026)
+const listed: string[] = []; // every files/list_folder path asked for (lower case)
 const linkCalls: string[] = [];
 const saved: { path: string; url: string }[] = []; // files/save_url into 06-Ready-for-Aryeo
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -70,6 +72,9 @@ const fence = fenceFetch(async (url, init) => {
       return json({ entries: saved.filter((f) => f.path.toLowerCase().startsWith((arg.path ?? "").toLowerCase() + "/")).map((f) => ({ ".tag": "file", name: f.path.split("/").pop(), path_display: f.path, id: `id:${f.path}`, size: Number(f.url.split(":")[1]) || 4 })), has_more: false });
     }
     if (ep === "files/list_folder") {
+      listed.push((arg.path ?? "").toLowerCase());
+      const sub = dirs.get((arg.path ?? "").toLowerCase());
+      if (sub) return json({ entries: sub.map((n) => ({ ".tag": "folder", name: n, path_display: `${arg.path}/${n}`, id: `id:${arg.path}/${n}` })), has_more: false });
       const files = dbx.get((arg.path ?? "").toLowerCase());
       if (!files) return json({ error_summary: "path/not_found/.." }, 409);
       return json({ entries: files.map((f) => ({ ".tag": "file", name: f.name, path_display: f.path, id: f.id, size: f.size, content_hash: f.hash, server_modified: f.at ?? "2026-10-14T01:00:00Z" })), has_more: false });
@@ -420,6 +425,52 @@ async function main() {
       await intake.driveIntake({ budgetMs: 120_000, now: new Date(t0.getTime() + 31 * MIN) });
       const pC1 = fake.posts("/v1/photoshoots/from-urls")[sentBefore]?.body as { address: string; files: { filename: string }[] } | undefined;
       c.ok("sent at 31 minutes: the 5 interiors, none of the exteriors", fake.posts("/v1/photoshoots/from-urls").length === sentBefore + 1 && pC1?.files.length === 5 && pC1.files.every((f) => /^A7511/.test(f.filename)), JSON.stringify(pC1?.files.map((f) => f.filename)));
+    }
+
+    // ======================================================================
+    c.head("15 · raws in a folder of the photographer's own; a submit is looked at right away (Oct 23 2026, 615 Cliff Ln)");
+    {
+      const at = (iso: string) => new Date(iso);
+      const S = "9 Stray Ct";
+      const base = `/AutoHDR/2026/Q4/October/${S} (Nehemiah Drill)`;
+      const sRaw = `${base}/01-RAW-Photos`;
+      const bath = `${base}/Bathroom Photos`;
+      c.ok("hub folders are never read as raws; a folder of the photographer's own is",
+        intake.strayFolderPaths(["01-RAW-Photos", "02-RAW-Video", "04-Final-Photos", "05-Final-Video", "06-Ready-for-Aryeo", "06-Ready-for-Aryeo - preparing ab12", "Client Assets", "Floor Plans", "Virtual Staging", "Bathroom Photos", "Twilight"].map((n) => ({ name: n, tag: "folder", path: `${base}/${n}` })), sRaw).map((x) => x.split("/").pop()).join(",") === "Bathroom Photos,Twilight");
+      const oldRaws = Array.from({ length: 5 }, (_, i) => ({ ...file(sRaw, `OLD${i}.JPG`, 200 + i), at: "2026-10-09T01:00:00Z" }));
+      dbx.set(sRaw.toLowerCase(), oldRaws);
+      dirs.set(base.toLowerCase(), ["01-RAW-Photos", "04-Final-Photos", "06-Ready-for-Aryeo", "Client Assets", "Bathroom Photos"]);
+      const newBath = Array.from({ length: 5 }, (_, i) => ({ ...file(bath, `BATH${i}.JPG`, 300 + i), at: "2026-10-14T01:30:00Z" }));
+      // one of visit 1's files copied in again (same content), and an older stray photo: neither is ever sent
+      dbx.set(bath.toLowerCase(), [...newBath, { ...file(bath, "OLD0 copy.JPG", 999, `h-${sRaw}-OLD0.JPG`), at: "2026-10-14T01:31:00Z" }, { ...file(bath, "agent.JPG", 998), at: "2026-10-09T02:00:00Z" }]);
+      dbx.set(`${base}/04-Final-Photos`.toLowerCase(), [{ ...file(`${base}/04-Final-Photos`, "F1.JPG", 1), at: "2026-10-14T01:30:00Z" }]);
+      const pS = await mkProject(S, { shootDate: at("2026-10-14T00:15:00Z"), dropboxFolder: base, debriefSubmittedAt: at("2026-10-09T01:05:00Z"), uploadedAt: at("2026-10-09T01:00:00Z") });
+      for (const a of [at("2026-10-08T17:30:00Z"), at("2026-10-14T00:15:00Z")]) await prisma.appointment.create({ data: { projectId: pS.id, aryeoId: `appt-stray-${a.getTime()}`, startAt: a, status: "SCHEDULED" } });
+      await prisma.photoJob.create({ data: { projectId: pS.id, stage: "DELIVERED" } });
+      // visit 1's batch: sent and done long ago, next relist hours away
+      await prisma.photoIntakeBatch.create({ data: { projectId: pS.id, batchNo: 1, rawPath: sRaw, filesJson: JSON.stringify(oldRaws.map((f) => ({ id: f.id, name: f.name, path: f.path, size: f.size, hash: f.hash }))), fileCount: 5, fingerprint: "old", seenAt: at("2026-10-09T01:30:00Z"), state: "DONE", doneAt: at("2026-10-09T03:00:00Z"), nextCheckAt: at("2026-10-14T08:00:00Z"), updatedAt: at("2026-10-13T20:00:00Z") } });
+      const sentBefore = fake.posts("/v1/photoshoots/from-urls").length;
+      const t0 = at("2026-10-14T01:50:00Z");
+      await intake.driveIntake({ budgetMs: 120_000, now: t0 });
+      c.ok("a settled job with no new submit waits for its relist (no listing at all)", (await prisma.photoIntakeBatch.count({ where: { projectId: pS.id } })) === 1 && !listed.includes(base.toLowerCase()));
+      // the photographer submits the upload page for this visit
+      await prisma.project.update({ where: { id: pS.id }, data: { debriefSubmittedAt: at("2026-10-14T01:45:00Z") } });
+      await intake.driveIntake({ budgetMs: 120_000, now: new Date(t0.getTime() + 5 * MIN) });
+      const b2 = await prisma.photoIntakeBatch.findFirst({ where: { projectId: pS.id, batchNo: 2 } });
+      const sent2 = JSON.parse(b2?.filesJson ?? "[]") as { name: string }[];
+      c.ok("submitted after the last batch: watched on the next pass, not at the 6-hour relist", !!b2 && b2.state === "WAITING", JSON.stringify(b2 && { s: b2.state, n: b2.fileCount }));
+      c.ok("…the 5 new raws in 'Bathroom Photos' only: no copy of a sent file, nothing from before this visit", b2?.fileCount === 5 && sent2.every((f) => /^BATH/.test(f.name)), sent2.map((f) => f.name).join(","));
+      c.ok("…hub folders were never listed (04-Final-Photos, 06-Ready-for-Aryeo, Client Assets)", !listed.some((x) => /04-final-photos|06-ready-for-aryeo|client assets/.test(x) && x.startsWith(base.toLowerCase())), listed.filter((x) => x.startsWith(base.toLowerCase())).join(" | "));
+      const jobS = await prisma.photoJob.findUniqueOrThrow({ where: { projectId: pS.id } });
+      c.ok("…the job's history names the folder", (await prisma.photoJobEvent.count({ where: { jobId: jobS.id, action: { startsWith: "raws found in 'Bathroom Photos' outside 01-RAW-Photos (5 files), sent with this visit" } } })) === 1);
+      c.ok("…and the office is told once", (await prisma.notification.count({ where: { dedupeKey: { startsWith: `pd-intake-stray-${pS.id}` } } })) >= 1);
+      await intake.driveIntake({ budgetMs: 120_000, now: new Date(t0.getTime() + 16 * MIN) });
+      c.ok("…still settling at 11 minutes (a later batch waits 20)", fake.posts("/v1/photoshoots/from-urls").length === sentBefore);
+      await intake.driveIntake({ budgetMs: 120_000, now: new Date(t0.getTime() + 26 * MIN) });
+      const pS2 = fake.posts("/v1/photoshoots/from-urls")[sentBefore]?.body as { files: { filename: string }[] } | undefined;
+      const b2b = await prisma.photoIntakeBatch.findFirst({ where: { projectId: pS.id, batchNo: 2 }, select: { state: true, lastError: true, seenAt: true } });
+      c.ok("sent once it settles: the 5 bathroom raws", fake.posts("/v1/photoshoots/from-urls").length === sentBefore + 1 && pS2?.files.length === 5 && pS2.files.every((f) => /^BATH/.test(f.filename)), `${JSON.stringify(pS2?.files.map((f) => f.filename))} ${JSON.stringify(b2b)} posts ${fake.posts("/v1/photoshoots/from-urls").length - sentBefore}`);
+      c.ok("…said once only (no second history line on later passes)", (await prisma.photoJobEvent.count({ where: { jobId: jobS.id, action: { startsWith: "raws found in 'Bathroom Photos'" } } })) === 1);
     }
 
     c.head("isolation");

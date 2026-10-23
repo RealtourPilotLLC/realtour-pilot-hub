@@ -113,6 +113,31 @@ export function filesSince(files: IntakeFile[], floor: Date | null): { kept: Int
   return { kept, older: olderFiles.length, olderFiles };
 }
 
+// ---------------------------------------------------------------------------
+// RAWS OUTSIDE 01-RAW-Photos (Oct 23 2026, 615 Cliff Ln). Harrison put a later
+// visit's 15 raws in a new "Bathroom Photos" folder beside 01-RAW-Photos and
+// the intake, which read only 01-RAW-Photos, never saw them. A top-level
+// folder of the job that is not one of the hub's own (the numbered folders,
+// anything final, ready, backup, edited, assets or plans) is read as raws too:
+// same visit floor, same claims, same batch. Nothing is moved.
+// ---------------------------------------------------------------------------
+export const HUB_FOLDER_RE = /^\d{1,2}\s*[-_.]|ready.?for.?aryeo|final|backup|edited|\bedits?\b|export|client assets|content plans|brand|logo|assets|plans?\b|floor ?plan|staging|staged|virtual|matterport|zillow|\b3d\b|headshot|video|footage|reel|clips?\b|audio|music/i;
+
+/** The job's top-level folders that are not the hub's own (and not the raws folder itself). Pure. */
+export function strayFolderPaths(listing: { name: string; tag: string; path: string }[], rawPath: string): string[] {
+  const raw = rawPath.toLowerCase().replace(/\/+$/, "");
+  return listing.filter((e) => e.tag === "folder" && e.path && e.path.toLowerCase() !== raw && !HUB_FOLDER_RE.test(e.name)).map((e) => e.path);
+}
+
+/** The top-level folder a file sits in, relative to the job folder ("Bathroom Photos"), or null when it is inside 01-RAW-Photos. Pure. */
+export function strayFolderOf(filePath: string, base: string, rawPath: string): string | null {
+  const lower = filePath.toLowerCase();
+  if (lower.startsWith(rawPath.toLowerCase().replace(/\/+$/, "") + "/")) return null;
+  const root = base.toLowerCase().replace(/\/+$/, "") + "/";
+  if (!lower.startsWith(root)) return null;
+  return filePath.slice(root.length).split("/")[0] || null;
+}
+
 /** The job event the floor's warning writes (photo audit M10), once per set of never-sent older files. */
 export const OLDER_NEVER_SENT_ACTION = "raws from before this visit were never sent to AutoHDR";
 
@@ -276,14 +301,18 @@ export async function driveIntake(opts: { budgetMs: number; now?: Date; listShoo
     select: { id: true, title: true, addressLine: true, shootDate: true, createdAt: true, dropboxFolder: true, debriefSubmittedAt: true, uploadedAt: true, deliveredAt: true, client: { select: { name: true } } },
     take: 60,
   });
-  const batchRows = await prisma.photoIntakeBatch.findMany({ where: { projectId: { in: projects.map((p) => p.id) } }, orderBy: { batchNo: "asc" }, select: { id: true, projectId: true, state: true, nextCheckAt: true, doneAt: true, seenAt: true } });
+  const batchRows = await prisma.photoIntakeBatch.findMany({ where: { projectId: { in: projects.map((p) => p.id) } }, orderBy: { batchNo: "asc" }, select: { id: true, projectId: true, state: true, nextCheckAt: true, doneAt: true, seenAt: true, updatedAt: true } });
   let sentThisPass = 0;
   for (const p of projects) {
     if (left() < 20_000) break;
     const mine = batchRows.filter((b) => b.projectId === p.id);
     const last = mine.at(-1);
     const settled = !!last && mine.every((b) => SETTLED.includes(b.state));
-    if (settled && last.nextCheckAt && last.nextCheckAt > now) continue;
+    // Oct 23 2026 (615 Cliff Ln): an upload page submitted (or files marked
+    // uploaded) after the job's last batch was last touched is a later visit
+    // handing in: watched on this pass, not at the next 6-hour relist.
+    const handedInSince = [p.debriefSubmittedAt, p.uploadedAt].some((d) => !!d && !!last && d > last.updatedAt);
+    if (settled && last.nextCheckAt && last.nextCheckAt > now && !handedInSince) continue;
     out.watched++;
     try {
       const r = await watchProject(p, now, { canSend: sentThisPass < 2 && left() > 60_000, listShoots });
@@ -319,9 +348,19 @@ async function watchProject(p: Project, now: Date, ctx: { canSend: boolean; list
       return "nothing";
     }
   }
-  const rawPath = actualFolderPaths(p).rawPhotos;
-  const entries = await dropboxListFolder(rawPath, { recursive: true }).catch(() => null);
-  if (!entries) return "error"; // unreadable is not empty
+  const folders = actualFolderPaths(p);
+  const rawPath = folders.rawPhotos;
+  const rawEntries = await dropboxListFolder(rawPath, { recursive: true }).catch(() => null);
+  if (!rawEntries) return "error"; // unreadable is not empty
+  // Raws a photographer put in a folder of their own beside 01-RAW-Photos
+  // (strayFolderPaths). Best-effort: an unreadable job folder reads 01-RAW-Photos alone.
+  const strayEntries: typeof rawEntries = [];
+  const top = await dropboxListFolder(folders.listing).catch(() => null);
+  for (const path of top ? strayFolderPaths(top, rawPath) : []) {
+    const inside = await dropboxListFolder(path, { recursive: true }).catch(() => null);
+    if (inside) strayEntries.push(...inside);
+  }
+  const entries = [...rawEntries, ...strayEntries];
   const { kept: all, older, olderFiles } = filesSince(eligibleFiles(entries), floor);
   // A file belongs to the first batch that listed it (any state but WAITING).
   const claimed = batches.filter((b) => b.state !== "WAITING").flatMap((b) => parseFiles(b.filesJson));
@@ -333,7 +372,9 @@ async function watchProject(p: Project, now: Date, ctx: { canSend: boolean; list
   // out. When some of them were NEVER sent by the hub (no batch ever claimed
   // them), they are not dropped silently: said once on the job, and Kyle hears
   // it once, so a person decides (edited another way, or send them by hand).
-  const neverSent = olderFiles.filter(unclaimed);
+  // Older files in a folder of the photographer's own are not this warning's
+  // business (it speaks of 01-RAW-Photos); they are simply left out.
+  const neverSent = olderFiles.filter(unclaimed).filter((f) => !strayFolderOf(f.path, folders.listing, rawPath));
   if (neverSent.length) await warnOlderNeverSent(p, neverSent, floor).catch((e) => console.warn("photo intake: older-raws warning failed", p.id, (e as Error).message));
   const waiting = batches.find((b) => b.state === "WAITING") ?? null;
   if (!fresh.length) {
@@ -348,6 +389,7 @@ async function watchProject(p: Project, now: Date, ctx: { canSend: boolean; list
       .catch((e: unknown) => ((e as { code?: string }).code === "P2002" ? null : Promise.reject(e)));
     const left = older ? `; ${older} older file${older === 1 ? "" : "s"} left out, uploaded before ${etDate(floor)}, the day of this visit` : "";
     await note(p.id, `raws seen for AutoHDR batch ${batchNo}: ${fresh.length} files (waiting for the upload to settle)${left}`, older ? { olderLeftOut: older, floor: floor?.toISOString() } : undefined);
+    await noteStrayFolders(p, fresh, folders.listing, rawPath, batchNo).catch((e) => console.warn("photo intake: stray-folder note failed", p.id, (e as Error).message));
     return "waiting";
   }
   if (waiting.fingerprint !== fp) {
@@ -360,6 +402,24 @@ async function watchProject(p: Project, now: Date, ctx: { canSend: boolean; list
   if (now.getTime() - waiting.seenAt.getTime() < settle) return "waiting";
   if (!ctx.canSend) return "waiting";
   return sendBatch(waiting.id, p, fresh, now, ctx.listShoots);
+}
+
+/** Oct 23 2026: raws found outside 01-RAW-Photos are said once per folder and batch, on the job and to Kyle (to tidy the folder). */
+async function noteStrayFolders(p: Project, files: IntakeFile[], base: string, rawPath: string, batchNo: number): Promise<void> {
+  const byFolder = new Map<string, number>();
+  for (const f of files) { const k = strayFolderOf(f.path, base, rawPath); if (k) byFolder.set(k, (byFolder.get(k) ?? 0) + 1); }
+  for (const [folder, n] of byFolder) {
+    await note(p.id, `raws found in '${folder}' outside 01-RAW-Photos (${n} file${n === 1 ? "" : "s"}), sent with this visit (batch ${batchNo})`, { strayFolder: folder, files: n, batchNo });
+    await alertOwnerAndKyle({
+      kind: "photo_autohdr_stray_folder",
+      title: `${streetOf(p)}: raws outside 01-RAW-Photos`.slice(0, 90),
+      body: `${n} raw file${n === 1 ? "" : "s"} in '${folder}', sent to AutoHDR with this visit.`,
+      href: `/ops/photo-delivery`,
+      dedupeKey: `pd-intake-stray-${p.id}-${batchNo}-${folder}`.slice(0, 190),
+      text: `${streetOf(p)}: ${n} raw file${n === 1 ? "" : "s"} were in a folder called '${folder}' instead of 01-RAW-Photos. The hub found them and is sending them to AutoHDR with this visit. Please move them into 01-RAW-Photos when you get a chance. ${appBase()}/ops/photo-delivery`,
+      to: "kyle",
+    }).catch(() => null);
+  }
 }
 
 /** Photo audit M10: once per job and set of files, on the job's activity and to Kyle. */
