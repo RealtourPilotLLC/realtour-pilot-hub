@@ -147,7 +147,8 @@ export function lessonOf(reason: string | null | undefined): { scope: LessonScop
 
 /** What a lesson changes, in Jordan's words (the settings list). Pure. */
 export function lessonWords(l: Pick<Lesson, "scope" | "alwaysFlagged" | "active" | "undone">): string {
-  if (l.alwaysFlagged) return "Not applied: Jordan always wants this flagged";
+  // A neighbor's property is never this home's, always-flagged check or not (the free check's own screen drops it for every check).
+  if (l.alwaysFlagged && l.scope !== "neighbor") return "Not applied: Jordan always wants this flagged";
   if (l.undone && !l.active) return "Undone";
   const w: Record<LessonScope, string> = {
     neighbor: "Not flagged on a neighbor's property",
@@ -180,7 +181,7 @@ const SYSTEM_DECIDER = /^(auto-|free second look|fix-runner|hub\b|system)/i;
  * undos, by lesson key (only later calls count again).
  */
 export function lessonsFrom(
-  rows: { id: string; jobId: string; photoId: string | null; ruleId: string; statusReason: string | null; decidedBy: string | null; decidedAt: Date | null }[],
+  rows: { id: string; jobId: string; photoId: string | null; ruleId: string; statusReason: string | null; decidedBy: string | null; decidedAt: Date | null; status?: string | null }[],
   undone: { key: string; by: string; at: string }[],
   alwaysFlag: Set<string>,
 ): Lesson[] {
@@ -188,6 +189,8 @@ export function lessonsFrom(
   for (const r of rows) {
     if (!r.decidedBy || SYSTEM_DECIDER.test(r.decidedBy) || !r.decidedAt) continue;
     const t = lessonOf(r.statusReason);
+    // A "Not there" (the check saw something that is not in the photo) never switches a check off: its strictness is learnedRules' job (fixPolicy). Only a reason that names a condition teaches.
+    if (t && r.status === "FALSE_POSITIVE" && t.scope === "rule") continue;
     if (!t) continue;
     const key = `${r.ruleId}|${t.scope}|${t.norm}`;
     const g = groups.get(key) ?? { ruleId: r.ruleId, scope: t.scope, rows: [] };
@@ -211,7 +214,7 @@ export function lessonsFrom(
       jobs,
       examples: (counted.length ? counted : all).slice(0, 4).map((r) => ({ findingId: r.id, jobId: r.jobId, photoId: r.photoId, reason: (r.statusReason ?? "").slice(0, 200), by: r.decidedBy!.slice(0, 120), atISO: r.decidedAt!.toISOString() })),
       lastISO: all[0].decidedAt!.toISOString(),
-      active: ripe && !alwaysFlagged,
+      active: ripe && (!alwaysFlagged || g.scope === "neighbor"),
       alwaysFlagged,
       undone: u ? { by: u.by, atISO: u.at } : null,
     });
@@ -255,7 +258,7 @@ export async function refreshLessons(now: Date = new Date(), by = "hub"): Promis
   const rows = await prisma.photoQcFinding.findMany({
     where: { decidedAt: { gte: new Date(now.getTime() - LESSON_DAYS * 86_400_000) }, status: { in: ["IGNORED", "FALSE_POSITIVE"] }, source: { not: "ADDON" }, statusReason: { not: null } },
     orderBy: { decidedAt: "desc" },
-    select: { id: true, jobId: true, photoId: true, ruleId: true, statusReason: true, decidedBy: true, decidedAt: true },
+    select: { id: true, jobId: true, photoId: true, ruleId: true, statusReason: true, decidedBy: true, decidedAt: true, status: true },
     take: 5000,
   });
   const { ALWAYS_FLAG } = await import("./fixPolicy");
