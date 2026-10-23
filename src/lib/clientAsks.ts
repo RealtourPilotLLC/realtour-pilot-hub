@@ -669,12 +669,36 @@ export async function fileAsksFromMessage(input: {
   defaultProjectId: string | null;
   /** The job a revision was raised on for this message, if any: its asks are the revision's. */
   revisionProjectId?: string | null;
+  /** The sender's OWN client row, before the assistant → agent fold (lib/teamRouting). */
+  senderClientId?: string | null;
   now?: Date;
 }): Promise<{ filed: string[]; skipped: string[] }> {
   const out = { filed: [] as string[], skipped: [] as string[] };
   try {
     if (!input.clientId || !input.asks?.length) return out;
     const { isAccessNote } = await import("@/lib/specialRequests");
+    // AN ASK GOES ON THE TEAM AGENT WHOSE JOB IT NAMES (Oct 23 2026,
+    // lib/teamRouting). Olivia Vecere's one email can carry an ask for Sharra
+    // Mercer's 1337 Carolannes Way and another for Mike Flatley's 2 Quail Run
+    // Ln; the message is filed on one of them, and each ask whose own words
+    // name a team agent's job (house number and street, or its listing link)
+    // is filed on THAT agent's job, by the same rule as the message. Asks that
+    // name no job stay with the message. Only for a folded assistant or a
+    // team member; everyone else is unchanged.
+    const teamJobOf = await (async () => {
+      if (!input.senderClientId) return null;
+      const T = await import("@/lib/teamRouting");
+      if (!(await T.isTeamSender(input.senderClientId))) return null;
+      const dir = await T.loadTeamDirectory();
+      const senderId = input.senderClientId;
+      return (words: string): { clientId: string; projectId: string } | null => {
+        const d = T.decideTeamRoute(dir, senderId, { body: words });
+        if (d.action === "move") return { clientId: d.route.clientId, projectId: d.route.project.id };
+        if (d.action === "stay" && d.job) return { clientId: d.job.root, projectId: d.job.id };
+        return null;
+      };
+    })().catch(() => null);
+    const elsewhere = new Map<string, { clientId: string; projectId: string; kind: AskKind; texts: string[]; summaries: string[]; media: Set<AskMediumValue> }>();
     const projects = await prisma.project.findMany({
       where: { clientId: input.clientId },
       select: { id: true, status: true, deliveredAt: true },
@@ -696,6 +720,19 @@ export async function fileAsksFromMessage(input: {
       const words = (a.text || "").trim() || clip(input.message, 600);
       if (isAccessNote(words) || isAccessNote(a.summary)) { out.skipped.push(`access note: ${clip(words, 60)}`); continue; }
       if (kindsFiled.has(a.kind)) { out.skipped.push(`already filed from this message: ${clip(words, 60)}`); continue; }
+      const team = teamJobOf ? teamJobOf(`${words}\n${a.summary ?? ""}`) : null;
+      if (team && team.clientId !== input.clientId) {
+        // Another team agent's job: the same rules, on that job.
+        const p = await prisma.project.findUnique({ where: { id: team.projectId }, select: { status: true, deliveredAt: true } });
+        if (a.kind === "SPECIAL_REQUEST" && !jobInFlight(p)) { out.skipped.push(`delivered job of another team agent: ${clip(words, 60)}`); continue; }
+        const key = `${team.clientId}|${team.projectId}|${a.kind}`;
+        const g = elsewhere.get(key) ?? { clientId: team.clientId, projectId: team.projectId, kind: a.kind, texts: [], summaries: [], media: new Set<AskMediumValue>() };
+        if (!g.texts.includes(words)) g.texts.push(words);
+        if (a.summary?.trim() && !g.summaries.includes(a.summary.trim())) g.summaries.push(a.summary.trim());
+        g.media.add(asMedium(a.medium));
+        elsewhere.set(key, g);
+        continue;
+      }
       const hinted = a.projectHint && byId.has(a.projectHint) ? a.projectHint : null;
       let projectId = hinted ?? (input.defaultProjectId && byId.has(input.defaultProjectId) ? input.defaultProjectId : null);
       if (a.kind === "SPECIAL_REQUEST") {
@@ -720,11 +757,16 @@ export async function fileAsksFromMessage(input: {
       g.media.add(asMedium(a.medium));
       groups.set(key, g);
     }
-    for (const g of groups.values()) {
+    const toFile = [
+      ...[...groups.values()].map((g) => ({ ...g, clientId: input.clientId, askedBy: input.contactName?.trim() || input.clientName?.trim() || null })),
+      // On another team agent's job: asked by the person who wrote, never the account it folded to.
+      ...[...elsewhere.values()].map((g) => ({ ...g, askedBy: input.contactName?.trim() || null })),
+    ];
+    for (const g of toFile) {
       const media = [...g.media].filter((m) => m !== "unclear");
       const medium: AskMediumValue = media.length === 0 ? "unclear" : media.length === 1 ? media[0] : "both";
       const r = await createAsk({
-        clientId: input.clientId,
+        clientId: g.clientId,
         projectId: g.projectId,
         kind: g.kind,
         medium,
@@ -732,9 +774,9 @@ export async function fileAsksFromMessage(input: {
         summary: g.summaries.join("; ") || null,
         source: input.channel,
         sourceRef: input.sourceRef ?? null,
-        askedBy: input.contactName?.trim() || input.clientName?.trim() || null,
+        askedBy: g.askedBy,
         askedAt: input.now ?? new Date(),
-        dedupeKey: messageAskKey(input.clientId, g.projectId, g.kind, input.message),
+        dedupeKey: messageAskKey(g.clientId, g.projectId, g.kind, input.message),
       });
       if (r?.created) out.filed.push(r.id);
     }

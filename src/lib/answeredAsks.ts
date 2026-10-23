@@ -34,6 +34,8 @@ export async function fileAnsweredEmailAsks(input: {
   threadId: string;
   sentReplyId: string | null;
   inboundExternalId?: string | null;
+  /** the sender's own client row, before the fold (lib/teamRouting) */
+  senderClientId?: string | null;
 }, opts: { retry?: boolean } = {}): Promise<{ filed: string[]; answered: string[]; held: string[]; brain: "answered" | "unavailable" | "off" }> {
   const out = { filed: [] as string[], answered: [] as string[], held: [] as string[], brain: "off" as "answered" | "unavailable" | "off" };
   try {
@@ -58,6 +60,7 @@ export async function fileAnsweredEmailAsks(input: {
         clientId: input.clientId, clientName: input.clientName, contactName: input.contactName,
         message: input.message, channel: "email", sourceRef, asks: decision.asks,
         defaultProjectId: decision.projectId ?? input.projectId,
+        senderClientId: input.senderClientId ?? null,
       });
       out.filed.push(...r.filed);
     } else if (!decision) {

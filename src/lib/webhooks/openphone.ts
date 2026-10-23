@@ -429,7 +429,10 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   const sender = !fromLine && fromPhone.length === 10 ? await resolveSenderName(fromPhone) : null;
   const robo = !fromUs && !!sender && AUTOMATED_SENDER_RE.test(sender.name);
 
-  const match = await resolveClientByPhones(phones.filter((k) => !ourNumbers.has(k)));
+  // A team assistant's text goes to the team agent whose job it names, and our
+  // reply to her stays in her conversation (contacts.resolveClientByPhones,
+  // lib/teamRouting, Oct 23 2026). A call event carries no words: the fold.
+  const match = await resolveClientByPhones(phones.filter((k) => !ourNumbers.has(k)), isCall ? {} : { text, reply: !effIncoming });
 
   // For a multi-order client, prefer the project the message is actually ABOUT
   // (named by street) over their most-recent order — so a text about an older
@@ -439,8 +442,8 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   // Track HOW the project was resolved: a street named in the text is a real
   // filing; the mostRelevantProject default is a guess, and project-scoped
   // surfaces (the /ops shoot-card comms chip) must know the difference.
-  let projectNamed = false;
-  if (match && !isCall && text.trim()) {
+  let projectNamed = !!match?.projectNamed;
+  if (match && !match.projectNamed && !isCall && text.trim()) {
     const named = await findClientProjectByText(match.clientId, text);
     if (named) { effProject = named; projectNamed = true; }
   }
@@ -581,6 +584,8 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
         text,
         kind: "text",
         source: "openphone",
+        // Her own row: an ask naming another team agent's job goes there (lib/teamRouting).
+        senderClientId: match.senderClientId ?? null,
       });
     }
 
@@ -975,7 +980,10 @@ async function handleTranscript(data: Record<string, unknown>) {
   const phones = [...new Set(collectPhones(data).map((p) => phoneKey(p)).filter((k) => k.length === 10))];
   const { line: ourLine, team: ourTeam } = await ourNumberKeys();
   const ourNumbers = new Set([...ourLine, ...ourTeam]);
-  const match = await resolveClientByPhones(phones.filter((k) => !ourNumbers.has(k)));
+  // A team assistant's call goes to the team agent whose job the call names
+  // (the whole conversation: both sides talk about the same listing), else
+  // the fold (lib/teamRouting, Oct 23 2026).
+  const match = await resolveClientByPhones(phones.filter((k) => !ourNumbers.has(k)), { text: full });
 
   // A number we don't know. If THEY rang us, that's a LEAD, not noise: log the
   // transcript (previously it vanished without a trace) and mint/upgrade the
@@ -1018,8 +1026,9 @@ async function handleTranscript(data: Record<string, unknown>) {
     });
   }
 
-  // Comms memory: store the full call transcript. The project is always the
-  // router's most-relevant guess (a call has no parsed street), so stamp it.
+  // Comms memory: store the full call transcript. The project is the
+  // router's most-relevant guess (a call has no parsed street), so stamp it,
+  // unless a team assistant's call named the job (team routing).
   await logComm({
     channel: "call",
     direction: dir,
@@ -1030,7 +1039,7 @@ async function handleTranscript(data: Record<string, unknown>) {
     body: full,
     source: "openphone-call",
     externalId: callId ? `op-call-${callId}` : undefined,
-    projectGuess: !!project,
+    projectGuess: !!project && !match.projectNamed,
   });
 
   // Scan the client's spoken words for a revision/change request.
@@ -1060,6 +1069,7 @@ async function handleTranscript(data: Record<string, unknown>) {
       // Task source stays "openphone" (not "openphone-call") so the reply sweep +
       // real-time outbound close pick up voicemail callbacks like any other reply.
       source: "openphone",
+      senderClientId: match.senderClientId ?? null,
     });
   }
 }

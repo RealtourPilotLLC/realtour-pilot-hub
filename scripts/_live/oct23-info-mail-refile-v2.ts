@@ -61,9 +61,6 @@ const OLIVIA_ASK = "cmvi9rnb10004l308yzogqqo7";
 const SHARRA_SUSSEX = "cmsrlzhlj0036jx04r8sny19g";
 const day = (d: Date) => d.toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
-/** Free mailboxes: a domain anyone can have, never a company. */
-const FREE_MAIL = new Set(["gmail.com", "googlemail.com", "yahoo.com", "hotmail.com", "aol.com", "icloud.com", "me.com", "mac.com", "outlook.com", "live.com", "msn.com", "comcast.net", "verizon.net", "att.net", "ymail.com", "protonmail.com"]);
-
 /** Personal or vendor mail: no client, owner-only. The address or its domain, and why. */
 const PERSONAL_OR_VENDOR: { re: RegExp; why: string }[] = [
   { re: /@(?:[\w-]+\.)*greendot\.com$/i, why: "bank (Green Dot)" },
@@ -107,6 +104,8 @@ type Decision =
   const { streetMatchAllowed, sameSenderName } = await import("@/lib/mailMatch");
   const { staffAddressBook, isStaffAddress } = await import("@/lib/staffEmail");
   const { gmailSenderAddresses } = await import("@/lib/integrations/google");
+  // Free mailboxes and the job matcher: one rule with the live receivers (lib/teamRouting, Oct 23 2026).
+  const { companyDomain, loadTeamDirectory, namedJobOf } = await import("@/lib/teamRouting");
   if (streetMatchAllowed({ mailbox: INFO, senderKnown: false })) throw new Error("the code rule still allows the street match for unknown info@ senders: not refiling");
   console.log(`${APPLY ? "APPLYING" : "DRY RUN (read-only connection)"}: info@ mail filed to a client by a street or town name, version 2 (by who sent it)\n`);
 
@@ -152,8 +151,8 @@ type Decision =
   for (const k of contacts) addAddr(k.email, k.clientId!);
   const domainOwners = new Map<string, Set<string>>();
   for (const [a, ids] of clientsByAddress) {
-    const d = domainOf(a);
-    if (!d || FREE_MAIL.has(d)) continue;
+    const d = companyDomain(a);
+    if (!d) continue;
     const s = domainOwners.get(d) ?? new Set<string>();
     ids.forEach((x) => s.add(x));
     domainOwners.set(d, s);
@@ -164,31 +163,17 @@ type Decision =
     for (const k of contacts) if (sameSenderName(display, `${k.firstName ?? ""} ${k.lastName ?? ""}`)) out.add(fold(k.clientId!).id);
     return out;
   };
-  // A job the mail NAMES: its house number and street together ("512 Firethorn",
-  // "2 QUAIL RUN", "859 N Lawrence"), the subject first, newest order first.
-  // Stricter than the street-word match that misfiled these rows ("Spring
-  // City" is not 115 Spring Ln). In the body, an address that is a job of two
-  // or more clients is not read: a team's office ("893 S. Matlack St" in every
-  // Gary Mercer Team signature) names nobody's listing.
-  const DIR = "(?:(?:n|s|e|w|north|south|east|west)\\.?\\s+)?";
-  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const allJobs = await prisma.project.findMany({
-    where: { status: { not: "CANCELLED" } },
-    orderBy: [{ orderedAt: { sort: "desc", nulls: "last" } }, { shootDate: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
-    select: { id: true, title: true, addressLine: true, clientId: true },
-  });
-  const keyed = allJobs.flatMap((p) => {
-    const m = new RegExp(`^(\\d+[a-z]?)\\s+${DIR}([a-z0-9'-]+)`, "i").exec((p.addressLine || p.title.split(",")[0]).trim());
-    return m ? [{ ...p, key: `${m[1]} ${m[2]}`.toLowerCase(), re: new RegExp(`\\b${esc(m[1])}\\s+${DIR}${esc(m[2])}\\b`, "i") }] : [];
-  });
-  const clientsOfKey = new Map<string, Set<string>>();
-  for (const p of keyed) clientsOfKey.set(p.key, (clientsOfKey.get(p.key) ?? new Set<string>()).add(fold(p.clientId!).id));
-  const namedJob = (clientId: string, subject: string, body: string): { id: string; title: string } | null => {
-    const mine = keyed.filter((p) => p.clientId === clientId || fold(p.clientId!).id === clientId);
-    const s = subject.replace(/\s+/g, " ");
-    const b = body.replace(/\s+/g, " ");
-    return mine.find((p) => p.re.test(s)) ?? mine.find((p) => (clientsOfKey.get(p.key)?.size ?? 0) < 2 && p.re.test(b)) ?? null;
-  };
+  // A job the mail NAMES: its house number and street together ("512
+  // Firethorn", "2 QUAIL RUN", "859 N Lawrence") or a link to its listing
+  // page; the subject first, then the sender's own words, then the quoted
+  // thread; the job in flight, else the newest. Stricter than the street-word
+  // match that misfiled these rows ("Spring City" is not 115 Spring Ln). An
+  // address that is a job of two or more clients is not read: a team's office
+  // ("893 S. Matlack St" in every Gary Mercer Team signature) names nobody's
+  // listing. The shared rule (lib/teamRouting namedJobOf): the Gmail scan and
+  // the OpenPhone receiver route a team assistant's messages by it.
+  const dir = await loadTeamDirectory();
+  const namedJob = (clientId: string, subject: string, body: string): { id: string; title: string } | null => namedJobOf(dir, clientId, { subject, body });
   const clientsNamedInThread = (body: string): string[] => {
     const found = new Set<string>();
     for (const m of body.matchAll(/[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g)) for (const id of clientsByAddress.get(lc(m[0])) ?? []) found.add(byId.get(id)!.name);
