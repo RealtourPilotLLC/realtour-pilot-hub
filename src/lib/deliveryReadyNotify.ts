@@ -118,6 +118,10 @@ export async function notifyKyleDeliveryReady() {
     // The hub is uploading or delivering this one to Aryeo itself (Oct 19
     // 2026): Kyle hears about it only when it needs him.
     if (hubIsSending(video)) continue;
+    // Uploaded only (Oct 23 2026): a person chose to put it on the listing
+    // without sending it, so nobody is told to send it. Its row says "On
+    // Aryeo, not sent yet" until somebody presses Send now.
+    if (video.push?.uploadedOnly) continue;
     const message = deliveryReadyMessage(video, appBase());
     // Existing bridge dedupes successful delivery, retries failed sends, and honors
     // the recipient's saved channel/quiet-hours preferences. No new retry loop.

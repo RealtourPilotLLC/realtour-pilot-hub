@@ -9,7 +9,8 @@
 // browser and without the production database.
 //   1  /ops/video-delivery redirects to /review; the room renders
 //   2  what it says: Ready to send with each run's three steps and words (a
-//      run uploading, a run stopped with Try again), a held run's reason
+//      run uploading, a run stopped with Try again, a run uploaded only with
+//      Send now, Oct 23 2026), a held run's reason
 //      under Held, the late video under With the editors with how late, no
 //      switch card (since the room was tightened, Oct 19: no Monthly content
 //      section; the monthly videos live on the Shoots page and the Dashboard)
@@ -77,6 +78,10 @@ async function main() {
     await run(sending.sub!, { state: "SENDING", note: "Sending the 1080p file to Aryeo: 10 of 23 parts (about 52 of 113 MB)." });
     await run(held.sub!, { state: "HELD", note: "Sound check held this file: this video has no sound. Ask the editor for a new export.", hold: { gate: "sound", why: "Sound check held this file: this video has no sound. Ask the editor for a new export.", by: null, at: new Date().toISOString(), resume: "PREPARING" } });
     await run(hand.sub!, { state: "FAILED", note: "The 1080p file was never checked, so the hub does not send it on its own. Upload it by hand." });
+    // Upload to Aryeo only (Oct 23 2026): on the listing, waiting for Send now.
+    const onlyUp = await mk("7 Uploaded Only Rd", { approved: true });
+    const { UPLOADED_ONLY_SAYS } = await import("@/lib/videoAryeoPush");
+    await run(onlyUp.sub!, { state: "WAITING", mode: "upload", mediaId: "m-only", deliverNow: false, note: UPLOADED_ONLY_SAYS, wait: { gate: "kyle", why: UPLOADED_ONLY_SAYS, since: new Date().toISOString() } });
     const fresh = await mk("6 Fresh St", { approved: true });
     // The hub's Aryeo login is set up, so a row nobody pressed offers the button.
     const { saveSecret } = await import("@/lib/integrations/connections");
@@ -111,6 +116,15 @@ async function main() {
     c.ok("a held run says why, under Held", /Held \(\d+\).*4 Held Ct/.test(t) && /Sound check held this file: this video has no sound/.test(t));
     c.ok("a run the hub will not send says so, with the hand path open", /5 By Hand Rd/.test(t) && /never checked, so the hub does not send it on its own/.test(t) && /Done it by hand\?/.test(t));
     c.ok("a row nobody pressed offers Upload to Aryeo and send", /6 Fresh St.{0,400}Upload to Aryeo and send/.test(t));
+    c.ok("…and Upload to Aryeo only beside it (Oct 23 2026)", /6 Fresh St.{0,500}Upload to Aryeo and send Upload to Aryeo only/.test(t), (t.match(/6 Fresh St.{0,500}/) ?? [""])[0]);
+    {
+      // The uploaded-only row, from its street to the next row's heading.
+      const at = owner.indexOf(">7 Uploaded Only Rd</a>");
+      const end = owner.indexOf("</li>", owner.indexOf("Done it by hand?", at));
+      const seg = at >= 0 && end > at ? owner.slice(at, end) : "";
+      const btns = [...seg.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].map((m) => text(m[1]).trim());
+      c.ok("an uploaded-only run: 'On Aryeo, not sent yet', the step at On the listing, and Send now (no upload press, no Deliver now)", /On Aryeo, not sent yet\. Aryeo has not emailed the client: press Send now to send it\./.test(text(seg)) && /aria-current="step"[^>]*>On the listing</.test(seg) && btns.includes("Send now") && !btns.some((b) => /Upload to Aryeo|Deliver now|Try again/.test(b)), `${JSON.stringify(btns)} · ${text(seg).slice(0, 300)}`);
+    }
     c.ok("no Monthly content section any more (the monthly videos live on the Shoots page and the Dashboard)", !/>Monthly content</.test(owner));
     c.ok("no switch card any more (button only)", !/The hub sends listing videos to Aryeo/.test(t) && !/Practice run/.test(t) && !/Upload and deliver/.test(t));
 

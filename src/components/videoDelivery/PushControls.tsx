@@ -16,9 +16,12 @@ import { deliverVideoNowAction, releaseVideoPushAction } from "@/app/review/vide
 // were never offered (the room always passed false), so they and their
 // actions are gone; Deliver now and Release moved beside the room's other
 // delivery actions (review/videoSendActions).
+// `uploadedOnly` (Oct 23 2026): a video put on the listing with "Upload to
+// Aryeo only" says "On Aryeo, not sent yet"; the same press reads Send now
+// (the same deliverVideoNowAction, the same gates).
 // ---------------------------------------------------------------------------
 
-export function PushControls(props: { submissionId: string; canDeliverNow: boolean; canRelease: boolean }) {
+export function PushControls(props: { submissionId: string; canDeliverNow: boolean; canRelease: boolean; uploadedOnly?: boolean }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -38,7 +41,7 @@ export function PushControls(props: { submissionId: string; canDeliverNow: boole
       <div className="flex flex-wrap items-center gap-2">
         {props.canDeliverNow && (
           <Button variant="primary" busy={pending} onClick={() => run(() => deliverVideoNowAction(props.submissionId))}>
-            <Send aria-hidden className="size-4" /> Deliver now
+            <Send aria-hidden className="size-4" /> {props.uploadedOnly ? "Send now" : "Deliver now"}
           </Button>
         )}
         {props.canRelease && (
