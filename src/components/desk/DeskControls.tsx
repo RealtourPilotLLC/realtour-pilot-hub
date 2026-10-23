@@ -64,7 +64,7 @@ export function ReplyBox({ phone, clientId }: { phone: string; clientId: string 
   const { busy, msg, run, setMsg } = useRun();
   const [text, setText] = useState("");
   const send = () => {
-    const intentId = (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}${Math.random()}`).replace(/[^A-Za-z0-9]/g, "").slice(0, 32);
+    const intentId = (globalThis.crypto?.randomUUID?.() ?? `${Math.random().toString(36)}${Math.random().toString(36)}`).replace(/[^A-Za-z0-9]/g, "").slice(0, 32);
     run(async () => {
       const r = await sendThreadText(phone, text, undefined, clientId, intentId);
       if (r.ok) setText("");

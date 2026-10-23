@@ -269,8 +269,13 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const creativeManager = !isOwner && !!me?.teamMemberId
     ? !!(await prisma.teamMember.findUnique({ where: { id: me.teamMemberId }, select: { creativeManager: true } }).catch(() => null))?.creativeManager
     : false;
+  // So does the creative approver's seat (the Review Room's primary reviewer):
+  // creative review is never the desk's work.
+  const reviewSeat = !isOwner && !creativeManager && !!me?.teamMemberId
+    ? (await import("@/lib/settings").then((m) => m.reviewRoomRules()).catch(() => null))?.creativeApproverTeamMemberId === me.teamMemberId
+    : false;
   // Kyle and any other office login (Oct 23 2026): the desk, and nothing else.
-  if (!isOwner && !creativeHome && !creativeManager) {
+  if (!isOwner && !creativeHome && !creativeManager && !reviewSeat) {
     const nowMin0 = etMinutes(now0);
     const first = me?.name?.split(" ")[0] ?? "there";
     const deskP = officeDeskFor(me, { now: now0, includeTest }).catch((e: unknown) => { console.warn("officeDesk failed", (e as Error).message); return null; });

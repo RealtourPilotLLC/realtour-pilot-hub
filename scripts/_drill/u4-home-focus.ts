@@ -34,7 +34,7 @@ function textOf(tree: unknown): string {
 // Oct 5: Home streams its secondary sections (Suspense around async server
 // components that await reads started with the page's own). Resolve those
 // named components so the checks read the page as it finishes composing.
-const STREAMED_HOME = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots"]);
+const STREAMED_HOME = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "OfficeDeskSection"]);
 async function settleHome(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settleHome));
   if (!isValidElement<Record<string, unknown>>(tree)) return tree;
@@ -103,7 +103,9 @@ async function main() {
     c.ok("failed review read says so (never a reassuring zero) and keeps the rest of the dashboard", healthOf(failedQueueTree).qc?.toReview === null && attentionOf(failedQueueTree).unavailable.includes("the review queue") && !attentionOf(failedQueueTree).items.some((i) => i.key === "review-mine") && elements(failedQueueTree, "HealthStrip").length === 1 && elements(failedQueueTree, "NeedsAttention").length === 1);
     await signIn(kyle);
     const opsTree = await page({});
-    c.ok("the backup reviewer (the office) gets the same dashboard, with the list one tap away", elements(opsTree, "HealthStrip").length === 1 && elements(opsTree, "KylesDayCard").length === 1 && elements(opsTree, "DailyChecklist").length === 0 && !textOf(opsTree).includes("Your creative review desk"));
+    // Oct 23 2026: the office's home is Kyle's desk (lib/officeDesk); the review seat keeps the dashboard above.
+    const opsDesk = elements(opsTree, "OfficeDesk")[0]?.desk as import("../../src/lib/officeDesk").OfficeDesk | undefined;
+    c.ok("the backup reviewer (the office) gets his desk, with the list one tap away (no review desk, no creative review)", !!opsDesk && elements(opsTree, "HealthStrip").length === 0 && elements(opsTree, "KylesDayCard").length === 0 && elements(opsTree, "DailyChecklist").length === 0 && !textOf(opsTree).includes("Your creative review desk"));
     c.ok("the old ten time blocks are on no Home; the checklist is on its own page", [opsTree, reviewTree].every((t) => elements(t, "HomeRoutine").length === 0 && elements(t, "Block").length === 0 && elements(t, "DailyChecklist").length === 0));
     const { GROUP_ALIASES, forwardedHref } = await import("@/lib/homeAnchors");
     // Oct 13 2026 (Jordan's audit) kept every block the old anchors link to;
@@ -114,7 +116,8 @@ async function main() {
     const list = elements(await listPage({}), "DailyChecklist")[0]?.list as import("../../src/lib/opsHome").KyleChecklist;
     // The delivery evidence and actions live with the video (Video Review
     // Room); the dashboard's QC tile opens it and each video line its cut.
-    c.ok("delivery evidence/actions stay one tap away: the QC & review tile opens the Video Review Room", healthOf(opsTree).qc?.href === "/review" && list.groups[0].lines.filter((l) => l.key.startsWith("video:")).every((l) => l.href.startsWith("/review/")));
+    const deliveryRows = opsDesk?.tabs.find((t) => t.key === "delivery");
+    c.ok("delivery evidence/actions stay one tap away: every QC & Delivery row opens its job, every list video line its cut", !!deliveryRows && [...deliveryRows.now, ...deliveryRows.waiting].every((i) => !!i.href) && list.groups[0].lines.filter((l) => l.key.startsWith("video:")).every((l) => l.href.startsWith("/review/")));
     await signIn(owner);
     const ownerTree = await page({});
     c.ok("owner dashboard carries no checklist (Kyle's day reads his)", elements(ownerTree, "HomeRoutine").length === 0 && elements(ownerTree, "Block").length === 0 && elements(ownerTree, "DailyChecklist").length === 0 && elements(ownerTree, "KylesDayCard").length === 1);

@@ -55,7 +55,7 @@ function elements(tree: unknown, name: string): Props[] {
   const found = (typeof type === "string" ? type : type.name) === name ? [tree.props] : [];
   return [...found, ...Object.values(tree.props).flatMap((part) => elements(part, name))];
 }
-const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "ContentActionsSection", "CaughtProblems"]);
+const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "ContentActionsSection", "CaughtProblems", "OfficeDeskSection"]);
 async function settle(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settle));
   if (!isValidElement<Props>(tree)) return tree;
@@ -311,7 +311,8 @@ async function main() {
     c.ok("buildDashboard(focus: creative) reads no client inbox", creativeDash.health.clients === null && !creativeDash.attention.unavailable.includes("client messages"));
     await signIn(kyle);
     const kHtml = renderToStaticMarkup(expand(await settle(await home({}))) as Parameters<typeof renderToStaticMarkup>[0]);
-    c.ok("Kyle's dashboard is unchanged: Clients waiting and his list", kHtml.includes("Clients waiting") && kHtml.includes("Your list"));
+    // Oct 23 2026: Kyle's home is his desk now (lib/officeDesk); the creative manager's is unchanged.
+    c.ok("Kyle's dashboard is his desk (Oct 23 2026): Client Replies and Closeout, none of the creative manager's cards", kHtml.includes("data-office-desk") && kHtml.includes("Client Replies") && kHtml.includes("Closeout") && !kHtml.includes("data-content-actions"));
 
     // =====================================================================
     c.head("§7 · a stale ADMIN claim grants nothing");
