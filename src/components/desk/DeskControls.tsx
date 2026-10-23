@@ -6,18 +6,19 @@ import { useRouter } from "next/navigation";
 import { Check, Loader2, Send } from "lucide-react";
 import { approveAryeoAction } from "@/app/ops/photo-delivery/actions";
 import { sendThreadText } from "@/app/communications/threadActions";
-import { dismissTask } from "@/app/actions";
+import { dismissTask, sendConfirmationText } from "@/app/actions";
 import { sendPhotographerBriefNow } from "@/app/shoot/brief/actions";
-import { closeoutTickAction, deskWaitAction, finishDayAction, type DeskResult, type WaitInput } from "@/app/deskActions";
-import type { CloseoutKey } from "@/lib/officeDesk";
+import { closeoutTickAction, deskFollowUpAction, deskWaitAction, finishDayAction, type DeskResult, type FollowUpInput, type WaitInput } from "@/app/deskActions";
+import type { CheckKey } from "@/lib/officeDesk";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // The desk's own small controls (Oct 23 2026). Each calls an EXISTING action
-// (Approve and deliver / upload, the Messages text send, Not needed) or one
-// of the desk's two writes (closeout ticks, Waiting on), then refreshes the
-// page in place: the dashboard, its tab and its side panel stay where they
-// are, and the counts recompute.
+// (Approve and deliver / upload, the Messages text send, the confirmation
+// text, Send brief now, Not needed) or one of the desk's own writes (a daily
+// check's tick, Waiting on, Create follow-up), then refreshes the page in
+// place: the dashboard and its side panel stay where they are, and the counts
+// recompute.
 // ---------------------------------------------------------------------------
 
 export const BTN = "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg px-3 text-sm font-semibold disabled:opacity-60";
@@ -93,18 +94,46 @@ export function ReplyBox({ phone, clientId }: { phone: string; clientId: string 
   );
 }
 
-/** A shoot confirmed by phone (or otherwise): the confirmation text is not needed. */
-export function ConfirmControls({ taskId, outboxHref }: { taskId: string; outboxHref: string }) {
+/** The client's shoot confirmation: the hub's own template text (through
+ *  the outbox, never twice), or "Confirmed another way" (by phone). */
+export function ConfirmControls({ taskId }: { taskId: string }) {
   const { busy, msg, run } = useRun();
   if (msg?.ok) return <Said msg={msg} />;
   return (
     <div className="flex flex-wrap items-center gap-2" data-control="confirm">
-      <Link href={outboxHref} className={QUIET}>Send the confirmation text</Link>
+      <button type="button" disabled={busy} onClick={() => run(() => sendConfirmationText(taskId))} className={PRIMARY}>
+        {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Send aria-hidden className="size-4" />} Send the confirmation text
+      </button>
       <button type="button" disabled={busy} onClick={() => run(() => dismissTask(taskId, "already done"))} className={QUIET}>
-        {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />} Confirmed another way
+        <Check aria-hidden className="size-4" /> Confirmed another way
       </button>
       <Said msg={msg} />
     </div>
+  );
+}
+
+/** Create follow-up: a task linked to the client, back at the time picked. */
+export function FollowUpCreate({ clientId, projectId, title }: { clientId: string | null; projectId: string | null; title: string }) {
+  const { busy, msg, run } = useRun();
+  const [text, setText] = useState(title);
+  const [when, setWhen] = useState<FollowUpInput["when"]>("tomorrow");
+  if (msg?.ok) return <Said msg={msg} />;
+  return (
+    <fieldset className="space-y-2 rounded-lg border border-border p-3" data-control="follow-up">
+      <legend className="px-1 text-sm font-semibold">Create a follow-up</legend>
+      <input aria-label="What to follow up on" value={text} onChange={(e) => setText(e.target.value)} className="min-h-11 w-full rounded-lg border border-border bg-surface px-2 text-sm" />
+      <div className="flex flex-wrap items-center gap-2">
+        <select aria-label="When to follow up" value={when} onChange={(e) => setWhen(e.target.value as FollowUpInput["when"])} className="min-h-11 rounded-lg border border-border bg-surface px-2 text-sm">
+          <option value="2h">In 2 hours</option>
+          <option value="tomorrow">Next business day, 10 AM</option>
+          <option value="2days">In 2 business days, 10 AM</option>
+        </select>
+        <button type="button" disabled={busy || text.trim().length < 3} onClick={() => run(() => deskFollowUpAction({ clientId, projectId, title: text, when }))} className={QUIET}>
+          {busy && <Loader2 aria-hidden className="size-4 animate-spin" />} Create follow-up
+        </button>
+        <Said msg={msg} />
+      </div>
+    </fieldset>
   );
 }
 
@@ -147,7 +176,7 @@ export function WaitOn({ taskId, creative, owner }: { taskId: string; creative: 
 }
 
 /** One closeout line's manual tick (a timestamped AppSetting entry). */
-export function CloseoutTick({ dayKey, itemKey, checked, disabled, label }: { dayKey: string; itemKey: CloseoutKey; checked: boolean; disabled: boolean; label: string }) {
+export function CloseoutTick({ dayKey, itemKey, checked, disabled, label }: { dayKey: string; itemKey: CheckKey; checked: boolean; disabled: boolean; label: string }) {
   const { busy, msg, run } = useRun();
   return (
     <span className="inline-flex items-center gap-2">
@@ -165,13 +194,13 @@ export function CloseoutTick({ dayKey, itemKey, checked, disabled, label }: { da
 }
 
 /** The photographer brief's own "Send brief now" (the briefing build's action). */
-export function BriefSend({ teamMemberId, day, name }: { teamMemberId: string; day: string; name: string }) {
+export function BriefSend({ teamMemberId, day, name, resend }: { teamMemberId: string; day: string; name: string; resend: boolean }) {
   const { busy, msg, run } = useRun();
   if (msg?.ok) return <Said msg={msg} />;
   return (
     <div className="flex flex-wrap items-center gap-2" data-control="brief-send">
       <button type="button" disabled={busy} onClick={() => run(() => sendPhotographerBriefNow(teamMemberId, day))} className={QUIET}>
-        {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Send aria-hidden className="size-4" />} Send {name} the brief now
+        {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Send aria-hidden className="size-4" />} {resend ? `Resend ${name} the brief` : `Send ${name} the brief`}
       </button>
       <Said msg={msg} />
     </div>
