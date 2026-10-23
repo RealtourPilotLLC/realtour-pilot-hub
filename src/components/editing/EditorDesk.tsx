@@ -1,5 +1,7 @@
 "use client";
 
+import { zonedDateTime } from "@/lib/datetime";
+
 import { useOptimistic, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -54,7 +56,9 @@ type ActiveWork = { projectId: string; street: string; sinceISO: string | null; 
 // project is due"): the day AND the hour, in the editor's own time.
 function dueWords(j: DeskJob, tz: string): { text: string; late: boolean } {
   if (!j.dueISO) return { text: "No due date", late: false };
-  const when = new Date(j.dueISO).toLocaleString("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).replace(":00", "");
+  // Two calls, plain spaces (lib/datetime): one call printed different words
+  // on the server and in the browser (React #418, audit L4, Oct 22 2026).
+  const when = zonedDateTime(j.dueISO, tz).replace(":00", "");
   const yours = tz === "America/New_York" ? `${when} ET` : `${when} your time`;
   return j.late ? { text: `Late · was due ${yours}`, late: true } : { text: `Due ${yours}`, late: false };
 }

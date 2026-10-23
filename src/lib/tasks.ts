@@ -3298,8 +3298,16 @@ export async function mintEditTask(projectId: string): Promise<void> {
     ? `Due ${etWhen(oneDue.at)}${oneDue.source === "office" ? " (set by the office)" : oneDue.source === "reopened" ? " (the reopened work)" : ""}.${oneDue.aimAt ? ` Aim to hand it in by ${etWhen(oneDue.aimAt)} so review has time.` : ""}`
     : "No due date yet.";
 
+  // TWO OR MORE VIDEOS ON A LISTING JOB (audit H4a, Oct 22 2026): the card
+  // names every video, so a video the order added mid-job is on it too (538
+  // Onward Ave's card said "Premium reel" for a premium and a standard reel).
+  // A monthly batch keeps its one line, as before.
+  const owedVideos = monthly ? [] : await import("@/lib/reviewCuts").then((m) => m.cutSlots(projectId)).catch(() => []);
+  const multi = owedVideos.length > 1;
+  const cardTitle = (multi ? `Edit ${owedVideos.length} videos — ${street}` : `Edit — ${street}`).slice(0, 120);
+  const what = multi ? `${owedVideos.length} videos for ${street} (${owedVideos.map((s) => s.label).join(", ")}). Raws are in — cut each video` : `${tierLabel} reel for ${street}. Raws are in — cut the video`;
   const summary =
-    `${tierLabel} reel for ${street}. Raws are in — cut the video. ${dueWords} ` +
+    `${what}. ${dueWords} ` +
     `RAW footage: ${rawUrl} · Brief: ${briefUrl}`;
 
   const key = `edit-video-${projectId}`;
@@ -3345,6 +3353,8 @@ export async function mintEditTask(projectId: string): Promise<void> {
     const route: { assignedKey?: string; assignedManually?: boolean } =
       existing.assignedManually || (startedByHolder && !pin.pinned) || !assignedKey ? {} : { assignedKey, ...(pin.pinned ? { assignedManually: true } : {}) };
     const refresh = {
+      // The title follows the videos owed (audit H4a): "Edit 2 videos — …".
+      title: cardTitle,
       dueAt: refreshedDue,
       priority: priorityFor(refreshedDue),
       // A bounce writes "Round N — …" here (addRoundToEditCard, Sep 8): that
@@ -3410,7 +3420,7 @@ export async function mintEditTask(projectId: string): Promise<void> {
   await withEditorAssignmentChange(projectId, (tx) => tx.smartTask.create({
     data: {
       taskType: "edit_video",
-      title: `Edit — ${street}`.slice(0, 120),
+      title: cardTitle,
       summary: summary.slice(0, 500),
       reasonCreated: assignedKey
         ? `Raws landed — ${tierLabel} reel routed to ${editorName}`

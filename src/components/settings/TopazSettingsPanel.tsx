@@ -41,7 +41,10 @@ export type TopazUsage = {
   balance: number | null;
   todayRenders: number;
   monthRenders: number;
-  monthCredits: number;
+  /** null for anyone but the owner (credits are money, canSeeMoney) */
+  monthCredits: number | null;
+  /** the balance and the month's credits are on the strip (the owner) */
+  showsMoney?: boolean;
 };
 
 /** His desktop sliders, in his words, and the API parameter each one is our
@@ -157,24 +160,34 @@ export function TopazSettingsPanel({
               <b className="font-semibold text-foreground/80">{usage.monthRenders}</b> video
               {usage.monthRenders === 1 ? "" : "s"} this month
             </span>
-            <span>
-              <b className="font-semibold text-foreground/80">{usage.monthCredits.toLocaleString()}</b> credits this month
-            </span>
+            {usage.showsMoney && usage.monthCredits !== null && (
+              <span>
+                <b className="font-semibold text-foreground/80">{usage.monthCredits.toLocaleString("en-US")}</b> credits this month
+              </span>
+            )}
             <span>
               <b className="font-semibold text-foreground/80">{usage.todayRenders}</b> today
             </span>
-            <span>
-              Credits left:{" "}
-              <b className="font-semibold text-foreground/80">
-                {usage.balance === null ? (usage.connected ? "couldn't ask Topaz just now" : "—") : usage.balance.toLocaleString()}
-              </b>
-            </span>
+            {usage.showsMoney && (
+              <span>
+                Credits left:{" "}
+                <b className="font-semibold text-foreground/80">
+                  {usage.balance === null ? (usage.connected ? "couldn't ask Topaz just now" : "—") : usage.balance.toLocaleString("en-US")}
+                </b>
+              </span>
+            )}
           </div>
         )}
 
+        {!isOwner && (
+          <p className="mt-2 text-[12px] leading-relaxed text-muted" data-topaz-limits-owner-only>
+            Only Jordan changes these spending limits. The other settings on this card are yours to save.
+          </p>
+        )}
         <div className="mt-2 space-y-1.5">
           <NumRow
             label="Most one video may cost"
+            locked={!isOwner}
             hint="a minute of 1080p is about 8 credits, so 20 is roughly a two-and-a-half-minute video. Anything dearer is left out and told to you rather than charged."
             value={r.maxCreditsPerVideo}
             onChange={(n) => set({ maxCreditsPerVideo: n })}
@@ -187,6 +200,7 @@ export function TopazSettingsPanel({
             hint="counted in Eastern time, so an evening approval doesn't spill into tomorrow's allowance"
             value={r.maxRendersPerDay}
             onChange={(n) => set({ maxRendersPerDay: n })}
+            locked={!isOwner}
             min={0}
             max={200}
             suffix="videos"
@@ -196,15 +210,17 @@ export function TopazSettingsPanel({
             hint="you finish about 49 a month, with a busy month near 68"
             value={r.maxRendersPerMonth}
             onChange={(n) => set({ maxRendersPerMonth: n })}
+            locked={!isOwner}
             min={0}
             max={1000}
             suffix="videos"
           />
           <NumRow
             label="Most credits in one month"
-            hint="this is the limit that actually bounds the bill. Your plan includes 400 a month; 900 works out around $79 all-in, under your $100 cap."
+            hint={isOwner ? "this is the limit that actually bounds the bill. Your plan includes 400 a month; 900 works out around $79 all-in, under your $100 cap." : "this is the limit that actually bounds the bill."}
             value={r.maxCreditsPerMonth}
             onChange={(n) => set({ maxCreditsPerMonth: n })}
+            locked={!isOwner}
             min={0}
             max={4000}
             suffix="credits"
@@ -214,6 +230,7 @@ export function TopazSettingsPanel({
             hint="so it can never run out halfway through a delivery. You get told once a day while it is stopped."
             value={r.minBalanceCredits}
             onChange={(n) => set({ minBalanceCredits: n })}
+            locked={!isOwner}
             min={0}
             max={2000}
             suffix="credits"
@@ -586,6 +603,7 @@ function Num({
   max,
   suffix,
   wide,
+  locked,
 }: {
   value: number;
   onChange: (n: number) => void;
@@ -593,12 +611,17 @@ function Num({
   max: number;
   suffix?: string;
   wide?: boolean;
+  /** shown, not changeable (the owner's spending limits, for Kyle) */
+  locked?: boolean;
 }) {
   return (
     <span className="inline-flex shrink-0 items-center gap-1.5">
       <input
         inputMode="numeric"
         value={String(value)}
+        readOnly={locked}
+        disabled={locked}
+        aria-readonly={locked || undefined}
         onChange={(e) => {
           const n = Number(e.target.value.replace(/[^\d]/g, ""));
           if (!Number.isNaN(n)) onChange(Math.min(max, Math.max(min, n)));
@@ -621,6 +644,7 @@ function NumRow({
   min,
   max,
   suffix,
+  locked,
 }: {
   label: string;
   hint: string;
@@ -629,14 +653,15 @@ function NumRow({
   min: number;
   max: number;
   suffix: string;
+  locked?: boolean;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2">
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2" data-locked={locked ? "" : undefined}>
       <span className="min-w-0 flex-1 text-[13px]">
         <b>{label}</b>
         <span className="text-muted"> — {hint}</span>
       </span>
-      <Num value={value} onChange={onChange} min={min} max={max} suffix={suffix} wide />
+      <Num value={value} onChange={onChange} min={min} max={max} suffix={suffix} wide locked={locked} />
     </div>
   );
 }

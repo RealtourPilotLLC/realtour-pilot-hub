@@ -7,7 +7,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { RoutingRulesForm } from "@/components/settings/RoutingRulesForm";
 import { getCurrentUser } from "@/lib/auth/user";
-import { canAccess } from "@/lib/auth/access";
+import { canAccess, canSeeMoney } from "@/lib/auth/access";
 import { authEnforced } from "@/lib/auth/guards";
 import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, eveningHoursOffSchedule, reviewRoomRules, topazSettings, DEFAULT_TOPAZ_PARAMS, type TopazSettings } from "@/lib/settings";
 import { textTemplateRows } from "@/lib/textTemplateStore";
@@ -102,15 +102,20 @@ async function TopazCard({ initial, isOwner }: { initial: TopazSettings; isOwner
   // control. Reading it asks Topaz for the balance (free, starts nothing), so
   // it is capped and falls back to no strip rather than holding the card open.
   const topazLane = await capped(topazDashboard().catch(() => null), 6000);
+  // Credits are money (the plan tops itself up): the balance and the month's
+  // spend reach the owner's browser only (canSeeMoney, audit L6 / P-L1, Oct 22
+  // 2026). Kyle sees the render counts.
+  const money = canSeeMoney(isOwner ? "OWNER" : null);
   const usage: TopazUsage | null = topazLane
     ? {
         connected: topazLane.connected,
         // null, never 0: "we couldn't ask" and "you have none left" are
         // different problems with different answers.
-        balance: topazLane.balance ? topazLane.balance.available : null,
+        balance: money && topazLane.balance ? topazLane.balance.available : null,
         todayRenders: topazLane.today.renders,
         monthRenders: topazLane.month.renders,
-        monthCredits: topazLane.month.credits,
+        monthCredits: money ? topazLane.month.credits : null,
+        showsMoney: money,
       }
     : null;
   // "Try these settings" (Oct 22 2026) spends credits: its lists are read for

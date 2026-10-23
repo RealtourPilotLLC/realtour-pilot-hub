@@ -310,6 +310,28 @@ export function refuseOwnWork(
     : "This is on your own version — the reviewer classifies it.";
 }
 
+/**
+ * NOBODY APPROVES A VERSION THEY UPLOADED (audit M5 / P-M2, Oct 22 2026).
+ * refuseOwnWork compares editor keys, so a login with none (the creative
+ * manager, the office uploading on somebody's behalf) passed it for a version
+ * it had uploaded itself. The login that sent a version in is already recorded
+ * on every cut that went through a send-for-review check: the check row
+ * (CutSelfCheck.actorUserId) is written with the reservation (an upload) or
+ * with the press (a Final-folder send), in the same transaction, under the
+ * session that did it. Any check on the version whose login is the approver's
+ * refuses the approval. No schema change. Null = go ahead; sessionless local
+ * dev has no login to compare and goes ahead, like every guard.
+ */
+export async function refuseOwnUpload(
+  me: { id: string; impersonating: boolean } | null | undefined,
+  submissionId: string,
+): Promise<string | null> {
+  if (!me?.id || me.impersonating) return null;
+  const mine = await prisma.cutSelfCheck.findFirst({ where: { submissionId, actorUserId: me.id }, select: { id: true } });
+  return mine ? "You uploaded this version, so somebody else approves it." : null;
+}
+
+
 /** Could this roster row hold a cut? Owner/admin with an active login, or a
  *  named seat with any active login. What "hand it to" may choose from. */
 export async function eligibleReviewer(teamMemberId: string): Promise<{ id: string; name: string } | null> {

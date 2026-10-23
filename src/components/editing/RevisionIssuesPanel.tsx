@@ -1,5 +1,7 @@
 "use client";
 
+import { etMonthDayTime } from "@/lib/datetime";
+
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { ClipboardCheck, ListChecks, Loader2 } from "lucide-react";
@@ -38,7 +40,9 @@ export type AttestationView = {
 };
 
 const fmtT = (t: number | null) => (t == null ? "" : `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")} `);
-const when = (iso: string) => new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+// Two calls, plain spaces (lib/datetime): one call printed different words on
+// the server and in the browser (React #418, audit L4, Oct 22 2026).
+const when = (iso: string) => etMonthDayTime(iso);
 
 /** What an editor reads for each state (Oct 15 2026 audit: "Editor says fixed", "Verified" are the reviewer's words). */
 const EDITOR_STATE_LABEL: Record<string, string> = { OPEN: "To fix", REOPENED: "Back to fix", ADDRESSED: "You marked it fixed", VERIFIED: "Checked", NOT_APPLICABLE: "Not needed", DUPLICATE: "Same as another" };

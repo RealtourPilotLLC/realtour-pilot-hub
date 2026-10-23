@@ -1,5 +1,7 @@
 "use client";
 
+import { zonedDateTime, zonedTime } from "@/lib/datetime";
+
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { CalendarClock, Camera, CheckCircle2, ChevronLeft, ChevronRight, Clock, Info, Loader2, Lock, MapPin, MoveRight, Phone, XCircle } from "lucide-react";
@@ -55,10 +57,10 @@ const dayLabel = (date: string) =>
   new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
 // The client's own timezone (enrollment.timezone, ET by default) — every
 // time on this card is printed in it and labelled with it.
-const timeLabel = (iso: string, tz: string) =>
-  new Date(iso).toLocaleTimeString("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" });
-const whenLabel = (iso: string, tz: string) =>
-  new Date(iso).toLocaleString("en-US", { timeZone: tz, weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" });
+// Two calls, plain spaces (lib/datetime): one call printed different words on
+// the server and in the browser (React #418, audit L4, Oct 22 2026).
+const timeLabel = (iso: string, tz: string) => zonedTime(iso, tz);
+const whenLabel = (iso: string, tz: string) => zonedDateTime(iso, tz, { weekday: "long", month: "long", day: "numeric" });
 /** The zone's abbreviation AS IT READS ON THAT DATE (Sep 28). The old label
  *  read today's, so a November session opened in September said "EDT" on a
  *  time that is EST — an hour's worth of wrong on the client's own screen. */

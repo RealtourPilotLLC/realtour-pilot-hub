@@ -513,7 +513,7 @@ export async function finalizeUpload(
       // videoStyle: §7.4 — the gate reads the stamp the page resolved from,
       // not the product names alone. waivedAt: an office "not required" owes
       // no handoff (O05's whole-wrap-up test).
-      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, notCompletedReason: true, videoStyle: true, waivedAt: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { id: true, type: true, label: true, notCompletedReason: true, videoStyle: true, waivedAt: true } },
     },
   });
   const scope: "photos" | "video" | null = data.scope === "photos" || data.scope === "video" ? data.scope : null;
@@ -742,7 +742,14 @@ export async function finalizeUpload(
     // video already has count, as the first video's prior brief does.
     if (wantsVideoGate && data.laterVideoInstructions && typeof data.laterVideoInstructions === "object") {
       const [{ videoInstructionsFor }, pv] = await Promise.all([import("@/lib/deliverableOutputs"), import("@/lib/perVideoInstructions")]);
-      const later = (await videoInstructionsFor(projectId).catch(() => [])).filter((r) => r.number > 1);
+      // A video the photographer marked "couldn't complete" (or the office
+      // marked not required) owes no instructions, and neither does one waiting
+      // on a second shoot (lib/secondShootCore): its box stays, nothing is
+      // required until its footage is in (audit H4b, Oct 22 2026). The color
+      // profile check below used to run before laterVideoGap's own waiting
+      // test, so both of those blocked the submit.
+      const excusedRows = new Set((prior?.deliverables ?? []).filter((d) => d.notCompletedReason || d.waivedAt).map((d) => d.id));
+      const later = (await videoInstructionsFor(projectId).catch(() => [])).filter((r) => r.number > 1 && !r.waiting && !excusedRows.has(r.deliverableId));
       for (const r of later) {
         const incoming = typeof data.laterVideoInstructions[r.key] === "string" ? data.laterVideoInstructions[r.key].trim() : "";
         const own = incoming || r.own || "";

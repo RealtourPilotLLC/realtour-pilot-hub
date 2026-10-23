@@ -231,6 +231,9 @@ async function linkVisitorsFor(enrollmentIds: string[]): Promise<Map<string, num
   return out;
 }
 
+/** What a scrubbed note that was ALL price talk reads as (the /edit placeholder). */
+export const HELD_BACK_NOTE = "(a note was held back; ask Jordan in the team messages)";
+
 /** One portal note as STAFF read it (the Review Room's "Client's notes"). */
 export type StaffClientNote = {
   id: string;
@@ -257,7 +260,7 @@ export type StaffClientNote = {
  * the newest `take` notes with their replies under them, each with its author
  * (staff on the client's behalf marked as such) and its time, grouped by cut.
  */
-export async function clientNotesForReviewRoom(projectId: string, take = 30): Promise<{ submissionId: string; notes: StaffClientNote[] }[]> {
+export async function clientNotesForReviewRoom(projectId: string, take = 30, opts: { scrub?: boolean } = {}): Promise<{ submissionId: string; notes: StaffClientNote[] }[]> {
   const roots = (
     await prisma.portalComment.findMany({ where: { projectId, parentId: null }, orderBy: { createdAt: "desc" }, take })
   ).reverse();
@@ -270,8 +273,12 @@ export async function clientNotesForReviewRoom(projectId: string, take = 30): Pr
     prisma.project.findUnique({ where: { id: projectId }, select: { client: { select: { name: true } } } }),
   ]);
   const clientName = project?.client?.name || "The client";
+  // THE CLIENT'S OWN WORDS, MONEY-SCRUBBED for anyone but the owner and Kyle
+  // (audit M6 / P-M3, Oct 22 2026): the same scrub /edit/<id> gives an editor.
+  const { stripMoneySentences } = await import("@/lib/text");
+  const bodyOf = (b: string) => (opts.scrub ? stripMoneySentences(b) || HELD_BACK_NOTE : b);
   const view = (r: (typeof all)[number]): StaffClientNote => ({
-    id: r.id, submissionId: r.submissionId, timeSec: r.timeSec, body: r.body, status: r.status, createdAtISO: r.createdAt.toISOString(),
+    id: r.id, submissionId: r.submissionId, timeSec: r.timeSec, body: bodyOf(r.body), status: r.status, createdAtISO: r.createdAt.toISOString(),
     author: staffViewLabel(r, names, clientName, visitors.get(r.id) ?? null),
     onBehalf: !!r.staffUserId, viaLink: !r.staffUserId && !r.clientUserId,
     resolvedAtISO: r.resolvedAt?.toISOString() ?? null, resolvedBy: r.resolvedBy, replies: [],
@@ -1381,10 +1388,18 @@ export async function repairPortalRevisionRequests(opts: { now?: Date; max?: num
   for (const s of stuck) {
     try { if (await routePortalRequest(s.id)) routed++; } catch (e) { console.error("[repairPortalRevisionRequests] route failed", s.id, e); }
   }
-  const open = await prisma.contentReviewWindow.findMany({ where: { state: "CHANGES_REQUESTED" }, orderBy: { updatedAt: "desc" }, take: 200, select: { id: true, submissionId: true, enrollmentId: true, decisionId: true, updatedAt: true } });
+  const open = await prisma.contentReviewWindow.findMany({ where: { state: "CHANGES_REQUESTED" }, orderBy: { updatedAt: "desc" }, take: 200, select: { id: true, submissionId: true, enrollmentId: true, decisionId: true, updatedAt: true, closedReason: true } });
   for (const w of open) {
     if (!w.decisionId) {
       if (w.updatedAt >= cutoff) continue;
+      // A VIDEO REOPENED BY A TEXT, AN EMAIL, A CALL OR THE REVIEW ROOM (audit
+      // M7, Oct 22 2026) carries no portal decision on purpose: the client
+      // asked outside the portal, and cutReopen.reopenBookkeeping closes the
+      // window as changes requested with closedReason REOPENED_<source>. That
+      // is the reopen's own state, not a request whose decision was lost, so
+      // it is never "given back": flipping it to OPEN left a window the client
+      // could approve while the editor was making the changes.
+      if (w.closedReason?.startsWith("REOPENED_")) continue;
       const written = await prisma.clientDecision.findFirst({
         where: { windowId: w.id, submissionId: w.submissionId, decision: "REQUEST_CHANGES", receiptState: { not: "SUPERSEDED" } },
         orderBy: { decidedAt: "desc" }, select: { id: true },

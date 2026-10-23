@@ -1,5 +1,7 @@
 "use client";
 
+import { zonedDateTime } from "@/lib/datetime";
+
 import { useEffect, useId, useRef, useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { Trash2, Undo2 } from "lucide-react";
@@ -111,8 +113,9 @@ export type RemovedRow = {
 };
 
 const ET = "America/New_York";
-const when = (iso: string) =>
-  new Date(iso).toLocaleString("en-US", { timeZone: ET, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+// Two calls, plain spaces (lib/datetime): one call printed different words on
+// the server and in the browser (React #418, audit L4, Oct 22 2026).
+const when = (iso: string) => zonedDateTime(iso, ET, { month: "short", day: "numeric" });
 const daysLeft = (iso: string) =>
   Math.max(0, Math.ceil((new Date(iso).getTime() - Date.now()) / 86_400_000));
 

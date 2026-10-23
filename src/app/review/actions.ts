@@ -5,9 +5,9 @@ import { revalidatePath } from "next/cache";
 // measurement in here that nobody is waiting on (finishCutUpload, below).
 import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { addressableKeys, authEnforced, requireAdmin, requireCutReviewer } from "@/lib/auth/guards";
+import { addressableKeys, authEnforced, canViewProject, requireAdmin, requireCutReviewer } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
-import { isCreativeLead } from "@/lib/auth/access";
+import { isCreativeLead, isOffice } from "@/lib/auth/access";
 import { editorForDeliverable, editorMeta, TEAM_MEMBER_EDITOR_KEYS, type EditorKey } from "@/lib/editors";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { notifyInApp, type NotifyTarget } from "@/lib/notify";
@@ -1141,10 +1141,13 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
   if (!(await currentReviewCut(submission))) {
     return { ok: false, message: "A newer version of this cut has replaced that one — rule on the newest version instead." };
   }
-  // Nobody approves their own version, whatever seat or role they hold (§8.1).
+  // Nobody approves their own version, whatever seat or role they hold (§8.1)
+  // — by their editor key, and (Oct 22 2026, audit M5) by the login that
+  // uploaded it: the creative manager, or the office on somebody's behalf.
   {
-    const { refuseOwnWork } = await import("@/lib/reviewerAssignment");
-    const own = refuseOwnWork(await getCurrentUser().catch(() => null), submission.submittedByKey, "cut");
+    const { refuseOwnWork, refuseOwnUpload } = await import("@/lib/reviewerAssignment");
+    const meNow = await getCurrentUser().catch(() => null);
+    const own = refuseOwnWork(meNow, submission.submittedByKey, "cut") ?? (await refuseOwnUpload(meNow, submission.id));
     if (own) return { ok: false, message: own };
   }
   const { folderDriftCheck } = await import("@/lib/selfCheckStore");
@@ -1323,6 +1326,12 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
       })
     ).resolved;
   } catch { /* the approval itself already landed */ }
+  // A creative review this approval (or the revision it closed) answered
+  // closes itself (audit M1, Oct 22 2026, lib/creativeReview). Database only.
+  try {
+    const { closeSettledCreativeReviews } = await import("@/lib/creativeReview");
+    await closeSettledCreativeReviews({ projectId: submission.projectId });
+  } catch { /* the hourly sync closes what this missed */ }
 
   // THE HONEST NEXT STEP (Oct 5). This used to end by telling the reviewer Kyle
   // had been pinged to deliver, and rang Ready to deliver, on every approval —
@@ -2168,7 +2177,9 @@ export async function startCutUpload(input: {
   //   · it never lets an EDITOR past. Jordan and Kyle can wave one through,
   //     with their name on it, below.
   const overSpec = isOverExportSpec(input.width, input.height);
-  const mayOverride = isCreativeLead(who.role);
+  // Jordan and Kyle only (audit M5 / P-M2, Oct 22 2026): the comment above
+  // always said so, and the creative manager's seat is not the office's.
+  const mayOverride = isOffice(who.role);
   const waved = overSpec && mayOverride && input.overrideExportSpec === true;
   if (overSpec && !waved) return { ok: false, message: exportRefusalMessage(input.width, input.height) };
   // A WITHDRAWN round is not a version of this cut any more (Sep 16) — it is
@@ -2556,28 +2567,40 @@ export async function abandonCutUpload(submissionId: string, blobUrl?: string | 
  *  Same key resolution as requireTaskAccess — editor key, login-name slug,
  *  roster-name slug — so an editor renamed away from the roster spelling
  *  doesn't lose the ability to take their own cut back. */
-type TakeBackActor = { office: boolean; owner: boolean; keys: Set<string>; name: string };
+type TakeBackActor = {
+  /** Jordan or Kyle (isOffice): the only people who may pull an APPROVED or
+   *  sent cut, or delete its finished file from Dropbox (audit M5 / P-M1,
+   *  Oct 22 2026). */
+  office: boolean;
+  /** the office or the creative manager (isCreativeLead): tidies the Room's
+   *  cuts still waiting on a verdict like the office does (Oct 21 2026) */
+  lead: boolean;
+  owner: boolean; keys: Set<string>; name: string;
+};
 
 async function takeBackActor(): Promise<{ ok: true; actor: TakeBackActor } | { ok: false; message: string }> {
   const me = await getCurrentUser().catch(() => null);
   if (!me) {
     // Same rule as every other guard: local dev with auth off acts as the desk.
-    if (!authEnforced()) return { ok: true, actor: { office: true, owner: true, keys: new Set(), name: LOCAL_DEV_AUTHOR } };
+    if (!authEnforced()) return { ok: true, actor: { office: true, lead: true, owner: true, keys: new Set(), name: LOCAL_DEV_AUTHOR } };
     return { ok: false, message: "Sign in to take a cut back." };
   }
   // "View as" is read-only platform-wide — a previewing owner must not withdraw
   // a cut under an editor's name.
   if (me.impersonating) return { ok: false, message: "You're previewing another user — exit the preview to make changes." };
-  // The creative manager tidies the Room like the office (Oct 21 2026).
-  const office = isCreativeLead(me.realRole);
-  if (!office && me.realRole !== "EDITOR") {
+  // The creative manager tidies the Room like the office (Oct 21 2026) for
+  // cuts still waiting on a verdict. An approved or sent cut, and the finished
+  // file behind it, stay Jordan's and Kyle's (audit M5 / P-M1, Oct 22 2026).
+  const lead = isCreativeLead(me.realRole);
+  const office = isOffice(me.realRole);
+  if (!lead && me.realRole !== "EDITOR") {
     return { ok: false, message: "Only the editor who sent this cut in, Jordan, Kyle or the creative manager can take it back." };
   }
   // The one answer to "which keys are theirs" (guards.addressableKeys, Oct 20
   // 2026): an editor's assigned key and roster name, never the free-text login
   // name, whose first-name slug could match another editor's cuts.
   const keys = await addressableKeys(me).catch(() => new Set<string>());
-  return { ok: true, actor: { office, owner: me.realRole === "OWNER", keys, name: (await displayNameFor(me)) ?? "Someone" } };
+  return { ok: true, actor: { office, lead, owner: me.realRole === "OWNER", keys, name: (await displayNameFor(me)) ?? "Someone" } };
 }
 
 /** The refusals, in plain words (Jordan's rule 4). Null = go ahead.
@@ -2600,7 +2623,7 @@ function whyNotTakeBack(
   if (mode === "move" && sub.status === "WITHDRAWN") return "That version was withdrawn — upload the file on the right job instead.";
   if (mode === "move" && sub.status === "SUPERSEDED") return "A newer version of this cut has replaced that one — move the newest version instead.";
   const mine = !!sub.submittedByKey && actor.keys.has(sub.submittedByKey);
-  if (!actor.office && !mine) return `That cut was sent in by someone else — ask Jordan or Kyle to ${verb} it.`;
+  if (!actor.lead && !mine) return `That cut was sent in by someone else — ask Jordan or Kyle to ${verb} it.`;
   // Jordan's call, in his words: an approved cut is his to pull, not the
   // editor's. Name the reviewer so the refusal tells them what to do next.
   if (sub.status === "APPROVED" && !actor.office) {
@@ -3182,7 +3205,7 @@ async function reassignCutInner(
   // An editor may only move a cut onto a job they actually hold — the same
   // scope startCutUpload enforces, because an editor must never be able to
   // drop a video onto a co-editor's job.
-  if (!who.actor.office) {
+  if (!who.actor.lead) {
     const { holdersFor } = await import("@/lib/editorWork");
     const held = (await holdersFor([target.id])).get(target.id);
     const mine = [...who.actor.keys].some((key) => held?.has(key));
@@ -3404,6 +3427,10 @@ async function removeStrandedFinalInner(submissionId: string): Promise<{ ok: boo
 export async function cutTakeBackFlags(projectId: string): Promise<CutTakeBackInfo[]> {
   const who = await takeBackActor();
   if (!who.ok) return [];
+  // THE JOB'S OWN PEOPLE ONLY (audit P-L2, Oct 22 2026): takeBackActor admits
+  // any editor, and this lists every cut on whatever job id it is handed
+  // (Dropbox paths, file names, withdrawal reasons, other jobs' streets).
+  if (!who.actor.office && !(await canViewProject(projectId))) return [];
   const rows = await prisma.reviewSubmission.findMany({
     where: { projectId, status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } },
     orderBy: { round: "asc" },
@@ -3452,7 +3479,7 @@ export async function cutMoveTargets(submissionId: string, query: string): Promi
   const sub = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true } });
   if (!sub) throw new Error("That version no longer exists. Close this dialog and check the current cut.");
   const q = (query ?? "").trim().slice(0, 80);
-  const held = who.actor.office
+  const held = who.actor.lead
     ? null
     : (await prisma.smartTask.findMany({
         where: {

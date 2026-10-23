@@ -1,5 +1,7 @@
 "use client";
 
+import { etMonthDayTime } from "@/lib/datetime";
+
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -38,7 +40,9 @@ import type { BrandBannerItem } from "@/components/editing/BrandUpdatesBanner";
 // links to it.
 // ---------------------------------------------------------------------------
 
-const when = (iso: string) => new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+// Two calls, plain spaces (lib/datetime): one call printed different words on
+// the server and in the browser (React #418, audit L4, Oct 22 2026).
+const when = (iso: string) => etMonthDayTime(iso);
 
 export function BriefGotIt({
   projectId,

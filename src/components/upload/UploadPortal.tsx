@@ -828,22 +828,7 @@ export function UploadPortal({
       return [v.key, st ? composeVideoInstructions(v.shape === "full" ? st.style : null, st.sections, st.color) : ""];
     }),
   );
-  // What a later video still needs before the video half can go (the server
-  // asks the same on the first submit). A video that already has words of
-  // its own is never re-asked, like the first video's prior brief.
-  const laterMissing = laterVideos.flatMap((v) => {
-    if (v.own?.trim()) return [];
-    // Waiting on a second shoot (Oct 22 2026): not asked for until its footage is in.
-    if (v.waiting) return [];
-    const st = laterVids[v.key];
-    const name = `video ${v.number}`;
-    return [
-      !st?.color ? `pick the color profile for ${name}` : null,
-      v.shape === "full" && !st?.sections.vision.trim() ? `the vision for ${name}` : null,
-      v.shape === "full" && !st?.style ? `pick an edit style for ${name}` : null,
-      v.shape === "agent_intro" && !st?.sections.intro.trim() ? `the agent's intro script for ${name}` : null,
-    ].filter((x): x is string => !!x);
-  });
+
   // What "answered" means depends on the package flavor: agent-intro packages
   // need the typed intro script; everything else needs vision + style.
   // Monthly plans: how many videos actually got filmed. The editor works from
@@ -991,6 +976,26 @@ export function UploadPortal({
   const [notDone, setNotDone] = useState<Record<string, string>>(
     Object.fromEntries(deliverables.filter((d) => d.notCompletedReason).map((d) => [d.id, d.notCompletedReason as string])),
   );
+  // What a later video still needs before the video half can go (the server
+  // asks the same on the first submit). A video that already has words of
+  // its own is never re-asked, like the first video's prior brief. Read after
+  // the "couldn't complete" answers (Oct 22 2026, audit H4b): a video marked
+  // couldn't complete (or not required by the office) owes no instructions.
+  const laterMissing = laterVideos.flatMap((v) => {
+    if (v.own?.trim()) return [];
+    // Waiting on a second shoot (Oct 22 2026): not asked for until its footage is in.
+    if (v.waiting) return [];
+    const deliverableId = v.key.split(":")[0];
+    if (notDone[deliverableId] || deliverables.some((d) => d.id === deliverableId && d.waivedAt)) return [];
+    const st = laterVids[v.key];
+    const name = `video ${v.number}`;
+    return [
+      !st?.color ? `pick the color profile for ${name}` : null,
+      v.shape === "full" && !st?.sections.vision.trim() ? `the vision for ${name}` : null,
+      v.shape === "full" && !st?.style ? `pick an edit style for ${name}` : null,
+      v.shape === "agent_intro" && !st?.sections.intro.trim() ? `the agent's intro script for ${name}` : null,
+    ].filter((x): x is string => !!x);
+  });
   const [reasonFor, setReasonFor] = useState<string | null>(null);
   const [reasonText, setReasonText] = useState("");
   // IN-PAGE confirmation, never window.confirm(). The portal is opened from a

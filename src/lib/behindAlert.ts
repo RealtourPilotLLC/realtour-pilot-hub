@@ -62,7 +62,11 @@ export type BehindState = {
 
 export type BehindLevel = BehindState["level"];
 export type BehindKind = "video" | "photo";
-export type BehindItem = { kind: BehindKind; projectId: string; street: string; lateHours: number; who: string; href: string };
+export type BehindItem = {
+  kind: BehindKind; projectId: string; street: string; lateHours: number; who: string; href: string;
+  /** a monthly program video (Oct 22 2026, audit M2), dated by its own month promise */
+  program?: boolean;
+};
 
 const HOUR = 3_600_000;
 /** Three or more late, or one this many hours late: very behind. */
@@ -138,13 +142,20 @@ async function lateVideos(now: Date, fresh: boolean): Promise<BehindItem[]> {
   const board = await videoDeliveryBoard(near ? (fresh ? { fresh: true } : {}) : { now });
   if (board.unavailable) throw new Error("the video delivery screen could not be read");
   const rows = VIDEO_LANES.filter((l) => l !== "delivered").flatMap((l) => board.lanes[l]).filter((r) => r.late);
-  if (!rows.length) return [];
+  // MONTHLY PROGRAM VIDEOS COUNT TOO (audit M2, Oct 22 2026). The board is the
+  // listing videos' (it leaves a program job out unless the office switched a
+  // version to Aryeo), so 99 Bridge St sat late for ten days with no alert.
+  // Each program video is dated by its own month promise (programWatch), a
+  // video waiting on a second shoot stays out, and a switched version already
+  // on the board is not counted twice.
+  const program = await lateProgramVideos(now, new Set(rows.map((r) => r.projectId)));
+  if (!rows.length) return program;
   const projects = await prisma.project.findMany({
     where: { id: { in: [...new Set(rows.map((r) => r.projectId))] } },
     select: { id: true, editorVendorKey: true, editor: { select: { name: true } } },
   });
   const byId = new Map(projects.map((p) => [p.id, p]));
-  return rows.map((r) => {
+  return [...rows.map((r) => {
     const p = byId.get(r.projectId);
     const editor = p?.editor?.name ? first(p.editor.name) : p?.editorVendorKey ? "the outside editor" : null;
     const version = r.round ? ` (version ${r.round})` : "";
@@ -156,7 +167,41 @@ async function lateVideos(now: Date, fresh: boolean): Promise<BehindItem[]> {
     else if (/^Not shot yet/i.test(r.stage)) who = "Not shot yet";
     else who = editor ? `With ${editor} (${r.stage.toLowerCase()})` : `${r.stage}, not with an editor yet`;
     return { kind: "video" as const, projectId: r.projectId, street: r.street, lateHours: r.lateHours ?? 0, who, href: r.reviewHref ?? `/edit/${r.projectId}` };
-  });
+  }), ...program];
+}
+
+/** Late monthly program videos (programWatch.programVideos: each video's own
+ *  promise, LATE = past it and not on the client's portal). Test clients and
+ *  videos waiting on a second shoot are left out. */
+async function lateProgramVideos(now: Date, onBoard: Set<string>): Promise<BehindItem[]> {
+  const [{ programVideos }, { STAGE_STAFF_WORDS }, { syntheticClientIds }, { waitingHoldsByProject, slotKeyOf }] = await Promise.all([
+    import("@/lib/programWatch"),
+    import("@/lib/programWatchCore"),
+    import("@/lib/syntheticClients"),
+    import("@/lib/reviewCuts"),
+  ]);
+  const excluded = new Set(await syntheticClientIds());
+  const late = (await programVideos({ now })).filter(
+    (r) => r.evaluation?.status === "LATE" && !!r.promisedAt && !excluded.has(r.clientId)
+      // an approved version the office switched to Aryeo is already a board row
+      && !(onBoard.has(r.projectId) && r.evaluation.stage === "FINAL_TOUCHES"),
+  );
+  if (!late.length) return [];
+  const ids = [...new Set(late.map((r) => r.projectId))];
+  const [held, projects] = await Promise.all([
+    waitingHoldsByProject(ids),
+    prisma.project.findMany({ where: { id: { in: ids } }, select: { id: true, title: true, editorVendorKey: true, editor: { select: { name: true } } } }),
+  ]);
+  const byId = new Map(projects.map((p) => [p.id, p]));
+  return late
+    .filter((r) => !held.get(r.projectId)?.has(slotKeyOf(r.deliverableId, r.slot)))
+    .map((r) => {
+      const p = byId.get(r.projectId);
+      const editor = p?.editor?.name ? first(p.editor.name) : p?.editorVendorKey ? "the outside editor" : null;
+      const stage = STAGE_STAFF_WORDS[r.evaluation!.stage];
+      const who = editor && r.evaluation!.stage !== "FINAL_TOUCHES" ? `Monthly video, with ${editor} (${stage})` : `Monthly video: ${stage}`;
+      return { kind: "video" as const, projectId: r.projectId, street: streetOf(p?.title), lateHours: Math.max(0, (now.getTime() - r.promisedAt!.getTime()) / HOUR), who, href: `/review/${r.projectId}`, program: true };
+    });
 }
 
 async function latePhotos(now: Date): Promise<BehindItem[]> {
@@ -227,7 +272,10 @@ type Stored = { level: BehindLevel; since: string | null; posted: boolean; lastP
 
 /** The message (pure). No em dashes, no money, staff words. */
 export function behindMessage(kind: "raise" | "morning", state: BehindState, items: BehindItem[], base: string): string {
-  const parts = [state.videosLate ? plural(state.videosLate, "listing video", "listing videos") : null, state.photosLate ? plural(state.photosLate, "photo job", "photo jobs") : null].filter(Boolean).join(" and ");
+  // "listing video" while only listing videos are late, as it always said;
+  // "video" once a monthly program video is among them (audit M2).
+  const anyProgram = items.some((i) => i.program);
+  const parts = [state.videosLate ? plural(state.videosLate, anyProgram ? "video" : "listing video", anyProgram ? "videos" : "listing videos") : null, state.photosLate ? plural(state.photosLate, "photo job", "photo jobs") : null].filter(Boolean).join(" and ");
   const verb = items.length === 1 ? "is" : "are";
   const lead =
     kind === "morning"
