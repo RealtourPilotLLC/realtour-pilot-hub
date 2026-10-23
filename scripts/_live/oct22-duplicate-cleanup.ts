@@ -56,8 +56,13 @@ const when = (d: Date) => d.toLocaleString("en-US", { timeZone: "America/New_Yor
   const keyed = (k: string | null) => !!k && (k.startsWith("photo-office:") || k.startsWith("photo-shared:"));
   const fromMessage = (k: string | null) => !!k && (k.startsWith("msg:") || k.startsWith("ask:") || keyed(k));
   const groups = new Map<string, typeof asks>();
+  // --skip-job=<projectId>[,…]: leave a job's asks unmerged (Oct 22: 859 N
+  // Lawrence's "pic 11 dining area and pic 38" is not a twin of the pic 38
+  // office question; pic 11 stays its own change).
+  const skipJobs = new Set((process.argv.find((x) => x.startsWith("--skip-job=")) ?? "").slice(11).split(",").filter(Boolean));
   for (const a of asks) {
     if (!fromMessage(a.dedupeKey)) continue;
+    if (a.projectId && skipJobs.has(a.projectId)) continue;
     const k = `${a.clientId}|${a.kind}|${a.projectId ?? "-"}`;
     groups.set(k, [...(groups.get(k) ?? []), a]);
   }
