@@ -343,6 +343,14 @@ export type InterviewContext = {
    * loud. It needs `sufficiency`; without it the mode reads as FULL.
    */
   mode?: "FULL" | "GAPS_ONLY";
+  /**
+   * Oct 23 2026 (Jordan's "Send Question Request"): the question ids this
+   * topic actually asks, when the hub chose a subset (three to five, written
+   * for the topic by AI). A question outside it is never served in the FULL
+   * walk; the gap phase still asks for a missing premise, stance or points,
+   * because a script cannot exist without them. Omitted or null = all six.
+   */
+  asked?: readonly string[] | null;
 };
 
 /** The stored per-topic sentence for a step, when one exists and is usable. */
@@ -386,6 +394,8 @@ export function nextQuestion(answers: InterviewAnswer[], ctx: InterviewContext):
     return { kind: "done", answered, skipped, substantiveAnswered };
   }
   for (const q of INTERVIEW_QUESTION_PLAN) {
+    // A question this topic does not ask (Oct 23 2026, a question request's subset).
+    if (ctx.asked && !ctx.asked.includes(q.id)) continue;
     const a = byId.get(q.id);
     if (!a || a.status === "pending") return { kind: "question", question: q, prompt: phrased(ctx, q.id) ?? fill(q.template, ctx) };
     if (a.status === "skipped" || a.status === "dont-know") continue;

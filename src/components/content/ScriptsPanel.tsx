@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Check, ChevronDown, CircleDashed, Eye, FileText, History, Loader2, PenLine, RefreshCw, RotateCcw, Send, Sparkles } from "lucide-react";
+import { Check, ChevronDown, CircleDashed, Eye, FileText, History, Loader2, MessageSquareText, PenLine, RefreshCw, RotateCcw, Send, Sparkles } from "lucide-react";
 import type { QueueItemUi } from "@/lib/aiQueue";
+import type { QuestionRequestUi } from "@/lib/questionRequests";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { useToast } from "@/components/ui/Toast";
@@ -18,7 +19,7 @@ import { lengthBand, trimInstruction } from "@/lib/scriptWriter/rules";
 // the Shorten offer and the validator can never drift from each other.
 import { GENERATION_POLICY } from "@/lib/contentPolicy/policy";
 import { VIDEO_FORMAT_LABEL, type VideoFormat } from "@/lib/contentPolicy/videoFormat";
-import { approveAndSendScriptAction, approveAndSendScriptsAction, approveScriptVersionAction, queueOwedScriptsAction, queueScriptRevisionAction, queueScriptRewriteAction, releaseScriptAction, restoreScriptVersionAction, retryAiJobAction, returnScriptAction, saveScriptText } from "@/app/content/actions";
+import { approveAndSendScriptAction, approveAndSendScriptsAction, approveScriptVersionAction, queueOwedScriptsAction, queueScriptRevisionAction, queueScriptRewriteAction, releaseScriptAction, resendQuestionRequestAction, restoreScriptVersionAction, retryAiJobAction, returnScriptAction, saveScriptText, sendQuestionRequestAction, undoQuestionRequestAction } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
 // Scripts tab (spec §22/§27): ONE review queue for both planning paths, the
@@ -50,6 +51,14 @@ import { approveAndSendScriptAction, approveAndSendScriptsAction, approveScriptV
 //               placed against the screen when it opens (useDetailsMenu), so
 //               the card's rounded, clipped edge never cuts it off.
 //   notes       one fold at the very bottom, "Writer's notes", closed, grey
+//
+// SEND QUESTION REQUEST (Oct 23 2026, Jordan). A visible button beside Edit on
+// a draft the client has not seen (never shared, never approved by them, not
+// filmed). One short confirm, then lib/questionRequests: the draft comes off
+// the month (kept in its history), the topic is asked in writing with three
+// to five AI questions, and the client gets one email with a link. The card's
+// place is taken by "Questions sent <date> · waiting on <client>", with Undo
+// (the draft back, no more emails) and Resend (a new link).
 //
 // No review result, gap, craft score, fix round, word count or red warning
 // is on the card, and nothing on it says a script needs fixes: the automatic
@@ -103,7 +112,7 @@ export function currentOf(s: Pick<ScriptUi, "versions" | "currentVersionId">): V
 }
 
 /** A version's status in words (audit D22: staff saw "internal_review"). */
-const VERSION_WORD: Record<string, string> = { DRAFT: "waiting for an OK", INTERNAL_REVIEW: "waiting for an OK", APPROVED: "approved", SHARED: "sent to the client", SUPERSEDED: "replaced", REJECTED: "rejected" };
+const VERSION_WORD: Record<string, string> = { DRAFT: "waiting for an OK", INTERNAL_REVIEW: "waiting for an OK", APPROVED: "approved", SHARED: "sent to the client", SUPERSEDED: "replaced", REJECTED: "rejected", WITHDRAWN: "withdrawn for questions" };
 
 const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2 disabled:opacity-50";
@@ -126,8 +135,10 @@ type RevCtl = { server: QueueItemUi | null; sending: boolean; sendingLabel?: str
 /** Oct 14 2026: "Keep exactly" on a revision: these sections are copied back word for word by code. */
 const LOCKS: [string, string][] = [["hook", "Hook"], ["rehook", "Re-hook"], ["buildup", "Build up"], ["payoff", "Payoff"], ["close", "Close"], ["captionCta", "Caption CTA"]];
 
-export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwner, owed = [], revising = {}, drafting = {}, queueActive = [] }: {
+export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwner, owed = [], revising = {}, drafting = {}, queueActive = [], questionRequests = [] }: {
   enrollmentId?: string; scripts: ScriptUi[]; queueCount: number; scriptOwner: string; owed?: OwedUi[];
+  /** Oct 23 2026: the month's open question requests (Send Question Request). */
+  questionRequests?: QuestionRequestUi[];
   /** Oct 12: queued / running / failed AI revisions, by script id (aiQueue.queueStateFor). */
   revising?: Record<string, QueueItemUi>;
   /** Oct 12: the month's queued / drafting / failed script drafts, by topic id. */
@@ -171,11 +182,24 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
   const queue = scripts.filter((s) => !s.historical && waiting(s)).sort((a, b) => Number(!!currentOf(b)?.flagged) - Number(!!currentOf(a)?.flagged));
   const rest = scripts.filter((s) => !queue.includes(s) && !s.historical);
   const historical = scripts.filter((s) => s.historical);
+  // Oct 23 2026: Send Question Request. A success is said in the toast (the
+  // card leaves the queue for the request's card); a refusal stays on the card.
+  const askQuestions = async (scriptId: string): Promise<{ ok: boolean; message: string }> => {
+    let r: { ok: boolean; message: string };
+    try { r = await sendQuestionRequestAction(scriptId); } catch { r = { ok: false, message: "Couldn't reach the server. Try again." }; }
+    if (r.ok) show("ok", r.message);
+    return r;
+  };
   return (
     <div className="space-y-5">
       {toast}
       {note && <p className="rounded-lg border border-border bg-surface px-3 py-2 text-[12px] text-muted">{busy && <Loader2 className="mr-1 inline size-3 animate-spin" />}{note}</p>}
       <OwedScripts owed={owed} drafting={drafting} sending={sending.has("owed")} onDraft={(includeThin) => void send("owed", () => queueOwedScriptsAction(owed[0]?.monthId ?? "", includeThin))} />
+      {questionRequests.length > 0 && (
+        <Section icon={MessageSquareText} title="Questions sent" count={questionRequests.length} flush action={<span className="text-[11px] text-muted-2">the client answers, then the script is drafted from their answers</span>}>
+          <div className="divide-y divide-border">{questionRequests.map((q) => <QuestionRequestCard key={q.id} q={q} show={show} />)}</div>
+        </Section>
+      )}
       <Section icon={FileText} title="Review queue" count={queueCount} flush action={<span className="text-[11px] text-muted-2">approval owner: {scriptOwner}</span>}>
         {/* Oct 20 2026 (audit D5): tick the scripts you have read, then one
             press approves and sends them (one email batch per client). */}
@@ -202,7 +226,7 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
                     <input type="checkbox" className="size-4" checked={picked.has(vid!)} onChange={(e) => setPicked((cur) => { const next = new Set(cur); if (e.target.checked) next.add(vid!); else next.delete(vid!); return next; })} />
                   </label>
                 )}
-                <div className="min-w-0 flex-1"><ScriptItem s={s} busy={busy} run={runCard} rev={revCtl(s)} open /></div>
+                <div className="min-w-0 flex-1"><ScriptItem s={s} busy={busy} run={runCard} rev={revCtl(s)} open onAsk={askQuestions} /></div>
               </div>
             );
           })}
@@ -211,7 +235,7 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
       </Section>
       <Section icon={Check} title="Approved and released" count={rest.length} flush>
         <div className="divide-y divide-border">
-          {rest.map((s) => <ScriptItem key={s.id} s={s} busy={busy} run={runCard} rev={revCtl(s)} />)}
+          {rest.map((s) => <ScriptItem key={s.id} s={s} busy={busy} run={runCard} rev={revCtl(s)} onAsk={askQuestions} />)}
           {rest.length === 0 && <p className="px-5 py-3 text-sm text-muted">No approved scripts on this month yet.</p>}
         </div>
       </Section>
@@ -224,7 +248,7 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
   );
 }
 
-function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; run: Run; open?: boolean; rev?: RevCtl }) {
+function ScriptItem({ s, busy, run, open, rev, onAsk }: { s: ScriptUi; busy: boolean; run: Run; open?: boolean; rev?: RevCtl; onAsk?: (scriptId: string) => Promise<{ ok: boolean; message: string }> }) {
   const [showVersions, setShowVersions] = useState(false);
   const [viewing, setViewing] = useState<string | null>(null);
   const [mode, setMode] = useState<"read" | "revise" | "edit">("read");
@@ -269,6 +293,10 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
   const [overrideWhy, setOverrideWhy] = useState("");
   const [pulling, setPulling] = useState(false);
   const [pullWhy, setPullWhy] = useState("");
+  // Oct 23 2026: Send Question Request, for a draft the client has never seen
+  // (never shared or released, no verdict of theirs, not filmed). The server
+  // asks the same questions again and refuses in words (questionRequestRefusal).
+  const [asking, setAsking] = useState<"idle" | "confirm" | "sending">("idle");
   const approve = (send: boolean) => {
     if (!cur) return;
     setOverride(null);
@@ -278,6 +306,13 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
       if (!r.ok && /^Format check:/.test(r.message)) setOverride({ message: r.message, send });
       else setSaid(r);
     });
+  };
+  const canAsk = !!onAsk && !s.historical && !s.bulkBank && !!s.monthKey && !!cur && !cur.id.startsWith("legacy:") && !s.sharedVersionId && s.releaseState !== "released" && !s.clientVerdict && !s.filmed;
+  const ask = () => {
+    if (!onAsk) return;
+    setAsking("sending");
+    setSaid(null);
+    void onAsk(s.id).then((r) => { setAsking("idle"); if (!r.ok) setSaid(r); });
   };
   const tone = s.historical ? "bg-surface-2 text-muted" : state.startsWith("needs") || state.startsWith("new draft") || state.startsWith("approved · client") ? "bg-brand-soft text-brand" : "bg-success-soft text-success";
   // Oct 12: an AI revision of THIS script in the queue (the rest stay usable).
@@ -385,6 +420,7 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
             {!s.historical && canApprove && cur && <button disabled={busy} onClick={() => approve(true)} className={`${btn} min-h-9 bg-brand-action text-white`}><Send className="mr-1 inline size-3" />Approve and send</button>}
             {!s.historical && !canApprove && canSendApproved && <button disabled={busy} onClick={() => { setSaid(null); run(() => releaseScriptAction(s.id), setSaid); }} className={`${btn} min-h-9 bg-brand-action text-white`}><Send className="mr-1 inline size-3" />Send v{approvedNo ?? ""} to the client</button>}
             {!s.historical && cur && <button onClick={startEdit} className={`${quiet} min-h-9`}><PenLine className="mr-1 inline size-3" />Edit</button>}
+            {canAsk && <button disabled={busy || revBusy || asking !== "idle"} onClick={() => { setSaid(null); setAsking("confirm"); }} className={`${quiet} min-h-9`} data-question-request><MessageSquareText className="mr-1 inline size-3" />Send Question Request</button>}
             {/* Oct 23 2026: placed against the screen when it opens (useDetailsMenu), so the card's clipped edge never cuts it off. */}
             <details {...menu.detailsProps} className="relative" data-more-menu>
               <summary {...menu.summaryProps} className={`${quiet} inline-flex min-h-9 cursor-pointer list-none items-center gap-1 marker:content-none [&::-webkit-details-marker]:hidden`}>More <ChevronDown className="size-3" /></summary>
@@ -404,6 +440,17 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
                 {s.historical && s.versions.length <= 1 && <p className="px-2.5 py-1.5 text-xs text-muted">Imported history: nothing to change.</p>}
               </div>
             </details>
+          </div>
+        )}
+        {mode === "read" && asking !== "idle" && (
+          <div className="mt-2 rounded-lg border border-border bg-surface-2/50 px-2.5 py-2 text-[12px]" data-question-confirm>
+            <p className="text-muted">Withdraw this draft and email the client a few questions about this topic? The draft stays in its history, and Undo puts it back.</p>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              <button disabled={asking === "sending"} onClick={ask} className={`${btn} min-h-9 bg-brand-action text-white`}>
+                {asking === "sending" ? <><Loader2 className="mr-1 inline size-3 animate-spin" />Writing the questions…</> : <><Send className="mr-1 inline size-3" />Send the questions</>}
+              </button>
+              <button disabled={asking === "sending"} onClick={() => setAsking("idle")} className={`${quiet} min-h-9`}>Keep the draft</button>
+            </div>
           </div>
         )}
         {said && mode === "read" && <p role="status" className="mt-1.5 text-[12px] text-muted">{said.message}</p>}
@@ -469,6 +516,60 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
         )}
       </div>
     </details>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// A QUESTION REQUEST'S CARD (Oct 23 2026): "Questions sent <date> · waiting on
+// <client>", the questions, the email's state, the withdrawn draft one press
+// away, Undo (the draft back, no further email) and Resend (a new link).
+// ---------------------------------------------------------------------------
+const fmtWhen = (iso: string | null) => (iso ? new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "");
+function QuestionRequestCard({ q, show }: { q: QuestionRequestUi; show: (kind: "ok" | "err", text: string) => void }) {
+  const [busy, start] = useTransition();
+  const [said, setSaid] = useState<string | null>(null);
+  const [viewing, setViewing] = useState(false);
+  const [confirmUndo, setConfirmUndo] = useState(false);
+  const act = (fn: () => Promise<{ ok: boolean; message: string }>) => start(async () => {
+    setSaid(null);
+    let r: { ok: boolean; message: string };
+    try { r = await fn(); } catch { r = { ok: false, message: "Couldn't reach the server. Try again." }; }
+    if (r.ok) show("ok", r.message); else setSaid(r.message);
+    setConfirmUndo(false);
+  });
+  const sentOn = fmt(q.email.state === "sent" ? q.email.at : q.createdAt);
+  const chip = q.stage === "ANSWERED" ? "Answers in · the new draft is on its way" : `Questions sent ${sentOn} · waiting on ${q.clientFirstName}`;
+  const emailLine = q.email.state === "sent" ? `Emailed ${fmt(q.email.at)}${q.email.count > 1 ? ` (${q.email.count} emails so far)` : ""}. Follow-ups go on the usual reminder cadence until they answer.`
+    : q.email.state === "queued" ? `The email goes out ${q.email.at ? `${fmtWhen(q.email.at)} ET` : "in office hours"}.`
+    : q.email.state === "failed" ? `The email failed (${q.email.note ?? "unknown"}); it retries on its own, or press Resend.`
+    : q.email.state === "not_sent" ? `No email went out (${(q.email.note ?? "not sent").replace(/_/g, " ")}). Press Resend once that's sorted.`
+    : "No email yet.";
+  return (
+    <div className="px-5 py-3" data-question-request-card={q.id}>
+      <div className="flex flex-wrap items-center gap-2">
+        <MessageSquareText className="size-3.5 shrink-0 text-muted-2" />
+        <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">{q.topicTitle}</span>
+        <span className="shrink-0 rounded-full bg-brand-soft px-2 py-0.5 text-xs font-medium text-brand">{chip}</span>
+      </div>
+      <p className="mt-1.5 text-[12px] text-muted">{emailLine}{q.answered > 0 && q.stage === "WAITING" ? ` ${q.answered} of ${q.questions.length} answered so far.` : ""}</p>
+      <ol className="mt-1.5 list-decimal space-y-0.5 pl-5 text-[12px]">{q.questions.map((t, i) => <li key={i}>{t}</li>)}</ol>
+      {viewing && q.withdrawn.body && (
+        <div className="mt-2 rounded-lg border border-border bg-surface px-2.5 py-2"><ScriptView body={q.withdrawn.body} size="sm" audience="staff" fileTitle={q.topicTitle} /></div>
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        {q.stage === "WAITING" && <button disabled={busy} onClick={() => act(() => resendQuestionRequestAction(q.id))} className={`${quiet} min-h-9`}><Send className="mr-1 inline size-3" />Resend</button>}
+        {!confirmUndo
+          ? <button disabled={busy} onClick={() => setConfirmUndo(true)} className={`${quiet} min-h-9`}><RotateCcw className="mr-1 inline size-3" />Undo</button>
+          : <>
+              <span className="text-[12px] text-muted">Put the draft back and stop the emails?</span>
+              <button disabled={busy} onClick={() => act(() => undoQuestionRequestAction(q.id))} className={`${btn} min-h-9 border border-border text-foreground hover:bg-surface-2`}>Undo the request</button>
+              <button disabled={busy} onClick={() => setConfirmUndo(false)} className={`${quiet} min-h-9`}>Cancel</button>
+            </>}
+        {q.withdrawn.body && <button onClick={() => setViewing(!viewing)} className={`${quiet} min-h-9`}><Eye className="mr-1 inline size-3" />{viewing ? "Hide" : "View"} the withdrawn draft{q.withdrawn.versionNo ? ` (v${q.withdrawn.versionNo})` : ""}</button>}
+        {busy && <Loader2 className="size-3 animate-spin text-muted" />}
+      </div>
+      {said && <p role="status" className="mt-1.5 text-[12px] text-muted">{said}</p>}
+    </div>
   );
 }
 

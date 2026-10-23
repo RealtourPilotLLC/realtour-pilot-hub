@@ -33,7 +33,11 @@ export type ReminderAction =
   // Oct 22 2026 (audit M1): the written route with no topics picked yet. The
   // answers ask (COMPLETE_ANSWERS) waits until there are picked topics with
   // questions to answer; before that the client's step is picking topics.
-  | "PICK_TOPICS";
+  | "PICK_TOPICS"
+  // Oct 23 2026 (Jordan, "Send Question Request"): the office withdrew a draft
+  // and asks the client a few questions about that ONE topic, so the script
+  // can be finished. The press sends the first; the hourly pass follows up.
+  | "QUESTION_REQUEST";
 
 export type TemplateVars = {
   firstName: string;
@@ -101,6 +105,12 @@ export type TemplateVars = {
   strategyCallsOff?: boolean;
   /** BRAND_KIT (Oct 20 2026): what the editor still has not got, in plain words ("logo", "brand colors"). */
   brandMissing?: string[] | null;
+  /** QUESTION_REQUEST (Oct 23 2026): the topic the questions are about, as the client knows it. */
+  topicTitle?: string | null;
+  /** QUESTION_REQUEST: how many questions wait (three to five). */
+  questionCount?: number | null;
+  /** QUESTION_REQUEST: a follow-up (they have not answered yet), not the first ask. */
+  followUp?: boolean;
 };
 
 export type ReminderTemplate = {
@@ -435,6 +445,30 @@ REMINDER_TEMPLATES["reminder.book_session.v2"] = {
   },
 };
 
+// QUESTION_REQUEST (Oct 23 2026, Jordan): "the client gets an email with a
+// link and says we need them to answer a few questions on the topic so we can
+// finish scripting." Short and warm, one link straight to that topic's
+// questions, no em dashes (the topic title's are taken out too).
+const plainTitle = (t: string | null | undefined) => (t ?? "your video").replace(/\s*[\u2014\u2013]\s*/g, ", ").replace(/\s+/g, " ").trim();
+REMINDER_TEMPLATES["question_request.v1"] = {
+  id: "question_request.v1",
+  action: "QUESTION_REQUEST",
+  version: "1",
+  purpose: "The office asked a few questions about one topic so the script can be finished (sent when Send Question Request is pressed, then followed up until answered).",
+  render: (v) =>
+    [
+      `Hi ${v.firstName},`,
+      "",
+      v.followUp
+        ? `A quick nudge: we still need your answers to a few questions about "${plainTitle(v.topicTitle)}" so we can finish your script.`
+        : `We need you to answer a few questions about "${plainTitle(v.topicTitle)}" so we can finish your script.`,
+      "",
+      `${v.questionCount && v.questionCount > 0 ? `There are ${v.questionCount} short ones` : "They're short"}, and a sentence or two each is plenty. Your own stories, numbers and opinions are what make it sound like you. This link opens them: ${v.portalLink}`,
+      "",
+      SIGN_OFF,
+    ].join("\n"),
+};
+
 /** The default template id per action — the policy JSON (`templates`) may point an action at a newer version. */
 export const DEFAULT_TEMPLATE_IDS: Record<Exclude<ReminderAction, "DIGEST" | "ESCALATION" | "SESSION_REQUEST_FOLLOWUP">, string> = {
   CHOOSE_PATH: "reminder.choose_path.v1",
@@ -448,6 +482,7 @@ export const DEFAULT_TEMPLATE_IDS: Record<Exclude<ReminderAction, "DIGEST" | "ES
   APPROVE_SCRIPTS: "reminder.approve_scripts.v1",
   BRAND_KIT: "reminder.brand_kit.v1",
   PICK_TOPICS: "reminder.pick_topics.v1",
+  QUESTION_REQUEST: "question_request.v1",
 };
 
 /** Resolve a template by id, refusing an id nobody has (a typo in the policy

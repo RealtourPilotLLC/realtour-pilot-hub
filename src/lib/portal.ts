@@ -1807,7 +1807,8 @@ export async function portalInterview(enrollment: { id: string; clientId: string
     prisma.contentMonth.findUnique({ where: { id: row.monthId }, select: { monthKey: true } }),
     // COUNT, NOT CONTENT. We need to know whether a version exists; we must not
     // read its words, because nothing on this page may quote them.
-    prisma.contentScriptVersion.count({ where: { interviewId, enrollmentId: enrollment.id } }),
+    // Oct 23 2026: a draft withdrawn for a question request is not "being prepared".
+    prisma.contentScriptVersion.count({ where: { interviewId, enrollmentId: enrollment.id, status: { not: "WITHDRAWN" } } }),
     answersChangedSinceLastDraft(interviewId),
     row.strategyVersionId ? prisma.contentStrategyVersion.findUnique({ where: { id: row.strategyVersionId }, select: { versionNo: true } }) : Promise.resolve(null),
     // Has the finished script for this topic actually been released? Asked of

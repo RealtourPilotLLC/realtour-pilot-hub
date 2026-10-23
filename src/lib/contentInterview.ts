@@ -107,7 +107,7 @@ export async function currentAnswers(interviewId: string) {
   return rows.filter((r) => (seen.has(r.questionKey) ? false : (seen.add(r.questionKey), true)));
 }
 
-async function topicForInterview(interviewId: string): Promise<{ topic: Topic; audience: string | null; clientName: string | null; row: NonNullable<Awaited<ReturnType<typeof prisma.contentInterview.findUnique>>>; sufficiency: SufficiencyContext; excerpts: TopicExcerpt[]; mode: "FULL" | "GAPS_ONLY" }> {
+async function topicForInterview(interviewId: string): Promise<{ topic: Topic; audience: string | null; clientName: string | null; row: NonNullable<Awaited<ReturnType<typeof prisma.contentInterview.findUnique>>>; sufficiency: SufficiencyContext; excerpts: TopicExcerpt[]; mode: "FULL" | "GAPS_ONLY"; meta: PlanMeta }> {
   const row = await prisma.contentInterview.findUnique({ where: { id: interviewId } });
   if (!row) throw new Error("Interview not found.");
   const [t, client, strategy, pillars, safe] = await Promise.all([
@@ -129,7 +129,7 @@ async function topicForInterview(interviewId: string): Promise<{ topic: Topic; a
   };
   // 6.5: a CALL interview asks only the gaps (see getOrCreateInterview).
   const mode = row.sourceKind === "CALL" ? "GAPS_ONLY" : "FULL";
-  return { topic, audience: strategy?.document?.targetAudience.primaryClientTypes ?? null, clientName: client?.name ?? null, row, sufficiency: sufficiencyContextFor(t, safe.kept), excerpts: safe.kept, mode };
+  return { topic, audience: strategy?.document?.targetAudience.primaryClientTypes ?? null, clientName: client?.name ?? null, row, sufficiency: sufficiencyContextFor(t, safe.kept), excerpts: safe.kept, mode, meta: planMeta(row.questionPlanJson) };
 }
 
 /**
@@ -168,6 +168,51 @@ function storedPhrasing(questionPlanJson: string | null | undefined): Record<str
   } catch {
     return null;
   }
+}
+
+/**
+ * WHICH QUESTIONS THIS TOPIC ASKS, AND SINCE WHEN (Oct 23 2026, Jordan's "Send
+ * Question Request"). A question request stores three to five questions in the
+ * same questionPlanJson rows, every row marked `asked` true or false, with the
+ * moment they were asked (`askedAt`). Rows without the marks (every plan
+ * written before) mean all six, exactly as before.
+ */
+export type PlanMeta = { asked: string[] | null; askedAt: Date | null };
+export function planMeta(questionPlanJson: string | null | undefined): PlanMeta {
+  if (!questionPlanJson) return { asked: null, askedAt: null };
+  try {
+    const v: unknown = JSON.parse(questionPlanJson);
+    if (!Array.isArray(v)) return { asked: null, askedAt: null };
+    const rows = v as { key?: unknown; asked?: unknown; askedAt?: unknown }[];
+    if (!rows.some((r) => typeof r?.asked === "boolean")) return { asked: null, askedAt: null };
+    const asked = rows.filter((r) => r?.asked === true && typeof r.key === "string" && QUESTION_IDS.has(r.key)).map((r) => r.key as string);
+    const at = rows.map((r) => (typeof r?.askedAt === "string" ? new Date(r.askedAt) : null)).find((d) => d && !isNaN(d.getTime())) ?? null;
+    return { asked: asked.length ? asked : null, askedAt: at };
+  } catch {
+    return { asked: null, askedAt: null };
+  }
+}
+
+/**
+ * The plan rows a question request stores: its questions on their own keys
+ * (asked), and the house wording kept on the rest (not asked), so the row set
+ * is always complete and every older reader still parses it.
+ */
+export function requestPlanJson(questions: { key: string; text: string }[], askedAt: Date): string {
+  const own = new Map(questions.map((q) => [q.key, q.text]));
+  return JSON.stringify(INTERVIEW_QUESTION_PLAN.map((q) => ({ key: q.id, role: ROLE_OF[q.id], text: own.get(q.id) ?? q.template, asked: own.has(q.id), askedAt: askedAt.toISOString() })));
+}
+
+/**
+ * The answer rows that answer the questions as they are asked NOW. A question
+ * asked again by a request (askedAt) is not answered by what was written
+ * before it: those rows stay on file, and the client answers the new question.
+ */
+function liveRows<R extends { questionKey: string; answeredAt: Date }>(rows: R[], meta: PlanMeta): R[] {
+  if (!meta.asked || !meta.askedAt) return rows;
+  const asked = new Set(meta.asked);
+  const at = meta.askedAt.getTime();
+  return rows.filter((r) => !(asked.has(r.questionKey.split(":fu:")[0]) && r.answeredAt.getTime() < at));
 }
 
 /** Rows → the policy's answer shape (follow-ups fold under their question). */
@@ -210,10 +255,10 @@ const sufficiencyJson = (suff: SufficiencyResult, gaps: { text: string }[]) =>
 
 /** Where the interview stands: the next question (or done), completeness, and the answers so far. Pure over the rows; safe to call on every render. */
 export async function interviewState(interviewId: string, opts: { readOnly?: boolean } = {}): Promise<InterviewState> {
-  const { topic, audience, clientName, row, sufficiency, mode } = await topicForInterview(interviewId);
-  const rows = await currentAnswers(interviewId);
+  const { topic, audience, clientName, row, sufficiency, mode, meta } = await topicForInterview(interviewId);
+  const rows = liveRows(await currentAnswers(interviewId), meta);
   const answers = toPolicyAnswers(rows);
-  const next = nextQuestion(answers, { topic, audience, clientName, phrasing: storedPhrasing(row.questionPlanJson), sufficiency, mode });
+  const next = nextQuestion(answers, { topic, audience, clientName, phrasing: storedPhrasing(row.questionPlanJson), sufficiency, mode, asked: meta.asked });
   const inputs = assembleScriptInputs(answers, topic, row.strategyVersionId, sufficiency);
   const suff = inputs.sufficiency!;
   const nextKey = next.kind === "question" ? next.question.id : next.kind === "follow-up" ? followUpKey(next.question.id, next.condition) : null;
@@ -240,8 +285,8 @@ export async function interviewState(interviewId: string, opts: { readOnly?: boo
  * it must not be the thing that moves an interview's status.
  */
 export async function readInterviewSufficiency(interviewId: string): Promise<SufficiencyResult> {
-  const { row, sufficiency } = await topicForInterview(interviewId);
-  const answers = toPolicyAnswers(await currentAnswers(row.id));
+  const { row, sufficiency, meta } = await topicForInterview(interviewId);
+  const answers = toPolicyAnswers(liveRows(await currentAnswers(row.id), meta));
   return evaluateSufficiency(answers, sufficiency);
 }
 
@@ -317,8 +362,8 @@ export async function answerQuestion(interviewId: string, questionKey: string, i
  * typed, and nobody retypes the call as answers.
  */
 export async function assembleInterviewInputs(interviewId: string): Promise<{ input: ScriptGeneratorInput; answerIds: string[]; topic: Topic; enrollmentId: string; clientId: string; monthId: string; strategyVersionId: string | null; policyVersionId: string | null; excerpts: SourceExcerpt[] }> {
-  const { topic, row, sufficiency, excerpts } = await topicForInterview(interviewId);
-  const rows = await currentAnswers(interviewId);
+  const { topic, row, sufficiency, excerpts, meta } = await topicForInterview(interviewId);
+  const rows = liveRows(await currentAnswers(interviewId), meta);
   const input = assembleScriptInputs(toPolicyAnswers(rows), topic, row.strategyVersionId, sufficiency);
   const plain: SourceExcerpt[] = excerpts.map((e) => ({ speaker: e.speaker, speakerName: e.speakerName, source: e.source, text: e.text }));
   return { input, answerIds: rows.map((r) => r.id), topic, enrollmentId: row.enrollmentId, clientId: row.clientId, monthId: row.monthId, strategyVersionId: row.strategyVersionId, policyVersionId: row.policyVersionId, excerpts: plain };
@@ -448,7 +493,7 @@ export async function interviewsForMonth(monthId: string) {
 export async function answersChangedSinceLastDraft(interviewId: string): Promise<boolean> {
   const [latestAnswer, latestVersion] = await Promise.all([
     prisma.contentInterviewAnswer.findFirst({ where: { interviewId }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
-    prisma.contentScriptVersion.findFirst({ where: { interviewId }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
+    prisma.contentScriptVersion.findFirst({ where: { interviewId, status: { not: "WITHDRAWN" } }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
   ]);
   if (!latestAnswer || !latestVersion) return false;
   return latestAnswer.createdAt > latestVersion.createdAt;
@@ -523,6 +568,10 @@ export async function questionSheets(pairs: { topicId: string; monthId: string }
     if (!t) continue;
     const iv = interviews.find((i) => i.topicId === p.topicId && i.monthId === p.monthId) ?? null;
     const phrasing = iv ? storedPhrasing(iv.questionPlanJson) : null;
+    // Oct 23 2026: a question request asks its own three to five, and an answer
+    // written before they were asked does not answer them.
+    const meta = iv ? planMeta(iv.questionPlanJson) : { asked: null, askedAt: null };
+    const fresh = (a: (typeof answerRows)[number] | undefined) => (a && meta.asked && meta.askedAt && meta.asked.includes(a.questionKey) && a.answeredAt < meta.askedAt ? undefined : a);
     const pillarName = pillarsOf.get(t.enrollmentId)?.find((x) => x.id === t.pillarId)?.name ?? t.pillar ?? "";
     const fillIn = (template: string) => template
       .replace(/\{\{topic\}\}/g, t.title).replace(/\{\{pillar\}\}/g, pillarName)
@@ -530,9 +579,9 @@ export async function questionSheets(pairs: { topicId: string; monthId: string }
     out.set(sheetKey(p.topicId, p.monthId), {
       interviewId: iv?.id ?? null,
       status: iv?.status ?? null,
-      questions: INTERVIEW_QUESTION_PLAN.map((q) => {
+      questions: INTERVIEW_QUESTION_PLAN.filter((q) => !meta.asked || meta.asked.includes(q.id)).map((q) => {
         const own = phrasing?.[q.id]?.trim();
-        const a = iv ? latest.get(`${iv.id}:${q.id}`) : undefined;
+        const a = iv ? fresh(latest.get(`${iv.id}:${q.id}`)) : undefined;
         return { key: q.id, text: readable(own && own.length >= 12 && !own.includes("{{") ? own : fillIn(q.template)), answer: a?.answerKind === "SKIPPED" ? null : a?.answerText ?? null, skipped: a?.answerKind === "SKIPPED" };
       }),
     });

@@ -179,7 +179,8 @@ export async function loadTopicsTab(enrollmentId: string, month: { id: string; m
 
 export async function loadScriptsTab(enrollmentId: string, month: { id: string } | null) {
   const [scripts, owners, pillars, strategyVs, policies] = await Promise.all([
-    prisma.contentScript.findMany({ where: { enrollmentId, ...(month ? { monthId: month.id } : {}) }, orderBy: { createdAt: "asc" } }),
+    // Oct 23 2026: a draft withdrawn for a question request is not a script of the month (its card is the request's).
+    prisma.contentScript.findMany({ where: { enrollmentId, status: { not: "WITHDRAWN" }, ...(month ? { monthId: month.id } : {}) }, orderBy: { createdAt: "asc" } }),
     ownersFor(enrollmentId, month?.id), listPillars(enrollmentId, { includeRetired: true }),
     prisma.contentStrategyVersion.findMany({ where: { enrollmentId }, select: { id: true, versionNo: true } }), prisma.programGenerationPolicyVersion.findMany({ select: { id: true, versionNo: true } }),
   ]);
@@ -267,7 +268,9 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
   // Oct 23 2026: the CURRENT version (an automatic fix round set aside in the history can be newer than it).
   const curOf = (r: ScriptUi) => r.versions.find((x) => x.id === r.currentVersionId) ?? r.versions[0];
   const queueCount = rows.filter((r) => !r.historical && (curOf(r)?.status === "DRAFT" || curOf(r)?.status === "INTERNAL_REVIEW")).length;
-  return { scripts: rows, queueCount, scriptOwner: owners.SCRIPTS.label, owed: owed.filter((o) => o.readiness !== "HAS_SCRIPT"), revising, drafting: aq.topics, queueActive: aq.active };
+  // Oct 23 2026: the month's open question requests (Send Question Request): "Questions sent · waiting on …", Undo, Resend.
+  const questionRequests = month ? await import("@/lib/questionRequests").then((m) => m.questionRequestsForMonth(month.id)).catch(() => []) : [];
+  return { scripts: rows, queueCount, scriptOwner: owners.SCRIPTS.label, owed: owed.filter((o) => o.readiness !== "HAS_SCRIPT"), revising, drafting: aq.topics, queueActive: aq.active, questionRequests };
 }
 
 export async function loadFactsTab(clientId: string, enrollmentId: string) {

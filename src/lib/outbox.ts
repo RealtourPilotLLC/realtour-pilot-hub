@@ -530,6 +530,8 @@ function programReminderSubject(dedupeKey: string | null): string {
     case "APPROVE_SCRIPTS": return month ? `Please approve your ${month} scripts before filming` : "Please approve your scripts before filming";
     // Oct 20 2026: the weekly brand-kit reminder (no month in it: it is about the account).
     case "BRAND_KIT": return "Your logo and brand colors for your videos";
+    // Oct 23 2026: a few questions about one topic, so the script can be finished.
+    case "QUESTION_REQUEST": return "A few quick questions so we can finish your script";
     default: return `Let's plan${forMonth}`;
   }
 }

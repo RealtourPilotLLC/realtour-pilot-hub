@@ -247,7 +247,8 @@ async function main() {
     c.ok("the filming notes, in small type", /text-\[11px\][^>]*><span class="font-semibold">Filming notes:<\/span> Film at the Emmaus coffee shop/.test(top));
     const actions = top.slice(top.indexOf("data-card-actions"));
     const buttons = [...actions.slice(0, actions.indexOf("data-more-menu")).matchAll(/<button[^>]*>((?:(?!<\/button>).)*)<\/button>/g)].map((m) => text(m[1]).trim());
-    c.ok("two actions up front, in order: Approve and send, Edit", buttons.length === 2 && buttons[0] === "Approve and send" && buttons[1] === "Edit", JSON.stringify(buttons));
+    // Oct 23 2026: Jordan named "Send Question Request" and wanted it on the card, not in More (questionRequests.ts).
+    c.ok("the actions up front, in order: Approve and send, Edit, then Send Question Request", buttons.length === 3 && buttons[0] === "Approve and send" && buttons[1] === "Edit" && buttons[2] === "Send Question Request", JSON.stringify(buttons));
     const more = actions.slice(actions.indexOf("data-more-menu"), actions.indexOf("</details>", actions.indexOf("data-more-menu")));
     c.ok("a More menu holds the rest: Approve only, Ask AI to revise, Shorten with AI (it is over 110 words)", /<summary[^>]*>More/.test(more) && ["Approve only", "Ask AI to revise", "Shorten with AI"].every((x) => text(more).includes(x)), text(more));
     c.ok("nothing red on the card (no danger or warning colours)", !RED.test(card), (card.match(RED) ?? [""])[0]);

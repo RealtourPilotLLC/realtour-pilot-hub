@@ -138,6 +138,10 @@ export async function createScriptVersion(opts: NewVersionOpts): Promise<{ scrip
     // historical record is refused — its text is what was filmed (Jordan's ruling).
     if (head.historical && opts.source !== "IMPORT") throw new Error("This is an imported historical script — it is not edited, revised or regenerated; draft a new script instead.");
     if (!head.historical && opts.historical) throw new Error("An import cannot become a version of a live script — it is stored as a proposal instead.");
+    // Oct 23 2026 (Send Question Request): a draft withdrawn while the client
+    // answers questions takes no new version. Its words are history until
+    // Undo puts it back; the client's answers write the next draft.
+    if (head.status === "WITHDRAWN") throw new Error("This draft was withdrawn while the client answers questions about the topic. Undo the question request to work on it again.");
     wasApprovedLive = !head.historical && !!head.approvedVersionId && !head.sharedVersionId;
   }
   if (!scriptId) {
@@ -444,9 +448,11 @@ export const STRUCTURAL_CODES = new Set([
 export async function approveScriptVersion(versionId: string, actor: { email: string; appUserId?: string | null }, note?: string | null): Promise<{ alreadyApproved: boolean }> {
   const v = await prisma.contentScriptVersion.findUnique({ where: { id: versionId } });
   if (!v) throw new Error("Script version not found.");
-  const s = await prisma.contentScript.findUnique({ where: { id: v.scriptId }, select: { historical: true, monthId: true, topicId: true, approvedVersionId: true, clientId: true, sharedVersionId: true, releaseState: true } });
+  const s = await prisma.contentScript.findUnique({ where: { id: v.scriptId }, select: { historical: true, monthId: true, topicId: true, approvedVersionId: true, clientId: true, sharedVersionId: true, releaseState: true, status: true } });
   if (!s) throw new Error("Script not found.");
   if (s.historical) throw new Error("Imported scripts are history — they are not approved, filmed or released by an import.");
+  // Oct 23 2026: a draft withdrawn for a question request is not approved or sent (Undo the request first).
+  if (s.status === "WITHDRAWN" || v.status === "WITHDRAWN") throw new Error("This draft was withdrawn while the client answers questions about the topic. Undo the question request first.");
   // A repeated click is not a second approval — no second ledger row. SHARED
   // counts as approved here: after a release the version's status moves
   // APPROVED → SHARED, so a guard that only looked for APPROVED missed it and
@@ -570,9 +576,10 @@ export async function releaseScriptVersion(scriptId: string, actor: { email: str
  * AUTHORISATION, which is a different fact from what happened before.
  */
 export async function returnScriptToQueue(scriptId: string, actor: { email: string; appUserId?: string | null }, note?: string | null): Promise<void> {
-  const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { currentVersionId: true, approvedVersionId: true, sharedVersionId: true, enrollmentId: true, clientId: true, monthId: true, historical: true } });
+  const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { currentVersionId: true, approvedVersionId: true, sharedVersionId: true, enrollmentId: true, clientId: true, monthId: true, historical: true, status: true } });
   if (!s || !s.currentVersionId) throw new Error("Script not found.");
   if (s.historical) throw new Error("Imported scripts are history — there is no approval to withdraw.");
+  if (s.status === "WITHDRAWN") throw new Error("This draft was withdrawn while the client answers questions about the topic. Undo the question request first.");
   // The version the ledger row is ABOUT: what was live before this click.
   const pinned = s.sharedVersionId ?? s.approvedVersionId ?? s.currentVersionId;
   await prisma.$transaction([

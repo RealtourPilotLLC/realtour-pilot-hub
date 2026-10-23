@@ -1614,7 +1614,15 @@ export async function planInterviewQuestions(interviewId: string, o: { requested
     followUps++;
   }
   const questions = rows.filter((r) => allowed.has(r.key) && !r.text.includes("{{")).length;
-  await prisma.contentInterview.update({ where: { id: interviewId }, data: { questionPlanJson: JSON.stringify(rows), aiRunId: run.runId } });
+  // Oct 23 2026: a question request's subset (which questions are asked, and
+  // since when) survives a re-phrasing; only the sentences change.
+  const { planMeta } = await import("@/lib/contentInterview");
+  const before = await prisma.contentInterview.findUnique({ where: { id: interviewId }, select: { questionPlanJson: true } });
+  const meta = planMeta(before?.questionPlanJson);
+  const marked = meta.asked
+    ? rows.map((r) => (allowed.has(r.key) ? { ...r, asked: meta.asked!.includes(r.key), ...(meta.askedAt ? { askedAt: meta.askedAt.toISOString() } : {}) } : r))
+    : rows;
+  await prisma.contentInterview.update({ where: { id: interviewId }, data: { questionPlanJson: JSON.stringify(marked), aiRunId: run.runId } });
   await setRunOutputRef(run.runId, `ContentInterview:${interviewId}`);
   return { runId: run.runId, questions, followUps };
 }

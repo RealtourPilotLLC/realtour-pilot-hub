@@ -1779,6 +1779,7 @@ export function actionLabel(a: ReminderAction | null): string {
     case "REVIEW_WORK": return "a review of the shared cuts";
     case "SCRIPTS_READY": return "scripts ready";
     case "STRATEGY_READY": return "strategy ready";
+    case "QUESTION_REQUEST": return "answers to a few questions about one topic";
     default: return "attention";
   }
 }
@@ -2032,6 +2033,8 @@ export type EvaluateResult = {
   scriptApprovalLane: ScriptApprovalPreview[];
   /** Oct 20 2026: the weekly brand-kit lane — one row per client still missing a logo or brand colors. */
   brandKitLane: BrandKitPreview[];
+  /** Oct 23 2026: open question requests (Send Question Request) — a held press, a retry, or the next follow-up. */
+  questionRequestLane: QuestionRequestPreview[];
   /** A run that went quiet for an infrastructure reason, in words, for the
    *  automation row's lastError and the settings panel. null = healthy. */
   healthError: string | null;
@@ -2046,7 +2049,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
   const now = opts.now ?? new Date();
   const { enabled, policy, source } = await reminderPolicy({ orDefaults: opts.dryRun });
   if (!policy || (!enabled && !opts.dryRun)) {
-    return { enabled: false, policySource: source, evaluated: 0, candidates: [], sent: [], escalations: [], kyleFollowUps: [], addressLane: [], scriptApprovalLane: [], brandKitLane: [], healthError: null, note: "reminders are off (missing or disabled ProgramAutomation row) — nothing evaluated, nothing written" };
+    return { enabled: false, policySource: source, evaluated: 0, candidates: [], sent: [], escalations: [], kyleFollowUps: [], addressLane: [], scriptApprovalLane: [], brandKitLane: [], questionRequestLane: [], healthError: null, note: "reminders are off (missing or disabled ProgramAutomation row) — nothing evaluated, nothing written" };
   }
   const [feeds, clientWindowOpen] = await Promise.all([bookingFeeds(now, policy), clientTextWindowOpen(now)]);
   const sync = feeds.call;
@@ -2093,6 +2096,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
   const addressLane: AddressReminderPreview[] = [];
   const scriptApprovalLane: ScriptApprovalPreview[] = [];
   const brandKitLane: BrandKitPreview[] = [];
+  const questionRequestLane: QuestionRequestPreview[] = [];
   const brandKitDone = new Set<string>();
   let sends = 0;
   for (const m of months) {
@@ -2164,6 +2168,20 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
       sent.push(r);
       if (r.outcome === "sent") sends++;
     }
+    // QUESTION REQUESTS (Oct 23 2026): a held press, a retry, or the next
+    // follow-up for an open request on this month. Not gated on the month
+    // having started: the office asked about this month's topic on purpose.
+    const qr = await evaluateQuestionRequestLane(e, m, now, policy, clientWindowOpen, { dryRun: opts.dryRun }, rollout).catch(() => [] as QuestionRequestPreview[]);
+    questionRequestLane.push(...qr);
+    if (!opts.dryRun) {
+      for (const a of qr) {
+        if (a.decision !== "send") continue;
+        if (sends >= policy.maxSendsPerRun) { sent.push({ reminderId: null, outcome: "skipped", detail: `maxSendsPerRun (${policy.maxSendsPerRun}) reached — ${a.clientName} question request waits for the next run` }); continue; }
+        const r = await dispatchQuestionRequestLane(a, policy, now, { requestedBy: opts.requestedBy ?? "reminders-cron", byAppUserId: opts.byAppUserId ?? null });
+        sent.push(r);
+        if (r.outcome === "sent") sends++;
+      }
+    }
     // THE BRAND KIT LAST (Oct 20 2026): once per client per pass, on its first
     // month in view, and only into a day nothing more urgent took.
     if (started && !brandKitDone.has(e.id)) {
@@ -2200,7 +2218,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
   const healthError = [staleError, scopeError].filter(Boolean).join(" ") || null;
   if (!opts.dryRun && staleError) await raiseSchedulerStaleTask(stale, { fresh: false, detail: staleDetail }, now, staleError);
   return {
-    enabled, policySource: source, evaluated: candidates.length, candidates, sent, escalations, kyleFollowUps, addressLane, scriptApprovalLane, brandKitLane, healthError,
+    enabled, policySource: source, evaluated: candidates.length, candidates, sent, escalations, kyleFollowUps, addressLane, scriptApprovalLane, brandKitLane, questionRequestLane, healthError,
     note: opts.dryRun ? `dry run: ${wouldSend} would send, ${candidates.filter((c) => c.decision === "suppressed").length} suppressed, ${candidates.filter((c) => c.decision === "wait").length} waiting` : `${sends} sent`,
   };
 }
@@ -2614,6 +2632,261 @@ async function dispatchBrandKit(a: BrandKitPreview, e: EnrollmentRow, p: Reminde
   const g = await sendGuarded(reminderId, { channel: "email", toRef: to.email, body, dedupeKey: programReminderKey("BRAND_KIT", reminderId, a.monthKey), clientId: e.clientId, requestedBy: opts.requestedBy }, leaseBy, now);
   if (g.kind === "refused") return g.outcome;
   return recordSendResult(reminderId, g.r, now);
+}
+
+// ---- the QUESTION REQUEST lane (Oct 23 2026, Jordan's "Send Question Request") -------
+//
+// The office withdrew a draft and asked the client a few questions about that
+// one topic (lib/questionRequests). The FIRST email goes when the button is
+// pressed (sendQuestionRequestEmail, kind "first"); a Resend is a new email
+// with a new one-tap link. Both are a person's deliberate send: no cadence,
+// no one-a-day rule and no snooze bind them, but the switch, the rollout scope,
+// the TEST floor and the send window do (a press after 4:30 PM waits for the
+// morning, the way Send now does). The hourly pass here then follows up on the
+// house cadence (followUpAfterBusinessDays, maxAttemptsPerAction in all, the
+// one-a-day rule, the snooze) until the client sends their answers, the topic
+// gets a draft, or the request is undone. Every email is a ProgramReminder row
+// on the month (action QUESTION_REQUEST, dedupeKey
+// `<enrollment>:<month>:QUESTION_REQUEST:<request>:<attempt>`), so one attempt
+// is never sent twice.
+
+export type QuestionRequestPreview = {
+  requestId: string; enrollmentId: string; clientName: string; monthId: string; monthKey: string; topicTitle: string;
+  kind: "first" | "resend" | "follow-up" | "retry";
+  /** The ledger row to dispatch: an existing PENDING/FAILED one, or null for a follow-up not yet written. */
+  rowId: string | null;
+  attempt: number;
+  decision: ReminderDecision;
+  reason: string;
+  suppressionReason: string | null;
+  nextEligibleAt: Date | null;
+  to: string | null;
+};
+
+type QrOutcome = DispatchOutcome & { nextEligibleAt?: Date | null };
+
+async function enrollmentRowFor(enrollmentId: string): Promise<EnrollmentRow | null> {
+  const en = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: ENROLLMENT_SELECT });
+  if (!en) return null;
+  const client = await prisma.client.findUnique({ where: { id: en.clientId }, select: { name: true, email: true } });
+  return { ...en, firstMonthKey: null, client: { name: client?.name ?? "", email: client?.email ?? null } };
+}
+
+const qrKind = (json: string | null | undefined): QuestionRequestPreview["kind"] => {
+  try { const k = (JSON.parse(json ?? "{}") as { kind?: string }).kind; return k === "resend" || k === "follow-up" ? k : "first"; } catch { return "first"; }
+};
+
+/**
+ * The press: write this request's next ledger row (attempt n+1, manual) and
+ * send it now, or hold it for the send window. Returns the outcome, and when
+ * it was held, when it goes.
+ */
+export async function sendQuestionRequestEmail(requestId: string, o: { kind: "first" | "resend"; by: { email: string; appUserId?: string | null }; now?: Date }): Promise<QrOutcome> {
+  const now = o.now ?? new Date();
+  const rel = await prisma.contentScriptRelease.findUnique({ where: { id: requestId }, select: { id: true, enrollmentId: true, clientId: true, monthId: true, note: true, reminderId: true } });
+  const { readQuestionRequestLedger, questionRequestKeyPrefix } = await import("@/lib/questionRequests");
+  const ledger = readQuestionRequestLedger(rel?.note);
+  if (!rel || !ledger) return { reminderId: null, outcome: "skipped", detail: "the question request is not on file" };
+  const prefix = questionRequestKeyPrefix(rel.enrollmentId, ledger.monthKey, rel.id);
+  const { policy } = await reminderPolicy({ orDefaults: true });
+  const p = policy ?? REMINDER_DEFAULTS;
+  const template = templateForAction("QUESTION_REQUEST", p.templates as Record<string, unknown> | undefined);
+  const switchOn = await isAutomationEnabled(REMINDERS_KEY);
+  let rowId: string | null = null;
+  for (let i = 0; i < 3 && !rowId; i++) {
+    const attempt = (await prisma.programReminder.count({ where: { dedupeKey: { startsWith: prefix } } })) + 1;
+    try {
+      const row = await prisma.programReminder.create({
+        data: {
+          enrollmentId: rel.enrollmentId, clientId: rel.clientId, monthId: ledger.monthId, monthKey: ledger.monthKey, action: "QUESTION_REQUEST", templateKey: template.id, templateVersion: template.version,
+          channel: "email", attempt, state: switchOn ? "PENDING" : "SUPPRESSED", suppressionReason: switchOn ? null : "switched_off", lastError: switchOn ? null : "reminders are switched off, so no email went out",
+          manual: true, requestedBy: o.by.email, dedupeKey: `${prefix}${attempt}`, nextEligibleAt: now, evaluatedStateJson: JSON.stringify({ requestId: rel.id, topicId: ledger.topicId, kind: o.kind }),
+        },
+        select: { id: true },
+      });
+      rowId = row.id;
+    } catch (err) {
+      if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002")) throw err;
+    }
+  }
+  if (!rowId) return { reminderId: null, outcome: "duplicate", detail: "another send of this request is being written right now" };
+  if (o.kind === "first") await prisma.contentScriptRelease.update({ where: { id: rel.id }, data: { reminderId: rowId, notificationState: switchOn ? "QUEUED" : "SUPPRESSED" } });
+  if (!switchOn) return { reminderId: rowId, outcome: "suppressed", detail: "reminders are switched off (Settings, Automations), so no email went out" };
+  return dispatchQuestionRequestRow(rowId, { manual: true, requestedBy: `question-request:${o.by.email}`, byAppUserId: o.by.appUserId ?? null, now, policy: p });
+}
+
+/**
+ * ONE send of one ledger row: claim → recheck (still open, program active,
+ * scope fresh, an address, the TEST floor; for the automatic follow-up also
+ * the snooze and the one-a-day rule) → the window (closed = held, PENDING with
+ * its opening) → the one-tap link straight to the topic's questions → render
+ * → outbox → outcome.
+ */
+async function dispatchQuestionRequestRow(reminderId: string, o: { manual: boolean; requestedBy: string; byAppUserId: string | null; now: Date; policy: ReminderPolicy }): Promise<QrOutcome> {
+  const { now, policy: p } = o;
+  const leaseBy = `${o.requestedBy}:${process.pid}`;
+  const row = await prisma.programReminder.findUnique({ where: { id: reminderId } });
+  if (!row) return { reminderId, outcome: "skipped", detail: "the ledger row is gone" };
+  const won = await prisma.programReminder.updateMany({
+    where: { id: reminderId, OR: [{ state: "PENDING", OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }] }, { state: "FAILED" }] },
+    data: { state: "PENDING", leaseUntil: new Date(now.getTime() + 5 * 60_000), leaseBy, nextAttemptAt: null },
+  });
+  if (won.count === 0) return { reminderId, outcome: "duplicate", detail: "another run holds this email" };
+  const close = (state: "SUPPRESSED" | "CANCELLED", reason: string, why: string): Promise<QrOutcome> =>
+    prisma.programReminder.update({ where: { id: reminderId }, data: { state, suppressionReason: reason, lastError: why, leaseUntil: null, leaseBy: null, nextAttemptAt: null } })
+      .then(() => ({ reminderId, outcome: state === "CANCELLED" ? "skipped" as const : "suppressed" as const, detail: `${reason}: ${why}` }));
+  const kind = qrKind(row.evaluatedStateJson);
+  let requestId: string | null = null;
+  try { requestId = (JSON.parse(row.evaluatedStateJson ?? "{}") as { requestId?: string }).requestId ?? null; } catch { requestId = null; }
+  const rel = requestId ? await prisma.contentScriptRelease.findUnique({ where: { id: requestId }, select: { id: true, createdAt: true, note: true, reminderId: true } }) : null;
+  if (!rel) return close("CANCELLED", "request_gone", "the question request is not on file");
+  const qr = await import("@/lib/questionRequests");
+  const st = await qr.questionRequestStatus(rel);
+  if (!st.open || !st.ledger) {
+    if (st.answered || st.drafted) await qr.settleQuestionRequest(rel.id, "ANSWERED").catch(() => {});
+    return close("CANCELLED", st.answered || st.drafted ? "answered" : "request_cancelled", st.why);
+  }
+  const ledger = st.ledger;
+  const e = await enrollmentRowFor(row.enrollmentId);
+  if (!e) return close("SUPPRESSED", "no_enrollment", "the program no longer exists");
+  if (e.status !== "ACTIVE") return close("SUPPRESSED", e.status === "PAUSED" ? "paused" : "ended", `the program is ${e.status.toLowerCase()}`);
+  if (e.accessRevokedAt) return close("SUPPRESSED", "access_revoked", "portal access for this client has been revoked");
+  if (!o.manual) {
+    const month = await prisma.contentMonth.findUnique({ where: { id: ledger.monthId }, select: { remindersSnoozedUntil: true } });
+    if (month?.remindersSnoozedUntil && month.remindersSnoozedUntil > now) return close("SUPPRESSED", "snoozed", `reminders are snoozed until ${fmtDay(month.remindersSnoozedUntil)}`);
+  }
+  const scope = await freshRollout();
+  if (!scope.rollout) return leaveRetryable(reminderId, scope.error, now);
+  const reach = reminderReach(scope.rollout, e, now, p);
+  if (reach && !reach.ok) {
+    const code = reachSuppressionReason(reach) ?? "not_in_rollout_scope";
+    await prisma.contentScriptRelease.updateMany({ where: { reminderId }, data: { notificationState: "SUPPRESSED" } });
+    return close("SUPPRESSED", code, code === "launch_not_authorised" ? `policy.testClientsOnly is on, ${reach.reason}` : reach.reason);
+  }
+  const to = await recipientFor(e);
+  if (!to) return close("SUPPRESSED", "no_recipient", "no email address on the portal seat or the client record");
+  if (isSyntheticClientRow({ id: e.clientId, name: e.client.name }) && !isVerifiedTestDestinationEmail(to.email)) return close("SUPPRESSED", "test_client_real_address", `TEST client's address ${maskToRef("email", to.email)} is not one of Jordan's verified test inboxes`);
+  if (!o.manual) {
+    const dayFrom = etAt(etDayKey(now), 0);
+    const dayTo = etAt(shiftKey(etDayKey(now), 1), 0);
+    const sentToday = await prisma.programReminder.count({
+      where: { enrollmentId: e.id, id: { not: reminderId }, channel: { in: ["email", "copy"] }, action: { not: "BRAND_KIT" }, OR: [{ state: "SENT", sentAt: { gte: dayFrom, lt: dayTo } }, { state: "QUEUED", createdAt: { gte: dayFrom, lt: dayTo } }] },
+    });
+    if (sentToday >= p.maxClientEmailsPerDay) {
+      const next = nextPolicyWindowOpen(etAt(shiftKey(etDayKey(now), 1), 0), p);
+      await prisma.programReminder.update({ where: { id: reminderId }, data: { nextEligibleAt: next, leaseUntil: null, leaseBy: null, suppressionReason: "another_reminder_today" } });
+      return { reminderId, outcome: "skipped", detail: `another program email already went to this client today; this one waits until ${fmtDay(next)}`, nextEligibleAt: next };
+    }
+  }
+  // THE SEND WINDOW binds a person's press too (Send now's rule): held, not dropped.
+  if (!inPolicyWindow(now, p) || !(await clientTextWindowOpen(now))) {
+    const next = nextPolicyWindowOpen(now, p);
+    await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "PENDING", nextEligibleAt: next, leaseUntil: null, leaseBy: null, suppressionReason: "quiet_hours" } });
+    return { reminderId, outcome: "skipped", detail: `outside the send window; it goes ${fmtWhenET(next)}`, nextEligibleAt: next };
+  }
+  const link = await resolvePortalLink(e, to, o.byAppUserId, now, { path: PORTAL_LANDING.topicQuestions(ledger.interviewId, e.id) });
+  if (!link) return close("SUPPRESSED", "no_portal_link", "no portal link could be made for this client (no seat, no token)");
+  const template = reminderTemplate(row.templateKey);
+  const body = renderReminder(template, {
+    firstName: firstNameOf(e.client.name), month: monthName(ledger.monthKey), portalLink: link.url, bookCallLink: null, noCallEligible: false, answersStarted: false,
+    sessionNote: null, earliestSession: null, itemCount: 0, titles: [], updatedTitles: [], deadline: null,
+    topicTitle: ledger.topicTitle, questionCount: ledger.questions.length, followUp: kind === "follow-up",
+  });
+  await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "QUEUED", toRef: to.email, suppressionReason: null, evaluatedStateJson: JSON.stringify({ requestId: rel.id, topicId: ledger.topicId, kind, interviewId: ledger.interviewId, portalLinkKind: link.kind }) } });
+  const g = await sendGuarded(reminderId, { channel: "email", toRef: to.email, body, dedupeKey: programReminderKey("QUESTION_REQUEST", reminderId, ledger.monthKey), clientId: e.clientId, requestedBy: o.requestedBy }, leaseBy, now);
+  if (g.kind === "refused") return g.outcome;
+  const r = await recordSendResult(reminderId, g.r, now);
+  if (rel.reminderId === reminderId) {
+    await prisma.contentScriptRelease.update({ where: { id: rel.id }, data: { notificationState: r.outcome === "sent" ? "SENT" : r.outcome === "failed" ? "FAILED" : r.outcome === "suppressed" ? "SUPPRESSED" : "QUEUED", outboxMessageId: g.r.id || null } });
+  }
+  return r;
+}
+
+/**
+ * The hourly pass for one month: every open request on it — a held press
+ * (PENDING, its window open now), a failed send due a retry, or the next
+ * follow-up on the house cadence. A request the client has answered, that got
+ * a draft, or that was undone is settled here and sends nothing.
+ */
+export async function evaluateQuestionRequestLane(e: EnrollmentRow, month: { id: string; monthKey: string; remindersSnoozedUntil: Date | null }, now: Date, p: ReminderPolicy, clientWindowOpen: boolean, opts: { dryRun: boolean }, rollout: ProgramRollout | null): Promise<QuestionRequestPreview[]> {
+  const rels = await prisma.contentScriptRelease.findMany({ where: { monthId: month.id, enrollmentId: e.id, action: "QUESTION_REQUEST" }, orderBy: { createdAt: "asc" }, select: { id: true, createdAt: true, note: true } });
+  if (!rels.length) return [];
+  const qr = await import("@/lib/questionRequests");
+  const out: QuestionRequestPreview[] = [];
+  for (const rel of rels) {
+    const ledger = qr.readQuestionRequestLedger(rel.note);
+    if (!ledger || ledger.state !== "OPEN") continue;
+    const st = await qr.questionRequestStatus(rel);
+    const base = { requestId: rel.id, enrollmentId: e.id, clientName: e.client.name, monthId: month.id, monthKey: month.monthKey, topicTitle: ledger.topicTitle, to: null as string | null };
+    if (!st.open) {
+      if (!opts.dryRun && (st.answered || st.drafted)) await qr.settleQuestionRequest(rel.id, "ANSWERED").catch(() => {});
+      out.push({ ...base, kind: "follow-up", rowId: null, attempt: 0, decision: "none", reason: st.why, suppressionReason: null, nextEligibleAt: null });
+      continue;
+    }
+    const rows = await prisma.programReminder.findMany({ where: { dedupeKey: { startsWith: qr.questionRequestKeyPrefix(e.id, month.monthKey, rel.id) } }, orderBy: { attempt: "asc" } });
+    const held = rows.find((r) => r.state === "PENDING" && (!r.nextEligibleAt || r.nextEligibleAt <= now) && (!r.leaseUntil || r.leaseUntil < now));
+    const retry = rows.find((r) => r.state === "FAILED" && !!r.nextAttemptAt && r.nextAttemptAt <= now);
+    const waiting = held ?? retry;
+    if (waiting) {
+      out.push({ ...base, kind: retry && !held ? "retry" : qrKind(waiting.evaluatedStateJson), rowId: waiting.id, attempt: waiting.attempt, decision: "send", reason: held ? "a held email, its window is open" : `retrying (last error: ${waiting.lastError ?? "unknown"})`, suppressionReason: null, nextEligibleAt: null });
+      continue;
+    }
+    if (rows.some((r) => r.state === "PENDING" || (r.state === "FAILED" && r.nextAttemptAt))) {
+      const next = rows.map((r) => r.nextEligibleAt ?? r.nextAttemptAt).filter((d): d is Date => !!d).sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
+      out.push({ ...base, kind: "first", rowId: null, attempt: 0, decision: "wait", reason: `an email is waiting${next ? ` until ${fmtDay(next)}` : ""}`, suppressionReason: "quiet_hours", nextEligibleAt: next });
+      continue;
+    }
+    const counted = rows.filter((r) => r.state === "SENT" || r.state === "UNKNOWN" || r.state === "QUEUED" || r.state === "BOUNCED");
+    const attempt = rows.length + 1;
+    const row = (decision: ReminderDecision, reason: string, suppressionReason: string | null = null, nextEligibleAt: Date | null = null): QuestionRequestPreview => ({ ...base, kind: "follow-up", rowId: null, attempt, decision, reason, suppressionReason, nextEligibleAt });
+    if (!counted.length) { out.push(row("none", "the first email has not gone out (see the card)")); continue; }
+    if (counted.length >= p.maxAttemptsPerAction) { out.push(row("none", `asked ${counted.length} times already; no more emails (the card still offers Resend)`)); continue; }
+    const lastSent = counted.reduce<Date | null>((m, r) => { const at = r.sentAt ?? r.createdAt; return !m || at > m ? at : m; }, null)!;
+    const due = addWeekdayHoursET(lastSent, p.followUpAfterBusinessDays * 24);
+    if (now < due) { out.push(row("wait", `follow-up ${counted.length} is due ${fmtDay(due)}`, null, due)); continue; }
+    if (e.status !== "ACTIVE") { out.push(row("suppressed", `the program is ${e.status.toLowerCase()}`, "paused")); continue; }
+    if (month.remindersSnoozedUntil && month.remindersSnoozedUntil > now) { out.push(row("suppressed", `reminders are snoozed until ${fmtDay(month.remindersSnoozedUntil)}`, "snoozed", month.remindersSnoozedUntil)); continue; }
+    const reach = reminderReach(rollout, e, now, p);
+    if (reach && !reach.ok) { const code = reachSuppressionReason(reach) ?? "not_in_rollout_scope"; out.push(row("suppressed", reach.reason, code)); continue; }
+    const to = await recipientFor(e);
+    base.to = to ? maskToRef("email", to.email) : null;
+    if (!to) { out.push({ ...row("suppressed", "no email address on the portal seat or the client record", "no_recipient"), to: null }); continue; }
+    const dayFrom = etAt(etDayKey(now), 0);
+    const dayTo = etAt(shiftKey(etDayKey(now), 1), 0);
+    const sentToday = await prisma.programReminder.count({ where: { enrollmentId: e.id, channel: { in: ["email", "copy"] }, action: { not: "BRAND_KIT" }, OR: [{ state: "SENT", sentAt: { gte: dayFrom, lt: dayTo } }, { state: "QUEUED", createdAt: { gte: dayFrom, lt: dayTo } }] } });
+    if (sentToday >= p.maxClientEmailsPerDay) { const next = nextPolicyWindowOpen(dayTo, p); out.push({ ...row("wait", `another program email already went to this client today; the follow-up waits until ${fmtDay(next)}`, "another_reminder_today", next), to: base.to }); continue; }
+    if (!inPolicyWindow(now, p) || !clientWindowOpen) { const next = nextPolicyWindowOpen(now, p); out.push({ ...row("wait", `outside the send window; next opening ${fmtDay(next)}`, "quiet_hours", next), to: base.to }); continue; }
+    out.push({ ...row("send", `follow-up ${counted.length} of ${p.maxAttemptsPerAction - 1}: no answers yet`), to: base.to });
+  }
+  return out;
+}
+
+/** The pass's send for one lane row: a held/failed row as it is, or the follow-up's new row first. */
+export async function dispatchQuestionRequestLane(a: QuestionRequestPreview, p: ReminderPolicy, now: Date, opts: { requestedBy: string; byAppUserId: string | null }): Promise<QrOutcome> {
+  if (a.decision !== "send") return { reminderId: a.rowId, outcome: "skipped", detail: a.reason };
+  let rowId = a.rowId;
+  const manual = a.kind === "first" || a.kind === "resend";
+  if (!rowId) {
+    const { questionRequestKeyPrefix } = await import("@/lib/questionRequests");
+    const template = templateForAction("QUESTION_REQUEST", p.templates as Record<string, unknown> | undefined);
+    const rel = await prisma.contentScriptRelease.findUnique({ where: { id: a.requestId }, select: { clientId: true } });
+    if (!rel) return { reminderId: null, outcome: "skipped", detail: "the question request is not on file" };
+    try {
+      const row = await prisma.programReminder.create({
+        data: {
+          enrollmentId: a.enrollmentId, clientId: rel.clientId, monthId: a.monthId, monthKey: a.monthKey, action: "QUESTION_REQUEST", templateKey: template.id, templateVersion: template.version,
+          channel: "email", attempt: a.attempt, state: "PENDING", manual: false, requestedBy: opts.requestedBy, dedupeKey: `${questionRequestKeyPrefix(a.enrollmentId, a.monthKey, a.requestId)}${a.attempt}`, nextEligibleAt: now,
+          evaluatedStateJson: JSON.stringify({ requestId: a.requestId, kind: "follow-up" }),
+        },
+        select: { id: true },
+      });
+      rowId = row.id;
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") return { reminderId: null, outcome: "duplicate", detail: `follow-up ${a.attempt} already exists` };
+      throw err;
+    }
+  }
+  return dispatchQuestionRequestRow(rowId, { manual, requestedBy: opts.requestedBy, byAppUserId: opts.byAppUserId, now, policy: p });
 }
 
 // ---- the SCRIPTS lane (6.5, Jordan's answer Sep 25 2026) ---------------------------
