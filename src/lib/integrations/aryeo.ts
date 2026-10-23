@@ -6,6 +6,7 @@ import type { DeliverableType, Prisma, ProjectStatus } from "@prisma/client";
 import type { NotifyTarget } from "@/lib/notify";
 import { streetOf } from "@/lib/delivery";
 import { etAt, etDayKey } from "@/lib/datetime";
+import { loadRemovedClients, removedMatch } from "@/lib/removedClients";
 
 // ---------------------------------------------------------------------------
 // Aryeo REST client.  Base: https://api.aryeo.com/v1  ·  Auth: Bearer {key}
@@ -2266,6 +2267,8 @@ export async function syncAryeoOrders(
   opts: { full?: boolean; orderId?: string; budgetMs?: number; maxPages?: number } = {},
 ): Promise<{
   imported: number; updated: number; clients: number; scanned: number;
+  /** orders not imported because they, or their customer, were removed on purpose (lib/removedClients) */
+  ignoredRemoved?: number;
   /** full mode: did this run reach the END of the order history? */
   complete?: boolean;
   /** full mode: the page the next run resumes from (1 = starting over) */
@@ -2283,8 +2286,15 @@ export async function syncAryeoOrders(
   let updated = 0;
   let scanned = 0;
   let clientsCreated = 0;
+  let ignoredRemoved = 0;
   const t0 = Date.now();
   const resumable = !!opts.full && !opts.orderId;
+  // Clients removed on purpose (Oct 23 2026, lib/removedClients): their orders
+  // are never imported again and a live job is never re-linked to them, or
+  // the full reconcile below would mint them back within the hour.
+  const removed = await loadRemovedClients(prisma);
+  const removedHit = (order: AryeoOrder) =>
+    removedMatch(removed, { orderId: order.id, customerIds: [order.customer?.id], email: order.customer?.email });
   // Direct AppSetting reads/writes (not getSetting's 60s cache) — a cursor has
   // to be exact across two runs minutes apart.
   const cursor = resumable ? await readReconcileCursor() : null;
@@ -2615,8 +2625,10 @@ export async function syncAryeoOrders(
           }
           // Customer changed on the order: same person under a new Aryeo id
           // re-links silently; a different person gets an activity trail.
-          const clientChanged = !!cust?.id && custClientId !== undefined && custClientId !== proj.clientId;
-          const clientNeedsResolve = !!cust?.id && custClientId === undefined;
+          // …never onto a customer removed on purpose: the job stays where it is.
+          const custRemoved = !!removedHit(order);
+          const clientChanged = !custRemoved && !!cust?.id && custClientId !== undefined && custClientId !== proj.clientId;
+          const clientNeedsResolve = !custRemoved && !!cust?.id && custClientId === undefined;
           // Square footage is usually filled in Aryeo AFTER the order is
           // created (or never — only 7 of 1,701 listings carry one), so the
           // import-time read is not enough. Aryeo wins when it HAS a number;
@@ -2796,6 +2808,12 @@ export async function syncAryeoOrders(
           continue;
         }
 
+        const gone = removedHit(order);
+        if (gone) {
+          ignoredRemoved++;
+          console.warn(`[aryeo] order ${order.id} not imported: ${gone.on} belongs to "${gone.entry.name}", removed on purpose ${gone.entry.removedAt.slice(0, 10)}`);
+          continue;
+        }
         const cust = order.customer;
         const addr = order.address;
         const clientId = await resolveClient(cust);
@@ -2930,6 +2948,7 @@ export async function syncAryeoOrders(
     await markSynced("aryeo");
     return {
       imported, updated, clients: clientsCreated, scanned,
+      ...(ignoredRemoved ? { ignoredRemoved } : {}),
       ...(resumable ? { complete: reachedEnd, resumeFromPage: reachedEnd ? 1 : page, budgetHit } : {}),
       ...(opts.orderId ? { missing: orderMissing } : {}),
       ...(outputErrors.length > 0 ? { outputErrors } : {}),
@@ -4305,6 +4324,14 @@ export async function upsertAryeoCustomerClient(
   // aryeoCustomerId slot, so we search on all of them.
   const ids = [...new Set([cust.id, ...(opts.altIds ?? [])].filter((v): v is string => !!v && !!v.trim()))];
 
+  // Removed on purpose (Oct 23 2026, lib/removedClients): neither re-created
+  // nor adopted onto another row.
+  const gone = removedMatch(await loadRemovedClients(prisma), { customerIds: ids, email });
+  if (gone) {
+    console.warn(`[aryeo] customer event ignored: ${gone.on} belongs to "${gone.entry.name}", removed on purpose ${gone.entry.removedAt.slice(0, 10)}`);
+    return null;
+  }
+
   const pk = phoneKey(cust.phone);
   const company = norm(cust.office_name);
 
@@ -4452,10 +4479,14 @@ export async function upsertAryeoCustomerClient(
 // Without those signals this daily sweep was the second twin-minting door: a
 // merged-away address (living on only as backupEmail) re-created the twin the
 // merge had just repaired. Idempotent — only creates true strangers.
-export async function syncAllAryeoClients(): Promise<{ created: number; scanned: number }> {
+export async function syncAllAryeoClients(): Promise<{ created: number; scanned: number; skippedRemoved?: number }> {
   const { prisma } = await import("@/lib/prisma");
   const { phoneKey } = await import("@/lib/integrations/openphone");
   const customers = await Aryeo.customerUsers();
+  // Removed on purpose (Oct 23 2026, lib/removedClients): this sweep is the
+  // door that would mint them back every morning, and greet them.
+  const removed = await loadRemovedClients(prisma);
+  let skippedRemoved = 0;
   const existing = await prisma.client.findMany({
     select: { id: true, email: true, backupEmail: true, phone: true, name: true, company: true, aryeoCustomerId: true },
   });
@@ -4485,6 +4516,7 @@ export async function syncAllAryeoClients(): Promise<{ created: number; scanned:
   let created = 0;
   for (const cu of customers) {
     const email = (cu.email ?? "").toLowerCase();
+    if (removedMatch(removed, { customerIds: [cu.id], email })) { skippedRemoved++; continue; }
     if (!email || byEmail.has(email)) continue;
     const name = cu.full_name || [cu.first_name, cu.last_name].filter(Boolean).join(" ") || cu.email!;
     // Strongest signal first, exactly like the order sync's resolveClient: a
@@ -4551,7 +4583,7 @@ export async function syncAllAryeoClients(): Promise<{ created: number; scanned:
     if (cpk.length === 10 && !byPhone.has(cpk)) byPhone.set(cpk, { id: createdRow.id, name });
     created++;
   }
-  return { created, scanned: customers.length };
+  return { created, scanned: customers.length, ...(skippedRemoved ? { skippedRemoved } : {}) };
 }
 
 // ---------------------------------------------------------------------------
