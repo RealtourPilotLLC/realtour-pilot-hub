@@ -56,6 +56,11 @@ import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 // The job's timeline says what went ("Asked Harrison for the missing
 // instructions at 10:00 AM; James copied.").
 //
+// THE BUTTON (Oct 23 2026, lib/remindPhotographer): "Remind photographer" in
+// the Editing Room texts the photographer on demand. A press writes this same
+// morning claim (marked `by` the person), so it is that day's ask: the sweep
+// skips the morning and counts it among its three.
+//
 // Behind its own switch (Settings, Internal alerts, "Missing instructions,
 // the morning after"), default on. Staff only: no client is ever texted here.
 // ---------------------------------------------------------------------------
@@ -69,10 +74,10 @@ export const FIRST_SHOOT_DAY = "2026-10-18";
 /** How far back the sweep reads shoots at all (bounds the query, not the rule). */
 const LOOKBACK_DAYS = 7;
 /** A claim older than this was a tick that died mid-send: the next tick takes it over. */
-const CLAIM_STALE_MS = 15 * 60_000;
-const CLAIM_PREFIX = "instructions_missing:";
+export const CLAIM_STALE_MS = 15 * 60_000;
+export const CLAIM_PREFIX = "instructions_missing:";
 /** The claim and text identity of an ask about a video added after the handoff. */
-const ADDED_SUFFIX = ":added";
+export const ADDED_SUFFIX = ":added";
 const REQUESTED_BY = "missing-instructions-text";
 /** The bell kind (notify.ts BELL_RULES, notifyPrefs.ts KIND_TO_EVENT → shoot_change). */
 export const MANAGER_BELL_KIND = "instructions_missing";
@@ -80,7 +85,8 @@ export const MANAGER_BELL_KIND = "instructions_missing";
 /** One text per job, per photographer, per ET morning (the outbox identity). */
 export const instructionsNudgeKey = (projectId: string, teamMemberId: string, dayKey: string) =>
   `instructions_missing:${projectId}:${teamMemberId}:${dayKey}`;
-const claimKey = (projectId: string, dayKey: string) => `${CLAIM_PREFIX}${projectId}:${dayKey}`;
+/** A morning's claim (an AppSetting key): `dayKey` is the ET day, plus ADDED_SUFFIX for an added-video ask. */
+export const claimKey = (projectId: string, dayKey: string) => `${CLAIM_PREFIX}${projectId}:${dayKey}`;
 
 // ---- the words (pure) ---------------------------------------------------------
 
@@ -107,11 +113,11 @@ export function listWords(items: string[]): string {
   return w.length <= 1 ? w[0] ?? "" : `${w.slice(0, -1).join(", ")} and ${w[w.length - 1]}`;
 }
 
-const allItems = (m: MissingInstructions) => [...m.video, ...m.photos];
+export const allItems = (m: MissingInstructions) => [...m.video, ...m.photos];
 /** "Tue Oct 20" */
 const shotDay = (d: Date) => etDate(d).replace(/,/g, "");
-const firstName = (n: string) => n.trim().split(/\s+/)[0] || n;
-const streetOf = (title: string, addressLine: string | null) =>
+export const firstName = (n: string) => n.trim().split(/\s+/)[0] || n;
+export const streetOf = (title: string, addressLine: string | null) =>
   (addressLine?.trim() && !/^\[No address/i.test(addressLine) ? addressLine.trim() : title.split(",")[0].trim()) || "Your shoot";
 
 /** The photographer's text. No dashes; their upload page linked. The words are
@@ -188,6 +194,59 @@ const JOB_SELECT = {
   cullingConfirmedAt: true,
 } satisfies Prisma.ProjectSelect;
 type JobRow = Prisma.ProjectGetPayload<{ select: typeof JOB_SELECT }>;
+/** The job as this file reads it (the Editing Room's Remind photographer reads the same row). */
+export const INSTRUCTIONS_JOB_SELECT = JOB_SELECT;
+export type InstructionsJob = JobRow;
+
+/** The video half's gaps the photographer owes, in the handoff engine's words
+ *  (video 2 and on included, through perVideoInstructions). The half must still
+ *  be owed and not handed in; the caller checks that. */
+async function handoffVideoGaps(p: JobRow): Promise<string[]> {
+  const { handoffReadinessOf } = await import("@/lib/tasks");
+  const r = await handoffReadinessOf(p);
+  return r.gaps.filter((g) => g.owedBy === "photographer").map((g) => g.label);
+}
+
+/**
+ * THE VIDEO HALF'S MISSING INSTRUCTIONS, whoever shot it (Oct 23 2026, the
+ * Editing Room's "Remind photographer"). Exactly what the morning ask lists
+ * for the video half: the handoff engine's gaps while the half is not handed
+ * in, else any video set up after the handoff that still has no words of its
+ * own. A video waiting on a second shoot, a waived video and "couldn't
+ * complete" ask nothing (liveHandoffCategories, laterVideoGap). Unlike the
+ * morning ask it answers for a job with no photographer too, so the button can
+ * say who is missing rather than pretend nothing is.
+ */
+export async function videoGapsOf(p: JobRow): Promise<string[]> {
+  if (!liveHandoffCategories(p.deliverables).includes("video")) return [];
+  if (!categoryHandoffAt(p, "video")) return handoffVideoGaps(p);
+  return (await addedVideoGaps(p)).labels;
+}
+
+/**
+ * The same answer for many jobs at once (the Editing Room's rows): one read of
+ * the jobs, one of their video rows' ages, and the engine's own reads only for
+ * the jobs that can owe something. A job whose video half is in and has no
+ * video set up since is skipped without opening its per-video rows. Only the
+ * jobs missing something come back.
+ */
+export async function videoGapsFor(projectIds: string[]): Promise<Map<string, { job: JobRow; missing: string[] }>> {
+  const out = new Map<string, { job: JobRow; missing: string[] }>();
+  if (!projectIds.length) return out;
+  const [jobs, videoRows] = await Promise.all([
+    prisma.project.findMany({ where: { id: { in: projectIds } }, select: JOB_SELECT }),
+    // videoInstructionsFor's own row filter: a video row's age is when it was set up.
+    prisma.deliverable.findMany({ where: { projectId: { in: projectIds }, removedFromOrderAt: null, type: { in: ["VIDEO", "SOCIAL_REEL"] } }, select: { projectId: true, createdAt: true } }),
+  ]);
+  for (const p of jobs) {
+    if (!liveHandoffCategories(p.deliverables).includes("video")) continue;
+    const handedIn = categoryHandoffAt(p, "video");
+    if (handedIn && !videoRows.some((d) => d.projectId === p.id && d.createdAt.getTime() > handedIn.getTime())) continue;
+    const missing = await videoGapsOf(p).catch(() => [] as string[]);
+    if (missing.length) out.set(p.id, { job: p, missing });
+  }
+  return out;
+}
 
 /** What each half the job still owes is missing, in the existing definitions' words. */
 async function readMissing(p: JobRow): Promise<MissingInstructions> {
@@ -195,9 +254,7 @@ async function readMissing(p: JobRow): Promise<MissingInstructions> {
   if (!p.photographer) return out;
   const halves = liveHandoffCategories(p.deliverables);
   if (halves.includes("video") && !categoryHandoffAt(p, "video")) {
-    const { handoffReadinessOf } = await import("@/lib/tasks");
-    const r = await handoffReadinessOf(p);
-    out.video = r.gaps.filter((g) => g.owedBy === "photographer").map((g) => g.label);
+    out.video = await handoffVideoGaps(p);
   }
   if (halves.includes("photos") && !categoryHandoffAt(p, "photos")) {
     const [{ wrapUpMissing }, { DEBRIEF_PAY_GATE_FROM }] = await Promise.all([import("@/lib/photoDelivery/clientAsked"), import("@/lib/payroll")]);
@@ -234,7 +291,7 @@ async function addedVideoGaps(p: JobRow): Promise<{ labels: string[]; since: Dat
 }
 
 /** Everything the morning asks for: the page's own gaps plus any video set up after the handoff. */
-async function readAllMissing(p: JobRow): Promise<{ missing: MissingInstructions; addedOnly: boolean; addedSince: Date | null }> {
+export async function readAllMissing(p: JobRow): Promise<{ missing: MissingInstructions; addedOnly: boolean; addedSince: Date | null }> {
   const base = await readMissing(p);
   const added = await addedVideoGaps(p);
   const video = [...base.video, ...added.labels.filter((l) => !base.video.includes(l))];
@@ -249,11 +306,24 @@ export async function missingInstructionsFor(projectId: string): Promise<Missing
 
 // ---- the morning's claim ---------------------------------------------------------
 
-type ClaimRecord = { state: "sending" | "sent"; at: string; id?: string; morning?: number; to?: string[]; missing?: string[] };
+/** A morning's claim. `by` (Oct 23 2026): the person who pressed "Remind
+ *  photographer" in the Editing Room; that press IS the day's ask (the sweep
+ *  then skips the morning). Absent = the 10 AM sweep sent it. */
+export type ClaimRecord = { state: "sending" | "sent"; at: string; id?: string; morning?: number; to?: string[]; missing?: string[]; by?: string };
 
-const parseClaim = (v: string): ClaimRecord | null => {
+export const parseClaim = (v: string): ClaimRecord | null => {
   try { return JSON.parse(v) as ClaimRecord; } catch { return null; }
 };
+
+/** How many earlier mornings this job was asked (the sweep's count, shared with
+ *  the button). Every earlier claim counts, finished or not: a tick that died
+ *  mid-send may still have texted. An added-video ask counts only the asks
+ *  since that video was set up. */
+export function morningsBefore(prior: { key: string; value: string }[], projectId: string, dayKey: string, added: { only: boolean; since: Date | null }): number {
+  return prior.filter((r) => r.key !== claimKey(projectId, dayKey) && (added.only
+    ? !!added.since && Date.parse(parseClaim(r.value)?.at ?? "") >= added.since.getTime()
+    : !r.key.endsWith(ADDED_SUFFIX))).length;
+}
 
 /** Take this job's ask for this morning in ONE atomic step (photoDelivery/digest's claim). */
 async function claimMorning(key: string, existing: { value: string } | null, now: Date): Promise<{ claim: string } | { reason: string }> {
@@ -346,10 +416,9 @@ export async function sweepMissingInstructions(now: Date = new Date(), opts: { p
 
     // Every earlier morning that was claimed counts, finished or not: a tick
     // that died mid-send may still have texted, and a fourth ask is the one
-    // outcome this must never have.
-    const mornings = prior.filter((r) => r.key !== claimKey(p.id, dayKey) && (addedOnly
-      ? !!addedSince && Date.parse(parseClaim(r.value)?.at ?? "") >= addedSince.getTime()
-      : !r.key.endsWith(ADDED_SUFFIX))).length;
+    // outcome this must never have. A "Remind photographer" press (Oct 23
+    // 2026) writes its day's claim too, so it counts as that morning's ask.
+    const mornings = morningsBefore(prior, p.id, dayKey, { only: addedOnly, since: addedSince });
     if (mornings >= MAX_MORNINGS) {
       run.done.push(`${street}: asked ${MAX_MORNINGS} mornings, the office alerts carry it`);
       continue;
