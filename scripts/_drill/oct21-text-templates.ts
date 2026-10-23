@@ -195,6 +195,11 @@ async function main() {
         const o = { firstName: "Harrison", street: "610 Onward Ave", missing: ["the flow and vision for video 1 (Premium Social Reel)", "the instructions for video 2 (Standard Reel)"], link: `${APP}/upload/p1` };
         same("instructions_reminder_photographer", "two videos", `⚙️ Realtour Hub: Hi Harrison, quick reminder: the instructions for 610 Onward Ave are missing and the editor is waiting on them. Still needed: the flow and vision for video 1 (Premium Social Reel) and the instructions for video 2 (Standard Reel). You can add them here: ${APP}/upload/p1`, rmd.composeReminderText(o));
       }
+      {
+        // Oct 23 2026 (huddle item 9): Photo Delivery's Ask the photographer for notes, new with its template (no older code to compare).
+        const an = await import("@/lib/photoDelivery/askNotes");
+        same("photo_notes_ask_photographer", "Harrison", `⚙️ Realtour Hub: Hi Harrison, any notes on 90 Notes Rd for the photos? Anything promised to the client, or anything that should be removed or fixed? You can add them here: ${APP}/upload/p1. If there are none, just reply none.`, an.composeNotesAskText({ firstName: "Harrison", street: "90 Notes Rd", link: `${APP}/upload/p1` }));
+      }
       const counts = { groundPhotos: 0, dronePhotos: 45, droneClips: 4, footage: 0, newestAt: null };
       for (const [sure, alsoEmpty] of [[["ground_photos"], []], [["ground_photos", "drone"], ["footage"]], [["footage"], ["ground_photos", "drone"]]] as const) {
         const o = { firstName: "Harrison", street: "123 Main St", shotWhen: "yesterday", counts, sure: [...sure], alsoEmpty: [...alsoEmpty], link: `${APP}/upload/p1` };

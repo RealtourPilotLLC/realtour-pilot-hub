@@ -100,6 +100,10 @@ export default async function CreditsPage({ searchParams }: { searchParams: Prom
                     <dd>{page.credit.runwayDays != null ? `${page.credit.runwayDays < 1 ? "Under a day" : `About ${page.credit.runwayDays} day${page.credit.runwayDays === 1 ? "" : "s"}`} at ${page.credit.perDay} a day (14-day average)` : "No recent spend to project from"}</dd>
                   </div>
                   <div>
+                    <dt className="text-muted">AutoHDR plan</dt>
+                    <dd data-plan-credits={page.credit.planCreditsPerMonth ?? ""}>{page.credit.planCreditsPerMonth != null ? `${page.credit.planCreditsPerMonth.toLocaleString("en-US")} credits a month` : "Not recorded yet"}</dd>
+                  </div>
+                  <div>
                     <dt className="text-muted">Committed</dt>
                     <dd>{page.credit.committed.toLocaleString("en-US")} credits for approved fixes not yet run</dd>
                   </div>
@@ -210,7 +214,7 @@ export default async function CreditsPage({ searchParams }: { searchParams: Prom
                   </details>
                 </div>
                 {viewer.isOwner ? (
-                  <ThresholdsForm initial={{ warn: page.credit.warn, critical: page.credit.critical, resetBuffer: page.credit.resetBuffer, usdPerCredit: page.credit.usdPerCredit ?? 0.5 }} />
+                  <ThresholdsForm initial={{ warn: page.credit.warn, critical: page.credit.critical, resetBuffer: page.credit.resetBuffer, usdPerCredit: page.credit.usdPerCredit ?? 0.5, planCreditsPerMonth: page.credit.planCreditsPerMonth }} />
                 ) : (
                   <p className="text-sm text-muted">Jordan sets these levels.</p>
                 )}

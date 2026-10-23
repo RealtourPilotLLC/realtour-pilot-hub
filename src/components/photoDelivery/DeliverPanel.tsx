@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import { etMonthDayTime } from "@/lib/datetime";
 import { CopyButton } from "@/components/ui/CopyButton";
 import {
-  clientAskedAnswerAction, clientAskedDoneAction, confirmAddOnAction, overrideDeliverAction, overrideWrapUpAction, restageForAryeoAction, startDeliveryAction, verifyDeliveryAction,
+  askPhotographerNotesAction, clientAskedAnswerAction, clientAskedDoneAction, confirmAddOnAction, overrideDeliverAction, overrideWrapUpAction, restageForAryeoAction, startDeliveryAction, verifyDeliveryAction,
 } from "@/app/ops/photo-delivery/actions";
 import { updateOnAryeoAction } from "@/app/ops/photo-delivery/editActions";
 import { PhotoImg } from "./PhotoImg";
@@ -100,7 +100,8 @@ export function DeliverPanel() {
   const flagWords = flags?.detail ? `${flags.detail[0].toUpperCase()}${flags.detail.slice(1)}` : "Photo flags are open";
   // Oct 21 2026 (859 N Lawrence St): the photographer's wrap-up and what the
   // client asked hold Kyle's delivery too, shadow mode or not.
-  const holds = gate?.checks.filter((c) => c.hold || c.askId) ?? [];
+  // Oct 23 2026: the wrap-up line (askNotes) shows here too, without holding anything.
+  const holds = gate?.checks.filter((c) => c.hold || c.askId || c.askNotes) ?? [];
   const openHolds = holds.filter((c) => c.hold && !c.ok);
   const canStage = START_FROM.has(stage);
   const canStart = !!gate && canStage && gate.canDeliver;
@@ -443,7 +444,7 @@ export function DeliverPanel() {
                             ))}
                           </span>
                         )}
-                        {!c.ok && (c.href || (!readOnly && (c.askId || c.overridable || c.addOn || c.photoIds?.length))) && (
+                        {!c.ok && (c.href || (!readOnly && (c.askId || c.overridable || c.askNotes || c.addOn || c.photoIds?.length))) && (
                           <span className="mt-1 flex flex-wrap gap-2">
                             {c.href && (
                               <Link href={c.href} className={cn(cardBtn, secondary, "font-medium")}>
@@ -460,6 +461,11 @@ export function DeliverPanel() {
                                   Answer with a note
                                 </button>
                               </>
+                            )}
+                            {c.askNotes && !readOnly && (
+                              <button type="button" disabled={pending} onClick={() => void run(() => askPhotographerNotesAction(jobId))} className={cn(cardBtn, secondary)}>
+                                Ask the photographer for notes
+                              </button>
                             )}
                             {c.overridable && !readOnly && (
                               <button type="button" disabled={pending} onClick={() => void withoutWrapUp()} className={cn(cardBtn, "border border-danger/50 text-danger hover:bg-danger-soft")}>

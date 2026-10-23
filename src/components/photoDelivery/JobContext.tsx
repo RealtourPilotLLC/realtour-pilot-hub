@@ -40,7 +40,16 @@ type Ctx = {
   cartLineByFinding: Map<string, CartLineView>;
   selected: Set<string>;
   setSelected: (fn: (s: Set<string>) => Set<string>) => void;
-  addToCart: (findingIds: string[]) => boolean;
+  /**
+   * Put fixes in the Fix Cart. `stay` (Oct 23 2026, huddle item 6: Fix sent
+   * Kyle back to the top of the job and he lost his place): the issue is
+   * queued where he is, like Not worth fixing; no tab switch, no drawer, the
+   * lightbox stays open. Without it (review mode's F key) the cart opens.
+   */
+  addToCart: (findingIds: string[], opts?: { stay?: boolean }) => boolean;
+  /** Oct 23 2026: findings Kyle pressed Fix on here (queued in the Fix Cart): the Issues tab folds their group away and moves on. */
+  queued: Set<string>;
+  unqueue: (findingIds: string[]) => void;
   tab: TabKey;
   setTab: (t: TabKey) => void;
   cartOpen: boolean;
@@ -146,8 +155,20 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
     [readOnly, show],
   );
 
-  const addToCart = useCallback(
+  const [queued, setQueued] = useState<Set<string>>(() => new Set());
+  const unqueue = useCallback(
     (findingIds: string[]) => {
+      setQueued((q) => new Set([...q].filter((id) => !findingIds.includes(id))));
+      setSelected((s) => {
+        for (const id of findingIds) s.delete(id);
+        return s;
+      });
+    },
+    [setSelected],
+  );
+
+  const addToCart = useCallback(
+    (findingIds: string[], opts: { stay?: boolean } = {}) => {
       if (readOnly) return false;
       const runnable = findingIds.filter((id) => {
         const l = cartLineByFinding.get(id);
@@ -162,6 +183,12 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
         for (const id of runnable) s.add(id);
         return s;
       });
+      if (opts.stay) {
+        // Oct 23 2026 (huddle item 6): queued where Kyle is; the next issue takes its place.
+        setQueued((q) => new Set([...q, ...runnable]));
+        show("ok", `${runnable.length === 1 ? "Fix queued" : `${runnable.length} fixes queued`} in the Fix Cart. Run them from the Fix Cart tab when you're done here.`);
+        return true;
+      }
       setLightbox(null);
       if (mode === "workspace") setTab("cart");
       else setCartOpen(true);
@@ -207,8 +234,19 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
           confirmLabel: status === "IGNORED" ? "Leave as is" : "Override",
         });
         if (reason === null) return false;
-      } else if (status === "IGNORED" && required) {
-        reason = await ask({ title: n === 1 ? "Not worth fixing?" : `Mark ${n} issues not worth fixing?`, description: "It is there, but not worth fixing here. A major or critical issue needs a reason; it stays in the activity log.", presets: IGNORE_PRESETS, required: true, confirmLabel: "Not worth fixing" });
+      } else if (status === "IGNORED") {
+        // Oct 23 2026 (huddle item 5): a few words why, kept with the check and
+        // the photo. The same reason on several jobs teaches the check house-wide
+        // (houseRules.learnedChecks); a minor one can still go without words.
+        reason = await ask({
+          title: n === 1 ? "Not worth fixing?" : `Mark ${n} issues not worth fixing?`,
+          description: required
+            ? "It is there, but not worth fixing here. A major or critical issue needs a reason; it stays in the activity log, and the same reason on several jobs teaches the check."
+            : "It is there, but not worth fixing here. A few words why (optional) teach the check: the same reason on several jobs stops it flagging this kind of thing.",
+          presets: IGNORE_PRESETS,
+          required,
+          confirmLabel: "Not worth fixing",
+        });
         if (reason === null) return false;
       } else if (status === "FALSE_POSITIVE" && required) {
         reason = await ask({
@@ -279,6 +317,8 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
     selected,
     setSelected,
     addToCart,
+    queued,
+    unqueue,
     tab,
     setTab,
     cartOpen,

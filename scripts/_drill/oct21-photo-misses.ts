@@ -21,9 +21,10 @@
 //   4. the approve summary: "You're delivering with 6 exterior issues ignored
 //      (construction materials ×4, trash cans ×2)", never the hub's own
 //      set-asides; on the delivery's activity
-//   5. the wrap-up gate: a blocking line naming the photographer (shadow mode
-//      or not), its page linked; a typed reason lets a person deliver, the hub
-//      never; the wrap-up in clears it and its removal notes become an item
+//   5. the wrap-up gate: a line naming the photographer, its page linked
+//      (since Oct 23 2026 information for Kyle, never his hold: the hub's own
+//      same-day delivery still waits); a typed reason is recorded, the hub
+//      never goes past it; the wrap-up in clears it and its removal notes become an item
 //   6. client asked, before delivery: each photo request holds Approve and
 //      deliver with its photo numbers until Done or answered with a note
 //  6b. the order note (the shape of 859 N Lawrence St): written on the Aryeo
@@ -236,12 +237,15 @@ async function main() {
   const W = await mkJob({ street: "859 N Lawrence St", sameDay: true });
   const gW0 = await delivery.deliveryGate(W.job.id);
   const wl0 = line(gW0, "wrapup");
-  c.ok("Harrison hasn't sent the wrap-up: a blocking line that names him and says what is unknown", wl0?.hold === true && wl0.ok === false && wl0.label === "Harrison hasn't sent the wrap-up yet: what was promised to the client or must be removed is unknown.", wl0?.label);
+  // Oct 23 2026 (Jordan and Kyle's huddle, item 9): missing photographer notes
+  // NEVER hold Kyle any more (oct23-photo-huddle.ts): the line informs him and
+  // offers "Ask the photographer for notes"; only the hub's own same-day
+  // delivery still waits for it.
+  c.ok("Harrison hasn't sent the wrap-up: a line that names him and says the notes are unknown (information, never a hold for Kyle)", wl0?.hold !== true && wl0?.advisory === true && wl0.ok === false && wl0.askNotes === true && wl0.label === "Harrison hasn't sent the wrap-up yet (any notes for the photos are unknown).", wl0?.label);
   c.ok("…with his wrap-up page (the page the 10 PM chaser links to) and what is missing", wl0?.href === `/upload/${W.project.id}` && /Harrison's wrap-up/.test(wl0?.hrefLabel ?? "") && /removal notes not answered, cull not confirmed/.test(wl0?.detail ?? ""));
-  c.ok("…it holds the delivery in shadow mode too: Approve and deliver can't go", gW0.advisory === true && gW0.canDeliver === false && gW0.passed === false && gW0.holdsOpen === 1);
-  c.ok("…and it is the only thing open (every other line passes on this job)", gW0.checks.filter((x) => !x.ok && !x.advisory).map((x) => x.key).join() === "wrapup", gW0.checks.filter((x) => !x.ok).map((x) => x.key).join());
+  c.ok("…Kyle's Approve and deliver is not held by it (Oct 23 2026), but the hub's own delivery is (passed stays false)", gW0.advisory === true && gW0.canDeliver === true && gW0.passed === false && gW0.holdsOpen === 0);
+  c.ok("…and it is the only thing open (every other line passes on this job)", gW0.checks.filter((x) => !x.ok).map((x) => x.key).join() === "wrapup", gW0.checks.filter((x) => !x.ok).map((x) => x.key).join());
   const { startDelivery } = await import("@/lib/photoDelivery/delivery");
-  c.ok("Mark as delivering is refused too", !(await startDelivery(W.job.id, "Kyle Smith")).ok);
   const { sameDayBlocker } = await import("@/lib/photoDelivery/aryeoPush");
   c.ok("a same-day order does not approve itself", (await sameDayBlocker(W.job.id)) === "the checklist has open items");
   const short = await actions.overrideWrapUpAction(W.job.id, "ok");
@@ -369,7 +373,9 @@ async function main() {
   const dl = line(gD, `ask:${dAsk!.id}`);
   c.ok("it holds the next delivery, with the photo numbers, until it is done", !gD.canDeliver && dl?.hold === true && /\(photos 1-5, 38-40\)$/.test(dl.label), dl?.label);
   await actions.clientAskedDoneAction(D.job.id, dAsk!.id);
-  c.ok("…Done: the hold lifts (the missing wrap-up still holds, and says so)", (await delivery.deliveryGate(D.job.id)).checks.filter((x) => x.hold && !x.ok).map((x) => x.key).join() === "wrapup");
+  // Oct 23 2026 (huddle item 9): the missing wrap-up still shows, but never holds Kyle (only the hub's own delivery).
+  const gD2 = await delivery.deliveryGate(D.job.id);
+  c.ok("…Done: the hold lifts (the missing wrap-up still shows, as information, and holds only the hub's own delivery)", gD2.checks.filter((x) => x.hold && !x.ok).length === 0 && gD2.checks.some((x) => x.key === "wrapup" && !x.ok && x.advisory && x.hubHold));
   // The old judgement (Oct 21): "pre-delivery work, not a revision", the ask read as a special request.
   const D2 = await mkJob({ street: "860 N Lawrence St", stage: "DELIVERED", jobDeliveredAt: deliveredAt, removalNotes: "Nothing needs removal — confirmed by the photographer.", culled: true });
   nextDecision = { actionable: true, projectId: D2.project.id, title: "Note crop request for pre-delivery work", detail: "Pre-delivery work, not a revision.", priority: "MEDIUM", mergeIntoTaskId: null, isRevisionRequest: false, flags: [], reason: "pre-delivery work", taskType: "client_reply", asks: [{ kind: "SPECIAL_REQUEST", text: "crop out the wooden sidewalk forms. Photos 1-5 and 38-40", summary: "Crop the sidewalk forms out of photos 1-5 and 38-40", medium: "photo", projectHint: D2.project.id }] };

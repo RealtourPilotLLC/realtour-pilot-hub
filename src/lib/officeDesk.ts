@@ -759,7 +759,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
         // A failed or late edit is a production follow-up (Requests & Follow-Ups), not a delivery.
         if (c.stage === "EDIT_FAILED" || late) photoLate.push({ c, failed: c.stage === "EDIT_FAILED" });
         else photosInProgress++;
-        Object.assign(a, { tone: "waiting", status: c.stage === "EDIT_FAILED" ? "Editing failed in AutoHDR" : "Being edited", who: "AutoHDR" });
+        // Oct 23 2026 (photo huddle item 12): before the raws arrive it is the photographer's upload, never "Being edited".
+        Object.assign(a, c.waitingForUpload ? { tone: "waiting", status: "Waiting for upload", who: "the photographer" } : { tone: "waiting", status: c.stage === "EDIT_FAILED" ? "Editing failed in AutoHDR" : "Being edited", who: "AutoHDR" });
         break;
       case "qc":
         if (late) photoLate.push({ c, failed: false }); else photosInProgress++;
@@ -1401,11 +1402,13 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   // Production follow-ups: photos late (or failed) at AutoHDR.
   for (const { c, failed } of photoLate) {
     const street = clean(c.street);
+    // Oct 23 2026 (photo huddle item 12): a late job whose raws never arrived is the photographer's, not AutoHDR's.
+    const notUp = !failed && !!c.waitingForUpload;
     push({
       id: `photos-late:${c.id}`, section: "followups", tag: "production", state: "now",
-      title: `${street} · Photos`, line: failed ? "Editing failed in AutoHDR · Restart it" : "Late from AutoHDR · Follow up", client: c.clientName ? clean(c.clientName) : null,
+      title: `${street} · Photos`, line: failed ? "Editing failed in AutoHDR · Restart it" : notUp ? "Waiting for upload · Ask the photographer" : "Late from AutoHDR · Follow up", client: c.clientName ? clean(c.clientName) : null,
       reason: failed ? "AutoHDR could not edit this set. Restart it from Photo Delivery." : `Promised ${c.slaDueAt ? etDateTime(c.slaDueAt) : "earlier"}, still ${c.stageLabel.toLowerCase()}.`,
-      who: failed ? "You" : "AutoHDR", dueISO: c.slaDueAt, dueWords: dueWordsFor(c.slaDueAt, now), late: true, rank: RANK.overdue,
+      who: failed ? "You" : notUp ? "the photographer" : "AutoHDR", dueISO: c.slaDueAt, dueWords: dueWordsFor(c.slaDueAt, now), late: true, rank: RANK.overdue,
       primary: { label: failed ? "Restart edits" : "Follow up", action: { kind: "link", label: "Open photos", href: `/ops/photo-delivery/${c.id}` } },
       actions: [{ kind: "link", label: "Open photos", href: `/ops/photo-delivery/${c.id}` }],
       href: `/ops/photo-delivery/${c.id}`,

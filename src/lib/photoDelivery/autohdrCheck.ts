@@ -6,10 +6,10 @@ import { appBase } from "@/lib/appUrl";
 import { autohdr, autohdrConfigured, AutohdrError } from "@/lib/integrations/autohdr";
 import { photoDeliverySettings } from "./settings";
 import { logJobEvent, setStage } from "./jobState";
-import { ruleById, RULES_REGISTRY_VERSION, type RoomType } from "./registry";
+import { ruleById, RULES_REGISTRY_VERSION, SEVERITY_RANK, type RoomType } from "./registry";
 import { jobVerdict, photoVerdicts, qcStageFor } from "./qc/verdict";
-import { disabledIn, houseOverrides } from "./houseRules";
-import { fixClass, instructionFor, refreshVerdict, shootIdOf as shootOf } from "./fixPolicy";
+import { disabledIn, houseOverrides, learnedChecks, lessonPromptLines } from "./houseRules";
+import { ALWAYS_FLAG, fixClass, instructionFor, refreshVerdict, shootIdOf as shootOf } from "./fixPolicy";
 import { overridesFor } from "./decisions";
 
 // ---------------------------------------------------------------------------
@@ -69,8 +69,8 @@ const CHECK_RULES = [
 ] as const;
 
 const ALLOWED = new Set<string>(CHECK_RULES);
-/** 2: light + furnished (Oct 14 2026). 3: prep + features, "look for" words, the removable-things rule, warped architecture (Oct 15 2026). 4: floating objects left by the edit (Oct 22 2026). */
-export const CHECK_PROMPT_VERSION = 4;
+/** 2: light + furnished (Oct 14 2026). 3: prep + features, "look for" words, the removable-things rule, warped architecture (Oct 15 2026). 4: floating objects left by the edit (Oct 22 2026). 5: the never and always lists, the shot's view (wide, partial, close-up) for the hero, and what the check learned from the office's calls (Oct 23 2026). */
+export const CHECK_PROMPT_VERSION = 5;
 const PER_PHOTO_TRIES = 3;
 const CONCURRENCY = 4;
 
@@ -98,7 +98,8 @@ export const LOOK_FOR: Partial<Record<(typeof CHECK_RULES)[number], string>> = {
   PREP_GARBAGE_BAGS_LOOSE_TRASH: "garbage bags, wrappers, cups or other small trash",
   PREP_CLEANING_SUPPLIES: "a broom, mop, dustpan, bucket, spray bottles or rags left out",
   PREP_VACUUM_CLEANING_EQUIPMENT: "a vacuum or steam mop left out",
-  PREP_LOOSE_CORDS_CABLES: "loose cords, chargers or extension cables",
+  // Oct 23 2026 (huddle): only a cord left lying loose, never one that belongs to the house.
+  PREP_LOOSE_CORDS_CABLES: "loose cords left lying across a floor, counter, table or bed (an extension cord or a charger cable; never a cord from a TV, lamp or appliance to the wall, never one barely visible)",
   PREP_PERSONAL_PHOTOS: "family photos showing people's faces",
   PREP_PERSONAL_DOCUMENTS: "mail, papers or documents you could read",
   PREP_PET_ITEMS: "pet bowls, beds, crates or toys",
@@ -115,7 +116,10 @@ export const LOOK_FOR: Partial<Record<(typeof CHECK_RULES)[number], string>> = {
   BED_CLOTHES_LEFT_OUT: "clothes on beds, chairs or floors",
   BED_CHILDRENS_TOYS: "toys left out",
   BED_LAUNDRY_HAMPERS: "laundry hampers or piles of laundry",
-  EXT_TRASH_CANS_PRIMARY: "trash or recycling bins outside (curb, driveway, by the garage)",
+  EXT_TRASH_CANS_PRIMARY: "trash or recycling bins outside this home (its curb, its driveway, by its garage or side door)",
+  // Oct 23 2026 (huddle): a car on THIS home's driveway, always; a neighbor's car, never.
+  EXT_PARKED_CARS_DRIVEWAY: "a car parked in this home's own driveway or carport, or right in front of this home (never a neighbor's car, never one in another home's driveway)",
+  EXT_VEHICLES_BLOCKING_HOME: "a vehicle standing in front of this home and hiding part of it (never a neighbor's)",
   EXT_GARDEN_HOSES: "a garden hose on the lawn, beds or walkway",
   EXT_HOSE_REELS: "a hose reel",
   EXT_CHILDRENS_OUTDOOR_TOYS: "kids' toys or bikes left in the yard",
@@ -130,32 +134,100 @@ export const LOOK_FOR: Partial<Record<(typeof CHECK_RULES)[number], string>> = {
   PERSP_CROOKED_HORIZON: "a tilted horizon outside",
   PERSP_AUTOHDR_ROOF_PEAKS_CROPPED: "outside: the top of the roof (peak, ridge or chimney) cut off by the top edge of the photo",
   PERSP_EDIT_WARP: "walls, door frames, windows or cabinets that look bent, curved or wedge-shaped (architecture only, never furniture)",
-  AIEDIT_FLOATING_OBJECT: "a lamp, piece of furniture or decor floating with nothing under it (no table, floor or shelf), an object cut off in mid-air, or the same object twice or as a faint ghost copy",
+  AIEDIT_FLOATING_OBJECT: "a lamp shade with no lamp base or stand under it, a lamp, piece of furniture or decor floating with nothing under it (no table, floor or shelf), an object cut off in mid-air, or the same object twice or as a faint ghost copy",
 };
+
+// ---------------------------------------------------------------------------
+// WHAT THE CHECK NEVER AND ALWAYS RAISES (Oct 23 2026, Jordan and Kyle's
+// huddle: "the free check flags too much").
+//   NEVER: anything on a neighbor's property ("need to be left alone"); cords
+//   and cables that belong to the house (a TV plugged into the wall, a cord
+//   barely visible) and signs; clutter, cleaning supplies or tools in an
+//   unfinished space (a garage, an unfinished basement or room); clutter in a
+//   home lived in throughout (prep.ts sets that aside: "we're not gonna fix
+//   all that unless the agent is paying for it").
+//   ALWAYS (fixPolicy.ALWAYS_FLAG): warped or leaning lines, trash bins, a car
+//   on THIS home's driveway, what the photographer could have moved (a
+//   crooked door mat, a broom against the front door), random clutter in an
+//   otherwise finished, tidy home, and the AI edit's own mistakes (a lamp
+//   shade left floating with no stand, 615 Cliff Ln). Trash cans are always
+//   wanted. Ordered add-ons not done are the add-on holds (addOns.ts).
+// The check is a model's answer, so the never-list is said in its question
+// AND screened in code where the answer shows it (screenIssues): the `where`
+// naming a neighbor's property, a cord that belongs to the house, a room the
+// check called a garage or unfinished space. Then one finding per real issue
+// per photo (ISSUE_FAMILY: "trash can" and "garbage can" on one photo are one
+// bin), and an issue a person already decided on that photo is not raised
+// again by a later check (checkJob).
+// ---------------------------------------------------------------------------
+
+/** Rules that name the same real thing; on one photo they are one finding (the most serious one, its places merged). */
+export const ISSUE_FAMILY: Readonly<Record<string, string>> = {
+  PREP_TRASH_CANS: "trash", EXT_TRASH_CANS_PRIMARY: "trash", BATH_TRASH_CANS: "trash", UTIL_GARAGE_TRASH_CANS: "trash", LIV_OFFICE_TRASH_CANS: "trash", KIT_GARBAGE_CANS: "trash",
+  PREP_GARBAGE_BAGS_LOOSE_TRASH: "loose-trash", EXT_LOOSE_GARBAGE_DEBRIS: "loose-trash",
+  PREP_CLEANING_SUPPLIES: "cleaning", BATH_CLEANING_SUPPLIES: "cleaning", PREP_VACUUM_CLEANING_EQUIPMENT: "cleaning",
+  EXT_PARKED_CARS_DRIVEWAY: "car", EXT_VEHICLES_BLOCKING_HOME: "car",
+  EXT_GARDEN_HOSES: "hose", EXT_HOSE_REELS: "hose",
+  PERSP_CROOKED_VERTICALS: "lean", PERSP_LEANING_DOOR_FRAMES: "lean", PERSP_EXTERIOR_WALLS_LEANING: "lean",
+  PREP_CONSTRUCTION_PAINTING_MATERIALS: "construction", EXT_CONSTRUCTION_MATERIALS: "construction", EXT_LADDERS_TEMP_EQUIPMENT: "construction", EXT_YARD_TOOLS: "construction",
+  REFL_PHOTOGRAPHER_IN_MIRROR: "reflection", REFL_CAMERA_TRIPOD_IN_MIRROR: "reflection", REFL_PHOTOGRAPHER_IN_GLASS: "reflection",
+  REFL_PHOTOGRAPHER_SHADOW: "shadow", REFL_TRIPOD_EQUIPMENT_SHADOW: "shadow",
+  KIT_DIRTY_DISHES_SINK: "dishes", KIT_DISHES_ON_COUNTERS: "dishes",
+  BED_CHILDRENS_TOYS: "toys", EXT_CHILDRENS_OUTDOOR_TOYS: "toys",
+  BATH_DIRTY_WET_TOWELS: "towels", BATH_TOWELS_UNEVEN: "towels",
+};
+/** The real issue a rule names (its family, or itself). Pure. */
+export const issueFamily = (ruleId: string): string => ISSUE_FAMILY[ruleId] ?? ruleId;
+
+/** The `where` names a neighboring property (the check is told to say so). */
+export const NEIGHBOR_RE = /\bneighbou?r|\bnext[\s-]door\b|\bacross the street\b|\badjacent (?:house|home|property|yard|lot|driveway)\b|\b(?:another|other|different) (?:house|home|property|driveway|yard)\b|\bneighboring\b/i;
+/** A cord that belongs to the house: from a TV, lamp or appliance to the wall, or barely there. */
+export const HOUSE_CORD_RE = /\b(?:tv|television|lamps?|plugged|outlets?|sockets?|walls?|appliances?|fridge|refrigerator|microwave|router|modem|barely|faint|thin|behind|under|utility|power lines?|cable lines?|ceiling|mounted)\b/i;
+/** A space that is not finished living space: clutter there is not the photographer's miss. */
+export const UNFINISHED_RE = /\bgarage\b|\bunfinished\b|\bstorage\b|\butility room\b|\bmechanical\b|\bfurnace\b|\bboiler\b|\battic\b|\bshed\b|\bcrawl ?space\b|\bworkshop\b|\bunder construction\b/i;
+/** Checks the neighbor screen never touches (a reflection, an edit mistake, the lines are about this photo, not a property). */
+const NOT_A_PLACE = /^(?:REFL_|AIEDIT_|PERSP_|EXPO_|COLOR_|SKY_|COMP_)/;
 
 /** What the photo shows that the room coverage check needs (coverage.ts). */
 export const CHECK_FEATURES = ["shower", "tub", "shower_in_background", "tub_in_background", "toilet", "vanity", "kitchen_island", "fireplace", "pool"] as const;
 const PREPS = ["staged", "tidy", "lived_in", "cluttered", "empty"];
 
-/** The one question every photo is asked. Built from the registry and the words above; a switched-off check is left out. */
-export function checkPrompt(off: Set<string> = new Set()): string {
+/**
+ * The one question every photo is asked. Built from the registry and the
+ * words above; a switched-off check is left out. `learned`: what the check
+ * learned from the office's calls (houseRules.lessonPromptLines), said after
+ * the house rules (Oct 23 2026).
+ */
+export function checkPrompt(off: Set<string> = new Set(), learned: string[] = []): string {
   const lines = CHECK_RULES.filter((id) => !off.has(id)).map((id) => `${id}: ${LOOK_FOR[id] ?? ruleById(id)?.shortLabel ?? id.toLowerCase().replace(/_/g, " ")}`);
+  const asked = learned.filter((l) => !off.has(l.split(":")[0]));
   return [
     "You are checking a real estate listing photo before it goes to the client.",
-    'Answer ONLY with JSON: {"room":"<room type>","light":"day|twilight|night","furnished":"empty|sparse|furnished","prep":"staged|tidy|lived_in|cluttered|empty","features":["<from the feature list>"],"issues":[{"id":"<one id from the list>","where":"<short location in the frame>","confidence":<0 to 1>}]}.',
-    'room: the space shown, for example "front exterior", "rear exterior", "kitchen", "living room", "primary bedroom", "bedroom", "primary bathroom", "bathroom", "powder room". Say primary only for the main suite.',
+    'Answer ONLY with JSON: {"room":"<room type>","view":"wide|partial|close_up","light":"day|twilight|night","furnished":"empty|sparse|furnished","prep":"staged|tidy|lived_in|cluttered|empty","features":["<from the feature list>"],"issues":[{"id":"<one id from the list>","where":"<short location in the frame>","confidence":<0 to 1>}]}.',
+    'room: the space shown, for example "front exterior", "rear exterior", "kitchen", "living room", "primary bedroom", "bedroom", "primary bathroom", "bathroom", "powder room", "garage", "unfinished basement", "unfinished room". Say primary only for the main suite; say unfinished for bare concrete, exposed framing or a space under construction.',
+    "view: wide = the whole house, or the whole room, from a distance; partial = part of the house or room; close_up = a detail such as a front door, a fixture, a sign or a view through a window.",
     "light: twilight = shot at dusk with a sunset or dusk sky and lights on. furnished: for an interior, how much furniture is in the room.",
     "prep: how ready the space looks. staged = styled like a show home; tidy = clean and put away (one or two stray things still count as tidy); lived_in = everyday things out in several places; cluttered = messy, piles, things everywhere; empty = no furniture. For an outside photo, judge the yard, driveway and porch.",
     `features: only these, when this photo shows them: ${CHECK_FEATURES.join(", ")}. shower or tub = it is a main subject of the photo; shower_in_background or tub_in_background = it only shows in the background, partly, or through a doorway.`,
-    "Clutter and distractions: report only things a photographer could have moved out of the frame, never furniture, decor, appliances or anything built in. In an EMPTY room, any loose item left behind counts.",
+    // Oct 23 2026 (huddle): what is never raised, and what always is.
+    "This property only: report things on the home being photographed, its own driveway, yard, porch and curb. Never anything on a neighbor's property: a neighbor's car, a car in another home's driveway, things in a neighbor's yard or on a neighboring house. If something you report is on a neighboring property, say neighbor in where.",
+    "Never report cords or cables that belong to the house (a TV, lamp or appliance plugged into the wall, a cord barely visible, utility or cable lines), or signs.",
+    "Unfinished spaces (a garage, an unfinished basement or room, a storage, utility or mechanical room): never report clutter, cleaning supplies, tools or stored things there. Trash cans still count.",
+    "Clutter and distractions: report only things a photographer could have moved out of the frame, never furniture, decor, appliances or anything built in. In an EMPTY room, any loose item left behind counts. In a home that is lived in or cluttered throughout, rate prep honestly.",
+    "Always report, wherever they are on this property: trash or recycling bins; a car in this home's own driveway or in front of it; anything the photographer could have moved before the shot (a crooked door mat, a broom or mop leaning against a door); random clutter in an otherwise clean, finished room.",
     "Lines: report leaning or bent architecture only (walls, door frames, windows, cabinets, the house), never furniture.",
     // A check switched off house-wide is never asked about, its explanation included.
-    ...(off.has("AIEDIT_FLOATING_OBJECT") ? [] : ["Editing mistakes: look at what every lamp, piece of furniture and decor item rests on. One that floats with nothing under it, ends in mid-air, or shows twice or as a ghost is AIEDIT_FLOATING_OBJECT, furniture and decor included. Never a pendant, chandelier, sconce, wall shelf or mounted TV."]),
-    "Report only problems you can actually see in this photo. An empty list is a good answer.",
+    ...(off.has("AIEDIT_FLOATING_OBJECT") ? [] : ["Editing mistakes: look at what every lamp, piece of furniture and decor item rests on. One that floats with nothing under it (a lamp shade with no lamp stand or base), ends in mid-air, or shows twice or as a ghost is AIEDIT_FLOATING_OBJECT, furniture and decor included. Never a pendant, chandelier, sconce, wall shelf or mounted TV."]),
+    ...(asked.length ? ["Learned from the office's calls on earlier shoots:", ...asked] : []),
+    "Report only problems you can actually see in this photo, each once. An empty list is a good answer.",
     "Ids:",
     ...lines,
   ].join("\n");
 }
+
+/** What the check saw of the shot (Oct 23 2026): the whole house or room, part of it, or a detail. */
+export const VIEWS = ["wide", "partial", "close_up"] as const;
+export type ShotView = (typeof VIEWS)[number];
 
 export type CheckIssue = { ruleId: string; where: string; confidence: number };
 
@@ -167,7 +239,8 @@ export type CheckIssue = { ruleId: string; where: string; confidence: number };
 export function roomTypeFrom(text: string | null | undefined, light?: string | null): RoomType | null {
   const t = (text ?? "").toLowerCase();
   if (!t.trim()) return null;
-  const outside = /exterior|outside|outdoor|facade|façade|front of|house|home|porch|street/.test(t);
+  // Oct 23 2026: a front door or the front walk is the front of the house (a close-up of it, its view says so).
+  const outside = /exterior|outside|outdoor|facade|façade|front of|house|home|porch|street|front door|front step|front walk|walkway|driveway|curb/.test(t);
   if (/aerial|drone|overhead|bird/.test(t)) return "AERIAL";
   if ((light === "twilight" || light === "night") && outside) return "TWILIGHT_EXTERIOR";
   if (/pool|spa|hot tub/.test(t)) return "POOL_SPA";
@@ -199,15 +272,79 @@ export function roomTypeFrom(text: string | null | undefined, light?: string | n
   return "OTHER";
 }
 
-export type CheckAnswer = { room: string | null; light: string | null; furnished: string | null; prep: string | null; features: string[]; issues: CheckIssue[] };
+export type CheckAnswer = { room: string | null; view?: ShotView | null; light: string | null; furnished: string | null; prep: string | null; features: string[]; issues: CheckIssue[] };
 
-/** Read describe's answer. Pure. Unknown ids, duplicates and junk are dropped. */
+/**
+ * ONE FINDING PER REAL ISSUE PER PHOTO (Oct 23 2026, huddle item 4: cleaning
+ * supplies were flagged 4 times on one listing, the bins 3 times). Issues of
+ * one family (ISSUE_FAMILY) on one photo become one: the most serious rule
+ * (its default severity, then the check's confidence), every place it was
+ * seen in one `where`, the highest confidence. Order kept. Pure.
+ */
+export function dedupeIssues(issues: CheckIssue[]): CheckIssue[] {
+  const rank = (id: string) => SEVERITY_RANK[ruleById(id)?.defaultSeverity ?? "MINOR"] ?? 0;
+  const byFamily = new Map<string, { at: number; best: CheckIssue; wheres: string[]; confidence: number }>();
+  issues.forEach((iss, at) => {
+    const k = issueFamily(iss.ruleId);
+    const cur = byFamily.get(k);
+    if (!cur) {
+      byFamily.set(k, { at, best: iss, wheres: iss.where ? [iss.where] : [], confidence: iss.confidence });
+      return;
+    }
+    if (rank(iss.ruleId) > rank(cur.best.ruleId) || (rank(iss.ruleId) === rank(cur.best.ruleId) && iss.confidence > cur.best.confidence)) cur.best = iss;
+    if (iss.where && !cur.wheres.some((w) => w.toLowerCase() === iss.where.toLowerCase())) cur.wheres.push(iss.where);
+    cur.confidence = Math.max(cur.confidence, iss.confidence);
+  });
+  return [...byFamily.values()].sort((a, b) => a.at - b.at).map((v) => ({ ruleId: v.best.ruleId, where: v.wheres.join("; ").slice(0, 200), confidence: v.confidence }));
+}
+
+/** A lesson the check learned (houseRules.learnedChecks), as the screen reads it. */
+type ScreenLesson = { ruleId: string; scope: string; active: boolean };
+
+/**
+ * THE CODE-SIDE SCREEN (Oct 23 2026, huddle item 3): what the model was told
+ * never to raise, dropped where its own answer shows it. Pure.
+ *   · on a neighbor's property (`where` names it): every check but the photo's
+ *     own (reflections, edit mistakes, lines, exposure);
+ *   · a cord that belongs to the house (from a TV, lamp or appliance, barely there);
+ *   · clutter in an unfinished space (the room the check named: a garage, an
+ *     unfinished basement or room, storage), never an ALWAYS_FLAG check (trash
+ *     cans still count there);
+ *   · what the office's calls taught (houseRules.learnedChecks), never on an
+ *     ALWAYS_FLAG check: "barely visible" drops one the check was under 75%
+ *     sure of, "part of the house" one whose place says it is, "garage or
+ *     basement" one in an unfinished space.
+ * Then one finding per family (dedupeIssues).
+ */
+export function screenIssues(a: Pick<CheckAnswer, "room" | "issues">, opts: { lessons?: ScreenLesson[]; alwaysFlag?: Set<string>; clutter?: (ruleId: string) => boolean } = {}): { kept: CheckIssue[]; dropped: { ruleId: string; why: string }[] } {
+  const always = opts.alwaysFlag ?? new Set<string>();
+  const isClutter = opts.clutter ?? ((id: string) => fixClass(id) === "prep");
+  const unfinished = UNFINISHED_RE.test(a.room ?? "");
+  const lessons = (opts.lessons ?? []).filter((l) => l.active && !always.has(l.ruleId));
+  const has = (ruleId: string, scope: string) => lessons.some((l) => l.ruleId === ruleId && l.scope === scope);
+  const kept: CheckIssue[] = [];
+  const dropped: { ruleId: string; why: string }[] = [];
+  for (const iss of a.issues) {
+    const why =
+      !NOT_A_PLACE.test(iss.ruleId) && NEIGHBOR_RE.test(iss.where) ? "on a neighbor's property"
+      : iss.ruleId === "PREP_LOOSE_CORDS_CABLES" && HOUSE_CORD_RE.test(iss.where) ? "a cord that belongs to the house"
+      : unfinished && !always.has(iss.ruleId) && (isClutter(iss.ruleId) || has(iss.ruleId, "unfinished")) ? "in an unfinished space"
+      : has(iss.ruleId, "faint") && iss.confidence < 0.75 ? "learned: barely visible"
+      : has(iss.ruleId, "attached") && HOUSE_CORD_RE.test(iss.where) ? "learned: part of the house"
+      : null;
+    if (why) dropped.push({ ruleId: iss.ruleId, why });
+    else kept.push(iss);
+  }
+  return { kept: dedupeIssues(kept), dropped };
+}
+
+/** Read describe's answer. Pure. Unknown ids, duplicates and junk are dropped. One issue per family per photo comes after the screen (screenIssues, then dedupeIssues): a neighbor's car must not merge into this home's before it is dropped. */
 export function parseCheckAnswer(text: string, off: Set<string> = new Set()): CheckAnswer | null {
   const body = text.replace(/```(?:json)?/gi, "").trim();
   const start = body.indexOf("{");
   const end = body.lastIndexOf("}");
   if (start < 0 || end <= start) return null;
-  let j: { room?: unknown; issues?: unknown; light?: unknown; furnished?: unknown; prep?: unknown; features?: unknown };
+  let j: { room?: unknown; view?: unknown; issues?: unknown; light?: unknown; furnished?: unknown; prep?: unknown; features?: unknown };
   try {
     j = JSON.parse(body.slice(start, end + 1));
   } catch {
@@ -229,7 +366,23 @@ export function parseCheckAnswer(text: string, off: Set<string> = new Set()): Ch
   const norm = (v: unknown) => (typeof v === "string" ? v.trim().toLowerCase().replace(/[\s-]+/g, "_") : "");
   const pick = (v: unknown, allowed: string[]) => (allowed.includes(norm(v)) ? norm(v) : null);
   const features = [...new Set((Array.isArray(j.features) ? j.features : []).map(norm).filter((f) => (CHECK_FEATURES as readonly string[]).includes(f)))];
-  return { room: typeof j.room === "string" ? j.room.slice(0, 60) : null, light: pick(j.light, ["day", "twilight", "night"]), furnished: pick(j.furnished, ["empty", "sparse", "furnished"]), prep: pick(j.prep, PREPS), features, issues };
+  const view = norm(j.view) === "closeup" ? "close_up" : (pick(j.view, [...VIEWS]) as ShotView | null);
+  return { room: typeof j.room === "string" ? j.room.slice(0, 60) : null, view, light: pick(j.light, ["day", "twilight", "night"]), furnished: pick(j.furnished, ["empty", "sparse", "furnished"]), prep: pick(j.prep, PREPS), features, issues };
+}
+
+/**
+ * The hero score the free check gives a photo of the front (Oct 23 2026, huddle
+ * item 8: the hero was a front door close-up): a wide shot of the whole house
+ * leads, part of it next, a detail (a door, a fixture) never. From the shot's
+ * view, else from the room's words ("front door", "porch"). null: not a front
+ * exterior, or nothing to go on. Pure.
+ */
+export function heroScoreFrom(type: RoomType | null, room: string | null | undefined, view?: string | null): number | null {
+  if (type !== "EXTERIOR_FRONT" && type !== "TWILIGHT_EXTERIOR") return null;
+  if (view === "wide") return 90;
+  if (view === "partial") return 50;
+  if (view === "close_up") return 10;
+  return /\bdoor|\bentr(?:y|ance)|\bporch\b|\bsteps?\b|\bdetail|close[\s-]?up|\bsign\b|\bmailbox|\bnumbers?\b|\blight fixture/i.test(room ?? "") ? 20 : null;
 }
 
 /**
@@ -242,6 +395,10 @@ export type Progress = {
   v?: number;
   done: Record<string, number>; errors: Record<string, number>; skipped: string[]; rooms: Record<string, string>;
   light?: Record<string, string>; furnished?: Record<string, string>; prep?: Record<string, string>; features?: Record<string, string[]>; kept?: string[];
+  /** Oct 23 2026: wide | partial | close_up per photo (the hero, delivery.suggestedOrder). */
+  view?: Record<string, string>;
+  /** Oct 23 2026: what the screen dropped (screenIssues) and the repeats of an issue a person already decided, per photo. */
+  screened?: Record<string, { ruleId: string; why: string }[]>;
   geometry?: Record<string, unknown>; geometryDone?: boolean;
   /** Oct 22 2026 (photo audit H5): a person's "Check again" started this run (not a changed listing). */
   asked?: boolean;
@@ -249,7 +406,7 @@ export type Progress = {
 export const readProgress = (json: string | null | undefined): Progress => {
   try {
     const p = JSON.parse(json ?? "{}") as Partial<Progress>;
-    return { v: p.v, done: p.done ?? {}, errors: p.errors ?? {}, skipped: p.skipped ?? [], rooms: p.rooms ?? {}, light: p.light ?? {}, furnished: p.furnished ?? {}, prep: p.prep ?? {}, features: p.features ?? {}, kept: p.kept ?? [], geometry: p.geometry ?? {}, geometryDone: p.geometryDone ?? false, ...(p.asked ? { asked: true } : {}) };
+    return { v: p.v, done: p.done ?? {}, errors: p.errors ?? {}, skipped: p.skipped ?? [], rooms: p.rooms ?? {}, light: p.light ?? {}, furnished: p.furnished ?? {}, prep: p.prep ?? {}, features: p.features ?? {}, view: p.view ?? {}, ...(p.screened ? { screened: p.screened } : {}), kept: p.kept ?? [], geometry: p.geometry ?? {}, geometryDone: p.geometryDone ?? false, ...(p.asked ? { asked: true } : {}) };
   } catch {
     return { done: {}, errors: {}, skipped: [], rooms: {}, kept: [] };
   }
@@ -265,15 +422,21 @@ export function __setDescribeForTests(fn: typeof describeImpl) {
 }
 const describe = (shootId: number, imageUuid: string, prompt: string) => (describeImpl ? describeImpl(shootId, imageUuid, prompt) : autohdr.describe(shootId, imageUuid, { prompt }));
 
-/** Give a photo the room label (and the features) the free check saw, unless the paid QC's classifier already labeled it. */
-export async function labelRoom(photoId: string, room: string, light?: string | null, features?: string[] | null): Promise<void> {
+/**
+ * Give a photo the room label (and the features) the free check saw, unless
+ * the paid QC's classifier already labeled it. Oct 23 2026: a front exterior
+ * also gets its hero score from the shot's view (heroScoreFrom), so the hub's
+ * own order leads with a wide shot of the house, never a door close-up.
+ */
+export async function labelRoom(photoId: string, room: string, light?: string | null, features?: string[] | null, view?: string | null): Promise<void> {
   const type = roomTypeFrom(room, light);
   if (!type) return;
   const { groupOf } = await import("./qc/verdict");
   const sequenceGroup = groupOf({ id: photoId, name: "", sequence: 0, status: "ACTIVE", roomType: type, sequenceGroup: null } as Parameters<typeof groupOf>[0]);
+  const heroScore = heroScoreFrom(type, room, view);
   await prisma.photoAsset.updateMany({
     where: { id: photoId, classifiedHash: null },
-    data: { roomType: type, roomConfidence: 0.7, sequenceGroup, isTwilight: type === "TWILIGHT_EXTERIOR", isAerial: type === "AERIAL", ...(features ? { featuresJson: JSON.stringify(features) } : {}) },
+    data: { roomType: type, roomConfidence: 0.7, sequenceGroup, isTwilight: type === "TWILIGHT_EXTERIOR", isAerial: type === "AERIAL", heroScore, ...(features ? { featuresJson: JSON.stringify(features) } : {}) },
   });
 }
 
@@ -289,6 +452,8 @@ export type CheckSummary = { skipped?: string; jobs: { jobId: string; checked: n
  */
 /** The job event a person's "Check again" writes (requestFreeRecheck); the check picks the job up while it is newer than the job's last free check. */
 export const FREE_RECHECK_ACTION = "free photo check requested";
+/** Oct 23 2026 (huddle item 4): a finding in one of these on a photo means its issue was decided (or is being fixed): a later check does not raise it again. */
+export const ALREADY_DECIDED = ["IGNORED", "FALSE_POSITIVE", "OVERRIDDEN", "SENT_TO_EDITOR", "RESHOOT_REQUESTED", "APPROVED_FIX", "FIXING"] as const;
 /** Oct 22 2026 (photo audit H5): the stages "Check again" (and a changed gallery) re-check, a client's revision and a delivery problem included. */
 export const RECHECK_STAGES = ["EDITED", "QC_REVIEW", "READY", "ON_HOLD", "FIXING", "REVISION_REQUESTED", "DELIVERY_MISMATCH"] as const;
 
@@ -405,7 +570,7 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
       const carry = <T,>(m: Record<string, T> | undefined) => Object.fromEntries(unchanged.filter((id) => m?.[id] !== undefined).map((id) => [id, m![id]]));
       // A person's "Check again" since the last check (requestFreeRecheck): said so on the run, never read as a changed listing.
       const asked = (await prisma.photoJobEvent.count({ where: { jobId, action: FREE_RECHECK_ACTION, ...(lastRow ? { at: { gt: lastRow.startedAt } } : {}) } })) > 0;
-      const start: Progress = { v: CHECK_PROMPT_VERSION, done: {}, errors: {}, skipped: [], kept: unchanged, rooms: carry(last.rooms), light: carry(last.light), furnished: carry(last.furnished), prep: carry(last.prep), features: carry(last.features), geometry: carry(last.geometry), geometryDone: false, ...(asked ? { asked: true } : {}) };
+      const start: Progress = { v: CHECK_PROMPT_VERSION, done: {}, errors: {}, skipped: [], kept: unchanged, rooms: carry(last.rooms), light: carry(last.light), furnished: carry(last.furnished), prep: carry(last.prep), features: carry(last.features), view: carry(last.view), geometry: carry(last.geometry), geometryDone: false, ...(asked ? { asked: true } : {}) };
       run = await prisma.photoQcRun.create({
         data: { jobId, trigger: "AUTOHDR_CHECK", status: "RUNNING", shadow: settings.qcShadow, rulesVersion: RULES_REGISTRY_VERSION, promptVersionsJson: JSON.stringify({ autohdrCheck: CHECK_PROMPT_VERSION }), modelsJson: JSON.stringify({ describe: "AutoHDR describe (free)" }), checksJson: JSON.stringify(start) },
       });
@@ -414,9 +579,17 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
     }
     const progress = readProgress(run.checksJson);
     const kept = new Set(progress.kept);
-    const house = await houseOverrides();
+    // The house list (switched off, and what the office's calls taught: houseRules.learnedChecks).
+    const [house, lessons] = await Promise.all([houseOverrides(), learnedChecks().catch(() => [])]);
     const off = disabledIn(house);
-    const prompt = checkPrompt(off);
+    const prompt = checkPrompt(off, lessonPromptLines(lessons));
+    // Oct 23 2026 (huddle item 4): an issue a person (or the second look, or the
+    // home's own prep) already decided on a photo is not raised again by a later
+    // check of it; one being fixed is not either. A fixed one that is still
+    // there is (the fix did not take).
+    const decided = new Set(
+      (await prisma.photoQcFinding.findMany({ where: { jobId, photoId: { not: null }, status: { in: [...ALREADY_DECIDED] } }, select: { photoId: true, ruleId: true } })).map((d) => `${d.photoId}:${issueFamily(d.ruleId)}`),
+    );
     const todo = photos.filter((p) => !(p.id in progress.done) && !kept.has(p.id) && (progress.errors[p.id] ?? 0) < PER_PHOTO_TRIES && !progress.skipped.includes(p.id));
     for (const p of todo) if (!p.autohdrImageUuid || !shootOf(p, job.autohdrPhotoshootId)) progress.skipped.push(p.id);
     const work = todo.filter((p) => !progress.skipped.includes(p.id));
@@ -440,11 +613,18 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
         if (a.error === "gone") { progress.skipped.push(a.p.id); continue; }
         const parsed = a.text ? parseCheckAnswer(a.text, off) : null;
         if (!parsed) { progress.errors[a.p.id] = (progress.errors[a.p.id] ?? 0) + 1; continue; }
-        progress.done[a.p.id] = parsed.issues.length;
+        // Oct 23 2026: the never-list screened in code, one per family, and no repeat of a decided issue.
+        const screen = screenIssues(parsed, { lessons, alwaysFlag: ALWAYS_FLAG });
+        const issues = screen.kept.filter((i) => !decided.has(`${a.p.id}:${issueFamily(i.ruleId)}`));
+        const repeats = screen.kept.filter((i) => !issues.includes(i)).map((i) => ({ ruleId: i.ruleId, why: "already decided on this photo" }));
+        if (screen.dropped.length || repeats.length) (progress.screened ??= {})[a.p.id] = [...screen.dropped, ...repeats];
+        else delete progress.screened?.[a.p.id];
+        progress.done[a.p.id] = issues.length;
         looked.push(a.p);
+        if (parsed.view) (progress.view ??= {})[a.p.id] = parsed.view;
         if (parsed.room) {
           progress.rooms[a.p.id] = parsed.room;
-          await labelRoom(a.p.id, parsed.room, parsed.light, parsed.features);
+          await labelRoom(a.p.id, parsed.room, parsed.light, parsed.features, parsed.view);
         }
         if (parsed.light) (progress.light ??= {})[a.p.id] = parsed.light;
         if (parsed.furnished) (progress.furnished ??= {})[a.p.id] = parsed.furnished;
@@ -453,7 +633,7 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
         else delete progress.prep?.[a.p.id];
         (progress.features ??= {})[a.p.id] = parsed.features;
         checked++;
-        for (const iss of parsed.issues) {
+        for (const iss of issues) {
           const rule = ruleById(iss.ruleId);
           if (!rule) continue;
           found++;

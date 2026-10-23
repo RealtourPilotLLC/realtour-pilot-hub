@@ -6,9 +6,10 @@ import { Section } from "@/components/ui/Section";
 import { requirePageAccess } from "@/lib/auth/guards";
 import { homeFor, isCreativeLead } from "@/lib/auth/access";
 import { etDayKey, etMonthDayTime } from "@/lib/datetime";
-import { houseRules } from "@/lib/photoDelivery/houseRules";
+import { houseRules, lessonWords, refreshLessons, LESSON_DAYS, LESSON_MIN_CALLS, LESSON_MIN_JOBS } from "@/lib/photoDelivery/houseRules";
 import { ruleById } from "@/lib/photoDelivery/registry";
 import { SwitchedOffChecks } from "@/components/photoDelivery/SwitchedOffChecks";
+import { LearnedChecks, type LessonView } from "@/components/photoDelivery/LearnedChecks";
 import { photoDeliverySettings } from "@/lib/photoDelivery/settings";
 import { prisma } from "@/lib/prisma";
 import { fixPolicySummary, learnedRules, LEARN_DAYS, STRICT_CONFIDENCE } from "@/lib/photoDelivery/fixPolicy";
@@ -50,6 +51,32 @@ export default async function PhotoDeliverySettingsPage() {
   ]);
   const policy = fixPolicySummary(settings);
   const lessons = learned ? [...learned.values()].filter((l) => l.notThere + l.notWorth + l.wanted >= 2).sort((a, b) => Number(b.skip || b.strict) - Number(a.skip || a.strict) || b.notThere + b.notWorth - (a.notThere + a.notWorth)) : null;
+  // Oct 23 2026 (huddle item 5): what the check learned from the office's reasons, worked out fresh, with Undo.
+  const taught = await refreshLessons(new Date(), viewer.name ?? "Jordan").catch((e) => {
+    console.error("[photo-delivery] lessons failed", e);
+    return null;
+  });
+  const exampleJobs = [...new Set((taught ?? []).flatMap((l) => l.examples.map((e) => e.jobId)))];
+  const examplePhotos = [...new Set((taught ?? []).flatMap((l) => l.examples.map((e) => e.photoId).filter((x): x is string => !!x)))];
+  const [jobRows, photoRows] = await Promise.all([
+    exampleJobs.length ? prisma.photoJob.findMany({ where: { id: { in: exampleJobs } }, select: { id: true, projectId: true } }).catch(() => []) : [],
+    examplePhotos.length ? prisma.photoAsset.findMany({ where: { id: { in: examplePhotos } }, select: { id: true, name: true } }).catch(() => []) : [],
+  ]);
+  const titles = jobRows.length ? new Map((await prisma.project.findMany({ where: { id: { in: jobRows.map((j) => j.projectId) } }, select: { id: true, title: true } }).catch(() => [])).map((p) => [p.id, (p.title ?? "A job").split(",")[0]])) : new Map<string, string>();
+  const streetOfJob = new Map(jobRows.map((j) => [j.id, titles.get(j.projectId) ?? "A job"]));
+  const photoName = new Map(photoRows.map((p) => [p.id, p.name]));
+  const lessonViews: LessonView[] = (taught ?? []).map((l) => ({
+    key: l.key,
+    label: ruleById(l.ruleId)?.shortLabel ?? l.ruleId,
+    reason: l.reason,
+    count: l.count,
+    jobs: l.jobs,
+    changes: lessonWords(l),
+    active: l.active,
+    alwaysFlagged: l.alwaysFlagged,
+    undone: l.undone ? `undone by ${l.undone.by}, ${etMonthDayTime(l.undone.atISO)}` : null,
+    examples: l.examples.slice(0, 3).map((e) => ({ href: `/ops/photo-delivery/${e.jobId}${e.photoId ? `?photo=${e.photoId}` : ""}`, label: `${streetOfJob.get(e.jobId) ?? "A job"}${e.photoId && photoName.get(e.photoId) ? `, ${photoName.get(e.photoId)}` : ""}` })),
+  }));
   const qcFrom = settings.qcFrom ? new Date(settings.qcFrom) : null;
 
   return (
@@ -116,11 +143,17 @@ export default async function PhotoDeliverySettingsPage() {
         </details>
         <details className="panel-shadow group rounded-2xl border border-border bg-surface">
           <summary className={summary}>
-            <Brain aria-hidden className="size-4 text-muted" /> What the hub learned from your calls
-            {lessons && <span className="rounded-full bg-surface-2 px-2 text-ui-status font-medium text-muted">{lessons.length}</span>}
+            <Brain aria-hidden className="size-4 text-muted" /> What the check has learned
+            {taught && <span className="rounded-full bg-surface-2 px-2 text-ui-status font-medium text-muted">{taught.filter((l) => l.active).length}</span>}
             <ChevronDown aria-hidden className="ml-auto size-4 text-muted transition-transform group-open:rotate-180 motion-reduce:transition-none" />
           </summary>
           <div className="border-t border-border px-5 py-4">
+            {/* Oct 23 2026 (huddle item 5): the reasons people gave when setting something aside, once they repeat. */}
+            <p className="mb-2 text-ui-status text-muted">
+              When the same reason for &ldquo;not worth fixing&rdquo; (or &ldquo;not there&rdquo;) is given {LESSON_MIN_CALLS} times on {LESSON_MIN_JOBS} different jobs in {LESSON_DAYS} days, the free check learns it for every shoot. A reason about one listing never counts. Undo stops a lesson.
+            </p>
+            {taught ? <LearnedChecks lessons={lessonViews} /> : <p role="alert" className="text-sm text-warning">This could not be read. Refresh to try again.</p>}
+            <h3 className="mb-1 mt-5 text-sm font-semibold">Calls per check (automatic fixes)</h3>
             <p className="mb-3 text-ui-status text-muted">
               The last {LEARN_DAYS} days of people&rsquo;s calls on each check. &ldquo;Not there&rdquo; means the check got it wrong; &ldquo;not worth fixing&rdquo; means it was right but nobody wanted it fixed. Skip all and the hub&rsquo;s own calls do not count.
             </p>

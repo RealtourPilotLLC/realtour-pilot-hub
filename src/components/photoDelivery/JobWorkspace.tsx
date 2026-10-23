@@ -10,6 +10,7 @@ import { CoveragePanel } from "./CoveragePanel";
 import { Lightbox } from "./Lightbox";
 import { DeliverPanel } from "./DeliverPanel";
 import { HoldingPanel } from "./HoldingPanel";
+import { SpecialRequests } from "./SpecialRequests";
 import type { JobDetail, Viewer } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -36,6 +37,8 @@ export function JobWorkspace({ data, viewer, initialTab, initialPhoto, history, 
     <JobProvider data={data} viewer={viewer} mode="workspace" initialTab={tab} initialPhoto={initialPhoto}>
       {/* Oct 22 2026: what holds this job, first (HoldingPanel). */}
       <div className="mb-4 space-y-4">
+        {/* Oct 23 2026 (huddle item 7): the special requests first: lot lines, staging, what the client asked. */}
+        <SpecialRequests />
         <HoldingPanel />
         {lead}
       </div>

@@ -69,6 +69,20 @@ const VEHICLES = ["EXT_PARKED_CARS_DRIVEWAY", "EXT_VEHICLES_BLOCKING_HOME", "EXT
 // Oct 15 2026: the kitchen trash can too (Jordan: trash cans are always wanted).
 const TRASH = ["PREP_TRASH_CANS", "EXT_TRASH_CANS_PRIMARY", "BATH_TRASH_CANS", "UTIL_GARAGE_TRASH_CANS", "LIV_OFFICE_TRASH_CANS", "PREP_GARBAGE_BAGS_LOOSE_TRASH", "KIT_GARBAGE_CANS"];
 export const ALWAYS_FIX = new Set([...CAMERA, ...DISTORTION, ...VEHICLES, ...TRASH]);
+/**
+ * ALWAYS FLAGGED (Oct 23 2026, Jordan and Kyle's huddle): what Jordan always
+ * wants to hear about. Warped or leaning architecture and a cut-off roof,
+ * trash bins, a car on this home's own driveway, camera mistakes, the AI
+ * edit's own mistakes (615 Cliff Ln's lamp shade floating with no stand), and
+ * what the photographer could have moved (a crooked door mat). These are
+ * never switched off house-wide (houseRules.stopRule), never learned away
+ * from "not worth fixing" calls (houseRules.learnedChecks), and never dropped
+ * by the free check's own screens for an unfinished space (autohdrCheck
+ * screenIssues). Something on a NEIGHBOR's property is not this home's, so the
+ * neighbor screen still applies to them. Ordered add-ons not done (lot
+ * lines, staging) are their own holds (addOns.ts).
+ */
+export const ALWAYS_FLAG = new Set<string>([...ALWAYS_FIX, ...Object.keys(AUTOHDR_FREE_FIX), "AIEDIT_FLOATING_OBJECT", "PREP_DOOR_MAT_CROOKED"]);
 /** A person decides these, every time. */
 const NEVER_AUTO = new Set(["PREP_PERSONAL_DOCUMENTS", "PREP_PERSONAL_PHOTOS", "BED_PERSONAL_PHOTOS_SENSITIVE", "PREP_VISIBLE_PEOPLE_PETS", "OTHER_DEFECT", "FIX_DAMAGE_AI_EDIT"]);
 /** An AI fix that changed the house and could not be put back (fixRunner): a person restores it, never skipped in bulk. */
@@ -382,7 +396,7 @@ export async function learnedRules(now = new Date()): Promise<Map<string, RuleLe
   for (const l of out.values()) {
     const calls = l.notThere + l.notWorth + l.wanted;
     l.strict = l.notThere >= 3 && l.notThere / calls >= 0.5;
-    l.skip = fixClass(l.ruleId) === "prep" && l.notWorth >= 3 && l.notWorth / (l.notWorth + l.wanted) >= 0.6;
+    l.skip = fixClass(l.ruleId) === "prep" && !ALWAYS_FLAG.has(l.ruleId) && l.notWorth >= 3 && l.notWorth / (l.notWorth + l.wanted) >= 0.6;
   }
   return out;
 }

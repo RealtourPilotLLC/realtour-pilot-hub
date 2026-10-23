@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etAddDays, etDateTime, etDayKey, etMonthDay, etTime, etWeekday } from "@/lib/datetime";
+import { WAITING_FOR_UPLOAD } from "@/lib/photoDelivery/holding";
 
 // ---------------------------------------------------------------------------
 // SHOOTS (Jordan, Oct 19 2026): every shoot (job) in progress, one row each,
@@ -28,7 +29,7 @@ import { etAddDays, etDateTime, etDayKey, etMonthDay, etTime, etWeekday } from "
 // video (the job's edit card).
 //
 // STAGE WORDS (the chip):
-//   photos  Not shot yet · Not uploaded · Editing · Edit failed · In QC ·
+//   photos  Not shot yet · Waiting for upload · Editing · Edit failed · In QC ·
 //           Ready to review · On hold · Revisions · Delivering ·
 //           Delivery problem · Delivered
 //   video   Not shot yet · Not cut · <editor> · Editing · <editor> ·
@@ -169,11 +170,12 @@ const PHOTO_BY_STAGE: Record<string, { label: string; tone: StageTone; at: numbe
 
 function readPhotos(f: PhotoFacts): PhotoRead {
   let r: { label: string; tone: StageTone; at: number };
-  if (f.jobStage === "EDITING" && f.noRawsSeen) r = { label: "Not uploaded", tone: "waiting", at: 1 }; // photo audit M3
+  // Photo audit M3; Oct 23 2026 (huddle item 12): before the raws arrive the photos read "Waiting for upload", never "Editing".
+  if (f.jobStage === "EDITING" && f.noRawsSeen) r = { label: WAITING_FOR_UPLOAD, tone: "waiting", at: 1 };
   else if (f.jobStage && PHOTO_BY_STAGE[f.jobStage]) r = PHOTO_BY_STAGE[f.jobStage];
   else if (f.liveOnAryeo) r = f.reopened ? PHOTO_BY_STAGE.REVISION_REQUESTED : PHOTO_BY_STAGE.DELIVERED;
   else if (!f.shootOver) r = { label: "Not shot yet", tone: "waiting", at: 0 };
-  else if (!f.rawsIn) r = { label: "Not uploaded", tone: "waiting", at: 1 };
+  else if (!f.rawsIn) r = { label: WAITING_FOR_UPLOAD, tone: "waiting", at: 1 };
   else r = { label: "Editing", tone: "active", at: 1 };
   const tone: StageTone = f.late && r.at < 5 && r.tone !== "late" ? "late" : r.tone;
   return { label: r.label, tone, at: r.at, revision: r.at === 3 };
@@ -339,7 +341,7 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
   const nearNow = Math.abs(now.getTime() - Date.now()) < 60_000;
   const [extras, photoJobs, asks, editTasks, room] = await Promise.all([
     prisma.project.findMany({ where: { id: { in: ids } }, select: { id: true, contentMonthId: true } }),
-    prisma.photoJob.findMany({ where: { projectId: { in: ids } }, select: { projectId: true, stage: true, finalsCount: true } }),
+    prisma.photoJob.findMany({ where: { projectId: { in: ids } }, select: { projectId: true, stage: true, finalsCount: true, autohdrPhotoshootId: true } }),
     prisma.clientAsk.findMany({
       where: { projectId: { in: ids }, state: "OPEN", kind: "SPECIAL_REQUEST", source: { in: [...ca.ASK_SOURCES] } },
       select: { projectId: true, medium: true, kind: true, askedAt: true },
@@ -385,12 +387,9 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
     .catch(() => new Map<string, string[]>());
   const monthlyIds = new Set(extras.filter((p) => p.contentMonthId).map((p) => p.id));
   const photoStageBy = new Map(photoJobs.map((p) => [p.projectId, p.stage]));
-  // Photo audit M3 (Oct 22 2026): photo jobs in Editing whose raws the hub never saw (no intake batch, no photos read). A read that fails marks none.
-  const editingNoFinals = photoJobs.filter((p) => p.stage === "EDITING" && !p.finalsCount).map((p) => p.projectId);
-  const withRaws = editingNoFinals.length
-    ? await prisma.photoIntakeBatch.groupBy({ by: ["projectId"], where: { projectId: { in: editingNoFinals } }, _count: { _all: true } }).then((rows) => new Set(rows.map((r) => r.projectId))).catch(() => null)
-    : new Set<string>();
-  const noRawsSeen = new Set(withRaws ? editingNoFinals.filter((id) => !withRaws.has(id)) : []);
+  // Photo audit M3 (Oct 22 2026): photo jobs in Editing whose raws the hub never saw. Oct 23 2026 (huddle item 12):
+  // "in" = an upload that went on to AutoHDR (uploadState.ts), files still arriving are not. A read that fails marks none.
+  const noRawsSeen = await (await import("@/lib/photoDelivery/uploadState")).waitingForUploadOf(photoJobs);
   const asksBy = new Map<string, { medium: string | null; kind: string; askedAt: Date }[]>();
   for (const a of asks) if (a.projectId) asksBy.set(a.projectId, [...(asksBy.get(a.projectId) ?? []), a]);
   // The job's editor: the open edit card's person, else the newest card's (newest first).
@@ -652,7 +651,7 @@ export async function jobDeliverables(projectId: string, now: Date = new Date())
   const videoRows = p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
 
   const [photoJob, states, editTasks, sent, turnarounds, clocks, dueSet] = await Promise.all([
-    prisma.photoJob.findUnique({ where: { projectId }, select: { id: true, stage: true, finalsCount: true } }),
+    prisma.photoJob.findUnique({ where: { projectId }, select: { id: true, stage: true, finalsCount: true, autohdrPhotoshootId: true } }),
     import("@/lib/reviewCuts").then((m) => m.videoStatesFor([projectId])).catch(() => new Map<string, CutStateLike>()),
     prisma.smartTask.findMany({ where: { projectId, taskType: "edit_video" }, orderBy: { createdAt: "desc" }, take: 10, select: { assignedKey: true, status: true } }),
     prisma.reviewSubmission.findMany({ where: { projectId, status: "APPROVED", sentToClientAt: { not: null } }, select: { id: true, sentToClientAt: true } }),
@@ -714,7 +713,8 @@ export async function jobDeliverables(projectId: string, now: Date = new Date())
     late: pastDue(dueOf("Photos")),
     reopened: (p.status === "REVISION" || (!!p.revisionRequestedAt && (!p.deliveredAt || p.revisionRequestedAt > p.deliveredAt))) && videoRows.length === 0,
     // Photo audit M3 (Oct 22 2026): in Editing with no raws ever seen and no photos read.
-    noRawsSeen: photoJob?.stage === "EDITING" && !photoJob.finalsCount ? (await prisma.photoIntakeBatch.count({ where: { projectId } }).catch(() => 1)) === 0 : false,
+    // Oct 23 2026 (huddle item 12): files still arriving are not in yet (uploadState.ts).
+    noRawsSeen: photoJob ? (await (await import("@/lib/photoDelivery/uploadState")).waitingForUploadOf([{ projectId, ...photoJob }])).has(projectId) : false,
   };
 
   // ---- video ----

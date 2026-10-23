@@ -201,6 +201,11 @@ export async function decideFindings(input: { findingIds: string[]; status: Deci
     status,
     reason: reason || null,
   });
+  // Oct 23 2026 (huddle item 5): a reason given (or a call undone) may teach
+  // the check a house lesson, or stop teaching one (houseRules.refreshLessons).
+  if ((status === "IGNORED" || status === "FALSE_POSITIVE" || status === "OPEN") && (reason || status === "OPEN")) {
+    await import("./houseRules").then((m) => m.refreshLessons(new Date(), by)).catch((e) => console.warn("photo delivery: lessons not refreshed", (e as Error).message));
+  }
   const stage = await reconcileReviewStage(jobId, by);
   const skipped = ids.length - res.count;
   return {

@@ -368,7 +368,21 @@ const DELIVERED_STAGES = new Set(["DELIVERING", "DELIVERED", "DELIVERY_MISMATCH"
  * the hub's own (a HUB_EDIT version "Added by hand by Kyle"), counted as
  * checked (a person chose it; the free check only reads AutoHDR's photos).
  */
-export async function addPhotosByHand(input: { jobId: string; files: { pathname: string; fileName?: string | null }[]; by: string }): Promise<{ ok: boolean; message: string; added: string[] }> {
+export async function addPhotosByHand(input: {
+  jobId: string;
+  files: { pathname: string; fileName?: string | null }[];
+  by: string;
+  /**
+   * Oct 23 2026 (huddle item 7): the finished versions of add-on work done
+   * outside the hub (virtual staging, lot lines): each new photo carries the
+   * work's version label ("Virtual staging by Kyle", addOns.versionCarries),
+   * so the add-on's hold clears by itself, and sits right after its original
+   * in the delivery order. The originals are never replaced.
+   */
+  addOn?: string | null;
+  /** The original photo each file was made from (same index), or null. */
+  nextTo?: (string | null)[] | null;
+}): Promise<{ ok: boolean; message: string; added: string[] }> {
   const by = (input.by || "staff").slice(0, 120);
   const files = Array.isArray(input.files) ? input.files.slice(0, MAX_ADD + 1) : [];
   if (!files.length) return { ok: false, message: "Choose at least one photo.", added: [] };
@@ -378,12 +392,18 @@ export async function addPhotosByHand(input: { jobId: string; files: { pathname:
   if (DELIVERED_STAGES.has(job.stage)) return { ok: false, message: "This job is delivered (or being delivered). Add the photo on the Aryeo listing itself: the hub picks it up from there.", added: [] };
   const { derivativeStore, putDerivative } = await import("./blob");
   if (!derivativeStore()) return { ok: false, message: NO_STORE, added: [] };
-  const existing = await prisma.photoAsset.findMany({ where: { jobId: job.id }, select: { name: true, sequence: true } });
+  const existing = await prisma.photoAsset.findMany({ where: { jobId: job.id }, select: { id: true, name: true, sequence: true, status: true, roomType: true, sequenceGroup: true } });
   const taken = new Set(existing.map((p) => p.name.toLowerCase()));
   let seq = existing.reduce((m, p) => Math.max(m, p.sequence), -1);
-  const added: { id: string; name: string }[] = [];
+  const added: { id: string; name: string; after: string | null }[] = [];
   const refused: string[] = [];
-  for (const f of files) {
+  // Oct 23 2026: add-on work's finished versions, each next to its original (an active photo of this job).
+  const { ADD_ON_BY_KEY } = await import("./addOns");
+  const work = input.addOn ? ADD_ON_BY_KEY.get(input.addOn as never) ?? null : null;
+  if (input.addOn && !work) return { ok: false, message: "That add-on is not one the hub knows.", added: [] };
+  const originals = new Map(existing.filter((p) => p.status === "ACTIVE").map((p) => [p.id, p]));
+  for (const [i, f] of files.entries()) {
+    const orig = input.nextTo?.[i] ? originals.get(input.nextTo[i]!) ?? null : null;
     const fileName = shortName(f.fileName);
     const up = await readUpload(f.pathname, uploadPathPrefix(job.id, "new"));
     if ("error" in up) {
@@ -415,12 +435,15 @@ export async function addPhotosByHand(input: { jobId: string; files: { pathname:
     seq += 1;
     const info: HubEditInfo = { hash, kind: "added", from: hash, params: cleanParams({}), base: { sourceHash: hash, autohdrVersionUuid: null, width: jpeg.width, height: jpeg.height }, measured: null, fixed: [], by };
     const meta: HubEditMeta & Record<string, unknown> = { file, capturedAt: new Date().toISOString(), hub: info, upload: { fileName, converted: jpeg.converted } };
+    // Oct 23 2026: add-on work carries its label (the hold clears by it), and the original's room, so the order keeps it there.
+    const label = work ? `${work.versionLabel} by ${by}${orig ? ` (next to ${orig.name})` : ""}` : `${ADDED_LABEL} by ${by}`;
+    const room = orig ? { roomType: orig.roomType, sequenceGroup: orig.sequenceGroup, roomConfidence: 0.7 } : {};
     const row = await prisma.$transaction(async (tx) => {
       const p = await tx.photoAsset.create({
-        data: { jobId: job.id, name, sourceKind: BY_HAND_SOURCE, contentHash: hash, inspectedHash: hash, width: jpeg.width, height: jpeg.height, bytes: jpeg.bytes.length, format: "jpeg", sequence: seq, status: "ACTIVE" },
+        data: { jobId: job.id, name, sourceKind: BY_HAND_SOURCE, contentHash: hash, inspectedHash: hash, width: jpeg.width, height: jpeg.height, bytes: jpeg.bytes.length, format: "jpeg", sequence: seq, status: "ACTIVE", ...room, ...(work?.key === "virtual_staging" ? { isVirtuallyStaged: true } : {}) },
         select: { id: true },
       });
-      const v = await tx.photoVersion.create({ data: { photoId: p.id, label: `${ADDED_LABEL} by ${by}`.slice(0, 80), source: HUB_EDIT, contentHash: hash, derivJson: JSON.stringify(meta), width: jpeg.width, height: jpeg.height, bytes: jpeg.bytes.length, createdBy: by }, select: { id: true } });
+      const v = await tx.photoVersion.create({ data: { photoId: p.id, label: label.slice(0, 80), source: HUB_EDIT, contentHash: hash, derivJson: JSON.stringify(meta), width: jpeg.width, height: jpeg.height, bytes: jpeg.bytes.length, createdBy: by }, select: { id: true } });
       return { id: p.id, versionId: v.id };
     }).catch((e: unknown) => ((e as { code?: string }).code === "P2002" ? null : Promise.reject(e)));
     if (!row) {
@@ -435,8 +458,9 @@ export async function addPhotosByHand(input: { jobId: string; files: { pathname:
     } catch (e) {
       console.warn("photo delivery: sizes of an added photo not kept", row.id, (e as Error).message);
     }
-    added.push({ id: row.id, name });
+    added.push({ id: row.id, name, after: orig?.id ?? null });
   }
+  const nextToOriginals = added.some((a) => a.after);
   if (added.length) {
     // At the end of a saved delivery order (without one, the suggested order places it; either way it can be moved).
     const saved = (() => {
@@ -446,15 +470,31 @@ export async function addPhotosByHand(input: { jobId: string; files: { pathname:
         return null;
       }
     })();
-    if (Array.isArray(saved) && saved.length) await prisma.photoJob.update({ where: { id: job.id }, data: { orderJson: JSON.stringify([...saved, ...added.map((a) => a.id)]) } });
-    await logJobEvent(job.id, by, `${plural(added.length, "photo")} added to the gallery by hand (${added.map((a) => a.name).slice(0, 6).join(", ")}${added.length > 6 ? "…" : ""}): in the delivery, at the end of the order`, { photoIds: added.map((a) => a.id) });
+    if (nextToOriginals) {
+      // Oct 23 2026 (huddle item 7): each finished version right after its original, in the order as it stands now.
+      const newIds = new Set(added.map((a) => a.id));
+      const base = Array.isArray(saved) && saved.length ? saved : (await (await import("./delivery")).deliveryOrderFor(job.id)).map((o) => o.photoId);
+      const order = base.filter((id) => !newIds.has(id));
+      for (const a of added) {
+        const at = a.after ? order.lastIndexOf(a.after) : -1;
+        // After the original and any version already placed after it.
+        let i = at < 0 ? order.length : at + 1;
+        while (i < order.length && added.some((x) => x.id === order[i] && x.after === a.after)) i++;
+        order.splice(i, 0, a.id);
+      }
+      await prisma.photoJob.update({ where: { id: job.id }, data: { orderJson: JSON.stringify(order) } });
+    } else if (Array.isArray(saved) && saved.length) await prisma.photoJob.update({ where: { id: job.id }, data: { orderJson: JSON.stringify([...saved, ...added.map((a) => a.id)]) } });
+    const where = nextToOriginals ? "in the delivery, each next to its original (the originals stay)" : "in the delivery, at the end of the order";
+    await logJobEvent(job.id, by, `${plural(added.length, "photo")} added to the gallery by hand${work ? ` (${work.done.toLowerCase()})` : ""} (${added.map((a) => a.name).slice(0, 6).join(", ")}${added.length > 6 ? "…" : ""}): ${where}`, { photoIds: added.map((a) => a.id), ...(work ? { addOn: work.key, nextTo: added.map((a) => a.after) } : {}) });
     const { refreshVerdict } = await import("./fixPolicy");
     await refreshVerdict(job.id, by).catch(() => {});
   }
   const note = refused.length ? ` Not added: ${refused.slice(0, 3).join("; ")}${refused.length > 3 ? "…" : ""}.` : "";
   return {
     ok: added.length > 0,
-    message: added.length ? `${plural(added.length, "photo")} added to the gallery, at the end of the delivery order.${note}` : `Nothing was added.${note}`,
+    message: added.length
+      ? `${plural(added.length, "photo")} added to the gallery, ${nextToOriginals ? "each next to its original (the originals stay)" : "at the end of the delivery order"}.${work ? ` ${work.done}: it no longer holds the delivery.` : ""}${note}`
+      : `Nothing was added.${note}`,
     added: added.map((a) => a.id),
   };
 }

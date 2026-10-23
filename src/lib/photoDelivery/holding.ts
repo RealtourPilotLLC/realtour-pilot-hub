@@ -65,7 +65,9 @@ export type HoldingAction =
   | { kind: "rerun"; label: string }
   | { kind: "update"; label: string; photoIds: string[] }
   /** Oct 22 2026 (photo audit C1): "Settled with the client: nothing to resend", with a typed reason. */
-  | { kind: "settle"; label: string };
+  | { kind: "settle"; label: string }
+  /** Oct 23 2026 (huddle item 9): text the photographer asking for notes (askNotes.ts); the photos never wait for them. */
+  | { kind: "asknotes"; label: string };
 
 export type HoldingItem = {
   key: string;
@@ -119,6 +121,9 @@ export type HoldingGateLine = {
   waitingOn?: string;
   doneLabel?: string;
   said?: { from: string; text: string } | null;
+  /** Oct 23 2026: informs Kyle, holds only the hub's own delivery (the wrap-up); offer "Ask the photographer for notes". */
+  hubHold?: boolean;
+  askNotes?: boolean;
 };
 
 export type HoldingPush = {
@@ -202,10 +207,21 @@ function item(kind: HoldingKind, key: string, text: string, short: string, waiti
   return { key, kind, text, short, waitingOn, detail: extra.detail ?? null, quotes: extra.quotes ?? [], said: extra.said ?? null, action, ...(extra.alt ? { alt: extra.alt } : {}), link: extra.link ?? null };
 }
 
-/** Oct 22 2026 (photo audit M3): a job in Editing that never had raws (no upload seen, no photos): the photographer's, not AutoHDR's. Pure. */
+/**
+ * Oct 22 2026 (photo audit M3): a job in Editing that never had raws (no upload
+ * seen, no photos): the photographer's, not AutoHDR's. Pure. Oct 23 2026
+ * (Jordan and Kyle's huddle, item 12: today's jobs read "Editing" before the
+ * photos were uploaded): `rawBatches` counts the uploads that went on to
+ * AutoHDR (an intake batch past WAITING, or an AutoHDR shoot linked by hand);
+ * files still arriving are not "in" yet. Such a job reads WAITING_FOR_UPLOAD
+ * everywhere: this panel, the Photo Delivery board, the job's stage stepper,
+ * the Shoots board and Kyle's desk.
+ */
 export function notUploadedYet(stage: string, rawBatches: number | null | undefined, photosRead: number | null | undefined): boolean {
   return stage === "EDITING" && rawBatches === 0 && !photosRead;
 }
+/** The words for a photo job before its raws arrive (Oct 23 2026). */
+export const WAITING_FOR_UPLOAD = "Waiting for upload";
 
 /** The upload is on and the hub has its Aryeo login (AryeoPushControls.aryeoPushOn). */
 const pushOn = (p: HoldingPush) => p.mode !== "off" && p.connected;
@@ -247,7 +263,7 @@ export function holdingFor(input: HoldingInput): HoldingView {
     add(true, item("edits", "edits", `Waiting for the photos from the ${input.waitingForVisit} visit. The earlier visit's photos are already on the listing.`, "Waiting for the next visit's photos", photographer, { kind: "link", label: "Open the upload page", href: `/upload/${input.projectId}` }));
   } else if (notUploadedYet(stage, input.rawBatches, input.photosRead)) {
     // Oct 22 2026 (photo audit M3, 913 Lakeview and 1316 Blair): no raws ever reached the hub, so nothing went to AutoHDR.
-    add(true, item("edits", "edits", `Not uploaded yet: the raw photos have not reached the hub, so nothing has gone to AutoHDR.`, "Not uploaded yet", photographer, { kind: "link", label: "Open the upload page", href: `/upload/${input.projectId}` }));
+    add(true, item("edits", "edits", `${WAITING_FOR_UPLOAD}: the raw photos have not reached the hub yet, so nothing has gone to AutoHDR.`, WAITING_FOR_UPLOAD, photographer, { kind: "link", label: "Open the upload page", href: `/upload/${input.projectId}` }));
   } else if (stage === "EDITING") {
     // Nothing to press: the hub looks at AutoHDR every few minutes by itself.
     add(true, item("edits", "edits", "AutoHDR is still editing the photos. The hub looks again every few minutes.", "Waiting for AutoHDR's edits", "Waiting on AutoHDR", null));
@@ -282,7 +298,14 @@ export function holdingFor(input: HoldingInput): HoldingView {
     if (c.key === "upload") {
       add(holds, item("upload", c.key, `Part of the order was not uploaded${c.detail ? `: ${c.detail}` : "."}`, "Part of the order not uploaded", photographer, { kind: "link", label: "Open the upload page", href: `/upload/${input.projectId}` }));
     } else if (c.key === "wrapup") {
-      add(holds, item("wrapup", c.key, c.label, "Wrap-up missing", photographer, c.href ? { kind: "wrapup", label: c.hrefLabel ?? "Open the wrap-up", href: c.href } : null, { detail: c.detail ?? null }));
+      // Oct 23 2026 (huddle item 9): the photographer's notes never hold Kyle;
+      // the line informs and offers a text asking for them (the old line with
+      // "Deliver without it" for a hold that still is one: an older reader).
+      if (c.askNotes || c.hubHold) {
+        also.push(item("wrapup", c.key, c.label, "No photographer notes yet", photographer, c.askNotes ? { kind: "asknotes", label: "Ask the photographer for notes" } : null, { detail: c.detail ?? null, link: c.href ? { label: c.hrefLabel ?? "Open the wrap-up", href: c.href } : null }));
+      } else {
+        add(holds, item("wrapup", c.key, c.label, "Wrap-up missing", photographer, c.href ? { kind: "wrapup", label: c.hrefLabel ?? "Open the wrap-up", href: c.href } : null, { detail: c.detail ?? null }));
+      }
     } else if (c.key.startsWith("addon")) {
       const a = c.addOn;
       add(holds, item("addon", c.key, a ? `${a.need}.` : `${c.label}.`, a?.need ?? c.label, "Waiting on Kyle", a ? { kind: "addon", label: a.done, addOn: a.key } : null, { detail: c.detail ?? null, quotes: a?.quotes ?? [] }));

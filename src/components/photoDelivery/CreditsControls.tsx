@@ -47,16 +47,16 @@ export function CheckBalanceButton({ connected }: { connected: boolean }) {
 
 const field = "min-h-11 w-full rounded-lg border border-border-strong bg-surface-2 px-3 text-sm tabular-nums focus-visible:outline-2 focus-visible:outline-brand";
 
-export function ThresholdsForm({ initial }: { initial: { warn: number; critical: number; resetBuffer: number; usdPerCredit: number } }) {
+export function ThresholdsForm({ initial }: { initial: { warn: number; critical: number; resetBuffer: number; usdPerCredit: number; planCreditsPerMonth?: number | null } }) {
   const { pending, msg, run } = useRun();
-  const [v, setV] = useState({ warn: String(initial.warn), critical: String(initial.critical), resetBuffer: String(initial.resetBuffer), usdPerCredit: String(initial.usdPerCredit) });
+  const [v, setV] = useState({ warn: String(initial.warn), critical: String(initial.critical), resetBuffer: String(initial.resetBuffer), usdPerCredit: String(initial.usdPerCredit), plan: initial.planCreditsPerMonth != null ? String(initial.planCreditsPerMonth) : "" });
   const set = (k: keyof typeof v) => (e: React.ChangeEvent<HTMLInputElement>) => setV((cur) => ({ ...cur, [k]: e.target.value }));
   return (
     <form
       className="space-y-3"
       onSubmit={(e) => {
         e.preventDefault();
-        run(() => saveThresholdsAction({ warn: Number(v.warn), critical: Number(v.critical), resetBuffer: Number(v.resetBuffer), usdPerCredit: Number(v.usdPerCredit) }));
+        run(() => saveThresholdsAction({ warn: Number(v.warn), critical: Number(v.critical), resetBuffer: Number(v.resetBuffer), usdPerCredit: Number(v.usdPerCredit), planCreditsPerMonth: v.plan.trim() ? Number(v.plan) : null }));
       }}
     >
       <div className="grid gap-3 sm:grid-cols-2">
@@ -79,6 +79,11 @@ export function ThresholdsForm({ initial }: { initial: { warn: number; critical:
           <span className="font-medium">Dollars per credit</span>
           <input type="number" inputMode="decimal" min={0.0001} step="0.0001" required value={v.usdPerCredit} onChange={set("usdPerCredit")} className={field} />
           <span className="mt-0.5 block text-[12px] text-muted">For the dollar estimates only you see (the Pro plan rate).</span>
+        </label>
+        <label className="block text-sm">
+          <span className="font-medium">Plan credits a month</span>
+          <input type="number" inputMode="numeric" min={1} step={1} value={v.plan} onChange={set("plan")} placeholder="2000" className={field} />
+          <span className="mt-0.5 block text-[12px] text-muted">The AutoHDR plan&rsquo;s monthly allowance, shown on this page. It does not change the fix budget (Settings).</span>
         </label>
       </div>
       <div className="flex flex-wrap items-center gap-3">

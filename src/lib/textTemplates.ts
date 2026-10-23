@@ -295,6 +295,22 @@ export const TEXT_TEMPLATES = {
     sender: "src/lib/remindPhotographer.ts (composeReminderText)",
   },
 
+  // Oct 23 2026 (Jordan and Kyle's huddle): the photographer's notes never hold
+  // the photos; Kyle can ask for them from the photo job instead.
+  photo_notes_ask_photographer: {
+    label: "Photo Delivery: Ask the photographer for notes",
+    audience: "team",
+    when: "When Kyle presses Ask the photographer for notes on a photo job whose wrap-up has not come in.",
+    body: "Hi {firstName}, any notes on {street} for the photos? Anything promised to the client, or anything that should be removed or fixed? You can add them here: {link}. If there are none, just reply none.",
+    placeholders: [
+      P("firstName", "The photographer's first name", "Harrison"),
+      P("street", "The job's street", "123 Main St"),
+      P("link", "The job's upload page (the wrap-up)", "https://hub.realtourpilot.com/upload/abc123"),
+    ],
+    required: ["street", "link"],
+    sender: "src/lib/photoDelivery/askNotes.ts (composeNotesAskText)",
+  },
+
   // ---- TO THE TEAM: shoots -----------------------------------------------------
   shoot_day_requests: {
     label: "Shoot-day special requests",

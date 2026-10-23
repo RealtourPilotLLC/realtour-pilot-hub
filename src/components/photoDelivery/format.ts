@@ -113,7 +113,7 @@ export const HOLD_REASON_LABEL: Record<string, string> = {
 };
 
 /** Presets for "why are you ignoring this" (plan 8.3). */
-export const IGNORE_PRESETS = ["Client preference", "Intentional staging", "Permanent feature", "Not worth a fix on this listing"] as const;
+export const IGNORE_PRESETS = ["Neighbor's property", "Barely visible", "Unfinished space (garage, basement)", "Part of the house", "Intentional staging", "Client preference", "Not worth a fix on this listing"] as const;
 
 /** Presets for "why is this photo left out". */
 export const EXCLUDE_PRESETS = ["Duplicate", "Out of focus or soft", "Privacy", "Not this property", "Weak angle, better one in the set"] as const;
@@ -192,6 +192,17 @@ export type FindingGroup = {
   /** An unresolved CRITICAL that holds delivery, by the engine's rule. */
   holds: boolean;
 };
+
+/**
+ * Oct 23 2026 (huddle item 6): a group Kyle queued with Fix (every open
+ * finding in it fixable and queued in the Fix Cart): the Issues tab folds it
+ * away like a decided one, so the next issue is where he is. `fixable`: is
+ * this finding a cart line that runs by itself (not a person's call). Pure.
+ */
+export function isQueuedGroup(g: Pick<FindingGroup, "findings">, queued: Set<string>, fixable: (findingId: string) => boolean): boolean {
+  const open = g.findings.filter((f) => f.status === "OPEN");
+  return open.length > 0 && open.every((f) => fixable(f.id) && queued.has(f.id));
+}
 
 const ACTIVE_FINDING = new Set(["OPEN", "APPROVED_FIX", "FIXING"]);
 

@@ -141,6 +141,30 @@ export async function confirmAddOnAction(jobId: string, addOn: string, note: str
   }
 }
 
+/**
+ * Oct 23 2026 (huddle item 9): "Ask the photographer for notes": one text to
+ * the shoot's photographer through the staff text path (askNotes.ts). The
+ * photos never wait for the answer. The office's (requireAdmin).
+ */
+export async function askPhotographerNotesAction(jobId: string): Promise<ActionResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  if (!ID.test(String(jobId))) return { ok: false, message: "That job id is not valid." };
+  try {
+    const me = await getCurrentUser().catch(() => null);
+    const { by } = await actor();
+    const { askPhotographerForNotes } = await import("@/lib/photoDelivery/askNotes");
+    const r = await askPhotographerForNotes(jobId, { name: by, teamMemberId: me?.teamMemberId ?? null });
+    refresh(jobId);
+    return { ok: r.ok, message: r.message };
+  } catch (e) {
+    return failed("ask the photographer", e);
+  }
+}
+
 /** The photos may go out without the photographer's wrap-up: a typed reason, kept on the job's activity. */
 export async function overrideWrapUpAction(jobId: string, reason: string): Promise<ActionResult> {
   try {
@@ -273,6 +297,28 @@ export async function resumeCheckAction(ruleId: string): Promise<ActionResult> {
     return r;
   } catch (e) {
     return failed("turn the check back on", e);
+  }
+}
+
+/** Oct 23 2026 (huddle item 5): Jordan undoes a lesson the check learned from the office's calls. Owner only. */
+export async function undoLessonAction(key: string): Promise<ActionResult> {
+  try {
+    await requireOwner();
+  } catch (e) {
+    return denied(e);
+  }
+  if (typeof key !== "string" || key.length < 5 || key.length > 400 || !/^[A-Z0-9_]{3,80}\|[a-z]{3,20}\|/.test(key)) return { ok: false, message: "That lesson is not valid." };
+  try {
+    const { by } = await actor();
+    const { undoLesson } = await import("@/lib/photoDelivery/houseRules");
+    const r = await undoLesson(key, by);
+    if (r.ok) {
+      revalidatePath(`${BASE}/settings`);
+      revalidatePath(BASE);
+    }
+    return r;
+  } catch (e) {
+    return failed("undo the lesson", e);
   }
 }
 
@@ -712,7 +758,7 @@ export async function checkBalanceAction(): Promise<ActionResult> {
   }
 }
 
-export async function saveThresholdsAction(input: { warn: number; critical: number; resetBuffer: number; usdPerCredit: number }): Promise<ActionResult> {
+export async function saveThresholdsAction(input: { warn: number; critical: number; resetBuffer: number; usdPerCredit: number; planCreditsPerMonth?: number | null }): Promise<ActionResult> {
   try {
     await requireOwner();
   } catch (e) {
@@ -727,13 +773,17 @@ export async function saveThresholdsAction(input: { warn: number; critical: numb
   if (!(critical > 0 && critical <= warn)) return { ok: false, message: "The critical level must be above 0 and no higher than the warning level." };
   if (!(resetBuffer > 0 && resetBuffer <= 10_000)) return { ok: false, message: "The reset buffer must be a whole number above 0." };
   if (!(usdPerCredit > 0 && usdPerCredit <= 100)) return { ok: false, message: "The dollars per credit must be above 0 (for example 0.50)." };
+  // Oct 23 2026: the AutoHDR plan's credits a month (left out: kept as it is; empty: not recorded).
+  const planRaw = input?.planCreditsPerMonth;
+  const plan = planRaw === undefined ? undefined : planRaw === null ? null : Math.round(n(planRaw));
+  if (plan != null && !(plan > 0 && plan <= 1_000_000)) return { ok: false, message: "The plan's credits a month must be a whole number above 0, or left empty." };
   try {
     const { by } = await actor();
-    await saveCreditThresholds({ warn, critical, resetBuffer, usdPerCredit: Math.round(usdPerCredit * 10_000) / 10_000 }, by);
+    await saveCreditThresholds({ warn, critical, resetBuffer, usdPerCredit: Math.round(usdPerCredit * 10_000) / 10_000, ...(plan !== undefined ? { planCreditsPerMonth: plan } : {}) }, by);
     const t = await creditThresholds();
     revalidatePath(`${BASE}/credits`);
     revalidatePath(BASE);
-    return { ok: true, message: `Saved: warn below ${t.warn}, critical below ${t.critical}.` };
+    return { ok: true, message: `Saved: warn below ${t.warn}, critical below ${t.critical}${t.planCreditsPerMonth != null ? `, plan ${t.planCreditsPerMonth.toLocaleString("en-US")} credits a month` : ""}.` };
   } catch (e) {
     return failed("thresholds", e);
   }
