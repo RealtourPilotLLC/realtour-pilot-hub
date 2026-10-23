@@ -1,10 +1,19 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { usd0Signed } from "@/lib/money";
+import { noDashes } from "@/lib/text";
 import { endOfBusinessDaysET, etDate, etDateTime, etDayKey, etMonthDay, etTime } from "@/lib/datetime";
 import { listAssignees, firstName, type Assignee } from "@/lib/assignees";
 import { syntheticClientIds } from "@/lib/syntheticClients";
 import { openDelegations, resurfaceOf, type DelegatedTaskView } from "@/lib/delegation";
+// The boards production health is read from (static, so each one is the
+// module its own screen and its own drills use).
+import { jobsBoard, phaseOfVideoRow } from "@/lib/jobsBoard";
+import { videoDeliveryBoard } from "@/lib/videoDelivery";
+import { getReviewQueue } from "@/lib/reviewRoom";
+import { loadQueue } from "@/app/ops/photo-delivery/data";
+import { opsExceptionsBoard } from "@/lib/opsExceptions";
+import { kylePerson, chipPerson, ownerWeek, etWeekStart, ON_TIME_MIN_JOBS } from "@/lib/opsHome";
 
 // ---------------------------------------------------------------------------
 // JORDAN'S DASHBOARD, BUSINESS OVERSIGHT (Oct 23 2026, his spec §4 A–D, I).
@@ -216,7 +225,8 @@ export async function financialPosition(opts: { now?: Date; excludeClientIds?: s
     period: `Month to date ${etMonthDay(new Date(`${monthStartKey}T12:00:00Z`))} to ${etMonthDay(now)} · next 14 days to ${etMonthDay(horizon)} (ET)`,
     sources: "Bank feed (Plaid) · revenue at Stripe, QuickBooks Payments and Venmo · spend from the categorized ledger · unpaid from Aryeo",
     freshness,
-    limitations: [...new Set(limitations)],
+    // The books' own sentences, in the dashboard's voice (no em dashes).
+    limitations: [...new Set(limitations.map((l) => noDashes(l)))],
   };
 }
 
@@ -325,14 +335,6 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
   const exclude = opts.excludeClientIds ?? (opts.includeTest ? [] : await syntheticClientIds());
   const current = Math.abs(now.getTime() - Date.now()) < 60_000;
 
-  const [{ jobsBoard, phaseOfVideoRow, }, { videoDeliveryBoard }, { getReviewQueue }, { loadQueue }, { opsExceptionsBoard }, { kylePerson, chipPerson }] = await Promise.all([
-    import("@/lib/jobsBoard"),
-    import("@/lib/videoDelivery"),
-    import("@/lib/reviewRoom"),
-    import("@/app/ops/photo-delivery/data"),
-    import("@/lib/opsExceptions"),
-    import("@/lib/opsHome"),
-  ]);
   const [jobs, video, review, photos, exceptions, visits, kyle] = await Promise.all([
     jobsBoard(now, { includeTest: !!opts.includeTest }).catch(warn("shoots board")),
     videoDeliveryBoard(current ? {} : { now }).catch(warn("video board")),
@@ -753,7 +755,7 @@ export async function teamCoverage(opts: { now?: Date; includeTest?: boolean; ro
   const todayKey = etDayKey(now);
   const weekKey = etDayKey(new Date(now.getTime() + 7 * DAY));
   const unavailable: string[] = [];
-  const [{ kylePerson }, { reviewRoomRules, editorRouting }] = await Promise.all([import("@/lib/opsHome"), import("@/lib/settings")]);
+  const { reviewRoomRules, editorRouting } = await import("@/lib/settings");
   const [delegations, kyle, rules, routing, managers, off, owners] = await Promise.all([
     openDelegations().catch(warn("assignments")),
     kylePerson(roster).catch(() => null),
@@ -865,7 +867,6 @@ export type WeeklyPerformance = { measures: Measure[]; updatedISO: string };
 
 export async function weeklyPerformance(opts: { now?: Date; excludeClientIds?: string[] } = {}): Promise<WeeklyPerformance> {
   const now = opts.now ?? new Date();
-  const { ownerWeek, etWeekStart, ON_TIME_MIN_JOBS } = await import("@/lib/opsHome");
   const weekStart = etWeekStart(now);
   const exclude = opts.excludeClientIds ?? [];
   const in7 = new Date(now.getTime() + 7 * DAY);
