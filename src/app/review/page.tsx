@@ -4,7 +4,7 @@ import { requirePageAccess } from "@/lib/auth/guards";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Clapperboard, Download, ExternalLink, Eye, History, Hourglass, Pencil, PlayCircle, Send } from "lucide-react";
+import { Clapperboard, Download, ExternalLink, Eye, History, Hourglass, Loader2, Pencil, PlayCircle, Send } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { getCurrentUser } from "@/lib/auth/user";
@@ -224,6 +224,66 @@ function EditorRow({ e, children }: { e: EditorItem; children?: React.ReactNode 
   );
 }
 
+// ---------------------------------------------------------------------------
+// WITH TOPAZ (Jordan, Oct 23 2026: after "Run Topaz again" the video should
+// "close out and show that it's with topaz and show its progress and when it
+// was re-ran through topaz"). One row per approved video still in the pass:
+// the step it is on, Topaz's own percent while it renders, and when it was
+// last run again and by whom. It comes back to Ready to send by itself once
+// the new file is in Dropbox and checked (the page refreshes every 30 s).
+// ---------------------------------------------------------------------------
+const TOPAZ_STEPS = [
+  { key: "queued", label: "Queued" },
+  { key: "uploading", label: "Sending to Topaz" },
+  { key: "processing", label: "Topaz working" },
+  { key: "saving", label: "Filing in Dropbox" },
+] as const;
+
+function topazStepIndex(state: string): number {
+  if (state === "queued" || state === "estimated") return 0;
+  const i = TOPAZ_STEPS.findIndex((x) => x.key === state);
+  return i < 0 ? 0 : i;
+}
+
+/** The whole pass as one bar: each step a quarter, the step's own percent inside it. */
+function topazOverall(state: string, percent: number | null): number {
+  const i = topazStepIndex(state);
+  const within = percent != null ? percent / 100 : state === "saving" ? 0.5 : 0.1;
+  return Math.max(3, Math.min(97, Math.round(((i + within) / TOPAZ_STEPS.length) * 100)));
+}
+
+function WithTopazRow({ r }: { r: VideoRow }) {
+  const t = r.topaz ?? null;
+  const state = t?.state ?? "queued";
+  const at = topazStepIndex(state);
+  const overall = topazOverall(state, t?.percent ?? null);
+  return (
+    <li className="space-y-2 px-5 py-3" data-with-topaz={r.submissionId ?? r.key}>
+      <RowHead r={r} />
+      <p className="text-sm text-muted">
+        {t?.rerun
+          ? <>Run through Topaz again {etDateTime(new Date(t.rerun.atISO))} ET{t.rerun.by ? ` by ${t.rerun.by}` : ""}, from the editor&rsquo;s original file.</>
+          : t?.startedAtISO
+            ? <>In the Topaz pass since {etDateTime(new Date(t.startedAtISO))} ET.</>
+            : <>In the Topaz pass.</>}
+      </p>
+      <div>
+        <div className="h-2 w-full max-w-md overflow-hidden rounded-full bg-surface-2" role="progressbar" aria-label={`Topaz pass for ${r.street}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={overall}>
+          <div className="h-full rounded-full bg-brand transition-[width] duration-700 motion-reduce:transition-none" style={{ width: `${overall}%` }} />
+        </div>
+        <ol className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs" aria-label="Topaz steps">
+          {TOPAZ_STEPS.map((x, i) => (
+            <li key={x.key} className={cn(i < at ? "text-muted" : i === at ? "font-semibold text-foreground" : "text-muted-2")} aria-current={i === at ? "step" : undefined}>
+              {i < at ? "\u2713 " : ""}{x.label}{i === at && t?.percent != null && (state === "uploading" || state === "processing") ? ` ${t.percent}%` : ""}
+            </li>
+          ))}
+        </ol>
+      </div>
+      <p className="text-xs text-muted">It moves back to Ready to send by itself once the new file is in and checked.</p>
+    </li>
+  );
+}
+
 export default async function ReviewRoomPage({ searchParams }: { searchParams: Promise<{ test?: string }> }) {
   await requirePageAccess("review");
   const includeTest = (await searchParams).test === "1";
@@ -381,6 +441,7 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
   const subtitle = [
     `${q.pending.length} to review`,
     board ? `${ready.length} ready to send` : null,
+    finishing.length ? `${finishing.length} with Topaz` : null,
     `${editors.length} with editors${editorsLate ? ` (${editorsLate} late)` : ""}`,
   ].filter(Boolean).join(" · ");
   const editorRow = (e: EditorItem) => (
@@ -407,7 +468,7 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
       <div className="space-y-6 p-4 sm:p-6">
         {/* While a video is on its way (Oct 20 2026, audit B9): every 30 s,
             not 20; the cron moves an upload once a minute. */}
-        {moving && <AutoRefresh seconds={30} />}
+        {(moving || finishing.length > 0) && <AutoRefresh seconds={30} />}
         {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden. */}
         {includeTest && <p className="text-xs text-muted">Showing real and test records</p>}
 
@@ -475,10 +536,12 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
               </>
             )}
             {finishing.length > 0 && (
-              <p className="border-t border-border px-5 py-3 text-sm text-muted">
-                <span className="font-medium text-foreground">Finishing the Topaz pass ({finishing.length}):</span>{" "}
-                {finishing.map((r) => `${r.street}${r.late ? " (late)" : ""}`).join(", ")}. They show up above when the file is back.
-              </p>
+              <>
+                <h3 className="flex items-center gap-1.5 border-t border-border px-5 pt-3 text-sm font-semibold">
+                  <Loader2 aria-hidden className="size-4 animate-spin text-brand motion-reduce:animate-none" /> With Topaz ({finishing.length})
+                </h3>
+                <ul className="divide-y divide-border">{finishing.map((r) => <WithTopazRow key={r.key} r={r} />)}</ul>
+              </>
             )}
             {/* Branding videos still in the 1080p pass, which can still go to
                 Aryeo instead of the portal (Oct 21 2026). */}

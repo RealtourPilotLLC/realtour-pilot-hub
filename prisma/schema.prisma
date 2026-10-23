@@ -3108,6 +3108,9 @@ model TopazJob {
   sourceContainer   String?
   outputWidth       Int?
   outputHeight      Int?
+  /// Topaz's own percent while it renders (status poll), for the Review Room's
+  /// With Topaz row (Oct 23 2026). Null before processing and after a re-run.
+  renderProgress    Int?
   /**
    * JSON: the exact filter block sent to Topaz. Kept so that when Jordan
    * compares the first render against his desktop export, the numbers that

@@ -37,6 +37,7 @@ export const RERUN_SAYS = {
   published: "This video is already in the client's portal, so it can't be run through Topaz again.",
   onListing: "This Topaz file is already on the Aryeo listing, so it can't be run again.",
   goingUp: "This video is on its way to Aryeo right now, so it can't be run through Topaz again.",
+  noOriginal: "The hub no longer holds the editor's original file for this video, so it can't go through Topaz again.",
 } as const;
 
 /** What a run of "Upload to Aryeo and send" tells this rule (videoAryeoPush's record, read as data). */
@@ -64,6 +65,10 @@ export type RerunFacts = {
   /** a person or the listing check recorded THIS file on the Aryeo listing */
   onListing: boolean;
   push: RerunPushFacts;
+  /** The hub still holds the editor's original upload (the cut's own file in
+   *  the hub store), which is what a re-run sends: never the Topaz file
+   *  (Jordan, Oct 23 2026). false = released after the retention window. */
+  originalHeld?: boolean;
 };
 
 const LIVE = ["queued", "estimated", "uploading", "processing", "saving"];
@@ -74,6 +79,7 @@ export function rerunRefusal(f: RerunFacts): string | null {
   if (f.state !== "done" && f.state !== "held") return RERUN_SAYS.notFinished;
   if (f.state === "done" && (!f.finalPath || !f.savedAt)) return RERUN_SAYS.notFiled;
   if (f.state === "held" && !f.heldPath && !f.finalPath) return RERUN_SAYS.notFiled;
+  if (f.originalHeld === false) return RERUN_SAYS.noOriginal;
   if (f.deliveredAt || f.sentToClientAt) return f.monthly ? RERUN_SAYS.published : RERUN_SAYS.sent;
   if (f.cutStatus && f.cutStatus !== "APPROVED") return RERUN_SAYS.reopened;
   // A later round's file took its place (supersedePriorEnhanced moved it).
@@ -99,7 +105,7 @@ export type RerunOffer = { jobId: string; credits: number | null; limit: number 
 
 /** The line under the button once it asks: the cost before anything is spent. */
 export function rerunCostLine(o: Pick<RerunOffer, "credits" | "limit">): string {
-  const keep = "The current Topaz file is kept in Dropbox (superseded/), and nothing goes to the client until the new one is finished and checked.";
+  const keep = "It sends the editor's original file, not the current Topaz file. The current Topaz file is kept in Dropbox (superseded/), and nothing goes to the client until the new one is finished and checked.";
   if (o.credits == null) return `It starts with the free price check, so every limit in Settings applies. ${keep}`;
   const n = Math.max(1, Math.round(o.credits));
   if (o.limit != null && n > o.limit) {

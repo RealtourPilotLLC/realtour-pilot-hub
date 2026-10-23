@@ -2112,7 +2112,9 @@ async function stepProcessing(job: NonNullable<JobRow>, s: TopazSettings): Promi
     return "uploading";
   }
 
-  await release(job, { nextAttemptAt: new Date(Date.now() + 60_000), error: null, errorAt: null });
+  // Topaz's own percent, for the Review Room's With Topaz row (Oct 23 2026).
+  const pct = st.progress != null && Number.isFinite(st.progress) ? Math.max(0, Math.min(100, Math.round(st.progress))) : undefined;
+  await release(job, { nextAttemptAt: new Date(Date.now() + 60_000), error: null, errorAt: null, ...(pct !== undefined ? { renderProgress: pct } : {}) });
   return "processing";
 }
 
@@ -3505,7 +3507,7 @@ async function rerunFactsFor(jobId: string): Promise<RerunFacts | null> {
     where: { id: jobId },
     select: {
       state: true, finalPath: true, savedAt: true, heldPath: true, deliveredAt: true, submissionId: true,
-      submission: { select: { status: true, sentToClientAt: true } },
+      submission: { select: { status: true, sentToClientAt: true, blobUrl: true } },
       project: { select: { contentMonthId: true } },
     },
   });
@@ -3531,6 +3533,9 @@ async function rerunFactsFor(jobId: string): Promise<RerunFacts | null> {
     monthly: !!job.project?.contentMonthId,
     onListing,
     push: run ? { state: run.state, addSentAt: run.addSentAt, mediaId: run.mediaId, hold: run.hold ? { resume: run.hold.resume } : null } : null,
+    // stepQueued sends sub.blobUrl, the editor's own upload: without it the
+    // reset row would only skip, with the Topaz file already moved aside.
+    originalHeld: !!job.submission?.blobUrl,
   };
 }
 
@@ -3652,6 +3657,7 @@ export async function rerunTopazJob(jobId: string, by: string | null): Promise<{
           uploadedBytes: null,
           downloadUrl: null,
           presetJson: null,
+          renderProgress: null,
           // No file until the new one is finished and checked.
           finalPath: null,
           savedAt: null,
@@ -3725,7 +3731,7 @@ export async function rerunTopazJob(jobId: string, by: string | null): Promise<{
     .catch(() => {});
   return {
     ok: true,
-    message: `Running it through Topaz again with today's Settings${credits != null ? `, about ${credits} credits` : ""}. It starts with the free price check, so every limit still applies. The previous Topaz file is kept in superseded/, and the new one becomes the file to send once it is finished and checked.`,
+    message: `Sent back through Topaz from the editor's original file${credits != null ? `, about ${credits} credits` : ""}. It's under With Topaz until the new file is back and checked; the previous Topaz file is kept in superseded/.`,
   };
 }
 

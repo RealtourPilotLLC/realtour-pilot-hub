@@ -330,6 +330,19 @@ export type ReadyVideo = {
 };
 
 /** An approved cut whose 1080p pass has not finished — shown, never offered. */
+/** One video in the Topaz pass, as the With Topaz row shows it. */
+export type TopazProgress = {
+  jobId: string;
+  /** queued · estimated · uploading · processing · saving (held rows are apart) */
+  state: string;
+  /** uploading: the share of the file sent; processing: Topaz's own percent. Null = not known. */
+  percent: number | null;
+  /** when this pass began (a re-run restarts it) */
+  startedAtISO: string | null;
+  /** the latest "Run Topaz again" on this video, when there was one */
+  rerun: { atISO: string; by: string | null } | null;
+};
+
 export type RenderingVideo = {
   /** A monthly job: its portal only takes the checked 1080p file, so a held
    *  file offers no "keep the original" (Oct 5 2026). */
@@ -356,6 +369,9 @@ export type RenderingVideo = {
    * other row.
    */
   held?: { jobId: string; fileName: string; dropboxUrl: string | null; heldAtISO: string | null; lastCheck: string | null } | null;
+  /** Where the pass is (Oct 23 2026, Jordan: "show that it's with topaz and
+   *  show its progress and when it was re-ran"): the Review Room's With Topaz row. */
+  topaz?: TopazProgress | null;
   /** "Run Topaz again" on a HELD file (Oct 23 2026): the other way out of a
    *  render that doesn't sound or look right. Absent on every other row. */
   rerun?: RerunOffer | null;
@@ -877,7 +893,9 @@ const CANDIDATE_SELECT = {
     // the unchecked file and say what the last look at it found.
     // estimateCredits/creditsCharged/sourceWidth/sourceHeight: what "Run Topaz
     // again" expects to cost with today's Settings (Oct 23 2026).
-    select: { id: true, state: true, finalPath: true, savedAt: true, deliveredAt: true, skipReason: true, error: true, sourceDurationSec: true, heldPath: true, heldAt: true, outputCheckJson: true, outputCheck: true, estimateCredits: true, creditsCharged: true, sourceWidth: true, sourceHeight: true },
+    // startedAt/createdAt/uploadedBytes/sourceSizeBytes/renderProgress: the
+    // With Topaz row's progress (Oct 23 2026).
+    select: { id: true, state: true, finalPath: true, savedAt: true, deliveredAt: true, skipReason: true, error: true, sourceDurationSec: true, heldPath: true, heldAt: true, outputCheckJson: true, outputCheck: true, estimateCredits: true, creditsCharged: true, sourceWidth: true, sourceHeight: true, startedAt: true, createdAt: true, uploadedBytes: true, sourceSizeBytes: true, renderProgress: true },
   },
   project: {
     select: {
@@ -1025,6 +1043,7 @@ export async function readyToSend(opts?: ReadyToSendOpts): Promise<ReadyBoard> {
         says: soundHeldSays(sub.topazJob) ?? renderingSays(sub.topazJob.state, Boolean(sub.project.contentMonthId)),
         held: sub.topazJob.state === "held" ? heldLine(sub.topazJob) : null,
         monthlyProgram: Boolean(sub.project.contentMonthId),
+        topaz: progressOf(sub.topazJob),
       });
       continue;
     }
@@ -1118,6 +1137,7 @@ export async function readyToSend(opts?: ReadyToSendOpts): Promise<ReadyBoard> {
   // listing, or on it, is not swapped underneath. A failed read offers
   // nothing; the server decides on every press anyway.
   await attachRerunOffers(ready, rendering, winners, s).catch((e) => console.warn("[delivery] run-again offers unavailable", e));
+  await attachRerunStamps(rendering).catch((e) => console.warn("[delivery] run-again stamps unavailable", e));
 
   // Late first, then oldest first — the order a person would work them in.
   ready.sort((a, b) => Number(b.overdue) - Number(a.overdue) || a.approvedAtISO.localeCompare(b.approvedAtISO));
@@ -1125,6 +1145,41 @@ export async function readyToSend(opts?: ReadyToSendOpts): Promise<ReadyBoard> {
   // R5: rows already recorded as sent whose own records did not finish. Derived
   // on every read, so a refresh keeps showing it until it is genuinely fixed.
   return { ready, rendering, ...(await deliveryExitExtras(opts)) };
+}
+
+/** A running pass's progress: the share of the file sent while uploading,
+ *  Topaz's own percent while it renders, nothing in between. */
+function progressOf(j: NonNullable<CandidateSub["topazJob"]>): TopazProgress {
+  const sent = j.state === "uploading" && j.uploadedBytes != null && j.sourceSizeBytes ? Math.min(100, Math.round((j.uploadedBytes / j.sourceSizeBytes) * 100)) : null;
+  return {
+    jobId: j.id,
+    state: j.state,
+    percent: j.state === "processing" ? j.renderProgress ?? null : sent,
+    startedAtISO: (j.startedAt ?? j.createdAt)?.toISOString() ?? null,
+    rerun: null,
+  };
+}
+
+/** The latest "Run Topaz again" on each running pass (topazJobs' re-run
+ *  records, AppSetting `topaz-rerun:<jobId>:<ms>`), read once for the board. */
+async function attachRerunStamps(rendering: RenderingVideo[]): Promise<void> {
+  const jobIds = [...new Set(rendering.filter((r) => r.topaz && !r.held).map((r) => r.topaz!.jobId))];
+  if (!jobIds.length) return;
+  const rows = await prisma.appSetting.findMany({
+    where: { OR: jobIds.map((id) => ({ key: { startsWith: `topaz-rerun:${id}:` } })) },
+    select: { key: true, value: true },
+  });
+  const latest = new Map<string, { atISO: string; by: string | null }>();
+  for (const r of rows) {
+    const jobId = r.key.split(":")[1];
+    try {
+      const rec = JSON.parse(r.value) as { at?: string; by?: string | null };
+      if (!rec.at) continue;
+      const had = latest.get(jobId);
+      if (!had || had.atISO < rec.at) latest.set(jobId, { atISO: rec.at, by: rec.by ?? null });
+    } catch { /* an unreadable record says nothing */ }
+  }
+  for (const r of rendering) if (r.topaz) r.topaz.rerun = latest.get(r.topaz.jobId) ?? null;
 }
 
 /** Put "Run Topaz again" on the rows the engine would run it for. */
@@ -1146,6 +1201,7 @@ async function attachRerunOffers(ready: ReadyVideo[], rendering: RenderingVideo[
       state: j.state, finalPath: j.finalPath, savedAt: j.savedAt, heldPath: j.heldPath, deliveredAt: j.deliveredAt,
       cutStatus: sub.status, sentToClientAt: null, monthly: !!sub.project.contentMonthId, onListing,
       push: run ? { state: run.state, addSentAt: run.addSentAt, mediaId: run.mediaId, hold: run.hold ? { resume: run.hold.resume } : null } : null,
+      originalHeld: !!sub.blobUrl,
     });
     return refused ? null : { jobId: j.id, credits: expectedRerunCredits(j, s), limit: s.maxCreditsPerVideo };
   };

@@ -127,6 +127,8 @@ export type VideoRow = {
   heldRender: { jobId: string; fileName: string; dropboxUrl: string | null; lastCheck: string | null } | null;
   /** "Run Topaz again" (Oct 23 2026): a finished or held Topaz file not sent yet (readyToSend's offer). */
   rerun?: import("@/lib/topazRerun").RerunOffer | null;
+  /** The finishing lane: where the Topaz pass is and when it was last run again (Oct 23 2026). */
+  topaz?: import("@/lib/readyToSend").TopazProgress | null;
 };
 
 export type VideoDeliveryBoard = {
@@ -389,6 +391,7 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
             waitingSinceISO: rend ? null : approvedAt,
             heldRender: rend?.held ? { jobId: rend.held.jobId, fileName: rend.held.fileName, dropboxUrl: rend.held.dropboxUrl, lastCheck: rend.held.lastCheck } : null,
             rerun: r?.rerun ?? rend?.rerun ?? null,
+            topaz: rend && !rend.held ? rend.topaz ?? null : null,
             send: r ? {
               approvedBy: r.approvedBy, fileSource: r.file.source, fileName: r.file.fileName, fileSays: r.file.says.replace(/\s*[\u2014\u2013]\s*/g, ": "), downloadHref: r.file.downloadHref, watchHref: r.file.watchHref,
               uploadFingerprint: r.uploadFingerprint ?? null,
