@@ -67,6 +67,20 @@ export type DraftPayload = {
    * draft's topic fields ARE its answer, as before.
    */
   topicsUnknown?: true;
+  // ---- Oct 23 2026 (the upload-page revamp). All optional: a draft saved
+  // before has none, and reads exactly as it did. ----
+  /** "What did you capture?": service keys (lib/sharedShootCore). A hidden section keeps its answers whatever this says. */
+  captured?: string[];
+  /** the "Includes drone footage" tick under Video */
+  videoDrone?: boolean;
+  /** video 1's song request (lib/songRequest) */
+  song?: { mode: "unset" | "none" | "requested"; title: string; link: string; start: string };
+  /** video 2 and on: each one's composed instructions, by cut key (they used to live only on the page until the submit) */
+  laterTexts?: Record<string, string>;
+  /** videos added on site (no row yet): composed instructions by their Added at the shoot card */
+  addedTexts?: Record<string, string>;
+  /** the "I've read the agent's requests" tick */
+  requestsReviewed?: boolean;
 };
 
 const str =(v: unknown, max: number): string => (typeof v === "string" ? v.slice(0, max) : "");
@@ -138,7 +152,38 @@ export function normalizeDraftPayload(raw: unknown): DraftPayload {
     scriptText: str(r.scriptText, DRAFT_LIMITS.script),
     scriptNote: str(r.scriptNote, DRAFT_LIMITS.scriptNote),
     ...(unknown ? { topicsUnknown: true as const } : {}),
+    ...revampFields(r),
   };
+}
+
+const SERVICE_RE = /^(?:photos|drone|twilight|video|floorplan|tour|headshots)$/;
+const TEXT_KEY_RE = /^[A-Za-z0-9_:.-]{1,120}$/;
+function textMap(v: unknown): Record<string, string> | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, t] of Object.entries(v as Record<string, unknown>).slice(0, 20)) {
+    if (!TEXT_KEY_RE.test(k)) continue;
+    const s = str(t, DRAFT_LIMITS.section);
+    if (s.trim()) out[k] = s;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+/** The Oct 23 2026 fields, each only when it was sent (an older page's draft gains no keys). */
+function revampFields(r: Record<string, unknown>): Partial<DraftPayload> {
+  const out: Partial<DraftPayload> = {};
+  if (Array.isArray(r.captured)) out.captured = [...new Set(r.captured.filter((x): x is string => typeof x === "string" && SERVICE_RE.test(x)))];
+  if (typeof r.videoDrone === "boolean") out.videoDrone = r.videoDrone;
+  if (r.song && typeof r.song === "object" && !Array.isArray(r.song)) {
+    const s = r.song as Record<string, unknown>;
+    const mode = s.mode === "none" || s.mode === "requested" ? s.mode : "unset";
+    out.song = { mode, title: str(s.title, 200), link: str(s.link, 500), start: str(s.start, 120) };
+  }
+  const later = textMap(r.laterTexts);
+  if (later) out.laterTexts = later;
+  const added = textMap(r.addedTexts);
+  if (added) out.addedTexts = added;
+  if (r.requestsReviewed === true) out.requestsReviewed = true;
+  return out;
 }
 
 /** Does this draft say anything at all? An empty draft is not worth a restore banner. */
@@ -148,7 +193,9 @@ export function draftHasContent(p: DraftPayload): boolean {
     p.vidStyle || Object.values(p.vidSections).some((v) => v.trim()) || p.videosFilmed ||
     p.filmedTopicIds.length || Object.keys(p.topicNotes).length || p.extraRows.length ||
     p.scriptChoice || p.scriptNote.trim() ||
-    p.checks.coverage || p.checks.culling || p.checks.quality || p.checks.count
+    p.checks.coverage || p.checks.culling || p.checks.quality || p.checks.count ||
+    (p.song?.mode === "requested" && !!(p.song.title.trim() || p.song.link.trim())) ||
+    Object.values(p.laterTexts ?? {}).some((v) => v.trim()) || Object.values(p.addedTexts ?? {}).some((v) => v.trim())
   );
 }
 

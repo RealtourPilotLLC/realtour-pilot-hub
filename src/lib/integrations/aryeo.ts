@@ -3357,6 +3357,11 @@ export async function reconcileDeliverablesToOrder(
     try {
       await completeShootAddonTasksFor(projectId, w.type);
     } catch { /* closing a stale card never breaks the reconcile */ }
+    // Oct 23 2026 (lib/addedOnSite): a video the photographer added on site
+    // and already wrote instructions for gets them now that it is on the job.
+    if (w.type === "VIDEO" || w.type === "SOCIAL_REEL") {
+      await import("@/lib/addedOnSite").then((m) => m.attachAddedVideoInstructions(projectId, "the order reconcile")).catch(() => {});
+    }
   }
 
   // Stored line items: replace wholesale when the set differs (same shape as

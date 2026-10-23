@@ -168,7 +168,7 @@ put(require.resolve("next/navigation", { paths: [root] }), { useRouter: () => ({
 put(require.resolve("next/link", { paths: [root] }), { __esModule: true, default: (p) => React.createElement("a", { href: p.href, className: p.className }, p.children) });
 const noop = async () => ({ ok: true, message: "" });
 const actions = () => new Proxy({ __esModule: true }, { get: (_t, k) => (k === "__esModule" ? true : k === "then" ? undefined : noop) });
-for (const f of ["src/app/upload/actions.ts", "src/app/upload/draftActions.ts", "src/app/shoot/actions.ts", "src/app/editing/actions.ts"]) put(path.join(root, f), actions());
+for (const f of ["src/app/upload/actions.ts", "src/app/upload/draftActions.ts", "src/app/upload/sharedActions.ts", "src/app/shoot/actions.ts", "src/app/editing/actions.ts"]) put(path.join(root, f), actions());
 `);
   const runner = path.join(CACHE, "render.ts");
   fs.writeFileSync(runner, `/* eslint-disable */
@@ -218,9 +218,17 @@ process.stdout.write("\\n@@UPB@@" + JSON.stringify(out));
 
 /** The portal's props as the child can take them: the server-rendered folder card and the action are not data. */
 function portalProps(p: Record<string, unknown>, over: Record<string, unknown> = {}): Record<string, unknown> {
-  const { foldersSlot: _slot, onBriefNote: _act, ...rest } = p;
-  void _slot; void _act;
-  return JSON.parse(JSON.stringify({ ...rest, foldersSlot: null, ...over }));
+  const { foldersSlot: _slot, onBriefNote: _act, slots: _slots, ...rest } = p;
+  void _slot; void _act; void _slots;
+  // Oct 23 2026 (the upload-page revamp): the video's details show once Video
+  // is ticked under "What did you capture?". An open page here has it ticked,
+  // as the photographer would (through their draft); a submitted page reads
+  // its own handoff, as before. Server-rendered slots are not data either.
+  const merged = { ...rest, foldersSlot: null, ...("agentRequests" in rest ? { slots: {} } : {}), ...over } as Record<string, unknown> & { draft?: unknown; project?: { debriefSubmittedAt?: string | null } };
+  if (!merged.draft && !merged.project?.debriefSubmittedAt && "agentRequests" in rest) {
+    merged.draft = { revision: 1, savedAtISO: new Date().toISOString(), payload: { editorBrief: "", checks: { coverage: false, culling: false, quality: false, count: false }, removal: "", nothingToRemove: false, orderChoice: null, orderNotes: "", vidStyle: null, vidSections: {}, videosFilmed: "", filmedTopicIds: [], topicNotes: {}, extraRows: [], scriptChoice: null, scriptText: "", scriptNote: "", captured: ["photos", "video"] } };
+  }
+  return JSON.parse(JSON.stringify(merged));
 }
 
 async function main() {

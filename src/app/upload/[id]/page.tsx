@@ -18,7 +18,6 @@ import { UploadPortal, type BriefNoteResult, type PortalOutputBrief, type Portal
 import type { OutputBrief } from "@/lib/deliverableOutputs";
 import type { VideoStyleKey } from "@/lib/videoStyles";
 import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
-import { AddedAtShoot } from "./AddedAtShoot";
 import { AdditionalShoot } from "./AdditionalShoot";
 import { itemFromTaskTitle, shootAddonKey, shootAddonKeyPrefix, streetOf, type ShootAddOn } from "@/app/upload/shootAddOns";
 import {
@@ -41,6 +40,9 @@ import { videoTier } from "@/lib/projectStatus";
 import { submissionTrail, UPLOAD_COMPLETED_BODY, UPLOAD_EDITED_BY_PREFIX, UPLOAD_SUBMITTED_BY_PREFIX } from "@/lib/uploadSummary";
 import { DEBRIEF_PAY_GATE_FROM } from "@/lib/payroll";
 import { payHiddenFor } from "@/lib/settings";
+import type { Contribution, SharedNote } from "@/lib/sharedShootCore";
+import type { AgentRequestItem } from "@/lib/agentRequestsCore";
+import type { AddedVideoRecord } from "@/lib/addedOnSite";
 
 export const dynamic = "force-dynamic";
 
@@ -455,6 +457,12 @@ export default async function UploadProjectPage({
   // both videos"). A listing job owing two or more videos names each one and
   // gives video 2 and on an area of its own; a one-video job and a content
   // session (one shared brief plus a note per topic) read as before.
+  // Oct 23 2026 (lib/addedOnSite): a video added on site whose order line has
+  // landed since gets the instructions written for it before anything reads
+  // the job's videos. Does nothing when nothing is waiting.
+  if (addOnTasks.length) {
+    await import("@/lib/addedOnSite").then((m) => m.attachAddedVideoInstructions(project.id, "the upload page")).catch(() => []);
+  }
   const perVideo = videoOrderedRow && !session && !topicsUnavailable && !project.contentMonthId
     ? await import("@/lib/deliverableOutputs").then((m) => m.videoInstructionsFor(project.id)).catch(() => [])
     : [];
@@ -483,19 +491,73 @@ export default async function UploadProjectPage({
         .map((m) => ({ memberId: m.id, name: m.name }))
     : [];
 
+  // ---- Oct 23 2026: THE REVAMP'S READS (lib/sharedShoot, lib/agentRequests,
+  // lib/addedOnSite). Each one failing reads as "nothing there": the page
+  // then works exactly as the single page always did.
+  const viewerMemberId = viewer ? await photographerMemberId(viewer).catch(() => null) : null;
+  const [roster, contributionMap, sharedNotes, agentRequestItems, addedVideoRecs, viewerName] = await Promise.all([
+    import("@/lib/sharedShoot").then((m) => m.shootRoster(project.id)).catch(() => ({ members: [], shared: false, appointments: [] as { assignedToId: string | null; status: string | null; startAt: Date | null }[] })),
+    import("@/lib/sharedShoot").then((m) => m.readContributions(project.id)).catch(() => new Map<string, Contribution>()),
+    import("@/lib/sharedShoot").then((m) => m.readSharedNotes(project.id)).catch(() => [] as SharedNote[]),
+    import("@/lib/agentRequests").then((m) => m.agentRequestsFor(project.id, { office: viewerIsOffice })).catch(() => [] as AgentRequestItem[]),
+    import("@/lib/addedOnSite").then((m) => m.addedVideoRecords(project.id)).catch(() => new Map<string, AddedVideoRecord>()),
+    import("@/lib/actorName").then((m) => m.displayNameFor(viewer)).catch(() => null),
+  ]);
+  const meOnRoster = roster.members.find((m) => m.memberId === viewerMemberId) ?? null;
+  // A submit before the visit floor (lib/visitSubmission) counts as theirs only
+  // when they were not on the latest visit: their earlier visit was their part.
+  const floor = project.visitFloor;
+  const myFloor = meOnRoster && floor && roster.appointments.some((a) => a.assignedToId === meOnRoster.memberId && a.startAt && a.startAt.getTime() >= floor.getTime() && !/cancel/i.test(a.status ?? ""))
+    ? floor
+    : null;
+  // What the others handed off, as the job holds it (read-only on the page).
+  const { shotOrderSummary, removalSummary, parseEditorBriefSections } = await import("@/lib/uploadSummary");
+  const photoAt = project.photosHandoffAt ?? project.debriefSubmittedAt;
+  const videoAt = project.videoHandoffAt ?? project.debriefSubmittedAt;
+  const vb = parseEditorBriefSections(project.videoInstructions);
+  const othersAnswers = {
+    photos: photoAt
+      ? {
+          handedOffBy: project.photosHandoffBy ?? trail.submittedBy,
+          atISO: photoAt.toISOString(),
+          lines: [
+            project.cullingConfirmedAt ? "Cull confirmed (all four checks)" : null,
+            shotOrderSummary(project.shotOrderNotes) ? `Gallery order: ${shotOrderSummary(project.shotOrderNotes)}` : null,
+            removalSummary(project.removalNotes) ? `Remove in editing: ${removalSummary(project.removalNotes)}` : null,
+          ].filter((x): x is string => !!x),
+        }
+      : null,
+    video: videoAt
+      ? {
+          handedOffBy: project.videoHandoffBy ?? trail.submittedBy,
+          atISO: videoAt.toISOString(),
+          lines: [
+            [vb.style ? `Style: ${vb.style}` : null, vb.colorProfile ? `Color profile: ${vb.colorProfile}` : null, vb.song ? `Song: ${vb.song}` : null].filter(Boolean).join(" · ") || null,
+            ...vb.sections.slice(0, 3).map((x) => `${x.title}: ${x.text}`),
+            vb.preface || null,
+          ].filter((x): x is string => !!x),
+        }
+      : null,
+  };
+  // Songs already on file for each video: the client's ask on its music note,
+  // and the office's music pick (video 1). Read-only beside the song request.
+  const { readMusicPick } = await import("@/lib/musicPick");
+  const pick = readMusicPick(project.editSpec);
+  const existingSongs: Record<string, string[]> = {};
+  allBriefs.forEach((b, i) => {
+    const music = b.sections.find((x) => x.key === "music")?.text?.trim();
+    const lines = [music ? `${music} (on the video's brief)` : null, i === 0 && pick ? `${pick.title}${pick.artist ? ` by ${pick.artist}` : ""} (picked by ${pick.pickedBy || "the office"})` : null].filter((x): x is string => !!x);
+    if (lines.length) existingSongs[i === 0 ? "job" : b.key] = lines;
+  });
+  if (!allBriefs.length && pick) existingSongs.job = [`${pick.title}${pick.artist ? ` by ${pick.artist}` : ""} (picked by ${pick.pickedBy || "the office"})`];
+  const addedVideoTexts = Object.fromEntries([...addedVideoRecs.values()].map((r) => [r.taskId, { text: r.text, attachedKey: r.attachedKey }]));
+
   // The page's one clock reading, handed down (a render must not read the clock twice).
   const renderedAt = new Date();
 
   return (
-    <div className="mx-auto max-w-3xl p-4 sm:p-6">
+    <div className="mx-auto max-w-6xl p-4 sm:p-6">
       <div className="mb-4"><BackLink href="/upload" label="All shoots" /></div>
-      <ShootCrew
-        projectId={project.id}
-        photographerName={crew.length ? project.photographer?.name ?? null : null}
-        crew={crew.map((c) => ({ memberId: c.memberId, name: c.name }))}
-        choices={crewChoices}
-        canEdit={viewerIsOffice && !viewer?.impersonating}
-      />
 
       <UploadPortal
         sessionTopics={sessionTopics}
@@ -596,31 +658,56 @@ export default async function UploadProjectPage({
         onBriefNote={addOnSiteBriefNote}
         briefNoteBlocked={briefNoteBlocked}
         briefNoteCap={ON_SITE_NOTE_CAP}
+        // ---- Oct 23 2026 (the upload-page revamp) ----
+        agentRequests={agentRequestItems}
+        sharedShoot={{
+          shared: roster.shared,
+          me: meOnRoster ? { memberId: meOnRoster.memberId, name: meOnRoster.name } : null,
+          members: roster.members.map((m) => ({ memberId: m.memberId, name: m.name, via: m.via })),
+          contributions: [...contributionMap.values()],
+          notes: sharedNotes,
+          floorISO: myFloor?.toISOString() ?? null,
+          answers: othersAnswers,
+        }}
+        // Anything the agent added on site that the order doesn't know about —
+        // one task for the office to add the item to the Aryeo order. Drawn
+        // under "What did you capture?" (upload/[id]/AddedAtShoot).
+        addOnRows={addOns}
+        addedVideoTexts={addedVideoTexts}
+        folders={folderState?.folders.map((f) => ({ key: f.key, label: f.label, url: f.url, count: f.count })) ?? null}
+        dropboxConnected={!!folderState?.connected}
+        rawBudget={photosOrdered ? { budget: rawBudgetFor(photoTarget), overage: rawOverageCeiling(photoTarget) } : null}
+        existingSongs={existingSongs}
+        viewerName={viewerName ?? meOnRoster?.name ?? null}
+        slots={{
+          // Who was on the shoot; the office adds a second shooter here (Oct 21 2026).
+          crew: crew.length || (viewerIsOffice && !viewer?.impersonating) ? (
+            <ShootCrew
+              projectId={project.id}
+              photographerName={crew.length ? project.photographer?.name ?? null : null}
+              crew={crew.map((c) => ({ memberId: c.memberId, name: c.name }))}
+              choices={crewChoices}
+              canEdit={viewerIsOffice && !viewer?.impersonating}
+            />
+          ) : null,
+          // How the shoot went: client issues, anything we should change on
+          // our end. Routes to Kyle + the feedback board when it wasn't smooth.
+          debrief: <AppointmentFeedback projectId={project.id} />,
+          // The way back in for a job that has already left the portal: a
+          // second reel or video filmed on another day joins THIS job as its
+          // own video. Hidden while the job is still a live to-do.
+          additionalShoot: leftThePortal ? (
+            <AdditionalShoot
+              projectId={project.id}
+              initial={extraShoots}
+              todayKey={etDayKey(new Date())}
+              minKey={project.shootDate ? etDayKey(project.shootDate) : ""}
+              jobShootISO={project.shootDate?.toISOString() ?? null}
+              delivered={project.deliveredAt != null}
+            />
+          ) : null,
+        }}
       />
-
-      {/* Anything the agent added on site that the order doesn't know about —
-          becomes one task for the office to add the item to the Aryeo order. */}
-      <AddedAtShoot projectId={project.id} initial={addOns} />
-
-      {/* The way back in for a job that has already left the portal: a second
-          reel or video filmed on another day joins THIS job as its own video.
-          Hidden while the job is still a live to-do — the checklist above is
-          the place for footage from the shoot it was booked for. */}
-      {leftThePortal && (
-        <AdditionalShoot
-          projectId={project.id}
-          initial={extraShoots}
-          todayKey={etDayKey(new Date())}
-          minKey={project.shootDate ? etDayKey(project.shootDate) : ""}
-          jobShootISO={project.shootDate?.toISOString() ?? null}
-          delivered={project.deliveredAt != null}
-        />
-      )}
-
-      {/* How the shoot went — client issues, anything we should change on our
-          end. Routes to Kyle + the feedback board when it wasn't smooth. */}
-      <AppointmentFeedback projectId={project.id} />
-
     </div>
   );
 }

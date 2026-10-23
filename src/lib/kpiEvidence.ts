@@ -100,7 +100,8 @@ export function ownWords(text: string | null | undefined): number {
   return (text ?? "")
     .split("\n")
     .map((l) => l.trim())
-    .filter((t) => t && !/^STYLE:/i.test(t) && !/^COLOR PROFILE:/i.test(t) && !HEADINGS.has(t.toUpperCase()) && !PLACEHOLDER.test(t))
+    // Oct 23 2026: song request lines (lib/songRequest) are not instructions, so they never count as the photographer's words.
+    .filter((t) => t && !/^STYLE:/i.test(t) && !/^COLOR PROFILE:/i.test(t) && !/^SONG (?:REQUEST|TITLE|LINK|START):/i.test(t) && !HEADINGS.has(t.toUpperCase()) && !PLACEHOLDER.test(t))
     .join(" ")
     .split(/\s+/)
     .filter((w) => /[a-z0-9]/i.test(w)).length;

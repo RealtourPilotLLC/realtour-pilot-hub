@@ -22,11 +22,26 @@ import type { ShootAddOn } from "@/app/upload/shootAddOns";
 export function AddedAtShoot({
   projectId,
   initial,
+  onRowsChange,
+  quickPicks,
+  embedded = false,
 }: {
   projectId: string;
   initial: ShootAddOn[];
+  /** Oct 23 2026: the upload page's "What did you capture?" lists added services from these rows. */
+  onRowsChange?: (rows: ShootAddOn[]) => void;
+  /** Oct 23 2026: one-tap service names ("Drone photos", "Extra video") that fill the item box. */
+  quickPicks?: string[];
+  /** drawn inside another card (no card of its own, the step's own heading) */
+  embedded?: boolean;
 }) {
-  const [rows, setRows] = useState<ShootAddOn[]>(initial);
+  const [rows, setRowsState] = useState<ShootAddOn[]>(initial);
+  const setRows = (next: ShootAddOn[] | ((prev: ShootAddOn[]) => ShootAddOn[])) =>
+    setRowsState((prev) => {
+      const v = typeof next === "function" ? next(prev) : next;
+      onRowsChange?.(v);
+      return v;
+    });
   const [open, setOpen] = useState(false);
   const [item, setItem] = useState("");
   const [note, setNote] = useState("");
@@ -87,10 +102,10 @@ export function AddedAtShoot({
   };
 
   return (
-    <section className="mt-4 rounded-2xl border bg-surface p-4">
+    <section data-added-at-shoot className={embedded ? "" : "mt-4 rounded-2xl border bg-surface p-4"}>
       <h2 className="flex items-center gap-1.5 text-sm font-semibold">
         <PackagePlus className="size-4 text-brand" />
-        Added at the shoot
+        {embedded ? "Add a service that wasn't ordered" : "Added at the shoot"}
       </h2>
       <p className="mt-0.5 text-xs text-muted">
         Did the agent add anything on site that wasn&apos;t on the order — an extra twilight, drone,
@@ -126,7 +141,7 @@ export function AddedAtShoot({
                   disabled={pending}
                   onClick={() => remove(r.id)}
                   aria-label={`Remove ${r.item}`}
-                  className="shrink-0 rounded-lg p-1 text-muted-2 hover:bg-surface hover:text-danger disabled:opacity-50"
+                  className="inline-flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-2 hover:bg-surface hover:text-danger disabled:opacity-50"
                 >
                   <X className="size-4" />
                 </button>
@@ -140,18 +155,33 @@ export function AddedAtShoot({
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2"
+          className="mt-3 inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2"
         >
           <Plus className="size-4" /> Add an item
         </button>
       ) : (
         <div className="mt-3 space-y-2">
+          {quickPicks && quickPicks.length > 0 && (
+            <div className="flex flex-wrap gap-2" aria-label="Common additions">
+              {quickPicks.map((q) => (
+                <button
+                  key={q}
+                  type="button"
+                  onClick={() => setItem(q)}
+                  aria-pressed={item === q}
+                  className={cn("min-h-11 rounded-lg border px-3 text-sm font-medium", item === q ? "border-brand bg-brand-soft text-brand" : "border-border hover:bg-surface-2")}
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
           <input
             value={item}
             onChange={(e) => setItem(e.target.value)}
             maxLength={80}
             placeholder="What was added? (e.g. Twilight photos, Drone add-on)"
-            className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+            className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-base outline-none focus:border-brand sm:text-sm"
           />
           <AutoTextarea
             value={note}
@@ -159,13 +189,13 @@ export function AddedAtShoot({
             minRows={2}
             maxLength={500}
             placeholder="Anything the office should know (optional) — who asked, what was agreed…"
-            className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+            className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-base outline-none focus:border-brand sm:text-sm"
           />
           <button
             type="button"
             disabled={pending || !item.trim()}
             onClick={submit}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-4 py-1.5 text-sm font-medium text-brand-fg disabled:opacity-50"
           >
             {pending ? "Saving…" : "Add item"}
           </button>

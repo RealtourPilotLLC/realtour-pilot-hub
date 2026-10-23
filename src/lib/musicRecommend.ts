@@ -102,6 +102,8 @@ function briefParts(text: string | null | undefined): BriefParts {
     if (style) { out.style = style[1].trim(); continue; }
     const color = line.match(/^COLOR PROFILE:\s*(.+)$/);
     if (color) { out.colorProfile = color[1].trim(); continue; }
+    // Oct 23 2026: a song request line (lib/songRequest) is not the vision.
+    if (/^SONG (?:REQUEST|TITLE|LINK|START):/i.test(line)) continue;
     if (SECTION_LABELS.has(line)) {
       current = line;
       if (!buckets.has(line)) buckets.set(line, []);

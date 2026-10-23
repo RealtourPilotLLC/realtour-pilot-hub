@@ -114,6 +114,10 @@ export type PacketManifest = {
     specialRequests: string[];
     customerNote: string | null;
     videosFilmed: number | null;
+    /** Oct 23 2026: each video's song request (lib/songRequest), only when one was said. */
+    songRequests?: string[];
+    /** Oct 23 2026: the photographers' shared instructions, combined (lib/sharedShoot), only on a job that has them. */
+    sharedInstructions?: { lines: string[]; conflicts: string[]; addedVideos: string[] };
   };
   music: { line: string; file: string | null } | null;
   brand: { colors: string[]; fonts: string | null; files: string[]; music: string | null; defaults: string[]; preferences: string[] } | null;
@@ -197,6 +201,22 @@ export async function buildEditorPacket(projectId: string): Promise<EditorPacket
   // video 1's. A monthly batch keeps one shared brief for all of them.
   const perVideo = await import("@/lib/deliverableOutputs").then((m) => m.videoInstructionsFor(projectId)).catch(() => []);
   const instructionsFor = perVideo.length > 1 ? `video 1 (${perVideo[0].label})` : null;
+  // Oct 23 2026: the song each video asked for, and the photographers' shared
+  // instructions with their authors and any disagreement flagged. Both only
+  // when there is something to say, so an older job's packet is unchanged.
+  const { songSummaryOfText } = await import("@/lib/songRequest");
+  const songRequests = (perVideo.length > 1
+    ? perVideo.map((r) => { const t = songSummaryOfText(r.own); return t ? `Video ${r.number} (${r.label}): ${t}` : null; })
+    : [songSummaryOfText(p.videoInstructions)].map((t) => (t ? `The video: ${t}` : null))
+  ).filter((x): x is string => !!x).map((x) => scrub(x)).filter((x): x is string => !!x);
+  const shared = await import("@/lib/sharedShoot").then((m) => m.sharedBriefFor(projectId, { scrub: true })).catch(() => null);
+  const sharedInstructions = shared && (shared.notes.length || shared.conflicts.length || shared.addedVideos.length)
+    ? {
+        lines: shared.notes.map((n) => `${n.text} (${n.author}${n.edited ? `, last changed by ${n.lastBy}` : ""}${n.changedAfterHandoff ? "; changed after the handoff" : ""})`),
+        conflicts: shared.conflicts.map((c) => `"${c.a.text}" (${c.a.who}) vs "${c.b.text}" (${c.b.who})`),
+        addedVideos: shared.addedVideos.map((v) => `${v.item} (added on site${v.handled ? "" : ", waiting for the office"}): ${v.text.replace(/\s+/g, " ").trim()}`),
+      }
+    : null;
 
   const videos: PacketVideo[] = outputs.map((o) => ({
     outputId: o.outputId,
@@ -240,6 +260,8 @@ export async function buildEditorPacket(projectId: string): Promise<EditorPacket
       specialRequests: (await import("@/lib/specialRequests")).requestsForEditors(p.activities, { video: true }).map((a) => scrub(a.body)).filter((x): x is string => !!x),
       customerNote: scrub(creativeCustomerNote(p.client)),
       videosFilmed: p.videosFilmed,
+      ...(songRequests.length ? { songRequests } : {}),
+      ...(sharedInstructions ? { sharedInstructions } : {}),
     },
     music: music ? { line: musicPickLine(music), file: music.dropboxPath ?? null } : null,
     brand: brand
@@ -690,6 +712,22 @@ export async function buildEditorPacketPdf(
   if (manifest.job.photographerNotes) {
     heading("Photographer's notes");
     text(manifest.job.photographerNotes);
+  }
+  // Oct 23 2026: the photographers' shared instructions, combined, with the
+  // disagreements flagged rather than resolved (lib/sharedShoot).
+  if (manifest.job.sharedInstructions) {
+    const si = manifest.job.sharedInstructions;
+    heading("From the photographers");
+    if (si.conflicts.length) {
+      text("These point opposite ways. Check with Kyle before cutting either way:", { color: WARN });
+      for (const c of si.conflicts) text(`-  ${c}`, { color: WARN });
+    }
+    for (const l of si.lines) text(`-  ${l}`);
+    for (const v of si.addedVideos) text(`-  Video ${v}`);
+  }
+  if (manifest.job.songRequests?.length) {
+    heading("Song requests");
+    for (const l of manifest.job.songRequests) text(`-  ${l}`);
   }
   if (manifest.job.studioScript || manifest.job.scriptStatus) {
     heading("Script");
