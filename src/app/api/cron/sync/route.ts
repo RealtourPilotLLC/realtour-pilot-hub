@@ -378,6 +378,10 @@ export async function GET(req: NextRequest) {
     if (!(await hasEnabledCallMapping())) return { skipped: "no enabled Calendly mapping" };
     return runParts({
       bookings: () => syncCallRecordsFromCalendly(),
+      // Oct 23 2026 (lib/meetingPrep): one prep task per booking chain; a
+      // reschedule moves it, a cancellation cancels it. Reads the records the
+      // bookings part just wrote; sends nothing to a client.
+      prep: () => import("@/lib/meetingPrep").then((m) => m.syncMeetingPrep()),
       calendar: () => linkCalendarEvents({ max: 20 }),
       transcripts: () => discoverTranscriptSources({ max: 40 }),
       // Program Gemini docs no record has claimed → the import review queue (rows only, no text, no tasks, no analysis).
@@ -386,6 +390,13 @@ export async function GET(req: NextRequest) {
     });
   }, { maxMs: 45_000 });
   // (Transcript jobs: /api/cron/topics, the 15-minute AI work job.)
+  // Oct 23 2026 (lib/delegation): an assignment not accepted in time, past its
+  // due time, or blocked past its follow-up comes back to whoever assigned it
+  // (one bell per task, per reason, per ET day). Bells only; writes no task.
+  await step("delegationFollowUps", async () => {
+    const { resurfaceDelegations } = await import("@/lib/delegation");
+    return resurfaceDelegations();
+  }, { maxMs: 20_000 });
   // F14: approved content cuts that never reached the client's library. The
   // approve-time write is best-effort by design (an approval must not fail over
   // it) and nothing looked again afterwards. Normally repairs nothing.
