@@ -250,7 +250,9 @@ async function main() {
   console.log("\n13. THE OLD BEHAVIOUR — what the hand paths must never be wired back to");
   const e = await stage("223 E Evans St");
   await resolveRevision(e.projectId); // the bare project-wide resolver
-  ok("it closes the untouched photo ask", (await taskStatus(e.photoTaskId)) === "COMPLETED");
+  // CHANGED Oct 22 2026 (photo audit H1): the bare resolver is the video side's (the editing queue, the
+  // Review Room); it no longer closes the photo lane's ask. Only the job page's whole-job close (section 6) does.
+  ok("it leaves the photo lane's ask to the photo job (photo audit H1)", (await taskStatus(e.photoTaskId)) === "OPEN");
   ok("it takes the job out of Revisions", (await proj(e.projectId)).status === "DELIVERED");
   ok("and it marks the open image flag FIXED", (await flagStatus(e.flagId)) === "FIXED");
   console.log("     (all three are the damage F02 describes — the drill above proves the hand paths no longer do it)");

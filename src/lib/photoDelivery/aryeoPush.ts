@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { photoDeliverySettings, type AryeoPushMode } from "./settings";
 import { logJobEvent } from "./jobState";
 import { closeMediaCheckForPhotos } from "./mediaCheck";
+import { UPLOAD_HELD_PREFIX, UPLOAD_OVERRIDE_MIN } from "./holding";
 import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 
 // ---------------------------------------------------------------------------
@@ -650,6 +651,10 @@ export async function approvePushDelivery(jobId: string, by: string): Promise<{ 
 /** The stages Kyle's approval is taken from: Ready to review, or a job already past it. */
 const APPROVE_FROM = new Set(["READY", "DELIVERING", "DELIVERY_MISMATCH", "REVISION_REQUESTED"]);
 
+// Oct 22 2026 (photo audit H2): the refusal's prefix and the reason's length
+// live in holding.ts (browser-safe), shared with the page.
+export { UPLOAD_HELD_PREFIX, UPLOAD_OVERRIDE_MIN };
+
 /**
  * Kyle's approval of a job that is Ready to review (Oct 15, Jordan: "click
  * approve and deliver or approve and upload to Aryeo"). Deliver: photos
@@ -657,7 +662,7 @@ const APPROVE_FROM = new Set(["READY", "DELIVERING", "DELIVERY_MISMATCH", "REVIS
  * they go up first and the delivery follows by itself. Nothing is marked as
  * delivering before the photos are on the listing.
  */
-export async function approveJob(jobId: string, by: string, opts: { deliver: boolean; anyway?: boolean }): Promise<{ ok: boolean; started: boolean; message: string }> {
+export async function approveJob(jobId: string, by: string, opts: { deliver: boolean; anyway?: boolean; holdReason?: string | null }): Promise<{ ok: boolean; started: boolean; message: string }> {
   const settings = await photoDeliverySettings();
   if (settings.aryeoPush === "off") return { ok: false, started: false, message: "The hub's Aryeo upload is switched off (Photo Delivery settings)." };
   const { run } = await load(jobId);
@@ -668,6 +673,27 @@ export async function approveJob(jobId: string, by: string, opts: { deliver: boo
   const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true } });
   if (!job) return { ok: false, started: false, message: "That job no longer exists." };
   if (!APPROVE_FROM.has(job.stage)) return { ok: false, started: false, message: "This job is not ready to review yet. Reload the page." };
+  // Oct 22 2026 (photo audit H2): Approve and upload ran no checklist, and its
+  // finish line sent Kyle to deliver in Aryeo, past every hold (58 Recreation
+  // Dr went out with "Lot Lines needed" open). It now checks the same holds as
+  // Approve and deliver. Kyle can still put the photos up past them with a
+  // typed reason (kept on the job's activity); the delivery itself still waits
+  // for the checklist (Deliver in Aryeo goes through startDelivery).
+  let pastHolds: { holds: string; reason: string } | null = null;
+  if (!opts.deliver && job.stage !== "DELIVERING") {
+    const { deliveryGate } = await import("./delivery");
+    const gate = await deliveryGate(jobId);
+    if (!gate.canDeliver) {
+      if (!gate.overrideAllowed) return { ok: false, started: false, message: gate.blockedForOverride ?? "This gallery cannot go on the listing yet." };
+      const open = gate.checks.filter((c) => !c.ok && !c.advisory && (c.hold || !gate.advisory)).map((c) => c.label.replace(/\.$/, "").toLowerCase());
+      const holds = open.join("; ").slice(0, 300) || "the checklist has open items";
+      const reason = (opts.holdReason ?? "").replace(/\s+/g, " ").trim().slice(0, 400);
+      if (reason.length < UPLOAD_OVERRIDE_MIN) {
+        return { ok: false, started: false, message: `${UPLOAD_HELD_PREFIX} the checklist still holds these photos (${holds}). Settle them first, or write why they can go on the listing now (they are not delivered until the checklist is clear).`.slice(0, 600) };
+      }
+      pastHolds = { holds, reason };
+    }
+  }
   if (opts.deliver) {
     if (job.stage !== "DELIVERING") {
       const { deliveryGate } = await import("./delivery");
@@ -682,7 +708,12 @@ export async function approveJob(jobId: string, by: string, opts: { deliver: boo
   }
   const r = await requestPush(jobId, { by, then: opts.deliver ? "deliver" : "stop", anyway: opts.anyway, approvedBy: by });
   if (r.started) {
-    await logJobEvent(jobId, by, opts.deliver ? "approved: deliver" : "approved: upload to Aryeo");
+    await logJobEvent(
+      jobId,
+      by,
+      opts.deliver ? "approved: deliver" : pastHolds ? `approved: upload to Aryeo past open holds (${pastHolds.holds}): ${pastHolds.reason}` : "approved: upload to Aryeo",
+      pastHolds ? { uploadPastHolds: true, ...pastHolds } : null,
+    );
     // Kyle checked the photos here: the shoot's media check closes with them (audit C11, Oct 21 2026).
     await closeMediaCheckForPhotos(jobId, { by, reason: "Photos approved in Photo Delivery", human: true });
   }
@@ -900,13 +931,16 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
     }
     if (r.state === "ADDING") {
       // 0. The hub's own photos that changed or left the set come off first (read, then delete what is still there).
-      if ((r.remove?.length || r.replaceIds?.length) && !r.removedAt) {
+      // Oct 22 2026 (photo audit H7): never in Update on Aryeo. There the old
+      // listing image stays until the new one is attached AND read back on the
+      // listing (CHECKING below), so a failed upload never leaves a delivered
+      // listing without the photo.
+      if (r.mode !== "update" && r.remove?.length && !r.removedAt) {
         const gone = new Set(r.remove ?? []);
-        const replace = new Set(r.replaceIds ?? []);
         // Oct 22 2026: never an image that was already on the listing (an earlier visit's, a photo added by hand).
         const keep = new Set(r.keepIds ?? []);
         const page = await W.listingPage(r.listingId);
-        const ids = page.images.filter((i) => replace.has(i.id) || (!keep.has(i.id) && gone.has(lower(`${i.filename}.${i.filename_extension}`)))).map((i) => i.id);
+        const ids = page.images.filter((i) => !keep.has(i.id) && gone.has(lower(`${i.filename}.${i.filename_extension}`))).map((i) => i.id);
         if (ids.length) await W.deleteImages(r.listingId, ids);
         r.removedAt = new Date().toISOString();
         return r;
@@ -928,7 +962,9 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
       if (Date.now() - Date.parse(r.addSentAt) > 90_000) {
         const { listingGallery } = await import("./jobs");
         const listing = await listingGallery(r.listingId);
-        const names = new Set((listing?.entries ?? []).map((e) => lower(e.name)));
+        // Update on Aryeo: the old image (still there, same name) is not the new one (photo audit H7).
+        const replaced = new Set(r.replaceIds ?? []);
+        const names = new Set((listing?.entries ?? []).filter((e) => !e.sourceRef || !replaced.has(e.sourceRef)).map((e) => lower(e.name)));
         if (!listing || ours.some((i) => names.has(lower(i.name)))) {
           r.addedAt = r.addedAt ?? r.addSentAt;
           r.state = "CHECKING";
@@ -959,6 +995,15 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
       const wanted = new Set(r.items.map((i) => lower(i.name)));
       const missing = r.items.filter((i) => !names.has(lower(i.name)));
       const lingering = [...(r.remove ?? []).filter((n) => !wanted.has(n) && names.has(n)), ...listing.entries.filter((e) => e.sourceRef && old.has(e.sourceRef)).map((e) => lower(e.name))];
+      // Oct 22 2026 (photo audit H7): Update on Aryeo takes the old image off
+      // only now, once every new one is read back on the listing (once; the
+      // next pass looks again, and 20 minutes later says what is still there).
+      if (r.mode === "update" && !missing.length && lingering.length && !r.removedAt) {
+        const stale = listing.entries.filter((e) => e.sourceRef && old.has(e.sourceRef)).map((e) => e.sourceRef!);
+        if (stale.length) await W.deleteImages(r.listingId, stale);
+        r.removedAt = new Date().toISOString();
+        return r;
+      }
       if (!missing.length && !lingering.length) {
         r.state = "ORDERING";
         r.note = null;
@@ -1157,7 +1202,8 @@ export async function advancePush(jobId: string, opts: { budgetMs?: number } = {
       if (run.state === "FAILED") await logJobEvent(jobId, "aryeo-push", `sending to Aryeo stopped: ${run.note}`);
       else if (run.state === "WAITING") await logJobEvent(jobId, "aryeo-push", `all ${run.items.length} photos are on the Aryeo listing${run.note ? ` (${run.note})` : ""}; waiting for Deliver in Aryeo`);
       else if (run.state === "DONE" && run.deliveredAt) await logJobEvent(jobId, "aryeo-push", run.redelivery?.state === "sent" ? "re-delivered in Aryeo by the hub and checked" : `delivered in Aryeo by the hub and checked`);
-      else if (run.state === "DONE") await logJobEvent(jobId, "aryeo-push", `all ${run.items.length} photos are on the Aryeo listing, in order; deliver in Aryeo`);
+      // Oct 22 2026 (photo audit H2): never "deliver in Aryeo" (that skips every hold): the hub's own Deliver in Aryeo checks them first.
+      else if (run.state === "DONE") await logJobEvent(jobId, "aryeo-push", `all ${run.items.length} photos are on the Aryeo listing, in order; not delivered yet: press Deliver in Aryeo on this job once nothing holds the photos (the hub checks the holds first)`);
     }
   }
   if (run.lease?.token === token) {

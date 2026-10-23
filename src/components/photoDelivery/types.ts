@@ -299,7 +299,7 @@ export type AddOnView = {
   done: string;
   ordered: string;
   quotes: { from: string; text: string }[];
-  cleared: { how: "version" | "confirmed"; by: string | null; atISO: string; note: string | null; photoName: string | null } | null;
+  cleared: { how: "version" | "confirmed" | "listing"; by: string | null; atISO: string; note: string | null; photoName: string | null } | null;
 };
 /** `ignored`: "You're delivering with 6 exterior issues ignored (…)", shown before delivering. */
 export type GateView = { checks: GateCheckView[]; passed: boolean; advisory: boolean; canDeliver: boolean; overrideAllowed: boolean; blockedForOverride: string | null; holdsOpen: number; ignored: string | null };

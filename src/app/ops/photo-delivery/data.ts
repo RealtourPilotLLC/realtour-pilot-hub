@@ -148,6 +148,16 @@ export async function loadViewer(): Promise<Viewer | null> {
  * ($1.50; target $5.00, max $8.00)"), and the office never sees money. Credit
  * amounts are the office's: a view-only viewer reads neither.
  */
+/** A key that holds dollars (photo audit M7): costUsd, estimatedUsd, usdPerCredit, priceUsd, fixMaxUsd, cents… Credits are not dollars (Kyle may see them). */
+const MONEY_KEY = /usd|dollar|cents|price|cost/i;
+
+/** Event details without their dollar fields, at any depth (Oct 22 2026, photo audit M7). Pure. */
+export function moneyFreeData(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(moneyFreeData);
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v as Record<string, unknown>).filter(([k]) => !MONEY_KEY.test(k)).map(([k, x]) => [k, moneyFreeData(x)]));
+  return v;
+}
+
 export function eventTextFor(text: string, viewer: Pick<Viewer, "canSeeMoney" | "readOnly">): string {
   let t = text;
   if (!viewer.canSeeMoney) t = t.replace(/\s*\(\$[^()]*\)/g, "").replace(/\$\s?\d[\d,]*(?:\.\d+)?/g, "an amount");
@@ -393,6 +403,8 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
             orderUrl: p?.aryeoOrderId ? aryeoOrderUrl(p.aryeoOrderId) : null,
             deliveryCheckNote: j.deliveryCheckNote,
             listingUpdates: { photoIds: [], names: [] }, // read for the whole board in boardHolding
+            rawBatches: null, // read for the board's jobs in Editing in boardHolding (photo audit M3)
+            photosRead: j.finalsCount,
           };
         }),
     ).catch((e: unknown) => {
@@ -444,6 +456,12 @@ async function boardHolding(bases: HoldingBase[]): Promise<Map<string, { holding
   const ids = bases.map((b) => b.jobId);
   const editing = bases.filter((b) => b.stage === "EDITING").map((b) => b.jobId);
   const [{ progressOf }, { openAddOnsByProject }] = await Promise.all([import("@/lib/photoDelivery/aryeoPush"), import("@/lib/photoDelivery/addOns")]);
+  // Oct 22 2026 (photo audit M3): the raw uploads seen for each job in Editing (none: "Not uploaded yet").
+  // A read that fails says nothing (null), never "not uploaded".
+  const rawRows = editing.length
+    ? await prisma.photoIntakeBatch.groupBy({ by: ["projectId"], where: { projectId: { in: bases.filter((b) => b.stage === "EDITING").map((b) => b.projectId) } }, _count: { _all: true } }).catch(() => null)
+    : [];
+  const rawCounts = rawRows ? new Map(rawRows.map((r) => [r.projectId, r._count._all])) : null;
   const [settings, conn, runs, events, addOns, edited] = await Promise.all([
     photoDeliverySettings(),
     prisma.connection.findUnique({ where: { provider: "aryeo_web" }, select: { secretEncrypted: true } }).catch(() => null),
@@ -492,6 +510,7 @@ async function boardHolding(bases: HoldingBase[]): Promise<Map<string, { holding
     const gate = gates.get(b.jobId) ?? null;
     const view = holdingFor({
       ...b,
+      rawBatches: b.stage === "EDITING" && rawCounts ? rawCounts.get(b.projectId) ?? 0 : b.rawBatches ?? null,
       waitingForVisit: waitingForVisitOf(b.stage, eventsOf.get(b.jobId) ?? []),
       listingUpdates: listingUpdatesOf(editedOf.get(b.jobId) ?? [], b.stage),
       gate,
@@ -645,7 +664,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     aryeoPushView(job.id),
     prisma.photoIntakeBatch
       .findMany({ where: { projectId: job.projectId }, orderBy: { batchNo: "asc" }, select: { batchNo: true, state: true, fileCount: true, expectedPhotos: true, sentAt: true, doneAt: true, imageCount: true, lastError: true } })
-      .catch(() => []),
+      .catch(() => null), // null: unreadable (never read as "not uploaded", photo audit M3)
   ]);
   const p4RawById = new Map(p4Raw.map((f) => [f.id, f.rawJson]));
   // Oct 15 2026: clutter set aside because the home or the room was not
@@ -740,8 +759,9 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       recommendedAction: f.recommendedAction,
       fixStrategy: f.fixStrategy,
       status: f.status,
-      statusReason: f.statusReason,
-      planNote: f.planNote,
+      // Oct 22 2026 (photo audit M7): "the automatic fix maximum ($10)" and the like, dollars for the owner only.
+      statusReason: f.statusReason ? eventTextFor(f.statusReason, viewer) : f.statusReason,
+      planNote: f.planNote ? eventTextFor(f.planNote, viewer) : f.planNote,
       alwaysFixed: ALWAYS_FIX.has(f.ruleId),
       exterior: isExteriorFinding(f.ruleId, f.photoId ? roomOfPhoto.get(f.photoId) : null),
       clientAsk: askLinks.get(f.id) ?? null,
@@ -820,7 +840,10 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
   // Oct 22 2026: each line as this viewer may read it (eventTextFor); a
   // view-only viewer gets no raw details (they carry credit counts and ids).
   const eventViews: EventView[] = events.map((e) => {
-    const data = readOnly ? null : parse<Record<string, unknown>>(e.dataJson);
+    // Oct 22 2026 (photo audit M7): an event's details can carry dollar fields
+    // ("costUsd", a price, the fix maximum): only the owner reads them.
+    const raw = readOnly ? null : parse<Record<string, unknown>>(e.dataJson);
+    const data = raw && !viewer.canSeeMoney ? (moneyFreeData(raw) as Record<string, unknown>) : raw;
     const detail = data && typeof data === "object" && Object.keys(data).length ? eventTextFor(JSON.stringify(data, null, 1).slice(0, 1200), viewer) : null;
     return { id: e.id, at: e.at.toISOString(), actor: e.actor, action: eventTextFor(e.action, viewer), detail };
   });
@@ -838,7 +861,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     estimatedCredits: b.estimatedCredits,
     approvedBy: b.approvedBy,
     approvedAt: b.approvedAt.toISOString(),
-    operations: (opsByBatch.get(b.id) ?? []).map((o) => ({ id: o.id, photoId: o.photoId, strategy: o.strategy, status: o.status, estimatedCredits: o.estimatedCredits, chargedCredits: o.chargedCredits, error: o.error })),
+    operations: (opsByBatch.get(b.id) ?? []).map((o) => ({ id: o.id, photoId: o.photoId, strategy: o.strategy, status: o.status, estimatedCredits: o.estimatedCredits, chargedCredits: o.chargedCredits, error: o.error ? eventTextFor(o.error, viewer) : o.error })),
     estimatedUsd: viewer.canSeeMoney ? b.estimatedUsdCents / 100 : null,
   }));
 
@@ -943,6 +966,9 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       orderUrl: project?.aryeoOrderId ? aryeoOrderUrl(project.aryeoOrderId) : null,
       deliveryCheckNote: job.deliveryCheckNote,
       listingUpdates: listingUpdatesOf(photos, job.stage),
+      // Oct 22 2026 (photo audit M3): no raws seen and no photos read: not uploaded yet (the photographer's, not AutoHDR's).
+      rawBatches: intake ? intake.length : null,
+      photosRead: job.finalsCount,
     },
     runs: runViews,
     events: eventViews,
@@ -955,7 +981,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     qcEnabled: settings.qcEnabled,
     freeCheck: settings.freeCheck,
     paidQcAuto: settings.paidQcAuto,
-    intake: intake.map((b) => ({ ...b, sentAt: b.sentAt?.toISOString() ?? null, doneAt: b.doneAt?.toISOString() ?? null })),
+    intake: (intake ?? []).map((b) => ({ ...b, sentAt: b.sentAt?.toISOString() ?? null, doneAt: b.doneAt?.toISOString() ?? null })),
     nowIso: now.toISOString(),
   };
 }

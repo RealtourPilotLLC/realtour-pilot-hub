@@ -462,7 +462,7 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
   if (!job) return { changed: false, count: null, stage: "missing", source: null };
   const project = await prisma.project.findUnique({
     where: { id: job.projectId },
-    select: { title: true, addressLine: true, shootDate: true, createdAt: true, dropboxFolder: true, status: true, aryeoListingId: true, promisedDueAt: true, deliveryDue: true, appointments: { select: { startAt: true, status: true } }, client: { select: { name: true } } },
+    select: { title: true, addressLine: true, shootDate: true, createdAt: true, dropboxFolder: true, status: true, aryeoListingId: true, promisedDueAt: true, deliveryDue: true, dueOverrideAt: true, appointments: { select: { startAt: true, status: true } }, client: { select: { name: true } } },
   });
   if (!project?.client) return { changed: false, count: null, stage: job.stage, source: null };
   if (project.status === "CANCELLED") {
@@ -497,12 +497,31 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
   // these are (photoDueFor). Re-read every pass while the job is open; a
   // delivered job keeps the deadline it was delivered against.
   if (job.stage !== "DELIVERED") {
-    const visit = await photoVisitFor(job.projectId, project.appointments, project.shootDate, now);
-    const due = photoDueFor(visit, await sameDayPhotos(job.projectId));
+    const { etDateTime } = await import("@/lib/datetime");
+    // Oct 22 2026 (photo audit M1): a client's revision of photos already
+    // delivered has its OWN clock, the standard revision turnaround from the
+    // client's request (deliveryBoard.clientRoundClock: due 48 weekday hours
+    // after it). Recomputed from the original visit it read days late and set
+    // off the photos-late alert. The office's due date for the job
+    // (Project.dueOverrideAt) outranks the visit's turnaround, as everywhere.
+    const revisionAt = job.deliveredAt ? await import("./clientAsked").then((m) => m.revisionStartOf(jobId)).catch(() => null) : null;
+    let due: Date | null;
+    let why: string;
+    if (revisionAt) {
+      const { clientRoundClock } = await import("@/lib/deliveryBoard");
+      due = clientRoundClock(revisionAt).dueAt;
+      why = `the revision turnaround from the client's request (${etDateTime(revisionAt)})`;
+    } else if (project.dueOverrideAt) {
+      due = project.dueOverrideAt;
+      why = "the job's due date the office set";
+    } else {
+      const visit = await photoVisitFor(job.projectId, project.appointments, project.shootDate, now);
+      due = photoDueFor(visit, await sameDayPhotos(job.projectId));
+      why = `the photos turnaround from the ${etDateTime(visit)} visit`;
+    }
     if (due && job.slaDueAt?.getTime() !== due.getTime()) {
       await prisma.photoJob.update({ where: { id: jobId }, data: { slaDueAt: due } });
-      const { etDateTime } = await import("@/lib/datetime");
-      await logJobEvent(jobId, "sync", `photo deadline set to ${etDateTime(due)} ET: the photos turnaround from the ${etDateTime(visit)} visit${job.slaDueAt ? ` (was ${etDateTime(job.slaDueAt)})` : ""}`);
+      await logJobEvent(jobId, "sync", `photo deadline set to ${etDateTime(due)} ET: ${why}${job.slaDueAt ? ` (was ${etDateTime(job.slaDueAt)})` : ""}`);
     }
   }
   // WAITING ON THE LATEST VISIT (Oct 22 2026, Jordan on 615 Cliff Ln: "it
@@ -522,7 +541,11 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
     // uploaded to Dropbox / submitted in the upload portal"): with nothing seen
     // a day after the visit started, the earlier visit's delivery stands.
     const quietDay = !!visits.start && now.getTime() - visits.start.getTime() > 24 * 60 * MIN;
-    awaitingVisit = since.length === 0 ? !quietDay : since.some((b) => !["DONE", "LINKED"].includes(b.state));
+    // Oct 22 2026 (photo audit M4): a return visit that uploaded no photos (a
+    // video-only return) never pulls DELIVERED photos back into Editing (nor
+    // clears their delivery date): only raws seen since the visit's day do.
+    const photosOut = ["DELIVERED", "DELIVERING", "DELIVERY_MISMATCH"].includes(job.stage) || !!job.deliveredAt;
+    awaitingVisit = since.length === 0 ? !quietDay && !photosOut : since.some((b) => !["DONE", "LINKED"].includes(b.state));
   }
   let newVisit = false;
   // DELIVERED BESIDE THE NEW VISIT (Oct 22 2026, Jordan on 615 Cliff Ln: "show
@@ -802,6 +825,8 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
     const earlier = await prisma.photoAsset.count({ where: { jobId, status: ON_LISTING } });
     await setStage(jobId, ["DELIVERING", "DELIVERY_MISMATCH", "DELIVERED"], "EDITING", "sync", {
       why: `a new visit: ${hubNew.length} photo${hubNew.length === 1 ? "" : "s"} back from AutoHDR. The ${earlier} already on the listing stay there, shown as delivered beside these`,
+      // Photo audit H3 (Oct 22 2026): the earlier visit's delivery date is kept on this line before the new visit's round clears it.
+      data: job.deliveredAt ? { earlierVisitDeliveredAt: job.deliveredAt.toISOString() } : undefined,
       extra: { deliveryDiffJson: null, deliveryCheckNote: null, deliveredAt: null, deliveredBy: null },
     });
   }
@@ -811,7 +836,7 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
     const why = `split job: waiting for the photos from ${visitDay}; the listing's delivery is the earlier visit's`;
     const cur = (await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true } }))?.stage ?? job.stage;
     if (["DELIVERING", "DELIVERY_MISMATCH", "DELIVERED"].includes(cur)) {
-      await setStage(jobId, ["DELIVERING", "DELIVERY_MISMATCH", "DELIVERED"], "EDITING", "sync", { why, extra: { deliveryDiffJson: null, deliveryCheckNote: null, deliveredAt: null, deliveredBy: null } });
+      await setStage(jobId, ["DELIVERING", "DELIVERY_MISMATCH", "DELIVERED"], "EDITING", "sync", { why, data: job.deliveredAt ? { earlierVisitDeliveredAt: job.deliveredAt.toISOString() } : undefined, extra: { deliveryDiffJson: null, deliveryCheckNote: null, deliveredAt: null, deliveredBy: null } });
     } else if (!(await prisma.photoJobEvent.count({ where: { jobId, action: why } }))) {
       await logJobEvent(jobId, "sync", why);
     }
@@ -831,9 +856,22 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
   // Only the listing's own delivery_status says so: Project.deliveredAt can be
   // the hub's guess from the status sweep, before Aryeo has delivered.
   const deliveredOnAryeo = listing?.deliveryStatus === "DELIVERED";
+  // Oct 22 2026 (photo audit C1): Aryeo's "delivered" is sticky: after the
+  // first delivery it says so for ever. A job reopened for a client's revision
+  // (REVISION_REQUESTED, or any stage after it while the job keeps its first
+  // delivery date) never takes it as the revision being delivered: 615 Cliff
+  // Ln's lamp request was closed by this sync at 5:48 PM. The revision leaves
+  // only by Approve and deliver again or Mark as delivering (both move it to
+  // Delivering first, verified below), or Settled with the client.
+  const inRevision = stage === "REVISION_REQUESTED" || (!!job.deliveredAt && stage !== "DELIVERING");
   // A new visit not on the listing yet: the listing's "delivered" is the earlier visit's.
-  if (deliveredOnAryeo && !newVisit && !["DELIVERED", "DELIVERY_MISMATCH"].includes(stage)) {
-    const from: JobStage[] = ["EDITING", "EDITED", "QC_RUNNING", "QC_REVIEW", "FIXING", "ON_HOLD", "READY", "DELIVERING", "REVISION_REQUESTED", "EDIT_FAILED"];
+  if (deliveredOnAryeo && !newVisit && !inRevision && !["DELIVERED", "DELIVERY_MISMATCH"].includes(stage)) {
+    const from: JobStage[] = ["EDITING", "EDITED", "QC_RUNNING", "QC_REVIEW", "FIXING", "ON_HOLD", "READY", "DELIVERING", "EDIT_FAILED"];
+    // Oct 22 2026 (photo audit H2): delivered in Aryeo itself (past the hub)
+    // while the checklist still held the photos: Jordan and Kyle hear it once,
+    // and the holds (the client's requests, the add-on work) stay OPEN on the
+    // job for a person to settle; the hub never closes them for it.
+    if (stage !== "DELIVERING") await alertDeliveredWithHolds(jobId, project.title).catch((e) => console.warn("photo delivery: holds alert failed", jobId, (e as Error).message));
     if (stage !== "DELIVERING") await setStage(jobId, from, "DELIVERING", "sync", { why: "delivered in Aryeo", extra: { deliveryStartedAt: now } });
     try {
       const { verifyDelivery } = await import("./delivery");
@@ -866,6 +904,43 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
   await prisma.photoJob.update({ where: { id: jobId }, data: { nextCheckAt: new Date(now.getTime() + next) } });
   // A split job's new visit: the count read is that visit's (the gallery also holds the listing's photos).
   return { changed, count: newVisit ? hubNew.length : entries.length, stage, source };
+}
+
+/** The job event alertDeliveredWithHolds writes (once per set of open holds). */
+export const DELIVERED_WITH_HOLDS_ACTION = "delivered in Aryeo with holds still open";
+
+/**
+ * Oct 22 2026 (photo audit H2): the listing was delivered in Aryeo (not by the
+ * hub's checked delivery) while hold lines were open on the checklist (what the
+ * client asked, the add-on work, the wrap-up). 11 of 23 holding asks in two
+ * weeks were then closed by the hub, not a person; 58 Recreation Dr went out
+ * with "Lot Lines needed" open. Now: one alert to Jordan and Kyle (the bell
+ * and their Slack DM, alertOwnerAndKyle; deduped per job and per set of holds)
+ * and one line on the job's activity. The holds stay open. Returns how many.
+ */
+export async function alertDeliveredWithHolds(jobId: string, title: string | null): Promise<number> {
+  const { deliveryGate } = await import("./delivery");
+  const gate = await deliveryGate(jobId, { sync: false });
+  const open = gate.checks.filter((c) => c.hold && !c.ok && !c.advisory);
+  if (!open.length) return 0;
+  const keys = open.map((c) => c.key).sort().join("|");
+  const words = open.map((c) => c.label.replace(/\.$/, "")).join("; ");
+  const street = (title ?? "A job").split(",")[0];
+  if (!(await prisma.photoJobEvent.count({ where: { jobId, action: { startsWith: DELIVERED_WITH_HOLDS_ACTION }, dataJson: { contains: JSON.stringify(keys) } } }))) {
+    await logJobEvent(jobId, "sync", `${DELIVERED_WITH_HOLDS_ACTION}: ${words}. They stay open until a person settles each one`, { keys });
+  }
+  const { alertOwnerAndKyle } = await import("./notifyOps");
+  const { appBase } = await import("@/lib/appUrl");
+  await alertOwnerAndKyle({
+    kind: "photo_delivered_with_holds",
+    title: `${street}: delivered in Aryeo with ${open.length} hold${open.length === 1 ? "" : "s"} open`,
+    body: words.slice(0, 140),
+    href: `/ops/photo-delivery/${jobId}`,
+    dedupeKey: `pd-delivered-holds-${jobId}-${createHash("sha256").update(keys).digest("hex").slice(0, 12)}`,
+    text: `${street}: the photos were delivered in Aryeo while the checklist still held them (${words}). Nothing was closed: settle each one on the job. ${appBase()}/ops/photo-delivery/${jobId}`,
+    to: "both",
+  });
+  return open.length;
 }
 
 /**

@@ -78,9 +78,13 @@ export function mergeOverrides(house: RuleOverride[], client: RuleOverride[] | n
 export const disabledIn = (overrides: RuleOverride[] | null | undefined) => new Set((overrides ?? []).filter((o) => o.disabled).map((o) => o.ruleId));
 
 /** Switch a check off for every shoot and set its open findings aside. */
-export async function stopRule(ruleId: string, reason: string, by: string): Promise<{ ok: boolean; message: string; setAside: number }> {
+/** Oct 22 2026 (photo audit M6): checks only the owner can switch off for every shoot, whoever calls stopRule (the caller passes the real role). */
+export const OWNER_ONLY_SWITCH = new Set(["AIEDIT_FLOATING_OBJECT"]);
+
+export async function stopRule(ruleId: string, reason: string, by: string, opts: { role?: string | null } = {}): Promise<{ ok: boolean; message: string; setAside: number }> {
   const rule = ruleById(ruleId);
   if (!rule) return { ok: false, message: "That check is not one the hub knows.", setAside: 0 };
+  if (OWNER_ONLY_SWITCH.has(ruleId) && opts.role !== "OWNER") return { ok: false, message: "Only Jordan can switch this check off for every shoot (an editing mistake the client sees). Decide it one by one instead.", setAside: 0 };
   if (ruleId === "OTHER_DEFECT") return { ok: false, message: "The catch-all check can't be switched off; ignore those one by one.", setAside: 0 };
   // Oct 14 2026 (huddle): an AI fix that changed the house is never hidden house-wide.
   if (ruleId === "FIX_DAMAGE_AI_EDIT") return { ok: false, message: "This one can't be switched off: it is how the hub says an AI fix changed a house. Restore the photo, or decide it one by one.", setAside: 0 };

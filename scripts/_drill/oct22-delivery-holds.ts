@@ -344,16 +344,24 @@ async function main() {
     const fixV = await prisma.photoVersion.create({ data: { photoId: photos[0].id, label: "Lot lines (from AutoHDR)", source: "FIX", createdBy: "fix-runner", createdAt: at(1) } });
     c.ok("a 'Lot lines' version from another source (an AutoHDR fix) does not count", (await lotLine())?.ok === false);
     await prisma.photoVersion.delete({ where: { id: fixV.id } });
+    // Oct 22 2026 (photo audit H6): a version counts only while it IS the photo
+    // (the Lot lines tool makes it the current picture), so each one below also
+    // becomes the photo's content hash, as the tool and the sync do.
+    const cur = (photoId: string, contentHash: string) => prisma.photoAsset.update({ where: { id: photoId }, data: { contentHash } });
     const drawn = await prisma.photoVersion.create({ data: { photoId: photos[0].id, label: lotLinesVersionLabel("Kyle"), source: "HUB_EDIT", contentHash: "hub-lotlines-1", createdBy: "Kyle", createdAt: at(2) } });
+    await cur(photos[0].id, "hub-lotlines-1");
     gate = await delivery.deliveryGate(job.id);
     const cleared = gate.checks.find((x) => x.key === "addon:lot_lines");
     c.ok("(a) the Lot lines tool's 'Lot lines by Kyle' version on a photo in the delivery clears it: 'Lot lines added', on DJI_0100.jpg", drawn.label === "Lot lines by Kyle" && cleared?.ok === true && cleared.label === "Lot lines added" && /on DJI_0100\.jpg, by Kyle/.test(cleared.detail ?? "") && cleared.addOn?.cleared?.how === "version" && gate.canDeliver === true, JSON.stringify(cleared));
     c.ok("…the hub's same-day approval still never passes it (Kyle approves a lot lines job)", (await P.sameDayBlocker(job.id)) === "lot lines on the order: Kyle approves it" && gate.passed === false);
     const later = await prisma.photoVersion.create({ data: { photoId: photos[0].id, label: "Straightened 1.5° by Kyle", source: "HUB_EDIT", contentHash: "hub-straight-1", createdBy: "Kyle", createdAt: at(3) } });
+    await cur(photos[0].id, "hub-straight-1");
     c.ok("…a later Straighten of that photo (drawn from the photo's own file) takes the lines off: it holds again", (await lotLine())?.ok === false);
     const redrawn = await prisma.photoVersion.create({ data: { photoId: photos[0].id, label: lotLinesVersionLabel("Kyle"), source: "HUB_EDIT", contentHash: "hub-lotlines-2", createdBy: "Kyle", createdAt: at(4) } });
+    await cur(photos[0].id, "hub-lotlines-2");
     c.ok("…drawn again after it: cleared again", (await lotLine())?.ok === true);
     const listedV = await prisma.photoVersion.create({ data: { photoId: photos[1].id, label: "Lot lines (on the Aryeo listing)", source: "HUB_EDIT_LISTED", contentHash: "lst-ll", createdBy: "Kyle", createdAt: at(5) } });
+    await cur(photos[1].id, "lst-ll");
     await prisma.photoVersion.deleteMany({ where: { id: { in: [drawn.id, later.id, redrawn.id] } } });
     c.ok("…the same picture once Update on Aryeo put it on the listing still counts", (await lotLine())?.ok === true);
     await prisma.photoAsset.update({ where: { id: photos[1].id }, data: { status: "EXCLUDED" } });
@@ -395,7 +403,9 @@ async function main() {
     const sq = both[1]?.addOn?.quotes ?? [];
     c.ok("…the agent's words for the staging: which rooms (no gate code)", sq.length === 1 && /virtually stage the living room and the primary bedroom/.test(sq[0].text) && !/1234/.test(sq[0].text), JSON.stringify(sq));
     c.ok("…it holds Kyle's delivery (both lines open)", g2.canDeliver === false && g2.holdsOpen >= 2);
-    await prisma.photoVersion.create({ data: { photoId: s1.id, label: "Virtual staging: living room, modern farmhouse", source: "FIX", createdBy: "fix-runner" } });
+    // (photo audit H6: the staging is the photo's current version, as a fix makes it.)
+    await prisma.photoVersion.create({ data: { photoId: s1.id, label: "Virtual staging: living room, modern farmhouse", source: "FIX", autohdrVersionUuid: "st-v2", createdBy: "fix-runner" } });
+    await prisma.photoAsset.update({ where: { id: s1.id }, data: { autohdrVersionUuid: "st-v2" } });
     g2 = await delivery.deliveryGate(j2.id);
     c.ok("a 'Virtual staging' version (any source) clears the staging line: 'Virtual staging added'; lot lines still held", g2.checks.find((x) => x.key === "addon:virtual_staging")?.label === "Virtual staging added" && g2.checks.find((x) => x.key === "addon:virtual_staging")?.ok === true && g2.checks.find((x) => x.key === "addon:lot_lines")?.ok === false);
     const st = await A.confirmAddOn(j2.id, "lot_lines", "Kyle drew them outside the hub on IMG_2001", "Kyle");
