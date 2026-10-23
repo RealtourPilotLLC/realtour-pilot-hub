@@ -78,7 +78,7 @@ export async function monthlyFinalSnapshot(id: string): Promise<MonthlyFinalSnap
   const cut = await loadMonthlyCut(id);
   if (!cut || !(await currentMonthlyCut(cut))) return { ok: false, message: "That monthly approved version is no longer current." };
   // The gate as stamped, or implied for a job linked to its month after approval.
-  if (publicationRequiredAt(cut, true) && !verified1080p(cut)) return { ok: false, message: "The checked 1080p file isn't ready. Run the 1080p pass again, or listen to a held file and use it." };
+  if (publicationRequiredAt(cut, true) && !verified1080p(cut)) return { ok: false, message: "The checked Topaz file isn't ready. Run the Topaz pass again, or listen to a held file and use it." };
   const files = await clientCutFiles([id]); // A read failure throws, never falls back to the original.
   const file = files.get(id) ?? { kind: "original" as const };
   if (file.kind === "finishing") return { ok: false, message: "The client file is still being finished or held for review." };

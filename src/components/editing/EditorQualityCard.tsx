@@ -78,7 +78,7 @@ export function EditorQualityCard({ report, own = false }: { report: EditorQuali
         <Block title="Revision turnaround" n={report.turnaround.n} thin={report.turnaround.thin}>
           <p><span className="text-xl font-semibold tabular-nums">{hrs(report.turnaround.medianHours)}</span> <span className="text-xs text-muted">median, ask → next version (weekday hours)</span></p>
           <p className="mt-0.5 text-[11px] text-muted-2">
-            Processing (1080p pass): {hrs(report.turnaround.medianProcessingHours)} (n = {report.turnaround.processingN}) · Waiting on assets or feedback:{" "}
+            Processing (Topaz pass): {hrs(report.turnaround.medianProcessingHours)} (n = {report.turnaround.processingN}) · Waiting on assets or feedback:{" "}
             {report.turnaround.waitingOnAssetsHours == null ? "not recorded" : hrs(report.turnaround.waitingOnAssetsHours)} · Client&rsquo;s total wait: {hrs(report.turnaround.medianClientWaitHours)} (n = {report.turnaround.clientWaitN})
           </p>
         </Block>

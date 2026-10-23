@@ -53,7 +53,18 @@ export function groupSidebarDestinations<T extends Destination>(items: readonly 
 // Oct 19 2026's six office doors (Dashboard, Shoots, Photos, Videos,
 // Messages, Schedule) were the first version of this; Schedule is now a tab
 // on Shoots (one door reaches both pages).
+//
+// Oct 23 2026 (Jordan: "Instead of Photo and Video, I want it to be Photo
+// Delivery and Video Delivery"): the photo desk's door reads Photo Delivery
+// and the videos page's door Video Delivery, on every role menu that has
+// them. Kyle's door read "Ready to send": it is Video Delivery too, so
+// everyone says the same name, and it still opens that section. A
+// photographer's "My Videos" is their own view and keeps its label.
 // ---------------------------------------------------------------------------
+
+/** The two delivery doors' one name each (Oct 23 2026). */
+export const PHOTO_DELIVERY_LABEL = "Photo Delivery";
+export const VIDEO_DELIVERY_LABEL = "Video Delivery";
 
 /** One door: the destination it labels (`href`, what access and the active
  *  state are read from) and, when the door opens a section of that page, the
@@ -63,37 +74,37 @@ export type MenuDoor = { href: string; label: string; link?: string };
 /** Jordan: oversight first, money under More (Finance leads it). */
 export const OWNER_MENU: readonly MenuDoor[] = [
   { href: "/", label: "Dashboard" },
-  { href: "/review", label: "Videos" },
+  { href: "/review", label: VIDEO_DELIVERY_LABEL },
   { href: "/editing", label: "Editing Room" },
   { href: "/content", label: "Monthly Content" },
-  { href: "/ops/photo-delivery", label: "Photos" },
+  { href: "/ops/photo-delivery", label: PHOTO_DELIVERY_LABEL },
   { href: "/communications", label: "Messages" },
   { href: "/jobs", label: "Shoots" },
 ];
 
 /** Kyle (the office): his list, the client inbox, photo approvals, the videos
- *  he sends (the Videos page opened at Ready to send), the Editing Room he
- *  works in most, and Shoots. */
+ *  he sends (Video Delivery, opened at its Ready to send section), the
+ *  Editing Room he works in most, and Shoots. */
 export const OFFICE_MENU: readonly MenuDoor[] = [
   { href: "/", label: "Dashboard" },
   { href: "/ops/checklist", label: "Your list" },
   { href: "/communications", label: "Messages" },
-  { href: "/ops/photo-delivery", label: "Photos" },
-  { href: "/review", label: "Ready to send", link: "/review#ready-to-send" },
+  { href: "/ops/photo-delivery", label: PHOTO_DELIVERY_LABEL },
+  { href: "/review", label: VIDEO_DELIVERY_LABEL, link: "/review#ready-to-send" },
   { href: "/editing", label: "Editing Room" },
   { href: "/jobs", label: "Shoots" },
 ];
 
 /** James (the creative manager): the creative process end to end, his own
  *  uploads (he still shoots) and his scorecard. No office desks, no money.
- *  Photos (Jordan, Oct 22 2026): the photo desk, view only, to check photo
- *  quality across every job; it sits where the owner's menu has it. */
+ *  Photo Delivery (Jordan, Oct 22 2026): the photo desk, view only, to check
+ *  photo quality across every job; it sits where the owner's menu has it. */
 export const CREATIVE_MENU: readonly MenuDoor[] = [
   { href: "/", label: "Dashboard" },
-  { href: "/review", label: "Videos" },
+  { href: "/review", label: VIDEO_DELIVERY_LABEL },
   { href: "/editing", label: "Editing Room" },
   { href: "/content", label: "Monthly Content" },
-  { href: "/ops/photo-delivery", label: "Photos" },
+  { href: "/ops/photo-delivery", label: PHOTO_DELIVERY_LABEL },
   { href: "/upload", label: "Uploads" },
   { href: "/jobs", label: "Shoots" },
   { href: "/my-pay", label: "My Performance" },

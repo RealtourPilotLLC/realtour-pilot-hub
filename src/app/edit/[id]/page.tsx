@@ -2124,10 +2124,10 @@ export default async function EditBriefPage({
           {/* The rescue hatch for the old habit: exporting straight into the
               Dropbox Final folder (12 of 26 cuts once came this way). */}
           {/* NOT FOR MONTHLY VIDEOS (Oct 5 2026): their portal only takes the
-              checked 1080p file, and the 1080p pass needs the hub's own copy —
+              checked Topaz file, and the Topaz pass needs the hub's own copy —
               a file sent from the Final folder could never reach the client. */}
           {project.contentMonthId ? (
-            <p className="rounded-xl border border-border bg-surface px-4 py-2.5 text-xs text-muted">Monthly videos are sent from here only: upload the file above, even if it&apos;s already in the Final folder. The 1080p finish needs the hub&apos;s own copy.</p>
+            <p className="rounded-xl border border-border bg-surface px-4 py-2.5 text-xs text-muted">Monthly videos are sent from here only: upload the file above, even if it&apos;s already in the Final folder. The Topaz pass needs the hub&apos;s own copy.</p>
           ) : (
             <details className="rounded-xl border border-border bg-surface px-4 text-xs text-muted">
               <summary className="flex min-h-11 cursor-pointer items-center">Already put the file in the Final footage folder?</summary>

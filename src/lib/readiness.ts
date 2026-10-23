@@ -789,7 +789,7 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
   const nameOf = (id: string | null) => (id ? team.find((t) => t.id === id)?.name ?? "someone no longer on the roster" : null);
   const [primary, backup, fallback] = [nameOf(reviewRoom.creativeApproverTeamMemberId), nameOf(reviewRoom.backupReviewerTeamMemberId), nameOf(reviewRoom.fallbackReviewerTeamMemberId)];
 
-  business({ key: "topaz", group: "production", title: "1080p video pass (Topaz)", reaches: "internal", saved: savedSettings.has("topaz"), enabled: topaz.enabled, providers: ["topaz"], job: "topaz", recipients: "Kyle, as a card with the finished file. The file lands in the job's Dropbox", scope: null, cadence: "on-action" });
+  business({ key: "topaz", group: "production", title: "Topaz pass", reaches: "internal", saved: savedSettings.has("topaz"), enabled: topaz.enabled, providers: ["topaz"], job: "topaz", recipients: "Kyle, as a card with the finished file. The file lands in the job's Dropbox", scope: null, cadence: "on-action" });
   const routeWords = (k: string | null) => (k ? k[0].toUpperCase() + k.slice(1) : "Needs assigning (by hand)");
   business({
     key: "editor_routing", group: "production", title: "Editor auto-assignment", reaches: "staff", saved: savedSettings.has("editor_routing"),

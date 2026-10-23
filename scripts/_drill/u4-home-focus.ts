@@ -119,8 +119,8 @@ async function main() {
     const list = elements(await listPage({}), "DailyChecklist")[0]?.list as import("../../src/lib/opsHome").KyleChecklist;
     // The delivery evidence and actions live with the video (Video Review
     // Room); the dashboard's QC tile opens it and each video line its cut.
-    const deliveryRows = opsDesk?.tabs.find((t) => t.key === "delivery");
-    c.ok("delivery evidence/actions stay one tap away: every QC & Delivery row opens its job, every list video line its cut", !!deliveryRows && [...deliveryRows.now, ...deliveryRows.waiting].every((i) => !!i.href) && list.groups[0].lines.filter((l) => l.key.startsWith("video:")).every((l) => l.href.startsWith("/review/")));
+    const deliveryRows = opsDesk?.sections.find((s) => s.key === "deliver");
+    c.ok("delivery evidence/actions stay one tap away: every Review & Deliver row opens its job, every list video line its cut", !!deliveryRows && [...deliveryRows.now, ...deliveryRows.waiting].every((i) => !!i.href) && list.groups[0].lines.filter((l) => l.key.startsWith("video:")).every((l) => l.href.startsWith("/review/")));
     // Oct 23 2026: the owner's "/" is his own dashboard (components/owner/
     // OwnerHome): the office shows as a row of Team coverage, the week and the
     // money as their own sections.

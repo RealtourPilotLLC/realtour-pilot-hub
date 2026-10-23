@@ -339,7 +339,7 @@ function photoLines(q: QueueData, now: Date): ChecklistLine[] {
 /** What a listing video needs, in a few words, from where the video screen says it stands. */
 function videoNeed(r: VideoRow): string {
   if (r.lane === "sending") return "Ready to send";
-  if (r.lane === "finishing") return "In the 1080p pass";
+  if (r.lane === "finishing") return "In the Topaz pass";
   if (r.lane === "held") return "Held";
   if (r.cutStatus === "PENDING") return "Waiting on review";
   if (/^Not shot/.test(r.stage)) return "Not shot yet";

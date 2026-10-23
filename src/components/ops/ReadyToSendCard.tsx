@@ -13,6 +13,7 @@ import { WatchDeliveryVideo, deliveryPreview } from "@/components/ops/WatchDeliv
 import { uploadedDeliveryGroups, type UploadedTarget } from "@/lib/uploadedDeliveryGroups";
 import { CorrectUpload } from "@/components/ops/CorrectUpload";
 import { RetryRender } from "@/components/ops/RetryRender";
+import { RerunTopaz } from "@/components/ops/RerunTopaz";
 import { HeldRender } from "@/components/ops/HeldRender";
 import { PortalNextStep } from "@/components/ops/PortalNextStep";
 import { ChooseAryeoDelivery } from "@/components/ops/ChooseAryeoDelivery";
@@ -87,7 +88,7 @@ function monthName(monthKey: string): string {
 }
 
 const SOURCE_CHIP: Record<ReadyVideo["file"]["source"], string> = {
-  "topaz-1080p": "1080p",
+  "topaz-1080p": "Topaz",
   "editor-hub-copy": "Editor's file",
   "editor-dropbox": "Editor's file",
 };
@@ -245,7 +246,7 @@ export function PortalFinishing({ rows }: { rows: RenderingVideo[] }) {
   if (!rows.length) return null;
   return (
     <section className="space-y-2" aria-label="Branding videos going to the client's portal">
-      <h4 className="text-sm font-semibold">Going to the client&rsquo;s portal <span className="font-normal text-muted">({rows.length}) · after the 1080p pass</span></h4>
+      <h4 className="text-sm font-semibold">Going to the client&rsquo;s portal <span className="font-normal text-muted">({rows.length}) · after the Topaz pass</span></h4>
       {rows.map((r) => (
         <div key={r.submissionId} className="min-w-0 rounded-xl border border-border px-3.5 py-2.5 text-sm">
           <p className="leading-snug">
@@ -328,7 +329,7 @@ function Held({ rows }: { rows: RenderingVideo[] }) {
   return (
     <div className="rounded-xl border border-dashed border-border px-3.5 py-2.5">
       <p className="flex items-center gap-1.5 text-ui-status font-semibold text-warning">
-        <AlertTriangle className="size-3.5" /> Held — the 1080p file&rsquo;s sound couldn&rsquo;t be checked
+        <AlertTriangle className="size-3.5" /> Held — the Topaz file&rsquo;s sound couldn&rsquo;t be checked
       </p>
       <ul className="mt-1 space-y-2">
         {rows.map((r) => (
@@ -340,6 +341,7 @@ function Held({ rows }: { rows: RenderingVideo[] }) {
             {r.held && (
               <HeldRender jobId={r.held.jobId} street={r.street} fileName={r.held.fileName} dropboxUrl={r.held.dropboxUrl} lastCheck={r.held.lastCheck} monthly={!!r.monthlyProgram} />
             )}
+            {r.rerun && <RerunTopaz jobId={r.rerun.jobId} street={r.street} credits={r.rerun.credits} limit={r.rerun.limit} />}
           </li>
         ))}
       </ul>
@@ -351,7 +353,7 @@ function Running({ rows }: { rows: RenderingVideo[] }) {
   return (
     <div className="rounded-xl border border-dashed border-border px-3.5 py-2.5">
       <p className="flex items-center gap-1.5 text-ui-status font-semibold text-muted">
-        <Loader2 className="size-3.5" /> Still in the 1080p pass — not ready yet
+        <Loader2 className="size-3.5" /> Still in the Topaz pass — not ready yet
       </p>
       <ul className="mt-1 space-y-1">
         {rows.map((r) => (
@@ -399,7 +401,7 @@ function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: (sent?: boole
           "rounded px-1.5 py-0.5 text-ui-status font-semibold",
           v.file.source === "topaz-1080p" || v.originalIsFinal ? "bg-brand/15 text-brand" : "bg-warning/15 text-warning",
         )}>
-          {v.portalStep?.blocked ? "Needs 1080p" : chipOf(v)}
+          {v.portalStep?.blocked ? "Needs Topaz" : chipOf(v)}
         </span>
         {v.overdue && (
           <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-ui-status font-bold text-danger">
@@ -519,7 +521,7 @@ function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: (sent?: boole
             {v.file.source === "editor-hub-copy" && !v.file.dropboxPath && (
               <span className="mt-0.5 block">The hub is holding this file — it isn&rsquo;t in the job&rsquo;s Final Video folder.</span>
             )}
-            {v.file.why && <span className="mt-1 block italic">Why the 1080p pass didn&rsquo;t produce it: {v.file.why}</span>}
+            {v.file.why && <span className="mt-1 block italic">Why the Topaz pass didn&rsquo;t produce it: {v.file.why}</span>}
             {/* WHAT ARYEO IS ALREADY SHOWING ON THIS LISTING.
                 The card cannot prove that the video up there is this file — a
                 re-cut looks exactly like a first cut from the outside — so it
@@ -582,7 +584,7 @@ function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: (sent?: boole
         {!usesPortal(v) && !v.uploaded && !v.listingMissing && v.uploadFingerprint && <MarkDelivered submissionId={v.submissionId} fingerprint={v.uploadFingerprint} onDelivered={onUploaded} />}
         {/* THE RETRY LIVES WHERE THE FAILURE IS READ (Jordan, Sep 18: "I need a
             way to retry the render without going into connections"). Offered
-            only on a row whose 1080p pass did NOT produce the file — there is a
+            only on a row whose Topaz pass did NOT produce the file — there is a
             job to re-run and a reason printed two lines above it. A row already
             carrying the enhanced file has nothing to retry, and showing the
             button there would invite spending money to replace a good file. */}
@@ -592,6 +594,10 @@ function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: (sent?: boole
           <RetryRender jobId={v.topazJobId} street={v.street} />
         )}
       </div>
+        {/* Run Topaz again (Jordan, Oct 23 2026): a finished Topaz file that
+            hasn't gone to the client, beside Watch it. The board offers it
+            only where the engine would run it (lib/topazRerun). */}
+        {v.rerun && <RerunTopaz jobId={v.rerun.jobId} street={v.street} credits={v.rerun.credits} limit={v.rerun.limit} />}
         {v.uploaded && <CorrectUpload submissionId={v.submissionId} receiptId={v.uploaded.id} />}
       </section>
     </div>

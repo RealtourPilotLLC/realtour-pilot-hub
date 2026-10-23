@@ -73,10 +73,10 @@ async function main() {
     const RENDER = { readyAt: at("2026-10-22T21:52:00Z"), sizeBytes: 122_532_068, kind: "1080p" as const };
     const v859 = { id: mediaId("2026-10-22T21:41:00Z", "1"), at: at("2026-10-22T21:41:00Z"), sizeBytes: 114_597_798 };
     const timeWrong = lfm.judgeListingFile(RENDER, [v859]);
-    c.ok("859's shape: the listing video went up before the render was saved → a different file", timeWrong.verdict === "mismatch" && /went up Thu, Oct 22, 5:41 PM ET, before this 1080p file was saved \(Thu, Oct 22, 5:52 PM ET\)/.test(timeWrong.message) && /for example the editor's original instead of the 1080p file/.test(timeWrong.message) && !/—/.test(timeWrong.message), timeWrong.message);
+    c.ok("859's shape: the listing video went up before the render was saved → a different file", timeWrong.verdict === "mismatch" && /went up Thu, Oct 22, 5:41 PM ET, before this Topaz file was saved \(Thu, Oct 22, 5:52 PM ET\)/.test(timeWrong.message) && /for example the editor's original instead of the Topaz file/.test(timeWrong.message) && !/—/.test(timeWrong.message), timeWrong.message);
     const later = { id: mediaId("2026-10-22T22:05:00Z", "2"), at: at("2026-10-22T22:05:00Z"), sizeBytes: 114_597_798 };
     const sizeWrong = lfm.judgeListingFile(RENDER, [v859, later]);
-    c.ok("a later video of the wrong size → a different file, both sizes named", sizeWrong.verdict === "mismatch" && /114\.6 MB \(114,597,798 bytes\); the 1080p file is 122\.5 MB \(122,532,068 bytes\)/.test(sizeWrong.message), sizeWrong.message);
+    c.ok("a later video of the wrong size → a different file, both sizes named", sizeWrong.verdict === "mismatch" && /114\.6 MB \(114,597,798 bytes\); the Topaz file is 122\.5 MB \(122,532,068 bytes\)/.test(sizeWrong.message), sizeWrong.message);
     c.ok("the right size after the save → this file", lfm.judgeListingFile(RENDER, [v859, { ...later, sizeBytes: 122_532_068 }]).verdict === "match");
     c.ok("the exact bytes under an older id (Aryeo replaced the file in place) → still this file", lfm.judgeListingFile(RENDER, [{ ...v859, sizeBytes: 122_532_068 }]).verdict === "match");
     c.ok("a size that could not be read → nothing concluded", lfm.judgeListingFile(RENDER, [{ ...later, sizeBytes: null }]).verdict === "unknown" && lfm.judgeListingFile({ ...RENDER, sizeBytes: null }, [later]).verdict === "unknown");

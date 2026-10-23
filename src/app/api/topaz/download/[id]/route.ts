@@ -47,7 +47,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     // Not an error — the render simply hasn't landed yet. Say which, in words
     // the person reading them can act on.
     return NextResponse.json(
-      { error: "That 1080p file isn't in Dropbox yet. The card will say when it lands." },
+      { error: "That Topaz file isn't in Dropbox yet. The card will say when it lands." },
       { status: 409 },
     );
   }

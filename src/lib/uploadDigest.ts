@@ -144,7 +144,9 @@ export async function sendNightlyUploadNags(): Promise<{ sent: number; skipped: 
         status: { notIn: ["CANCELLED", "ON_HOLD"] },
         aryeoMissingAt: null,
         photographerId: { not: null },
-        debriefSubmittedAt: null,
+        // Oct 23 2026 (lib/visitSubmission): a page submitted before today was
+        // an EARLIER visit's (615 Cliff Ln's Oct 8 stamp on its Oct 23 visit).
+        OR: [{ debriefSubmittedAt: null }, { debriefSubmittedAt: { lt: start } }],
       },
       select: {
         id: true, title: true,
