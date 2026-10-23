@@ -276,7 +276,8 @@ export async function linkPillarLabel(enrollmentId: string, label: string, pilla
       data: topics.map((t) => ({ topicId: t.id, enrollmentId, kind: "RECONCILED", actorKind: opts.actorKind ?? "STAFF", staffUserId: by, note: `Pillar label “${label}” linked to the confirmed pillar “${pillar.name}”${why}`.slice(0, 2000), sourceRef: `pillar:${pillarId}` })),
     });
   }
-  const candidates = await prisma.contentScript.findMany({ where: { enrollmentId, pillarId: null, currentVersionId: { not: null } }, select: { id: true, currentVersionId: true, updatedAt: true } });
+  // A script already shared with or approved by the client is never touched (Oct 23 2026: the pushed-scripts rule).
+  const candidates = await prisma.contentScript.findMany({ where: { enrollmentId, pillarId: null, currentVersionId: { not: null }, sharedAt: null, clientApprovedAt: null }, select: { id: true, currentVersionId: true, updatedAt: true } });
   const labelled = candidates.length
     ? new Set((await prisma.contentScriptVersion.findMany({ where: { id: { in: candidates.map((s) => s.currentVersionId!) }, pillarId: null, categoryLabel: label }, select: { id: true } })).map((v) => v.id))
     : new Set<string>();
