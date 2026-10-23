@@ -511,7 +511,8 @@ async function main() {
     c.ok("the job page: beside the video's send, and nulled for anyone not the office", /\{v\.rerun && <RerunTopaz /.test(jobPage) && /rerun: null/.test(jobPage));
     const desk = src("src/components/desk/OfficeDesk.tsx");
     const deskLib = await import("@/lib/officeDesk");
-    c.ok("Kyle's desk: the side panel renders it, labelled \"Run Topaz again\"", /case "topaz-rerun":\s*\n\s*return <RerunTopaz /.test(desk) && deskLib.actionLabel({ kind: "topaz-rerun", jobId: "x", street: "y", credits: 1, limit: 2 }) === "Run Topaz again");
+    c.ok("Kyle's desk: the side panel renders it, labelled \"Run Topaz again\"", /case "topaz-rerun":\s*\n\s*return <RerunTopaz /.test(desk) && deskLib.actionLabel({ kind: "topaz-rerun", jobId: "x", street: "y", video: "Listing video", credits: 1, limit: 2 }) === "Run Topaz again");
+    c.ok("Kyle's desk: Review & Deliver's approved-video rows carry it too (never in a preview)", /i\.group !== "video" \? \[\] : i\.actions\.filter\(/.test(desk) && /readOnly \|\| i\.group !== "video"/.test(desk) && /data-row-rerun=\{i\.id\}/.test(desk) && /<RerunTopaz key=\{a\.jobId\}/.test(desk));
     const button = src("src/components/ops/RerunTopaz.tsx");
     c.ok("the button asks first and shows the cost before it spends; it calls the guarded action", /setAsking\(true\)/.test(button) && /rerunCostLine/.test(button) && /rerunTopazAction/.test(button) && !/from "@\/lib\/topazJobs"/.test(button));
 
@@ -525,8 +526,9 @@ async function main() {
     const item = jd?.video.items.find((v) => v.key === L.subId);
     c.ok("the job page's video item carries it", item?.phase === "ready" && item.rerun?.jobId === L.jobId, `${item?.phase} ${JSON.stringify(item?.rerun)}`);
     const deskData = await deskLib.officeDeskFor(null, { includeTest: true }).catch((e: Error) => { console.log("  (desk)", e.message); return null; });
-    const jobItem = deskData?.tabs.flatMap((t) => [...t.now, ...t.waiting, ...t.ok]).find((i) => i.id === `job:${L.projectId}`);
-    c.ok("Kyle's desk: the job's side panel offers \"Run Topaz again\" after the send", !!jobItem && jobItem.actions.some((a) => a.kind === "topaz-rerun" && a.jobId === L.jobId) && jobItem.actions[0]?.kind !== "topaz-rerun", JSON.stringify(jobItem?.actions.map((a) => a.kind)));
+    const deliver = deskData?.sections.find((x) => x.key === "deliver");
+    const jobItem = deliver ? [...deliver.now, ...deliver.waiting, ...deliver.ok].find((i) => i.id === `video:${L.projectId}`) : undefined;
+    c.ok("Kyle's desk: the approved video's item in Review & Deliver offers \"Run Topaz again\" after its send", !!jobItem && jobItem.group === "video" && jobItem.actions.some((a) => a.kind === "topaz-rerun" && a.jobId === L.jobId && !!a.video) && jobItem.actions[0]?.kind !== "topaz-rerun", JSON.stringify(jobItem?.actions));
   }
 
   c.head("Z · isolation");

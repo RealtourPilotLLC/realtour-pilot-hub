@@ -24,7 +24,7 @@ import { RERUN_CONFIRM, RERUN_LABEL, rerunCostLine } from "@/lib/topazRerun";
  * must not import @/lib/topazJobs (server-only); the words come from the pure
  * @/lib/topazRerun, the same module the server's refusals use.
  */
-export function RerunTopaz({ jobId, street, credits, limit }: { jobId: string; street: string; credits: number | null; limit: number | null }) {
+export function RerunTopaz({ jobId, street, credits, limit, video }: { jobId: string; street: string; credits: number | null; limit: number | null; /** which video, when a row carries more than one */ video?: string }) {
   const router = useRouter();
   const [asking, setAsking] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -51,8 +51,8 @@ export function RerunTopaz({ jobId, street, credits, limit }: { jobId: string; s
 
   return (
     <div className="mt-2 min-w-0 space-y-1" data-rerun-topaz={jobId}>
-      <Button variant="secondary" busy={busy} onClick={press} aria-label={asking ? `${RERUN_CONFIRM}: run the Topaz pass again for ${street}` : `${RERUN_LABEL} for ${street}`}>
-        <RotateCcw aria-hidden className="size-4" /> {asking ? RERUN_CONFIRM : RERUN_LABEL}
+      <Button variant="secondary" busy={busy} onClick={press} aria-label={asking ? `${RERUN_CONFIRM}: run the Topaz pass again for ${video ? `${video}, ` : ""}${street}` : `${RERUN_LABEL} for ${video ? `${video}, ` : ""}${street}`}>
+        <RotateCcw aria-hidden className="size-4" /> {asking ? RERUN_CONFIRM : RERUN_LABEL}{video ? `: ${video}` : ""}
       </Button>
       {asking && <p className="text-xs text-muted" data-rerun-cost>{rerunCostLine({ credits, limit })}</p>}
       {msg && <p role="status" className={msg.ok ? "text-xs text-muted" : "text-xs text-danger"}>{msg.text}</p>}

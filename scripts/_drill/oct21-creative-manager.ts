@@ -312,7 +312,7 @@ async function main() {
     await signIn(kyle);
     const kHtml = renderToStaticMarkup(expand(await settle(await home({}))) as Parameters<typeof renderToStaticMarkup>[0]);
     // Oct 23 2026: Kyle's home is his desk now (lib/officeDesk); the creative manager's is unchanged.
-    c.ok("Kyle's dashboard is his desk (Oct 23 2026): Client Replies and Closeout, none of the creative manager's cards", kHtml.includes("data-office-desk") && kHtml.includes("Client Replies") && kHtml.includes("Closeout") && !kHtml.includes("data-content-actions"));
+    c.ok("Kyle's dashboard is his desk (Oct 23 2026, revision 2): Client Communications and the Daily checks, none of the creative manager's cards", kHtml.includes("data-office-desk") && kHtml.includes("Client Communications") && kHtml.includes("Daily checks") && !kHtml.includes("data-content-actions"));
 
     // =====================================================================
     c.head("§7 · a stale ADMIN claim grants nothing");
