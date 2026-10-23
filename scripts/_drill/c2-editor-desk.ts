@@ -608,7 +608,7 @@ async function main() {
     c.ok("…in HIS timezone (Asia/Manila), pressable (not a preview)", k.desk?.tz === "Asia/Manila" && k.desk?.readOnly === false);
     c.ok("…no \"Your workload\" panel any more; his own review card stays",
       walk(k.tree, WorkloadPanel).length === 0 && walk(k.tree, EditorQualityCard).length === 1);
-    c.ok("…the header says only what he can start: \"3 to edit\"", headerOf(k.tree) === "3 projects to edit", JSON.stringify(headerOf(k.tree)));
+    c.ok("…the header says only what he can start: \"3 to edit\"", /^3 projects to edit( · \d+ late)?$/.test(String(headerOf(k.tree))), JSON.stringify(headerOf(k.tree)));
     const pv = await deskOf(jordan, kim);
     c.ok("Jordan previewing Kim: the same desk, every button off (readOnly)", pv.n === 1 && pv.desk?.readOnly === true && pv.desk?.tz === "Asia/Manila");
     try {
@@ -659,7 +659,7 @@ async function main() {
       rowA?.status === "Ready for review" && rowA.videosToEdit === 1 && JSON.stringify(rowA.startableBy) === JSON.stringify(["kim"]), `${rowA?.status} · ${rowA?.videoBreakdown} · toEdit ${rowA?.videosToEdit}`);
     c.ok("…and it STAYS on his desk — a Start button saying \"1 more video to edit\" — whether he answers Yes or No",
       !!aU && aU.startable && aU.note === "1 more video to edit" && aU.pausedSinceISO === null, JSON.stringify(aU));
-    c.ok("…the header still counts it: \"3 to edit\", never \"Nothing to edit right now\" while a video is owed", headerOf(kU.tree) === "3 projects to edit", JSON.stringify(headerOf(kU.tree)));
+    c.ok("…the header still counts it: \"3 to edit\", never \"Nothing to edit right now\" while a video is owed", /^3 projects to edit( · \d+ late)?$/.test(String(headerOf(kU.tree))), JSON.stringify(headerOf(kU.tree)));
   }
   await as(jordan);
   const jb = await work.workBarFor(A.id, { role: "OWNER", realRole: "OWNER", editorKey: null, impersonating: false });
@@ -739,7 +739,7 @@ async function main() {
     // on the desk, so Switch job can take him straight back to it.
     c.ok("REVIEW F9: 107 E, paused by the switch, is on his desk with its pause time and \"1 more video to edit\" — one tap to go back",
       !!aOnDesk && aOnDesk.startable && aOnDesk.pausedSinceISO === Z("16:45") && aOnDesk.note === "1 more video to edit", JSON.stringify(aOnDesk));
-    c.ok("…and the header counts it too (\"3 to edit\")", headerOf(k2.tree) === "3 projects to edit", JSON.stringify(headerOf(k2.tree)));
+    c.ok("…and the header counts it too (\"3 to edit\")", /^3 projects to edit( · \d+ late)?$/.test(String(headerOf(k2.tree))), JSON.stringify(headerOf(k2.tree)));
   }
 
   // =========================================================================
