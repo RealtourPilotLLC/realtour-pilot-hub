@@ -93,7 +93,9 @@ async function main() {
         catch (error) { return { value: null, error, hits }; }
       } finally { delegate.findMany = original; }
     };
-    await signIn(kyle);
+    // Oct 23 2026: Kyle's home is now his desk (lib/officeDesk); the health
+    // strip read failure is checked on the Review Room seat's dashboard, which keeps it.
+    await signIn(james);
     const queueRead = (args: Props) => record(record(args.include).project).select !== undefined && record(record(record(args.include).project).select).deliveredAt === true;
     const homeFailed = await inject(prisma.reviewSubmission as unknown as { findMany: unknown }, queueRead, () => home(query));
     const healthProps = (tree: unknown) => elements(tree, "HealthStrip")[0] as Parameters<typeof HealthStrip>[0];
@@ -110,9 +112,10 @@ async function main() {
     const mine = (attentionProps(jamesHome).attention as Dash["attention"]).items.find((i) => i.key === "review-mine");
     c.ok("…and the review seat's own line opens that exact cut", mine?.action.href === `/review/${job.id}?cut=${cut.id}`, JSON.stringify(mine));
     await signIn(restricted);
-    const restrictedFailure = await inject(prisma.reviewSubmission as unknown as { findMany: unknown }, queueRead, () => home(query));
-    const restrictedHtml = renderToStaticMarkup(createElement(HealthStrip, healthProps(restrictedFailure.value))) + renderToStaticMarkup(createElement(NeedsAttention, attentionProps(restrictedFailure.value)));
-    c.ok("signed page overrides hide denied destinations while still saying what could not be checked", restrictedFailure.hits === 1 && !restrictedFailure.error && (healthProps(restrictedFailure.value).doors as { review: boolean }).review === false && !restrictedHtml.includes('href="/review') && !restrictedHtml.includes('href="/editing"') && restrictedHtml.includes("Couldn’t check the review queue"));
+    // Oct 23 2026: an office login's home is the desk (lib/officeDesk), which
+    // has no health strip; its own drills (oct23-kyle-desk*) cover access per tab.
+    const restrictedHome = await home(query);
+    c.ok("a restricted office login gets the office desk, not the old strip", elements(restrictedHome, "OfficeDeskSection").length === 1 && elements(restrictedHome, "HealthStrip").length === 0);
 
     await signIn(james);
     const reviewFailed = await inject(prisma.reviewSubmission as unknown as { findMany: unknown }, (args) => record(record(args.include).project).select !== undefined && record(record(record(args.include).project).select).deliveredAt === true, () => review(query));
