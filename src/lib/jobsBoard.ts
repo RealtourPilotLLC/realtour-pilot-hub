@@ -583,6 +583,8 @@ export type VideoItem = {
     listingWarning: string | null;
     byHandWhy: string | null;
   } | null;
+  /** "Run Topaz again" (Oct 23 2026): the Review Room's own offer, on a finished or held Topaz file not sent yet. */
+  rerun?: import("@/lib/topazRerun").RerunOffer | null;
 };
 
 export type JobDeliverables = {
@@ -725,7 +727,7 @@ export async function jobDeliverables(projectId: string, now: Date = new Date())
   const sentAt = new Map(sent.map((s) => [s.id, s.sentToClientAt!]));
   // The Video Review Room's own row for an approved listing cut (ready to send, held, in the 1080p pass, sent this
   // week) decides where it stands, exactly as the room shows it, and carries what the send button needs.
-  const roomRow = new Map<string, { lane: string; late: boolean; send: VideoItem["send"]; stage: string; uploadedOnly: boolean }>();
+  const roomRow = new Map<string, { lane: string; late: boolean; send: VideoItem["send"]; stage: string; uploadedOnly: boolean; rerun: VideoItem["rerun"] }>();
   if (!monthly && (st?.cuts ?? []).some((c) => c.status === "APPROVED")) {
     const room = await import("@/lib/videoDelivery")
       .then((m) => m.videoDeliveryBoard(Math.abs(now.getTime() - Date.now()) < 60_000 ? {} : { now }))
@@ -739,6 +741,7 @@ export async function jobDeliverables(projectId: string, now: Date = new Date())
           late: r.late,
           stage: r.stage,
           uploadedOnly: !!r.push?.uploadedOnly,
+          rerun: r.rerun ?? null,
           // The room's ReadyRow rule (review/page.tsx): the button only when the hub can send this file and no run is in the way.
           send: r.send
             ? {
@@ -776,8 +779,8 @@ export async function jobDeliverables(projectId: string, now: Date = new Date())
       phase === "review" ? `${v} in review`
       : phase === "changes" ? `${v}, changes asked`
       : phase === "sent" ? `${v} sent${sentOn ? ` ${etMonthDay(sentOn)}` : ""}`
-      : phase === "finishing" ? `${v} approved, in the 1080p pass`
-      : phase === "held" ? `${v} approved, the 1080p file is held (check the sound)`
+      : phase === "finishing" ? `${v} approved, in the Topaz pass`
+      : phase === "held" ? `${v} approved, the Topaz file is held (check the sound)`
       : phase === "approved" ? `${v} approved, goes to the client's portal`
       : rr?.uploadedOnly ? `${v} on Aryeo, not sent yet`
       : `${v} approved, ready to send`;
@@ -786,6 +789,7 @@ export async function jobDeliverables(projectId: string, now: Date = new Date())
       late: phase !== "sent" && (rr ? rr.late : videoLate && PHASE_RANK[phase] < 5),
       href: `/review/${projectId}?cut=${c.submissionId}`,
       send: phase === "ready" ? rr?.send ?? null : null,
+      rerun: phase === "ready" || phase === "held" ? rr?.rerun ?? null : null,
     });
   }
   const owed = Math.max(st?.owed ?? 0, videoOrdered ? 1 : 0);

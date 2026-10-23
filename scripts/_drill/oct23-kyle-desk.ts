@@ -323,7 +323,7 @@ async function main() {
     c.ok("#3 an approved video is Kyle's to SEND: 'Approved by James, ready to send', Deliver, with Upload to Aryeo only beside it", i?.state === "now" && i.group === "video" && i.line === "Approved by James, ready to send" && i.primary?.label === "Deliver" && i.primary.action.kind === "video-send" && (i.primary.action as { uploadOnly: boolean }).uploadOnly === true);
     c.ok("#3 …and never his to approve: no approve or send-back control anywhere on his desk", everyItem(d).every((x) => x.actions.every((a) => !/approve-cut|send-back|request-changes/.test(a.kind))) && asset(i, "video:")?.note?.includes("You send it") === true);
     c.ok("an upload-only video reads 'On Aryeo, not sent yet' with Send now", video(d, pOnly.id)?.line.startsWith("On Aryeo, not sent yet") === true && video(d, pOnly.id)?.primary?.label === "Send now");
-    c.ok("a video still in the 1080p pass is not an action: a quiet line only", !video(d, pFin.id) && sec(d, "deliver").quiet.some((q) => q.text === "1 video finishing the 1080p pass"));
+    c.ok("a video still in the Topaz pass is not an action: a quiet line only", !video(d, pFin.id) && sec(d, "deliver").quiet.some((q) => q.text === "1 video finishing the Topaz pass"));
     c.ok("#3 a cut still in review is the creative manager's, a late edit the editor's: both in Requests & Follow-Ups, neither a delivery", !video(d, pInReview.id) && !video(d, pEditLate.id) && find(d, "edit:v-review")?.state === "waiting" && find(d, "edit:v-review")?.who === "James" && find(d, "edit:v-late")?.state === "now");
 
     // ---- #4 ----

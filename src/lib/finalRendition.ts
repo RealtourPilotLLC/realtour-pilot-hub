@@ -145,12 +145,12 @@ export async function finalFileSoundCheck(submissionId: string, opts: { probe?: 
     const cut = await loadCut(submissionId);
     if (!cut) return unchecked("That cut no longer exists.");
     const job = cut.topazJob;
-    if (job && !["done", "failed", "cancelled", "skipped"].includes(job.state)) return unchecked("The 1080p pass hasn't finished, so there is no final file to check yet.");
+    if (job && !["done", "failed", "cancelled", "skipped"].includes(job.state)) return unchecked("The Topaz pass hasn't finished, so there is no final file to check yet.");
     const processed = job?.state === "done" && !!job.finalPath && !!job.savedAt;
     if (processed) {
       const row = await prisma.topazJob.findUnique({ where: { id: job!.id }, select: { outputCheck: true, resolvedBy: true } });
       if (row?.outputCheck === "resolved-processed") {
-        return { verdict: "ok", av: null, message: `${row.resolvedBy ?? "A reviewer"} listened to this 1080p file and chose it.` };
+        return { verdict: "ok", av: null, message: `${row.resolvedBy ?? "A reviewer"} listened to this Topaz file and chose it.` };
       }
     }
     let url: string | null = null;

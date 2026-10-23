@@ -17,6 +17,7 @@ import { parseEvidence } from "@/lib/statusEvidence";
 import { briefStatusForAppointments, type BriefState } from "@/lib/photographerBrief";
 import { expectedCrons, staleAfterMs, type CronJobHealth } from "@/lib/cronHealth";
 import { scrubMoney } from "@/lib/text";
+import { RERUN_LABEL } from "@/lib/topazRerun";
 import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import { listAssignees, viewerAssigneeKey, type Assignee } from "@/lib/assignees";
 import { syntheticClientIds } from "@/lib/syntheticClients";
@@ -135,6 +136,8 @@ export type DeskAction =
   | { kind: "confirm"; taskId: string }
   /** the photographer brief's own Send brief now; `resend` only when one already went */
   | { kind: "brief-send"; teamMemberId: string; day: string; name: string; resend: boolean }
+  /** "Run Topaz again" (Oct 23 2026): a finished Topaz file not sent yet (readyToSend's offer) */
+  | { kind: "topaz-rerun"; jobId: string; street: string; video: string; credits: number | null; limit: number | null }
   | { kind: "link"; label: string; href: string };
 
 export type AssetLine = {
@@ -151,6 +154,9 @@ export type AssetLine = {
   /** context, never a checklist: what the free photo check found, who approved */
   note: string | null;
   action: DeskAction | null;
+  /** a second control for the same asset, after `action` in the side panel
+   *  (Oct 23 2026: "Run Topaz again" beside a video's send) */
+  more?: DeskAction[];
 };
 
 export type PrepVisit = {
@@ -244,7 +250,7 @@ export type DeskSection = {
   now: DeskItem[];
   waiting: DeskItem[];
   ok: DeskItem[];
-  /** quiet lines that are not actions ("2 videos finishing the 1080p pass") */
+  /** quiet lines that are not actions ("2 videos finishing the Topaz pass") */
   quiet: { text: string; href: string | null }[];
   unavailable: string[];
 };
@@ -820,6 +826,9 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
           : { kind: "link", label: "Open in Videos", href: r.reviewHref ?? "/review" },
       });
     }
+    // Run Topaz again (Jordan, Oct 23 2026) beside the video's send, wherever
+    // the board offers it: a finished or held Topaz file not sent yet.
+    if (r.rerun) a.more = [{ kind: "topaz-rerun", jobId: r.rerun.jobId, street: clean(r.street), video: clean(r.label), credits: r.rerun.credits, limit: r.rerun.limit }];
     const g = groupOf(r.projectId, "video", r.street, r.clientName);
     g.aryeoUrl = g.aryeoUrl ?? r.aryeoUrl;
     g.assets.push(a);
@@ -859,7 +868,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     const line = photosReady && planReady ? "Photos + floor plan ready"
       : needs.length === 1 ? lead.status
       : `${lead.status} · ${needs.filter((a) => a !== lead).map((a) => a.label.toLowerCase()).join(", ")} too`;
-    const actions = [...needs.map((a) => a.action).filter((x): x is DeskAction => !!x)];
+    // Each asset's action, then its second control (Run Topaz again after a video's send).
+    const actions = [...needs.flatMap((a) => [a.action, ...(a.more ?? [])]).filter((x): x is DeskAction => !!x)];
     push({
       id: g.id, section: "deliver", group: g.group, state: "now",
       title: g.street, line, reason: g.assets.map((a) => `${a.label}: ${a.status}`).join(" · "), client: g.client, who: "You",
@@ -874,7 +884,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   if (photosInProgress) quiet.deliver.push({ text: `${plural(photosInProgress, "photo set")} in editing, checks or delivery`, href: "/ops/photo-delivery" });
   if (plansOnTheirWay) quiet.deliver.push({ text: `${plural(plansOnTheirWay, "floor plan or tour", "floor plans and tours")} on the way`, href: "/ops/photo-delivery" });
   if (uploading) quiet.deliver.push({ text: `${plural(uploading, "video")} uploading to Aryeo`, href: "/review" });
-  if (finishing) quiet.deliver.push({ text: `${plural(finishing, "video")} finishing the 1080p pass`, href: "/review" });
+  if (finishing) quiet.deliver.push({ text: `${plural(finishing, "video")} finishing the Topaz pass`, href: "/review" });
 
   // =====================================================================
   // CLIENT COMMUNICATIONS: genuinely waiting on us (the comms scan already
@@ -1526,6 +1536,7 @@ export function actionLabel(a: DeskAction): string {
     case "remind": return "Remind";
     case "confirm": return "Confirm";
     case "brief-send": return a.resend ? "Resend brief" : "Send brief";
+    case "topaz-rerun": return RERUN_LABEL;
     case "link": return a.label;
   }
 }

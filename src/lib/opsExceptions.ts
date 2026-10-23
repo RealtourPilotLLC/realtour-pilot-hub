@@ -118,7 +118,7 @@ export const EXCEPTION_LABEL: Record<ExceptionKind, string> = {
   "overdue-followup": "Follow-up date passed",
   "stalled-render": "Render stuck at the provider",
   "unsent-replacement": "Approved replacement, not sent",
-  "unverified-render": "1080p file held — sound not verified",
+  "unverified-render": "Topaz file held — sound not verified",
   "library-missing": "Video missing from the client's library",
   "reopened-work": "Reopened work",
   "unmapped-scope": "Product nobody has mapped",
@@ -611,8 +611,8 @@ export async function opsExceptionsBoard(opts: { now?: Date; includeTest?: boole
       severity: hours >= 24 ? "high" : "medium",
       title: streetOf(j.project?.title),
       why: j.error
-        ? `The 1080p pass has not moved in ${hours}h — ${j.error.slice(0, 90)}`
-        : `The 1080p pass has been "${j.state}" for ${hours}h`,
+        ? `The Topaz pass has not moved in ${hours}h — ${j.error.slice(0, 90)}`
+        : `The Topaz pass has been "${j.state}" for ${hours}h`,
       owner: "Kyle",
       nextAction: "Try the pass again on the Ready-to-send row, or send the editor's export",
       href: `/edit/${j.projectId}`,
@@ -675,11 +675,11 @@ export async function opsExceptionsBoard(opts: { now?: Date; includeTest?: boole
       // that is worth doing today.
       severity: hours >= 24 ? "high" : "medium",
       title: streetOf(j.project?.title),
-      why: `Version ${j.submission?.round ?? "?"} came back from the 1080p pass but its sound couldn't be verified, so it hasn't gone to Kyle`,
+      why: `Version ${j.submission?.round ?? "?"} came back from the Topaz pass but its sound couldn't be verified, so it hasn't gone to Kyle`,
       // The creative reviewer's call — whoever reviewed this cut, else the
       // board's approver line (which says out loud when nobody is named).
       owner: reviewer ?? verdictOwner,
-      nextAction: "Listen to the 1080p file or keep the original",
+      nextAction: "Listen to the Topaz file or keep the original",
       // The listen / keep-original control (HeldRender) is on the Video Review
       // Room's Held rows. "/#video-review" forwarded to the checklist's
       // Deliveries group, which has neither (Oct 20 2026, audit A5).

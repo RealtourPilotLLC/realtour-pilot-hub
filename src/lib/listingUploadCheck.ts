@@ -69,7 +69,7 @@ export async function recordUploadsSeenOnListing(listingId: string, listing: Lis
   const boards = await Promise.all(projectIds.map((projectId) => readyToSend({ projectId, recordFollowUpHealth: false, includeNoticeIncidents: false })));
   const rows = boards.flatMap((b) => b.ready);
   if (!rows.length) return none("nothing on the card for this listing");
-  if (boards.some((b) => b.rendering.length > 0)) return none("a video on this listing is still in the 1080p pass — left for a person");
+  if (boards.some((b) => b.rendering.length > 0)) return none("a video on this listing is still in the Topaz pass — left for a person");
   if (rows.some((r) => r.deliveryDestination === "client-portal" || (!r.deliveryDestination && r.monthlyProgram))) return none("a portal video is on this listing — left for a person");
   if (rows.some((r) => r.uploaded)) return none("an upload is already recorded here and waiting for Aryeo's delivery");
   if (rows.some((r) => r.listingMissing || !r.uploadFingerprint)) return none("a video here has no exact finished file to record — left for a person");

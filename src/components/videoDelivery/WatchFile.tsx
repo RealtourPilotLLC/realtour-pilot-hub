@@ -22,7 +22,7 @@ export function WatchFile({ href, fileName, isRender }: { href: string; fileName
         <div className="space-y-2 rounded-lg border border-border bg-surface-2/40 p-2">
           <div className="flex items-center justify-between gap-2 px-1">
             <p className="min-w-0 truncate text-xs text-muted" title={fileName}>
-              {isRender ? "The 1080p file that goes to Aryeo" : "The editor's file that goes to Aryeo"} · <span className="font-mono">{fileName}</span>
+              {isRender ? "The Topaz file that goes to Aryeo" : "The editor's file that goes to Aryeo"} · <span className="font-mono">{fileName}</span>
             </p>
             <button
               type="button"

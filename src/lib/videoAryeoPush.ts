@@ -394,7 +394,7 @@ async function gates(submissionId: string, opts: { asks: boolean; sound: boolean
   }
   if (!cut.project.aryeoListingId) return { ok: false, kind: "hold", gate: "listing", why: "This job has no Aryeo listing linked yet. Open the job and press Refresh from Aryeo." };
   const j = cut.topazJob;
-  if (!j) return { ok: false, kind: "manual", why: "No 1080p pass ran for this video, so the hub does not send it on its own. Upload it by hand." };
+  if (!j) return { ok: false, kind: "manual", why: "No Topaz pass ran for this video, so the hub does not send it on its own. Upload it by hand." };
   if (j.state === "held") {
     const reason = heldReason(j.outputCheckJson);
     return { ok: false, kind: "hold", gate: "sound", why: `Sound check held this file${reason ? `: ${reason}` : ": its sound could not be checked"}. Listen to it on the delivery queue.` };
@@ -412,12 +412,12 @@ async function gates(submissionId: string, opts: { asks: boolean; sound: boolean
     }
     file = { path: cut.finalPath, durationSec: j.sourceDurationSec ?? null, approxBytes: cut.sizeBytes ?? j.sourceSizeBytes ?? null };
   } else {
-    if (j.state === "failed" || j.state === "skipped" || j.state === "cancelled") return { ok: false, kind: "manual", why: "The 1080p pass did not produce a file. Upload the editor's export by hand." };
-    if (j.state !== "done" || !j.finalPath || !j.savedAt) return { ok: false, kind: "not-yet", why: "The 1080p pass has not finished yet." };
+    if (j.state === "failed" || j.state === "skipped" || j.state === "cancelled") return { ok: false, kind: "manual", why: "The Topaz pass did not produce a file. Upload the editor's export by hand." };
+    if (j.state !== "done" || !j.finalPath || !j.savedAt) return { ok: false, kind: "not-yet", why: "The Topaz pass has not finished yet." };
     if (!VERIFIED.has(j.outputCheck ?? "")) {
       if (j.outputCheck === "unverified") return { ok: false, kind: "hold", gate: "sound", why: "Sound check held this file: it was never confirmed. Listen to it on the delivery queue." };
       if (j.outputCheck === "resolved-original") return { ok: false, kind: "manual", why: "A reviewer kept the editor's original, so the hub does not send it on its own. Upload it by hand." };
-      return { ok: false, kind: "manual", why: "The 1080p file was never checked, so the hub does not send it on its own. Upload it by hand." };
+      return { ok: false, kind: "manual", why: "The Topaz file was never checked, so the hub does not send it on its own. Upload it by hand." };
     }
     file = { path: j.finalPath, durationSec: j.sourceDurationSec ?? null, approxBytes: j.sourceSizeBytes ?? null };
   }
@@ -463,13 +463,13 @@ const durationMatches = (want: number | null, got: number | null) => want == nul
 async function tempLink(path: string): Promise<{ link: string; size: number | null }> {
   const { dbx } = await import("@/lib/integrations/dropbox");
   const r = await dbx<{ link?: string; metadata?: { size?: number } }>("files/get_temporary_link", { path });
-  if (!r.link) throw new Error("Dropbox did not give a link to the 1080p file.");
+  if (!r.link) throw new Error("Dropbox did not give a link to the Topaz file.");
   return { link: r.link, size: typeof r.metadata?.size === "number" ? r.metadata.size : null };
 }
 
 async function readRange(link: string, start: number, end: number): Promise<Uint8Array> {
   const res = await fetch(link, { headers: { Range: `bytes=${start}-${end}` }, signal: AbortSignal.timeout(120_000) });
-  if (res.status !== 206 && res.status !== 200) throw new Error(`Dropbox answered ${res.status} for a part of the 1080p file.`);
+  if (res.status !== 206 && res.status !== 200) throw new Error(`Dropbox answered ${res.status} for a part of the Topaz file.`);
   const buf = new Uint8Array(await res.arrayBuffer());
   const want = end - start + 1;
   // A 200 is the whole file (a server that ignored the range): take the slice.
@@ -860,7 +860,7 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
       }
       // The file's size, from Dropbox (the multipart upload needs it exactly).
       const { size } = await tempLink(r.file.path);
-      if (!size) return fail(r, "Dropbox did not say how big the 1080p file is.");
+      if (!size) return fail(r, "Dropbox did not say how big the Topaz file is.");
       r.file.size = size;
       r.before = listed.map((v) => v.id);
       r.state = "SENDING";
@@ -884,7 +884,7 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
                 u.token = got.token;
                 u.fromUrlAt = new Date().toISOString();
               }
-              r.note = "Aryeo's upload service is fetching the 1080p file.";
+              r.note = "Aryeo's upload service is fetching the Topaz file.";
             } catch (e) {
               const err = e as Error & { kind?: string };
               if (err.kind === "transient" && ++u.tries < 3) {
@@ -914,7 +914,7 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
               return r;
             }
             const done_ = st.done != null && st.total ? ` (${mb(st.done)} of ${mb(st.total)} MB)` : "";
-            r.note = `Aryeo's upload service is fetching the 1080p file${done_}.`;
+            r.note = `Aryeo's upload service is fetching the Topaz file${done_}.`;
             if (ctx.deadline - Date.now() < 15_000) return r.note === r0.note ? null : r;
             await sleep(3_000);
           }
@@ -928,7 +928,7 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
             u.parts = started.parts;
             u.partsDone = 0;
             u.mpStartedAt = new Date().toISOString();
-            r.note = `Sending the 1080p file to Aryeo in ${started.parts.length} parts.`;
+            r.note = `Sending the Topaz file to Aryeo in ${started.parts.length} parts.`;
             return r;
           }
           if (u.partsDone < u.parts.length) {
@@ -954,7 +954,7 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
               u.partsDone++;
               sentThisPass++;
             }
-            r.note = `Sending the 1080p file to Aryeo: ${u.partsDone} of ${u.parts.length} parts (about ${mb(Math.min(size, u.partsDone * P))} of ${mb(size)} MB).`;
+            r.note = `Sending the Topaz file to Aryeo: ${u.partsDone} of ${u.parts.length} parts (about ${mb(Math.min(size, u.partsDone * P))} of ${mb(size)} MB).`;
             if (u.partsDone < u.parts.length) return r;
           }
           await W.uploadcareMultipartComplete(u.mpUuid);
@@ -1557,7 +1557,7 @@ const TONE: Record<VideoPushState, VideoPushLine["tone"]> = {
 function stateWords(r: VideoPushRun): string {
   switch (r.state) {
     case "PREPARING": return "Getting ready to upload it to Aryeo.";
-    case "SENDING": return "Uploading the 1080p file to Aryeo.";
+    case "SENDING": return "Uploading the Topaz file to Aryeo.";
     case "ADDING": return "Adding the video to the Aryeo listing.";
     case "CHECKING": return "On its way: Aryeo is processing the video.";
     case "REPLACING": return "Taking the earlier version off the listing.";

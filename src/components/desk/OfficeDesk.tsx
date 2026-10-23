@@ -12,6 +12,7 @@ import { PhotoImg } from "@/components/photoDelivery/PhotoImg";
 import { SendVideo } from "@/components/videoDelivery/SendVideo";
 import { PushControls } from "@/components/videoDelivery/PushControls";
 import { NotTold } from "@/components/ops/NotTold";
+import { RerunTopaz } from "@/components/ops/RerunTopaz";
 import { CommsDismissButton } from "@/components/tasks/ChecklistButtons";
 import { OldItemActions } from "@/components/home/OldItemActions";
 import { AskQuickActions } from "@/components/home/AskQuickActions";
@@ -112,7 +113,7 @@ export function OfficeDesk({ desk, includeTest = false, initialOpen = null, init
       <DailyChecksBar desk={desk} initial={initialChecks} />
 
       <div className="grid items-start gap-4 lg:grid-cols-2" data-desk-grid>
-        <ReviewDeliver s={sec("deliver")} onOpen={show} />
+        <ReviewDeliver s={sec("deliver")} onOpen={show} readOnly={desk.readOnly} />
         <Communications s={sec("comms")} onOpen={show} />
         <Shoots s={sec("shoots")} onOpen={show} initialDay={initialDay} includeTest={includeTest} />
         <FollowUps s={sec("followups")} onOpen={show} backlog={desk.backlog} includeTest={includeTest} />
@@ -266,13 +267,16 @@ function Thumb({ i, icon }: { i: DeskItem; icon: "photo" | "video" | "shoot" }) 
   );
 }
 
-function ReviewDeliver({ s, onOpen }: { s: DeskSection; onOpen: (i: DeskItem) => void }) {
+function ReviewDeliver({ s, onOpen, readOnly }: { s: DeskSection; onOpen: (i: DeskItem) => void; readOnly: boolean }) {
   const [all, setAll] = useState(false);
   const rows = all ? s.now : s.now.slice(0, ROWS_SHOWN);
   const media = rows.filter((i) => i.group === "media");
   const video = rows.filter((i) => i.group === "video");
+  // Run Topaz again on an approved video's row (Jordan, Oct 23 2026), under
+  // the row's own button; the side panel carries the same control.
+  const reruns = (i: DeskItem) => (readOnly || i.group !== "video" ? [] : i.actions.filter((a): a is Extract<DeskAction, { kind: "topaz-rerun" }> => a.kind === "topaz-rerun"));
   const row = (i: DeskItem) => (
-    <li key={i.id} data-desk-item={i.id} className="flex items-center gap-3 py-2.5">
+    <li key={i.id} data-desk-item={i.id} className="flex flex-wrap items-center gap-3 py-2.5">
       <Thumb i={i} icon={i.group === "video" ? "video" : "photo"} />
       <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 text-left">
         <span className="block font-semibold leading-snug [overflow-wrap:anywhere]">{i.title}</span>
@@ -280,6 +284,11 @@ function ReviewDeliver({ s, onOpen }: { s: DeskSection; onOpen: (i: DeskItem) =>
         <span className="block text-[13px] text-muted">{[i.client && `Client: ${i.client}`, i.dueWords].filter(Boolean).join(" · ")}</span>
       </button>
       <RowButton i={i} onOpen={onOpen} />
+      {reruns(i).length > 0 && (
+        <div className="basis-full sm:pl-[6.75rem]" data-row-rerun={i.id}>
+          {reruns(i).map((a) => <RerunTopaz key={a.jobId} jobId={a.jobId} street={a.street} credits={a.credits} limit={a.limit} video={reruns(i).length > 1 ? a.video : undefined} />)}
+        </div>
+      )}
     </li>
   );
   return (
@@ -627,6 +636,8 @@ function ActionControl({ a, item, desk }: { a: DeskAction; item: DeskItem; desk:
       return <RemindPhotographerButton projectId={a.projectId} street={a.street} view={a.view} showMissing />;
     case "confirm":
       return <ConfirmControls taskId={a.taskId} />;
+    case "topaz-rerun":
+      return <RerunTopaz jobId={a.jobId} street={a.street} credits={a.credits} limit={a.limit} video={item.actions.filter((x) => x.kind === "topaz-rerun").length > 1 ? a.video : undefined} />;
     case "brief-send":
       return <BriefSend teamMemberId={a.teamMemberId} day={a.day} name={a.name} resend={a.resend} />;
     case "link":

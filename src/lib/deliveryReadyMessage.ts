@@ -63,7 +63,7 @@ export function deliveryReadyMessage(video: ReadyVideo, base: string) {
     video.file.source, video.file.fileName, stage,
   ])).digest("hex").slice(0, 32);
   const portalTitle = !step ? "Ready for portal delivery"
-    : step.action === "run-1080p" || step.action === "retry-1080p" ? "1080p file needed"
+    : step.action === "run-1080p" || step.action === "retry-1080p" ? "Topaz file needed"
         : step.action === "retry-publication" ? "Portal publication"
           : "Needs a new upload";
   const title = `${uploaded ? "Uploaded — send now" : unlinked ? "Link the Aryeo listing" : pressable ? "Ready to send" : aryeo ? "Ready — upload now" : portalTitle} · ${video.street}`;
@@ -72,9 +72,9 @@ export function deliveryReadyMessage(video: ReadyVideo, base: string) {
   const portalSteps = !step
     ? "This approved video goes to the client's portal. Open the delivery queue to see its next step."
     : step.action === "run-1080p"
-        ? `${step.says} Press Run 1080p on the delivery queue.`
+        ? `${step.says} Press Run Topaz on the delivery queue.`
         : step.action === "retry-1080p"
-          ? `${step.says} Press Retry 1080p on the delivery queue.`
+          ? `${step.says} Press Retry Topaz on the delivery queue.`
           : step.action === "retry-publication"
             ? `${step.says} Press Retry publication on the delivery queue if it hasn't reached the portal.`
             : step.says;

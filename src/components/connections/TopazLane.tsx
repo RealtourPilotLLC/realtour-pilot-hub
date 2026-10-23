@@ -118,10 +118,10 @@ export function TopazLane({ stats, jobs }: { stats: TopazLaneStats | null; jobs:
       <section className="rounded-2xl border bg-surface p-4">
         <div className="mb-2 flex items-center gap-2">
           <Film className="size-4 text-muted" />
-          <h2 className="text-sm font-semibold">1080p video pass</h2>
+          <h2 className="text-sm font-semibold">Topaz pass</h2>
         </div>
         <p className="text-[13px] leading-relaxed text-muted">
-          We couldn&rsquo;t read how the 1080p pass is doing just now — reload the page to try again. Videos already
+          We couldn&rsquo;t read how the Topaz pass is doing just now — reload the page to try again. Videos already
           running are unaffected; this panel is only the view of them.
         </p>
       </section>
@@ -152,7 +152,7 @@ export function TopazLane({ stats, jobs }: { stats: TopazLaneStats | null; jobs:
     <section className="rounded-2xl border bg-surface p-4">
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <Film className="size-4 text-muted" />
-        <h2 className="text-sm font-semibold">1080p video pass</h2>
+        <h2 className="text-sm font-semibold">Topaz pass</h2>
         {!connected ? (
           <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-muted">Not connected</span>
         ) : enabled ? (
@@ -169,7 +169,7 @@ export function TopazLane({ stats, jobs }: { stats: TopazLaneStats | null; jobs:
 
       {/* What it does, in one line, before any numbers. */}
       <p className="text-[13px] leading-relaxed text-muted">
-        When you approve a cut in the Review Room, the hub sends that video to Topaz, gets a cleaned-up 1080p version back,
+        When you approve a cut in the Review Room, the hub sends that video to Topaz, gets the cleaned-up Topaz file back,
         and puts it in the job&rsquo;s <b className="font-medium text-foreground/80">05-Final-Video</b> folder next to the
         editor&rsquo;s original. Then it gives Kyle a card to upload and deliver it.
       </p>
@@ -193,7 +193,7 @@ export function TopazLane({ stats, jobs }: { stats: TopazLaneStats | null; jobs:
         <p className="mt-3 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[13px] leading-relaxed">
           Topaz is connected, but the pass is switched off — approving a cut queues nothing. Turn it on in{" "}
           <Link href="/settings#topaz" className="font-semibold text-brand hover:underline">
-            Settings → 1080p video pass
+            Settings → Topaz pass
           </Link>{" "}
           when you&rsquo;re ready for the first render.
         </p>

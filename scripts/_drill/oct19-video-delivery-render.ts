@@ -75,9 +75,9 @@ async function main() {
     // The hub's own runs, as the push writes them.
     const run = (sid: string, patch: Record<string, unknown>) =>
       prisma.appSetting.create({ data: { key: `video_aryeo_push:${sid}`, value: JSON.stringify({ id: "r", submissionId: sid, projectId: "", listingId: "", state: "SENDING", note: null, hold: null, wait: null, mode: "deliver", updatedAt: new Date().toISOString(), upload: { parts: [] }, ...patch }) } });
-    await run(sending.sub!, { state: "SENDING", note: "Sending the 1080p file to Aryeo: 10 of 23 parts (about 52 of 113 MB)." });
+    await run(sending.sub!, { state: "SENDING", note: "Sending the Topaz file to Aryeo: 10 of 23 parts (about 52 of 113 MB)." });
     await run(held.sub!, { state: "HELD", note: "Sound check held this file: this video has no sound. Ask the editor for a new export.", hold: { gate: "sound", why: "Sound check held this file: this video has no sound. Ask the editor for a new export.", by: null, at: new Date().toISOString(), resume: "PREPARING" } });
-    await run(hand.sub!, { state: "FAILED", note: "The 1080p file was never checked, so the hub does not send it on its own. Upload it by hand." });
+    await run(hand.sub!, { state: "FAILED", note: "The Topaz file was never checked, so the hub does not send it on its own. Upload it by hand." });
     // Upload to Aryeo only (Oct 23 2026): on the listing, waiting for Send now.
     const onlyUp = await mk("7 Uploaded Only Rd", { approved: true });
     const { UPLOADED_ONLY_SAYS } = await import("@/lib/videoAryeoPush");
@@ -112,7 +112,7 @@ async function main() {
     c.head("2 · what it says");
     c.ok("the header: Video Review Room, to review, ready to send, with editors (late)", /Video Review Room/.test(t) && /\d+ to review · \d+ ready to send · \d+ with editors \(\d+ late\)/.test(t), t.slice(0, 300));
     c.ok("the late video is under With the editors, first, with how late", /With the editors \d+, \d+ late (?:Open the Editing Room )?1 Late Lane/.test(t) && /Late by \d+ h/.test(t), (t.match(/With the editors .{0,200}/) ?? [""])[0]);
-    c.ok("a started run shows its three steps and its own words", /3 Sending St/.test(t) && /Uploading On the listing Sent/.test(t) && /Sending the 1080p file to Aryeo: 10 of 23 parts/.test(t) && /aria-current="step"[^>]*>Uploading</.test(owner));
+    c.ok("a started run shows its three steps and its own words", /3 Sending St/.test(t) && /Uploading On the listing Sent/.test(t) && /Sending the Topaz file to Aryeo: 10 of 23 parts/.test(t) && /aria-current="step"[^>]*>Uploading</.test(owner));
     c.ok("a held run says why, under Held", /Held \(\d+\).*4 Held Ct/.test(t) && /Sound check held this file: this video has no sound/.test(t));
     c.ok("a run the hub will not send says so, with the hand path open", /5 By Hand Rd/.test(t) && /never checked, so the hub does not send it on its own/.test(t) && /Done it by hand\?/.test(t));
     c.ok("a row nobody pressed offers Upload to Aryeo and send", /6 Fresh St.{0,400}Upload to Aryeo and send/.test(t));
@@ -134,7 +134,7 @@ async function main() {
     const { ReadyToSendCard } = await import("@/components/ops/ReadyToSendCard");
     const card = await render("the delivery card", () => createElement(ReadyToSendCard as never, { board } as never));
     const ct = text(card);
-    c.ok("a started run: the card carries its line and a link to the Video Review Room, not 'Upload this version to Aryeo'", /Sending the 1080p file to Aryeo/.test(ct) && /href="\/review"/.test(card) && /Video Review Room/.test(ct) && !/Upload this version to Aryeo and deliver the listing/.test(ct), ct.slice(0, 400));
+    c.ok("a started run: the card carries its line and a link to the Video Review Room, not 'Upload this version to Aryeo'", /Sending the Topaz file to Aryeo/.test(ct) && /href="\/review"/.test(card) && /Video Review Room/.test(ct) && !/Upload this version to Aryeo and deliver the listing/.test(ct), ct.slice(0, 400));
     const freshBoard = await readyToSend({ projectId: fresh.p.id });
     const card2 = await render("the delivery card (a row nobody pressed)", () => createElement(ReadyToSendCard as never, { board: freshBoard } as never));
     const ct2 = text(card2);

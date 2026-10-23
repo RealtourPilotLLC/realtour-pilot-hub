@@ -138,7 +138,7 @@ export const EXPORT_SPEC = {
   // what every social platform wants anyway, so it is now part of the brief,
   // and a file that arrives with uncompressed audio skips the pass rather than
   // going out silent.
-  audio: "Set Audio Format to AAC, not Linear PCM. Uncompressed audio can't go through our 1080p pass, and a video that loses its sound can't go out.",
+  audio: "Set Audio Format to AAC, not Linear PCM. Uncompressed audio can't go through our Topaz pass, and a video that loses its sound can't go out.",
   why: "Everything we deliver goes out at 1080p, and a 4K master costs about four times as much to finish — for a file that ends up 1080p anyway.",
 } as const;
 

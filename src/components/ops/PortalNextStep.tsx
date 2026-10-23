@@ -36,7 +36,7 @@ export function PortalNextStep({ submissionId, street, step }: { submissionId: s
     if (r.ok) later(() => router.refresh(), repaint);
   });
 
-  const label = step.action === "run-1080p" ? "Run 1080p" : step.action === "retry-1080p" ? "Retry 1080p" : step.action === "retry-publication" ? "Retry publication" : null;
+  const label = step.action === "run-1080p" ? "Run Topaz" : step.action === "retry-1080p" ? "Retry Topaz" : step.action === "retry-publication" ? "Retry publication" : null;
   return (
     <div className="mt-2 min-w-0 space-y-2">
       <p className={step.blocked ? "text-sm font-medium text-warning" : "text-sm text-foreground/85"}>{step.says}</p>

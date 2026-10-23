@@ -480,7 +480,7 @@ export function classifyDelivery(input: DeliveryInput): DeliveryClassification {
         lane,
         verdict: "IN_PRODUCTION",
         why:
-          `${input.renderingCutsUnsent} approved cut${input.renderingCutsUnsent === 1 ? " is" : "s are"} still in the 1080p lane — ` +
+          `${input.renderingCutsUnsent} approved cut${input.renderingCutsUnsent === 1 ? " is" : "s are"} still in the Topaz pass — ` +
           `there is no finished file to be owed yet` +
           (dropboxFinal === null ? ", and no Dropbox read on this job to say otherwise" : "") +
           partly,
@@ -576,7 +576,7 @@ export function classifyDelivery(input: DeliveryInput): DeliveryClassification {
         : finalVerdict === "DELIVERED"
           ? "Confirmed — every ordered category is live on a listing Aryeo reports delivered."
           : finalVerdict === "IN_PRODUCTION"
-            ? "Nothing owed yet — the work is still in the 1080p lane."
+            ? "Nothing owed yet — the work is still in the Topaz pass."
             : "Unconfirmed — nothing this pass can read speaks to what was ordered.";
   const note =
     problems.length === 0

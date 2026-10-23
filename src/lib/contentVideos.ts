@@ -136,7 +136,7 @@ export async function stampImpliedPublicationGates(opts: { projectIds?: string[]
     });
     if (w.count === 1) {
       stamped++;
-      await prisma.activity.create({ data: { projectId: r.projectId, type: "SYSTEM", body: `Version ${r.round} was approved before this job was linked to its content month. Its portal release now waits for the checked 1080p file, like every monthly video.` } }).catch(() => {});
+      await prisma.activity.create({ data: { projectId: r.projectId, type: "SYSTEM", body: `Version ${r.round} was approved before this job was linked to its content month. Its portal release now waits for the checked Topaz file, like every monthly video.` } }).catch(() => {});
     }
   }
   return stamped;
