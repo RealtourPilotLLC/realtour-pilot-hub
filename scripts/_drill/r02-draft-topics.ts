@@ -556,7 +556,8 @@ async function run(base: { draftActions: string; filmedTopics: string; page: str
   c.ok("the portal restores ticks through restoredTopicTicks with the unavailable flag",
     /const ticksFrom = \(ids: string\[\]\) =>\s*restoredTopicTicks\(\{ unavailable: topicsUnavailable,/.test(portalSrc));
   c.ok("the portal holds the video half while the list is unavailable (the reload line in the missing list)",
-    portalSrc.includes(`if (vOn && topicsUnavailable) missing.push("reload the page (this job's topic list didn't load)");`));
+    // Oct 23 2026: the video half's checks are gathered per half (vm), then named; same line.
+    portalSrc.includes(`if (vOn && topicsUnavailable) vm.push("reload the page (this job's topic list didn't load)");`));
   c.ok("the portal tells the photographer, in plain words", portalSrc.includes("This job&rsquo;s topic list didn&rsquo;t load. Reload the page before you submit the video — the topics you ticked earlier are kept."));
   c.ok("the portal's save goes through settleDraftSave (the device copy goes only on 'saved')",
     /const settled = settleDraftSave\(r, device\);/.test(portalSrc) && !/if \(r\.ok\) \{\s*revRef\.current = r\.revision;\s*lastSavedJson\.current = json;\s*clearMirror\(\);/.test(portalSrc));

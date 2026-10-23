@@ -53,7 +53,8 @@ export function meaningfulBrief(text: string | null | undefined): string {
     .split("\n")
     .filter((line) => {
       const t = line.trim();
-      return t && !/^STYLE:/.test(t) && !/^COLOR PROFILE:/.test(t) && !BOILERPLATE_HEADINGS.has(t);
+      // Oct 23 2026: a song request (lib/songRequest) is never the photographer's direction for the edit.
+      return t && !/^STYLE:/.test(t) && !/^COLOR PROFILE:/.test(t) && !/^SONG (?:REQUEST|TITLE|LINK|START):/i.test(t) && !BOILERPLATE_HEADINGS.has(t);
     })
     .join("")
     .trim();

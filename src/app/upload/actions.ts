@@ -445,6 +445,20 @@ export async function finalizeUpload(
     /** New tabs carry an opaque exact-attempt receipt; older tabs keep their existing contract. */
     attemptId?: string;
     payloadFingerprint?: string;
+    /**
+     * Oct 23 2026 (the upload-page revamp): what the submitter says they
+     * captured ("What did you capture?"), recorded on their own part of the
+     * shoot (lib/sharedShoot). It never changes what this submit hands off,
+     * gates or stamps. Absent on an older tab.
+     */
+    captured?: string[];
+    videoDrone?: boolean;
+    /**
+     * Oct 23 2026: instructions for a video ADDED ON SITE that has no video
+     * row yet (the office adds it to the order first), keyed by its Added at
+     * the shoot card. Kept until the row exists (lib/addedOnSite).
+     */
+    addedVideoInstructions?: Record<string, string>;
   },
 ): Promise<{
   pdfPath?: string;
@@ -786,7 +800,8 @@ export async function finalizeUpload(
         .split("\n")
         .filter((l) => {
           const t = l.trim();
-          return t && !/^STYLE:/.test(t) && !/^COLOR PROFILE:/.test(t) &&
+          // Oct 23 2026: a song request line is not the photographer's direction either (lib/songRequest).
+          return t && !/^STYLE:/.test(t) && !/^COLOR PROFILE:/.test(t) && !/^SONG (?:REQUEST|TITLE|LINK|START):/i.test(t) &&
             !["VISION FOR THE EDIT", "SUMMARY", "SHOTS THAT MUST BE SHOWN", "AREAS TO AVOID", "THINGS TO AVOID", "REALTOR REQUESTS", "ADDITIONAL NOTES", "INTRO SCRIPT", "EDITING NOTES", "SCRIPT FOR THIS VIDEO", "SONG OR MUSIC"].includes(t);
         })
         .join("")
@@ -847,6 +862,22 @@ export async function finalizeUpload(
     }
     if (wantsVideoGate && data.scriptConfirm?.state === "edited" && !data.scriptConfirm.script?.trim()) {
       return { blocked: "You marked the script as changed but the script box is empty — paste what was actually filmed, or choose “Delivered as written.”" };
+    }
+  }
+
+  // A REQUESTED SONG NEEDS SOMETHING TO FIND IT BY (Oct 23 2026,
+  // lib/songRequest): a title or a link, on every video this submit writes.
+  // "No request" is an answer; a request with neither is not.
+  if (scope !== "photos") {
+    const { songOfText, songProblem } = await import("@/lib/songRequest");
+    const texts: [string, string | undefined][] = [
+      ["this video", data.videoInstructions],
+      ...Object.values(data.laterVideoInstructions ?? {}).map((t, i): [string, string] => [`video ${i + 2}`, t]),
+      ...Object.values(data.addedVideoInstructions ?? {}).map((t): [string, string] => ["the video added on site", t]),
+    ];
+    for (const [name, t] of texts) {
+      const problem = typeof t === "string" ? songProblem(songOfText(t), name) : null;
+      if (problem) return { blocked: `Add ${problem}.` };
     }
   }
 
@@ -1126,6 +1157,41 @@ export async function finalizeUpload(
       .then((m) => m.saveLaterVideoInstructions(projectId, clean, submitterName))
       .catch((e: unknown) => { laterVideosError = (e as Error)?.message ?? "unknown error"; });
     if (laterVideosError) console.error(`[upload] ${projectId}: the later videos' instructions did not save: ${laterVideosError}`);
+  }
+  // Oct 23 2026: a video added on site (no row until the office adds it to the
+  // order) keeps its instructions until the row exists (lib/addedOnSite).
+  if (videoPart && data.addedVideoInstructions && typeof data.addedVideoInstructions === "object") {
+    const { saveAddedVideoInstructions } = await import("@/lib/addedOnSite");
+    for (const [taskId, text] of Object.entries(data.addedVideoInstructions).slice(0, 10)) {
+      if (typeof taskId !== "string" || typeof text !== "string" || !text.trim()) continue;
+      const r = await saveAddedVideoInstructions(projectId, { taskId, text, byName: submitterName, actor: receiptActor }).catch((e: Error) => ({ ok: false, message: e.message }));
+      if (!r.ok) laterVideosError = laterVideosError ?? r.message;
+    }
+  }
+  // Oct 23 2026: this submit, on the submitter's own part of the shoot
+  // (lib/sharedShoot). One person's submit is never another's. Best-effort:
+  // the handoff above is the record that counts, and nothing reads this for
+  // pay or a KPI.
+  if (Array.isArray(data.captured)) {
+    try {
+      const { photographerMemberId } = await import("@/lib/shoot");
+      const mid = me ? await photographerMemberId(me) : null;
+      if (mid && !me?.impersonating) {
+        const { shootRoster, writeContribution } = await import("@/lib/sharedShoot");
+        const { isServiceKey, halfOfService } = await import("@/lib/sharedShootCore");
+        if ((await shootRoster(projectId)).members.some((m) => m.memberId === mid)) {
+          const captured = data.captured.filter(isServiceKey);
+          const handed = captured.filter((s) => !scope || halfOfService(s) === scope || halfOfService(s) === null);
+          await writeContribution(projectId, { memberId: mid, name: submitterName, actor: receiptActor }, {
+            captured,
+            videoDrone: data.videoDrone === true,
+            submit: { scope: scope ?? "all", services: handed, atISO: nowStamp.toISOString() },
+          });
+        }
+      }
+    } catch (e) {
+      console.warn(`[upload] ${projectId}: the submitter's part was not recorded: ${(e as Error).message}`);
+    }
   }
   try {
   await completeIfWhole();

@@ -155,7 +155,7 @@ put(require.resolve("next/navigation", { paths: [root] }), { useRouter: () => ({
 put(require.resolve("next/link", { paths: [root] }), { __esModule: true, default: (p) => React.createElement("a", { href: p.href, className: p.className }, p.children) });
 const noop = async () => ({ ok: true, message: "" });
 const actions = () => new Proxy({ __esModule: true }, { get: (_t, k) => (k === "__esModule" ? true : k === "then" ? undefined : noop) });
-for (const f of ["src/app/upload/actions.ts", "src/app/upload/draftActions.ts", "src/app/shoot/actions.ts", "src/app/editing/actions.ts", "src/app/editing/workActions.ts", "src/app/portal/actions.ts"]) put(path.join(root, f), actions());
+for (const f of ["src/app/upload/actions.ts", "src/app/upload/draftActions.ts", "src/app/upload/sharedActions.ts", "src/app/shoot/actions.ts", "src/app/editing/actions.ts", "src/app/editing/workActions.ts", "src/app/portal/actions.ts"]) put(path.join(root, f), actions());
 `);
   const runner = path.join(CACHE, "runner.ts");
   fs.writeFileSync(runner, `/* eslint-disable */

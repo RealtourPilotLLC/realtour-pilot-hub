@@ -78,6 +78,7 @@ export function WhatYouSubmitted({
   const videoFacts = [
     brief.style ? `Style: ${brief.style}` : null,
     brief.colorProfile ? `Color profile: ${brief.colorProfile}` : null,
+    brief.song ? `Song: ${brief.song}` : null,
     videosFilmed != null ? `${videosFilmed} video${videosFilmed === 1 ? "" : "s"} filmed` : null,
   ].filter(Boolean) as string[];
   const hasVideo = !brief.empty || videosFilmed != null || !!scriptConfirmNote;
@@ -208,7 +209,7 @@ export function WhatYouSubmitted({
         {/* Oct 22 2026: each later video's own instructions, after video 1's. */}
         {laterVideos.map((v) => {
           const b = parseEditorBriefSections(v.text);
-          const facts = [b.style ? `Style: ${b.style}` : null, b.colorProfile ? `Color profile: ${b.colorProfile}` : null].filter(Boolean) as string[];
+          const facts = [b.style ? `Style: ${b.style}` : null, b.colorProfile ? `Color profile: ${b.colorProfile}` : null, b.song ? `Song: ${b.song}` : null].filter(Boolean) as string[];
           return (
             <Block key={v.number} title={`Video ${v.number}: ${v.label}`}>
               {b.empty ? <p className="text-sm text-warning">No instructions for this video yet.</p> : null}

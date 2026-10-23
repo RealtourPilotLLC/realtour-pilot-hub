@@ -568,13 +568,15 @@ async function main() {
     const portalEl = find(up, "UploadPortal")[0];
     const folders = find(portalEl.props.foldersSlot, "DropboxFolders")[0];
     c.ok("the session's page knows it has topics and no photos (so no Backup Photos folder)", !!portalEl.props.sessionTopics && folders?.props.photosOrdered === false);
-    const { foldersSlot: _slot, onBriefNote: _note, ...rest } = portalEl.props;
-    void _slot; void _note;
-    const tickedProps = { ...rest, foldersSlot: null, draft: { revision: 1, savedAtISO: now.toISOString(), baseHash: null, payload: { ...draftPayload, editorBrief: "", filmedTopicIds: [T1], topicNotes: {} } }, draftRevision: 1 };
+    // Oct 23 2026 (the upload-page revamp): the video's details show once Video is ticked under
+    // "What did you capture?" (here in the draft, as the photographer would); slots are server-rendered.
+    const { foldersSlot: _slot, onBriefNote: _note, slots: _slots, ...rest } = portalEl.props;
+    void _slot; void _note; void _slots;
+    const tickedProps = { ...rest, foldersSlot: null, slots: {}, draft: { revision: 1, savedAtISO: now.toISOString(), baseHash: null, payload: { ...draftPayload, editorBrief: "", filmedTopicIds: [T1], topicNotes: {}, captured: ["video"] } }, draftRevision: 1 };
     const ph = renderToStaticMarkup(createElement(portalEl.type, tickedProps));
     const pht = text(ph);
     c.ok("a ticked topic opens its note at once, asking which clips are which", /aria-label="Note for the editor about Approved by the client"[^>]*placeholder="Which clips are this one\? File names, e\.g\. C0012–C0015 or IMG_4412–4418/.test(ph) || /placeholder="Which clips are this one\? File names[^"]*"[^>]*aria-label="Note for the editor about Approved by the client"/.test(ph));
-    c.ok("the topics lead; the general box comes after and says it applies to all videos", pht.indexOf("Which topics did you film?") >= 0 && pht.indexOf("Which topics did you film?") < pht.indexOf("Instructions for the edit — applies to all videos") && pht.includes("Anything else for the editor? — applies to all videos"));
+    c.ok("the topics lead; the general box comes after and says it applies to all videos", pht.indexOf("Which topics did you film?") >= 0 && pht.indexOf("Which topics did you film?") < pht.indexOf("Instructions for the edit — applies to all videos") && pht.includes("Additional editor notes — applies to all videos"));
     c.ok("the optional boxes fold under 'More for the editor — optional'", /<details[^>]*><summary[^>]*>More for the editor <span[^>]*>— optional<\/span><\/summary>/.test(ph));
     c.ok("no foyer / drone / pool placeholders, no 'forfeits' line, no Backup Photos", !/foyer|drone push-in|over the pool|neighbor's yard/i.test(ph) && !pht.includes("forfeits future premium shoot assignments") && !pht.includes("Backup Photos"));
 

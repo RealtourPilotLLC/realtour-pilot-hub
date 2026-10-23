@@ -119,7 +119,7 @@ put(require.resolve("next/navigation", { paths: [root] }), { useRouter: () => ({
 put(require.resolve("next/link", { paths: [root] }), { __esModule: true, default: (p) => React.createElement("a", { href: p.href, className: p.className }, p.children) });
 const noop = async () => ({ ok: true, message: "" });
 const actions = () => new Proxy({ __esModule: true }, { get: (_t, k) => (k === "__esModule" ? true : k === "then" ? undefined : noop) });
-for (const f of ["src/app/upload/actions.ts", "src/app/upload/draftActions.ts", "src/app/shoot/actions.ts", "src/app/editing/actions.ts"]) put(path.join(root, f), actions());
+for (const f of ["src/app/upload/actions.ts", "src/app/upload/draftActions.ts", "src/app/upload/sharedActions.ts", "src/app/shoot/actions.ts", "src/app/editing/actions.ts"]) put(path.join(root, f), actions());
 `);
   const runner = path.join(CACHE, "render.ts");
   fs.writeFileSync(runner, `/* eslint-disable */
@@ -156,10 +156,14 @@ process.stdout.write("\\n@@TV@@" + JSON.stringify(out));
     fs.rmSync(casesFile, { force: true });
   }
 }
+// Oct 23 2026 (the upload-page revamp): server-rendered slots do not cross
+// the JSON hop either, and the video areas show once Video is ticked under
+// "What did you capture?", as the photographer does (here through their draft).
 const portalProps = (p: Record<string, unknown>) => {
-  const { foldersSlot: _s, onBriefNote: _a, ...rest } = p;
-  void _s; void _a;
-  return JSON.parse(JSON.stringify({ ...rest, foldersSlot: null }));
+  const { foldersSlot: _s, onBriefNote: _a, slots: _l, ...rest } = p;
+  void _s; void _a; void _l;
+  const draft = rest.draft ?? { revision: 1, savedAtISO: NOW_ISO, payload: { editorBrief: "", checks: { coverage: false, culling: false, quality: false, count: false }, removal: "", nothingToRemove: false, orderChoice: null, orderNotes: "", vidStyle: null, vidSections: {}, videosFilmed: "", filmedTopicIds: [], topicNotes: {}, extraRows: [], scriptChoice: null, scriptText: "", scriptNote: "", captured: ["photos", "video"] } };
+  return JSON.parse(JSON.stringify({ ...rest, foldersSlot: null, slots: {}, draft }));
 };
 
 async function main() {
@@ -351,10 +355,10 @@ async function main() {
     const two = text(html.two ?? "");
     c.ok("the portal renders", !!html.two && !html.two.startsWith("RENDER_ERROR") && !!html.one && !html.one.startsWith("RENDER_ERROR"), `${(html.two ?? "").slice(0, 160)} | ${(html.one ?? "").slice(0, 160)}`);
     c.ok("two videos named up top, and which one the first answers are for", /This shoot has 2 videos, each with its own instructions/.test(two) && two.includes(`Video 1 of 2: ${videos!.first.label}. The answers right below are for this video`), two.slice(0, 300));
-    c.ok("video 2's own area: its name, tier and due date, its own color profile and instructions", /Video 2 of 2: Standard Reel/.test(two) && /Standard · due /.test(two) && /Color profile you shot this video in/.test(two) && /Your instructions for this video/.test(two) && /Song or music/.test(two));
-    c.ok("two color-profile choices on the page, one per video", ((html.two ?? "").match(/role="radiogroup"/g) ?? []).length === 2);
+    c.ok("video 2's own area: its name, tier and due date, its own color profile and instructions", /Video 2 of 2: Standard Reel/.test(two) && /Standard · due /.test(two) && /Color profile you shot this video in/.test(two) && /Your instructions for this video/.test(two) && /Song request/.test(two));
+    c.ok("two color-profile choices on the page, one per video", ((html.two ?? "").match(/aria-labelledby="(?:color-profile-label|later-color-\d+)"/g) ?? []).length === 2);
     const one = text(html.one ?? "");
-    c.ok("a one-video job's page is unchanged: no video list, one color profile, the plain wording", !/This shoot has/.test(one) && !/Video 2 of/.test(one) && ((html.one ?? "").match(/role="radiogroup"/g) ?? []).length === 1 && /Color profile you shot in/.test(one));
+    c.ok("a one-video job's page is unchanged: no video list, one color profile, the plain wording", !/This shoot has/.test(one) && !/Video 2 of/.test(one) && ((html.one ?? "").match(/aria-labelledby="(?:color-profile-label|later-color-\d+)"/g) ?? []).length === 1 && /Color profile you shot in/.test(one));
 
     const { finalizeUpload } = await import("@/app/upload/actions");
     const key2 = videos!.later[0].key;

@@ -70,7 +70,7 @@ async function main() {
   const blurSize = (value: string) => (size().onBlur as (event: { target: { value: string } }) => void)({ target: { value } });
   try {
     card.render(); await new Promise((resolve) => setTimeout(resolve, 10));
-    click("Everything's uploaded"); await until(() => button("Submit to editors")?.disabled === false || !!button("Confirm handoff"));
+    click("Submit my handoff"); await until(() => button("Submit to editors")?.disabled === false || !!button("Confirm handoff"));
     const confirm = elements(card.render(), "button").find((p) => p.className && String(p.className).includes("bg-brand-action px-3.5"))!;
     (confirm.onClick as () => void)(); (confirm.onClick as () => void)();
     await until(() => submissions.length === 1);
@@ -79,7 +79,7 @@ async function main() {
     (text.onChange as (event: { target: { value: string } }) => void)({ target: { value: "Newer native note\n Keep  spacing. " } }); card.render();
     response.reject(new Error("isolated lost response")); await until(() => contains(card.render(), "The upload response was lost"));
     c.ok("lost response never claims editors were not notified and keeps exact newer native text", !contains(card.render(), "NOT notified") && elements(card.render(), "AutoTextarea").some((p) => p.value === "Newer native note\n Keep  spacing. "));
-    c.ok("opaque attempt mirror retains ID/fingerprint only and submit remains held", storage.get(`upload-attempt:${project.id}`)?.includes(submissions[0].attemptId) === true && !storage.get(`upload-attempt:${project.id}`)?.includes("Original note") && elements(card.render(), "button").filter((p) => contains(p.children, "Everything's uploaded")).every((p) => p.disabled));
+    c.ok("opaque attempt mirror retains ID/fingerprint only and submit remains held", storage.get(`upload-attempt:${project.id}`)?.includes(submissions[0].attemptId) === true && !storage.get(`upload-attempt:${project.id}`)?.includes("Original note") && elements(card.render(), "button").filter((p) => contains(p.children, "Submit my handoff")).every((p) => p.disabled));
     await new Promise((resolve) => setTimeout(resolve, 1800));
     c.ok("unknown request holds server autosave and keeps newer draft locally", saves === 0 && storage.get(`upload-draft:${project.id}`)?.includes("Newer native note") === true);
     click("Check upload status"); await until(() => contains(card.render(), "This exact upload attempt is not confirmed"));

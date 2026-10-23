@@ -357,6 +357,27 @@ export async function buildEditorBriefPdf(
     text(project.editorBrief, { size: 11 });
   }
 
+  // ---- The photographers' shared instructions (Oct 23 2026) --------------
+  // A shared shoot's instructions, combined, with who wrote each; two that
+  // point opposite ways are both printed and flagged (lib/sharedShoot). A
+  // video added on site that is not on the order yet is named with its words.
+  const shared = await import("@/lib/sharedShoot").then((m) => m.sharedBriefFor(project.id, { scrub: true })).catch(() => null);
+  if (shared && (shared.notes.length || shared.conflicts.length || shared.addedVideos.length)) {
+    heading("From the photographers");
+    if (shared.conflicts.length) {
+      text("These point opposite ways. Check with Kyle before cutting either way:", { size: 10, f: bold, color: rgb(0.7, 0.42, 0.02) });
+      for (const c of shared.conflicts) text(`!  "${c.a.text}" (${c.a.who}) vs "${c.b.text}" (${c.b.who})`, { size: 10, color: rgb(0.7, 0.42, 0.02) });
+    }
+    for (const n of shared.notes) {
+      text(`-  ${n.text}`, { size: 11, gap: 2 });
+      text(`${n.author}${n.edited ? `, last changed by ${n.lastBy}` : ""}${n.changedAfterHandoff ? " - changed after the handoff" : ""}`, { size: 9, color: MUTED, x: MARGIN + 14 });
+    }
+    for (const v of shared.addedVideos) {
+      text(`Video added on site: ${v.item}${v.handled ? "" : " (waiting for the office to add it to the order)"}`, { size: 11, f: bold, gap: 2 });
+      text(v.text, { size: 10, x: MARGIN + 14 });
+    }
+  }
+
   // ---- Flags ------------------------------------------------------------
   // Human field flags only — a machine-written client revision row would print
   // an entire email thread under "Flagged issues" in the editor's brief.

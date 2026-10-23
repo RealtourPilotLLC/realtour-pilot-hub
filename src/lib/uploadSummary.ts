@@ -17,6 +17,7 @@
 // ---------------------------------------------------------------------------
 
 import { parseEvidence } from "@/lib/statusEvidence";
+import { SONG_LINE_RE, songSummaryOfText } from "@/lib/songRequest";
 import { NOTHING_TO_REMOVE_SENTINEL, FRONT_TO_BACK_SENTINEL, INTERIOR_EXTERIOR_SENTINEL } from "@/lib/debrief";
 
 /** Section labels the portal composes, in the order the editor reads them. */
@@ -41,6 +42,8 @@ export type ParsedBrief = {
   style: string | null;
   /** the "COLOR PROFILE: …" line (iPhone / S-Log3, D-LogM) */
   colorProfile: string | null;
+  /** Oct 23 2026: the video's song request in one line (lib/songRequest), null when none was said */
+  song: string | null;
   /** labelled sections with content, in the order written */
   sections: BriefSection[];
   /** text before any label — a legacy free-text brief lands here whole */
@@ -51,7 +54,7 @@ export type ParsedBrief = {
 /** Split a composed brief back into its labelled sections. Never throws;
  *  an empty / null input parses to `empty: true`. */
 export function parseEditorBriefSections(text: string | null | undefined): ParsedBrief {
-  const out: ParsedBrief = { style: null, colorProfile: null, sections: [], preface: "", empty: true };
+  const out: ParsedBrief = { style: null, colorProfile: null, song: songSummaryOfText(text), sections: [], preface: "", empty: true };
   if (!text?.trim()) return out;
   const buckets = new Map<string, string[]>();
   const order: string[] = [];
@@ -63,6 +66,7 @@ export function parseEditorBriefSections(text: string | null | undefined): Parse
     if (style) { out.style = style[1].trim(); continue; }
     const color = line.match(/^COLOR PROFILE:\s*(.+)$/);
     if (color) { out.colorProfile = color[1].trim(); continue; }
+    if (SONG_LINE_RE.test(line)) continue; // read whole by songSummaryOfText above
     if (BRIEF_SECTION_TITLES[line]) {
       current = line;
       if (!buckets.has(line)) { buckets.set(line, []); order.push(line); }
@@ -76,7 +80,7 @@ export function parseEditorBriefSections(text: string | null | undefined): Parse
     if (body) out.sections.push({ label, title: BRIEF_SECTION_TITLES[label], text: body });
   }
   out.preface = preface.join("\n").trim();
-  out.empty = !out.style && !out.colorProfile && out.sections.length === 0 && !out.preface;
+  out.empty = !out.style && !out.colorProfile && !out.song && out.sections.length === 0 && !out.preface;
   return out;
 }
 

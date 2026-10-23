@@ -47,8 +47,9 @@ import { canReplaceApprovedCut, cutUploadRefusal } from "@/app/review/actions";
 import { recordEditorPacketAckForm, recordEditorPacketSentForm, saveVideoBriefForm } from "@/app/editing/actions";
 // §7.6: a limitation on one video's brief becomes missing work in one press.
 import { raiseGapFromBriefForm } from "@/app/editing/gapActions";
-import { etDate } from "@/lib/datetime";
+import { etDate, etDateTime } from "@/lib/datetime";
 import { parseEditorBriefSections } from "@/lib/uploadSummary";
+import { songSummaryOfText, withoutSongLines } from "@/lib/songRequest";
 import { tierWords } from "@/lib/perVideoInstructions";
 import { autoSyncScript } from "@/lib/scriptSync";
 import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
@@ -1029,6 +1030,13 @@ export default async function EditBriefPage({
   // instructions are in, where its cut stands) and gives the video on this
   // page its OWN instructions, never video 1's under its name. A one-video
   // job and a content session read exactly as before.
+  // Oct 23 2026 (lib/addedOnSite): a video added on site whose order line has
+  // landed gets the words the photographer wrote for it first; then the
+  // photographers' shared instructions, combined, with any disagreement
+  // flagged (lib/sharedShoot sharedBriefFor). Both read nothing on an
+  // ordinary one-photographer job.
+  if (isVideoJob) await import("@/lib/addedOnSite").then((m) => m.attachAddedVideoInstructions(project.id, "the editor's brief")).catch(() => []);
+  const sharedBrief = await import("@/lib/sharedShoot").then((m) => m.sharedBriefFor(project.id, { scrub: !canSeeRaw })).catch(() => null);
   const perVideo = isVideoJob && !project.contentMonthId
     ? await import("@/lib/deliverableOutputs").then((m) => m.videoInstructionsFor(project.id)).catch(() => [])
     : [];
@@ -1065,7 +1073,9 @@ export default async function EditBriefPage({
       return x ? { label: x.label, text: x.text } : null;
     }),
     project.editorBrief?.trim() ? { label: "Photographer", text: project.editorBrief.trim() } : null,
-    !multiVideo && project.videoInstructions?.trim() ? { label: "Video notes", text: project.videoInstructions.trim() } : null,
+    // Oct 23 2026: the video's song request, on a line of its own (lib/songRequest).
+    !multiVideo && songSummaryOfText(project.videoInstructions) ? { label: "Song request", text: songSummaryOfText(project.videoInstructions)! } : null,
+    !multiVideo && project.videoInstructions?.trim() ? { label: "Video notes", text: withoutSongLines(project.videoInstructions) } : null,
     ...deliverableNotes.map((d) => ({ label: refinedDeliverableLabel(d.type, d.label), text: canSeeRaw ? d.notes ?? "" : stripMoneySentences(d.notes ?? "") })),
   ].filter((x): x is { label: string; text: string } => !!x && !!x.text.trim());
 
@@ -1673,11 +1683,64 @@ export default async function EditBriefPage({
               {(thisVideoBrief.style || thisVideoBrief.colorProfile) && (
                 <p className="mt-2 text-sm text-muted">{[thisVideoBrief.style ? `Style: ${thisVideoBrief.style}` : null, thisVideoBrief.colorProfile ? `Color profile: ${thisVideoBrief.colorProfile}` : null].filter(Boolean).join(" · ")}</p>
               )}
+              {thisVideoBrief.song && (
+                <p data-song-request className="mt-1.5 text-sm"><span className="font-medium text-muted">Song request: </span>{thisVideoBrief.song}</p>
+              )}
               {thisVideoBrief.preface && <p className="mt-2 whitespace-pre-wrap text-sm text-foreground/90">{thisVideoBrief.preface}</p>}
               {thisVideoBrief.sections.map((sec) => (
                 <div key={sec.label} className="mt-2.5">
                   <p className={LABEL}>{sec.title}</p>
                   <p className="mt-0.5 whitespace-pre-wrap text-sm text-foreground/90">{sec.text}</p>
+                </div>
+              ))}
+            </section>
+          )}
+
+          {/* FROM THE PHOTOGRAPHERS (Oct 23 2026, lib/sharedShoot): on a shared
+              shoot, who shot what, and the instructions they wrote together,
+              combined, with who wrote each. Two that point opposite ways are
+              both shown and flagged; nothing is picked for the editor. A video
+              added on site that is not on the order yet is named with its words. */}
+          {sharedBrief && (sharedBrief.notes.length > 0 || sharedBrief.people.length > 0 || sharedBrief.addedVideos.length > 0) && (
+            <section id="from-photographers" data-brief-section="photographers" className={CARD}>
+              <h2 className={H2}>{sharedBrief.shared ? "From the photographers (shared shoot)" : "From the photographer"}</h2>
+              {sharedBrief.people.length > 0 && (
+                <ul className="mt-2 space-y-1 text-sm">
+                  {sharedBrief.people.map((p, i) => (
+                    <li key={i}>
+                      <span className="font-medium">{p.name}</span>
+                      <span className="text-muted"> · {p.services.length ? p.services.join(", ") : "nothing reported yet"} · {p.state === "submitted" ? `submitted${p.submittedAtISO ? ` ${etDateTime(new Date(p.submittedAtISO))}` : ""}` : p.state === "in_progress" ? "still working" : "not started"}{p.former ? " · no longer assigned" : ""}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {sharedBrief.conflicts.length > 0 && (
+                <div data-brief-conflicts={sharedBrief.conflicts.length} className="mt-3 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
+                  <p className="font-medium text-warning">These instructions point opposite ways. Check with {askKyle("Kyle")} before cutting either way:</p>
+                  <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                    {sharedBrief.conflicts.map((c, i) => <li key={i}>&ldquo;{c.a.text}&rdquo; ({c.a.who}) vs &ldquo;{c.b.text}&rdquo; ({c.b.who})</li>)}
+                  </ul>
+                </div>
+              )}
+              {sharedBrief.notes.length > 0 && (
+                <ul data-shared-instructions className="mt-3 space-y-2 text-sm leading-relaxed">
+                  {sharedBrief.notes.map((n, i) => (
+                    <li key={i}>
+                      <p className="whitespace-pre-wrap text-foreground/90">{n.text}</p>
+                      <p className="text-xs text-muted">
+                        {n.author}{n.edited ? `, last changed by ${n.lastBy}` : ""} · {etDateTime(new Date(n.lastAtISO))}
+                        {n.changedAfterHandoff && <span className="font-semibold text-warning"> · changed after the handoff</span>}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {sharedBrief.addedVideos.map((v, i) => (
+                <div key={i} data-added-video className="mt-3 rounded-lg border border-brand/30 bg-brand-soft/20 px-3 py-2 text-sm">
+                  <p className="font-medium">Video added on site: {v.item}{v.handled ? " (the office has added it; it joins the job's videos shortly)" : " (waiting for the office to add it to the order)"}</p>
+                  {songSummaryOfText(v.text) && <p className="mt-0.5 text-sm"><span className="text-muted">Song request: </span>{songSummaryOfText(v.text)}</p>}
+                  <p className="mt-1 whitespace-pre-wrap text-foreground/90">{withoutSongLines(v.text)}</p>
+                  <p className="mt-0.5 text-xs text-muted">Written by {v.byName}, {etDateTime(new Date(v.atISO))}</p>
                 </div>
               ))}
             </section>

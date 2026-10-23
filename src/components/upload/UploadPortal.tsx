@@ -18,6 +18,19 @@ import {
   Plus,
   X,
   FolderOpen,
+  ExternalLink,
+  RefreshCw,
+  Image as ImageIcon,
+  Plane,
+  Moon,
+  Video as VideoIcon,
+  LayoutGrid,
+  Box,
+  UserRound,
+  BookOpen,
+  CircleHelp,
+  Info,
+  Camera,
 } from "lucide-react";
 import { DELIVERABLE_META, type VideoStepSpec } from "@/lib/pipeline";
 import { videoStyleName, type VideoStyleKey } from "@/lib/videoStyles";
@@ -49,6 +62,23 @@ import { NoticeGroup, type Notice } from "@/components/upload/NoticeGroup";
 import { DropboxInstructions, type DropboxInstructionsView } from "@/components/upload/DropboxInstructions";
 import { parseUploadAttempt, uploadAttemptFingerprint, type UploadAttempt } from "@/lib/uploadReceipt";
 import type { BriefShape } from "@/lib/perVideoInstructions";
+// Oct 23 2026 (the upload-page revamp): agent requests first, "What did you
+// capture?", Dropbox and the service details, then instructions and submit;
+// a shared shoot when two or more photographers are assigned; a song request
+// per video.
+import { AgentRequests } from "@/components/upload/AgentRequests";
+import { SongRequestField } from "@/components/upload/SongRequestField";
+import { ShootHandoffCard, SharedInstructions, type OthersAnswers, type RosterView } from "@/components/upload/SharedShoot";
+import { PortalCard, Fold, StatusChip } from "@/components/upload/portalUi";
+import { AddedAtShoot } from "@/app/upload/[id]/AddedAtShoot";
+import type { ShootAddOn } from "@/app/upload/shootAddOns";
+import { emptySong, songLines, songOfText, songProblem, SONG_LINE_RE, type SongRequest } from "@/lib/songRequest";
+import {
+  BASE_SERVICES, SERVICE_KEYS, SERVICE_LABEL, contributionState, halfOfService, halvesToSubmit, serviceOfAddonItem, serviceOfType,
+  type Contribution, type ServiceKey, type SharedNote,
+} from "@/lib/sharedShootCore";
+import type { AgentRequestItem } from "@/lib/agentRequestsCore";
+import { markMyUploads, saveMyCapture, submitMyPart, saveAddedVideo } from "@/app/upload/sharedActions";
 
 // ---------------------------------------------------------------------------
 // The shoot debrief portal (rebuilt Aug 31 2026 per Jordan; readability pass
@@ -255,8 +285,11 @@ const BRIEF_BY_STYLE: Record<VideoStyleKey, { shape: BriefShape }> = {
 // never carries two.
 const COLOR_PROFILE_RE = /^COLOR PROFILE:/;
 
-function composeVideoInstructions(style: VidStyle | null, sections: Record<VidKey, string>, colorProfile: ColorProfile | null): string {
-  const hasContent = style !== null || colorProfile !== null || VID_SECTIONS.some((s) => sections[s.key]?.trim());
+function composeVideoInstructions(style: VidStyle | null, sections: Record<VidKey, string>, colorProfile: ColorProfile | null, song: SongRequest | null = null): string {
+  // Oct 23 2026: with a song request, the old free-text song box is read into
+  // it (songOfText) and is not written again as its own section.
+  const secs = song ? VID_SECTIONS.filter((x) => x.key !== "song") : VID_SECTIONS;
+  const hasContent = style !== null || colorProfile !== null || secs.some((s) => sections[s.key]?.trim()) || song?.mode === "requested";
   // Nothing filled (photo-only jobs, untouched video forms) → EMPTY. A brief
   // that is only the profile line is saved (the editor needs it on a plain
   // reel), but the server's required-brief gate strips it, so it never
@@ -265,7 +298,9 @@ function composeVideoInstructions(style: VidStyle | null, sections: Record<VidKe
   const parts: string[] = [];
   if (style) parts.push(`STYLE: ${VID_STYLES[style]}`);
   if (colorProfile) parts.push(`COLOR PROFILE: ${COLOR_PROFILES[colorProfile]}`);
-  for (const s of VID_SECTIONS) {
+  const sl = songLines(song);
+  if (sl.length) parts.push(sl.join("\n"));
+  for (const s of secs) {
     const v = sections[s.key]?.trim();
     if (v) parts.push(`${s.label}\n${v}`);
   }
@@ -295,6 +330,7 @@ function parseVideoInstructions(text: string | null): { style: VidStyle | null; 
       continue;
     }
     if (COLOR_PROFILE_RE.test(line)) continue; // the profile line: read by colorProfileOf, re-added from the choice on compose
+    if (SONG_LINE_RE.test(line)) continue; // the song request: read by songOfText, re-added from the choice on compose
     const key = keyForLabel.get(line);
     if (key) { current = key; continue; }
     if (current) sections[current] += (sections[current] ? "\n" : "") + raw;
@@ -316,18 +352,27 @@ function parseVideoInstructions(text: string | null): { style: VidStyle | null; 
 // video's, so the editor's brief reads both the same way.
 // ---------------------------------------------------------------------------
 const LATER_KEYS: Record<BriefShape, readonly VidKey[]> = {
-  minimal: ["editNotes", "videoScript", "song"],
-  agent_intro: ["intro", "editNotes", "song"],
-  full: ["vision", "videoScript", "song", "mustShow", "avoid", "realtor", "additional"],
+  // Oct 23 2026: the free-text "song" box became each video's song request
+  // (SongRequestField below); a song typed in the old box is read into it.
+  minimal: ["editNotes", "videoScript"],
+  agent_intro: ["intro", "editNotes"],
+  full: ["vision", "videoScript", "mustShow", "avoid", "realtor", "additional"],
 };
+type LaterVidState = { style: VidStyle | null; sections: Record<VidKey, string>; color: ColorProfile | null; song: SongRequest };
 function LaterVideoArea({
   video,
   state,
   onChange,
+  existingSongs = [],
+  pendingNote,
 }: {
   video: PortalVideo;
-  state: { style: VidStyle | null; sections: Record<VidKey, string>; color: ColorProfile | null } | undefined;
-  onChange: (patch: Partial<{ style: VidStyle | null; sections: Record<VidKey, string>; color: ColorProfile | null }>) => void;
+  state: LaterVidState | undefined;
+  onChange: (patch: Partial<LaterVidState>) => void;
+  /** songs already recorded for this video elsewhere (the client asked by text, the office picked one) */
+  existingSongs?: string[];
+  /** Oct 23 2026: a video added on site, not on the order yet: why nothing here is required */
+  pendingNote?: string | null;
 }) {
   const sections = state?.sections ?? (Object.fromEntries(VID_SECTIONS.map((x) => [x.key, ""])) as Record<VidKey, string>);
   const color = state?.color ?? null;
@@ -336,7 +381,7 @@ function LaterVideoArea({
   return (
     <section data-later-video={video.key} aria-labelledby={`later-video-${video.number}`} className="mt-5 rounded-xl border-2 border-brand/30 bg-brand-soft/20 p-3.5 sm:p-4">
       <h3 id={`later-video-${video.number}`} className="text-sm font-semibold">
-        Video {video.number} of {video.total}: {video.label}
+        Video {video.number}{video.total > video.number || !pendingNote ? ` of ${video.total}` : ""}: {video.label}
       </h3>
       <p className="mt-0.5 text-[13px] text-muted">
         {video.tier}{video.dueISO ? ` · due ${etDateTime(new Date(video.dueISO))}` : ""}. Its own instructions, separate from video 1.
@@ -345,6 +390,9 @@ function LaterVideoArea({
         <p data-waiting-on-shoot className="mt-1.5 rounded-lg bg-warning/10 px-2.5 py-1.5 text-[13px] text-warning">
           {video.waiting}. Nothing here is required until its footage is in; add what you know now, or fill it in after the next appointment.
         </p>
+      )}
+      {pendingNote && (
+        <p data-added-on-site className="mt-1.5 rounded-lg bg-brand-soft/40 px-2.5 py-1.5 text-[13px] text-foreground/85">{pendingNote}</p>
       )}
       <div className="mt-3">
         <p id={labelId} className="text-[13px] font-medium text-muted">
@@ -406,38 +454,20 @@ function LaterVideoArea({
             </div>
           );
         })}
+        <SongRequestField
+          id={`song-${video.key.replace(/[^A-Za-z0-9_-]/g, "-")}`}
+          value={state?.song ?? emptySong()}
+          onChange={(song) => onChange({ song })}
+          existing={existingSongs}
+          videoName={`video ${video.number}`}
+        />
       </div>
     </section>
   );
 }
 
-// One numbered step card: orange number while open, green check once its
-// requirement is satisfied. The whole page reads as a checklist.
-function StepCard({
-  n, title, done, subtitle, children,
-}: {
-  n: number; title: string; done: boolean; subtitle?: string; children: React.ReactNode;
-}) {
-  return (
-    <section className="rounded-2xl border bg-surface p-4 sm:p-5">
-      <div className="flex items-start gap-3">
-        <span
-          className={cn(
-            "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full text-sm font-bold",
-            done ? "bg-success/15 text-success" : "bg-brand-action text-white",
-          )}
-        >
-          {done ? <Check className="size-4.5" /> : n}
-        </span>
-        <div className="min-w-0 flex-1">
-          <h2 className="text-base font-semibold leading-snug">{title}</h2>
-          {subtitle && <p className="mt-0.5 text-[13px] text-muted">{subtitle}</p>}
-        </div>
-      </div>
-      <div className="mt-3 sm:pl-11">{children}</div>
-    </section>
-  );
-}
+// (Oct 23 2026: the numbered step card is portalUi's PortalCard now: three
+// steps, the agent's requests above them.)
 
 // Small uppercase label that groups the standard into scannable chunks.
 function MiniHeading({ children }: { children: React.ReactNode }) {
@@ -555,6 +585,16 @@ export function UploadPortal({
   onBriefNote,
   briefNoteBlocked = null,
   briefNoteCap = 1000,
+  agentRequests,
+  sharedShoot = null,
+  addOnRows,
+  addedVideoTexts = {},
+  folders = null,
+  dropboxConnected = false,
+  rawBudget = null,
+  existingSongs = {},
+  slots = {},
+  viewerName = null,
 }: {
   project: {
     id: string;
@@ -701,6 +741,37 @@ export function UploadPortal({
   briefNoteBlocked?: string | null;
   /** one note's limit (deliverableOutputs.ON_SITE_NOTE_CAP; the server checks it again) */
   briefNoteCap?: number;
+  // ---- Oct 23 2026, the upload-page revamp. All optional: a caller that
+  // passes none gets the same answers and checks, in the new order. ----
+  /** the agent's requests (lib/agentRequests). Absent: they stay in the heads-up card, as before. */
+  agentRequests?: AgentRequestItem[];
+  /** the shoot's photographers, each one's part, and the shared instructions (lib/sharedShoot) */
+  sharedShoot?: {
+    shared: boolean;
+    me: { memberId: string; name: string } | null;
+    members: RosterView[];
+    contributions: Contribution[];
+    notes: SharedNote[];
+    /** lib/visitSubmission's floor for this viewer's own visit (a submit before it was another visit's) */
+    floorISO: string | null;
+    /** what the others handed off (the job's submitted photo / video answers) */
+    answers: OthersAnswers;
+  } | null;
+  /** the "Added at the shoot" cards (upload/[id]/AddedAtShoot), so an added service shows under What did you capture? */
+  addOnRows?: ShootAddOn[];
+  /** instructions already written for a video added on site, by its card (lib/addedOnSite) */
+  addedVideoTexts?: Record<string, { text: string; attachedKey: string | null }>;
+  /** the job's Dropbox folders with their file counts (null count = the read failed) */
+  folders?: { key: string; label: string; url: string; count: number | null }[] | null;
+  dropboxConnected?: boolean;
+  /** the raw-photo budget this home's target allows (lib/culling) */
+  rawBudget?: { budget: number; overage: number } | null;
+  /** songs already on file per video ("job" = video 1, else the cut key): read-only */
+  existingSongs?: Record<string, string[]>;
+  /** server-rendered pieces placed in the page's own sections */
+  slots?: { crew?: React.ReactNode; debrief?: React.ReactNode; additionalShoot?: React.ReactNode };
+  /** the viewer's display name (the shared instructions sign with it) */
+  viewerName?: string | null;
 }) {
   const router = useRouter();
   // A MONTHLY CONTENT SESSION (Oct 5): the page speaks about topics and clips,
@@ -813,21 +884,125 @@ export function UploadPortal({
   // Each later video keeps its own style, sections and color profile; they
   // compose exactly like the first video's and save on the submit.
   const laterVideos = videos?.later ?? [];
-  type LaterState = { style: VidStyle | null; sections: Record<VidKey, string>; color: ColorProfile | null };
+  type LaterState = LaterVidState;
+  // Oct 23 2026: each video's song is read out of its words (songOfText), and
+  // a draft now carries the later videos' answers too (laterTexts).
+  const stateOfText = (t: string | null | undefined): LaterState => {
+    const parsed = parseVideoInstructions(t ?? null);
+    return { style: parsed.style, sections: parsed.sections, color: colorProfileOf(t), song: songOfText(t) ?? emptySong() };
+  };
   const [laterVids, setLaterVids] = useState<Record<string, LaterState>>(() =>
-    Object.fromEntries(laterVideos.map((v) => {
-      const parsed = parseVideoInstructions(v.own);
-      return [v.key, { style: parsed.style, sections: parsed.sections, color: colorProfileOf(v.own) }];
-    })),
+    Object.fromEntries(laterVideos.map((v) => [v.key, stateOfText(d0?.laterTexts?.[v.key] ?? v.own)])),
   );
   const setLater = (key: string, patch: Partial<LaterState>) =>
-    setLaterVids((all) => ({ ...all, [key]: { ...(all[key] ?? { style: null, sections: parseVideoInstructions(null).sections, color: null }), ...patch } }));
+    setLaterVids((all) => ({ ...all, [key]: { ...(all[key] ?? stateOfText(null)), ...patch } }));
   const laterComposed: Record<string, string> = Object.fromEntries(
     laterVideos.map((v) => {
       const st = laterVids[v.key];
-      return [v.key, st ? composeVideoInstructions(v.shape === "full" ? st.style : null, st.sections, st.color) : ""];
+      return [v.key, st ? composeVideoInstructions(v.shape === "full" ? st.style : null, st.sections, st.color, st.song) : ""];
     }),
   );
+
+  const laterKey = JSON.stringify(laterComposed);
+
+  // ---- Oct 23 2026: THE REVAMP'S OWN ANSWERS --------------------------------
+  // Video 1's song request (each later video carries its own above).
+  const [song, setSong] = useState<SongRequest>(() => d0?.song ?? songOfText(project.videoInstructions) ?? emptySong());
+  // The shared shoot: who is on it, each one's part, and mine.
+  const shared = !!sharedShoot?.shared;
+  const meId = sharedShoot?.me?.memberId ?? null;
+  const [contribs, setContribs] = useState<Contribution[]>(sharedShoot?.contributions ?? []);
+  const myPart = meId ? contribs.find((x) => x.memberId === meId) ?? null : null;
+  const visitFloor = sharedShoot?.floorISO ? new Date(sharedShoot.floorISO) : null;
+  const mySubmitted = !!meId && contributionState(myPart, visitFloor) === "submitted";
+  // What was ordered, by service, and what was added on site (the office's cards).
+  const [addOns, setAddOns] = useState<ShootAddOn[]>(addOnRows ?? []);
+  const orderedBy = new Map<ServiceKey, Deliverable[]>();
+  for (const d of deliverables) {
+    const k = serviceOfType(d.type);
+    if (k) orderedBy.set(k, [...(orderedBy.get(k) ?? []), d]);
+  }
+  const addedBy = new Map<ServiceKey, ShootAddOn[]>();
+  for (const a of addOns) {
+    const k = serviceOfAddonItem(a.item);
+    if (k) addedBy.set(k, [...(addedBy.get(k) ?? []), a]);
+  }
+  const offered: ServiceKey[] = SERVICE_KEYS.filter((k) => BASE_SERVICES.includes(k) || orderedBy.has(k) || addedBy.has(k));
+  // "What did you capture?" starts from what this person already said (their
+  // draft, else their part). Never from the order: a service is not done
+  // because it was bought. A page that was already handed off on the single
+  // page reads its own earlier answers (the ticks, the halves it handed off)
+  // so reopening it shows what was submitted.
+  const [captured, setCaptured] = useState<ServiceKey[]>(() => {
+    const fromDraft = d0?.captured?.filter((k): k is ServiceKey => (SERVICE_KEYS as readonly string[]).includes(k));
+    if (fromDraft) return fromDraft;
+    if (myPart) return myPart.captured;
+    if (shared) return [];
+    const out = new Set<ServiceKey>();
+    for (const d of deliverables) {
+      const k = serviceOfType(d.type);
+      if (!k || d.notCompletedReason) continue;
+      const half = halfOfService(k);
+      if (initialUploaded(d) || project.debriefSubmittedAt || (half === "photos" && project.photosHandoffAt) || (half === "video" && project.videoHandoffAt)) out.add(k);
+    }
+    return SERVICE_KEYS.filter((k) => out.has(k));
+  });
+  const [videoDrone, setVideoDrone] = useState<boolean>(() => d0?.videoDrone ?? myPart?.videoDrone ?? false);
+  const [requestsReviewed, setRequestsReviewed] = useState<boolean>(!!d0?.requestsReviewed);
+  const has = (k: ServiceKey) => captured.includes(k);
+  const photoShown = has("photos") || has("drone") || has("twilight");
+  const videoShown = has("video");
+  // A video added on site has no row until the office puts it on the order:
+  // its own area, numbered after the ordered videos, saved as it is typed.
+  const addedVideoRows = addOns.filter((a) => serviceOfAddonItem(a.item) === "video" && !addedVideoTexts[a.id]?.attachedKey);
+  const [addedVids, setAddedVids] = useState<Record<string, LaterState>>(() =>
+    Object.fromEntries((addOnRows ?? []).map((a) => [a.id, stateOfText(d0?.addedTexts?.[a.id] ?? addedVideoTexts[a.id]?.text ?? null)])),
+  );
+  const setAddedVid = (id: string, patch: Partial<LaterState>) =>
+    setAddedVids((all) => ({ ...all, [id]: { ...(all[id] ?? stateOfText(null)), ...patch } }));
+  const addedComposed: Record<string, string> = Object.fromEntries(
+    addedVideoRows.map((a) => {
+      const st = addedVids[a.id] ?? stateOfText(null);
+      return [a.id, composeVideoInstructions(st.style, st.sections, st.color, st.song)];
+    }),
+  );
+  // What I captured is my part of the shoot: saved as I tick it, so the
+  // others see it, at most once a second. (The office has no part of its own:
+  // the action keeps theirs on the page.)
+  const captureKey = JSON.stringify({ captured, videoDrone });
+  const savedCaptureRef = useRef(captureKey);
+  useEffect(() => {
+    if (!meId || !canSaveDraft || captureKey === savedCaptureRef.current) return;
+    const t = setTimeout(() => {
+      savedCaptureRef.current = captureKey;
+      void saveMyCapture(project.id, { captured, videoDrone })
+        .then((r) => { if (r.contribution) setContribs((all) => [...all.filter((x) => x.memberId !== r.contribution!.memberId), r.contribution!]); })
+        .catch(() => { savedCaptureRef.current = ""; });
+    }, 800);
+    return () => clearTimeout(t);
+    // captureKey carries captured + videoDrone.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [captureKey, meId, canSaveDraft]);
+  // A video added on site: its words are saved as they are typed, so the
+  // office and the editor have them before any submit, and nothing is lost
+  // while its order line is waiting (lib/addedOnSite).
+  const addedKey = JSON.stringify(addedComposed);
+  const savedAddedRef = useRef<Record<string, string> | null>(null);
+  if (savedAddedRef.current === null) savedAddedRef.current = { ...addedComposed };
+  useEffect(() => {
+    if (!canSaveDraft) return;
+    const t = setTimeout(() => {
+      const saved = savedAddedRef.current ?? {};
+      for (const [id, text] of Object.entries(addedComposed)) {
+        if ((saved[id] ?? "") === text) continue;
+        saved[id] = text;
+        void saveAddedVideo(project.id, { taskId: id, text }).catch(() => { delete saved[id]; });
+      }
+    }, 1500);
+    return () => clearTimeout(t);
+    // addedKey carries addedComposed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addedKey, canSaveDraft]);
 
   // What "answered" means depends on the package flavor: agent-intro packages
   // need the typed intro script; everything else needs vision + style.
@@ -922,7 +1097,7 @@ export function UploadPortal({
   // the page resolved from Deliverable.videoStyle (tier fallback when no row
   // is stamped yet), the same answer videoSpec was built from.
   const brief = BRIEF_BY_STYLE[policy.videoStyle];
-  const vidInstructions = composeVideoInstructions(effectiveStyle, vidSections, colorProfile);
+  const vidInstructions = composeVideoInstructions(effectiveStyle, vidSections, colorProfile, song);
   const fullFields = brief.shape === "full";
   // The one standard box is REQUIRED unless the order is a plain social reel
   // (Sep 1: those need nothing) or the intro script already carries the
@@ -1030,8 +1205,15 @@ export function UploadPortal({
       // R02 follow-up: no topic answer on this page — the server keeps the
       // stored draft's, and a later page takes the job's own.
       ...(topicAnswerUnknown ? { topicsUnknown: true as const } : {}),
+      // Oct 23 2026: the revamp's answers ride the same draft.
+      captured, videoDrone, song,
+      ...(laterVideos.length ? { laterTexts: laterComposed } : {}),
+      ...(addedVideoRows.length ? { addedTexts: addedComposed } : {}),
+      ...(requestsReviewed ? { requestsReviewed: true } : {}),
     }),
-    [editorBrief, checks, removal, nothingToRemove, orderChoice, orderNotes, vidStyle, vidSections, colorProfile, videosFilmed, filmedTopicIds, topicNotes, extraRows, scriptChoice, scriptText, scriptNote, script, topicAnswerUnknown],
+    // laterComposed / addedComposed are rebuilt each render; their JSON (laterKey, addedKey) keeps the memo honest.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [editorBrief, checks, removal, nothingToRemove, orderChoice, orderNotes, vidStyle, vidSections, colorProfile, videosFilmed, filmedTopicIds, topicNotes, extraRows, scriptChoice, scriptText, scriptNote, script, topicAnswerUnknown, captured, videoDrone, song, laterKey, addedKey, requestsReviewed],
   );
   const payloadJson = JSON.stringify(draftPayload);
   const payloadRef = useRef(draftPayload);
@@ -1103,6 +1285,13 @@ export function UploadPortal({
     setScriptChoice(p.scriptChoice);
     if (p.scriptChoice === "edited" || !script) setScriptText(p.scriptText || script?.body || "");
     setScriptNote(p.scriptNote);
+    // Oct 23 2026: the revamp's answers, when the copy carries them.
+    if (p.captured) setCaptured(p.captured.filter((k): k is ServiceKey => (SERVICE_KEYS as readonly string[]).includes(k)));
+    if (typeof p.videoDrone === "boolean") setVideoDrone(p.videoDrone);
+    if (p.song) setSong(p.song);
+    if (p.laterTexts) setLaterVids((all) => ({ ...all, ...Object.fromEntries(Object.entries(p.laterTexts!).map(([k, t]) => [k, stateOfText(t)])) }));
+    if (p.addedTexts) setAddedVids((all) => ({ ...all, ...Object.fromEntries(Object.entries(p.addedTexts!).map(([k, t]) => [k, stateOfText(t)])) }));
+    if (p.requestsReviewed) setRequestsReviewed(true);
   }
   useEffect(() => { payloadRef.current = draftPayload; }, [draftPayload]);
   useEffect(() => {
@@ -1381,41 +1570,77 @@ export function UploadPortal({
 
   // O05: photos and video are handed off separately when a job owes both and
   // the whole wrap-up is not in yet. A job with one half keeps the one button.
-  const splitMode = photosLive && videoLive && !done;
+  // Oct 23 2026: on a shared shoot each photographer hands off the halves of
+  // what THEY captured (lib/sharedShootCore halvesToSubmit), and their page is
+  // done when their part is in, whatever the others' state. The single page
+  // keeps the halves the job owes, exactly as before.
+  const liveHalves: HandoffCategory[] = [...(photosLive ? (["photos"] as const) : []), ...(videoLive ? (["video"] as const) : [])];
+  const asMember = shared && !!meId;
+  const myHalves = halvesToSubmit({ shared: asMember, liveHalves, myServices: captured });
+  const pageDone = asMember ? mySubmitted : done;
+  const splitMode = (asMember ? myHalves.length === 2 : photosLive && videoLive) && !pageDone;
+  /** the one button's scope: on a shared shoot, only my half when the job owes two */
+  const myScope: HandoffCategory | undefined = asMember && myHalves.length === 1 && liveHalves.length === 2 ? myHalves[0] : undefined;
+  /** a shared-shoot part with no photo or video half of its own (a floor plan, a tour, nothing ticked) */
+  const partOnly = asMember && myHalves.length === 0;
 
   // What still blocks the submit — same rules the server enforces. `scope`
   // narrows it to one half (O05); absent = the whole page, as before.
   function missingItems(scope?: HandoffCategory): string[] {
-    const missing: string[] = [];
+    // Oct 23 2026: the same checks as always, gathered per half, so a half
+    // whose section is hidden (its service not ticked under "What did you
+    // capture?") is named once instead of by fields the person can't see.
+    const pm: string[] = [];
+    const vm: string[] = [];
     const pOn = photosLive && scope !== "video";
     const vOn = videoLive && scope !== "photos";
-    if (pOn && !cullOk) missing.push("the pre-upload checklist (all four boxes)");
-    if (pOn && orderChoice === null) missing.push("answer the shot order");
-    if (pOn && orderChoice === "out-of-order" && !orderNotes.trim()) missing.push("the order you shot the home (and why)");
-    if (pOn && !removal.trim() && !nothingToRemove) missing.push("answer the removal notes");
-    if (vOn && colorProfile === null) missing.push(laterVideos.length ? "pick the color profile for video 1" : "pick the color profile you shot in");
-    if (vOn) missing.push(...laterMissing);
+    if (pOn && !cullOk) pm.push("the pre-upload checklist (all four boxes)");
+    if (pOn && orderChoice === null) pm.push("answer the shot order");
+    if (pOn && orderChoice === "out-of-order" && !orderNotes.trim()) pm.push("the order you shot the home (and why)");
+    if (pOn && !removal.trim() && !nothingToRemove) pm.push("answer the removal notes");
+    if (vOn && colorProfile === null) vm.push(laterVideos.length ? "pick the color profile for video 1" : "pick the color profile you shot in");
+    if (vOn) vm.push(...laterMissing);
     if (vOn && !hadPriorBrief) {
-      if (spec.requireIntro && !vidSections.intro.trim()) missing.push("the agent's intro script — type it exactly as delivered");
-      if (fullFields && !vidSections.vision.trim()) missing.push("the vision for the edit");
-      if (fullFields && effectiveStyle === null) missing.push("pick an edit style");
-      if (notesRequired && !vidSections.editNotes.trim()) missing.push("your editing instructions for the editor");
+      if (spec.requireIntro && !vidSections.intro.trim()) vm.push("the agent's intro script — type it exactly as delivered");
+      if (fullFields && !vidSections.vision.trim()) vm.push("the vision for the edit");
+      if (fullFields && effectiveStyle === null) vm.push("pick an edit style");
+      if (notesRequired && !vidSections.editNotes.trim()) vm.push("your editing instructions for the editor");
     }
     // R02: a content session whose topic list did not load can't hand the
     // video over — it would go without a filming report (no list, no ticks).
     // A reload brings the list back; the photos half is unaffected.
-    if (vOn && topicsUnavailable) missing.push("reload the page (this job's topic list didn't load)");
-    if (vOn && liveExtras.some((x) => !x.note.trim())) missing.push("a note for each extra video filmed on site");
+    if (vOn && topicsUnavailable) vm.push("reload the page (this job's topic list didn't load)");
+    if (vOn && liveExtras.some((x) => !x.note.trim())) vm.push("a note for each extra video filmed on site");
     if (vOn && !topicsUnavailable && spec.requireVideoCount && project.videosFilmed == null && !((videosFilmedNum ?? 0) > 0)) {
-      missing.push(answersByTopic ? "tick the topics you filmed (or add one you filmed on site)" : "how many videos you filmed");
+      vm.push(answersByTopic ? "tick the topics you filmed (or add one you filmed on site)" : "how many videos you filmed");
     }
-    if (vOn && script && !scriptChoice) missing.push("confirm the script");
-    if (vOn && scriptChoice === "edited" && !scriptText.trim()) missing.push("the edited script text (or pick “Delivered as written”)");
+    if (vOn && script && !scriptChoice) vm.push("confirm the script");
+    if (vOn && scriptChoice === "edited" && !scriptText.trim()) vm.push("the edited script text (or pick “Delivered as written”)");
     // Premium packages: the script can NOT be left blank (Jordan, Sep 1) —
     // when Studio has none, the photographer types what was delivered.
     if (vOn && spec.requireScript && !script && !hadPriorBrief && !scriptText.trim()) {
-      missing.push("the script — this premium package can't be submitted without it");
+      vm.push("the script — this premium package can't be submitted without it");
     }
+    // Oct 23 2026: a requested song needs a title or a link (lib/songRequest).
+    if (vOn) {
+      const p1 = songProblem(song, laterVideos.length ? "video 1" : "the video");
+      if (p1) vm.push(p1);
+      for (const v of laterVideos) {
+        const pv = songProblem(laterVids[v.key]?.song, `video ${v.number}`);
+        if (pv) vm.push(pv);
+      }
+    }
+    if (scope !== "photos") {
+      for (const a of addedVideoRows) {
+        const p2 = songProblem(addedVids[a.id]?.song, a.item);
+        if (p2) vm.push(p2);
+      }
+    }
+    const missing: string[] = [];
+    if (pm.length && !photoShown) missing.push("the photos are on the order but not ticked under “What did you capture?” (tick what you shot and answer its details, or say why they weren’t completed)");
+    else missing.push(...pm);
+    if (vm.length && !videoShown && vOn) missing.push("the video is on the order but not ticked under “What did you capture?” (tick it and fill in its details, or say why it wasn’t completed)");
+    else missing.push(...vm);
     return missing;
   }
 
@@ -1541,6 +1766,12 @@ export function UploadPortal({
       ...(scope ? { scope } : {}),
       baseHash: baseHashOverride ?? submitHash,
       baseAtISO: baseAtRef.current,
+      // Oct 23 2026: what this person says they captured (their own part of
+      // the shoot; it never changes what this submit gates or stamps), and
+      // the words for a video added on site that has no row yet.
+      captured,
+      videoDrone,
+      ...(Object.values(addedComposed).some((t) => t.trim()) ? { addedVideoInstructions: addedComposed } : {}),
     };
     // A submit is not a draft save: hold the autosave while it runs, so the
     // answers being submitted are not written back as an unsent draft.
@@ -1587,6 +1818,18 @@ export function UploadPortal({
           return;
         }
         if (res.pdfPath) setPdfPath(res.pdfPath);
+        // Oct 23 2026: this submit is on MY part of the shoot (the server
+        // records it the same way); nobody else's part changes.
+        if (meId) {
+          const nowISO = new Date().toISOString();
+          const handed = captured.filter((k) => !scope || halfOfService(k) === scope || halfOfService(k) === null);
+          setContribs((all) => {
+            const cur = all.find((x) => x.memberId === meId);
+            const base: Contribution = cur ?? { memberId: meId, name: sharedShoot?.me?.name ?? "", captured: [], videoDrone: false, uploaded: [], submits: [], version: 0, updatedAtISO: nowISO };
+            return [...all.filter((x) => x.memberId !== meId), { ...base, captured, videoDrone, submits: [...base.submits, { scope: scope ?? "all", atISO: nowISO, services: handed }], updatedAtISO: nowISO }];
+          });
+          if (shared) setReopened(false);
+        }
         if (res.baseHash) { setSubmitHash(res.baseHash); baseHashRef.current = res.baseHash; baseAtRef.current = new Date().toISOString(); setMovedSinceDraft(false); }
         setTopicsPending(res.topicsPending?.message ?? null);
         setForcedSubmit(force);
@@ -1622,7 +1865,7 @@ export function UploadPortal({
   // square footage re-tiers the target immediately. An office override still
   // wins, and a legacy shoot keeps its briefed ceiling.
   const liveRange = policy.rangeMode === "sop" ? photoRangeFor(sqftSaved) : policy.range;
-  const collapsed = done && !reopened;
+  const collapsed = pageDone && !reopened;
   // §7.3: say only what is true about the files. A tick is the photographer's
   // word; Dropbox showing the files is evidence; an unreadable folder is
   // neither, and "Submit anyway" past an empty-folder warning is not proof.
@@ -1752,7 +1995,6 @@ export function UploadPortal({
 
   // Phone-sized targets (audit C15, Oct 20 2026): this page is opened from
   // the 7 PM text, on a phone. Every choice is at least 44px tall.
-  const checkbox = "size-5 shrink-0 accent-[var(--brand)]";
   const choiceBtn = (active: boolean, tone: "ok" | "warn" = "ok") =>
     cn(
       "inline-flex min-h-11 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium",
@@ -1761,9 +2003,8 @@ export function UploadPortal({
         : "border-border hover:bg-surface-2",
     );
 
-  // Step numbering adapts — photo-only jobs never see the video step, video-
-  // only jobs never see the photo steps (Jordan, Sep 1).
-  let stepNo = 1;
+  // (Oct 23 2026: the steps are fixed at three; what each shows follows what
+  // was captured, so a photo-only job still never sees the video details.)
   const removalAnswered = !!removal.trim() || nothingToRemove;
   const orderAnswered =
     orderChoice === "front-to-back" || orderChoice === "interior-exterior" ||
@@ -2034,7 +2275,11 @@ export function UploadPortal({
       ),
     });
   }
-  if (specialRequests.length > 0) {
+  // Oct 23 2026: the special requests and the customer's standing note moved
+  // into the Agent requests card at the top, each with its source. A caller
+  // that passes no agentRequests (an older page) keeps them here.
+  const requestsInCard = agentRequests !== undefined;
+  if (!requestsInCard && specialRequests.length > 0) {
     topNotices.push({
       key: "special-requests",
       tone: "warning",
@@ -2051,7 +2296,7 @@ export function UploadPortal({
   }
   // Standing customer notes: their own entry (they used to ride inside the
   // special-requests box, so most shoots never showed them).
-  if (project.customerNote) {
+  if (!requestsInCard && project.customerNote) {
     topNotices.push({
       key: "customer-notes",
       tone: "info",
@@ -2068,6 +2313,173 @@ export function UploadPortal({
       ),
     });
   }
+
+  // ---- Oct 23 2026: THE PAGE, REORGANISED (Jordan's upload-page spec) -------
+  // Agent requests → What did you capture? → Dropbox and each service's
+  // details → instructions and submit. Every earlier step is still here: the
+  // photo standard, gallery order, removal notes, the video step, the item
+  // list with "couldn't complete", flags, missing work, client preferences,
+  // added-at-the-shoot items, the shoot debrief and the extra shoot. Detail
+  // folds behind one line; a hidden section keeps everything typed in it.
+  const others = contribs.filter((x) => x.memberId !== meId);
+  const otherNames = (sharedShoot?.members ?? []).filter((m) => m.memberId !== meId).map((m) => m.name.split(/\s+/)[0]);
+  const capturedByOthers = (k: ServiceKey) => others.filter((x) => x.captured.includes(k));
+  const toggleService = (k: ServiceKey) => {
+    setCaptured((cur) => (cur.includes(k) ? cur.filter((x) => x !== k) : SERVICE_KEYS.filter((x) => x === k || cur.includes(x))));
+  };
+  const orderedServices = [...orderedBy.keys()].filter((k) => orderedBy.get(k)!.some((d) => !d.waivedAt));
+  const orderedWords = orderedServices.map((k) => SERVICE_LABEL[k]).join(" + ");
+  const unchecked = orderedServices.filter((k) => !has(k));
+  const myFolders = (folders ?? []).filter((f) => f.key !== "finalPhotos" && f.key !== "finalVideo" && (policy.photosOrdered || photoShown || f.key !== "backupPhotos"));
+  const shownFolders = captured.length
+    ? myFolders.filter((f) => (f.key === "rawVideo" ? videoShown : f.key === "rawPhotos" || f.key === "backupPhotos" ? photoShown || has("floorplan") || has("tour") || has("headshots") : true))
+    : myFolders;
+  const liveCount = (key: string) => {
+    if (rawCheck && key === "rawPhotos" && rawCheck.photos) return rawCheck.photos.count;
+    if (rawCheck && key === "rawVideo" && rawCheck.video) return rawCheck.video.count;
+    return folders?.find((f) => f.key === key)?.count ?? null;
+  };
+  // "My selected files are uploaded": on a shared shoot, my own word on my part; on the single page, every ordered item of what I ticked is ticked.
+  const rowsUploaded = (k: ServiceKey) => (orderedBy.get(k) ?? []).filter((d) => !d.waivedAt && !notDone[d.id]).every((d) => uploaded[d.id]);
+  const allMineUploaded = captured.length > 0 && (asMember ? captured.every((k) => (myPart?.uploaded ?? []).includes(k)) : captured.every(rowsUploaded));
+  const [removalOpen, setRemovalOpen] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const setMyUploads = (on: boolean) => {
+    if (!captured.length) return;
+    setUploadBusy(true);
+    void markMyUploads(project.id, { services: captured, uploaded: on })
+      .then((r) => {
+        if (!r.ok) { setErr(r.message); return; }
+        if (r.ticks) setUploaded((u) => ({ ...u, ...r.ticks }));
+        if (r.contribution) setContribs((all) => [...all.filter((x) => x.memberId !== r.contribution!.memberId), r.contribution!]);
+      })
+      .catch(() => setErr("Couldn't save that. Check your connection and try again."))
+      .finally(() => setUploadBusy(false));
+  };
+  const [checkingAgain, setCheckingAgain] = useState(false);
+  const checkDropboxAgain = () => {
+    setCheckingAgain(true);
+    const request = ++rawCheckRequest.current;
+    checkUploadRawFiles(project.id)
+      .then((r) => { if (rawCheckRequest.current === request) setRawCheck(r); })
+      .catch(() => setErr("Dropbox couldn't be read just now. Nothing about your files changed; try again in a minute."))
+      .finally(() => setCheckingAgain(false));
+  };
+  const lastChecked = rawCheck?.checkedAtISO ?? null;
+  const [partBusy, setPartBusy] = useState(false);
+  const submitPart = () => {
+    if (partBusy) return;
+    // A part is what was captured: an empty one is not a submit.
+    if (!captured.length) { setErr("Tick what you captured under “What did you capture?” first, then submit your part."); return; }
+    setPartBusy(true);
+    void submitMyPart(project.id, { services: captured })
+      .then((r) => {
+        if (!r.ok) { setErr(r.message); return; }
+        if (r.contribution) setContribs((all) => [...all.filter((x) => x.memberId !== r.contribution!.memberId), r.contribution!]);
+        setReopened(false);
+        setErr(null);
+      })
+      .catch(() => setErr("Couldn't submit your part. Check your connection and try again."))
+      .finally(() => setPartBusy(false));
+  };
+  const myServiceWords = captured.map((k) => SERVICE_LABEL[k].toLowerCase()).join(" + ");
+  const submitLabel = pageDone
+    ? asMember ? "Re-submit my part" : "Re-submit to editors"
+    : asMember
+      ? partOnly ? (captured.length ? `Submit my ${myServiceWords}` : "Submit my part") : `Submit my ${myScope === "photos" ? "photos" : myScope === "video" ? "video" : "handoff"}`
+      : "Submit my handoff";
+  const firstHandoffISO = [project.photosHandoffAt, project.videoHandoffAt, project.debriefSubmittedAt].filter((x): x is string => !!x).sort()[0] ?? null;
+  const readiness: { label: string; ok: boolean }[] = [
+    ...(shownFolders.some((f) => f.key === "rawPhotos" || f.key === "rawVideo")
+      ? [{ label: "Dropbox files found", ok: shownFolders.filter((f) => f.key === "rawPhotos" || f.key === "rawVideo").every((f) => (liveCount(f.key) ?? 0) > 0) }]
+      : []),
+    ...(photoShown ? [{ label: "Photo details complete", ok: cullOk && orderAnswered && removalAnswered }] : []),
+    ...(videoShown ? [{ label: "Video details complete", ok: videoDone }] : []),
+    ...(agentRequests && agentRequests.some((r) => r.group !== "history") ? [{ label: "Agent requests reviewed", ok: requestsReviewed }] : []),
+  ];
+  // What is ready, and what the submit means for pay (said once: in the bar on
+  // a wider screen, at the end of Step 3 on a phone, so the bar stays small).
+  const readinessBlock = (
+    <>
+      {readiness.length > 0 && (
+        <ul data-readiness className="mb-2.5 flex flex-wrap gap-x-4 gap-y-1.5 text-[13px]">
+          {readiness.map((r) => (
+            <li key={r.label} className={cn("inline-flex items-center gap-1.5", r.ok ? "text-success" : "text-muted")}>
+              {r.ok ? <CheckCircle2 aria-hidden className="size-4" /> : <Circle aria-hidden className="size-4" />} {r.label}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="mb-2.5 text-[13px] font-medium text-brand">
+        {asMember
+          ? `You submit your own part. ${payHidden ? "The shoot is done once every part is in." : "The shoot is added to payroll once every part is in."}`
+          : splitMode
+            ? `Submit the photos and the video each when they're ready. ${payHidden ? "The shoot is done once both are in." : "The shoot is added to your payroll once both are in."}`
+            : payHidden ? "Once submitted, this shoot is done." : "Once submitted, this shoot is added to your payroll."}
+      </p>
+    </>
+  );
+  const statusOf = (k: ServiceKey): { tone: "ok" | "warn" | "muted" | "danger"; words: string } => {
+    const rows = orderedBy.get(k) ?? [];
+    const reason = rows.map((d) => notDone[d.id]).find(Boolean);
+    if (reason) return { tone: "warn", words: `Couldn't complete: ${reason}` };
+    if (rows.length && rows.every((d) => d.waivedAt)) return { tone: "muted", words: "The office marked it not required" };
+    const by = capturedByOthers(k);
+    if (by.length) {
+      const sub = by.find((x) => contributionState(x, null) === "submitted");
+      return { tone: "ok", words: sub ? `Done by ${sub.name} (submitted)` : `${by.map((x) => x.name).join(" and ")} captured it` };
+    }
+    if (rows.some((d) => uploaded[d.id])) return { tone: "ok", words: "Marked uploaded" };
+    return { tone: "danger", words: "Pending: tick it if you shot it, or say why it wasn't completed" };
+  };
+  const [itemsOpen, setItemsOpen] = useState(false);
+  const capIcon: Record<ServiceKey, typeof ImageIcon> = { photos: ImageIcon, drone: Plane, twilight: Moon, video: VideoIcon, floorplan: LayoutGrid, tour: Box, headshots: UserRound };
+  const orderedVideoCount = videos ? videos.first.total : policy.videoOrdered ? 1 : 0;
+  const helpCard = (
+    <section className="rounded-2xl border bg-surface p-4">
+      <h2 className="flex items-center gap-2 text-base font-semibold"><CircleHelp aria-hidden className="size-4.5 text-brand" /> Need help?</h2>
+      <ul className="mt-1.5 text-sm">
+        <li><a href="/resources/photography-sop" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-1.5 font-medium text-brand hover:underline"><BookOpen aria-hidden className="size-4" /> Photography standards</a></li>
+        {(policy.videoOrdered || videoShown) && <li><a href="/resources/video-styles" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-1.5 font-medium text-brand hover:underline"><VideoIcon aria-hidden className="size-4" /> Video style guide</a></li>}
+        <li><a href="/upload/welcome" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-1.5 font-medium text-brand hover:underline"><FolderOpen aria-hidden className="size-4" /> How uploads and Dropbox work</a></li>
+      </ul>
+    </section>
+  );
+  const myMissing = pageDone ? [] : partOnly ? [] : missingItems(myScope);
+  const summaryCard = asMember || (shared && sharedShoot) ? (
+    <ShootHandoffCard
+      members={sharedShoot!.members}
+      contributions={contribs}
+      meId={meId}
+      floorISO={sharedShoot!.floorISO}
+      answers={sharedShoot!.answers}
+      wholeDoneISO={project.debriefSubmittedAt}
+      crewSlot={slots.crew}
+    />
+  ) : (
+    <section data-handoff-summary className="rounded-2xl border bg-surface p-4">
+      <h2 className="text-base font-semibold">Your handoff</h2>
+      <dl className="mt-2 space-y-2.5 text-sm">
+        <div className="flex items-start gap-2.5">
+          <Camera aria-hidden className="mt-0.5 size-4 shrink-0 text-muted" />
+          <div className="min-w-0"><dt className="text-xs text-muted">Photographer</dt><dd className="font-medium">{project.photographerName ?? "Not assigned"}</dd></div>
+        </div>
+        <div className="flex items-start gap-2.5">
+          <Check aria-hidden className="mt-0.5 size-4 shrink-0 text-muted" />
+          <div className="min-w-0"><dt className="text-xs text-muted">What you captured</dt><dd className="font-medium">{captured.length ? captured.map((k) => SERVICE_LABEL[k]).join(" · ") : "Nothing ticked yet"}</dd></div>
+        </div>
+        <div className="flex items-start gap-2.5">
+          <FolderOpen aria-hidden className="mt-0.5 size-4 shrink-0 text-muted" />
+          <div className="min-w-0"><dt className="text-xs text-muted">Dropbox</dt><dd className="font-medium">{!dropboxConnected && !rawCheck ? "Not connected: counts unknown" : shownFolders.some((f) => (liveCount(f.key) ?? 0) > 0) ? "Files found" : shownFolders.some((f) => liveCount(f.key) === null) ? "Couldn't read the folders" : "No files found yet"}</dd></div>
+        </div>
+        <div className="flex items-start gap-2.5">
+          <CheckCircle2 aria-hidden className={cn("mt-0.5 size-4 shrink-0", pageDone ? "text-success" : "text-muted")} />
+          <div className="min-w-0"><dt className="text-xs text-muted">Handoff</dt><dd className={cn("font-medium", pageDone ? "text-success" : myMissing.length ? "text-warning" : "text-success")}>{pageDone ? "Submitted" : myMissing.length ? `${myMissing.length} thing${myMissing.length === 1 ? "" : "s"} left` : "Ready to submit"}</dd></div>
+        </div>
+      </dl>
+      {slots.crew}
+    </section>
+  );
 
   return (
     <div className="space-y-4">
@@ -2087,6 +2499,20 @@ export function UploadPortal({
         </p>
         {project.packageName && <p className="mt-0.5 text-[13px] text-muted-2">{project.packageName}</p>}
       </div>
+
+
+      {asMember && (
+        <div data-shared-banner className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-brand/30 bg-brand-soft/30 px-3.5 py-2.5 text-sm">
+          <span className="font-semibold">{sharedShoot!.members.length} photographers assigned · Shared shoot</span>
+          <span className="text-muted">Your page: {sharedShoot!.me?.name ?? viewerName}</span>
+        </div>
+      )}
+      {!asMember && shared && (
+        <div data-shared-banner className="rounded-xl border border-brand/30 bg-brand-soft/30 px-3.5 py-2.5 text-sm">
+          <span className="font-semibold">{sharedShoot!.members.length} photographers on this shoot.</span>{" "}
+          <span className="text-muted">Each submits their own part; you are seeing the whole job.</span>
+        </div>
+      )}
 
       {/* O04: where the unsent answers stand. A restored draft says so and
           can be thrown away; a copy saved elsewhere is a question, never a
@@ -2159,13 +2585,20 @@ export function UploadPortal({
       <NoticeGroup storageKey={`upload-notices:${project.id}`} notices={topNotices} />
 
       {/* Success banner + process feedback */}
-      {done && (
+      {pageDone && (
         <div className="rounded-2xl border border-success/30 bg-success-soft/50 p-4">
           <div className="flex items-center gap-2 text-success">
             <CheckCircle2 className="size-5" />
-            <span className="font-semibold">Submitted — you&rsquo;re good to go</span>
+            <span className="font-semibold">{asMember && !done ? "Your part is submitted" : "Submitted — you’re good to go"}</span>
           </div>
-          {viewerIsOffice ? (
+          {asMember && !done ? (
+            // Oct 23 2026: a shared shoot. My part is in; the job is whole
+            // (and on payroll) once every part is, which is not mine to say.
+            <p className="mt-1 text-sm text-foreground/80">
+              Your notes are on the editor brief. {filesSentence} The rest of the shoot is still with {otherNames.join(" and ") || "the other photographer"}; their part stays theirs.{" "}
+              {payHidden ? "The shoot is done once every part is in." : "The shoot is added to payroll once every part is in."}
+            </p>
+          ) : viewerIsOffice ? (
             <p className="mt-1 text-sm text-foreground/80">
               The notes are on the editor brief. {filesSentence} Everything submitted reads back below; reopen
               it to make a correction.
@@ -2236,10 +2669,14 @@ export function UploadPortal({
       )}
       {pendingAttempt && <button type="button" disabled={isPending || checkingAttempt} onClick={() => { void checkAttempt(); }} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm font-medium disabled:opacity-50">{checkingAttempt ? "Checking upload status…" : "Check upload status"}</button>}
 
-      {/* Everything below is the checklist itself — hidden once submitted,
-          so the confirmation IS the page rather than a banner above a wall of
-          answered steps. `collapsed` never hides the submit bar: a re-submit
-          has to stay reachable. */}
+
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_19rem] lg:items-start">
+        <aside className="min-w-0 space-y-4 lg:sticky lg:top-4 lg:col-start-2 lg:row-start-1">
+          {summaryCard}
+          <div className="hidden lg:block">{helpCard}</div>
+        </aside>
+
+        <div className="min-w-0 space-y-4 lg:col-start-1 lg:row-start-1">
       {collapsed ? (
         <>
           {/* CP-09: the submit landed, the topic record did not (yet). Not an
@@ -2329,785 +2766,999 @@ export function UploadPortal({
             <MissingWork projectId={project.id} gaps={gaps} office={viewerIsOffice} />
             <FieldFeedback projectId={project.id} clientName={project.clientName} reports={fieldReports} office={viewerIsOffice} />
           </section>
+          {/* Still reachable after the submit, as they always were. */}
+          <AddedAtShoot projectId={project.id} initial={addOns} onRowsChange={setAddOns} />
+          {slots.additionalShoot}
+          {slots.debrief}
         </>
       ) : (
       <>
-      {/* ---- STEP: Upload to Dropbox ---- */}
-      <StepCard
-        n={stepNo++}
-        title="Upload everything to Dropbox"
-        done={doneCount >= total && total > 0}
-        subtitle={policy.photosOrdered ? "Raw files in the Raw folders · culled extras in Backup Photos." : "Raw video files in the Raw Video folder."}
-      >
-        {foldersSlot}
-        <PortalEvidence evidence={evidence} halfAt={halfAt} />
-      </StepCard>
-
-      {/* ---- STEP: The photo standard (the SOP, enforced) ---- */}
-      {policy.photosOrdered && (
-        <StepCard n={stepNo++} title="The photo standard — run your cull" done={cullOk}>
-          <div className="rounded-xl bg-brand-soft/50 px-3.5 py-2.5 text-sm">
-            {policy.rangeMode === "override" ? (
-              <>
-                <span className="font-semibold">This home&rsquo;s target: {policy.photoTarget} photos.</span>{" "}
-                <span className="text-foreground/80">Set by the office for this property — it beats the size tier.</span>
-              </>
-            ) : policy.rangeMode === "legacy" ? (
-              <>
-                {/* A pre-SOP job keeps its more lenient briefed ceiling so a tier
-                    change can't retro-fire cull tasks — but when the size IS
-                    known, lead with the range the SOP would ask for. The ceiling
-                    without the range reads as "shoot 80", which is the opposite
-                    of the point. */}
-                {sqftSaved ? (
-                  <>
-                    <span className="font-semibold">This home: aim for {photoRangeFor(sqftSaved).low}&ndash;{photoRangeFor(sqftSaved).high} finals.</span>{" "}
-                    <span className="text-foreground/80">
-                      Booked before the new standard, so nothing is enforced past ~{policy.photoTarget} —
-                      but the range is the goal.{sizeNote}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className="font-semibold">This shoot predates the new standard — ceiling ~{policy.photoTarget} finals.</span>{" "}
-                    <span className="text-foreground/80">Cull to the SOP anyway: hero shots, one composition once.</span>
-                  </>
-                )}
-              </>
-            ) : liveRange.upper ? (
-              <>
-                <span className="font-semibold">This home: aim for {liveRange.low}&ndash;{liveRange.high} finals.</span>{" "}
-                <span className="text-foreground/80">
-                  {liveRange.upper} is the normal ceiling — and the ceiling is not a goal.
-                  {sizeNote}
-                </span>
-              </>
-            ) : (
-              <>
-                <span className="font-semibold">7,000+ sq ft — property dependent.</span>{" "}
-                <span className="text-foreground/80">
-                  Professional judgment: complete coverage without unnecessary repetition. The sweep checks in
-                  around ~{policy.photoTarget} finals unless the office sets a target.
-                </span>
-              </>
-            )}
-          </div>
-
-          {/* THE SIZE THIS TIER IS BUILT ON. Aryeo carries a square footage on
-              7 of 1,701 listings, so without this every home shows the smallest
-              range. The person standing in the house is the one who knows. */}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-surface-2/40 px-3.5 py-2.5">
-            <label htmlFor="sqft" className="text-sm font-medium">
-              Square footage
-              {policy.rangeMode === "sop" && <span className="ml-1 font-normal text-muted">— sets the target above</span>}
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                id="sqft"
-                inputMode="numeric"
-                value={sqft}
-                onChange={(e) => setSqft(e.target.value.replace(/[^0-9]/g, ""))}
-                onBlur={(e) => void saveSqft(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
-                placeholder="e.g. 2400"
-                className="min-h-11 w-28 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-base outline-none focus:border-brand sm:text-sm"
-              />
-              {sqftBusy
-                ? <span className="text-xs text-muted">saving…</span>
-                : sqftSaved != null && String(sqftSaved) === sqft
-                  ? <span className="inline-flex items-center gap-1 text-xs text-success"><Check className="size-3.5" />saved</span>
-                  : null}
-              {sqftNeedsCheck ? <button type="button" disabled={sqftBusy} onClick={() => { void checkSqft(); }} className="min-h-11 rounded-lg border border-border px-3 py-2 text-xs disabled:opacity-50">Check current size</button>
-                : sqftErr && <button type="button" disabled={sqftBusy} onClick={() => { void saveSqft(sqft); }} className="min-h-11 rounded-lg border border-border px-3 py-2 text-xs disabled:opacity-50">Save current size</button>}
-            </div>
-            {sqftErr
-              ? <span className="w-full text-xs text-danger">{sqftErr}</span>
-              : policy.rangeMode === "override"
-                ? <span className="w-full text-xs text-muted">The office set a target for this home, so the size tier doesn&rsquo;t apply — but it&rsquo;s still worth recording.</span>
-                : bandText
-                  ? <span className="w-full text-xs text-muted">The order says <strong>{bandText}</strong> — a range the client picked. Type the real figure if you know it and the target sharpens.</span>
-                  : sqftSaved == null
-                    ? <span className="w-full text-xs text-muted">Not on the order. Add it and the range above matches the house.</span>
-                    : null}
-          </div>
-
-          {/* Oct 21 2026 (upload page tidy): the seven rules fold to one line,
-              like the room-by-room guide below. Photographers know them; the
-              line keeps the three that matter most in sight. */}
-          <details className="mt-3 rounded-xl border border-border">
-            <summary className="flex min-h-11 cursor-pointer items-center px-3.5 py-2.5 text-sm font-medium text-muted hover:text-foreground">
-              The standard: one hero shot per space, one composition once, 5-bracket JPG (7 rules)
-            </summary>
-            <div className="border-t border-border px-3.5 py-3">
-            <ul className="space-y-1.5 text-sm leading-relaxed text-foreground/85">
-              <li><strong>Every space gets one HERO SHOT</strong> — the photo you&rsquo;d pick if you could only show one. Supporting shots exist only to show what the hero can&rsquo;t.</li>
-              <li><strong>One composition, once.</strong> No distance or zoom variations of the same angle.</li>
-              <li><strong>Every photo must add new information.</strong> &ldquo;I like both&rdquo; is not a reason.</li>
-              <li><strong>Open-concept areas are one space</strong> — not four rooms&rsquo; worth of angles.</li>
-              <li><strong>5-bracket JPG.</strong> A bracket set counts as ONE composition. Not RAW, not 3-bracket.</li>
-              <li><strong>Trash cans and pet items are a no-go.</strong> Fix it on site — don&rsquo;t lean on the editor.</li>
-              <li><strong>Alternates go to Backup Photos</strong> — and cull that folder too.</li>
-            </ul>
-            </div>
-          </details>
-
-          <details className="mt-3 rounded-xl border border-border">
-            <summary className="cursor-pointer px-3.5 py-2.5 text-sm font-medium text-muted hover:text-foreground">
-              Room-by-room guide (guidelines, not quotas)
-            </summary>
-            <div className="overflow-x-auto border-t border-border">
-              <table className="w-full text-[13px]">
-                <tbody className="divide-y divide-border/60">
-                  {[
-                    ["Front exterior", "2–4 · up to 5 with aerials"],
-                    ["Rear exterior", "2–4 · up to 5 with aerials"],
-                    ["Front door / entry", "1"],
-                    ["Foyer / entrance", "1–2"],
-                    ["Dining room", "1–2"],
-                    ["Living / family room", "2–3"],
-                    ["Kitchen", "3–5 · up to 6 when justified"],
-                    ["Mudroom / laundry", "1–2"],
-                    ["Powder room", "1"],
-                    ["Full bathroom", "1 · 2 when necessary"],
-                    ["Primary bathroom", "2–3"],
-                    ["Primary bedroom", "2–3"],
-                    ["Secondary bedroom", "1–2"],
-                    ["Basement", "2–4 by layout"],
-                    ["Office / bonus room", "1–2"],
-                    ["Bar", "1–3"],
-                    ["Deck / patio", "1–2"],
-                    ["Pool", "2–3"],
-                    ["Pool house / detached", "1–3 by importance"],
-                    ["Other spaces", "1–2"],
-                  ].map(([space, n]) => (
-                    <tr key={space}>
-                      <td className="px-3.5 py-1.5 text-foreground/85">{space}</td>
-                      <td className="px-3.5 py-1.5 text-right text-muted tabular-nums">{n}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <p className="border-t border-border px-3.5 py-2 text-xs text-muted-2">
-                Guidelines, not quotas — use professional judgment.{" "}
-                <a href="/resources/photography-sop" target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">
-                  Full table in the SOP ↗
-                </a>
-              </p>
-            </div>
-          </details>
-
-          <p className="mt-3 text-[13px] leading-relaxed text-muted">
-            Unnecessary photos cost real money — extra editing, plus an extra 1–2 hours per job of re-culling
-            after the fact, which kills our turnaround time and pulls the admin and owner off other work. A{" "}
-            <strong className="text-foreground/85">$1 production charge may be deducted per clearly unnecessary photo</strong>{" "}
-            — duplicates, distance variations, backups uploaded as finals. You will never be charged for photos a
-            property genuinely needed: this is not a photo-count penalty, and a property that truly needs more gets more.{" "}
-            <a href="/resources/photography-sop" target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">
-              Read the full Photography SOP ↗
-            </a>
-          </p>
-
-          <MiniHeading>Before you upload — confirm all four</MiniHeading>
-          <div className="space-y-2">
-            <CheckRow checked={checks.coverage} onChange={setCheck("coverage")} title="Coverage"
-              text="Every important space is represented, each has its hero shot, exteriors and drone (if ordered) are complete." />
-            <CheckRow checked={checks.culling} onChange={setCheck("culling")} title="Culling"
-              text="Failures and test shots gone, duplicates and distance variations gone, every supporting photo adds something, backups separated." />
-            <CheckRow checked={checks.quality} onChange={setCheck("quality")} title="Quality"
-              text="Distractions were fixed on site — no avoidable trash cans, pets, or pet items in frame." />
-            <CheckRow checked={checks.count} onChange={setCheck("count")} title="Count"
-              text={policy.rangeMode !== "sop"
-                ? `The gallery makes sense for this home (~${policy.photoTarget} target) — every photo has a reason to exist.`
-                : policy.range.upper
-                  ? `The gallery makes sense for this home (aim ${policy.range.low}–${policy.range.high}) — anything above has a reason to exist.`
-                  : "The gallery size makes sense for this property — every photo has a reason to exist."} />
-          </div>
-        </StepCard>
+      {/* ---- AGENT REQUESTS: what was already asked for, first ---- */}
+      {agentRequests !== undefined && (
+        <AgentRequests projectId={project.id} initial={agentRequests} blocked={briefNoteBlocked} reviewed={requestsReviewed} onReviewed={setRequestsReviewed} />
       )}
 
-      {/* ---- STEP: Shot order ---- */}
-      {policy.photosOrdered && (
-        <StepCard
-          n={stepNo++}
-          title="Shot order — front to back?"
-          done={orderAnswered}
-          subtitle="The gallery should walk the house the way a buyer would. Organizing photos of a house we've never been in burns serious office time — presentation is everything."
-        >
-          <div className="flex flex-wrap gap-2">
-            <button onClick={() => { setOrderChoice("front-to-back"); setOrderNotes(""); }} className={choiceBtn(orderChoice === "front-to-back")}>
-              <CheckCircle2 className="size-4" /> Front to back
-            </button>
-            <button onClick={() => { setOrderChoice("interior-exterior"); setOrderNotes(""); }} className={choiceBtn(orderChoice === "interior-exterior")}>
-              <CheckCircle2 className="size-4" /> Interior front-to-back, then exterior
-            </button>
-            <button onClick={() => setOrderChoice("out-of-order")} className={choiceBtn(orderChoice === "out-of-order", "warn")}>
-              Different order
-            </button>
-          </div>
-          {orderChoice === "out-of-order" && (
-            <div className="mt-2.5">
-              <AutoTextarea
-                value={orderNotes}
-                onChange={(e) => setOrderNotes(e.target.value)}
-                minRows={2}
-                placeholder="Why, and the order you shot — e.g. contractor in the kitchen: started upstairs beds → baths → living/dining → kitchen last → exteriors."
-                className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
-              />
-              <p className="mt-1 text-xs text-muted">
-                Totally fine when the seller, a contractor, or the agent forces it — just tell us the order so nobody has to guess what&rsquo;s where.
-              </p>
-            </div>
-          )}
-        </StepCard>
-      )}
-
-      {/* ---- STEP: Removal notes ---- */}
-      {policy.photosOrdered && (
-        <StepCard
-          n={stepNo++}
-          title="Anything to remove in editing?"
-          done={removalAnswered}
-          subtitle="Pets, trash cans, vehicles, clutter that couldn’t be moved. Move what you can on site — we aren’t stagers, but we’re professionals with strong attention to detail."
-        >
-          <AutoTextarea
-            value={removal}
-            onChange={(e) => { setRemoval(e.target.value); if (e.target.value.trim()) setNothingToRemove(false); }}
-            minRows={2}
-            placeholder="e.g. Trash cans in exterior 3–4 · dog bed in the primary bedroom · neighbor's car in the driveway shots."
-            className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
-          />
-          <label className="mt-2 flex min-h-11 cursor-pointer items-center gap-2 text-sm text-muted">
-            <input
-              type="checkbox"
-              checked={nothingToRemove}
-              onChange={(e) => { setNothingToRemove(e.target.checked); if (e.target.checked) setRemoval(""); }}
-              className={checkbox}
-            />
-            Nothing needs removal — I checked.
-          </label>
-        </StepCard>
-      )}
-
-      {/* ---- STEP: Video (only when a video is on the order). The step's
-          shape follows the resolved VIDEO STYLE (BRIEF_BY_STYLE): premium
-          styles show the full fields and REQUIRE the script; agent-intro reels
-          require the typed intro script + just editing notes; standard reels
-          and cinematics get the one box; monthly plans the fixed-style full
-          set. The subtitle names the video the order actually bought (Jordan,
-          Sep 2: "That should be shown as video type") + the camera it implies,
-          so a photographer sees WHY the form has this shape. ---- */}
-      {policy.videoOrdered && (
-        <StepCard
-          n={stepNo++}
-          title={contentSession ? "Videos — what you filmed, and notes for the editor" : spec.requireIntro && !fullFields ? "Video — agent intro script & notes" : "Video — script & your instructions"}
-          subtitle={`${videoStyleName(policy.videoStyle) ?? "Video"} · ${colorProfile ? `shot on ${COLOR_PROFILES[colorProfile].replace(", ", " and ")}` : "pick the color profile you shot in"}`}
-          done={videoDone}
-        >
-          {/* Oct 22 2026: a job that owes two or more videos says so first,
-              and which video this first set of answers is for. Each later
-              video has its own area at the end of this step. */}
-          {videos && laterVideos.length > 0 && (
-            <div data-video-count={videos.first.total} className="mb-4 rounded-xl border border-brand/30 bg-brand-soft/30 px-3.5 py-2.5">
-              <p className="text-sm font-semibold">This shoot has {videos.first.total} videos, each with its own instructions.</p>
-              <ol className="mt-1 list-decimal pl-5 text-[13px] text-foreground/80">
-                {[videos.first, ...laterVideos].map((v) => (
-                  <li key={v.key}>{v.label} · {v.tier}{v.dueISO ? `, due ${etDateTime(new Date(v.dueISO))}` : ""}</li>
-                ))}
-              </ol>
-              <p data-first-video className="mt-1.5 text-[13px] font-medium">
-                Video 1 of {videos.first.total}: {videos.first.label}. The answers right below are for this video.
-              </p>
-            </div>
-          )}
-          {/* Oct 21 2026 (Jordan): the color profile is the photographer's
-              pick, required, never guessed from the order's tier. */}
-          <div className="mb-4 border-b border-border pb-3.5">
-            <p id="color-profile-label" className="text-[13px] font-medium text-muted">
-              {laterVideos.length ? "Color profile you shot video 1 in" : "Color profile you shot in"} <span className="text-danger">*</span>
-            </p>
-            <div role="radiogroup" aria-labelledby="color-profile-label" className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {COLOR_PROFILE_CHOICES.map((c) => {
-                const on = colorProfile === c.key;
-                return (
-                  <button
-                    key={c.key}
-                    type="button"
-                    role="radio"
-                    aria-checked={on}
-                    onClick={() => setColorProfile(c.key)}
-                    className={cn(
-                      "min-h-11 rounded-xl border px-3 py-2 text-sm font-semibold transition-colors",
-                      on ? "border-brand bg-brand-soft text-brand" : "border-border bg-surface text-foreground hover:border-brand/50",
-                    )}
-                  >
-                    {c.label}
-                  </button>
-                );
-              })}
-            </div>
-            {colorProfile === null && <p className="mt-1.5 text-xs text-muted-2">Pick one so the editor grades the footage the right way.</p>}
-          </div>
-          {/* Oct 22 2026: "Instructions added to Dropbox" — the file stands in
-              for the typed flow and vision below. */}
-          <DropboxInstructions projectId={project.id} current={dropboxInstructions} />
-          {/* §7.5: what the editor is told for each video, read here before
-              the photographer writes their own instructions below. */}
-          {briefs.length > 0 && <div className="mb-4 border-b border-border pb-3.5">{briefCard}</div>}
-          {script ? (
-            <div>
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-[13px] font-medium text-muted">The shoot script (from Script Studio)</p>
-                {script.url && (
-                  <a href={script.url} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-brand hover:underline">
-                    Open in Studio ↗
-                  </a>
-                )}
-              </div>
-              {/* Studio scripts are MARKDOWN (Jordan, Sep 1) — read it rendered,
-                  and only open the formatting editor after "Changed on site". */}
-              {scriptChoice === "edited" ? (
-                <MarkdownEditor value={scriptText} onChange={setScriptText} minRows={5} className="mt-1.5" />
-              ) : (
-                <div className="mt-1.5 max-h-80 overflow-y-auto scroll-thin rounded-lg border border-border bg-surface-2/60 px-3 py-2">
-                  <Markdown content={scriptText} />
-                </div>
-              )}
-              <p className="mt-1.5 text-[13px] text-muted">
-                Did the agent deliver it as written? If anything changed on site, pick &ldquo;Changed on site&rdquo; and fix the text — the editor cuts to what you confirm here.
-              </p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <button onClick={() => { setScriptChoice("as-written"); setScriptText(script.body); }} className={choiceBtn(scriptChoice === "as-written")}>
-                  <CheckCircle2 className="size-4" /> Delivered as written
-                </button>
-                <button onClick={() => setScriptChoice("edited")} className={choiceBtn(scriptChoice === "edited", "warn")}>
-                  Changed on site — edit it
-                </button>
-              </div>
-              {scriptChoice === "edited" && (
-                <input
-                  value={scriptNote}
-                  onChange={(e) => setScriptNote(e.target.value)}
-                  placeholder="What changed? (one line — e.g. agent swapped the hook, dropped talking point 2)"
-                  className="mt-2 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
-                />
-              )}
-            </div>
-          ) : spec.requireScript ? (
-            <div>
-              <p className="text-sm font-semibold">
-                The script <span className="text-brand">— required for this package</span>
-              </p>
-              <p className="mt-0.5 text-[13px] text-muted">
-                No script came through from Script Studio — type or paste the script exactly as it was delivered on camera. Premium packages can&rsquo;t be submitted without it.
-              </p>
-              <MarkdownEditor
-                value={scriptText}
-                onChange={setScriptText}
-                minRows={4}
-                placeholder="The full script, word for word as filmed."
-                className="mt-1.5"
-              />
-            </div>
-          ) : spec.requireIntro || sessionTopics || topicsUnavailable ? null : (
-            // Not on a content session: its scripts come from the program
-            // (the topic list below says which are signed off), never Studio.
-            <p className="rounded-lg bg-surface-2/70 px-3 py-2 text-[13px] text-muted">
-              No script found in Script Studio for this shoot. If the agent read from one, put it in the instructions below so the editor has it.
-            </p>
-          )}
-
-          <div className={cn("border-border", (script || (!spec.requireIntro && !sessionTopics)) && "mt-4 border-t pt-3.5")}>
-            {/* CONTENT SESSION ORDER (Oct 5): what was filmed, topic by topic
-                with its clip notes, comes FIRST; the general box after it. */}
-            {contentSession && topicsBlock}
-
-            {spec.minimalReel ? (
-              <p className="text-sm font-semibold">
-                Anything the editor should know? <span className="font-normal text-muted">— optional</span>
-              </p>
-            ) : notesRequired ? (
-              // Standard tier (Jordan, Sep 2): one box — no style picker, no
-              // sections — but still the photographer's own words.
-              <>
-                <p className="text-sm font-semibold">
-                  Your instructions for the edit <span className="text-brand">— required</span>
-                </p>
-                <p className="mt-0.5 text-[13px] text-muted">
-                  Standard-tier videos are cut from one box — the flow, the must-show moments, anything to avoid.
-                </p>
-              </>
-            ) : spec.requireIntro && !fullFields ? (
-              <p className="text-sm font-semibold">
-                Intro script &amp; editing notes <span className="text-brand">— intro required</span>
-              </p>
-            ) : (
-              <>
-                {contentSession ? (
-                  // A CONTENT SESSION'S GENERAL BOX (Oct 5): it comes after the
-                  // topics and says it is for every video; one-topic notes
-                  // belong on the topic above.
-                  <div className="mt-4 border-t border-border pt-3.5">
-                    <p className="text-sm font-semibold">
-                      Instructions for the edit <span className="font-normal text-muted">— applies to all videos</span>
-                    </p>
-                    <p className="mt-0.5 text-[13px] text-muted">
-                      A note about one video goes on its topic above. The vision is required{spec.fixedStyle ? "; every monthly video is cut in the personal-branding style." : " and so is the style."}
-                    </p>
-                  </div>
-                ) : (
-                  <>
-                    <p className="text-sm font-semibold">
-                      Your instructions for the edit <span className="text-brand">— required</span>
-                    </p>
-                    <p className="mt-0.5 text-[13px] text-muted">
-                      Sectioned so the editor can act on it — fill what applies; vision and style are required.
-                    </p>
-                  </>
-                )}
-
-                {/* Monthly plans have ONE style — no dropdown (Jordan, Sep 1).
-                    A content session says it in the line above instead. */}
-                {spec.fixedStyle ? (contentSession ? null : (
-                  <div className="mt-2.5">
-                    <label className="text-[13px] font-medium text-muted">Edit style</label>
-                    <p className="mt-1 inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm font-medium">
-                      <CheckCircle2 className="size-4 text-success" /> {VID_STYLES.branding}
-                    </p>
-                    <p className="mt-1 text-xs text-muted">Monthly content is always cut in the personal-branding style.</p>
-                  </div>
-                )) : (
-                  <div className="mt-2.5">
-                    <label className="text-[13px] font-medium text-muted">Edit style <span className="text-brand">*</span></label>
-                    <select
-                      value={vidStyle ?? ""}
-                      onChange={(e) => setVidStyle((e.target.value || null) as VidStyle | null)}
-                      className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand sm:max-w-xs"
-                    >
-                      <option value="">Pick a style…</option>
-                      <option value="fast">{VID_STYLES.fast}</option>
-                      <option value="cinematic">{VID_STYLES.cinematic}</option>
-                    </select>
-                    <p className="mt-1 text-xs text-muted">
-                      Ask the realtor on site which they want — luxury often leans timeless &amp; elegant, but not always. Never guess, just ask.
-                    </p>
-                  </div>
-                )}
-              </>
-            )}
-
-            {!contentSession && topicsBlock}
-
-            {(() => {
-              const field = (s: (typeof VID_SECTIONS)[number]) => {
-                const copy = contentSession ? CONTENT_SECTION_COPY[s.key] : undefined;
-                return (
-                  <div key={s.key}>
-                    <label className="text-[13px] font-medium text-muted">
-                      {copy?.title ?? s.title}{isRequiredKey(s.key) && <span className="text-brand"> *</span>}
-                    </label>
-                    <AutoTextarea
-                      value={vidSections[s.key]}
-                      onChange={(e) => setVidSections((v) => ({ ...v, [s.key]: e.target.value }))}
-                      minRows={s.key === "vision" || s.key === "intro" ? 3 : 2}
-                      placeholder={copy?.placeholder ?? s.placeholder}
-                      className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
-                    />
-                  </div>
-                );
-              };
-              const shown = sectionKeys.map((k) => VID_SECTIONS.find((sec) => sec.key === k)!);
-              // A content session folds the optional boxes (Oct 5): the
-              // required vision stays open, the rest is one tap away — and
-              // opens by itself when any of it already holds words.
-              const folded = contentSession ? shown.filter((x) => !isRequiredKey(x.key)) : [];
-              const visible = shown.filter((x) => !folded.includes(x));
-              return (
-                <>
-                  <div className="mt-3 space-y-3">{visible.map((x) => field(x))}</div>
-                  {folded.length > 0 && (
-                    <details className="mt-3 rounded-lg border border-border" open={folded.some((x) => !!vidSections[x.key]?.trim())}>
-                      <summary className="flex min-h-11 cursor-pointer items-center px-3 text-sm font-medium text-muted hover:text-foreground">
-                        More for the editor <span className="ml-1 font-normal">— optional</span>
-                      </summary>
-                      <div className="space-y-3 border-t border-border p-3">{folded.map((x) => field(x))}</div>
-                    </details>
-                  )}
-                </>
-              );
-            })()}
-
-            {laterVideos.map((v) => (
-              <LaterVideoArea key={v.key} video={v} state={laterVids[v.key]} onChange={(patch) => setLater(v.key, patch)} />
-            ))}
-
-            {requiredLabels.length > 0 && (
-              <p className="mt-1.5 text-xs text-warning">
-                {`${requiredLabels.length > 2 ? `${requiredLabels.slice(0, -1).join(", ")} and ${requiredLabels[requiredLabels.length - 1]}` : requiredLabels.join(" and ")} can’t be left blank${spec.requireIntro ? " — the editor cuts and captions to the intro" : ""}.${contentSession ? "" : " Skipping the instructions forfeits future premium shoot assignments."}`}
-              </p>
-            )}
-          </div>
-        </StepCard>
-      )}
-
-      {/* ---- STEP: Wrap up ---- */}
-      <StepCard
-        n={stepNo++}
-        title="Check off & wrap up"
-        done={done}
-        subtitle="Tick each item once its files are in Dropbox, add anything else the editor should know, then submit."
-      >
-        <div className="space-y-2">
-          {deliverables.map((d) => {
-            const meta = DELIVERABLE_META[d.type];
-            const on = uploaded[d.id];
-            const reason = !on ? notDone[d.id] : undefined;
-            const editing = reasonFor === d.id;
+      {/* ---- STEP 1: WHAT DID YOU CAPTURE? ---- */}
+      <PortalCard id="capture" n={1} title="What did you capture?" subtitle="Select your work to show the matching handoff fields." done={captured.length > 0}>
+        <div role="group" aria-label="What you captured" className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {offered.map((k) => {
+            const on = has(k);
+            const Icon = capIcon[k];
+            const added = addedBy.get(k);
             return (
-              <div key={d.id}>
+              <div key={k} className={cn("rounded-xl border transition-colors", on ? "border-brand bg-brand-soft/40" : "border-border bg-surface-2/40")}>
                 <button
-                  onClick={() => toggle(d.id)}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors",
-                    on ? "border-success/40 bg-success-soft/30" : reason ? "border-warning/40 bg-warning/5" : "bg-surface hover:bg-surface-2",
-                  )}
+                  type="button"
+                  role="checkbox"
+                  aria-checked={on}
+                  data-capture={k}
+                  onClick={() => toggleService(k)}
+                  className="flex min-h-14 w-full items-center gap-2.5 px-3 py-2 text-left"
                 >
-                  {on ? (
-                    <CheckCircle2 className="size-5 shrink-0 text-success" />
-                  ) : reason ? (
-                    <XCircle className="size-5 shrink-0 text-warning" />
-                  ) : (
-                    <Circle className="size-5 shrink-0 text-muted-2" />
-                  )}
-                  <span className="flex-1 text-sm font-medium">
-                    {meta.label}
-                    {d.quantity > 1 && <span className="text-muted"> ×{d.quantity}</span>}
+                  <span aria-hidden className={cn("flex size-5 shrink-0 items-center justify-center rounded border", on ? "border-brand bg-brand-action text-brand-fg" : "border-border-strong")}>
+                    {on && <Check className="size-3.5" />}
                   </span>
-                  <span className={cn("text-xs", reason ? "font-semibold text-warning" : "text-muted")}>
-                    {on ? "Uploaded" : reason ? "Couldn't complete" : "Not yet"}
+                  <Icon aria-hidden className={cn("size-4 shrink-0", on ? "text-brand" : "text-muted")} />
+                  <span className="min-w-0">
+                    <span className="block text-sm font-semibold leading-tight">{SERVICE_LABEL[k]}</span>
+                    <span className="block text-[11px] text-muted">
+                      {orderedBy.has(k) ? "Ordered" : added ? `Added on site${added.every((a) => a.handled) ? "" : " · waiting for the office"}` : "Not ordered"}
+                    </span>
                   </span>
                 </button>
-                {reason && !editing && (
-                  <p className="mt-1 rounded-lg bg-warning/10 px-2.5 py-1.5 text-xs text-foreground/80">
-                    <span className="font-semibold text-warning">Why:</span> {reason}{" "}
-                    <button
-                      onClick={() => { setReasonFor(d.id); setReasonText(reason); }}
-                      className="ml-1 font-medium text-muted underline"
-                    >
-                      edit
-                    </button>
-                    <button
-                      onClick={() => saveNotCompleted(d.id, "")}
-                      title="Remove the reason — it's just not done yet"
-                      className="ml-2 font-medium text-muted underline"
-                    >
-                      clear
-                    </button>
-                  </p>
-                )}
-                {!on && !reason && !editing && (
-                  <button
-                    onClick={() => { setReasonFor(d.id); setReasonText(""); }}
-                    className="mt-1 px-1 text-xs text-muted underline hover:text-foreground"
-                  >
-                    Can&rsquo;t complete this? Tell the admin why
-                  </button>
-                )}
-                {editing && (
-                  <div className="mt-1.5 flex gap-2">
-                    <input
-                      autoFocus
-                      value={reasonText}
-                      onChange={(e) => setReasonText(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && reasonText.trim()) saveNotCompleted(d.id, reasonText.trim());
-                        if (e.key === "Escape") { setReasonFor(null); setReasonText(""); }
-                      }}
-                      placeholder={contentSession ? "Why couldn't it be completed? e.g. The client ran out of time — two topics move to the next session" : "Why couldn't it be completed? e.g. Seller refused the drone — needs a re-shoot"}
-                      className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
-                    />
-                    <button
-                      disabled={toggling || !reasonText.trim()}
-                      onClick={() => saveNotCompleted(d.id, reasonText.trim())}
-                      className="rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-50"
-                    >
-                      Save
-                    </button>
-                    <button
-                      onClick={() => { setReasonFor(null); setReasonText(""); }}
-                      className="rounded-lg px-2 py-2 text-sm text-muted hover:text-foreground"
-                    >
-                      Cancel
-                    </button>
-                  </div>
+                {k === "video" && on && (
+                  <label className="flex min-h-11 cursor-pointer items-center gap-2 border-t border-border/60 px-3 text-xs">
+                    <input type="checkbox" checked={videoDrone} onChange={(e) => setVideoDrone(e.target.checked)} className="size-4 accent-[var(--brand)]" />
+                    Includes drone footage
+                  </label>
                 )}
               </div>
             );
           })}
         </div>
-
-        <div className="mt-4">
-          <label className="block text-sm font-semibold">
-            Anything else for the editor?
-            {contentSession && <span className="font-normal text-muted"> — applies to all videos</span>}
-          </label>
-          <AutoTextarea
-            value={editorBrief}
-            onChange={(e) => setEditorBrief(e.target.value)}
-            minRows={2}
-            placeholder={contentSession
-              ? "e.g. Captions on every video. Their new logo is in the brand kit. The second half of the card is B-roll for all topics."
-              : "e.g. House faces west so exteriors are backlit — recover sky. Seller wants the pool emphasized. Skip the cluttered office."}
-            className="mt-1.5 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
-          />
-        </div>
-
-        <div className="mt-4">
-          <div className="mb-1.5 flex items-center gap-2 text-sm font-semibold">
-            <Flag className="size-4 text-danger" /> Flag a problem
-          </div>
-          <div className="flex gap-2">
-            <input
-              value={flagInput}
-              onChange={(e) => setFlagInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && submitFlag()}
-              placeholder={contentSession ? "e.g. The mic cut out during topic 3 — that take's audio is rough." : "e.g. Couldn’t shoot the garage — heads up for the editor."}
-              className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
-            />
-            <button onClick={submitFlag} className="rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2">
-              Flag
-            </button>
-          </div>
-          {flagFailed && <p role="alert" className="mt-1.5 text-xs text-danger">{flagFailed}</p>}
-          {/* Oct 21 2026: the raised flags fold to one line (open after a new one). */}
-          {flags.length > 0 && (
-            <details className="mt-2 rounded-lg border border-danger/30 bg-danger/5" open={flagsOpen} onToggle={(e) => setFlagsOpen((e.target as HTMLDetailsElement).open)}>
-              <summary className="flex min-h-11 cursor-pointer items-center gap-2 px-3 text-[13px] font-medium text-danger focus-visible:outline-2 focus-visible:outline-brand">
-                <AlertTriangle className="size-3.5 shrink-0" />
-                {flags.length === 1 ? "1 problem flagged" : `${flags.length} problems flagged`}
-                <span className="truncate font-normal text-foreground/70">: {flags[0]}</span>
-              </summary>
-              <ul className="space-y-1 px-3 pb-3">
-                {flags.map((f, i) => (
-                  <li key={i} className="flex items-center gap-2 rounded-lg bg-danger-soft/60 px-2.5 py-1.5 text-xs text-danger">
-                    <AlertTriangle className="size-3.5 shrink-0" /> {f}
-                  </li>
-                ))}
-              </ul>
-            </details>
-          )}
-        </div>
-
-        <MissingWork projectId={project.id} gaps={gaps} office={viewerIsOffice} />
-        <FieldFeedback projectId={project.id} clientName={project.clientName} reports={fieldReports} office={viewerIsOffice} />
-      </StepCard>
-      </>
-      )}
-
-      {/* Submit — hidden while the confirmation is collapsed, so a submitted
-          page ends on "you're good to go" rather than on another submit button. */}
-      <div className={cn("sticky bottom-4 rounded-2xl border bg-surface p-4 shadow-lg", collapsed && !ask && "hidden")}>
-        {/* In-page confirmation — replaces window.confirm(), which mobile and
-            in-app browsers swallow after an await (Harrison's stuck "hold on"). */}
-        {ask && (
-          <div className="mb-3 rounded-xl border border-warning/40 bg-warning/10 p-3">
-            <p className="flex items-start gap-2 text-[13px] leading-relaxed text-foreground/90">
-              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
-              <span>{ask.body}</span>
-            </p>
-            {ask.review && ask.action.kind === "submit" && handoffReceipt(ask.action.scope)}
-            <div className="mt-2.5 flex flex-wrap gap-2">
-              <button
-                type="button"
-                disabled={isPending || !!pendingAttempt || (ask.review && checkingRaw)}
-                onClick={() => {
-                  const a = ask.action;
-                  setAsk(null);
-                  // Dispatched from THIS render, so it carries whatever the
-                  // photographer has typed up to the moment they confirm.
-                  if (a.kind === "submit") {
-                    if (a.reviewFingerprint && a.reviewFingerprint !== reviewFingerprint) { finalize(a.scope); return; }
-                    if (a.reviewFingerprint && rawCheck && Date.now() - Date.parse(rawCheck.checkedAtISO) > 120_000) { finalize(a.scope); return; }
-                    runSubmit(a.force, a.scope, a.baseHash);
-                  }
-                  else applyToggle(a.id, a.next, a.prevReason);
-                }}
-                className="rounded-lg bg-brand-action px-3.5 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
-              >
-                {isPending ? "Submitting…" : ask.review && checkingRaw ? "Checking files…" : ask.yes}
-              </button>
-              <button
-                onClick={() => { rawCheckRequest.current++; setCheckingRaw(false); setAsk(null); }}
-                className="rounded-lg border border-border px-3.5 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground"
-              >
-                Go back
-              </button>
-            </div>
-          </div>
-        )}
-        {!done && !ask && (
-          <p className="mb-2.5 text-[13px] font-medium text-brand">
-            {splitMode
-              ? `Submit the photos and the video each when they're ready. ${payHidden ? "The shoot is done once both are in." : "The shoot is added to your payroll once both are in."}`
-              : payHidden ? "Once submitted, this shoot is done." : "Once submitted, this shoot is added to your payroll."}
+        {orderedServices.length > 0 && (
+          <p className="mt-3 flex items-start gap-2 rounded-lg bg-brand-soft/30 px-3 py-2 text-[13px]">
+            <Info aria-hidden className="mt-0.5 size-4 shrink-0 text-brand" />
+            <span>Ordered: {orderedWords}.{asMember && others.some((x) => x.captured.length) ? ` ${others.filter((x) => x.captured.length).map((x) => `${x.name.split(/\s+/)[0]} ${contributionState(x, null) === "submitted" ? "submitted" : "is on"} ${x.captured.map((c) => SERVICE_LABEL[c].toLowerCase()).join(", ")}`).join("; ")}. Both of you can contribute to the same service.` : ""}</span>
           </p>
         )}
-        {!ask && (splitMode ? (
-          // O05: one button per half, each with its own checks. A half that is
-          // already in can be re-submitted to correct its notes.
-          <div className="space-y-2">
-            {(["photos", "video"] as const).map((half) => {
-              const at = half === "photos" ? halfAt.photos : halfAt.video;
-              const label = half === "photos" ? "photos" : "video";
+        {unchecked.length > 0 && (
+          <ul data-ordered-unchecked className="mt-2 space-y-1.5">
+            {unchecked.map((k) => {
+              const st = statusOf(k);
               return (
-                <div key={half} className="flex items-center justify-between gap-3">
-                  <div className="text-sm text-muted">
-                    {at ? (
-                      <span className="inline-flex items-center gap-1 text-success">
-                        <CheckCircle2 className="size-4" /> {half === "photos" ? "Photos" : "Video"} submitted {etTime(at)}
-                      </span>
-                    ) : (
-                      <>{half === "photos" ? "Photos" : "Video"} not submitted yet</>
-                    )}
-                  </div>
+                <li key={k} data-unchecked={k} className="flex flex-wrap items-center gap-2 rounded-lg border border-border px-3 py-2 text-[13px]">
+                  <span className="font-medium">{SERVICE_LABEL[k]}</span>
+                  <StatusChip tone={st.tone}>{st.words}</StatusChip>
+                  {st.tone === "danger" && (
+                    <button type="button" onClick={() => { setItemsOpen(true); document.getElementById("ordered-items")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} className="ml-auto min-h-11 text-xs font-medium text-brand hover:underline">
+                      Say why
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        <Fold id="ordered-items" className="mt-3" open={itemsOpen} onToggle={setItemsOpen} title="Something ordered wasn't completed?" summary={`each ordered item${notDoneCount ? ` · ${notDoneCount} couldn't be completed` : ""}`}>
+          <p className="mb-2 text-xs text-muted">Every ordered item: mark it uploaded once its files are in Dropbox, or tell the office why it wasn&rsquo;t done.</p>
+          <div className="space-y-2">
+            {deliverables.map((d) => {
+              const meta = DELIVERABLE_META[d.type];
+              const on = uploaded[d.id];
+              const reason = !on ? notDone[d.id] : undefined;
+              const editing = reasonFor === d.id;
+              return (
+                <div key={d.id}>
                   <button
-                    onClick={() => finalize(half)}
-                    disabled={isPending || !!pendingAttempt}
+                    onClick={() => toggle(d.id)}
                     className={cn(
-                      "inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition-opacity hover:opacity-90 disabled:opacity-50",
-                      at ? "border border-border bg-surface text-foreground" : "bg-brand-action text-brand-fg",
+                      "flex min-h-11 w-full items-center gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors",
+                      on ? "border-success/40 bg-success-soft/30" : reason ? "border-warning/40 bg-warning/5" : "bg-surface hover:bg-surface-2",
                     )}
                   >
-                    {isPending ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
-                    {at ? `Re-submit ${label}` : `Submit ${label}`}
+                    {on ? (
+                      <CheckCircle2 className="size-5 shrink-0 text-success" />
+                    ) : reason ? (
+                      <XCircle className="size-5 shrink-0 text-warning" />
+                    ) : (
+                      <Circle className="size-5 shrink-0 text-muted-2" />
+                    )}
+                    <span className="flex-1 text-sm font-medium">
+                      {meta.label}
+                      {d.quantity > 1 && <span className="text-muted"> ×{d.quantity}</span>}
+                    </span>
+                    <span className={cn("text-xs", reason ? "font-semibold text-warning" : "text-muted")}>
+                      {on ? "Uploaded" : reason ? "Couldn't complete" : "Not yet"}
+                    </span>
                   </button>
+                  {reason && !editing && (
+                    <p className="mt-1 rounded-lg bg-warning/10 px-2.5 py-1.5 text-xs text-foreground/80">
+                      <span className="font-semibold text-warning">Why:</span> {reason}{" "}
+                      <button
+                        onClick={() => { setReasonFor(d.id); setReasonText(reason); }}
+                        className="ml-1 inline-flex min-h-11 items-center font-medium text-muted underline"
+                      >
+                        edit
+                      </button>
+                      <button
+                        onClick={() => saveNotCompleted(d.id, "")}
+                        title="Remove the reason — it's just not done yet"
+                        className="ml-2 inline-flex min-h-11 items-center font-medium text-muted underline"
+                      >
+                        clear
+                      </button>
+                    </p>
+                  )}
+                  {!on && !reason && !editing && (
+                    <button
+                      onClick={() => { setReasonFor(d.id); setReasonText(""); }}
+                      className="mt-1 inline-flex min-h-11 items-center px-1 text-xs text-muted underline hover:text-foreground"
+                    >
+                      Can&rsquo;t complete this? Tell the admin why
+                    </button>
+                  )}
+                  {editing && (
+                    <div className="mt-1.5 flex gap-2">
+                      <input
+                        autoFocus
+                        value={reasonText}
+                        onChange={(e) => setReasonText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && reasonText.trim()) saveNotCompleted(d.id, reasonText.trim());
+                          if (e.key === "Escape") { setReasonFor(null); setReasonText(""); }
+                        }}
+                        placeholder={contentSession ? "Why couldn't it be completed? e.g. The client ran out of time — two topics move to the next session" : "Why couldn't it be completed? e.g. Seller refused the drone — needs a re-shoot"}
+                        className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                      />
+                      <button
+                        disabled={toggling || !reasonText.trim()}
+                        onClick={() => saveNotCompleted(d.id, reasonText.trim())}
+                        className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-50"
+                      >
+                        Save
+                      </button>
+                      <button
+                        onClick={() => { setReasonFor(null); setReasonText(""); }}
+                        className="min-h-11 rounded-lg px-2 py-2 text-sm text-muted hover:text-foreground"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })}
-            <div className="text-xs text-muted-2">
-              {doneCount}/{total} uploaded
-              {notDoneCount > 0 && <span className="text-warning"> · {notDoneCount} couldn&rsquo;t be completed</span>}
-              {project.photographerName && ` · ${project.photographerName}`}
-              {draftChip(saveStatus, canSaveDraft)}
-            </div>
           </div>
+        </Fold>
+        <div className="mt-3 rounded-xl border border-dashed border-border p-3">
+          <AddedAtShoot
+            projectId={project.id}
+            initial={addOns}
+            onRowsChange={setAddOns}
+            embedded
+            quickPicks={["Drone photos", "Twilight photos", addOns.some((a) => serviceOfAddonItem(a.item) === "video") ? `Extra video ${addOns.filter((a) => serviceOfAddonItem(a.item) === "video").length + 1}` : "Extra video", "Floor plan", "3D tour"]}
+          />
+        </div>
+      </PortalCard>
+
+      {/* ---- STEP 2: DROPBOX, THEN EACH SERVICE'S DETAILS ---- */}
+      <PortalCard id="dropbox" n={2} title="Upload to Dropbox" subtitle="Upload in Dropbox, then come back here. Opening a folder never marks anything uploaded." done={captured.length > 0 && allMineUploaded}>
+        {folders ? (
+          <>
+            {rawBudget && (liveCount("rawPhotos") ?? 0) > 0 && photoShown && (() => {
+              const n = liveCount("rawPhotos") ?? 0;
+              const tone = n > rawBudget.overage ? "danger" : n > rawBudget.budget ? "warning" : "muted";
+              return (
+                <p className={cn("mb-2.5 inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium", tone === "danger" && "bg-danger/10 text-danger", tone === "warning" && "bg-warning/10 text-warning", tone === "muted" && "bg-surface-2 text-muted")}>
+                  <ImageIcon aria-hidden className="size-3.5" />
+                  Raw photos: {n} / ~{rawBudget.budget} budget{tone === "danger" ? " (over budget, cull before submitting)" : tone === "warning" ? " (approaching the budget)" : ""}
+                </p>
+              );
+            })()}
+            <ul data-dropbox-folders className="divide-y divide-border rounded-xl border border-border">
+              {shownFolders.map((f) => {
+                const n = liveCount(f.key);
+                const backup = f.key === "backupPhotos";
+                return (
+                  <li key={f.key} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2.5">
+                    <FolderOpen aria-hidden className={cn("size-4 shrink-0", backup ? "text-muted" : "text-warning")} />
+                    <span className="min-w-0 flex-1 text-sm font-semibold">{f.label}</span>
+                    <span className="text-xs">
+                      {backup ? <span className="text-muted">Optional · culled extras</span>
+                        : !dropboxConnected && !rawCheck ? <span className="text-muted">Not checked</span>
+                        : n === null ? <span className="text-warning">Couldn&rsquo;t read</span>
+                        : n > 0 ? <span className="inline-flex items-center gap-1 font-medium text-success"><CheckCircle2 aria-hidden className="size-3.5" /> Files found ({n})</span>
+                        : <span className="text-muted">No files yet</span>}
+                    </span>
+                    <a
+                      href={f.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      data-open-dropbox={f.key}
+                      className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-brand/50 px-3 text-sm font-medium text-brand hover:bg-brand-soft/30"
+                    >
+                      Open in Dropbox <ExternalLink aria-hidden className="size-3.5" />
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
+              <span>{lastChecked ? `Last checked ${etDateTime(lastChecked)}` : dropboxConnected ? "Counts from when this page opened" : "Connect Dropbox to see live file counts."}</span>
+              <button type="button" disabled={checkingAgain} onClick={checkDropboxAgain} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 text-sm font-medium text-foreground hover:bg-surface-2 disabled:opacity-50">
+                <RefreshCw aria-hidden className={cn("size-3.5", checkingAgain && "animate-spin")} /> {checkingAgain ? "Checking…" : "Check Dropbox again"}
+              </button>
+            </div>
+          </>
         ) : (
-        <div className="flex items-center justify-between gap-3">
-        <div className="text-sm text-muted">
-          {doneCount}/{total} uploaded
-          {notDoneCount > 0 && <span className="text-warning"> · {notDoneCount} couldn&rsquo;t be completed</span>}
-          {project.photographerName && ` · ${project.photographerName}`}
-          {draftChip(saveStatus, canSaveDraft)}
-        </div>
-        <button
-          onClick={() => finalize()}
-          disabled={isPending || !!pendingAttempt}
-          className="inline-flex items-center gap-2 rounded-xl bg-brand-action px-5 py-2.5 text-sm font-semibold text-brand-fg transition-opacity hover:opacity-90 disabled:opacity-50"
-        >
-          {isPending ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
-          {done ? "Re-submit to editors" : "Everything's uploaded — submit"}
-        </button>
-        </div>
+          foldersSlot
+        )}
+        <label className={cn("mt-3 flex min-h-11 cursor-pointer items-center gap-2.5 rounded-xl border px-3.5 py-2 text-sm", captured.length ? "border-border" : "border-border opacity-60")}>
+          <input
+            type="checkbox"
+            disabled={!captured.length || uploadBusy}
+            checked={captured.length > 0 && allMineUploaded}
+            onChange={(e) => setMyUploads(e.target.checked)}
+            className="size-5 shrink-0 accent-[var(--brand)]"
+          />
+          <span>
+            My selected files are uploaded
+            <span className="block text-xs text-muted">{captured.length ? `${captured.map((k) => SERVICE_LABEL[k]).join(", ")}. Your word, not a file check: Dropbox has to show the files too.` : "Tick what you captured first."}</span>
+          </span>
+        </label>
+        <Fold className="mt-3" title="What the hub can see" summary="reported · found in Dropbox · handed off">
+          <PortalEvidence evidence={evidence} halfAt={halfAt} />
+        </Fold>
+
+        {/* ---- Photo details (photos, drone or twilight ticked) ---- */}
+        {photoShown && policy.photosOrdered && (
+          <section data-service-section="photos" className="mt-5 border-t border-border pt-4">
+            <h3 className="flex items-center gap-2 text-base font-semibold"><ImageIcon aria-hidden className="size-4.5 text-brand" /> Photo details</h3>
+            <div className="mt-3 grid gap-4 sm:grid-cols-2">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold">Gallery order</p>
+                <p className="mb-2 text-xs text-muted">The gallery walks the house the way a buyer would.</p>
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={() => { setOrderChoice("front-to-back"); setOrderNotes(""); }} className={choiceBtn(orderChoice === "front-to-back")}>
+                      <CheckCircle2 className="size-4" /> Front to back
+                    </button>
+                    <button onClick={() => { setOrderChoice("interior-exterior"); setOrderNotes(""); }} className={choiceBtn(orderChoice === "interior-exterior")}>
+                      <CheckCircle2 className="size-4" /> Interior front-to-back, then exterior
+                    </button>
+                    <button onClick={() => setOrderChoice("out-of-order")} className={choiceBtn(orderChoice === "out-of-order", "warn")}>
+                      Different order
+                    </button>
+                  </div>
+                  {orderChoice === "out-of-order" && (
+                    <div className="mt-2.5">
+                      <AutoTextarea
+                        value={orderNotes}
+                        onChange={(e) => setOrderNotes(e.target.value)}
+                        minRows={2}
+                        placeholder="Why, and the order you shot — e.g. contractor in the kitchen: started upstairs beds → baths → living/dining → kitchen last → exteriors."
+                        className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                      />
+                      <p className="mt-1 text-xs text-muted">
+                        Totally fine when the seller, a contractor, or the agent forces it — just tell us the order so nobody has to guess what&rsquo;s where.
+                      </p>
+                    </div>
+                  )}
+              </div>
+              <div className="min-w-0">
+                <p className="mb-2 text-sm font-semibold">Photo standard</p>
+                  <div className="rounded-xl bg-brand-soft/50 px-3.5 py-2.5 text-sm">
+                    {policy.rangeMode === "override" ? (
+                      <>
+                        <span className="font-semibold">This home&rsquo;s target: {policy.photoTarget} photos.</span>{" "}
+                        <span className="text-foreground/80">Set by the office for this property — it beats the size tier.</span>
+                      </>
+                    ) : policy.rangeMode === "legacy" ? (
+                      <>
+                        {/* A pre-SOP job keeps its more lenient briefed ceiling so a tier
+                            change can't retro-fire cull tasks — but when the size IS
+                            known, lead with the range the SOP would ask for. The ceiling
+                            without the range reads as "shoot 80", which is the opposite
+                            of the point. */}
+                        {sqftSaved ? (
+                          <>
+                            <span className="font-semibold">This home: aim for {photoRangeFor(sqftSaved).low}&ndash;{photoRangeFor(sqftSaved).high} finals.</span>{" "}
+                            <span className="text-foreground/80">
+                              Booked before the new standard, so nothing is enforced past ~{policy.photoTarget} —
+                              but the range is the goal.{sizeNote}
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="font-semibold">This shoot predates the new standard — ceiling ~{policy.photoTarget} finals.</span>{" "}
+                            <span className="text-foreground/80">Cull to the SOP anyway: hero shots, one composition once.</span>
+                          </>
+                        )}
+                      </>
+                    ) : liveRange.upper ? (
+                      <>
+                        <span className="font-semibold">This home: aim for {liveRange.low}&ndash;{liveRange.high} finals.</span>{" "}
+                        <span className="text-foreground/80">
+                          {liveRange.upper} is the normal ceiling — and the ceiling is not a goal.
+                          {sizeNote}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="font-semibold">7,000+ sq ft — property dependent.</span>{" "}
+                        <span className="text-foreground/80">
+                          Professional judgment: complete coverage without unnecessary repetition. The sweep checks in
+                          around ~{policy.photoTarget} finals unless the office sets a target.
+                        </span>
+                      </>
+                    )}
+                  </div>
+              </div>
+            </div>
+            {/* THE SIZE THIS TIER IS BUILT ON. Aryeo carries a square footage on
+                7 of 1,701 listings, so without this every home shows the smallest
+                range. The person standing in the house is the one who knows. */}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-surface-2/40 px-3.5 py-2.5">
+              <label htmlFor="sqft" className="text-sm font-medium">
+                Square footage
+                {policy.rangeMode === "sop" && <span className="ml-1 font-normal text-muted">— sets the target above</span>}
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  id="sqft"
+                  inputMode="numeric"
+                  value={sqft}
+                  onChange={(e) => setSqft(e.target.value.replace(/[^0-9]/g, ""))}
+                  onBlur={(e) => void saveSqft(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
+                  placeholder="e.g. 2400"
+                  className="min-h-11 w-28 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-base outline-none focus:border-brand sm:text-sm"
+                />
+                {sqftBusy
+                  ? <span className="text-xs text-muted">saving…</span>
+                  : sqftSaved != null && String(sqftSaved) === sqft
+                    ? <span className="inline-flex items-center gap-1 text-xs text-success"><Check className="size-3.5" />saved</span>
+                    : null}
+                {sqftNeedsCheck ? <button type="button" disabled={sqftBusy} onClick={() => { void checkSqft(); }} className="min-h-11 rounded-lg border border-border px-3 py-2 text-xs disabled:opacity-50">Check current size</button>
+                  : sqftErr && <button type="button" disabled={sqftBusy} onClick={() => { void saveSqft(sqft); }} className="min-h-11 rounded-lg border border-border px-3 py-2 text-xs disabled:opacity-50">Save current size</button>}
+              </div>
+              {sqftErr
+                ? <span className="w-full text-xs text-danger">{sqftErr}</span>
+                : policy.rangeMode === "override"
+                  ? <span className="w-full text-xs text-muted">The office set a target for this home, so the size tier doesn&rsquo;t apply — but it&rsquo;s still worth recording.</span>
+                  : bandText
+                    ? <span className="w-full text-xs text-muted">The order says <strong>{bandText}</strong> — a range the client picked. Type the real figure if you know it and the target sharpens.</span>
+                    : sqftSaved == null
+                      ? <span className="w-full text-xs text-muted">Not on the order. Add it and the range above matches the house.</span>
+                      : null}
+            </div>
+            <Fold className="mt-3" title="Full guide" summary="the 7 rules, room by room, the $1 policy">
+              {/* Oct 21 2026 (upload page tidy): the seven rules fold to one line,
+                  like the room-by-room guide below. Photographers know them; the
+                  line keeps the three that matter most in sight. */}
+              <details className="mt-3 rounded-xl border border-border">
+                <summary className="flex min-h-11 cursor-pointer items-center px-3.5 py-2.5 text-sm font-medium text-muted hover:text-foreground">
+                  The standard: one hero shot per space, one composition once, 5-bracket JPG (7 rules)
+                </summary>
+                <div className="border-t border-border px-3.5 py-3">
+                <ul className="space-y-1.5 text-sm leading-relaxed text-foreground/85">
+                  <li><strong>Every space gets one HERO SHOT</strong> — the photo you&rsquo;d pick if you could only show one. Supporting shots exist only to show what the hero can&rsquo;t.</li>
+                  <li><strong>One composition, once.</strong> No distance or zoom variations of the same angle.</li>
+                  <li><strong>Every photo must add new information.</strong> &ldquo;I like both&rdquo; is not a reason.</li>
+                  <li><strong>Open-concept areas are one space</strong> — not four rooms&rsquo; worth of angles.</li>
+                  <li><strong>5-bracket JPG.</strong> A bracket set counts as ONE composition. Not RAW, not 3-bracket.</li>
+                  <li><strong>Trash cans and pet items are a no-go.</strong> Fix it on site — don&rsquo;t lean on the editor.</li>
+                  <li><strong>Alternates go to Backup Photos</strong> — and cull that folder too.</li>
+                </ul>
+                </div>
+              </details>
+              <details className="mt-3 rounded-xl border border-border">
+                <summary className="cursor-pointer px-3.5 py-2.5 text-sm font-medium text-muted hover:text-foreground">
+                  Room-by-room guide (guidelines, not quotas)
+                </summary>
+                <div className="overflow-x-auto border-t border-border">
+                  <table className="w-full text-[13px]">
+                    <tbody className="divide-y divide-border/60">
+                      {[
+                        ["Front exterior", "2–4 · up to 5 with aerials"],
+                        ["Rear exterior", "2–4 · up to 5 with aerials"],
+                        ["Front door / entry", "1"],
+                        ["Foyer / entrance", "1–2"],
+                        ["Dining room", "1–2"],
+                        ["Living / family room", "2–3"],
+                        ["Kitchen", "3–5 · up to 6 when justified"],
+                        ["Mudroom / laundry", "1–2"],
+                        ["Powder room", "1"],
+                        ["Full bathroom", "1 · 2 when necessary"],
+                        ["Primary bathroom", "2–3"],
+                        ["Primary bedroom", "2–3"],
+                        ["Secondary bedroom", "1–2"],
+                        ["Basement", "2–4 by layout"],
+                        ["Office / bonus room", "1–2"],
+                        ["Bar", "1–3"],
+                        ["Deck / patio", "1–2"],
+                        ["Pool", "2–3"],
+                        ["Pool house / detached", "1–3 by importance"],
+                        ["Other spaces", "1–2"],
+                      ].map(([space, n]) => (
+                        <tr key={space}>
+                          <td className="px-3.5 py-1.5 text-foreground/85">{space}</td>
+                          <td className="px-3.5 py-1.5 text-right text-muted tabular-nums">{n}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p className="border-t border-border px-3.5 py-2 text-xs text-muted-2">
+                    Guidelines, not quotas — use professional judgment.{" "}
+                    <a href="/resources/photography-sop" target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">
+                      Full table in the SOP ↗
+                    </a>
+                  </p>
+                </div>
+              </details>
+              <p className="mt-3 text-[13px] leading-relaxed text-muted">
+                Unnecessary photos cost real money — extra editing, plus an extra 1–2 hours per job of re-culling
+                after the fact, which kills our turnaround time and pulls the admin and owner off other work. A{" "}
+                <strong className="text-foreground/85">$1 production charge may be deducted per clearly unnecessary photo</strong>{" "}
+                — duplicates, distance variations, backups uploaded as finals. You will never be charged for photos a
+                property genuinely needed: this is not a photo-count penalty, and a property that truly needs more gets more.{" "}
+                <a href="/resources/photography-sop" target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">
+                  Read the full Photography SOP ↗
+                </a>
+              </p>
+            </Fold>
+            <MiniHeading>Before you upload — confirm all four</MiniHeading>
+            <div className="space-y-2">
+              <CheckRow checked={checks.coverage} onChange={setCheck("coverage")} title="Coverage"
+                text="Every important space is represented, each has its hero shot, exteriors and drone (if ordered) are complete." />
+              <CheckRow checked={checks.culling} onChange={setCheck("culling")} title="Culling"
+                text="Failures and test shots gone, duplicates and distance variations gone, every supporting photo adds something, backups separated." />
+              <CheckRow checked={checks.quality} onChange={setCheck("quality")} title="Quality"
+                text="Distractions were fixed on site — no avoidable trash cans, pets, or pet items in frame." />
+              <CheckRow checked={checks.count} onChange={setCheck("count")} title="Count"
+                text={policy.rangeMode !== "sop"
+                  ? `The gallery makes sense for this home (~${policy.photoTarget} target) — every photo has a reason to exist.`
+                  : policy.range.upper
+                    ? `The gallery makes sense for this home (aim ${policy.range.low}–${policy.range.high}) — anything above has a reason to exist.`
+                    : "The gallery size makes sense for this property — every photo has a reason to exist."} />
+            </div>
+            <div className="mt-4">
+              <p className="text-sm font-semibold">Anything to remove in editing?</p>
+              <p className="mb-2 text-xs text-muted">Pets, trash cans, vehicles, clutter that couldn&rsquo;t be moved. Move what you can on site.</p>
+              <div role="radiogroup" aria-label="Anything to remove in editing?" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <button type="button" role="radio" aria-checked={nothingToRemove} onClick={() => { setNothingToRemove(true); setRemoval(""); setRemovalOpen(false); }} className={choiceBtn(nothingToRemove)}>
+                  <CheckCircle2 className="size-4" /> Nothing to remove (I checked)
+                </button>
+                <button type="button" role="radio" aria-checked={!nothingToRemove && (removalOpen || !!removal.trim())} onClick={() => { setNothingToRemove(false); setRemovalOpen(true); }} className={choiceBtn(!nothingToRemove && (removalOpen || !!removal.trim()), "warn")}>
+                  Add removal notes
+                </button>
+              </div>
+              {!nothingToRemove && (removalOpen || !!removal.trim()) && (
+                <AutoTextarea
+                  value={removal}
+                  onChange={(e) => { setRemoval(e.target.value); if (e.target.value.trim()) setNothingToRemove(false); }}
+                  minRows={2}
+                  aria-label="What to remove in editing"
+                  placeholder="e.g. Trash cans in exterior 3–4 · dog bed in the primary bedroom · neighbor's car in the driveway shots."
+                  className="mt-2 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                />
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* ---- Video details (video ticked) ---- */}
+        {videoShown && policy.videoOrdered && (
+          <section data-service-section="video" className="mt-5 border-t border-border pt-4">
+            <h3 className="flex items-center gap-2 text-base font-semibold"><VideoIcon aria-hidden className="size-4.5 text-brand" /> Video details</h3>
+            <p className="mb-3 mt-0.5 text-[13px] text-muted">
+              {videoStyleName(policy.videoStyle) ?? "Video"} · {colorProfile ? `shot on ${COLOR_PROFILES[colorProfile].replace(", ", " and ")}` : "pick the color profile you shot in"}
+              {contentSession ? " · what you filmed, and notes for the editor" : spec.requireIntro && !fullFields ? " · agent intro script and notes" : " · script and your instructions"}
+            </p>
+            {/* Oct 22 2026: a job that owes two or more videos says so first,
+                and which video this first set of answers is for. Each later
+                video has its own area at the end of this step. */}
+            {videos && laterVideos.length > 0 && (
+              <div data-video-count={videos.first.total} className="mb-4 rounded-xl border border-brand/30 bg-brand-soft/30 px-3.5 py-2.5">
+                <p className="text-sm font-semibold">This shoot has {videos.first.total} videos, each with its own instructions.</p>
+                <ol className="mt-1 list-decimal pl-5 text-[13px] text-foreground/80">
+                  {[videos.first, ...laterVideos].map((v) => (
+                    <li key={v.key}>{v.label} · {v.tier}{v.dueISO ? `, due ${etDateTime(new Date(v.dueISO))}` : ""}</li>
+                  ))}
+                </ol>
+                <p data-first-video className="mt-1.5 text-[13px] font-medium">
+                  Video 1 of {videos.first.total}: {videos.first.label}. The answers right below are for this video.
+                </p>
+              </div>
+            )}
+            {/* Oct 21 2026 (Jordan): the color profile is the photographer's
+                pick, required, never guessed from the order's tier. */}
+            <div className="mb-4 border-b border-border pb-3.5">
+              <p id="color-profile-label" className="text-[13px] font-medium text-muted">
+                {laterVideos.length ? "Color profile you shot video 1 in" : "Color profile you shot in"} <span className="text-danger">*</span>
+              </p>
+              <div role="radiogroup" aria-labelledby="color-profile-label" className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {COLOR_PROFILE_CHOICES.map((c) => {
+                  const on = colorProfile === c.key;
+                  return (
+                    <button
+                      key={c.key}
+                      type="button"
+                      role="radio"
+                      aria-checked={on}
+                      onClick={() => setColorProfile(c.key)}
+                      className={cn(
+                        "min-h-11 rounded-xl border px-3 py-2 text-sm font-semibold transition-colors",
+                        on ? "border-brand bg-brand-soft text-brand" : "border-border bg-surface text-foreground hover:border-brand/50",
+                      )}
+                    >
+                      {c.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {colorProfile === null && <p className="mt-1.5 text-xs text-muted-2">Pick one so the editor grades the footage the right way.</p>}
+            </div>
+            {/* Oct 22 2026: "Instructions added to Dropbox" — the file stands in
+                for the typed flow and vision below. */}
+            <DropboxInstructions projectId={project.id} current={dropboxInstructions} />
+            {/* §7.5: what the editor is told for each video, read here before
+                the photographer writes their own instructions below. */}
+            {briefs.length > 0 && <div className="mb-4 border-b border-border pb-3.5">{briefCard}</div>}
+            {script ? (
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[13px] font-medium text-muted">The shoot script (from Script Studio)</p>
+                  {script.url && (
+                    <a href={script.url} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-brand hover:underline">
+                      Open in Studio ↗
+                    </a>
+                  )}
+                </div>
+                {/* Studio scripts are MARKDOWN (Jordan, Sep 1) — read it rendered,
+                    and only open the formatting editor after "Changed on site". */}
+                {scriptChoice === "edited" ? (
+                  <MarkdownEditor value={scriptText} onChange={setScriptText} minRows={5} className="mt-1.5" />
+                ) : (
+                  <div className="mt-1.5 max-h-80 overflow-y-auto scroll-thin rounded-lg border border-border bg-surface-2/60 px-3 py-2">
+                    <Markdown content={scriptText} />
+                  </div>
+                )}
+                <p className="mt-1.5 text-[13px] text-muted">
+                  Did the agent deliver it as written? If anything changed on site, pick &ldquo;Changed on site&rdquo; and fix the text — the editor cuts to what you confirm here.
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button onClick={() => { setScriptChoice("as-written"); setScriptText(script.body); }} className={choiceBtn(scriptChoice === "as-written")}>
+                    <CheckCircle2 className="size-4" /> Delivered as written
+                  </button>
+                  <button onClick={() => setScriptChoice("edited")} className={choiceBtn(scriptChoice === "edited", "warn")}>
+                    Changed on site — edit it
+                  </button>
+                </div>
+                {scriptChoice === "edited" && (
+                  <input
+                    value={scriptNote}
+                    onChange={(e) => setScriptNote(e.target.value)}
+                    placeholder="What changed? (one line — e.g. agent swapped the hook, dropped talking point 2)"
+                    className="mt-2 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                  />
+                )}
+              </div>
+            ) : spec.requireScript ? (
+              <div>
+                <p className="text-sm font-semibold">
+                  The script <span className="text-brand">— required for this package</span>
+                </p>
+                <p className="mt-0.5 text-[13px] text-muted">
+                  No script came through from Script Studio — type or paste the script exactly as it was delivered on camera. Premium packages can&rsquo;t be submitted without it.
+                </p>
+                <MarkdownEditor
+                  value={scriptText}
+                  onChange={setScriptText}
+                  minRows={4}
+                  placeholder="The full script, word for word as filmed."
+                  className="mt-1.5"
+                />
+              </div>
+            ) : spec.requireIntro || sessionTopics || topicsUnavailable ? null : (
+              // Not on a content session: its scripts come from the program
+              // (the topic list below says which are signed off), never Studio.
+              <p className="rounded-lg bg-surface-2/70 px-3 py-2 text-[13px] text-muted">
+                No script found in Script Studio for this shoot. If the agent read from one, put it in the instructions below so the editor has it.
+              </p>
+            )}
+
+            <div className={cn("border-border", (script || (!spec.requireIntro && !sessionTopics)) && "mt-4 border-t pt-3.5")}>
+              {/* CONTENT SESSION ORDER (Oct 5): what was filmed, topic by topic
+                  with its clip notes, comes FIRST; the general box after it. */}
+              {contentSession && topicsBlock}
+
+              {spec.minimalReel ? (
+                <p className="text-sm font-semibold">
+                  Anything the editor should know? <span className="font-normal text-muted">— optional</span>
+                </p>
+              ) : notesRequired ? (
+                // Standard tier (Jordan, Sep 2): one box — no style picker, no
+                // sections — but still the photographer's own words.
+                <>
+                  <p className="text-sm font-semibold">
+                    Your instructions for the edit <span className="text-brand">— required</span>
+                  </p>
+                  <p className="mt-0.5 text-[13px] text-muted">
+                    Standard-tier videos are cut from one box — the flow, the must-show moments, anything to avoid.
+                  </p>
+                </>
+              ) : spec.requireIntro && !fullFields ? (
+                <p className="text-sm font-semibold">
+                  Intro script &amp; editing notes <span className="text-brand">— intro required</span>
+                </p>
+              ) : (
+                <>
+                  {contentSession ? (
+                    // A CONTENT SESSION'S GENERAL BOX (Oct 5): it comes after the
+                    // topics and says it is for every video; one-topic notes
+                    // belong on the topic above.
+                    <div className="mt-4 border-t border-border pt-3.5">
+                      <p className="text-sm font-semibold">
+                        Instructions for the edit <span className="font-normal text-muted">— applies to all videos</span>
+                      </p>
+                      <p className="mt-0.5 text-[13px] text-muted">
+                        A note about one video goes on its topic above. The vision is required{spec.fixedStyle ? "; every monthly video is cut in the personal-branding style." : " and so is the style."}
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="text-sm font-semibold">
+                        Your instructions for the edit <span className="text-brand">— required</span>
+                      </p>
+                      <p className="mt-0.5 text-[13px] text-muted">
+                        Sectioned so the editor can act on it — fill what applies; vision and style are required.
+                      </p>
+                    </>
+                  )}
+
+                  {/* Monthly plans have ONE style — no dropdown (Jordan, Sep 1).
+                      A content session says it in the line above instead. */}
+                  {spec.fixedStyle ? (contentSession ? null : (
+                    <div className="mt-2.5">
+                      <label className="text-[13px] font-medium text-muted">Edit style</label>
+                      <p className="mt-1 inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm font-medium">
+                        <CheckCircle2 className="size-4 text-success" /> {VID_STYLES.branding}
+                      </p>
+                      <p className="mt-1 text-xs text-muted">Monthly content is always cut in the personal-branding style.</p>
+                    </div>
+                  )) : (
+                    <div className="mt-2.5">
+                      <label className="text-[13px] font-medium text-muted">Edit style <span className="text-brand">*</span></label>
+                      <select
+                        value={vidStyle ?? ""}
+                        onChange={(e) => setVidStyle((e.target.value || null) as VidStyle | null)}
+                        className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand sm:max-w-xs"
+                      >
+                        <option value="">Pick a style…</option>
+                        <option value="fast">{VID_STYLES.fast}</option>
+                        <option value="cinematic">{VID_STYLES.cinematic}</option>
+                      </select>
+                      <p className="mt-1 text-xs text-muted">
+                        Ask the realtor on site which they want — luxury often leans timeless &amp; elegant, but not always. Never guess, just ask.
+                      </p>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {!contentSession && topicsBlock}
+
+              {(() => {
+                const field = (s: (typeof VID_SECTIONS)[number]) => {
+                  const copy = contentSession ? CONTENT_SECTION_COPY[s.key] : undefined;
+                  return (
+                    <div key={s.key}>
+                      <label className="text-[13px] font-medium text-muted">
+                        {copy?.title ?? s.title}{isRequiredKey(s.key) && <span className="text-brand"> *</span>}
+                      </label>
+                      <AutoTextarea
+                        value={vidSections[s.key]}
+                        onChange={(e) => setVidSections((v) => ({ ...v, [s.key]: e.target.value }))}
+                        minRows={s.key === "vision" || s.key === "intro" ? 3 : 2}
+                        placeholder={copy?.placeholder ?? s.placeholder}
+                        className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                      />
+                    </div>
+                  );
+                };
+                const shown = sectionKeys.map((k) => VID_SECTIONS.find((sec) => sec.key === k)!);
+                // A content session folds the optional boxes (Oct 5): the
+                // required vision stays open, the rest is one tap away — and
+                // opens by itself when any of it already holds words.
+                const folded = contentSession ? shown.filter((x) => !isRequiredKey(x.key)) : [];
+                const visible = shown.filter((x) => !folded.includes(x));
+                return (
+                  <>
+                    <div className="mt-3 space-y-3">{visible.map((x) => field(x))}</div>
+                    {folded.length > 0 && (
+                      <details className="mt-3 rounded-lg border border-border" open={folded.some((x) => !!vidSections[x.key]?.trim())}>
+                        <summary className="flex min-h-11 cursor-pointer items-center px-3 text-sm font-medium text-muted hover:text-foreground">
+                          More for the editor <span className="ml-1 font-normal">— optional</span>
+                        </summary>
+                        <div className="space-y-3 border-t border-border p-3">{folded.map((x) => field(x))}</div>
+                      </details>
+                    )}
+                  </>
+                );
+              })()}
+
+              {/* Oct 23 2026: video 1's song request (each later video has its own below). */}
+              <div className="mt-3">
+                <SongRequestField
+                  id="song-video-1"
+                  value={song}
+                  onChange={setSong}
+                  existing={existingSongs.job ?? []}
+                  videoName={laterVideos.length ? "video 1" : "the video"}
+                />
+              </div>
+
+              {laterVideos.map((v) => (
+                <LaterVideoArea key={v.key} video={v} state={laterVids[v.key]} onChange={(patch) => setLater(v.key, patch)} existingSongs={existingSongs[v.key] ?? []} />
+              ))}
+
+              {requiredLabels.length > 0 && (
+                <p className="mt-1.5 text-xs text-warning">
+                  {`${requiredLabels.length > 2 ? `${requiredLabels.slice(0, -1).join(", ")} and ${requiredLabels[requiredLabels.length - 1]}` : requiredLabels.join(" and ")} can’t be left blank${spec.requireIntro ? " — the editor cuts and captions to the intro" : ""}.${contentSession ? "" : " Skipping the instructions forfeits future premium shoot assignments."}`}
+                </p>
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* ---- Videos added on site: their own areas, numbered after the ordered ones ---- */}
+        {videoShown && addedVideoRows.map((a, i) => (
+          <LaterVideoArea
+            key={a.id}
+            video={{
+              key: `added:${a.id}`,
+              number: orderedVideoCount + i + 1,
+              total: orderedVideoCount + addedVideoRows.length,
+              label: `added on site (${a.item})`,
+              tier: "Added on site",
+              shape: "agent_intro",
+              own: addedVideoTexts[a.id]?.text ?? null,
+              dueISO: null,
+            }}
+            state={addedVids[a.id]}
+            onChange={(patch) => setAddedVid(a.id, patch)}
+            pendingNote={a.handled
+              ? "The office has handled the order line. These instructions join this video as soon as it is on the job; nothing here is lost."
+              : "Added on site, waiting for office approval. Fill it in now: it is saved, and it joins this video once the office adds it to the order."}
+          />
         ))}
+        {!videoShown && addedVideoRows.length > 0 && (
+          <p className="mt-4 text-[13px] text-muted">Tick Video above to write the instructions for the {addedVideoRows.length === 1 ? "video" : "videos"} added on site.</p>
+        )}
+
+        {/* ---- Floor plan / 3D tour / headshots: nothing extra to answer ---- */}
+        {(["floorplan", "tour", "headshots", "twilight"] as const).filter((k) => has(k) && (k !== "twilight" || !policy.photosOrdered)).map((k) => (
+          <p key={k} data-service-section={k} className="mt-4 rounded-lg bg-surface-2/60 px-3 py-2 text-[13px] text-foreground/85">
+            <span className="font-semibold">{SERVICE_LABEL[k]}:</span> nothing extra to fill in. Upload the files to Dropbox and mark them uploaded above{orderedBy.has(k) ? "" : "; the office adds it to the order"}.
+          </p>
+        ))}
+        {(photoShown && !policy.photosOrdered) && (
+          <p className="mt-4 rounded-lg bg-surface-2/60 px-3 py-2 text-[13px] text-foreground/85">Photos weren&rsquo;t on the order. Upload them to Raw Photos; the office adds them to the order from your note under Step 1.</p>
+        )}
+        {(videoShown && !policy.videoOrdered && addedVideoRows.length === 0) && (
+          <p className="mt-4 rounded-lg bg-surface-2/60 px-3 py-2 text-[13px] text-foreground/85">Video wasn&rsquo;t on the order. Add it under &ldquo;Add a service that wasn&rsquo;t ordered&rdquo; in Step 1 and its own instructions appear here.</p>
+        )}
+        {!captured.length && (
+          <p className="mt-4 text-[13px] text-muted">Tick what you captured in Step 1 and its details appear here.</p>
+        )}
+      </PortalCard>
+
+      {/* ---- STEP 3: INSTRUCTIONS AND SUBMIT ---- */}
+      <PortalCard id="submit" n={3} title={asMember ? "Shared instructions & submit" : "Notes & submit"} subtitle={asMember ? "Review what is already filled in, then edit or add." : "Add anything else the editor should know (optional)."} done={pageDone}>
+        {shared && sharedShoot ? (
+          <>
+            <SharedInstructions
+              projectId={project.id}
+              initial={sharedShoot.notes}
+              viewerName={viewerName ?? sharedShoot.me?.name ?? "you"}
+              handoffISO={firstHandoffISO}
+              blocked={!!briefNoteBlocked}
+              requests={(agentRequests ?? []).filter((r) => r.group !== "history").map((r) => ({ id: r.id, text: r.original, source: r.source }))}
+            />
+            {project.editorBrief?.trim() && (
+              <div className="mt-3 rounded-xl border border-border bg-surface-2/40 px-3 py-2.5 text-[13px]">
+                <p className="text-xs font-semibold text-muted">Already on the job for the editor{submission.lastEdited ? ` (last edited by ${submission.lastEdited.by})` : ""}</p>
+                <p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{project.editorBrief}</p>
+                <p className="mt-1 text-xs text-muted">Kept as it is. Add to it with a shared instruction above.</p>
+              </div>
+            )}
+          </>
+        ) : (
+          <div>
+            <label className="block text-sm font-semibold">
+              Additional editor notes
+              {contentSession && <span className="font-normal text-muted"> — applies to all videos</span>}
+            </label>
+            <AutoTextarea
+              value={editorBrief}
+              onChange={(e) => setEditorBrief(e.target.value)}
+              minRows={2}
+              placeholder={contentSession
+                ? "e.g. Captions on every video. Their new logo is in the brand kit. The second half of the card is B-roll for all topics."
+                : "e.g. House faces west so exteriors are backlit — recover sky. Seller wants the pool emphasized. Skip the cluttered office."}
+              className="mt-1.5 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+            />
+          </div>
+        )}
+
+        {!pageDone && <div className="mt-4 sm:hidden">{readinessBlock}</div>}
+        <Fold className="mt-4" title={<span className="inline-flex items-center gap-1.5"><Plus aria-hidden className="size-4" /> Report a problem, new request, or extra service</span>} summary={flags.length || gaps.length ? `${flags.length + gaps.length} on file` : undefined}>
+          <div>
+            <div className="mb-1.5 flex items-center gap-2 text-sm font-semibold">
+              <Flag className="size-4 text-danger" /> Flag a problem
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={flagInput}
+                onChange={(e) => setFlagInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && submitFlag()}
+                placeholder={contentSession ? "e.g. The mic cut out during topic 3 — that take's audio is rough." : "e.g. Couldn’t shoot the garage — heads up for the editor."}
+                className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+              />
+              <button onClick={submitFlag} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2">
+                Flag
+              </button>
+            </div>
+            {flagFailed && <p role="alert" className="mt-1.5 text-xs text-danger">{flagFailed}</p>}
+            {/* Oct 21 2026: the raised flags fold to one line (open after a new one). */}
+            {flags.length > 0 && (
+              <details className="mt-2 rounded-lg border border-danger/30 bg-danger/5" open={flagsOpen} onToggle={(e) => setFlagsOpen((e.target as HTMLDetailsElement).open)}>
+                <summary className="flex min-h-11 cursor-pointer items-center gap-2 px-3 text-[13px] font-medium text-danger focus-visible:outline-2 focus-visible:outline-brand">
+                  <AlertTriangle className="size-3.5 shrink-0" />
+                  {flags.length === 1 ? "1 problem flagged" : `${flags.length} problems flagged`}
+                  <span className="truncate font-normal text-foreground/70">: {flags[0]}</span>
+                </summary>
+                <ul className="space-y-1 px-3 pb-3">
+                  {flags.map((f, i) => (
+                    <li key={i} className="flex items-center gap-2 rounded-lg bg-danger-soft/60 px-2.5 py-1.5 text-xs text-danger">
+                      <AlertTriangle className="size-3.5 shrink-0" /> {f}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+          <MissingWork projectId={project.id} gaps={gaps} office={viewerIsOffice} />
+          <FieldFeedback projectId={project.id} clientName={project.clientName} reports={fieldReports} office={viewerIsOffice} />
+          {slots.debrief && <div className="mt-4 border-t border-border pt-4">{slots.debrief}</div>}
+          {slots.additionalShoot && <div className="mt-4 border-t border-border pt-4">{slots.additionalShoot}</div>}
+        </Fold>
+      </PortalCard>
+      </>
+      )}
+
+        {/* Submit — hidden while the confirmation is collapsed, so a submitted
+            page ends on "you're good to go" rather than on another submit button. */}
+        <div data-submit-bar className={cn("sticky bottom-3 z-10 rounded-2xl border bg-surface p-4 shadow-lg", collapsed && !ask && "hidden")}>
+          {/* In-page confirmation — replaces window.confirm(), which mobile and
+              in-app browsers swallow after an await (Harrison's stuck "hold on"). */}
+          {ask && (
+            <div className="mb-3 rounded-xl border border-warning/40 bg-warning/10 p-3">
+              <p className="flex items-start gap-2 text-[13px] leading-relaxed text-foreground/90">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+                <span>{ask.body}</span>
+              </p>
+              {ask.review && ask.action.kind === "submit" && handoffReceipt(ask.action.scope)}
+              <div className="mt-2.5 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={isPending || !!pendingAttempt || (ask.review && checkingRaw)}
+                  onClick={() => {
+                    const a = ask.action;
+                    setAsk(null);
+                    // Dispatched from THIS render, so it carries whatever the
+                    // photographer has typed up to the moment they confirm.
+                    if (a.kind === "submit") {
+                      if (a.reviewFingerprint && a.reviewFingerprint !== reviewFingerprint) { finalize(a.scope); return; }
+                      if (a.reviewFingerprint && rawCheck && Date.now() - Date.parse(rawCheck.checkedAtISO) > 120_000) { finalize(a.scope); return; }
+                      runSubmit(a.force, a.scope, a.baseHash);
+                    }
+                    else applyToggle(a.id, a.next, a.prevReason);
+                  }}
+                  className="min-h-11 rounded-lg bg-brand-action px-3.5 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
+                >
+                  {isPending ? "Submitting…" : ask.review && checkingRaw ? "Checking files…" : ask.yes}
+                </button>
+                <button
+                  onClick={() => { rawCheckRequest.current++; setCheckingRaw(false); setAsk(null); }}
+                  className="min-h-11 rounded-lg border border-border px-3.5 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+                >
+                  Go back
+                </button>
+              </div>
+            </div>
+          )}
+          {/* On a phone the bar stays small (just the buttons); the checklist
+              and the payroll line sit at the end of Step 3 instead. */}
+          {!pageDone && !ask && <div className="hidden sm:block">{readinessBlock}</div>}
+          {!ask && (splitMode ? (
+            // O05: one button per half, each with its own checks. A half that is
+            // already in can be re-submitted to correct its notes.
+            <div className="space-y-2">
+              {(["photos", "video"] as const).map((half) => {
+                const at = half === "photos" ? halfAt.photos : halfAt.video;
+                const label = half === "photos" ? "photos" : "video";
+                return (
+                  <div key={half} className="flex items-center justify-between gap-3">
+                    <div className="text-sm text-muted">
+                      {at ? (
+                        <span className="inline-flex items-center gap-1 text-success">
+                          <CheckCircle2 className="size-4" /> {half === "photos" ? "Photos" : "Video"} submitted {etTime(at)}
+                        </span>
+                      ) : (
+                        <>{half === "photos" ? "Photos" : "Video"} not submitted yet</>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => finalize(half)}
+                      disabled={isPending || !!pendingAttempt}
+                      className={cn(
+                        "inline-flex min-h-11 items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition-opacity hover:opacity-90 disabled:opacity-50",
+                        at ? "border border-border bg-surface text-foreground" : "bg-brand-action text-brand-fg",
+                      )}
+                    >
+                      {isPending ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
+                      {at ? `Re-submit ${label}` : `Submit ${label}`}
+                    </button>
+                  </div>
+                );
+              })}
+              <div className="text-xs text-muted-2">
+                {doneCount}/{total} uploaded
+                {notDoneCount > 0 && <span className="text-warning"> · {notDoneCount} couldn&rsquo;t be completed</span>}
+                {project.photographerName && ` · ${project.photographerName}`}
+                {draftChip(saveStatus, canSaveDraft)}
+              </div>
+            </div>
+          ) : (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="text-sm text-muted">
+            {doneCount}/{total} uploaded
+            {notDoneCount > 0 && <span className="text-warning"> · {notDoneCount} couldn&rsquo;t be completed</span>}
+            {project.photographerName && ` · ${project.photographerName}`}
+            {draftChip(saveStatus, canSaveDraft)}
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {canSaveDraft && !pageDone && (
+              <button
+                type="button"
+                onClick={() => { void saverRef.current?.flush(); }}
+                className="inline-flex min-h-11 items-center rounded-xl border border-border px-4 text-sm font-medium hover:bg-surface-2"
+              >
+                Save for later
+              </button>
+            )}
+            <button
+              onClick={() => (partOnly ? submitPart() : finalize(myScope))}
+              disabled={isPending || !!pendingAttempt}
+              className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-action px-5 py-2.5 text-sm font-semibold text-brand-fg transition-opacity hover:opacity-90 disabled:opacity-50"
+            >
+              {isPending ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
+              {submitLabel}
+            </button>
+          </div>
+          </div>
+          ))}
+        </div>
+        {asMember && !pageDone && (
+          <p className="flex items-start gap-2 rounded-xl bg-brand-soft/30 px-3.5 py-2.5 text-[13px] text-foreground/85">
+            <Info aria-hidden className="mt-0.5 size-4 shrink-0 text-brand" />
+            The editor receives one combined brief. {otherNames.length ? `${otherNames.join(" and ")}'s part stays recorded as it is.` : "Each part stays recorded separately."}
+          </p>
+        )}
+          <div className="lg:hidden">{helpCard}</div>
+        </div>
       </div>
     </div>
   );
@@ -3204,8 +3855,8 @@ function MissingWork({ projectId, gaps, office }: { projectId: string; gaps: Gap
                 {g.resolutionNote && <p className="mt-0.5 text-xs text-muted">{g.resolutionNote}</p>}
                 {office && !closed && planFor !== g.id && closeFor !== g.id && (
                   <div className="mt-1.5 flex gap-3 text-xs">
-                    <button onClick={() => { setPlanFor(g.id); setOwner(g.ownerKey ?? ""); setScopeNote(g.scopeNote ?? ""); setShots(g.shotList.map((l) => l.shot).join("\n")); }} className="font-medium text-brand underline">Plan recovery</button>
-                    <button onClick={() => { setCloseFor(g.id); setCloseNote(""); }} className="font-medium text-muted underline">Close</button>
+                    <button onClick={() => { setPlanFor(g.id); setOwner(g.ownerKey ?? ""); setScopeNote(g.scopeNote ?? ""); setShots(g.shotList.map((l) => l.shot).join("\n")); }} className="min-h-11 font-medium text-brand underline">Plan recovery</button>
+                    <button onClick={() => { setCloseFor(g.id); setCloseNote(""); }} className="min-h-11 font-medium text-muted underline">Close</button>
                   </div>
                 )}
                 {office && planFor === g.id && (
@@ -3224,8 +3875,8 @@ function MissingWork({ projectId, gaps, office }: { projectId: string; gaps: Gap
                       </>
                     )}
                     <div className="flex gap-2">
-                      <button disabled={pending} onClick={() => plan(g.id)} className="rounded-lg bg-brand-action px-3 py-1.5 text-sm font-semibold text-brand-fg disabled:opacity-50">Save plan</button>
-                      <button onClick={() => setPlanFor(null)} className="rounded-lg px-2 py-1.5 text-sm text-muted">Cancel</button>
+                      <button disabled={pending} onClick={() => plan(g.id)} className="min-h-11 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-semibold text-brand-fg disabled:opacity-50">Save plan</button>
+                      <button onClick={() => setPlanFor(null)} className="min-h-11 rounded-lg px-2 py-1.5 text-sm text-muted">Cancel</button>
                     </div>
                   </div>
                 )}
@@ -3233,9 +3884,9 @@ function MissingWork({ projectId, gaps, office }: { projectId: string; gaps: Gap
                   <div className="mt-2 space-y-1.5">
                     <input value={closeNote} onChange={(e) => setCloseNote(e.target.value)} placeholder="How it was settled — this note is the record" className={input} />
                     <div className="flex flex-wrap gap-2">
-                      <button disabled={pending || !closeNote.trim()} onClick={() => close(g.id, "RESOLVED")} className="rounded-lg bg-brand-action px-3 py-1.5 text-sm font-semibold text-brand-fg disabled:opacity-50">Recovered</button>
-                      <button disabled={pending || !closeNote.trim()} onClick={() => close(g.id, "CANCELLED")} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium disabled:opacity-50">No longer needed</button>
-                      <button onClick={() => setCloseFor(null)} className="rounded-lg px-2 py-1.5 text-sm text-muted">Cancel</button>
+                      <button disabled={pending || !closeNote.trim()} onClick={() => close(g.id, "RESOLVED")} className="min-h-11 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-semibold text-brand-fg disabled:opacity-50">Recovered</button>
+                      <button disabled={pending || !closeNote.trim()} onClick={() => close(g.id, "CANCELLED")} className="min-h-11 rounded-lg border border-border px-3 py-1.5 text-sm font-medium disabled:opacity-50">No longer needed</button>
+                      <button onClick={() => setCloseFor(null)} className="min-h-11 rounded-lg px-2 py-1.5 text-sm text-muted">Cancel</button>
                     </div>
                   </div>
                 )}
@@ -3251,12 +3902,12 @@ function MissingWork({ projectId, gaps, office }: { projectId: string; gaps: Gap
           <input value={what} onChange={(e) => setWhat(e.target.value)} maxLength={200} placeholder="Which shot? e.g. Pool at dusk" className={input} />
           <input value={why} onChange={(e) => setWhy(e.target.value)} maxLength={500} placeholder="Why? e.g. Rain rolled in before sunset" className={input} />
           <div className="flex gap-2">
-            <button disabled={pending || !what.trim() || !why.trim()} onClick={report} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">Tell the office</button>
-            <button onClick={() => setOpen(false)} className="rounded-lg px-2 py-1.5 text-sm text-muted">Cancel</button>
+            <button disabled={pending || !what.trim() || !why.trim()} onClick={report} className="min-h-11 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">Tell the office</button>
+            <button onClick={() => setOpen(false)} className="min-h-11 rounded-lg px-2 py-1.5 text-sm text-muted">Cancel</button>
           </div>
         </div>
       ) : (
-        <button onClick={() => setOpen(true)} className="px-1 text-xs text-muted underline hover:text-foreground">
+        <button onClick={() => setOpen(true)} className="inline-flex min-h-11 items-center px-1 text-xs text-muted underline hover:text-foreground">
           Missed a shot? Tell the office what and why
         </button>
       )}
@@ -3286,7 +3937,7 @@ function FieldFeedback({ projectId, clientName, reports, office }: { projectId: 
     const r = await decideFieldReport(id, d).catch(() => ({ ok: false, message: "Couldn't save that — try again." }));
     setMsg({ ok: r.ok, text: r.message });
   });
-  const pill = (active: boolean) => cn("rounded-lg border px-2.5 py-1 text-xs font-medium", active ? "border-brand bg-brand-soft text-foreground" : "border-border text-muted hover:bg-surface-2");
+  const pill = (active: boolean) => cn("inline-flex min-h-11 items-center rounded-lg border px-2.5 py-1 text-xs font-medium", active ? "border-brand bg-brand-soft text-foreground" : "border-border text-muted hover:bg-surface-2");
   return (
     <div className="mt-4">
       <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
@@ -3309,7 +3960,7 @@ function FieldFeedback({ projectId, clientName, reports, office }: { projectId: 
         <span className="mx-1 text-muted-2">·</span>
         <button type="button" onClick={() => setScope("project")} className={pill(scope === "project")}>Just this job</button>
         <button type="button" onClick={() => setScope("client")} className={pill(scope === "client")}>This client going forward</button>
-        <button disabled={pending || !body.trim()} onClick={send} className="ml-auto rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">
+        <button disabled={pending || !body.trim()} onClick={send} className="ml-auto min-h-11 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">
           Send to the office
         </button>
       </div>
