@@ -96,7 +96,9 @@ const stepOf = (system: string) =>
   : /^You write the TOPIC BRIEF/.test(system) ? "brief"
   : /^You write FIVE hooks/.test(system) ? "hooks"
   : /^You write ONE monthly personal-brand video script/.test(system) ? "draft"
+  : /^You write ONE short video script/.test(system) ? "draft" // writer v2.6 (Oct 23 2026)
   : /^You are the INDEPENDENT CREATIVE REVIEWER/.test(system) ? "review"
+  : /^You read ONE short video script the way a viewer would hear it/.test(system) ? "review26" // v2.6's viewer-first review
   : "other";
 const hookScores = { relevance: 5, curiosity: 5, tension: 5, specificity: 5, naturalDelivery: 5, accuracy: 5, herVoice: 5, payoffConnection: 5 };
 function writerAnswer(step: string): unknown {
@@ -115,6 +117,11 @@ function writerAnswer(step: string): unknown {
       checks++;
       const keys = ["on_topic", "her_meaning", "hook", "rehook", "story", "substance", "payoff", "close", "her_voice", "claims", "length", "nothing_extra"];
       return { checks: keys.map((key) => ({ key, pass: true, reason: "ok" })), craft: Object.fromEntries(["hook", "rehook", "buildup", "payoff", "close"].map((k) => [k, { score: 4, note: "it does its job" }])), fixInstruction: "", summary: "Strong." };
+    }
+    case "review26": {
+      checks++;
+      const yes = { pass: true, reason: "ok" };
+      return { sense: yes, voice: yes, hook: yes, invented: yes, reads: 8, note: "", summary: "Strong." };
     }
     default: throw new Error("unexpected writer call");
   }
@@ -465,7 +472,7 @@ async function main() {
     const bFresh = await prisma.contentScript.findFirst({ where: { topicId: B.topicIds[0], monthId: B.monthId, historical: false } });
     const bV = bFresh ? await prisma.contentScriptVersion.findFirst({ where: { scriptId: bFresh.id } }) : null;
     const steps = writerSteps.map((x) => x.step);
-    c.ok("her answers are in, and the sweep drafts on the NEW writer (brief, hooks, draft)", bAns.ok && bDr.drafted === 1 && !!bFresh && bFresh.id !== sb.scriptId && ["brief", "hooks", "draft"].every((x) => steps.includes(x)) && /Drafted by the new writer/.test(bV?.changeSummary ?? "") && !!JSON.parse(bV?.validationJson ?? "{}").writer, JSON.stringify({ steps, out: bDr.outcomes.map((o) => [o.result, o.note]) }));
+    c.ok("her answers are in, and the sweep drafts on the NEW writer (brief, draft; v2.6 has no hooks step)", bAns.ok && bDr.drafted === 1 && !!bFresh && bFresh.id !== sb.scriptId && ["brief", "draft"].every((x) => steps.includes(x)) && !steps.includes("hooks") && /Drafted by the new writer/.test(bV?.changeSummary ?? "") && !!JSON.parse(bV?.validationJson ?? "{}").writer, JSON.stringify({ steps, out: bDr.outcomes.map((o) => [o.result, o.note]) }));
     const briefPrompt = writerSteps.find((x) => x.step === "brief")?.prompt ?? "";
     c.ok("…the writer read her written answers (in its brief's material), and the version names the interview", /chose Emmaus over Ardmore/.test(briefPrompt) && bV?.interviewId === bLedger.interviewId && JSON.parse(bV?.answerIdsJson ?? "[]").length >= bLedger.questions.length, briefPrompt.slice(0, 200));
     c.ok("…Marcee's draft never touched the new writer", !writerSteps.some((x) => /Malvern/.test(x.prompt)));
