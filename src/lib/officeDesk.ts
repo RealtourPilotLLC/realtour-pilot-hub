@@ -964,17 +964,17 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     // A lead a week or more past its date is backlog (one link), not the day's work.
     if (nowMs - Date.parse(dueISO) >= WEEK_OLD_DAYS * DAY) { backlog++; continue; }
     const behind = Date.parse(dueISO) < nowMs;
-    const name = clean(l.title.replace(/^New (lead|texter|caller)\s*[:—-]\s*/i, "")) || clean(l.title);
+    const name = clean(l.title.replace(/^New (lead|texter|caller)\s*[:—-]\s*/i, ""));
     push({
       id: `lead:${l.id}`, section: "comms", tag: "lead", state: "now",
-      title: name, line: "New lead", client: null,
+      title: clean(l.title), line: "New lead", client: null,
       reason: `New lead, waiting since ${etDateTime(l.createdAt)}${l.summary ? `: ${clean(short(l.summary, 200))}` : ""}`, who: "You",
       dueISO, dueWords: dueWordsFor(dueISO, now), late: behind, rank: behind ? RANK.overdue : RANK.today,
       primary: { label: "Handle lead", action: { kind: "task", taskId: l.id, allowNewDate: true, canWait: false } },
       actions: [{ kind: "task", taskId: l.id, allowNewDate: true, canWait: false }],
       href: "/communications",
       panel: { kind: "task", lines: [{ label: "Lead", value: clean(l.title) }, ...(l.summary ? [{ label: "Notes", value: clean(short(l.summary, 300)) }] : [])] },
-      sinceISO: l.createdAt.toISOString(), initials: initialsOf(name), channel: "Lead", elapsed: businessElapsedWords(l.createdAt.toISOString(), now),
+      sinceISO: l.createdAt.toISOString(), initials: /^[A-Z]/.test(name) ? initialsOf(name) : "NL", channel: "Lead", elapsed: businessElapsedWords(l.createdAt.toISOString(), now),
     });
   }
 
@@ -1092,7 +1092,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       : offer.problem ? { label: bState === "failed" ? "Brief failed" : "No Got it yet", tone: "bad" }
       : waitingAck ? { label: "Waiting for Got it", tone: "muted" }
       : { label: "Ready", tone: "ok" };
-    const statusLine = [confirmation.words, briefWords[bState]].join(" · ");
+    // Once the shoot has started the brief is moot: its state is not shown as if it still mattered.
+    const statusLine = started ? confirmation.words : [confirmation.words, briefWords[bState]].join(" · ");
     push({
       id: v.apptId ? `visit:${v.apptId}` : `visit:p:${p.id}`, section: "shoots", day: visitDay === dayKey ? "today" : "next",
       state: problems.length ? "now" : waitingAck ? "waiting" : "ok",

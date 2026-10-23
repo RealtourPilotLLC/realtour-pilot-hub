@@ -387,6 +387,7 @@ const timeOf = (i: DeskItem) => (i.panel.kind === "visit" ? i.panel.visit.timeIS
 
 function FollowUps({ s, onOpen, backlog, includeTest }: { s: DeskSection; onOpen: (i: DeskItem) => void; backlog: Desk["backlog"]; includeTest: boolean }) {
   const [all, setAll] = useState(false);
+  const overdue = s.now.filter((i) => i.late).length;
   const rows = all ? s.now : s.now.slice(0, ROWS_SHOWN);
   const row = (i: DeskItem) => (
     <li key={i.id} data-desk-item={i.id} data-state={i.state} className="flex items-center gap-3 py-2.5">
@@ -399,7 +400,7 @@ function FollowUps({ s, onOpen, backlog, includeTest }: { s: DeskSection; onOpen
     </li>
   );
   return (
-    <Card s={s} subtitle={s.count == null ? "Couldn't count" : s.count === 0 ? "Nothing due today" : `${plural(s.count, "follow-up")} due today`}
+    <Card s={s} subtitle={s.count == null ? "Couldn't count" : s.count === 0 ? "Nothing due today" : overdue === 0 ? `${plural(s.count, "follow-up")} due today` : `${plural(s.count, "follow-up")} due, ${overdue} overdue`}
       footer={backlog.count > 0 ? <Link href={homeRecordHref(backlog.href, includeTest)} data-backlog className="inline-flex min-h-11 items-center gap-1 text-sm text-muted hover:text-foreground hover:underline">{plural(backlog.count, "older task")} in your full list <ArrowRight aria-hidden className="size-3.5" /></Link> : undefined}>
       {s.now.length === 0 ? <Empty words={s.empty} /> : (
         <>

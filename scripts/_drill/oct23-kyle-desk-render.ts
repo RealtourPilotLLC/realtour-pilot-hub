@@ -106,7 +106,7 @@ async function main() {
     c.head("§1 · Kyle's dashboard: the Daily checks, then four sections all visible");
     // =====================================================================
     // Enough of Kyle's own tasks due today that a section has more rows than it shows.
-    for (const n of [1, 2, 3, 4]) await prisma.smartTask.create({ data: { taskType: "todo", source: "manual", status: "OPEN", assignedKey: "kyle", title: `Due-today chore ${n}`, dueAt: new Date(Math.max(Date.now() + 30 * 60_000, etAt(etDayKey(T), 17).getTime())) } });
+    for (const n of [1, 2, 3, 4]) await prisma.smartTask.create({ data: { taskType: "todo", source: "manual", status: "OPEN", assignedKey: "kyle", title: `Due-today chore ${n}`, dueAt: etAt(etDayKey(T), 0, 5) } });
     await signIn(kyle);
     const kTree = await settle(await home({}));
     const kHtml = ssr(kTree);
@@ -121,12 +121,12 @@ async function main() {
     c.ok("#10 each section's count is the length of its rows, and its subtitle says that number", sectionCounts.length === 4 && !!kDesk && sectionCounts.every(([k, n]) => {
       const s = kDesk.sections.find((x) => x.key === k)!;
       return n === String(s.count) && s.count === s.now.length;
-    }) && kHtml.includes(`${kDesk!.sections.find((s) => s.key === "comms")!.count} client`) && kHtml.includes(`${kDesk!.sections.find((s) => s.key === "followups")!.count} follow-ups due today`), JSON.stringify(sectionCounts));
+    }) && kHtml.includes(`${kDesk!.sections.find((s) => s.key === "comms")!.count} client`) && kHtml.includes(`${kDesk!.sections.find((s) => s.key === "followups")!.count} follow-ups due`), JSON.stringify(sectionCounts));
     const fu = kDesk!.sections.find((s) => s.key === "followups")!;
     c.ok("a few rows per section, 'View all N' for the rest", fu.now.length > 4 && (kHtml.match(/data-desk-item=/g) ?? []).length >= 4 && kHtml.includes(`View all ${fu.now.length}`));
     c.ok("each section has a clear empty state when nothing is there (no thumbnails of nothing)", kHtml.includes("data-empty") || kDesk!.sections.every((s) => s.now.length > 0));
     c.ok("freshness says only what is wrong, in words (a missing sync), never a zero", kHtml.includes("data-freshness") && /data-fresh="aryeo" data-state="unknown"/.test(kHtml) && kHtml.includes("no sync recorded"));
-    c.ok("each row's one button opens the side panel (no navigation)", !!kDesk && kDesk.sections.flatMap((s) => s.now.slice(0, 4)).every((i) => kHtml.includes(`data-open-panel="${i.id}"`)) && !/<a[^>]*data-open-panel/.test(kHtml));
+    c.ok("each row's one button opens the side panel (no navigation)", !!kDesk && kDesk.sections.flatMap((s) => s.now.filter((i) => i.section !== "shoots" || i.day === "today").slice(0, 4)).every((i) => kHtml.includes(`data-open-panel="${i.id}"`)) && !/<a[^>]*data-open-panel/.test(kHtml));
     c.ok("Review & Deliver groups photos, floor plans & tours apart from approved videos; the photo row carries its thumbnail", kHtml.includes("Photos, floor plans &amp; tours") && kHtml.includes("Approved videos") && kHtml.includes("Approved by James, ready to send"));
     c.ok("Client Communications: initials, channel and business time, the summary, Reply", kHtml.includes(">RA<") && /Text · (\d+ min|[0-9.]+ business (hours?|days?))/.test(kHtml) && kHtml.includes("[amount] invoice") && kHtml.includes(">Reply<") && kHtml.includes("Other conversations are up to date"), (kHtml.match(/Text · [^<]{0,30}/) ?? [""])[0]);
     c.ok("Today's Shoots: the Today / Next business day switch, View schedule", kHtml.includes('data-day="today"') && kHtml.includes('data-day="next"') && kHtml.includes("View schedule"));
@@ -158,7 +158,9 @@ async function main() {
     const eodHtml = ssr(createElement(OfficeDesk, { desk: kDesk!, initialChecks: "eod" }));
     c.ok("End-of-day review opens to its checks (manual reviews are checkboxes; evidence-only ones are not), Finish the day held until done, and the day's summary", ["Due deliveries confirmed, or exceptions documented", "Unresolved requests have owners and follow-up times", "Next business day&#x27;s shoots prepared"].every((w) => eodHtml.includes(w)) && (eodHtml.match(/type="checkbox"/g) ?? []).length === 1 && /data-control="finish-day"[^>]*disabled|disabled[^>]*data-control="finish-day"/.test(eodHtml) && eodHtml.includes("You completed") && eodHtml.includes("Still open") && eodHtml.includes("never closes the work"));
     const nextHtml = ssr(createElement(OfficeDesk, { desk: kDesk!, initialDay: "next" }));
-    c.ok("the Next business day view lists only that day's visits", nextHtml.includes("next business day") && !nextHtml.includes(`data-desk-item="visit:${cliff2.id}"`));
+    const shootRows = kDesk!.sections.find((s) => s.key === "shoots")!;
+    const visits = [...shootRows.now, ...shootRows.waiting, ...shootRows.ok];
+    c.ok("the Next business day view lists only that day's visits", nextHtml.includes("next business day") && visits.filter((v) => v.day === "next").every((v) => nextHtml.includes(`data-desk-item="${v.id}"`)) && visits.filter((v) => v.day === "today").every((v) => !nextHtml.includes(`data-desk-item="${v.id}"`)));
 
     // =====================================================================
     c.head("§3 · the owner's 'view as Kyle' is read-only");

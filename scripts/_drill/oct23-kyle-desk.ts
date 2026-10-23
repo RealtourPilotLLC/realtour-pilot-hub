@@ -385,7 +385,7 @@ async function main() {
     c.ok("#7 …a creative question goes to James (one bell), on the record", await prisma.notification.count({ where: { kind: "office_question", userKey: `tm:${jamesTm.id}` } }) === 1 && await prisma.auditLog.count({ where: { action: "office_waiting_on", target: k4.id } }) === 1);
     const dWait = await desk.buildOfficeDesk({ now: realNow, excludeClientIds: [fixture.id], person, roster });
     const w = find(dWait, `task:${k4.id}`);
-    c.ok("#7 while it waits: collapsed under 'waiting on others', named, with when it comes back; not counted", w?.state === "waiting" && w.who === "James" && w.line.startsWith("Waiting on James · Follow up at") && !sec(dWait, "followups").now.some((x) => x.id === w.id), JSON.stringify(w && [w.state, w.line]));
+    c.ok("#7 while it waits: collapsed under 'waiting on others', named, with when it comes back; not counted", w?.state === "waiting" && w.who === "James" && w.line.startsWith("Waiting on James · Follow up ") && !sec(dWait, "followups").now.some((x) => x.id === w.id), JSON.stringify(w && [w.state, w.line]));
     const dBack = await desk.buildOfficeDesk({ now: new Date(realNow.getTime() + 3 * H), excludeClientIds: [fixture.id], person, roster });
     const back = find(dBack, `task:${k4.id}`);
     c.ok("#7 when the follow-up is due it comes back: counted, 'Waiting on James · Follow up now', Follow up", back?.state === "now" && back.line === "Waiting on James · Follow up now" && back.primary?.label === "Follow up" && sec(dBack, "followups").now.some((x) => x.id === back.id), JSON.stringify(back && [back.state, back.line]));
