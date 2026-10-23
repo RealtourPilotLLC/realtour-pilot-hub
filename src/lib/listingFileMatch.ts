@@ -73,7 +73,10 @@ export async function recordedFileFact(submissionId: string): Promise<RecordedFi
   });
   if (!sub) return null;
   const { dbx } = await import("@/lib/integrations/dropbox");
-  const sizeOf = async (path: string | null | undefined) => (path ? ((await dbx<{ size?: number }>("files/get_metadata", { path }).catch(() => null))?.size ?? null) : null);
+  // Bounded: Dropbox's own read retries for up to a minute, and a person is waiting on the press.
+  const sizeOf = async (path: string | null | undefined) => (path
+    ? ((await within(dbx<{ size?: number }>("files/get_metadata", { path }).catch(() => null), 5_000, null))?.size ?? null)
+    : null);
   const j = sub.topazJob;
   if (j?.state === "done" && j.finalPath && j.savedAt) return { readyAt: j.savedAt, sizeBytes: await sizeOf(j.finalPath), kind: "1080p" };
   // The editor's own export: its recorded size, else Dropbox's.
@@ -86,11 +89,21 @@ export async function recordedFileFact(submissionId: string): Promise<RecordedFi
 
 type RawListing = { id?: string; videos?: unknown[] } | null;
 
+/** `p`, or `fallback` once `ms` pass (the timer is cleared either way). */
+export async function within<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([p, new Promise<T>((r) => { timer = setTimeout(() => r(fallback), ms); })]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** One HEAD on a listing video's download link: its byte size, or null. */
 async function headSize(url: string | null): Promise<number | null> {
   if (!url || !/^https:\/\//.test(url)) return null;
   try {
-    const res = await fetch(url, { method: "HEAD", redirect: "follow", cache: "no-store", signal: AbortSignal.timeout(6_000) });
+    const res = await fetch(url, { method: "HEAD", redirect: "follow", cache: "no-store", signal: AbortSignal.timeout(5_000) });
     if (!res.ok) return null;
     const n = Number(res.headers.get("content-length"));
     return Number.isFinite(n) && n > 0 ? n : null;
@@ -110,8 +123,8 @@ export async function listingVideoFacts(listing: RawListing, from: Date | null, 
   });
   const newestFirst = [...dated].sort((a, b) => b.at.getTime() - a.at.getTime());
   const sized = new Set(newestFirst.filter((v) => !from || v.at.getTime() >= from.getTime()).slice(0, max).map((v) => v.id));
-  const videos: ListingVideoFact[] = [];
-  for (const v of newestFirst) videos.push({ id: v.id, at: v.at, sizeBytes: sized.has(v.id) ? await headSize(v.url) : null });
+  // The HEADs together, each timed, so the press waits for the slowest one only.
+  const videos: ListingVideoFact[] = await Promise.all(newestFirst.map(async (v) => ({ id: v.id, at: v.at, sizeBytes: sized.has(v.id) ? await headSize(v.url) : null })));
   return { videos, undated: raw.length - dated.length };
 }
 
@@ -130,7 +143,7 @@ export async function checkListingHasFile(submissionId: string, opts: { listing?
     let listing = opts.listing;
     if (listing === undefined) {
       const { aryeoRequest } = await import("@/lib/integrations/aryeo");
-      listing = await aryeoRequest<{ data: RawListing }>(`/listings/${listingId}`, { query: { include: "videos" }, timeoutMs: 8_000, attempts: 1 })
+      listing = await aryeoRequest<{ data: RawListing }>(`/listings/${listingId}`, { query: { include: "videos" }, timeoutMs: 6_000, attempts: 1 })
         .then((r) => r.data)
         .catch(() => undefined);
       if (listing === undefined) return { verdict: "unknown", message: "Aryeo could not be read just now." };

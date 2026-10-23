@@ -59,8 +59,14 @@ export async function recordUploaded(id: string, actor: { id: string | null; nam
   // their own matching.
   let listingCheck: { verdict: string; mediaId?: string | null } | null = null;
   if (!detected) {
-    const { checkListingHasFile } = await import("@/lib/listingFileMatch");
-    const check = await checkListingHasFile(id, opts.listing !== undefined ? { listing: opts.listing } : {});
+    const { checkListingHasFile, within } = await import("@/lib/listingFileMatch");
+    // Never longer than the screen waits (MarkDelivered gives the press 20 s):
+    // a check that has not answered in 14 s concludes nothing.
+    const check = await within(
+      checkListingHasFile(id, opts.listing !== undefined ? { listing: opts.listing } : {}),
+      14_000,
+      { verdict: "unknown" as const, message: "The listing check took too long." } as Awaited<ReturnType<typeof checkListingHasFile>>,
+    );
     if (check.verdict === "mismatch") return { ok: false, listingMismatch: true, message: check.message };
     listingCheck = { verdict: check.verdict, mediaId: check.mediaId ?? null };
   }
