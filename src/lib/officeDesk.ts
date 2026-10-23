@@ -72,8 +72,6 @@ export const DESK_SECTIONS = [
 ] as const;
 export type DeskSectionKey = (typeof DESK_SECTIONS)[number]["key"];
 
-/** Rows a section shows before "View all" (the rest are one press away). */
-export const ROWS_SHOWN = 4;
 /** The order of the work (the spec): shoot blockers and urgent client issues,
  *  then overdue commitments, upcoming deadlines, routine work, housekeeping. */
 export const RANK = { blocker: 0, overdue: 1, today: 2, routine: 3, housekeeping: 4 } as const;

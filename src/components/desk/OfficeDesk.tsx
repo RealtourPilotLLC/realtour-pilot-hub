@@ -6,7 +6,8 @@ import { AlertTriangle, ArrowRight, Camera, CheckCircle2, ChevronDown, Circle, C
 import { cn } from "@/lib/utils";
 import { homeRecordHref } from "@/lib/homeRecordScope";
 import { etDate, etDateTime, etTime } from "@/lib/datetime";
-import { ROWS_SHOWN, type AssetLine, type CheckGroup, type DeskAction, type DeskItem, type DeskSection, type DeskTag, type OfficeDesk as Desk, type PrepVisit } from "@/lib/officeDesk";
+// Types only: lib/officeDesk is server code, never part of this client module graph.
+import type { AssetLine, CheckGroup, DeskAction, DeskItem, DeskSection, DeskTag, OfficeDesk as Desk, PrepVisit } from "@/lib/officeDesk";
 import { PhotoImg } from "@/components/photoDelivery/PhotoImg";
 import { SendVideo } from "@/components/videoDelivery/SendVideo";
 import { PushControls } from "@/components/videoDelivery/PushControls";
@@ -48,6 +49,8 @@ const TAG: Record<DeskTag, { label: string; cls: string }> = {
   booking: { label: "Booking", cls: "bg-surface-2 text-muted" },
   lead: { label: "Lead", cls: "bg-surface-2 text-muted" },
 };
+/** Rows a section shows before "View all" (the rest are one press away). */
+const ROWS_SHOWN = 4;
 const SOLID = new Set<DeskAction["kind"]>(["photo-approve", "video-send", "video-push", "reply", "confirm"]);
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
