@@ -7,7 +7,7 @@ import { videoDeliveryBoard, type VideoDeliveryBoard, type VideoRow } from "@/li
 import { clientNotToldYet, type NotTold } from "@/lib/readyToSend";
 import { deliveryNoticeIncidents, type DeliveryNoticeIncident } from "@/lib/deliveryNoticeIncidents";
 import { unansweredCommsBoards, type CommsGroup } from "@/lib/commsBoard";
-import { checklistTasks, checklistTasksClosedToday, personTaskWhere, type ChecklistPerson, type ClosedTask, type OldItem } from "@/lib/taskAging";
+import { checklistTasks, checklistTasksClosedToday, personTaskWhere, WEEK_OLD_DAYS, type ChecklistPerson, type ClosedTask, type OldItem } from "@/lib/taskAging";
 import { jobsBoard, type JobsBoard } from "@/lib/jobsBoard";
 import { chipPerson, kylePerson, MESSAGE_BEHIND_HOURS, waitingClientReplyHref, waitedWords, lateWords } from "@/lib/opsHome";
 import { remindViewsFor, REMIND_GAP_MS, type RemindView } from "@/lib/remindPhotographer";
@@ -194,6 +194,9 @@ export type DeskItem = {
   sinceISO: string | null;
   /** a waiting item that still lacks a named person or a follow-up time */
   needsFollowUp?: boolean;
+  /** one of Kyle's own tasks a week or more past its date: still counted, but
+   *  housekeeping (close it or give it a new date), never ahead of client work */
+  stale?: boolean;
 };
 
 export type DeskTab = {
@@ -247,7 +250,7 @@ export type OfficeDesk = {
   readOnly: boolean;
   freshness: Freshness[];
   unavailable: string[];
-  status: { line: string; tone: "ok" | "warn" | "bad"; now: number; late: number; waiting: number };
+  status: { line: string; tone: "ok" | "warn" | "bad"; now: number; late: number; stale: number; waiting: number };
   doNext: DeskItem[];
   tabs: DeskTab[];
   closeout: Closeout;
@@ -728,6 +731,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     const late = open.some((a) => a.late);
     const dueISO = open.map((a) => a.dueISO).filter((x): x is string => !!x).sort()[0] ?? null;
     const title = !nowish ? `${g.street}: ${open.length === 1 ? open[0].label.toLowerCase() : "assets"} in progress`
+      : lead.tone === "failed" && lead.kind === "photos" ? (lead.status.startsWith("Not confirmed") ? `Check the photo delivery for ${g.street}` : `Restart the photo edits for ${g.street}`)
+      : lead.tone === "failed" && lead.kind === "video" ? `Retry the video upload for ${g.street}`
       : lead.kind === "photos" && lead.action?.kind === "photo-approve" ? `Review and deliver photos for ${g.street}`
       : lead.kind === "photos" && lead.status.startsWith("The client asked") ? `Decide the photo changes for ${g.street}`
       : lead.kind === "photos" && lead.action?.kind === "link" && lead.action.label === "Decide" ? `Decide the photo check for ${g.street}`
@@ -799,11 +804,15 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     if (onBoard.has(l.id)) continue;
     const behind = !!l.dueAt && l.dueAt < now;
     const dueISO = (l.dueAt ?? new Date(l.createdAt.getTime() + MESSAGE_BEHIND_HOURS * HOUR)).toISOString();
+    // A lead a week or more past its date is an old task to close or re-date,
+    // like Kyle's own: counted, folded, never ahead of a client waiting today.
+    const stale = nowMs - Date.parse(dueISO) >= WEEK_OLD_DAYS * DAY;
     push({
       id: `lead:${l.id}`, tab: "replies", state: "now", title: clean(l.title),
       reason: `New lead, waiting since ${etDateTime(l.createdAt)}`, who: "You",
       dueISO, dueWords: dueWordsFor(dueISO, now), late: behind || Date.parse(dueISO) < nowMs,
-      rank: behind ? RANK.overdue : RANK.today,
+      rank: stale ? RANK.housekeeping : behind ? RANK.overdue : RANK.today,
+      stale,
       primary: { label: "Handle lead", action: { kind: "task", taskId: l.id, allowNewDate: true, canWait: false } },
       actions: [{ kind: "task", taskId: l.id, allowNewDate: true, canWait: false }],
       href: "/communications",
@@ -967,7 +976,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       title: back ? `Follow up with ${w!.who}: ${clean(t.title)}` : clean(t.title),
       reason: back ? `You were waiting on ${waitingWords(w!)} until ${etDateTime(w!.followUpAt)}${w!.note ? `: ${clean(w!.note)}` : ""}` : [t.kind, t.projectTitle ? clean(t.projectTitle) : null, earlier ? `${plural(t.daysPast, "day")} past its date` : "due today", t.pushes ? `pushed ${plural(t.pushes, "time")}` : null].filter(Boolean).join(" · "),
       who: back ? w!.who : "You", dueISO: t.chaseISO, dueWords: dueWordsFor(t.chaseISO, now), late: earlier || Date.parse(t.chaseISO) < nowMs,
-      rank: earlier || back ? RANK.overdue : RANK.today,
+      rank: back ? RANK.overdue : earlier && t.daysPast >= WEEK_OLD_DAYS ? RANK.housekeeping : earlier ? RANK.overdue : RANK.today,
+      stale: !back && earlier && t.daysPast >= WEEK_OLD_DAYS,
       primary: { label: back ? "Follow up" : "Handle", action: taskAction(t.id) },
       actions: [taskAction(t.id)], href: t.href,
       panel: { kind: "task", lines: [{ label: "Task", value: clean(t.title) }, { label: "Kind", value: t.kind }, ...(t.projectTitle ? [{ label: "Job", value: clean(t.projectTitle) }] : []), ...(w ? [{ label: "Waiting on", value: waitingWords(w) }] : [])] },
@@ -1157,7 +1167,10 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
 
   const allNow = tabs.flatMap((t) => t.now);
   const doNext = rankDoNext(allNow);
-  const late = allNow.filter((i) => i.late).length;
+  // "Late" is the client work and the commitments running late; Kyle's own
+  // tasks a week or more past their date are said apart, as old items to clear.
+  const late = allNow.filter((i) => i.late && !i.stale).length;
+  const staleCount = allNow.filter((i) => i.stale).length;
   const waitingCount = tabs.reduce((n, t) => n + t.waiting.length, 0);
 
   // ---- freshness ----
@@ -1227,7 +1240,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     completed,
     completedTotal: completed.reduce((n, c) => n + c.count, 0),
     pending: tabs.map((t) => ({ tab: t.label, now: t.count, waiting: t.waiting.length })),
-    blockers: [...allNow.filter((i) => i.late || i.rank === RANK.blocker).slice(0, 5).map((i) => i.title), ...freshness.filter((f) => f.state === "failed" || f.state === "stale").map((f) => `${f.label}: ${f.words}`)],
+    blockers: [...allNow.filter((i) => (i.late && !i.stale) || i.rank === RANK.blocker).slice(0, 5).map((i) => i.title), ...freshness.filter((f) => f.state === "failed" || f.state === "stale").map((f) => `${f.label}: ${f.words}`)],
     tomorrow: {
       dayWords: etFullDate(etAt(nextDay, 12)),
       lines: [
@@ -1246,12 +1259,14 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   // ---- the status line ----
   const total = allNow.length;
   const blockers = allNow.filter((i) => i.rank === RANK.blocker).length;
+  const fresh = total - staleCount;
   const parts = [
-    total === 0 ? "Nothing needs you right now." : `${plural(total, "item")} ${total === 1 ? "needs" : "need"} you${late ? `, ${late} late` : ""}.`,
+    total === 0 ? "Nothing needs you right now." : fresh === 0 ? "Nothing urgent needs you." : `${plural(fresh, "item")} ${fresh === 1 ? "needs" : "need"} you${late ? `, ${late} late` : ""}.`,
+    staleCount ? `${plural(staleCount, "old task")} to close or re-date.` : null,
     waitingCount ? `${waitingCount} waiting on others, each with a person and a time.` : null,
     unavailable.length ? `Couldn't read ${unavailable.join(", ")}: those counts may be missing items.` : null,
   ].filter(Boolean);
-  const status = { line: parts.join(" "), tone: (blockers > 0 || late > 0 ? "bad" : total > 0 || unavailable.length ? "warn" : "ok") as "ok" | "warn" | "bad", now: total, late, waiting: waitingCount };
+  const status = { line: parts.join(" "), tone: (blockers > 0 || late > 0 ? "bad" : total > 0 || unavailable.length ? "warn" : "ok") as "ok" | "warn" | "bad", now: total, late, stale: staleCount, waiting: waitingCount };
 
   return {
     nowISO: now.toISOString(), dayKey, dateWords: etFullDate(now), person: opts.person.name, people: { creative: creativeName, owner: ownerName }, readOnly: !!opts.readOnly,

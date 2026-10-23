@@ -168,19 +168,33 @@ function Row({ i, onOpen }: { i: DeskItem; onOpen: (i: DeskItem) => void }) {
 
 function TabView({ tab, onOpen }: { tab: Desk["tabs"][number]; onOpen: (i: DeskItem) => void }) {
   const [all, setAll] = useState(false);
-  const shown = all ? tab.now : tab.now.slice(0, ROWS_SHOWN);
+  // Kyle's own tasks a week or more past their date: counted, folded under
+  // the work that is due (close each, or give it a new date).
+  const fresh = tab.now.filter((i) => !i.stale);
+  const stale = tab.now.filter((i) => i.stale);
+  const shown = all ? fresh : fresh.slice(0, ROWS_SHOWN);
   return (
     <div className="space-y-2">
       {tab.unavailable.length > 0 && (
         <p role="status" className="rounded-lg bg-warning/10 px-3 py-2 text-sm text-warning">Couldn&rsquo;t read {tab.unavailable.join(", ")} just now. This list may be missing items; refresh to try again.</p>
       )}
-      {tab.now.length === 0 ? (
-        <p className="flex items-center gap-1.5 px-2 py-2 text-sm text-success"><CheckCircle2 aria-hidden className="size-4" /> Nothing here needs you now.</p>
+      {fresh.length === 0 ? (
+        <p className="flex items-center gap-1.5 px-2 py-2 text-sm text-success"><CheckCircle2 aria-hidden className="size-4" /> {stale.length ? "Nothing due needs you now." : "Nothing here needs you now."}</p>
       ) : (
         <ul data-list="now" className="divide-y divide-border">{shown.map((i) => <Row key={i.id} i={i} onOpen={onOpen} />)}</ul>
       )}
-      {!all && tab.now.length > ROWS_SHOWN && (
-        <button type="button" onClick={() => setAll(true)} className="min-h-11 w-full rounded-lg text-sm font-medium text-muted hover:bg-surface-2/60">Show {tab.now.length - ROWS_SHOWN} more</button>
+      {!all && fresh.length > ROWS_SHOWN && (
+        <button type="button" onClick={() => setAll(true)} className="min-h-11 w-full rounded-lg text-sm font-medium text-muted hover:bg-surface-2/60">Show {fresh.length - ROWS_SHOWN} more</button>
+      )}
+      {stale.length > 0 && (
+        <details className="group rounded-lg border border-border" data-stale>
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-sm font-medium [&::-webkit-details-marker]:hidden">
+            <ChevronDown aria-hidden className="size-4 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
+            Old tasks to close or re-date <span className="text-muted tabular-nums">({stale.length})</span>
+            <span className="hidden text-[12px] font-normal text-muted sm:inline">· a week or more past their date</span>
+          </summary>
+          <ul data-list="stale" className="divide-y divide-border border-t border-border px-1">{stale.map((i) => <Row key={i.id} i={i} onOpen={onOpen} />)}</ul>
+        </details>
       )}
       {tab.waiting.length > 0 && (
         <details className="group rounded-lg border border-border">
@@ -280,7 +294,7 @@ function SidePanel({ item, fallbackTitle, desk, includeTest, onClose }: { item: 
             <h2 id="desk-panel-title" className="text-base font-semibold leading-snug [overflow-wrap:anywhere]">{item?.title ?? fallbackTitle ?? "Done"}</h2>
             {item && <p className="mt-0.5 text-[12px] text-muted">{[item.dueWords, item.who && `Whose move: ${item.who}`].filter(Boolean).join(" · ")}</p>}
           </div>
-          <button type="button" onClick={onClose} aria-label="Close" className="inline-flex size-11 shrink-0 items-center justify-center rounded-lg hover:bg-surface-2"><X aria-hidden className="size-5" /></button>
+          <button type="button" autoFocus onClick={onClose} aria-label="Close" className="inline-flex size-11 shrink-0 items-center justify-center rounded-lg hover:bg-surface-2"><X aria-hidden className="size-5" /></button>
         </div>
         <div className="flex-1 space-y-4 overflow-y-auto px-4 py-3">
           {!item ? (

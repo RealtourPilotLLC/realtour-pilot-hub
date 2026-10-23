@@ -379,11 +379,12 @@ async function main() {
         && tab(x, "closeout").count === x.closeout.lines.filter((l) => !l.done).length
         && new Set(ids).size === ids.length
         && x.doNext.length <= desk.DO_NEXT_MAX && x.doNext.every((y) => allNow.includes(y)) && JSON.stringify(x.doNext.map((y) => y.id)) === JSON.stringify(desk.rankDoNext(allNow).map((y) => y.id))
-        && x.status.now === allNow.length && x.status.late === allNow.filter((y) => y.late).length && x.status.waiting === counted.reduce((n, t) => n + t.waiting.length, 0),
+        && x.status.now === allNow.length && x.status.late === allNow.filter((y) => y.late && !y.stale).length && x.status.stale === allNow.filter((y) => y.stale).length && x.status.waiting === counted.reduce((n, t) => n + t.waiting.length, 0),
         JSON.stringify(x.tabs.map((t) => [t.key, t.count, t.now.length])));
     }
     c.ok("#10 every counted item has one primary action (no number without an action)", d.tabs.flatMap((t) => t.now).every((x) => !!x.primary && x.actions.length > 0), d.tabs.flatMap((t) => t.now).filter((x) => !x.primary).map((x) => x.id).join());
-    c.ok("#10 'N late' is said once, from the items themselves (no banner beside a card)", d.status.line.includes(`${d.status.late} late`) && d.status.late === d.tabs.flatMap((t) => t.now).filter((x) => x.late).length);
+    c.ok("#10 'N late' is said once, from the items themselves (no banner beside a card)", d.status.line.includes(`${d.status.late} late`) && d.status.late === d.tabs.flatMap((t) => t.now).filter((x) => x.late && !x.stale).length);
+    c.ok("Kyle's own task ten days past its date is an old task to close or re-date: counted, said apart, never ahead of client work", find(d, `task:${k1.id}`)?.stale === true && find(d, `task:${k1.id}`)?.rank === desk.RANK.housekeeping && d.status.line.includes("old task") && !d.doNext.slice(0, 1).some((x) => x.stale));
     c.ok("Do next leads with shoot blockers and urgent client issues", d.doNext[0]?.rank === desk.RANK.blocker && d.doNext.every((x, n, a) => n === 0 || a[n - 1].rank <= x.rank));
 
     // ---- freshness: stale and failed said, never zero ----
