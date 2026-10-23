@@ -182,3 +182,36 @@ export async function deskFollowUpAction(input: FollowUpInput): Promise<DeskResu
   await prisma.auditLog.create({ data: { actor: by, action: "office_follow_up_created", target: row.id, detail: JSON.stringify({ title, clientId: input.clientId ?? null, projectId: input.projectId ?? null, followUpAt: followUpAt.toISOString() }) } });
   return { ok: true, message: `Follow-up set for ${etDateTime(followUpAt)}.` };
 }
+
+export type DraftResult = { ok: boolean; message: string; draft?: string };
+
+/** A Content Program message opens with a draft, as texts and email do (Jordan's
+ *  huddle with Kyle, Oct 23 2026): the reply engine's own drafter, given the
+ *  program conversation. Kyle sends it as is or edits it; nothing is sent here. */
+export async function draftProgramReplyAction(enrollmentId: string): Promise<DraftResult> {
+  try { await requireAdmin(); } catch (e) { return denied(e); }
+  if (!/^[A-Za-z0-9_-]{6,60}$/.test(String(enrollmentId))) return { ok: false, message: "That program id is not valid." };
+  const { getSecret } = await import("@/lib/integrations/connections");
+  if (!(await getSecret("ai"))) return { ok: false, message: "Add an AI key in Connections to draft replies." };
+  const rows = await prisma.programMessage.findMany({
+    where: { enrollmentId, refKind: null },
+    orderBy: { createdAt: "desc" },
+    take: 16,
+    select: { authorKind: true, authorLabel: true, body: true, createdAt: true, clientId: true },
+  });
+  if (!rows.some((r) => r.authorKind === "CLIENT")) return { ok: false, message: "Nothing from the client to answer here." };
+  const client = await prisma.client.findUnique({ where: { id: rows[0].clientId }, select: { name: true } }).catch(() => null);
+  try {
+    const { draftReplyWithContext } = await import("@/lib/integrations/ai");
+    const draft = await draftReplyWithContext({
+      channel: "email",
+      clientName: client?.name ?? null,
+      transcript: rows.reverse().map((r) => ({ role: r.authorKind === "STAFF" ? ("us" as const) : ("client" as const), text: r.body, at: r.createdAt.toISOString(), sender: r.authorKind === "STAFF" ? null : r.authorLabel })),
+      note: "This is the client's Content Program conversation (their monthly social content), not a listing shoot.",
+    });
+    if (/^\s*NO_REPLY_NEEDED\s*$/i.test(draft)) return { ok: false, message: "This one looks handled: nothing to answer." };
+    return { ok: true, message: "Draft ready. Read it before sending.", draft };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Could not draft a reply." };
+  }
+}

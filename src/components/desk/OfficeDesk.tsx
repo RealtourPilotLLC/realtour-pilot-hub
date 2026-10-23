@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { AlertTriangle, ArrowRight, Camera, CheckCircle2, ChevronDown, Circle, Clock, ExternalLink, Film, Image as ImageIcon, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, CalendarDays, Camera, CheckCircle2, ChevronDown, ChevronRight, Circle, Clock, ExternalLink, FileText, Film, Image as ImageIcon, Users, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { homeRecordHref } from "@/lib/homeRecordScope";
 import { etDate, etDateTime, etTime } from "@/lib/datetime";
@@ -17,18 +17,20 @@ import { CommsDismissButton } from "@/components/tasks/ChecklistButtons";
 import { OldItemActions } from "@/components/home/OldItemActions";
 import { AskQuickActions } from "@/components/home/AskQuickActions";
 import { RemindPhotographerButton } from "@/components/editing/RemindPhotographer";
-import { BriefSend, CloseoutTick, ConfirmControls, FinishDay, FollowUpCreate, PhotoApprove, PRIMARY, QUIET, ReplyBox, WaitOn } from "@/components/desk/DeskControls";
+import { BriefSend, CloseoutTick, ConfirmControls, DelegationControls, DraftReply, FinishDay, FollowUpCreate, PhotoApprove, PRIMARY, QUIET, ReplyBox, WaitOn } from "@/components/desk/DeskControls";
 
 // ---------------------------------------------------------------------------
-// KYLE'S DESK, THE SCREEN, revision 2 (Oct 23 2026, evening: Jordan's mockup).
-// No "Do next", no wall of counts, no tabs: the Daily checks bar, then four
-// sections all visible in a wide two-column grid (one column on a phone):
-// Review & Deliver, Client Communications, Today's Shoots, Requests &
-// Follow-Ups. A few rows each, "View all" for the rest, a clear empty state.
-// A row's button opens the side panel, which holds the existing actions, so
-// the page never changes under Kyle; after an action it refreshes in place
-// and the counts recompute. Every number arrives computed (lib/officeDesk).
-// No checklists inside review: the free photo check's findings are context.
+// KYLE'S DESK, THE SCREEN, revision 3 (Oct 23 2026, evening: Jordan's updated
+// mockup). The Daily checks bar (Morning, Midday, End-of-day review, each
+// saying when it was completed), then the four sections in a wide two-column
+// grid (Review & Deliver, Client Communications, Today's Shoots, Requests &
+// Follow-Ups), a full-width "Next business day" card, then the End-of-day
+// closeout and Completed today. One column on a phone. A few rows each, "View
+// all" for the rest, a clear empty state. A row's button opens the side panel,
+// which holds the existing actions (every conversation opens with the reply
+// engine's draft), so the page never changes under Kyle; after an action it
+// refreshes in place and the counts recompute. Every number arrives computed
+// (lib/officeDesk). No checklists inside review.
 // ---------------------------------------------------------------------------
 
 const CHIP_TONE = { ok: "bg-success/15 text-success", warn: "bg-warning/15 text-warning", bad: "bg-danger/15 text-danger", muted: "bg-surface-2 text-muted" } as const;
@@ -43,6 +45,7 @@ const TAG: Record<DeskTag, { label: string; cls: string }> = {
   revision: { label: "Client revision", cls: "bg-brand-soft text-brand" },
   request: { label: "Special request", cls: "bg-brand-soft text-brand" },
   jordan: { label: "From Jordan", cls: "bg-warning/15 text-warning" },
+  assigned: { label: "Assigned to you", cls: "bg-warning/15 text-warning" },
   production: { label: "Production", cls: "bg-surface-2 text-muted" },
   task: { label: "Your task", cls: "bg-surface-2 text-muted" },
   reply: { label: "Reply", cls: "bg-surface-2 text-muted" },
@@ -52,24 +55,31 @@ const TAG: Record<DeskTag, { label: string; cls: string }> = {
 };
 /** Rows a section shows before "View all" (the rest are one press away). */
 const ROWS_SHOWN = 4;
-const SOLID = new Set<DeskAction["kind"]>(["photo-approve", "video-send", "video-push", "reply", "confirm"]);
+const ACTIVITY_SHOWN = 5;
+const SOLID = new Set<DeskAction["kind"]>(["photo-approve", "video-send", "video-push", "reply", "program-reply", "confirm"]);
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+/** The side panel's own views that are not one row: the briefs, Prepare <Day>, Review & finish day. */
+type Special = "special:briefs" | "special:prepare" | "special:finish";
 
-export function OfficeDesk({ desk, includeTest = false, initialOpen = null, initialChecks = null, initialDay = "today" }: {
+export function OfficeDesk({ desk, includeTest = false, initialOpen = null, initialChecks = null, initialDay = "today", initialDrafts = null }: {
   desk: Desk;
   includeTest?: boolean;
-  /** a drill can render the side panel open */
+  /** a drill can render the side panel open (an item id, or a special view) */
   initialOpen?: string | null;
   /** a drill can render a review's checks open */
   initialChecks?: CheckGroup["key"] | null;
   initialDay?: "today" | "next";
+  /** a drill can hand the reply drafts in (the browser fetches them on open) */
+  initialDrafts?: Record<string, string> | null;
 }) {
   const all = new Map(desk.sections.flatMap((s) => [...s.now, ...s.waiting, ...s.ok]).map((i) => [i.id, i]));
   const [open, setOpen] = useState<string | null>(initialOpen);
+  const [focus, setFocus] = useState<"follow-up" | null>(null);
   const [openedTitle, setOpenedTitle] = useState<string | null>(initialOpen ? all.get(initialOpen)?.title ?? null : null);
-  const show = (i: DeskItem) => { setOpen(i.id); setOpenedTitle(i.title); };
+  const show = (i: DeskItem, f: "follow-up" | null = null) => { setOpen(i.id); setFocus(f); setOpenedTitle(i.title); };
   const showId = (id: string) => { const i = all.get(id); if (i) show(i); };
-  const item = open ? all.get(open) ?? null : null;
+  const special = (s: Special) => { setOpen(s); setFocus(null); setOpenedTitle(null); };
+  const item = open && !open.startsWith("special:") ? all.get(open) ?? null : null;
   const sec = (k: DeskSection["key"]) => desk.sections.find((s) => s.key === k)!;
   const problems = desk.freshness.filter((f) => f.state !== "ok");
 
@@ -114,99 +124,97 @@ export function OfficeDesk({ desk, includeTest = false, initialOpen = null, init
 
       <div className="grid items-start gap-4 lg:grid-cols-2" data-desk-grid>
         <ReviewDeliver s={sec("deliver")} onOpen={show} readOnly={desk.readOnly} />
-        <Communications s={sec("comms")} onOpen={show} />
-        <Shoots s={sec("shoots")} onOpen={show} initialDay={initialDay} includeTest={includeTest} />
+        <Communications s={sec("comms")} onOpen={show} fresh={desk.commsFresh} />
+        <Shoots s={sec("shoots")} onOpen={show} initialDay={initialDay} includeTest={includeTest} briefs={desk.briefsPending} onBriefs={() => special("special:briefs")} />
         <FollowUps s={sec("followups")} onOpen={show} backlog={desk.backlog} includeTest={includeTest} />
+        <NextDayCard desk={desk} onPrepare={() => special("special:prepare")} />
+        <CloseoutCard desk={desk} onFinish={() => special("special:finish")} />
+        <CompletedToday desk={desk} />
       </div>
 
-      {open && <SidePanel item={item} fallbackTitle={openedTitle} desk={desk} includeTest={includeTest} onClose={() => setOpen(null)} />}
+      {open && (
+        <SidePanel
+          item={item}
+          special={open.startsWith("special:") ? (open as Special) : null}
+          focus={focus}
+          fallbackTitle={openedTitle}
+          desk={desk}
+          includeTest={includeTest}
+          drafts={initialDrafts}
+          onOpenItem={showId}
+          onClose={() => setOpen(null)}
+        />
+      )}
     </div>
   );
 }
 
 // ---- the daily checks ------------------------------------------------------------------
 
+function checkState(g: CheckGroup): string {
+  if (!g.done) return "Not yet completed";
+  return g.completedAtISO ? `Completed ${etTime(g.completedAtISO)}` : "Completed";
+}
+
 function DailyChecksBar({ desk, initial }: { desk: Desk; initial: CheckGroup["key"] | null }) {
-  const [open, setOpen] = useState<CheckGroup["key"] | null>(initial);
+  const [open, setOpen] = useState<CheckGroup["key"] | null>(initial === "eod" ? null : initial);
   const c = desk.checks;
   const group = c.groups.find((g) => g.key === open) ?? null;
+  const head = (g: CheckGroup) => (
+    <>
+      {g.done ? <CheckCircle2 aria-label="Done" className="size-5 shrink-0 text-success" /> : <Circle aria-label="Not done" className="size-5 shrink-0 text-muted-2" />}
+      <span className="text-left">
+        <span className="block text-sm font-medium">{g.label}</span>
+        <span className="block text-[12px] text-muted" data-check-state>{checkState(g)}</span>
+      </span>
+    </>
+  );
   return (
     <section aria-labelledby="daily-checks-title" data-daily-checks className="panel-shadow rounded-2xl border border-border bg-surface">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-1 px-4 py-2 sm:px-5">
-        <h2 id="daily-checks-title" className="mr-2 text-base font-semibold">Daily checks</h2>
-        {c.groups.map((g) => (
-          <button
-            key={g.key}
-            type="button"
-            aria-expanded={open === g.key}
-            data-check-group={g.key}
-            data-done={g.done ? "true" : "false"}
-            onClick={() => setOpen(open === g.key ? null : g.key)}
-            className="inline-flex min-h-11 items-center gap-2 rounded-lg px-1 text-sm hover:text-foreground"
-          >
-            {g.done ? <CheckCircle2 aria-label="Done" className="size-5 text-success" /> : <Circle aria-label="Not done" className="size-5 text-muted-2" />}
-            {g.label}
+        <h2 id="daily-checks-title" className="mr-4 text-base font-semibold">Daily checks</h2>
+        {c.groups.map((g) => g.key === "eod" ? (
+          // The end of the day has its own card (the closeout); the bar says where it stands and goes there.
+          <a key={g.key} href="#closeout" data-check-group={g.key} data-done={g.done ? "true" : "false"} className="inline-flex min-h-11 items-center gap-2 rounded-lg px-1 hover:text-foreground">{head(g)}</a>
+        ) : (
+          <button key={g.key} type="button" aria-expanded={open === g.key} data-check-group={g.key} data-done={g.done ? "true" : "false"} onClick={() => setOpen(open === g.key ? null : g.key)} className="inline-flex min-h-11 items-center gap-2 rounded-lg px-1 hover:text-foreground">
+            {head(g)}
             <ChevronDown aria-hidden className={cn("size-4 text-muted-2 transition-transform", open === g.key && "rotate-180")} />
           </button>
         ))}
       </div>
       {group && (
         <div className="space-y-3 border-t border-border px-4 py-3 sm:px-5" data-check-panel={group.key}>
-          <ul className="space-y-1.5">
-            {group.lines.map((l) => (
-              <li key={l.key} data-check-line={l.key} data-done={l.done ? "true" : "false"} className="flex items-start gap-3">
-                {l.auto === true ? (
-                  <CheckCircle2 aria-label="Done (the system checked it)" className="mt-0.5 size-5 shrink-0 text-success" />
-                ) : l.manual ? (
-                  <CloseoutTick dayKey={c.dayKey} itemKey={l.key} checked={!!l.tick} disabled={desk.readOnly} label={l.label} />
-                ) : (
-                  <Circle aria-label="Not yet (the system ticks this when the work is done)" className="mt-0.5 size-5 shrink-0 text-muted-2" />
-                )}
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-medium">{l.label}</span>
-                  <span className="block text-[12px] text-muted">
-                    {l.autoWords}
-                    {l.tick && ` · reviewed by ${l.tick.by.split(" ")[0]} at ${etTime(l.tick.atISO)}`}
-                  </span>
-                </span>
-              </li>
-            ))}
-          </ul>
+          <CheckLines desk={desk} group={group} />
           <p className="text-[12px] text-muted">A tick records your review; it never closes the work under it.</p>
-          {group.key === "eod" && <EndOfDay desk={desk} />}
         </div>
       )}
     </section>
   );
 }
 
-function EndOfDay({ desk }: { desk: Desk }) {
-  const c = desk.checks;
-  const s = c.summary;
-  const eod = c.groups.find((g) => g.key === "eod")!;
+function CheckLines({ desk, group }: { desk: Desk; group: CheckGroup }) {
   return (
-    <div className="space-y-3" data-day-summary>
-      {c.finished ? (
-        <p role="status" className="rounded-lg bg-success/10 px-3 py-2 text-sm text-success">
-          Day finished at {etTime(c.finished.atISO)}.
-          {c.newSinceFinish > 0 && <span className="text-warning"> {c.newSinceFinish} new since then: still on the desk.</span>}
-        </p>
-      ) : (
-        <FinishDay dayKey={c.dayKey} disabled={desk.readOnly || !eod.done} />
-      )}
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Block title={`You completed (${s.completedTotal})`}>
-          {s.completed.length === 0 ? <li className="text-muted">Nothing recorded yet today.</li> : s.completed.map((x) => (
-            <li key={x.what}><span className="font-medium">{x.count} · {x.what}</span>{x.examples.length > 0 && <span className="block text-[12px] text-muted">{x.examples.join(" · ")}</span>}</li>
-          ))}
-        </Block>
-        <Block title="Still open">
-          {s.pending.map((p) => <li key={p.section}>{p.section}: <span className="font-medium tabular-nums">{p.now == null ? "?" : p.now}</span>{p.waiting ? `, ${p.waiting} waiting on others` : ""}</li>)}
-        </Block>
-        <Block title="Blockers">{s.blockers.length === 0 ? <li className="text-muted">None.</li> : s.blockers.map((b) => <li key={b}>{b}</li>)}</Block>
-        <Block title={`Next business day · ${s.tomorrow.dayWords}`}>{s.tomorrow.lines.map((l) => <li key={l}>{l}</li>)}</Block>
-      </div>
-    </div>
+    <ul className="space-y-1.5">
+      {group.lines.map((l) => (
+        <li key={l.key} data-check-line={l.key} data-done={l.done ? "true" : "false"} className="flex items-start gap-3">
+          {l.auto === true ? (
+            <CheckCircle2 aria-label="Done (the system checked it)" className="mt-0.5 size-5 shrink-0 text-success" />
+          ) : l.manual ? (
+            <CloseoutTick dayKey={desk.checks.dayKey} itemKey={l.key} checked={!!l.tick} disabled={desk.readOnly} label={l.label} />
+          ) : (
+            <Circle aria-label="Not yet (the system ticks this when the work is done)" className="mt-0.5 size-5 shrink-0 text-muted-2" />
+          )}
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-medium">{l.label}</span>
+            <span className="block text-[12px] text-muted">
+              {l.autoWords}
+              {l.tick && ` · reviewed by ${l.tick.by.split(" ")[0]} at ${etTime(l.tick.atISO)}`}
+            </span>
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -221,12 +229,16 @@ function Block({ title, children }: { title: string; children: ReactNode }) {
 
 // ---- the sections ------------------------------------------------------------------------
 
-function Card({ s, subtitle, children, footer }: { s: DeskSection; subtitle: string; children: ReactNode; footer?: ReactNode }) {
+function Card({ s, title, subtitle, children, footer, id, wide = false, href }: { s?: DeskSection; title?: string; subtitle: string; children: ReactNode; footer?: ReactNode; id?: string; wide?: boolean; href?: string | null }) {
+  const key = s?.key ?? id;
   return (
-    <section aria-labelledby={`desk-${s.key}-title`} data-desk-section={s.key} data-count={s.count == null ? "?" : String(s.count)} className="panel-shadow flex min-w-0 flex-col rounded-2xl border border-border bg-surface px-4 py-4 sm:px-5">
-      <h2 id={`desk-${s.key}-title`} className="text-xl font-semibold leading-tight">{s.title}</h2>
+    <section id={id} aria-labelledby={`desk-${key}-title`} data-desk-section={s?.key} data-desk-card={id} data-count={s ? (s.count == null ? "?" : String(s.count)) : undefined} className={cn("panel-shadow flex min-w-0 scroll-mt-32 flex-col rounded-2xl border border-border bg-surface px-4 py-4 sm:px-5 md:scroll-mt-28", wide && "lg:col-span-2")}>
+      <div className="flex items-start gap-2">
+        <h2 id={`desk-${key}-title`} className="flex-1 text-xl font-semibold leading-tight">{s?.title ?? title}</h2>
+        {href && <Link href={href} aria-label={`Open ${s?.title ?? title}`} className="inline-flex size-9 items-center justify-center rounded-lg text-muted hover:bg-surface-2"><ChevronRight aria-hidden className="size-5" /></Link>}
+      </div>
       <p className="mt-0.5 text-sm text-muted" data-subtitle>{subtitle}</p>
-      {s.unavailable.length > 0 && (
+      {s && s.unavailable.length > 0 && (
         <p role="status" className="mt-2 rounded-lg bg-warning/10 px-3 py-2 text-sm text-warning">Couldn&rsquo;t read {s.unavailable.join(", ")} just now. This may be missing items; refresh to try again.</p>
       )}
       <div className="mt-3 min-w-0 flex-1">{children}</div>
@@ -267,7 +279,7 @@ function Thumb({ i, icon }: { i: DeskItem; icon: "photo" | "video" | "shoot" }) 
   );
 }
 
-function ReviewDeliver({ s, onOpen, readOnly }: { s: DeskSection; onOpen: (i: DeskItem) => void; readOnly: boolean }) {
+function ReviewDeliver({ s, onOpen, readOnly }: { s: DeskSection; onOpen: (i: DeskItem, f?: "follow-up" | null) => void; readOnly: boolean }) {
   const [all, setAll] = useState(false);
   const rows = all ? s.now : s.now.slice(0, ROWS_SHOWN);
   const media = rows.filter((i) => i.group === "media");
@@ -292,8 +304,31 @@ function ReviewDeliver({ s, onOpen, readOnly }: { s: DeskSection; onOpen: (i: De
     </li>
   );
   return (
-    <Card s={s} subtitle={s.count == null ? "Couldn't count" : s.count === 0 ? "Nothing waiting on you" : `${plural(s.count, "job")} ready for your attention`}
-      footer={s.quiet.length ? <ul className="space-y-1 text-[13px] text-muted" data-quiet>{s.quiet.map((q) => <li key={q.text}>{q.href ? <Link href={q.href} className="hover:text-foreground hover:underline">{q.text}</Link> : q.text}</li>)}</ul> : undefined}>
+    <Card s={s} href="/ops/photo-delivery" subtitle={s.count == null ? "Couldn't count" : s.count === 0 ? "Nothing waiting on you" : `${plural(s.count, "job")} ready for your attention`}
+      footer={
+        <div className="space-y-1.5">
+          <div className="flex flex-wrap items-center gap-3">
+            <Link href="/ops/photo-delivery" className="inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline">View all deliveries <ArrowRight aria-hidden className="size-3.5" /></Link>
+            {s.waiting.length > 0 && (
+              <details className="group ml-auto min-w-0" data-awaiting>
+                <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-1 text-sm text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
+                  {s.waiting.length} awaiting files <ChevronDown aria-hidden className="size-4 transition-transform group-open:rotate-180" />
+                </summary>
+                <ul className="mt-1 space-y-1.5 text-[13px]">
+                  {s.waiting.map((i) => (
+                    <li key={i.id} data-desk-item={i.id} data-state="waiting">
+                      <button type="button" onClick={() => onOpen(i)} className="text-left hover:underline">
+                        <span className="font-medium">{i.title}</span> <span className="text-muted">· {i.line}{i.dueWords ? ` · ${i.dueWords}` : ""}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+          {s.quiet.length > 0 && <ul className="space-y-1 text-[13px] text-muted" data-quiet>{s.quiet.map((q) => <li key={q.text}>{q.href ? <Link href={q.href} className="hover:text-foreground hover:underline">{q.text}</Link> : q.text}</li>)}</ul>}
+        </div>
+      }>
       {s.now.length === 0 ? <Empty words={s.empty} /> : (
         <>
           {media.length > 0 && <GroupHead>Photos, floor plans &amp; tours</GroupHead>}
@@ -311,37 +346,41 @@ function GroupHead({ children }: { children: ReactNode }) {
   return <h3 className="mt-1 text-[12px] font-semibold uppercase tracking-wide text-muted">{children}</h3>;
 }
 
-function Communications({ s, onOpen }: { s: DeskSection; onOpen: (i: DeskItem) => void }) {
+function Communications({ s, onOpen, fresh }: { s: DeskSection; onOpen: (i: DeskItem, f?: "follow-up" | null) => void; fresh: boolean }) {
   const [all, setAll] = useState(false);
   const rows = all ? s.now : s.now.slice(0, ROWS_SHOWN);
+  const upToDate = fresh && s.count != null && <p className="flex items-center gap-2 rounded-lg bg-success/10 px-3 py-2.5 text-sm" data-up-to-date><CheckCircle2 aria-hidden className="size-5 text-success" /> Other conversations are up to date.</p>;
   return (
-    <Card s={s} subtitle={s.count == null ? "Couldn't count" : s.count === 0 ? "Everyone has an answer" : `${plural(s.count, "client")} ${s.count === 1 ? "needs" : "need"} a reply`}
-      footer={s.count != null && s.count > 0 && !s.unavailable.length ? <p className="flex items-center gap-2 text-sm text-muted"><CheckCircle2 aria-hidden className="size-4 text-success" /> Other conversations are up to date</p> : undefined}>
-      {s.now.length === 0 ? <Empty words={s.empty} /> : (
+    <Card s={s} href="/communications" subtitle={s.count == null ? "Couldn't count" : s.count === 0 ? "Everyone has an answer" : `${plural(s.count, "client")} ${s.count === 1 ? "needs" : "need"} a reply`}>
+      {s.now.length === 0 ? (s.count === 0 && fresh ? <Empty words={s.empty} /> : s.count === 0 ? <p className="py-2 text-sm text-muted" data-empty>No client replies found; the mail sync is not fresh, so check Messages too.</p> : null) : (
         <>
           <ul className="divide-y divide-border">
             {rows.map((i) => (
-              <li key={i.id} data-desk-item={i.id} className="flex items-center gap-3 py-3">
+              <li key={i.id} data-desk-item={i.id} className="flex items-start gap-3 py-3">
                 <span aria-hidden className={cn("flex size-11 shrink-0 items-center justify-center rounded-full text-sm font-semibold", i.late ? "bg-danger/15 text-danger" : "bg-brand-soft text-brand")}>{i.initials ?? "?"}</span>
-                <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 text-left sm:grid sm:grid-cols-[minmax(0,10rem)_minmax(0,1fr)] sm:gap-3">
-                  <span className="block min-w-0">
-                    <span className="block font-semibold leading-snug [overflow-wrap:anywhere]">{i.title}</span>
-                    <span className={cn("block text-[13px]", i.late ? "text-danger" : "text-muted")}>{[i.channel, i.elapsed].filter(Boolean).join(" · ")}</span>
-                  </span>
-                  <span className="block text-sm text-foreground/80 [overflow-wrap:anywhere]">{i.line}</span>
+                <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 text-left">
+                  <span className="block font-semibold leading-snug [overflow-wrap:anywhere]">{i.title}</span>
+                  <span className={cn("block text-[13px]", i.late ? "text-danger" : "text-muted")}>{[i.channel, i.elapsed].filter(Boolean).join(" · ")}</span>
+                  <span className="mt-0.5 block text-sm text-foreground/80 [overflow-wrap:anywhere]">{i.line}</span>
                 </button>
-                <RowButton i={i} onOpen={onOpen} />
+                <span className="flex shrink-0 flex-col items-end gap-1">
+                  <RowButton i={i} onOpen={onOpen} />
+                  {i.actions.some((a) => a.kind === "follow-up") && (
+                    <button type="button" onClick={() => onOpen(i, "follow-up")} data-create-follow-up={i.id} className="min-h-9 text-[13px] font-medium text-brand underline-offset-2 hover:underline">Create follow-up</button>
+                  )}
+                </span>
               </li>
             ))}
           </ul>
           <ViewAll shown={rows.length} total={s.now.length} onClick={() => setAll(true)} />
         </>
       )}
+      {s.now.length > 0 && <div className="mt-3">{upToDate}</div>}
     </Card>
   );
 }
 
-function Shoots({ s, onOpen, initialDay, includeTest }: { s: DeskSection; onOpen: (i: DeskItem) => void; initialDay: "today" | "next"; includeTest: boolean }) {
+function Shoots({ s, onOpen, initialDay, includeTest, briefs, onBriefs }: { s: DeskSection; onOpen: (i: DeskItem, f?: "follow-up" | null) => void; initialDay: "today" | "next"; includeTest: boolean; briefs: Desk["briefsPending"]; onBriefs: () => void }) {
   const [day, setDay] = useState<"today" | "next">(initialDay);
   const everyone = [...s.now, ...s.waiting, ...s.ok];
   const ofDay = everyone.filter((i) => i.day === day).sort((a, b) => (timeOf(a) ?? "9999").localeCompare(timeOf(b) ?? "9999"));
@@ -350,6 +389,7 @@ function Shoots({ s, onOpen, initialDay, includeTest }: { s: DeskSection; onOpen
   const past = ofDay.filter(over);
   const needs = (d: "today" | "next") => s.now.filter((i) => i.day === d).length;
   const count = (d: "today" | "next") => everyone.filter((i) => i.day === d).length;
+  const pending = briefs.filter((b) => b.day === day);
   const row = (i: DeskItem) => {
     const v = i.panel.kind === "visit" ? i.panel.visit : null;
     return (
@@ -361,14 +401,14 @@ function Shoots({ s, onOpen, initialDay, includeTest }: { s: DeskSection; onOpen
         </button>
         <span className="min-w-0 sm:w-56">
           {i.chip && <span data-chip className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[12px] font-medium", CHIP_TONE[i.chip.tone])}>{i.chip.tone === "ok" ? <CheckCircle2 aria-hidden className="size-3.5" /> : i.chip.tone === "muted" ? null : <Clock aria-hidden className="size-3.5" />}{i.chip.label}</span>}
-          <span className="mt-0.5 block text-[12px] text-muted">{i.state === "now" ? i.line : v ? [v.confirmation.words, v.brief.words].join(" · ") : i.line}</span>
+          <span className="mt-0.5 block text-[12px] text-muted">{i.state === "now" ? i.line : v ? [v.confirmation.words, ...(v.over ? [] : [v.brief.words])].join(" · ") : i.line}</span>
         </span>
         <RowButton i={i} onOpen={onOpen} />
       </li>
     );
   };
   return (
-    <Card s={s} subtitle={`${plural(count(day), "shoot")} ${day === "today" ? "today" : "next business day"}${needs(day) ? ` · ${needs(day)} ${needs(day) === 1 ? "needs" : "need"} you` : ""}`}
+    <Card s={s} href={homeRecordHref("/schedule", includeTest)} subtitle={`${plural(count(day), "shoot")} ${day === "today" ? "today" : "next business day"}${needs(day) ? ` · ${needs(day)} ${needs(day) === 1 ? "needs" : "need"} you` : ""}`}
       footer={<Link href={homeRecordHref("/schedule", includeTest)} className="inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline">View schedule <ArrowRight aria-hidden className="size-3.5" /></Link>}>
       <div role="group" aria-label="Which day" className="mb-2 inline-flex rounded-lg border border-border p-0.5 text-sm">
         {(["today", "next"] as const).map((d) => (
@@ -380,6 +420,16 @@ function Shoots({ s, onOpen, initialDay, includeTest }: { s: DeskSection; onOpen
       {ofDay.length === 0 ? <Empty words={day === "today" ? "No shoots today" : "No shoots on the next business day"} /> : (
         <>
           {upcoming.length > 0 ? <ul className="divide-y divide-border">{upcoming.map(row)}</ul> : <p className="py-2 text-sm text-muted">Every shoot today has started.</p>}
+          {pending.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-3 rounded-lg bg-surface-2/60 px-3 py-2.5" data-briefs-pending={pending.length}>
+              <FileText aria-hidden className="size-5 shrink-0 text-muted" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium">Photographer briefs</span>
+                <span className="block text-[12px] text-muted">{plural(pending.length, "acknowledgment")} pending</span>
+              </span>
+              <button type="button" onClick={onBriefs} data-open-panel="special:briefs" className={QUIET}>Follow up</button>
+            </div>
+          )}
           {past.length > 0 && (
             <details className="group mt-1 rounded-lg border border-border" data-past>
               <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-sm font-medium [&::-webkit-details-marker]:hidden">
@@ -397,7 +447,7 @@ function Shoots({ s, onOpen, initialDay, includeTest }: { s: DeskSection; onOpen
 
 const timeOf = (i: DeskItem) => (i.panel.kind === "visit" ? i.panel.visit.timeISO : i.dueISO);
 
-function FollowUps({ s, onOpen, backlog, includeTest }: { s: DeskSection; onOpen: (i: DeskItem) => void; backlog: Desk["backlog"]; includeTest: boolean }) {
+function FollowUps({ s, onOpen, backlog, includeTest }: { s: DeskSection; onOpen: (i: DeskItem, f?: "follow-up" | null) => void; backlog: Desk["backlog"]; includeTest: boolean }) {
   const [all, setAll] = useState(false);
   const overdue = s.now.filter((i) => i.late).length;
   const rows = all ? s.now : s.now.slice(0, ROWS_SHOWN);
@@ -412,7 +462,7 @@ function FollowUps({ s, onOpen, backlog, includeTest }: { s: DeskSection; onOpen
     </li>
   );
   return (
-    <Card s={s} subtitle={s.count == null ? "Couldn't count" : s.count === 0 ? "Nothing due today" : overdue === 0 ? `${plural(s.count, "follow-up")} due today` : `${plural(s.count, "follow-up")} due, ${overdue} overdue`}
+    <Card s={s} href={homeRecordHref("/tasks", includeTest)} subtitle={s.count == null ? "Couldn't count" : s.count === 0 ? "Nothing due today" : overdue === 0 ? `${plural(s.count, "follow-up")} due today` : `${plural(s.count, "follow-up")} due, ${overdue} overdue`}
       footer={backlog.count > 0 ? <Link href={homeRecordHref(backlog.href, includeTest)} data-backlog className="inline-flex min-h-11 items-center gap-1 text-sm text-muted hover:text-foreground hover:underline">{plural(backlog.count, "older task")} in your full list <ArrowRight aria-hidden className="size-3.5" /></Link> : undefined}>
       {s.now.length === 0 ? <Empty words={s.empty} /> : (
         <>
@@ -421,9 +471,9 @@ function FollowUps({ s, onOpen, backlog, includeTest }: { s: DeskSection; onOpen
         </>
       )}
       {s.waiting.length > 0 && (
-        <details className="group mt-2" data-waiting>
-          <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-1 text-sm text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
-            {plural(s.waiting.length, "item")} waiting on others <ChevronDown aria-hidden className="size-4 transition-transform group-open:rotate-180" />
+        <details className="group mt-2 rounded-lg bg-surface-2/50 px-3" data-waiting>
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1 text-sm text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
+            <span className="flex-1">{plural(s.waiting.length, "item")} waiting on others</span> <ChevronDown aria-hidden className="size-4 transition-transform group-open:rotate-180" />
           </summary>
           <ul className="divide-y divide-border">{s.waiting.map(row)}</ul>
         </details>
@@ -432,43 +482,201 @@ function FollowUps({ s, onOpen, backlog, includeTest }: { s: DeskSection; onOpen
   );
 }
 
+// ---- the next business day, the closeout, completed today ----------------------------------------
+
+function NextDayCard({ desk, onPrepare }: { desk: Desk; onPrepare: () => void }) {
+  const n = desk.nextDay;
+  const stat = (icon: ReactNode, label: string, body: ReactNode, key: string) => (
+    <div key={key} data-next-stat={key} className="flex min-w-0 items-start gap-3 py-2 sm:px-4 sm:first:pl-0">
+      <span className="mt-0.5 text-muted">{icon}</span>
+      <span className="min-w-0">
+        <span className="block text-sm font-medium">{label}</span>
+        <span className="block text-[13px]">{body}</span>
+      </span>
+    </div>
+  );
+  const ok = (t: string) => <span className="text-success">{t}</span>;
+  const warn = (t: string) => <span className="text-warning">{t}</span>;
+  return (
+    <Card id="next-day" wide title={`Next business day · ${n.dayName}`} subtitle={n.visits === 0 ? `No shoots on the calendar for ${n.dayName}.` : `Everything you need for a smooth ${n.dayName}: ${plural(n.visits, "visit")}.`}>
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+        <div className="grid flex-1 gap-1 divide-border sm:grid-cols-3 sm:divide-x">
+          {stat(<CalendarDays aria-hidden className="size-5" />, "Appointments", n.visits === 0 ? <span className="text-muted">None</span> : <>{ok(`${n.appointments.confirmed} confirmed`)} / {n.appointments.pending ? warn(`${n.appointments.pending} pending`) : <span className="text-muted">0 pending</span>}</>, "appointments")}
+          {stat(<Users aria-hidden className="size-5" />, "Access & contacts", n.visits === 0 ? <span className="text-muted">None</span> : n.access.missing === 0 ? <span className="inline-flex items-center gap-1 text-success"><CheckCircle2 aria-hidden className="size-3.5" /> All details recorded</span> : <>{ok(`${n.access.recorded} recorded`)} / {warn(`${n.access.missing} missing`)}</>, "access")}
+          {stat(<FileText aria-hidden className="size-5" />, "Photographer instructions", n.visits === 0 ? <span className="text-muted">None</span> : <>{ok(`${n.instructions.ready} ready`)} / {n.instructions.review ? warn(`${n.instructions.review} need review`) : <span className="text-muted">0 need review</span>}</>, "instructions")}
+        </div>
+        <div className="flex flex-col items-start gap-1 lg:items-center">
+          <button type="button" onClick={onPrepare} data-open-panel="special:prepare" className={n.missing.length ? PRIMARY : QUIET}>Prepare {n.dayName}</button>
+          <span className="text-[12px] text-muted">Current visit instructions only</span>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function CloseoutCard({ desk, onFinish }: { desk: Desk; onFinish: () => void }) {
+  const eod = desk.checks.groups.find((g) => g.key === "eod")!;
+  return (
+    <Card id="closeout" title="End-of-day closeout" subtitle={desk.checks.finished ? `Day finished at ${etTime(desk.checks.finished.atISO)}.` : "A quick check to wrap up your day."}>
+      <CheckLines desk={desk} group={eod} />
+      {desk.checks.finished && desk.checks.newSinceFinish > 0 && <p className="mt-2 text-sm text-warning">{desk.checks.newSinceFinish} new since then: still on the desk.</p>}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <button type="button" onClick={onFinish} data-open-panel="special:finish" className={PRIMARY}>Review &amp; finish day</button>
+        <span className="text-[12px] text-muted">A tick records your review; it never closes the work under it.</span>
+      </div>
+    </Card>
+  );
+}
+
+function CompletedToday({ desk }: { desk: Desk }) {
+  const [all, setAll] = useState(false);
+  const list = desk.checks.summary.activity;
+  const rows = all ? list : list.slice(0, ACTIVITY_SHOWN);
+  return (
+    <Card id="completed-today" title="Completed today" subtitle={list.length ? `Recent activity from your day: ${plural(list.length, "thing")} done.` : "Nothing recorded yet today."}
+      footer={
+        <div className="flex flex-wrap items-center gap-3">
+          {list.length > rows.length && <button type="button" onClick={() => setAll(true)} data-view-activity className="inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline">View activity <ArrowRight aria-hidden className="size-3.5" /></button>}
+          <span className="ml-auto text-[12px] text-muted">Completed actions are logged automatically.</span>
+        </div>
+      }>
+      {rows.length === 0 ? <p className="py-2 text-sm text-muted">Approvals, sends, replies and checks you do today show here.</p> : (
+        <ol className="space-y-2.5">
+          {rows.map((a, n) => (
+            <li key={`${a.atISO}:${n}`} data-activity className="flex items-start gap-3">
+              <CheckCircle2 aria-hidden className="mt-0.5 size-5 shrink-0 text-success" />
+              <span className="w-16 shrink-0 text-sm tabular-nums text-muted">{etTime(a.atISO)}</span>
+              <span className="min-w-0">
+                <span className="block text-sm font-medium [overflow-wrap:anywhere]">{a.what}</span>
+                {a.detail && <span className="block text-[12px] text-muted [overflow-wrap:anywhere]">{a.detail}</span>}
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </Card>
+  );
+}
+
 // ---- the side panel ----------------------------------------------------------------------
 
-function SidePanel({ item, fallbackTitle, desk, includeTest, onClose }: { item: DeskItem | null; fallbackTitle: string | null; desk: Desk; includeTest: boolean; onClose: () => void }) {
+function SidePanel({ item, special, focus, fallbackTitle, desk, includeTest, drafts, onOpenItem, onClose }: {
+  item: DeskItem | null; special: Special | null; focus: "follow-up" | null; fallbackTitle: string | null; desk: Desk; includeTest: boolean;
+  drafts: Record<string, string> | null; onOpenItem: (id: string) => void; onClose: () => void;
+}) {
+  const title = special === "special:briefs" ? "Photographer briefs" : special === "special:prepare" ? `Prepare ${desk.nextDay.dayName}` : special === "special:finish" ? "Review & finish day" : item?.title ?? fallbackTitle ?? "Done";
+  const actions = item ? item.actions.filter((a) => !(item.panel.kind === "visit" && a.kind === "ask")) : [];
+  const ordered = focus === "follow-up" ? [...actions.filter((a) => a.kind === "follow-up"), ...actions.filter((a) => a.kind !== "follow-up")] : actions;
   return (
-    <div className="fixed inset-0 z-50 flex justify-end" data-side-panel={item?.id ?? "gone"}>
+    <div className="fixed inset-0 z-50 flex justify-end" data-side-panel={special ?? item?.id ?? "gone"}>
       <button type="button" aria-label="Close the panel" onClick={onClose} className="absolute inset-0 bg-black/30" />
       <aside role="dialog" aria-modal="true" aria-labelledby="desk-panel-title" className="relative flex h-full w-full max-w-xl flex-col overflow-hidden border-l border-border bg-surface shadow-xl">
         <div className="flex items-start gap-3 border-b border-border px-4 py-3">
           <div className="min-w-0 flex-1">
-            <h2 id="desk-panel-title" className="text-base font-semibold leading-snug [overflow-wrap:anywhere]">{item?.title ?? fallbackTitle ?? "Done"}</h2>
+            <h2 id="desk-panel-title" className="text-base font-semibold leading-snug [overflow-wrap:anywhere]">{title}</h2>
             {item && <p className="mt-0.5 text-[12px] text-muted">{[item.line, item.dueWords, item.who && `Whose move: ${item.who}`].filter(Boolean).join(" · ")}</p>}
           </div>
           <button type="button" autoFocus onClick={onClose} aria-label="Close" className="inline-flex size-11 shrink-0 items-center justify-center rounded-lg hover:bg-surface-2"><X aria-hidden className="size-5" /></button>
         </div>
         <div className="flex-1 space-y-4 overflow-y-auto px-4 py-3">
-          {!item ? (
-            <p role="status" className="flex items-center gap-1.5 text-sm text-success"><CheckCircle2 aria-hidden className="size-4" /> Done: it has left the list. The counts have been updated.</p>
-          ) : (
-            <>
-              <p className="text-sm">{item.reason}</p>
-              <PanelBody item={item} readOnly={desk.readOnly} />
-              {desk.readOnly ? (
-                <p className="rounded-lg bg-surface-2 px-3 py-2 text-sm text-muted">Preview: read-only. Actions are off.</p>
-              ) : (
-                <div className="space-y-3" data-panel-actions>
-                  {item.actions.filter((a) => !(item.panel.kind === "visit" && a.kind === "ask")).map((a, n) => <ActionControl key={`${a.kind}:${n}`} a={a} item={item} desk={desk} />)}
-                </div>
-              )}
-              {item.href && (
-                <Link href={homeRecordHref(item.href, includeTest)} className="inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline">
-                  Open the full page <ExternalLink aria-hidden className="size-3.5" />
-                </Link>
-              )}
-            </>
-          )}
+          {special === "special:briefs" ? <BriefsPanel desk={desk} />
+            : special === "special:prepare" ? <PreparePanel desk={desk} onOpenItem={onOpenItem} />
+            : special === "special:finish" ? <FinishPanel desk={desk} />
+            : !item ? (
+              <p role="status" className="flex items-center gap-1.5 text-sm text-success"><CheckCircle2 aria-hidden className="size-4" /> Done: it has left the list. The counts have been updated.</p>
+            ) : (
+              <>
+                <p className="text-sm">{item.reason}</p>
+                <PanelBody item={item} readOnly={desk.readOnly} />
+                {desk.readOnly ? (
+                  <p className="rounded-lg bg-surface-2 px-3 py-2 text-sm text-muted">Preview: read-only. Actions are off.</p>
+                ) : (
+                  <div className="space-y-3" data-panel-actions>
+                    {ordered.map((a, n) => <ActionControl key={`${a.kind}:${n}`} a={a} item={item} desk={desk} draft={drafts?.[item.id] ?? null} />)}
+                  </div>
+                )}
+                {item.href && (
+                  <Link href={homeRecordHref(item.href, includeTest)} className="inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline">
+                    Open the full page <ExternalLink aria-hidden className="size-3.5" />
+                  </Link>
+                )}
+              </>
+            )}
         </div>
       </aside>
+    </div>
+  );
+}
+
+/** The briefs that went and still wait on a Got it: the brief's own Resend, or a text to the photographer. */
+function BriefsPanel({ desk }: { desk: Desk }) {
+  const list = desk.briefsPending;
+  if (!list.length) return <Empty words="Every brief that went has its Got it." />;
+  return (
+    <ul className="space-y-4" data-panel="briefs">
+      {list.map((b) => (
+        <li key={b.visitId} className="space-y-2 rounded-lg border border-border p-3">
+          <p className="text-sm"><span className="font-semibold">{b.photographer}</span> · {b.street}{b.timeISO ? ` · ${b.day === "today" ? "" : `${etDate(b.timeISO)} `}${etTime(b.timeISO)}` : ""}</p>
+          <p className="text-[12px] text-muted">{b.state === "changed" ? "The instructions changed: waiting for a new Got it." : "Brief sent: no Got it yet."}</p>
+          {desk.readOnly ? <p className="text-[12px] text-muted">Preview: read-only.</p> : (
+            <>
+              <BriefSend teamMemberId={b.teamMemberId} day={b.dayKey} name={b.photographer.split(" ")[0]} resend />
+              {b.phone ? <ReplyBox phone={b.phone} clientId={null} /> : <p className="text-[12px] text-muted">No phone number on file for {b.photographer.split(" ")[0]}.</p>}
+            </>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Prepare <Day>: what is missing for the next business day, each with its visit's own action. */
+function PreparePanel({ desk, onOpenItem }: { desk: Desk; onOpenItem: (id: string) => void }) {
+  const n = desk.nextDay;
+  if (!n.missing.length) return <Empty words={n.visits ? `${n.dayName} is ready: every visit confirmed, with access and current instructions.` : `No shoots on ${n.dayName}.`} />;
+  return (
+    <ul className="space-y-3" data-panel="prepare">
+      {n.missing.map((m, k) => (
+        <li key={`${m.visitId}:${k}`} className="space-y-1.5 rounded-lg border border-border p-3" data-missing={m.visitId}>
+          <p className="text-sm"><span className="font-semibold">{m.street}</span>{m.timeISO ? ` · ${etDate(m.timeISO)} ${etTime(m.timeISO)}` : ""}</p>
+          <p className="text-sm text-warning">{m.problem}</p>
+          {desk.readOnly ? null : m.action && m.action.kind !== "link" ? <ActionControl a={m.action} item={null} desk={desk} draft={null} /> : (
+            <button type="button" onClick={() => onOpenItem(m.visitId)} className={QUIET}>Open the visit</button>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Review & finish day: the summary of the day, then Finish (held until the end-of-day review is done). */
+function FinishPanel({ desk }: { desk: Desk }) {
+  const c = desk.checks;
+  const s = c.summary;
+  const eod = c.groups.find((g) => g.key === "eod")!;
+  return (
+    <div className="space-y-3" data-day-summary>
+      <CheckLines desk={desk} group={eod} />
+      {c.finished ? (
+        <p role="status" className="rounded-lg bg-success/10 px-3 py-2 text-sm text-success">
+          Day finished at {etTime(c.finished.atISO)}.
+          {c.newSinceFinish > 0 && <span className="text-warning"> {c.newSinceFinish} new since then: still on the desk.</span>}
+        </p>
+      ) : (
+        <FinishDay dayKey={c.dayKey} disabled={desk.readOnly || !eod.done} />
+      )}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Block title={`You completed (${s.completedTotal})`}>
+          {s.completed.length === 0 ? <li className="text-muted">Nothing recorded yet today.</li> : s.completed.map((x) => (
+            <li key={x.what}><span className="font-medium">{x.count} · {x.what}</span>{x.examples.length > 0 && <span className="block text-[12px] text-muted">{x.examples.join(" · ")}</span>}</li>
+          ))}
+        </Block>
+        <Block title="Still open">
+          {s.pending.map((p) => <li key={p.section}>{p.section}: <span className="font-medium tabular-nums">{p.now == null ? "?" : p.now}</span>{p.waiting ? `, ${p.waiting} waiting on others` : ""}</li>)}
+        </Block>
+        <Block title="Blockers">{s.blockers.length === 0 ? <li className="text-muted">None.</li> : s.blockers.map((b) => <li key={b}>{b}</li>)}</Block>
+        <Block title={`Next business day · ${s.tomorrow.dayWords}`}>{s.tomorrow.lines.map((l) => <li key={l}>{l}</li>)}</Block>
+      </div>
     </div>
   );
 }
@@ -548,8 +756,8 @@ function VisitBody({ v, readOnly }: { v: PrepVisit; readOnly: boolean }) {
         {field("Client", v.client)}
         {field("Photographer", v.photographer ?? "Not assigned")}
         {field("Confirmation", v.confirmation.words)}
-        {field("Brief", v.brief.words)}
-        {v.brief.state !== "off" && v.brief.why && !v.brief.words.includes(v.brief.why) ? field("Why", v.brief.why) : null}
+        {v.over ? null : field("Brief", v.brief.words)}
+        {!v.over && v.brief.state !== "off" && v.brief.why && !v.brief.words.includes(v.brief.why) ? field("Why", v.brief.why) : null}
         {field("This visit", v.services.length ? v.services.join(", ") : "No services listed for this visit")}
         {field("Lockbox / code", v.access.lockbox)}
         {field("Access", v.access.access)}
@@ -596,7 +804,7 @@ function VisitBody({ v, readOnly }: { v: PrepVisit; readOnly: boolean }) {
   );
 }
 
-function ActionControl({ a, item, desk }: { a: DeskAction; item: DeskItem; desk: Desk }) {
+function ActionControl({ a, item, desk, draft }: { a: DeskAction; item: DeskItem | null; desk: Desk; draft: string | null }) {
   switch (a.kind) {
     case "photo-approve":
       return (
@@ -614,15 +822,28 @@ function ActionControl({ a, item, desk }: { a: DeskAction; item: DeskItem; desk:
     case "reply":
       return (
         <div className="space-y-3">
-          {a.family === "phone" && a.phone ? <ReplyBox phone={a.phone} clientId={a.clientId} /> : <p className="text-[12px] text-muted">Reply to this {a.family === "email" ? "email" : "conversation"} in Messages; it stays here until the answer is logged.</p>}
+          {a.family === "phone"
+            ? <DraftReply mode="text" threadKey={a.threadKey} initialDraft={draft} autoDraft={!draft} />
+            : a.taskId
+              ? <DraftReply mode="email" taskId={a.taskId} initialDraft={draft} autoDraft={!draft} />
+              : <p className="text-[12px] text-muted">This email has no reply task to send from here: answer it in Messages. It stays here until the answer is logged.</p>}
           <div className="flex flex-wrap items-center gap-2">
             <Link href={a.href} className={QUIET}>Open in Messages</Link>
             <CommsDismissButton threadKey={a.threadKey} family={a.family} clientId={a.clientId} groupKey={a.groupKey} />
           </div>
         </div>
       );
+    case "program-reply":
+      return (
+        <div className="space-y-3">
+          <DraftReply mode="program" enrollmentId={a.enrollmentId} initialDraft={draft} autoDraft={!draft} />
+          <Link href={a.href} className={QUIET}>Open the program&rsquo;s Messages</Link>
+        </div>
+      );
     case "follow-up":
       return <FollowUpCreate clientId={a.clientId} projectId={a.projectId} title={a.title} />;
+    case "delegation":
+      return <DelegationControls taskId={a.taskId} state={a.state} needsVerification={a.needsVerification} />;
     case "task":
       return (
         <div className="space-y-3">
@@ -637,10 +858,10 @@ function ActionControl({ a, item, desk }: { a: DeskAction; item: DeskItem; desk:
     case "confirm":
       return <ConfirmControls taskId={a.taskId} />;
     case "topaz-rerun":
-      return <RerunTopaz jobId={a.jobId} street={a.street} credits={a.credits} limit={a.limit} video={item.actions.filter((x) => x.kind === "topaz-rerun").length > 1 ? a.video : undefined} />;
+      return <RerunTopaz jobId={a.jobId} street={a.street} credits={a.credits} limit={a.limit} video={(item?.actions.filter((x) => x.kind === "topaz-rerun").length ?? 0) > 1 ? a.video : undefined} />;
     case "brief-send":
       return <BriefSend teamMemberId={a.teamMemberId} day={a.day} name={a.name} resend={a.resend} />;
     case "link":
-      return item.href === a.href ? null : <Link href={a.href} className={QUIET}>{a.label}</Link>;
+      return item?.href === a.href ? null : <Link href={a.href} className={QUIET}>{a.label}</Link>;
   }
 }
