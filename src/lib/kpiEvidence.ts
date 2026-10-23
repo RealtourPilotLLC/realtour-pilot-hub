@@ -217,11 +217,13 @@ export type Evidence = { shoots: ShootFact[]; entries: KpiEntryBase[]; coachingN
  * then (created by it) and were live then (a row retired later still counts;
  * one retired before it does not). Today's rows judged a photographer on a
  * video the order added after they had handed in (538 Onward Ave's second
- * reel). Pure.
+ * reel). A row made WITH the job (within a minute of it) was owed from the
+ * start, whatever the clocks say. Pure.
  */
-export function rowsAt<T extends { createdAt?: Date | null; removedFromOrderAt: Date | null }>(rows: T[], at: Date): T[] {
+export function rowsAt<T extends { createdAt?: Date | null; removedFromOrderAt: Date | null }>(rows: T[], at: Date, jobCreatedAt?: Date | null): T[] {
+  const withJob = jobCreatedAt ? jobCreatedAt.getTime() + 60_000 : -Infinity;
   return rows
-    .filter((d) => !d.createdAt || d.createdAt.getTime() <= at.getTime())
+    .filter((d) => !d.createdAt || d.createdAt.getTime() <= at.getTime() || d.createdAt.getTime() <= withJob)
     .map((d) => (d.removedFromOrderAt && d.removedFromOrderAt.getTime() > at.getTime() ? { ...d, removedFromOrderAt: null } : d));
 }
 
@@ -319,7 +321,7 @@ export async function loadEvidence(
       const passed = now.getTime() > due.getTime();
       if (!submitted && !passed) continue;
       // Owed at the handoff (or, not handed in, at the deadline)?
-      if (!liveHandoffCategories(rowsAt(r.deliverables, submitted ?? due)).includes(half)) continue;
+      if (!liveHandoffCategories(rowsAt(r.deliverables, submitted ?? due, r.createdAt)).includes(half)) continue;
       const by = half === "photos" ? r.photosHandoffBy : r.videoHandoffBy;
       // The office's submit is not the photographer's: their own footage landing stands in.
       const byOffice = !!submitted && officeSubmit(by);
@@ -376,10 +378,10 @@ export async function loadEvidence(
       const handedIn = categoryHandoffAt(r, "video");
       const readiness = await handoffReadinessOf({
         ...r,
-        deliverables: (handedIn ? rowsAt(r.deliverables, handedIn) : r.deliverables).filter((d) => !d.removedFromOrderAt && !d.waivedAt),
+        deliverables: (handedIn ? rowsAt(r.deliverables, handedIn, r.createdAt) : r.deliverables).filter((d) => !d.removedFromOrderAt && !d.waivedAt),
         photographer: r.photographer,
       }).catch(() => null);
-      const theirs = !!handedIn && !officeSubmit(r.videoHandoffBy) && liveHandoffCategories(rowsAt(r.deliverables, handedIn)).includes("video");
+      const theirs = !!handedIn && !officeSubmit(r.videoHandoffBy) && liveHandoffCategories(rowsAt(r.deliverables, handedIn, r.createdAt)).includes("video");
       if (readiness && !readiness.minimalReel && handedIn && theirs) {
         videoHandoff = true;
         // TWO VIDEOS, TWO SETS OF INSTRUCTIONS (Oct 22 2026): a later video of
@@ -387,7 +389,7 @@ export async function loadEvidence(
         // readiness above already names it), and a premium one with too few
         // is thin. A video the hub only set up AFTER this handoff is the hub's
         // miss, not the photographer's, and is not held against them.
-        const liveVideoRows = rowsAt(r.deliverables, handedIn).filter((d) => !d.removedFromOrderAt && !d.waivedAt && (d.type === "VIDEO" || d.type === "SOCIAL_REEL"));
+        const liveVideoRows = rowsAt(r.deliverables, handedIn, r.createdAt).filter((d) => !d.removedFromOrderAt && !d.waivedAt && (d.type === "VIDEO" || d.type === "SOCIAL_REEL"));
         const { laterVideoGap, perVideoRuleApplies } = await import("@/lib/perVideoInstructions");
         const later = liveVideoRows.length > 1 && perVideoRuleApplies(handedIn)
           ? (await import("@/lib/deliverableOutputs").then((m) => m.videoInstructionsFor(r.id)).catch(() => [])).filter((v) => v.number > 1)

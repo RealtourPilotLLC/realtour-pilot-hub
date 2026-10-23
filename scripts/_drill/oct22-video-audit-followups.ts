@@ -168,7 +168,7 @@ async function main() {
       k++;
       const p = await prisma.project.create({
         data: {
-          title: `${street}, Phoenixville, PA`, clientId: client.id, status: "REVIEW", shootDate: SHOT, photographerId: harrisonTm.id,
+          title: `${street}, Phoenixville, PA`, clientId: client.id, status: "REVIEW", shootDate: SHOT, photographerId: harrisonTm.id, createdAt: at("2026-10-14T19:41:00Z"),
           videoInstructions: "STYLE: Fast-Paced\n\nCOLOR PROFILE: S-Log3\n\nVISION FOR THE EDIT\nFollow the script.",
           videoHandoffAt: o.at, videoHandoffBy: o.by, photosHandoffAt: at("2026-10-21T20:00:00Z"), photosHandoffBy: "Harrison Drill", debriefSubmittedAt: o.at, uploadedAt: at("2026-10-22T03:01:20Z"),
           appointments: { create: [{ aryeoId: `appt-va-${k}`, startAt: SHOT, status: "SCHEDULED", title: street }] },

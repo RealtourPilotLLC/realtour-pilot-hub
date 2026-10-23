@@ -65,8 +65,11 @@ export function judgeListingFile(file: RecordedFileFact, videos: ListingVideoFac
   return { verdict: "unknown", message: "The listing video's size could not be read." };
 }
 
-/** The file a receipt for this version is about: its time and its size. Null = not readable. */
-export async function recordedFileFact(submissionId: string): Promise<RecordedFileFact | null> {
+/** The file a receipt for this version is about: its time and its size. Null
+ *  = not readable. `dropbox: false` reads the database only (a 1080p render's
+ *  size then reads null): the size is worth a Dropbox read only once a
+ *  listing video's size is known to compare it with. */
+export async function recordedFileFact(submissionId: string, opts: { dropbox?: boolean } = {}): Promise<RecordedFileFact | null> {
   const sub = await prisma.reviewSubmission.findUnique({
     where: { id: submissionId },
     select: { createdAt: true, completedAt: true, sizeBytes: true, blobUrl: true, assetPath: true, finalPath: true, topazJob: { select: { state: true, finalPath: true, savedAt: true } } },
@@ -74,7 +77,7 @@ export async function recordedFileFact(submissionId: string): Promise<RecordedFi
   if (!sub) return null;
   const { dbx } = await import("@/lib/integrations/dropbox");
   // Bounded: Dropbox's own read retries for up to a minute, and a person is waiting on the press.
-  const sizeOf = async (path: string | null | undefined) => (path
+  const sizeOf = async (path: string | null | undefined) => (path && opts.dropbox !== false
     ? ((await within(dbx<{ size?: number }>("files/get_metadata", { path }).catch(() => null), 5_000, null))?.size ?? null)
     : null);
   const j = sub.topazJob;
@@ -138,7 +141,7 @@ export async function checkListingHasFile(submissionId: string, opts: { listing?
     const cut = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { project: { select: { aryeoListingId: true } } } });
     const listingId = cut?.project.aryeoListingId;
     if (!listingId) return { verdict: "unknown", message: "No Aryeo listing is linked." };
-    const file = await recordedFileFact(submissionId);
+    let file = await recordedFileFact(submissionId, { dropbox: false });
     if (!file) return { verdict: "unknown", message: "The version could not be read." };
     let listing = opts.listing;
     if (listing === undefined) {
@@ -152,6 +155,8 @@ export async function checkListingHasFile(submissionId: string, opts: { listing?
     // The newest few, whatever their time: a size match on an older id is an
     // in-place replacement of the file, and still this file.
     const { videos, undated } = await listingVideoFacts(listing, null);
+    // Dropbox is asked for the file's size only when there is a listing size to compare it with.
+    if (file.sizeBytes == null && videos.some((v) => v.sizeBytes != null)) file = (await recordedFileFact(submissionId)) ?? file;
     return judgeListingFile(file, videos, undated);
   } catch (e) {
     return { verdict: "unknown", message: e instanceof Error ? e.message.slice(0, 160) : "The check failed." };

@@ -127,8 +127,11 @@ export async function recordUploadsSeenOnListing(listingId: string, listing: Lis
     const { recordedFileFact, listingVideoFacts } = await import("@/lib/listingFileMatch");
     const read = await listingVideoFacts(listing, floor, newer.length);
     const listed = newer.map((v) => read.videos.find((x) => x.id === v.id)?.sizeBytes ?? null);
-    const files = (await Promise.all(owed.map((o) => recordedFileFact(o.row.submissionId).catch(() => null)))).map((f) => f?.sizeBytes ?? null);
-    if (listed.every((n) => n != null) && files.every((n) => n != null)) {
+    // Dropbox is asked for the finished files' sizes only when every new video's size is known.
+    const files = listed.every((n) => n != null)
+      ? (await Promise.all(owed.map((o) => recordedFileFact(o.row.submissionId).catch(() => null)))).map((f) => f?.sizeBytes ?? null)
+      : [];
+    if (listed.every((n) => n != null) && files.length && files.every((n) => n != null)) {
       const key = (xs: (number | null)[]) => [...xs].sort((a, b) => a! - b!).join(",");
       if (key(listed) !== key(files)) {
         console.warn(`[aryeo] listing ${listingId}: the new video's size (${listed.join(", ")} bytes) is not the finished file's (${files.join(", ")} bytes)`);
