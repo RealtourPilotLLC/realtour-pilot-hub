@@ -213,7 +213,7 @@ async function main() {
     c.ok("Kyle keeps his desk", kNames.includes("OfficeDesk") && !kNames.includes("CreativeDesk"));
     await signIn(owner);
     const oNames = namesOf(await settle(await home({})));
-    c.ok("the owner keeps his dashboard", oNames.includes("HealthStrip") && !oNames.includes("CreativeDesk"));
+    c.ok("the owner has his own dashboard (OwnerHome, Oct 23 2026), never the creative desk", oNames.includes("OwnerHome") && !oNames.includes("CreativeDesk"));
     const { putSetting } = await import("@/lib/settings");
     await putSetting("review_room", { creativeApproverTeamMemberId: patTm.id, backupReviewerTeamMemberId: kyleTm.id, coverOfferHours: 9 });
     await signIn(pat);

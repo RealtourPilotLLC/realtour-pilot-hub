@@ -196,7 +196,10 @@ async function main() {
     const week = elements(homeTest, "WeekStrip")[0];
     const hrefsIn = (tree: unknown): string[] => Array.isArray(tree) ? tree.flatMap(hrefsIn) : isValidElement<Props>(tree) ? [...(typeof tree.props.href === "string" ? [tree.props.href] : []), ...Object.values(tree.props).flatMap(hrefsIn)] : [];
     const noShootsToday = elements(homeTest, "div").find((d) => d["data-todays-shoots"] === "none");
-    c.ok("the shared dashboard composes explicit record scope through today's shoots (week strip)", week ? week.includeTest === true : !!noShootsToday && hrefsIn(noShootsToday.children).includes("/schedule?test=1"));
+    // Oct 23 2026: a CREATIVE_MANAGER login's home is his own creative desk,
+    // which takes the same explicit record scope.
+    const creativeDesk = elements(homeTest, "CreativeDesk")[0] ?? elements(homeTest, "CreativeDeskSection")[0];
+    c.ok("the creative manager's dashboard composes explicit record scope (his desk, or today's shoots on the shared one)", creativeDesk ? (creativeDesk as { includeTest?: boolean }).includeTest === true : week ? week.includeTest === true : !!noShootsToday && hrefsIn(noShootsToday.children).includes("/schedule?test=1"));
     c.ok("scope reads preserve assignments, manual work, source tasks, settings and client-send boundary", before === await sourceSnapshot() && await prisma.outboxMessage.count() === 0 && fence.blocked.length === 0 && fence.faked.length === 0);
     c.summary();
   } finally { fence.restore(); await db.stop(); }

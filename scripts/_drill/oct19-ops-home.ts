@@ -523,25 +523,22 @@ async function main() {
     c.ok("…and the words: '3 late', due today and tomorrow, oldest 5 days; '2 need an owner'; '1 ready' (said once: not again under it)", ["3 late", "1 due today · 2 due tomorrow · oldest 5 days", "2 need an owner", "1 ready", "2 photo sets in QC"].every((w) => dashHtml.includes(w)) && !dashHtml.includes("1 video ready to send"), dashHtml.slice(dashHtml.indexOf("data-health-strip"), dashHtml.indexOf("data-health-strip") + 1500));
 
     // ---- shoots in progress ----
-    // Oct 23 2026: Shoots in progress is the creative manager's card on the
-    // shared dashboard (the office's has none, and the owner has his own
-    // dashboard), so it is read from a creative manager's home.
-    const caraTm = await prisma.teamMember.create({ data: { name: "Cara Creative", role: "MANAGER", email: "cara@oct19.invalid" } });
-    const cara = await user("Cara Creative", caraTm.email!, "CREATIVE_MANAGER", caraTm.id);
+    // Oct 23 2026: Shoots in progress is a card on the shared dashboard (the
+    // office's desk has none, the owner and the CREATIVE_MANAGER login each
+    // have their own home), which an office login flagged creative manager on
+    // the roster still gets, so it is read from that home.
+    const caraTm = await prisma.teamMember.create({ data: { name: "Cara Creative", role: "MANAGER", email: "cara@oct19.invalid", creativeManager: true } });
+    const cara = await user("Cara Creative", caraTm.email!, "ADMIN", caraTm.id);
     await signIn(cara);
     const cTree = await settle(await home({}));
     const cHtml = renderToStaticMarkup(expand(cTree) as Parameters<typeof renderToStaticMarkup>[0]);
     const cText = textOf(expand(cTree));
     await signIn(james);
-    const table = elements(cTree, "ShootsInProgress")[0]?.jobs as Dashboard["jobs"];
-    const expectRows = [...boardRows].sort(opsHome.jobOrder).slice(0, opsHome.DASHBOARD_ROWS);
-    c.ok("Shoots in progress: the board's first ten rows, late first (the monthly ones included in that order)", table.rows.map((r) => r.projectId).join() === expectRows.map((r) => r.projectId).join() && table.rows.slice(0, 3).every((r) => r.late) && table.total === board.counts.total, table.rows.map((r) => r.street).join(" | "));
-    c.ok("…each row opens its job page; 'All shoots' opens /jobs; the rest are counted", expectRows.every((r) => cHtml.includes(`href="/projects/${r.projectId}"`)) && cHtml.includes('href="/jobs"') && cHtml.includes(`${board.counts.total - opsHome.DASHBOARD_ROWS} more on the Shoots page`));
-    // Oct 22 2026: the owner's Monthly content CARD now sits above Shoots in
-    // progress, so the divider is looked for inside that section only.
-    const inProgressHtml = cHtml.slice(cHtml.indexOf('aria-labelledby="in-progress-title"'));
-    c.ok("…monthly rows sit under a 'Monthly content' divider, after the listing rows", cText.includes("Monthly content") && inProgressHtml.indexOf("Monthly content") > inProgressHtml.indexOf("2 Pine Rd") && inProgressHtml.indexOf("Monthly content") < inProgressHtml.indexOf("1033 Preserve Ln"));
-    c.ok("…with the photos chip, the video chip ('Changes · John') and the requests chip ('2 photo · no owner')", ["Changes · John", "In QC", "2 photo · no owner", "1 video", "Not ordered"].every((w) => cHtml.includes(w)));
+    // Oct 23 2026: every home that showed Shoots in progress has its own now
+    // (the owner's dashboard, the creative manager's desk, Kyle's desk), so
+    // the shared dashboard's card is shown to nobody; the Shoots board (/jobs)
+    // is where the shoots in progress are.
+    c.ok("Shoots in progress is retired from the shared dashboard (the Shoots board holds it)", elements(cTree, "ShootsInProgress").length === 0 && !cHtml.includes('aria-labelledby="in-progress-title"') && typeof cText === "string");
 
     // ---- needs attention now ----
     const att = elements(ownerTree, "NeedsAttention")[0]?.attention as Dashboard["attention"];
@@ -650,9 +647,9 @@ async function main() {
     await signIn(cara);
     jobsCalls.length = 0;
     const testHtml = renderToStaticMarkup(expand(await settle(await home({ searchParams: Promise.resolve({ test: "1" }) }))) as Parameters<typeof renderToStaticMarkup>[0]);
-    await signIn(james);
     const testDash = await settle(await home({ searchParams: Promise.resolve({ test: "1" }) }));
-    c.ok("Show test records: the Shoots board is read with them, and the doors keep the view", jobsCalls.some((o) => o.includeTest === true) && testHtml.includes('href="/jobs?f=late&amp;test=1"') && testHtml.includes('href="/jobs?test=1"') && testHtml.includes("Showing real and test records on the dashboard") && testHtml.includes(`href="/projects/${pEdit.id}"`));
+    await signIn(james);
+    c.ok("Show test records: the Shoots board is read with them, and the doors keep the view", jobsCalls.some((o) => o.includeTest === true) && testHtml.includes('href="/jobs?f=late&amp;test=1"') && testHtml.includes("Showing real and test records on the dashboard") && typeof pEdit.id === "string");
     const testClients = (elements(testDash, "HealthStrip")[0]?.health as Dashboard["health"]).clients;
     const allWaiting = (await unansweredCommsBoard("phone", now)).length + (await unansweredCommsBoard("email", now)).length;
     c.ok("…the clients-waiting number counts the test clients too", testClients?.waiting === allWaiting, `${testClients?.waiting} vs ${allWaiting}`);

@@ -166,7 +166,8 @@ async function main() {
     await signIn(james);
     const jTree = await settle(await home({}));
     const jHtml = ssr(jTree);
-    c.ok("#14 the creative manager's '/' is his existing home (the tiles, needs attention), no owner dashboard, no figures", !jHtml.startsWith("RENDER FAILED") && namesOf(jTree).includes("HealthStrip") && !jHtml.includes("data-owner-dashboard") && !/\$\d/.test(jHtml), jHtml.slice(0, 200));
+    // James's own dashboard (the creative desk, merged Oct 23 2026) is his home now.
+    c.ok("#14 the creative manager's '/' is his own home (the creative desk), no owner dashboard, no figures", !jHtml.startsWith("RENDER FAILED") && (namesOf(jTree).includes("CreativeDesk") || namesOf(jTree).includes("CreativeDeskSection")) && !jHtml.includes("data-owner-dashboard") && !/\$\d/.test(jHtml), namesOf(jTree).join(","));
     await signIn(owner, kyle.id);
     const vHtml = ssr(await settle(await home({})));
     c.ok("#14 Jordan previewing Kyle sees Kyle's desk (read-only), never his own money", vHtml.includes("data-office-desk") && vHtml.includes('data-readonly="true"') && !vHtml.includes("data-owner-dashboard") && !/\$\d/.test(vHtml));
