@@ -2,7 +2,7 @@
 
 import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, BellRing, Loader2, RotateCcw, Send, UploadCloud } from "lucide-react";
+import { AlertTriangle, BellRing, Loader2, RotateCcw, Send, Upload, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/Action";
 import { remindVideoAction, sendAllVideosAction, sendVideoToAryeoAction } from "@/app/review/videoSendActions";
@@ -17,6 +17,11 @@ import { remindVideoAction, sendAllVideosAction, sendVideoToAryeoAction } from "
 // one, the first press says so and asks "Upload anyway". After the press the
 // row shows the upload's own progress (the page refreshes itself every 30 s while a
 // video is on its way).
+// `uploadOnly` (Jordan, Oct 23 2026: "give an option to upload to Aryeo
+// without sending"): a second press beside it, "Upload to Aryeo only", the
+// same upload through the same checks (the requests, the listing warning),
+// stopped on the listing; the row then says "On Aryeo, not sent yet" with
+// Send now (PushControls). Try again repeats whichever was pressed.
 // SendAll: every ready row with no open request, one press.
 // RemindButton: "Remind editor" / "Remind reviewer", at most once every 4
 // hours per video (the server decides; the row then says who was reminded).
@@ -35,20 +40,26 @@ export function SendVideo(props: {
   openAsks: Ask[];
   asksUnknown: boolean;
   listingWarning: string | null;
+  /** Offer "Upload to Aryeo only" beside the press (a fresh "Upload to Aryeo and send" only). */
+  uploadOnly?: boolean;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [step, setStep] = useState<"idle" | "asks" | "listing">("idle");
+  // Which press the requests / listing check is for: false = and send, true = upload only.
+  const [only, setOnly] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const guard = useRef(false);
-  const go = (checkedRequests: boolean) => {
+  const offerOnly = !!props.uploadOnly && props.label === "Upload to Aryeo and send";
+  const go = (checkedRequests: boolean, uploadOnly: boolean) => {
     if (guard.current) return;
     guard.current = true;
     setStep("idle");
     setMsg(null);
     start(async () => {
       try {
-        const r = await sendVideoToAryeoAction(props.submissionId, { checkedRequests });
+        // Try again repeats what was pressed (the server reads the stopped run); the two fresh presses say which.
+        const r = await sendVideoToAryeoAction(props.submissionId, props.label === "Try again" ? { checkedRequests } : { checkedRequests, uploadOnly });
         setMsg({ ok: r.ok, text: r.message });
         router.refresh();
       } catch {
@@ -58,22 +69,30 @@ export function SendVideo(props: {
       }
     });
   };
-  const press = () => {
+  const press = (uploadOnly: boolean) => {
     if (props.asksUnknown) {
       setMsg({ ok: false, text: "The client's requests could not be read just now, so nothing was sent. Reload the page and try again." });
       return;
     }
+    setOnly(uploadOnly);
     if (props.openAsks.length) return setStep("asks");
     if (props.listingWarning && props.label !== "Try again") return setStep("listing");
-    go(false);
+    go(false, uploadOnly);
   };
   const Icon = props.label === "Try again" ? RotateCcw : props.label === "Send" ? Send : UploadCloud;
   return (
     <div className="mt-2 space-y-2">
       {step === "idle" && (
-        <Button variant={props.label === "Try again" ? "secondary" : "primary"} disabled={pending} onClick={press}>
-          {pending ? <Loader2 aria-hidden className="size-4 animate-spin motion-reduce:animate-none" /> : <Icon aria-hidden className="size-4" />} {pending ? "Starting" : props.label}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant={props.label === "Try again" ? "secondary" : "primary"} disabled={pending} onClick={() => press(false)}>
+            {pending && !only ? <Loader2 aria-hidden className="size-4 animate-spin motion-reduce:animate-none" /> : <Icon aria-hidden className="size-4" />} {pending && !only ? "Starting" : props.label}
+          </Button>
+          {offerOnly && (
+            <Button variant="secondary" disabled={pending} onClick={() => press(true)} title="Puts it on the Aryeo listing without sending it to the client. Send it later with Send now.">
+              {pending && only ? <Loader2 aria-hidden className="size-4 animate-spin motion-reduce:animate-none" /> : <Upload aria-hidden className="size-4" />} {pending && only ? "Uploading" : "Upload to Aryeo only"}
+            </Button>
+          )}
+        </div>
       )}
       {step === "asks" && (
         <div role="group" aria-label={`Client requests for ${props.street}`} className="rounded-lg border border-warning/40 bg-warning-soft/30 p-3 text-sm">
@@ -84,8 +103,8 @@ export function SendVideo(props: {
             ))}
           </ul>
           <div className="mt-2 flex flex-wrap gap-2">
-            <Button variant="primary" disabled={pending} onClick={() => go(true)}>
-              <UploadCloud aria-hidden className="size-4" /> Checked, upload and send
+            <Button variant="primary" disabled={pending} onClick={() => go(true, only)}>
+              <UploadCloud aria-hidden className="size-4" /> {only ? "Checked, upload only" : "Checked, upload and send"}
             </Button>
             <Button variant="secondary" onClick={() => setStep("idle")}>Cancel</Button>
           </div>
@@ -96,8 +115,8 @@ export function SendVideo(props: {
           <p className="flex items-start gap-1.5 font-medium"><AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" /> {props.listingWarning}</p>
           <p className="mt-1 text-muted">Play it in Aryeo first. If it is this video, record it under &ldquo;Done it by hand?&rdquo; instead.</p>
           <div className="mt-2 flex flex-wrap gap-2">
-            <Button variant="primary" disabled={pending} onClick={() => go(false)}>
-              <UploadCloud aria-hidden className="size-4" /> Upload anyway
+            <Button variant="primary" disabled={pending} onClick={() => go(false, only)}>
+              <UploadCloud aria-hidden className="size-4" /> {only ? "Upload anyway (not sent)" : "Upload anyway"}
             </Button>
             <Button variant="secondary" onClick={() => setStep("idle")}>Cancel</Button>
           </div>

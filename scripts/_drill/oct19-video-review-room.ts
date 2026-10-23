@@ -194,6 +194,8 @@ async function main() {
     c.ok("Needs a follow-up is one fold inside Ready to send, with the delivery card's own rows (the unknown delivery text, its conversation link)", fuAt > h.indexOf(">Ready to send</h2>") && fuAt < h.indexOf(">With the editors</h2>") && />Needs a follow-up</.test(h) && /Delivery texts needing a check/.test(h) && h.includes(`incident=${encodeURIComponent(notice.id)}`) && /data-follow-ups="1"/.test(h), String(fuAt));
     const ready = between(h, "Ready to send", "With the editors");
     c.ok("each ready row has Upload to Aryeo and send", (ready.match(/Upload to Aryeo and send/g) ?? []).length === 3, ready.slice(0, 400));
+    // Oct 23 2026 (Jordan: "give an option to upload to Aryeo without sending").
+    c.ok("…and beside it Upload to Aryeo only (the same three rows)", (ready.match(/Upload to Aryeo only/g) ?? []).length === 3, ready.slice(0, 400));
     c.ok("the hand path is folded under each row (Done it by hand?), open on the row the hub cannot send", (ready.match(/Done it by hand\?/g) ?? []).length === 4 && /4 Editor File Ln/.test(ready) && /editor's own file/.test(ready) && /<details[^>]*open=""[^>]*>\s*<summary[^>]*>Done it by hand\?/.test(h));
     c.ok("Send all, for the rows with no open request (2 and 3, not 1)", /Send all \(2\)/.test(ready));
     c.ok("approver and when, and late ones marked", /Approved .* by James Rivera/.test(ready) && /1 Request Rd .*Late/.test(ready));

@@ -572,6 +572,10 @@ export type VideoItem = {
     submissionId: string;
     canPress: boolean;
     label: "Upload to Aryeo and send" | "Send" | "Try again";
+    /** "Upload to Aryeo only" is offered beside a fresh "Upload to Aryeo and send" (Oct 23 2026), as in the room. */
+    uploadOnly: boolean;
+    /** On the listing, uploaded only ("On Aryeo, not sent yet"): the row's one press is Send now. */
+    sendNow: boolean;
     /** What the room says about the upload, once a person pressed it. */
     progress: string | null;
     openAsks: { summary: string; askedBy: string | null }[];
@@ -721,7 +725,7 @@ export async function jobDeliverables(projectId: string, now: Date = new Date())
   const sentAt = new Map(sent.map((s) => [s.id, s.sentToClientAt!]));
   // The Video Review Room's own row for an approved listing cut (ready to send, held, in the 1080p pass, sent this
   // week) decides where it stands, exactly as the room shows it, and carries what the send button needs.
-  const roomRow = new Map<string, { lane: string; late: boolean; send: VideoItem["send"]; stage: string }>();
+  const roomRow = new Map<string, { lane: string; late: boolean; send: VideoItem["send"]; stage: string; uploadedOnly: boolean }>();
   if (!monthly && (st?.cuts ?? []).some((c) => c.status === "APPROVED")) {
     const room = await import("@/lib/videoDelivery")
       .then((m) => m.videoDeliveryBoard(Math.abs(now.getTime() - Date.now()) < 60_000 ? {} : { now }))
@@ -729,16 +733,21 @@ export async function jobDeliverables(projectId: string, now: Date = new Date())
     for (const lane of ["sending", "held", "finishing", "delivered"] as const) {
       for (const r of room?.lanes[lane] ?? []) {
         if (r.projectId !== projectId || !r.submissionId) continue;
+        const label = r.push?.canRetry ? "Try again" as const : r.send?.uploaded ? "Send" as const : "Upload to Aryeo and send" as const;
         roomRow.set(r.submissionId, {
           lane,
           late: r.late,
           stage: r.stage,
+          uploadedOnly: !!r.push?.uploadedOnly,
           // The room's ReadyRow rule (review/page.tsx): the button only when the hub can send this file and no run is in the way.
           send: r.send
             ? {
                 submissionId: r.submissionId,
                 canPress: !r.send.byHandWhy && !!r.push?.canStart,
-                label: r.push?.canRetry ? "Try again" : r.send.uploaded ? "Send" : "Upload to Aryeo and send",
+                label,
+                // The same choice as the room (Oct 23 2026): Upload to Aryeo only beside a fresh press; Send now once it is up.
+                uploadOnly: label === "Upload to Aryeo and send",
+                sendNow: !!r.push?.uploadedOnly && r.push.canDeliverNow,
                 progress: r.push && (r.push.state || r.send.uploaded) ? r.push.says : null,
                 openAsks: r.send.openAsks,
                 asksUnknown: r.send.asksUnknown,
@@ -770,6 +779,7 @@ export async function jobDeliverables(projectId: string, now: Date = new Date())
       : phase === "finishing" ? `${v} approved, in the 1080p pass`
       : phase === "held" ? `${v} approved, the 1080p file is held (check the sound)`
       : phase === "approved" ? `${v} approved, goes to the client's portal`
+      : rr?.uploadedOnly ? `${v} on Aryeo, not sent yet`
       : `${v} approved, ready to send`;
     items.push({
       key: c.submissionId, label: cleanLabel(c.cutLabel), version: c.round, words, phase,

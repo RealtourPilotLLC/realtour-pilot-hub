@@ -8,6 +8,7 @@ import { CheckedButton } from "./CheckedButton";
 import { RequestOwnerPicker } from "./RequestOwnerPicker";
 import { StageChip, TONE_CLASS } from "./StageChip";
 import { SendVideo } from "@/components/videoDelivery/SendVideo";
+import { PushControls } from "@/components/videoDelivery/PushControls";
 import { isOffice } from "@/lib/auth/access";
 
 // ---------------------------------------------------------------------------
@@ -53,7 +54,7 @@ export async function JobDeliverablesSection({ projectId }: { projectId: string 
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
   if (me && !isOffice(me.role)) {
-    d.data.video.items = d.data.video.items.map((v) => (v.send ? { ...v, send: { ...v.send, canPress: false } } : v));
+    d.data.video.items = d.data.video.items.map((v) => (v.send ? { ...v, send: { ...v.send, canPress: false, sendNow: false } } : v));
   }
   return <JobDeliverablesView {...d} />;
 }
@@ -207,7 +208,10 @@ function VideoRowView({ v, street }: { v: VideoItem; street: string }) {
       </div>
       {v.phase === "ready" && send?.progress && <p className="text-xs text-muted">{send.progress}</p>}
       {v.phase === "ready" && send?.canPress ? (
-        <SendVideo submissionId={send.submissionId} street={street} label={send.label} openAsks={send.openAsks} asksUnknown={send.asksUnknown} listingWarning={send.listingWarning} />
+        <SendVideo submissionId={send.submissionId} street={street} label={send.label} openAsks={send.openAsks} asksUnknown={send.asksUnknown} listingWarning={send.listingWarning} uploadOnly={send.uploadOnly} />
+      ) : v.phase === "ready" && send?.sendNow ? (
+        // Uploaded only (Oct 23 2026): Send now, the room's own press.
+        <PushControls submissionId={send.submissionId} canDeliverNow canRelease={false} uploadedOnly />
       ) : v.phase === "ready" ? (
         <div className="space-y-0.5 text-xs">
           {send?.byHandWhy && <p className="font-medium text-warning">{send.byHandWhy}</p>}

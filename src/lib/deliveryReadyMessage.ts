@@ -28,8 +28,11 @@ export function deliveryReadyMessage(video: ReadyVideo, base: string) {
   // A run somebody started needs a person (Oct 19 2026): one message per state.
   const push = aryeo && video.push && video.push.state && (video.push.waitingForKyle || video.push.tone === "held" || video.push.tone === "failed") ? video.push : null;
   if (push) {
-    const title = `${push.waitingForKyle ? "On Aryeo, send it now" : push.tone === "held" ? "Held" : "Stopped"} · ${video.street}`;
-    const body = push.waitingForKyle
+    // Uploaded only (Oct 23 2026): the alert sweep skips it; worded for any other reader.
+    const title = `${push.uploadedOnly ? "On Aryeo, not sent yet" : push.waitingForKyle ? "On Aryeo, send it now" : push.tone === "held" ? "Held" : "Stopped"} · ${video.street}`;
+    const body = push.uploadedOnly
+      ? `${push.says} The Video Review Room has its Send now.`
+      : push.waitingForKyle
       ? `${push.says} Open the Video Review Room and press Deliver now to send it to the client.`
       : `${push.says} Open the Video Review Room to ${push.tone === "held" ? "see what it is waiting for" : "press Try again, or upload it by hand"}.`;
     const fingerprint = createHash("sha256").update(JSON.stringify([video.submissionId, video.uploadFingerprint, push.state, push.says])).digest("hex").slice(0, 32);

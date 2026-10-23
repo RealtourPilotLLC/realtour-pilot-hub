@@ -83,6 +83,17 @@ import { editorOriginalIsFinal } from "@/lib/topazOriginal";
 // same listing, and a few minutes since the listing's last delivery. Aryeo
 // signing the hub out (or not answering) during Deliver means the email may
 // have gone: never re-sent by the hub, only a person's Deliver now sends it.
+//
+// UPLOAD TO ARYEO ONLY (Jordan, Oct 23 2026: "give an option to upload to
+// Aryeo without sending"). The same run, `mode: "upload"`: every gate above,
+// the same upload, add, check, receipt and replacement of the hub's own
+// earlier version, then it stops in WAITING (the "kyle" gate, a person's
+// press) before DELIVERING: "On Aryeo, not sent yet". Aryeo's Deliver is never
+// pressed and the client is never emailed by it. Send now (deliverVideoNow)
+// turns it into a delivering run and goes through DELIVERING's gates like
+// Deliver now. Nothing else moves it: not the cron, not Send all, not a
+// sibling video's run (which never waits for it), not a Hold and Release. A
+// retry (Try again, the cron's login retry) repeats what was pressed.
 // ---------------------------------------------------------------------------
 
 const KEY = (submissionId: string) => `video_aryeo_push:${submissionId}`;
@@ -191,10 +202,19 @@ export type VideoPushRun = {
   /** A Dropbox or network blip: the next pass after this tries again (3 at most). */
   pauseUntil: string | null;
   errors: number;
-  /** What the run does: "deliver" (upload and deliver) for every run a person
-   *  starts; "shadow" only on the old practice-run lines. */
+  /** What the run does: "deliver" (Upload to Aryeo and send), "upload"
+   *  (Upload to Aryeo only, Oct 23 2026: stops on the listing until a person
+   *  presses Send now, which makes it "deliver"); "shadow" only on the old
+   *  practice-run lines. */
   mode: VideoPushMode;
 };
+
+/** The row's words once a video is uploaded only (Jordan, Oct 23 2026). */
+export const UPLOADED_ONLY_SAYS = "On Aryeo, not sent yet. Aryeo has not emailed the client: press Send now to send it.";
+
+/** On the listing, uploaded only, waiting for a person's Send now (nothing else sends it). */
+export const isUploadedOnly = (r: Pick<VideoPushRun, "mode" | "state" | "wait" | "deliverNow"> | null | undefined): boolean =>
+  !!r && r.mode === "upload" && r.state === "WAITING" && r.wait?.gate === "kyle" && !r.deliverNow;
 
 // ---- drills ---------------------------------------------------------------------------------
 
@@ -580,6 +600,9 @@ async function siblingsOnTheWay(r: VideoPushRun): Promise<string[]> {
     const cut = await loadCut(s.id);
     if (!cut || !(await currentApproved(cut))) continue;
     const run = runs.get(s.id);
+    // Uploaded only (Oct 23 2026): it is not going to the client with this
+    // delivery, so this one never waits for it.
+    if (run?.mode === "upload") continue;
     const rendering = !!s.topazJob && !["done", "failed", "cancelled", "skipped", "held"].includes(s.topazJob.state);
     const startsSoon = !run && ((s.topazJob?.state === "done" && VERIFIED.has(s.topazJob.outputCheck ?? "")) || editorOriginalIsFinal(s.topazJob));
     if (rendering || startsSoon || (run && BEFORE_LISTING.includes(run.state))) out.push(s.id);
@@ -607,20 +630,27 @@ async function log(projectId: string, body: string): Promise<void> {
 }
 
 /**
- * A PERSON PRESSED "Upload to Aryeo and send" (or Send all, or Try again).
- * The only way a run starts (button only, Oct 19 2026): the cron never calls
- * this for a video nobody pressed. A press that cannot start (no Aryeo login,
- * the 1080p file not checked, a newer version) writes a FAILED run that says
- * why, so the row shows it and offers Try again; a delivered video or one
- * that never goes to Aryeo (a program video) writes nothing. `auto` is the
- * cron's own retry of a run a person started that stopped on Aryeo's login.
+ * A PERSON PRESSED "Upload to Aryeo and send" (or Send all, or Try again), or
+ * "Upload to Aryeo only" (`uploadOnly`, Oct 23 2026: the same run, stopped on
+ * the listing until Send now). The only way a run starts (button only, Oct 19
+ * 2026): the cron never calls this for a video nobody pressed. A press that
+ * cannot start (no Aryeo login, the 1080p file not checked, a newer version)
+ * writes a FAILED run that says why, so the row shows it and offers Try again;
+ * a delivered video or one that never goes to Aryeo (a program video) writes
+ * nothing. `auto` is the cron's own retry of a run a person started that
+ * stopped on Aryeo's login. `uploadOnly` left out (Try again, Send all, the
+ * cron's retry) repeats what the stopped run was: never turns an upload-only
+ * press into a send.
  */
-export async function requestVideoPush(submissionId: string, opts: { by: string; auto?: boolean }): Promise<{ ok: boolean; started: boolean; message: string }> {
+export async function requestVideoPush(submissionId: string, opts: { by: string; auto?: boolean; uploadOnly?: boolean }): Promise<{ ok: boolean; started: boolean; message: string }> {
   const by = (opts.by || "staff").slice(0, 120);
   const { run: cur, raw } = await load(submissionId);
+  if (isUploadedOnly(cur)) return { ok: true, started: false, message: "It is on the Aryeo listing, not sent yet. Press Send now to send it to the client." };
   if (cur && MOVABLE.includes(cur.state) && cur.state !== "HELD") return { ok: true, started: false, message: "Already sending this video to Aryeo." };
   if (cur?.state === "HELD" && cur.hold?.gate === "manual") return { ok: false, started: false, message: `Held by ${cur.hold.by ?? "a person"}. Release it first.` };
-  const next = blank(submissionId, by);
+  const uploadOnly = opts.uploadOnly ?? cur?.mode === "upload";
+  const pressed = uploadOnly ? "Upload to Aryeo only" : "Upload to Aryeo and send";
+  const next: VideoPushRun = { ...blank(submissionId, by), mode: uploadOnly ? "upload" : "deliver" };
   const ids = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true, project: { select: { aryeoListingId: true } } } });
   if (!ids) return { ok: false, started: false, message: "That video no longer exists." };
   next.projectId = ids.projectId;
@@ -682,12 +712,12 @@ export async function requestVideoPush(submissionId: string, opts: { by: string;
     // because a person asked for it.
     const held: VideoPushRun = { ...next, state: "HELD", hold: { gate: g.gate, why: g.why, by: null, at: next.startedAt, resume: "PREPARING" }, note: g.why, recheckAt: new Date(Date.now() + RECHECK[g.gate]).toISOString() };
     if (!(await save(submissionId, { ...held, logged: `held. ${g.why}` }, raw))) return { ok: false, started: false, message: "That changed a moment ago. Reload the page." };
-    await log(next.projectId, `${by} pressed Upload to Aryeo and send; held. ${g.why}`);
-    return { ok: false, started: false, message: `${g.why} It goes by itself once that clears.` };
+    await log(next.projectId, `${by} pressed ${pressed}; held. ${g.why}`);
+    return { ok: false, started: false, message: `${g.why} ${uploadOnly ? "It goes up to the listing by itself once that clears (not sent to the client)." : "It goes by itself once that clears."}` };
   }
   if (!(await save(submissionId, next, raw))) return { ok: false, started: false, message: "Someone started it a moment ago." };
-  await log(next.projectId, `${opts.auto ? "trying again after Aryeo's login came back" : `${by} pressed Upload to Aryeo and send`}: uploading ${next.file.name} to the listing, then delivering it.`);
-  return { ok: true, started: true, message: "Uploading it to the Aryeo listing, then sending the listing to the client." };
+  await log(next.projectId, `${opts.auto ? "trying again after Aryeo's login came back" : `${by} pressed ${pressed}`}: uploading ${next.file.name} to the listing, ${uploadOnly ? "not sending it to the client (Send now sends it)" : "then delivering it"}.`);
+  return { ok: true, started: true, message: uploadOnly ? "Uploading it to the Aryeo listing only. Nothing goes to the client until you press Send now." : "Uploading it to the Aryeo listing, then sending the listing to the client." };
 }
 
 // ---- moving one on --------------------------------------------------------------------------
@@ -710,9 +740,17 @@ function blocked(r: VideoPushRun, g: Exclude<Verdict, { ok: true }>, resume: Vid
   return fail(r, g.why);
 }
 
-/** After the video is on the listing: deliver (a started run uploads AND
- *  delivers), or wait for a person when an earlier version went up by hand. */
+/** After the video is on the listing: deliver (Upload to Aryeo and send), stop
+ *  for Send now (Upload to Aryeo only, Oct 23 2026), or wait for a person
+ *  when an earlier version went up by hand. */
 function afterUpload(r: VideoPushRun): VideoPushRun {
+  if (r.mode === "upload" && !r.deliverNow) {
+    // What the person still has to do in Aryeo stays on the line.
+    const extra = r.handUploadedBefore
+      ? " An earlier version of this video went up by hand and is still there: remove it in Aryeo first."
+      : r.note && /Remove it in Aryeo/.test(r.note) ? ` ${r.note}` : "";
+    return waitRun(r, "kyle", `${UPLOADED_ONLY_SAYS}${extra}`, null);
+  }
   if (r.handUploadedBefore && !r.deliverNow) {
     return waitRun(r, "kyle", "On the Aryeo listing. An earlier version of this video went up by hand and is still there: remove it in Aryeo, then press Deliver now.", null);
   }
@@ -1394,16 +1432,18 @@ export async function driveVideoPushes(opts: { budgetMs?: number } = {}): Promis
 // ---- Kyle's controls ------------------------------------------------------------------------
 
 /**
- * THE PRESS: Upload to Aryeo and send, Try again on a stopped or held run (the
- * listing is checked before anything is sent again). Starts the run, then
- * moves it as far as `budgetMs` allows; the cron carries on from there.
+ * THE PRESS: Upload to Aryeo and send, Upload to Aryeo only (`uploadOnly`,
+ * Oct 23 2026), Try again on a stopped or held run (the listing is checked
+ * before anything is sent again; left out, it repeats what was pressed).
+ * Starts the run, then moves it as far as `budgetMs` allows; the cron carries
+ * on from there.
  */
-export async function retryVideoPush(submissionId: string, by: string, opts: { budgetMs?: number } = {}): Promise<{ ok: boolean; started?: boolean; message: string }> {
+export async function retryVideoPush(submissionId: string, by: string, opts: { budgetMs?: number; uploadOnly?: boolean } = {}): Promise<{ ok: boolean; started?: boolean; message: string }> {
   const { run } = await load(submissionId);
   if (run && ACTIVE.includes(run.state)) return { ok: true, message: "Already sending this video to Aryeo." };
   if (run?.state === "HELD" && run.hold?.gate === "manual") return { ok: false, message: `Held by ${run.hold.by ?? "a person"}. Release it first.` };
   if (run?.state === "DONE") return { ok: true, message: run.note ?? "Already delivered." };
-  const r = await requestVideoPush(submissionId, { by });
+  const r = await requestVideoPush(submissionId, { by, uploadOnly: opts.uploadOnly });
   if (r.started && (opts.budgetMs ?? 20_000) > 0) await advanceVideoPush(submissionId, { budgetMs: opts.budgetMs ?? 20_000 }).catch(() => null);
   return { ok: r.ok, started: r.started, message: r.message };
 }
@@ -1411,7 +1451,15 @@ export async function retryVideoPush(submissionId: string, by: string, opts: { b
 /** The press under its own name (the Video Review Room's button). */
 export const startVideoSend = retryVideoPush;
 
-/** Deliver now: a video on the listing waiting for a person (an earlier version up by hand, a delivery nobody saw finish) or for another video or the cooldown. Never past a hold. */
+/**
+ * Deliver now: a video on the listing waiting for a person (an earlier version
+ * up by hand, a delivery nobody saw finish) or for another video or the
+ * cooldown. Never past a hold. Also SEND NOW on a video uploaded only (Oct 23
+ * 2026): the run becomes a delivering one ("deliver") and goes through
+ * DELIVERING's gates (the client's open requests, the job on hold, the file
+ * unchanged since it went up, photos going up on the listing) exactly as
+ * Deliver now does; once, by the listing's delivery claim.
+ */
 export async function deliverVideoNow(submissionId: string, by: string): Promise<{ ok: boolean; message: string }> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const { run, raw } = await load(submissionId);
@@ -1419,10 +1467,13 @@ export async function deliverVideoNow(submissionId: string, by: string): Promise
     if (run.state === "DONE") return { ok: true, message: run.note ?? "Already delivered." };
     if (run.state === "HELD") return { ok: false, message: run.hold?.why ?? "It is held." };
     if (run.state === "DELIVERING" || run.state === "CONFIRMING") return { ok: true, message: "Already delivering." };
-    if (run.state !== "WAITING" || (!run.mediaId && !run.addedAt)) return { ok: false, message: "It is not on the listing yet. It is delivered as soon as it is." };
-    const next: VideoPushRun = { ...run, state: "DELIVERING", deliverNow: true, wait: null, recheckAt: null, by, note: null, lease: null };
+    if (run.state !== "WAITING" || (!run.mediaId && !run.addedAt)) {
+      return { ok: false, message: run.mode === "upload" ? "It is still going up to the Aryeo listing. Press Send now once it says On Aryeo, not sent yet." : "It is not on the listing yet. It is delivered as soon as it is." };
+    }
+    const sendNow = isUploadedOnly(run);
+    const next: VideoPushRun = { ...run, state: "DELIVERING", mode: run.mode === "upload" ? "deliver" : run.mode, deliverNow: true, wait: null, recheckAt: null, by, note: null, lease: null };
     if (await save(submissionId, next, raw)) {
-      await log(run.projectId, `${by} pressed Deliver now.`);
+      await log(run.projectId, sendNow ? `${by} pressed Send now (it was on the listing, uploaded only).` : `${by} pressed Deliver now.`);
       await advanceVideoPush(submissionId, { budgetMs: 25_000 }).catch(() => null);
       const after = (await load(submissionId)).run;
       return { ok: true, message: after?.state === "DONE" ? after.note ?? "Delivered." : after?.note ?? "Delivering in Aryeo now." };
@@ -1443,7 +1494,9 @@ export async function holdVideoPush(submissionId: string, by: string, reason: st
       const cut = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true, project: { select: { aryeoListingId: true } } } });
       return { ...b, projectId: cut?.projectId ?? "", listingId: cut?.project.aryeoListingId ?? "" };
     })());
-    const resume: VideoPushState = run && MOVABLE.includes(run.state) && run.state !== "HELD" && run.state !== "WAITING" ? run.state : run?.state === "WAITING" ? "DELIVERING" : "PREPARING";
+    // A video uploaded only goes back to waiting for Send now (Oct 23 2026):
+    // a Release never sends it.
+    const resume: VideoPushState = run && MOVABLE.includes(run.state) && run.state !== "HELD" && run.state !== "WAITING" ? run.state : isUploadedOnly(run) ? "WAITING" : run?.state === "WAITING" ? "DELIVERING" : "PREPARING";
     const next: VideoPushRun = { ...base, state: "HELD", hold: { gate: "manual", why, by, at: new Date().toISOString(), resume }, note: why, recheckAt: null, lease: null, finishedAt: null };
     if (run?.lease && run.lease.until > Date.now()) {
       // A pass is moving it right now: the hold lands as soon as it lets go.
@@ -1462,7 +1515,8 @@ export async function holdVideoPush(submissionId: string, by: string, reason: st
 export async function releaseVideoPush(submissionId: string, by: string): Promise<{ ok: boolean; message: string }> {
   const { run, raw } = await load(submissionId);
   if (!run || run.state !== "HELD" || run.hold?.gate !== "manual") return { ok: false, message: "It is not held by a person." };
-  const next: VideoPushRun = { ...run, state: run.hold.resume, hold: null, note: null, recheckAt: null };
+  // Back to waiting (a video uploaded only): its line says what it waits for again.
+  const next: VideoPushRun = { ...run, state: run.hold.resume, hold: null, note: run.hold.resume === "WAITING" ? run.wait?.why ?? null : null, recheckAt: null };
   if (!(await save(submissionId, next, raw))) return { ok: false, message: "That changed a moment ago. Reload the page." };
   await log(run.projectId, `${by} released the hold.`);
   return { ok: true, message: "Released. The hub carries on from where it stopped." };
@@ -1471,14 +1525,16 @@ export async function releaseVideoPush(submissionId: string, by: string): Promis
 // ---- the line on every screen ---------------------------------------------------------------
 
 export type VideoPushLine = {
-  /** "deliver" for a run a person started (it uploads and delivers); "off" when no run exists. */
+  /** "deliver" for a run a person started with Upload to Aryeo and send, "upload" for Upload to Aryeo only (Oct 23 2026); "off" when no run exists. */
   mode: VideoPushMode;
+  /** On the listing, uploaded only: "On Aryeo, not sent yet", and the row's one press is Send now (Oct 23 2026). */
+  uploadedOnly: boolean;
   state: VideoPushState | null;
   says: string;
   tone: "progress" | "waiting" | "held" | "failed" | "done" | "info";
   /** A run a person started is moving it: nobody is asked to upload it by hand. */
   handledByHub: boolean;
-  /** On the listing, waiting for a person's Deliver now (an earlier version up by hand, a delivery nobody saw finish). */
+  /** On the listing, waiting for a person's Deliver now (an earlier version up by hand, a delivery nobody saw finish) or Send now (uploaded only). */
   waitingForKyle: boolean;
   /** "Upload to Aryeo and send" (or Try again) may be pressed: no run is moving it and the hub can send this file. */
   canStart: boolean;
@@ -1529,7 +1585,7 @@ function progressOf(r: VideoPushRun): VideoPushLine["progress"] {
  * listing, when somebody did.
  */
 export function lineFor(run: VideoPushRun | null, ctx: { eligible: boolean; uploadedBy?: string | null }): VideoPushLine | null {
-  const none = { mode: "off" as VideoPushMode, state: null, tone: "info" as const, updatedAtISO: null, handledByHub: false, waitingForKyle: false, progress: null, canRetry: false, canDeliverNow: false, canHold: false, canRelease: false };
+  const none = { mode: "off" as VideoPushMode, uploadedOnly: false, state: null, tone: "info" as const, updatedAtISO: null, handledByHub: false, waitingForKyle: false, progress: null, canRetry: false, canDeliverNow: false, canHold: false, canRelease: false };
   if (!run || run.state === "SHADOW") {
     if (ctx.uploadedBy) {
       return {
@@ -1546,7 +1602,7 @@ export function lineFor(run: VideoPushRun | null, ctx: { eligible: boolean; uplo
   const says = run.state === "HELD" ? run.hold?.why ?? run.note ?? "Held." : run.note ?? stateWords(run);
   const retry = run.state === "FAILED" || (run.state === "HELD" && run.hold?.gate !== "manual");
   return {
-    mode: "deliver", state: run.state, tone: TONE[run.state], says, updatedAtISO: run.updatedAt,
+    mode: run.mode === "upload" ? "upload" : "deliver", uploadedOnly: isUploadedOnly(run), state: run.state, tone: TONE[run.state], says, updatedAtISO: run.updatedAt,
     handledByHub: run.state !== "FAILED" && run.state !== "HELD",
     waitingForKyle: run.state === "WAITING" && run.wait?.gate === "kyle",
     canStart: retry && ctx.eligible,

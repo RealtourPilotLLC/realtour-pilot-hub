@@ -48,6 +48,9 @@
 //   21  a sign-in failure of a started run is tried again (3 times at most);
 //       an older FAILED record is never picked up
 //   22  Try again after the file changed takes the earlier try's video off
+// Upload to Aryeo only (Oct 23 2026; the rest in oct23-video-upload-only.ts):
+//   23  the cron's login retry repeats "upload only"; a sibling video's full
+//       send never waits for an upload-only one
 // ISOLATION: PGlite via the shared harness; nothing leaves the fakes.
 // ---------------------------------------------------------------------------
 import { bootDrillDb, fenceFetch, installNextStubs, makeChecker, portFree } from "./_harness";
@@ -897,6 +900,34 @@ async function main() {
     const aa3 = await runOf(AA.cuts[0].sub);
     const la2 = lname("L-AA");
     c.ok("Try again remembered the earlier video, took it off, and sent the new one once", retryAA.ok && aa3?.state === "DONE" && kinds("delete", "L-AA").map((x) => x.body).includes(aa1!.mediaId) && !la2.videos.some((v) => v.id === aa1!.mediaId) && la2.videos.length === 1 && kinds("deliver", "L-AA").length === 1, `${aa3?.state} ${aa3?.note} · ${la2.videos.length} on listing`);
+
+    // ======================================================================
+    // Oct 23 2026 (Jordan: "give an option to upload to Aryeo without
+    // sending"). The press itself, the row, Send now, Send all, the gates and
+    // the roles are drilled end to end in oct23-video-upload-only.ts; here,
+    // the two cron paths that drill does not reach.
+    c.head("23 · Upload to Aryeo only: the cron's login retry keeps it; a sibling video never waits for it");
+    const UO = await mkJob("260 Upload Only Rd", "L-UO");
+    await disconnect("aryeo_web");
+    const uo0 = await V.requestVideoPush(UO.cuts[0].sub, { by: "Kyle Smith", uploadOnly: true });
+    await saveLogin();
+    // Stamped the way a sign-in failure of a started run is (retryAfter, loginRetries).
+    await patchRun(UO.cuts[0].sub, { retryAfter: new Date(Date.now() - 1000).toISOString(), loginRetries: 0 });
+    c.ok("(set-up) an upload-only press stopped on the login, due for the cron's retry", !uo0.started && (await runOf(UO.cuts[0].sub))?.mode === "upload");
+    const droveUO = await V.driveVideoPushes({ budgetMs: 60_000 });
+    await tick(4);
+    const uo1 = await runOf(UO.cuts[0].sub);
+    c.ok("the cron's retry repeats 'upload only': on the listing, never delivered", droveUO.started.includes(UO.cuts[0].sub) && uo1?.mode === "upload" && V.isUploadedOnly(uo1) && !!uo1.mediaId && lname("L-UO").videos.length === 1 && kinds("deliver", "L-UO").length === 0, `${uo1?.state} ${uo1?.note}`);
+    const rowUO = (await readyToSend({ projectId: UO.project.id })).ready[0];
+    c.ok("…its row: On Aryeo, not sent yet, Send now (no upload press), and no 'send it now' alert while it waits", !!rowUO?.push?.uploadedOnly && rowUO.push.canDeliverNow && !rowUO.push.canStart && /^On Aryeo, not sent yet/.test(rowUO.push.says) && /^On Aryeo, not sent yet · 260 Upload Only Rd$/.test(deliveryReadyMessage(rowUO, "https://hub.test").title), rowUO?.push?.says);
+    const SIB = await mkJob("270 Sibling Way", "L-SIB", { videos: 2 });
+    await V.requestVideoPush(SIB.cuts[1].sub, { by: "Kyle Smith", uploadOnly: true });
+    // The upload-only one is still on its way (sending, paused): before Oct 23 the other one waited up to two hours for it.
+    await patchRun(SIB.cuts[1].sub, { state: "SENDING", pauseUntil: new Date(Date.now() + HOUR).toISOString(), listingId: "L-SIB", projectId: SIB.project.id });
+    await press(SIB.cuts[0].sub);
+    await tick(4);
+    const sib0 = await runOf(SIB.cuts[0].sub);
+    c.ok("a sibling's full send does not wait for the upload-only video (it is not going to the client with it)", sib0?.state === "DONE" && kinds("deliver", "L-SIB").length === 1 && (await runOf(SIB.cuts[1].sub))?.state === "SENDING", `${sib0?.state} ${sib0?.note}`);
 
     c.head("isolation");
     c.ok("no outbound call escaped the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

@@ -13,7 +13,11 @@ import { prisma } from "@/lib/prisma";
 //     has open client requests the press first shows them; "Checked, upload
 //     and send" records them checked (the job box's confirmJobRequests) and
 //     then starts the upload.
-//   · Send all: every ready row with no open request, in one press.
+//   · Upload to Aryeo only (Jordan, Oct 23 2026): the same press with
+//     `uploadOnly`: every gate and the same upload, stopped on the listing
+//     ("On Aryeo, not sent yet") until Send now (deliverVideoNowAction).
+//   · Send all: every ready row with no open request, in one press (a video
+//     uploaded only is never one of them: only Send now sends it).
 //   · Remind editor / Remind reviewer (lib/remindEditor): at most once every
 //     4 hours per video.
 //   · Deliver now and Release, on a video a person already started sending
@@ -49,14 +53,18 @@ const failed = (what: string, e: unknown): SendResult => {
   return { ok: false, message: `That didn't go through (${what}). Reload the page to see what is saved, then try again.` };
 };
 
-/** Upload to Aryeo and send (also Try again). `checkedRequests`: the person confirmed the job's open client requests are right. */
-export async function sendVideoToAryeoAction(submissionId: string, opts: { checkedRequests?: boolean } = {}): Promise<SendResult> {
+/** Upload to Aryeo and send (also Try again), or Upload to Aryeo only (`uploadOnly: true`, Oct 23 2026;
+ *  left out, Try again repeats what was pressed). `checkedRequests`: the person confirmed the job's open
+ *  client requests are right. */
+export async function sendVideoToAryeoAction(submissionId: string, opts: { checkedRequests?: boolean; uploadOnly?: boolean } = {}): Promise<SendResult> {
   try {
     await requireAdmin();
   } catch (e) {
     return denied(e);
   }
   if (typeof submissionId !== "string" || !ID.test(submissionId)) return { ok: false, message: "That video id is not valid." };
+  const uploadOnly = opts?.uploadOnly;
+  if (uploadOnly !== undefined && typeof uploadOnly !== "boolean") return { ok: false, message: "That choice is not valid." };
   try {
     const cut = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true } });
     if (!cut) return { ok: false, message: "That video no longer exists." };
@@ -66,11 +74,11 @@ export async function sendVideoToAryeoAction(submissionId: string, opts: { check
       if (!c.ok) return { ok: false, message: `Nothing was sent: the client's requests could not be marked checked (${c.message})` };
     }
     const { startVideoSend } = await import("@/lib/videoAryeoPush");
-    const r = await startVideoSend(submissionId, (await actor()).name, { budgetMs: 25_000 });
+    const r = await startVideoSend(submissionId, (await actor()).name, { budgetMs: 25_000, uploadOnly });
     refresh();
     return { ok: r.ok, started: r.started, message: r.message };
   } catch (e) {
-    return failed("upload to Aryeo and send", e);
+    return failed(uploadOnly ? "upload to Aryeo only" : "upload to Aryeo and send", e);
   }
 }
 
@@ -111,7 +119,8 @@ export async function sendAllVideosAction(submissionIds: string[]): Promise<Send
   }
 }
 
-/** Deliver now: the video is on the listing and waiting for a person (lib/videoAryeoPush.deliverVideoNow). */
+/** Deliver now: the video is on the listing and waiting for a person (lib/videoAryeoPush.deliverVideoNow).
+ *  Also Send now on a video uploaded only (Oct 23 2026): the same path, the same gates. */
 export async function deliverVideoNowAction(submissionId: string): Promise<SendResult> {
   try {
     await requireAdmin();

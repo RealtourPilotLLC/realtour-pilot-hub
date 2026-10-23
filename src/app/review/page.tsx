@@ -49,7 +49,9 @@ export const maxDuration = 60;
 //                        quiet line under it, not a section.
 //   · Ready to send      approved listing videos whose file is ready: Upload
 //                        to Aryeo and send (the ONLY way the hub uploads a
-//                        video), Send all, the job's open requests and shoot
+//                        video) or Upload to Aryeo only (Oct 23 2026: "On
+//                        Aryeo, not sent yet", then Send now), Send all
+//                        (never an uploaded-only row), the job's open requests and shoot
 //                        flags (BeforeYouSend), the hand path folded under
 //                        each row; held and still-in-1080p rows as status
 //                        lines; the delivery follow-ups as one compact fold,
@@ -129,8 +131,9 @@ function ReadyRow({ r, checks, sendDesk = true }: { r: VideoRow; checks: React.R
       {sendDesk && !s.byHandWhy && s.asksUnknown && <p className="mt-1 text-sm font-medium text-warning">The client&rsquo;s requests could not be read just now. Reload before sending.</p>}
       {!sendDesk && !run && !s.uploaded && <p className="mt-1 text-sm text-muted">Waiting on the office to send it.</p>}
       <WatchFile href={s.watchHref} fileName={s.fileName} isRender={s.fileSource === "topaz-1080p"} />
-      {canPress && <SendVideo submissionId={r.submissionId!} street={r.street} label={label} openAsks={s.openAsks} asksUnknown={s.asksUnknown} listingWarning={s.listingWarning} />}
-      {sendDesk && p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} canDeliverNow={p.canDeliverNow} canRelease={p.canRelease} />}
+      {/* Upload to Aryeo only beside it (Jordan, Oct 23 2026): on the listing, not sent, until Send now. */}
+      {canPress && <SendVideo submissionId={r.submissionId!} street={r.street} label={label} openAsks={s.openAsks} asksUnknown={s.asksUnknown} listingWarning={s.listingWarning} uploadOnly={label === "Upload to Aryeo and send"} />}
+      {sendDesk && p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} canDeliverNow={p.canDeliverNow} canRelease={p.canRelease} uploadedOnly={p.uploadedOnly} />}
       {/* Not ready after all? Offered unless an upload is moving (Oct 20 2026,
           audit B18: a failed or held run no longer hides it). */}
       {(!run || stopped) && r.submissionId && <SendBack submissionId={r.submissionId} projectId={r.projectId} street={r.street} />}
@@ -163,7 +166,7 @@ function HeldRow({ r, sendDesk = true }: { r: VideoRow; sendDesk?: boolean }) {
       {r.heldWhy && <p className="mt-1 text-sm font-medium text-warning">{r.heldWhy}</p>}
       {r.heldRender && <HeldRender jobId={r.heldRender.jobId} street={r.street} fileName={r.heldRender.fileName} dropboxUrl={r.heldRender.dropboxUrl} lastCheck={r.heldRender.lastCheck} />}
       {sendDesk && p && p.canStart && r.send && !r.send.byHandWhy && <SendVideo submissionId={r.submissionId!} street={r.street} label="Try again" openAsks={r.send.openAsks} asksUnknown={r.send.asksUnknown} listingWarning={null} />}
-      {sendDesk && p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} canDeliverNow={p.canDeliverNow} canRelease={p.canRelease} />}
+      {sendDesk && p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} canDeliverNow={p.canDeliverNow} canRelease={p.canRelease} uploadedOnly={p.uploadedOnly} />}
       {/* A held video can go back to the editor too (audit B18). */}
       {r.submissionId && (!p?.state || p.tone === "failed" || p.tone === "held") && <SendBack submissionId={r.submissionId} projectId={r.projectId} street={r.street} />}
     </li>
