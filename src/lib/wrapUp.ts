@@ -1,4 +1,5 @@
 import "server-only";
+import { currentVisitStamps } from "@/lib/visitSubmission";
 import { prisma } from "@/lib/prisma";
 import { etDateTime } from "@/lib/datetime";
 import { liveHandoffCategories, type HandoffCategory } from "@/lib/handoff";
@@ -50,14 +51,18 @@ export async function completeWrapUpIfWhole(
   opts: { at?: Date; fromSubmit?: boolean; why?: string | null } = {},
 ): Promise<WrapUpResult | null> {
   try {
-    const p = await prisma.project.findUnique({
+    const row = await prisma.project.findUnique({
       where: { id: projectId },
       select: {
         debriefSubmittedAt: true, photosHandoffAt: true, videoHandoffAt: true,
         deliverables: { where: { removedFromOrderAt: null }, select: { type: true, notCompletedReason: true, waivedAt: true } },
+        appointments: { select: { startAt: true, status: true } },
       },
     });
-    if (!p) return null;
+    if (!row) return null;
+    // Oct 23 2026 (lib/visitSubmission): on a job with several visits, an
+    // earlier visit's stamps do not complete this visit's wrap-up.
+    const p = currentVisitStamps(row, row.appointments, opts.at ?? new Date());
     const halves = liveHandoffCategories(p.deliverables);
     const base = { photosAt: p.photosHandoffAt, videoAt: p.videoHandoffAt, halves };
     if (p.debriefSubmittedAt) return { ...base, wholeDone: true, completedNow: false };
@@ -68,7 +73,7 @@ export async function completeWrapUpIfWhole(
     }
     const at = opts.at ?? (stamps.length ? new Date(Math.max(...stamps.map((d) => d.getTime()))) : new Date());
     const claimed = await prisma.project.updateMany({
-      where: { id: projectId, debriefSubmittedAt: null },
+      where: { id: projectId, OR: [{ debriefSubmittedAt: null }, ...(p.visitFloor ? [{ debriefSubmittedAt: { lt: p.visitFloor } }] : [])] },
       data: { debriefSubmittedAt: at },
     });
     const completedNow = claimed.count === 1;

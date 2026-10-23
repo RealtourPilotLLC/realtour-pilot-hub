@@ -1,4 +1,5 @@
 import { notFound, redirect } from "next/navigation";
+import { currentVisitStamps } from "@/lib/visitSubmission";
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
@@ -79,7 +80,7 @@ export default async function UploadProjectPage({
     if (!mine || !(await photographerMayUpload(id, mine))) redirect("/upload");
   }
 
-  const project = await prisma.project.findUnique({
+  const projectRow = await prisma.project.findUnique({
     where: { id },
     include: {
       client: true,
@@ -96,9 +97,15 @@ export default async function UploadProjectPage({
       },
       // Files uploaded through this page — read back on the submitted card.
       uploads: { select: { originalName: true, size: true }, orderBy: { createdAt: "asc" } },
+      // Oct 23 2026 (lib/visitSubmission): which visit the stamps belong to.
+      appointments: { select: { startAt: true, status: true } },
     },
   });
-  if (!project) notFound();
+  if (!projectRow) notFound();
+  // Oct 23 2026 (615 Cliff Ln): on a job with several visits, the upload-page
+  // stamps an EARLIER visit left (its submit, its halves, the sweep's upload
+  // stamp) do not mark this visit's page done (lib/visitSubmission).
+  const project = currentVisitStamps(projectRow, projectRow.appointments, new Date());
 
   // ONE ROUND OF INDEPENDENT READS (Oct 5: "speed up the page"). Every read
   // below needs only the project row, so they run side by side instead of one
@@ -218,8 +225,9 @@ export default async function UploadProjectPage({
   // "This job has left the upload portal" — the hub's own definition
   // (uploadHistory.UPLOAD_PENDING_WHERE), so the card that offers a way back in
   // appears on exactly the jobs that have no other way back in.
-  const leftThePortal =
-    !(UPLOAD_PENDING_STATUSES as string[]).includes(project.status) || project.debriefSubmittedAt != null;
+  const leftThePortal = project.visitFloor && !project.debriefSubmittedAt
+    ? false // a later visit's page is still a to-do, whatever the job's status says
+    : !(UPLOAD_PENDING_STATUSES as string[]).includes(project.status) || project.debriefSubmittedAt != null;
 
   // ONE policy source for everything this page says about photo counts — the
   // enforcement target, the display range, and which regime produced them
