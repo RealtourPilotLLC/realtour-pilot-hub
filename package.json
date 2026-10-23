@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && tsc --noEmit -p . && next build --webpack",
+    "build": "prisma generate && NODE_OPTIONS=--max-old-space-size=6144 tsc --noEmit -p . && next build --webpack",
     "postinstall": "prisma generate",
     "start": "next start",
     "lint": "eslint",

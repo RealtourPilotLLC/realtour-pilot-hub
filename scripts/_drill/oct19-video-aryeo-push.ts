@@ -468,7 +468,7 @@ async function main() {
     await tick();
     const b1 = await runOf(B.cuts[0].sub);
     c.ok("from_url refused (the project does not allow it): the hub sends it in parts instead", b1?.upload.method === "multipart" && /not allowed/.test(b1.upload.fromUrlRefused ?? ""), JSON.stringify(b1?.upload.fromUrlRefused));
-    c.ok("a pass sends what it has time for and stops: 2 of 3 parts", b1?.state === "SENDING" && b1.upload.partsDone === 2 && /^Sending the 1080p file to Aryeo: 2 of 3 parts/.test(b1.note ?? ""), `${b1?.state} ${b1?.upload.partsDone} ${b1?.note}`);
+    c.ok("a pass sends what it has time for and stops: 2 of 3 parts", b1?.state === "SENDING" && b1.upload.partsDone === 2 && /^Sending the Topaz file to Aryeo: 2 of 3 parts/.test(b1.note ?? ""), `${b1?.state} ${b1?.upload.partsDone} ${b1?.note}`);
     await tick(3);
     const b2 = await runOf(B.cuts[0].sub);
     const ucB = [...ucFiles.values()].find((f) => f.size === 2 * 5 * MIB + 1234);

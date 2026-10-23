@@ -3,18 +3,23 @@
 import { requireAdmin } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { prisma } from "@/lib/prisma";
+import { listAssignees, viewerAssigneeKey } from "@/lib/assignees";
 import { addBusinessDayKeysET, etAt, etDayKey, etDateTime } from "@/lib/datetime";
 import {
-  CLOSEOUT_ITEMS, closeoutSettingKey, officeDeskFor, waitingSettingKey,
-  type CloseoutKey, type CloseoutRecord, type WaitingRecord,
+  MANUAL_CHECKS, closeoutSettingKey, officeDeskFor, waitingSettingKey,
+  type CheckKey, type CloseoutRecord, type WaitingRecord,
 } from "@/lib/officeDesk";
 
 // ---------------------------------------------------------------------------
 // KYLE'S DESK: the two writes the desk adds (Oct 23 2026). Everything else on
 // the desk calls the actions the screens already use (Approve and deliver,
 // Send, Reply, Done / Not needed / New date, Remind photographer, …).
-//   · the closeout ticks and "Finish the day", one AppSetting row per ET day
-//     (office_closeout:<YYYY-MM-DD>), each tick with who and when;
+//   · the Daily checks' manual ticks (a real review only: the system's own
+//     evidence ticks the rest) and "Finish the day", one AppSetting row per
+//     ET day (office_closeout:<YYYY-MM-DD>), each tick with who and when. A
+//     tick never completes the work under it;
+//   · "Create follow-up" from a conversation: a task linked to the client,
+//     with a time it comes back (a reply never resolves the request under it);
 //   · "Waiting on": a task's named person and follow-up time (the task's own
 //     followUpAt, plus office_waiting:<taskId> for the name). A creative
 //     question goes to the creative manager, a business or policy question to
@@ -51,11 +56,12 @@ async function writeRecord(dayKey: string, rec: CloseoutRecord, by: string): Pro
   await prisma.appSetting.upsert({ where: { key: closeoutSettingKey(dayKey) }, create: { key: closeoutSettingKey(dayKey), value, updatedBy: by }, update: { value, updatedBy: by } });
 }
 
-/** Tick (or untick) one closeout line for today. Only today's list can change. */
-export async function closeoutTickAction(dayKey: string, key: CloseoutKey, on: boolean): Promise<DeskResult> {
+/** Tick (or untick) one of today's manual checks. Only today's list can change,
+ *  and only a check that is a real review (the system's evidence ticks the rest). */
+export async function closeoutTickAction(dayKey: string, key: CheckKey, on: boolean): Promise<DeskResult> {
   try { await requireAdmin(); } catch (e) { return denied(e); }
-  if (!DAY_KEY.test(String(dayKey)) || dayKey !== etDayKey(new Date())) return { ok: false, message: "Only today's closeout can be changed. Reload the page." };
-  if (!CLOSEOUT_ITEMS.some((c) => c.key === key)) return { ok: false, message: "That isn't on the closeout list." };
+  if (!DAY_KEY.test(String(dayKey)) || dayKey !== etDayKey(new Date())) return { ok: false, message: "Only today's checks can be changed. Reload the page." };
+  if (!MANUAL_CHECKS.includes(key)) return { ok: false, message: "That check is ticked by the system when the work is done, not by hand." };
   const { by } = await actor();
   const rec = await readRecord(dayKey);
   const at = new Date().toISOString();
@@ -66,20 +72,20 @@ export async function closeoutTickAction(dayKey: string, key: CloseoutKey, on: b
   return { ok: true, message: on ? "Ticked." : "Unticked." };
 }
 
-/** Finish the day: only when every closeout line is done (derived or ticked).
+/** Finish the day: only when the end-of-day review is done (derived or ticked).
  *  Work that arrives afterwards still shows; finishing never hides it. */
 export async function finishDayAction(dayKey: string): Promise<DeskResult> {
   try { await requireAdmin(); } catch (e) { return denied(e); }
   if (!DAY_KEY.test(String(dayKey)) || dayKey !== etDayKey(new Date())) return { ok: false, message: "Only today can be finished. Reload the page." };
   const me = await getCurrentUser().catch(() => null);
   const desk = await officeDeskFor(me, {});
-  const open = desk.closeout.lines.filter((l) => !l.done);
+  const open = (desk.checks.groups.find((g) => g.key === "eod")?.lines ?? []).filter((l) => !l.done);
   if (open.length) return { ok: false, message: `Still open: ${open.map((l) => l.label.toLowerCase()).join("; ")}.` };
   const { by } = await actor();
   const rec = await readRecord(dayKey);
   const at = new Date().toISOString();
   rec.finished = { at, by };
-  await prisma.auditLog.create({ data: { actor: by, action: "office_day_finished", target: dayKey, detail: JSON.stringify({ dayKey, at, stillOpen: desk.status.now, waiting: desk.status.waiting }) } });
+  await prisma.auditLog.create({ data: { actor: by, action: "office_day_finished", target: dayKey, detail: JSON.stringify({ dayKey, at, stillOpen: desk.sections.map((s) => [s.key, s.count]), waiting: desk.sections.reduce((n, s) => n + s.waiting.length, 0) }) } });
   await writeRecord(dayKey, rec, by);
   return { ok: true, message: `Day finished at ${etDateTime(at)}. Anything new still shows up.` };
 }
@@ -138,4 +144,74 @@ export async function deskWaitAction(input: WaitInput): Promise<DeskResult> {
     }).catch(() => undefined);
   }
   return { ok: true, message: `Waiting on ${who}. It comes back ${etDateTime(followUpAt)}.` };
+}
+
+export type FollowUpInput = {
+  clientId: string | null;
+  projectId?: string | null;
+  title: string;
+  when: "2h" | "tomorrow" | "2days";
+  note?: string | null;
+};
+
+/** "Create follow-up" beside a reply: a task for the office, linked to the
+ *  client (and job), coming back at the time picked. Replying never resolves
+ *  the request under a conversation; this keeps it on the desk until it is. */
+export async function deskFollowUpAction(input: FollowUpInput): Promise<DeskResult> {
+  try { await requireAdmin(); } catch (e) { return denied(e); }
+  const title = (input?.title ?? "").replace(/\s+/g, " ").trim().slice(0, 140);
+  if (title.length < 3) return { ok: false, message: "Say what to follow up on." };
+  if (!["2h", "tomorrow", "2days"].includes(input.when)) return { ok: false, message: "Pick when to follow up." };
+  if (input.clientId != null && !ID.test(String(input.clientId))) return { ok: false, message: "That client id is not valid." };
+  if (input.projectId != null && !ID.test(String(input.projectId))) return { ok: false, message: "That job id is not valid." };
+  const now = new Date();
+  const followUpAt = input.when === "2h" ? new Date(now.getTime() + 2 * 3_600_000) : etAt(addBusinessDayKeysET(now, input.when === "tomorrow" ? 1 : 2), 10);
+  const me = await getCurrentUser().catch(() => null);
+  const { by } = await actor();
+  const note = (input.note ?? "").replace(/\s+/g, " ").trim().slice(0, 300) || null;
+  const row = await prisma.smartTask.create({
+    data: {
+      taskType: "comms_followup", source: "office", status: "OPEN", priority: "MEDIUM",
+      title, summary: note, description: note, reasonCreated: `Follow-up created on the dashboard by ${by}`,
+      assignedKey: me ? viewerAssigneeKey(me, await listAssignees().catch(() => [])) ?? "kyle" : "kyle", ownerId: me?.teamMemberId ?? null,
+      clientId: input.clientId ?? null, projectId: input.projectId ?? null,
+      dueAt: followUpAt, followUpAt,
+    },
+    select: { id: true },
+  });
+  await prisma.auditLog.create({ data: { actor: by, action: "office_follow_up_created", target: row.id, detail: JSON.stringify({ title, clientId: input.clientId ?? null, projectId: input.projectId ?? null, followUpAt: followUpAt.toISOString() }) } });
+  return { ok: true, message: `Follow-up set for ${etDateTime(followUpAt)}.` };
+}
+
+export type DraftResult = { ok: boolean; message: string; draft?: string };
+
+/** A Content Program message opens with a draft, as texts and email do (Jordan's
+ *  huddle with Kyle, Oct 23 2026): the reply engine's own drafter, given the
+ *  program conversation. Kyle sends it as is or edits it; nothing is sent here. */
+export async function draftProgramReplyAction(enrollmentId: string): Promise<DraftResult> {
+  try { await requireAdmin(); } catch (e) { return denied(e); }
+  if (!/^[A-Za-z0-9_-]{6,60}$/.test(String(enrollmentId))) return { ok: false, message: "That program id is not valid." };
+  const { getSecret } = await import("@/lib/integrations/connections");
+  if (!(await getSecret("ai"))) return { ok: false, message: "Add an AI key in Connections to draft replies." };
+  const rows = await prisma.programMessage.findMany({
+    where: { enrollmentId, refKind: null },
+    orderBy: { createdAt: "desc" },
+    take: 16,
+    select: { authorKind: true, authorLabel: true, body: true, createdAt: true, clientId: true },
+  });
+  if (!rows.some((r) => r.authorKind === "CLIENT")) return { ok: false, message: "Nothing from the client to answer here." };
+  const client = await prisma.client.findUnique({ where: { id: rows[0].clientId }, select: { name: true } }).catch(() => null);
+  try {
+    const { draftReplyWithContext } = await import("@/lib/integrations/ai");
+    const draft = await draftReplyWithContext({
+      channel: "email",
+      clientName: client?.name ?? null,
+      transcript: rows.reverse().map((r) => ({ role: r.authorKind === "STAFF" ? ("us" as const) : ("client" as const), text: r.body, at: r.createdAt.toISOString(), sender: r.authorKind === "STAFF" ? null : r.authorLabel })),
+      note: "This is the client's Content Program conversation (their monthly social content), not a listing shoot.",
+    });
+    if (/^\s*NO_REPLY_NEEDED\s*$/i.test(draft)) return { ok: false, message: "This one looks handled: nothing to answer." };
+    return { ok: true, message: "Draft ready. Read it before sending.", draft };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Could not draft a reply." };
+  }
 }

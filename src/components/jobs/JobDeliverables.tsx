@@ -9,6 +9,7 @@ import { RequestOwnerPicker } from "./RequestOwnerPicker";
 import { StageChip, TONE_CLASS } from "./StageChip";
 import { SendVideo } from "@/components/videoDelivery/SendVideo";
 import { PushControls } from "@/components/videoDelivery/PushControls";
+import { RerunTopaz } from "@/components/ops/RerunTopaz";
 import { isOffice } from "@/lib/auth/access";
 
 // ---------------------------------------------------------------------------
@@ -54,7 +55,8 @@ export async function JobDeliverablesSection({ projectId }: { projectId: string 
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
   if (me && !isOffice(me.role)) {
-    d.data.video.items = d.data.video.items.map((v) => (v.send ? { ...v, send: { ...v.send, canPress: false, sendNow: false } } : v));
+    // "Run Topaz again" is the office's press too (Oct 23 2026).
+    d.data.video.items = d.data.video.items.map((v) => ({ ...(v.send ? { ...v, send: { ...v.send, canPress: false, sendNow: false } } : v), rerun: null }));
   }
   return <JobDeliverablesView {...d} />;
 }
@@ -220,6 +222,9 @@ function VideoRowView({ v, street }: { v: VideoItem; street: string }) {
           </Link>
         </div>
       ) : null}
+      {/* Run Topaz again beside the send (Jordan, Oct 23 2026): a finished or
+          held Topaz file not sent yet, the Review Room's own offer. */}
+      {v.rerun && <RerunTopaz jobId={v.rerun.jobId} street={street} credits={v.rerun.credits} limit={v.rerun.limit} />}
     </li>
   );
 }

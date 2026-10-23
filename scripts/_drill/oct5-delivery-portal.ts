@@ -155,32 +155,32 @@ async function main() {
     const p1 = await mkCut(A.projectId!, A.deliverableId, 3, 1, approvedStamped());
     const rowOf = async (id: string) => (await rts.readyToSend({ projectId: A.projectId! })).ready.find((r) => r.submissionId === id);
     let row = await rowOf(p1);
-    c.ok("no 1080p pass yet: Run 1080p, blocked, plain reason", row?.portalStep?.action === "run-1080p" && row.portalStep.blocked && /client's portal only gets the checked 1080p file/.test(row.portalStep.says), row?.portalStep?.says);
+    c.ok("no 1080p pass yet: Run 1080p, blocked, plain reason", row?.portalStep?.action === "run-1080p" && row.portalStep.blocked && /client's portal only gets the checked Topaz file/.test(row.portalStep.says), row?.portalStep?.says);
     c.ok("the file line no longer says the editor's export is the deliverable", !!row && !/is the deliverable/.test(row.file.says), row?.file.says);
-    c.ok("Kyle's Slack names the 1080p step and offers no download", !!row && /1080p file needed/.test(deliveryReadyMessage(row, "https://hub.invalid").title) && !/Download:|final check/.test(deliveryReadyMessage(row, "https://hub.invalid").slackDm));
+    c.ok("Kyle's Slack names the Topaz step and offers no download", !!row && /Topaz file needed/.test(deliveryReadyMessage(row, "https://hub.invalid").title) && !/Download:|final check/.test(deliveryReadyMessage(row, "https://hub.invalid").slackDm));
     const ran = await actions.run1080pAction(p1);
     const job1 = await prisma.topazJob.findUnique({ where: { submissionId: p1 } });
-    c.ok("Run 1080p answers at once and queues the pass", ran.ok && job1?.state === "queued", ran.message);
+    c.ok("Run Topaz answers at once and queues the pass", ran.ok && job1?.state === "queued", ran.message);
     const board1 = await rts.readyToSend({ projectId: A.projectId! });
-    c.ok("…the row moves to 'still in the 1080p pass', nothing to send", !board1.ready.some((r) => r.submissionId === p1) && board1.rendering.some((r) => r.submissionId === p1 && r.monthlyProgram === true));
-    const listingReason = "This video's audio is uncompressed (PCM), and the 1080p pass loses it — the finished file comes back silent. The editor's own upload is the one to deliver. To put a video through the pass, export it with AAC audio.";
+    c.ok("…the row moves to 'still in the Topaz pass', nothing to send", !board1.ready.some((r) => r.submissionId === p1) && board1.rendering.some((r) => r.submissionId === p1 && r.monthlyProgram === true));
+    const listingReason = "This video's audio is uncompressed (PCM), and the Topaz pass loses it — the finished file comes back silent. The editor's own upload is the one to deliver. To put a video through the pass, export it with AAC audio.";
     await prisma.topazJob.update({ where: { id: job1!.id }, data: { state: "skipped", skipReason: listingReason, finishedAt: now() } });
     row = await rowOf(p1);
-    c.ok("a skipped pass: Retry 1080p with the real reason", row?.portalStep?.action === "retry-1080p" && /AAC audio/.test(row.portalStep.says), row?.portalStep?.says);
+    c.ok("a skipped pass: Retry Topaz with the real reason", row?.portalStep?.action === "retry-1080p" && /AAC audio/.test(row.portalStep.says), row?.portalStep?.says);
     c.ok("…minus the listing-only 'editor's upload is the one to deliver'", !!row && !/one to deliver/.test(row.portalStep!.says) && !/one to deliver/.test(row.file.why ?? ""));
     const retried = await actions.run1080pAction(p1);
-    c.ok("Retry 1080p answers at once; the pass is back in the queue", retried.ok && /Running the 1080p pass again/.test(retried.message) && (await prisma.topazJob.findUniqueOrThrow({ where: { id: job1!.id } })).state === "queued", retried.message);
+    c.ok("Retry Topaz answers at once; the pass is back in the queue", retried.ok && /Running the Topaz pass again/.test(retried.message) && (await prisma.topazJob.findUniqueOrThrow({ where: { id: job1!.id } })).state === "queued", retried.message);
 
     // keep-original on a monthly job: refused, and an old one may run again
     await prisma.topazJob.update({ where: { id: job1!.id }, data: { state: "held", heldPath: "/drill/Final Video/unverified/video3-v1 (Topaz - unchecked).mp4", heldAt: now() } });
     const kept = await tj.resolveHeldTopazJob(job1!.id, "use-original", "James");
-    c.ok("'Keep the approved original' is refused on a portal video", !kept.ok && /client only gets the checked 1080p file/.test(kept.message) && (await prisma.topazJob.findUniqueOrThrow({ where: { id: job1!.id } })).state === "held", kept.message);
+    c.ok("'Keep the approved original' is refused on a portal video", !kept.ok && /client only gets the checked Topaz file/.test(kept.message) && (await prisma.topazJob.findUniqueOrThrow({ where: { id: job1!.id } })).state === "held", kept.message);
     const heldSrc = src("src/components/ops/HeldRender.tsx");
     c.ok("the held card hides that button for a monthly job", /\{!monthly && \(/.test(heldSrc) && /monthly=\{!!r\.monthlyProgram\}/.test(src("src/components/ops/ReadyToSendCard.tsx")));
     await prisma.topazJob.update({ where: { id: job1!.id }, data: { state: "failed", outputCheck: "resolved-original", heldPath: "/drill/Final Video/superseded/video3-v1 (Topaz - unchecked).mp4", finishedAt: now() } });
     c.ok("an OLD keep-original on a portal video may be retried now", (await tj.retryTopazJobRefusal(job1!.id)) === null);
     row = await rowOf(p1);
-    c.ok("…the card says why and offers Retry 1080p", row?.portalStep?.action === "retry-1080p" && /kept the original/.test(row.portalStep.says), row?.portalStep?.says);
+    c.ok("…the card says why and offers Retry Topaz", row?.portalStep?.action === "retry-1080p" && /kept the original/.test(row.portalStep.says), row?.portalStep?.says);
     const L = await prisma.project.create({ data: { clientId: A.clientId, title: "12 Listing Rd, Drill, PA", status: "REVIEW" } });
     const lc = await mkCut(L.id, null, 1, 1, { status: "APPROVED", decidedAt: now(), decidedBy: "James" });
     const lj = await prisma.topazJob.create({ data: { projectId: L.id, submissionId: lc, state: "failed", outputCheck: "resolved-original" } });
@@ -252,7 +252,7 @@ async function main() {
     await notifyKyleDeliveryReady();
     const sweepRows = await prisma.notification.findMany({ where: { userKey: `tm:${kyle.id}`, dedupeKey: { startsWith: "delivery-ready-" } }, select: { title: true, body: true } });
     c.ok("the delivery sweep never asks Kyle for a Dropbox link (the hub publishes it)", !sweepRows.some((r) => /Send the Final Dropbox link/.test(`${r.title} ${r.body ?? ""}`)), sweepRows.map((r) => r.title).join(" | "));
-    c.ok("…and does not repeat the skipped pass as a second DM", !sweepRows.some((r) => r.title.startsWith("1080p file needed")), sweepRows.map((r) => r.title).join(" | "));
+    c.ok("…and does not repeat the skipped pass as a second DM", !sweepRows.some((r) => r.title.startsWith("Topaz file needed")), sweepRows.map((r) => r.title).join(" | "));
     // The publication itself, and its review clock waiting for a sign-in, are
     // proven end to end in monthly-final-destination.ts (this drill's Dropbox
     // has no final backup, so here only that proof can stop it).
@@ -285,7 +285,7 @@ async function main() {
     const lateEnt = vid ? await ce.videoEntitlement(vid) : null;
     c.ok("the client is handed no file for it", !!lateEnt && !lateEnt.file, JSON.stringify(lateEnt?.blockedBy));
     await prisma.topazJob.create({ data: { projectId: late.id, submissionId: lc1, state: "done", finalPath: "/drill/late/Final Video/v - FINAL (Topaz).mp4", savedAt: now(), outputCheck: "verified" } });
-    c.ok("with its checked 1080p file it is ready to publish (processed, not the original)", (await ce.clientCutFiles([lc1])).get(lc1)?.kind === "processed");
+    c.ok("with its checked Topaz file it is ready to publish (processed, not the original)", (await ce.clientCutFiles([lc1])).get(lc1)?.kind === "processed");
     const unrelated = await prisma.project.create({ data: { clientId: A.clientId, title: "Old monthly", status: "DELIVERED", contentMonthId: A.monthId } });
     const old1 = await mkCut(unrelated.id, null, 1, 1, { status: "APPROVED", decidedAt: new Date("2026-09-20T15:00:00Z"), decidedBy: "James", fileName: "old-monthly.mp4" });
     c.ok("a monthly cut approved before the gate is untouched (still released)", !cv.publicationRequiredAt(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: old1 } }), true) && (await cv.stampImpliedPublicationGates({ projectIds: [unrelated.id] })) === 0);

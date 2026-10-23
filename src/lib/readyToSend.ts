@@ -14,6 +14,7 @@ import type { TopazState } from "@/lib/topazJobs";
 import { monthlyOwnerAccess, claimMonthlyFinalDelivery } from "@/lib/monthlyFinal";
 import { portalReason } from "@/lib/deliveryReadyMessage";
 import { ALREADY_FINISHED_SAYS, editorOriginalIsFinal } from "@/lib/topazOriginal";
+import { rerunRefusal, type RerunOffer } from "@/lib/topazRerun";
 
 // ===========================================================================
 // READY TO SEND — the videos that are finished and have not gone to the client.
@@ -210,6 +211,10 @@ export type ReadyVideo = {
    *  rule "already finished" skipped the pass): sendable to the portal and by
    *  the Aryeo button, exactly as a checked render. */
   originalIsFinal?: boolean;
+  /** "Run Topaz again" (Oct 23 2026): offered on a finished Topaz file that has
+   *  not gone to the client and is not on (or on its way to) the Aryeo listing
+   *  (lib/topazRerun, the engine's own rule). Null/absent: not offered. */
+  rerun?: RerunOffer | null;
   /** "322 N 62nd St" — the same street the rest of the day uses */
   street: string;
   clientName: string;
@@ -351,6 +356,9 @@ export type RenderingVideo = {
    * other row.
    */
   held?: { jobId: string; fileName: string; dropboxUrl: string | null; heldAtISO: string | null; lastCheck: string | null } | null;
+  /** "Run Topaz again" on a HELD file (Oct 23 2026): the other way out of a
+   *  render that doesn't sound or look right. Absent on every other row. */
+  rerun?: RerunOffer | null;
 };
 
 /** R5: a cut recorded as SENT whose own records did not finish. Survives a refresh. */
@@ -867,7 +875,9 @@ const CANDIDATE_SELECT = {
     // listing (308 W Upsal St).
     // heldPath/heldAt/outputCheckJson: only a HELD row reads them (O02), to name
     // the unchecked file and say what the last look at it found.
-    select: { id: true, state: true, finalPath: true, savedAt: true, deliveredAt: true, skipReason: true, error: true, sourceDurationSec: true, heldPath: true, heldAt: true, outputCheckJson: true, outputCheck: true },
+    // estimateCredits/creditsCharged/sourceWidth/sourceHeight: what "Run Topaz
+    // again" expects to cost with today's Settings (Oct 23 2026).
+    select: { id: true, state: true, finalPath: true, savedAt: true, deliveredAt: true, skipReason: true, error: true, sourceDurationSec: true, heldPath: true, heldAt: true, outputCheckJson: true, outputCheck: true, estimateCredits: true, creditsCharged: true, sourceWidth: true, sourceHeight: true },
   },
   project: {
     select: {
@@ -970,7 +980,8 @@ export async function readyToSend(opts?: ReadyToSendOpts): Promise<ReadyBoard> {
     monthIds.length ? prisma.contentMonth.findMany({ where: { id: { in: monthIds } }, select: { id: true, monthKey: true } }) : Promise.resolve([]),
     outputIds.length ? prisma.deliverableOutput.findMany({ where: { id: { in: outputIds } }, select: { id: true, topicId: true } }) : Promise.resolve([]),
     monthlyOwnerAccess(monthIds).catch(() => new Map()),
-    winners.some((s) => !s.topazJob) || winners.some((s) => s.project.contentMonthId) ? topazSettings().catch(() => null) : Promise.resolve(null),
+    // The settings also price "Run Topaz again" on a finished or held file.
+    winners.some((s) => !s.topazJob || s.topazJob.state === "done" || s.topazJob.state === "held") || winners.some((s) => s.project.contentMonthId) ? topazSettings().catch(() => null) : Promise.resolve(null),
     clientChangeRequestsFor(winners.map((w) => w.projectId)),
     uploadsFor(winners.map((w) => w.id)),
     loadCuts(winners.map((w) => w.id)),
@@ -1027,7 +1038,7 @@ export async function readyToSend(opts?: ReadyToSendOpts): Promise<ReadyBoard> {
     // A portal video waiting on its 1080p file is not "the editor's export is
     // the deliverable" — its portal only takes the checked file.
     const file = portalStep?.blocked
-      ? { ...baseFile, says: "This is the editor's export. The client's portal only gets the checked 1080p file.", why: baseFile.why ? portalReason(baseFile.why) : null }
+      ? { ...baseFile, says: "This is the editor's export. The client's portal only gets the checked Topaz file.", why: baseFile.why ? portalReason(baseFile.why) : null }
       : baseFile;
 
     const ev = parseEvidence(sub.project.statusEvidence);
@@ -1101,12 +1112,45 @@ export async function readyToSend(opts?: ReadyToSendOpts): Promise<ReadyBoard> {
     }
   }
 
+  // RUN TOPAZ AGAIN (Oct 23 2026): on a finished Topaz file not sent yet, and
+  // on a held one. The engine's own rule (lib/topazRerun) over what this read
+  // already holds, plus the upload runs (one query): a file on its way to the
+  // listing, or on it, is not swapped underneath. A failed read offers
+  // nothing; the server decides on every press anyway.
+  await attachRerunOffers(ready, rendering, winners, s).catch((e) => console.warn("[delivery] run-again offers unavailable", e));
+
   // Late first, then oldest first — the order a person would work them in.
   ready.sort((a, b) => Number(b.overdue) - Number(a.overdue) || a.approvedAtISO.localeCompare(b.approvedAtISO));
   rendering.sort((a, b) => a.approvedAtISO.localeCompare(b.approvedAtISO));
   // R5: rows already recorded as sent whose own records did not finish. Derived
   // on every read, so a refresh keeps showing it until it is genuinely fixed.
   return { ready, rendering, ...(await deliveryExitExtras(opts)) };
+}
+
+/** Put "Run Topaz again" on the rows the engine would run it for. */
+async function attachRerunOffers(ready: ReadyVideo[], rendering: RenderingVideo[], winners: CandidateSub[], s: Awaited<ReturnType<typeof topazSettings>> | null): Promise<void> {
+  const subById = new Map(winners.map((w) => [w.id, w]));
+  const candidates = [
+    ...ready.filter((v) => v.file.source === "topaz-1080p"),
+    ...rendering.filter((r) => r.held),
+  ].map((r) => r.submissionId);
+  if (!candidates.length || !s) return;
+  const [{ runsFor }, { expectedRerunCredits }] = await Promise.all([import("@/lib/videoAryeoPush"), import("@/lib/topazJobs")]);
+  const runs = await runsFor(candidates);
+  const offerFor = (submissionId: string, onListing: boolean): RerunOffer | null => {
+    const sub = subById.get(submissionId);
+    const j = sub?.topazJob;
+    if (!sub || !j) return null;
+    const run = runs.get(submissionId) ?? null;
+    const refused = rerunRefusal({
+      state: j.state, finalPath: j.finalPath, savedAt: j.savedAt, heldPath: j.heldPath, deliveredAt: j.deliveredAt,
+      cutStatus: sub.status, sentToClientAt: null, monthly: !!sub.project.contentMonthId, onListing,
+      push: run ? { state: run.state, addSentAt: run.addSentAt, mediaId: run.mediaId, hold: run.hold ? { resume: run.hold.resume } : null } : null,
+    });
+    return refused ? null : { jobId: j.id, credits: expectedRerunCredits(j, s), limit: s.maxCreditsPerVideo };
+  };
+  for (const v of ready) if (v.file.source === "topaz-1080p") v.rerun = offerFor(v.submissionId, !!v.uploaded);
+  for (const r of rendering) if (r.held) r.rerun = offerFor(r.submissionId, false);
 }
 
 /**
@@ -1276,7 +1320,7 @@ function soundHeldSays(j: { state: string; outputCheckJson: string | null }): st
   if (j.state !== "held") return null;
   try {
     const c = j.outputCheckJson ? (JSON.parse(j.outputCheckJson) as { verdict?: string }) : null;
-    return c?.verdict === "sound" ? "The 1080p file is held: its sound is wrong. Listen to it, then use it or ask the editor for a new export." : null;
+    return c?.verdict === "sound" ? "The Topaz file is held: its sound is wrong. Listen to it, then use it or ask the editor for a new export." : null;
   } catch {
     return null;
   }
@@ -1287,13 +1331,13 @@ function renderingSays(state: string, monthly = false): string {
   // O02: finished, filed aside, and not trusted — the one rendering row that is
   // waiting on a PERSON rather than on the lane.
   if (state === "held") return monthly
-    ? "The 1080p file's sound couldn't be checked automatically. Listen to it, then use it — the client's portal only gets this checked file."
-    : "The 1080p file's sound couldn't be verified — waiting for a reviewer to listen to it or keep the original.";
-  if (state === "queued" || state === "estimated") return "The 1080p pass is queued — nothing to send yet.";
-  if (state === "saving") return "The 1080p file is being filed into Dropbox — nearly there.";
-  if (state === "uploading" || state === "processing") return "The 1080p pass is running — nothing to send yet.";
+    ? "The Topaz file's sound couldn't be checked automatically. Listen to it, then use it — the client's portal only gets this checked file."
+    : "The Topaz file's sound couldn't be verified — waiting for a reviewer to listen to it or keep the original.";
+  if (state === "queued" || state === "estimated") return "The Topaz pass is queued — nothing to send yet.";
+  if (state === "saving") return "The Topaz file is being filed into Dropbox — nearly there.";
+  if (state === "uploading" || state === "processing") return "The Topaz pass is running — nothing to send yet.";
   // An unknown state is still the lane's, and still not ours to send.
-  return "The 1080p pass hasn't finished — nothing to send yet.";
+  return "The Topaz pass hasn't finished — nothing to send yet.";
 }
 
 /** What a held row shows: the unchecked file, a link to listen to it, and what
@@ -1315,7 +1359,7 @@ function heldLine(j: { id: string; heldPath: string | null; heldAt: Date | null;
   } catch { /* an unreadable record says nothing rather than something wrong */ }
   return {
     jobId: j.id,
-    fileName: j.heldPath?.split("/").pop() ?? "the 1080p file",
+    fileName: j.heldPath?.split("/").pop() ?? "the Topaz file",
     dropboxUrl: j.heldPath ? dropboxFileUrl(j.heldPath) : null,
     heldAtISO: j.heldAt?.toISOString() ?? null,
     lastCheck,
@@ -1558,7 +1602,7 @@ export async function markVideoSent(submissionId: string, by: string | null, opt
   // its render arrives — which would close Kyle's upload card for a file he has
   // never seen.
   if (sub.topazJob && stillRendering(sub.topazJob.state)) {
-    return { ok: false, message: "The 1080p pass hasn't finished on this one yet — it isn't ready to send." };
+    return { ok: false, message: "The Topaz pass hasn't finished on this one yet — it isn't ready to send." };
   }
 
   const { usesAryeoDelivery } = await import("@/lib/videoDeliveryDestination");
@@ -1679,9 +1723,9 @@ async function settleDeliveryBookkeeping(
       const { markTopazDelivered } = await import("@/lib/topazJobs");
       const r = await markTopazDelivered(j.id, by, { at: sentAt, destination: portalDestination ? "client-portal" : dropboxLink ? "dropbox-link" : "aryeo-listing" });
       if (r.incomplete) incomplete.push(r.incomplete);
-      else if (r.repaired) repaired.push("the upload task the 1080p job left open");
+      else if (r.repaired) repaired.push("the upload task the Topaz job left open");
     } catch (e) {
-      incomplete.push(`the 1080p job did not close (${e instanceof Error ? e.message.slice(0, 100) : "unknown"})`);
+      incomplete.push(`the Topaz job did not close (${e instanceof Error ? e.message.slice(0, 100) : "unknown"})`);
     }
   } else if (j) {
     // Cases (b) and (c): the same writes, in words that fit the file that
@@ -1692,14 +1736,14 @@ async function settleDeliveryBookkeeping(
       // Stamp the job anyway: its card on /connections and its "waiting on
       // Kyle" count must clear with the row it describes.
       const stamped = await prisma.topazJob.updateMany({ where: { id: j.id, deliveredAt: null }, data: { deliveredAt: sentAt, deliveredBy: by } });
-      if (stamped.count > 0 && !opts.first) repaired.push("the 1080p job's stamp");
+      if (stamped.count > 0 && !opts.first) repaired.push("the Topaz job's stamp");
       const task = await prisma.topazJob.findUnique({ where: { id: j.id }, select: { taskId: true } });
       if (task?.taskId) {
         const closed = await prisma.smartTask.updateMany({ where: { id: task.taskId, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { status: "COMPLETED", completedAt: sentAt } });
         if (closed.count > 0 && !opts.first) repaired.push("the upload task");
       }
     } catch (e) {
-      incomplete.push(`the 1080p job did not close (${e instanceof Error ? e.message.slice(0, 100) : "unknown"})`);
+      incomplete.push(`the Topaz job did not close (${e instanceof Error ? e.message.slice(0, 100) : "unknown"})`);
     }
   }
 
@@ -2022,16 +2066,16 @@ export function portalStepFor(
   const verified = (!!j && j.state === "done" && !!j.finalPath && !!j.savedAt && VERIFIED_1080P.has(j.outputCheck ?? "")) || editorOriginalIsFinal(j);
   if (gated && !verified) {
     if (!j) {
-      if (!sub.blobUrl) return { action: null, blocked: true, says: "This version was sent from the Dropbox Final folder, so the hub has no copy to put through the 1080p pass. Ask the editor to upload it in the hub, then approve that version." };
+      if (!sub.blobUrl) return { action: null, blocked: true, says: "This version was sent from the Dropbox Final folder, so the hub has no copy to put through the Topaz pass. Ask the editor to upload it in the hub, then approve that version." };
       const type = sub.deliverable?.type ?? "VIDEO";
-      if (s && !s.enabled) return { action: "run-1080p", blocked: true, says: "The 1080p pass is switched off in Settings, and the client's portal only gets the checked 1080p file. Turn it on, then run it." };
-      if (s && !s.deliverableTypes.includes(type)) return { action: "run-1080p", blocked: true, says: `${type} isn't set to go through the 1080p pass, and the client's portal only gets the checked 1080p file. Add it in Settings, then run it.` };
-      return { action: "run-1080p", blocked: true, says: "No 1080p pass has run for this version yet. The client's portal only gets the checked 1080p file." };
+      if (s && !s.enabled) return { action: "run-1080p", blocked: true, says: "The Topaz pass is switched off in Settings, and the client's portal only gets the checked Topaz file. Turn it on, then run it." };
+      if (s && !s.deliverableTypes.includes(type)) return { action: "run-1080p", blocked: true, says: `${type} isn't set to go through the Topaz pass, and the client's portal only gets the checked Topaz file. Add it in Settings, then run it.` };
+      return { action: "run-1080p", blocked: true, says: "No Topaz pass has run for this version yet. The client's portal only gets the checked Topaz file." };
     }
-    if (j.outputCheck === "resolved-original") return { action: "retry-1080p", blocked: true, says: "A reviewer kept the original, but the client's portal only gets the checked 1080p file. Bring the 1080p file back and listen to it." };
-    if (j.state === "done") return { action: null, blocked: true, says: "This 1080p file was never checked, so it can't go to the portal. Ask Jordan to check it." };
+    if (j.outputCheck === "resolved-original") return { action: "retry-1080p", blocked: true, says: "A reviewer kept the original, but the client's portal only gets the checked Topaz file. Bring the Topaz file back and listen to it." };
+    if (j.state === "done") return { action: null, blocked: true, says: "This Topaz file was never checked, so it can't go to the portal. Ask Jordan to check it." };
     const why = trimReason(j.skipReason ?? j.error ?? null);
-    return { action: "retry-1080p", blocked: true, says: `The 1080p pass didn't finish${why ? `: ${portalReason(why)}` : "."}`.replace(/\.\.$/, ".") };
+    return { action: "retry-1080p", blocked: true, says: `The Topaz pass didn't finish${why ? `: ${portalReason(why)}` : "."}`.replace(/\.\.$/, ".") };
   }
   // Oct 12 2026 (Jordan): every approved, checked monthly video goes to the
   // client's portal for review, whether or not they have signed up yet; it
@@ -2069,7 +2113,7 @@ function fileFor(sub: CandidateSub, s: { enabled: boolean; deliverableTypes: str
       watchHref: `/api/topaz/download/${j.id}?watch=1`,
       dropboxPath: j.finalPath,
       dropboxUrl: dropboxFileUrl(j.finalPath),
-      says: "The 1080p pass finished — this is the file to send.",
+      says: "The Topaz pass finished — this is the file to send.",
       why: null,
     };
   }
@@ -2082,16 +2126,16 @@ function fileFor(sub: CandidateSub, s: { enabled: boolean; deliverableTypes: str
   const original = editorOriginalIsFinal(j) ? ALREADY_FINISHED_SAYS : null;
   const says = original ?? (
     j?.state === "skipped"
-      ? "The 1080p pass was skipped — send the editor's own export."
+      ? "The Topaz pass was skipped — send the editor's own export."
       : j?.state === "failed" || j?.state === "cancelled"
-        ? "The 1080p pass didn't produce a file — send the editor's own export."
+        ? "The Topaz pass didn't produce a file — send the editor's own export."
         : j
-          ? "The 1080p file isn't filed yet — the editor's own export is what's in hand."
+          ? "The Topaz file isn't filed yet — the editor's own export is what's in hand."
           : s && !s.enabled
-            ? "The 1080p pass is switched off in Settings — the editor's export is the deliverable."
+            ? "The Topaz pass is switched off in Settings — the editor's export is the deliverable."
             : s && !s.deliverableTypes.includes(type)
-              ? `${type} doesn't go through the 1080p pass — the editor's export is the deliverable.`
-              : "No 1080p pass ran for this cut — the editor's export is the deliverable.");
+              ? `${type} doesn't go through the Topaz pass — the editor's export is the deliverable.`
+              : "No Topaz pass ran for this cut — the editor's export is the deliverable.");
   // A decided original carries no "why the pass didn't produce it": nothing
   // went wrong, and the sentence above already says what happened.
   const why = original ? null : trimReason(j?.skipReason ?? j?.error ?? null);
@@ -2235,7 +2279,7 @@ export async function repairIncompleteDeliveries(opts: { sinceDays?: number; max
     }
   }
   if (repaired > 0) {
-    console.info(`[delivery] ${repaired} delivered 1080p job(s) still had an open upload card — closed. A "mark as sent" had stamped the job and not finished the card.`);
+    console.info(`[delivery] ${repaired} delivered Topaz job(s) still had an open upload card — closed. A "mark as sent" had stamped the job and not finished the card.`);
   }
   return { checked: jobs.length, repaired, failed, lastError, detail };
 }
@@ -2287,7 +2331,7 @@ export async function deliveriesNeedingFinishing(opts: { projectId?: string; sin
   for (const s of sent) {
     const why: string[] = [];
     if (s.topazJob?.deliveredAt && s.topazJob.taskId && openTasks.has(s.topazJob.taskId)) {
-      why.push("its 1080p upload card never closed");
+      why.push("its Topaz upload card never closed");
     }
     if (s.deliverableId && !haveOutput.has(`${s.deliverableId}:${s.slot ?? 1}`)) {
       why.push("this video has no per-video delivery row");

@@ -276,8 +276,8 @@ async function main() {
       (await prisma.deliverableOutput.count({ where: { approvedSubmissionId: cut1 } })) === 0 &&
       !dropboxCalls.includes("files/save_url"),
       `dropbox calls so far: ${dropboxCalls.join(", ") || "none"}`);
-    c.ok("the answer says what really happens next (1080p, then Kyle's upload prompt) — not 'Kyle's been pinged to deliver'",
-      /1080p/.test(r1.message) && /Kyle gets the upload-and-send prompt/.test(r1.message) && !/pinged to deliver/i.test(r1.message), r1.message);
+    c.ok("the answer says what really happens next (the Topaz pass, then Kyle's upload prompt) — not 'Kyle's been pinged to deliver'",
+      /Topaz pass/.test(r1.message) && /Kyle gets the upload-and-send prompt/.test(r1.message) && !/pinged to deliver/i.test(r1.message), r1.message);
     const ran1 = await flush();
     const b1 = await bells(`review-approved-${cut1}`);
     // 1 task: the verdict's follow-ons. (Oct 6–8 there were 2 — the error
@@ -302,7 +302,7 @@ async function main() {
     c.ok("the role-only ADMIN broadcast is gone (every seat is addressed by name)", !b1.some((b) => b.userKey === null));
     c.ok("Kim, who cut it, keeps her editor row", !!byKey("editor:kim"));
     const seatBell = byKey(`tm:${jordan.id}`)?.body ?? "";
-    c.ok("the seat's bell keeps its body: who approved it and the honest next step — no 'Ready to deliver.'", seatBell.startsWith("Approved by James Livingston.") && /1080p pass running/.test(seatBell) && !/Ready to deliver/.test(seatBell), seatBell);
+    c.ok("the seat's bell keeps its body: who approved it and the honest next step — no 'Ready to deliver.'", seatBell.startsWith("Approved by James Livingston.") && /Topaz pass running/.test(seatBell) && !/Ready to deliver/.test(seatBell), seatBell);
     c.ok("no text was queued by any of it (bell rows only)", (await prisma.pendingSms.count()) === 0);
 
     // =========================================================================
@@ -333,7 +333,7 @@ async function main() {
     const r3 = await actions.approveCut(cut3);
     const s3 = await sub(cut3);
     c.ok("approved, publication flagged as owed, the 1080p pass queued", r3.ok && s3.status === "APPROVED" && !!s3.portalPublicationRequiredAt && (await prisma.topazJob.count({ where: { submissionId: cut3, state: "queued" } })) === 1, r3.message);
-    c.ok("the answer: 1080p running, the client's portal gets it, nothing to send — no Kyle upload prompt", /1080p/.test(r3.message) && /client's portal/.test(r3.message) && /Nothing to send/.test(r3.message) && !/Kyle/.test(r3.message), r3.message);
+    c.ok("the answer: the Topaz pass running, the client's portal gets it, nothing to send — no Kyle upload prompt", /Topaz pass/.test(r3.message) && /client's portal/.test(r3.message) && /Nothing to send/.test(r3.message) && !/Kyle/.test(r3.message), r3.message);
     failLibraryWrites = 1; // the library row write fails in the background
     await flush();
     const f3 = await failures(cut3);

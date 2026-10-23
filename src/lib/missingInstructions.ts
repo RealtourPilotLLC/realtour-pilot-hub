@@ -1,4 +1,5 @@
 import "server-only";
+import { currentVisitStamps } from "@/lib/visitSubmission";
 import crypto from "crypto";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -375,6 +376,9 @@ export async function sweepMissingInstructions(now: Date = new Date(), opts: { p
         // …unless a video was set up after the video half went in (audit H4a):
         // its own instructions are still owed, whatever the page said.
         { videoHandoffAt: { not: null }, deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] }, removedFromOrderAt: null, createdAt: { gte: from } } } },
+        // …or a LATER visit of a job whose page was submitted for an earlier
+        // one (Oct 23 2026, lib/visitSubmission): read per visit in the loop.
+        { debriefSubmittedAt: { lt: from }, appointments: { some: { startAt: { gte: from, lte: now } } } },
       ],
     },
     orderBy: { shootDate: "asc" },
@@ -391,7 +395,9 @@ export async function sweepMissingInstructions(now: Date = new Date(), opts: { p
   let managers: { id: string; name: string }[] | null = null;
   let ours: Set<string> | null = null;
 
-  for (const p of rows) {
+  for (const row of rows) {
+    // Oct 23 2026: an earlier visit's upload-page stamps say nothing about this one.
+    const p = currentVisitStamps(row, row.appointments, now);
     if (!p.photographer || isSyntheticClientRow(p.client)) continue;
     const shotAt = shootFinishedAt(p.appointments, p.shootDate, now, liveAppointment);
     if (!shotAt) continue;

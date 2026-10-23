@@ -391,7 +391,8 @@ async function parent() {
       c.ok(`${role}: every card sits inside exactly one group — the one SETTINGS_LAYOUT names`, misplaced.length === 0, misplaced.map((e) => e.attrs["data-settings-card"]).join(","));
       // Oct 19 2026: the Review Room card is titled "Video Review Room" now (the OLD page keeps its old title).
       // Oct 21 2026: "Text wording" became "Text messages", every automatic text's wording (lib/textTemplates).
-      const newTitle = (k: string) => (k === "review-room" ? "Video Review Room" : k === "text-wording" ? "Text messages" : cardTitle[k]);
+      // Oct 23 2026: "1080p video pass" became "Topaz pass" (Jordan: "call it topaz pass").
+      const newTitle = (k: string) => (k === "review-room" ? "Video Review Room" : k === "text-wording" ? "Text messages" : k === "topaz" ? "Topaz pass" : cardTitle[k]);
       c.ok(`${role}: each card still carries its own title, once`, expected.every((k) => h2Count(root, newTitle(k)) === 1), expected.filter((k) => h2Count(root, newTitle(k)) !== 1).join(","));
       c.ok(`${role}: no pay switch card under either of its names`, h2Count(root, NEW_PAY_TITLE) === 0 && h2Count(root, "Photographer pay view") === 0);
       const groups = all(root, (e) => "data-settings-group" in e.attrs);
@@ -460,9 +461,9 @@ async function parent() {
     c.ok(`every "/settings#…" link in src lands on an id (${[...inbound.keys()].sort().join(", ")})`, inbound.size >= 3 && [...inbound.keys()].every((a) => ownerIds.has(a)), [...inbound].filter(([a]) => !ownerIds.has(a)).map(([a, f]) => `${a} ← ${f.join(",")}`).join(" | "));
     c.ok("…including the ones the task names: /coaching → #coaching, /connections → #topaz, /content/monitoring → #program-automations", ["coaching", "topaz", "program-automations"].every((a) => inbound.has(a)));
     c.ok(`every in-page "#…" link the settings cards write lands on an id (${[...inPage.keys()].sort().join(", ")})`, [...inPage.keys()].every((a) => ownerIds.has(a)), [...inPage].filter(([a]) => !ownerIds.has(a)).map(([a, f]) => `${a} ← ${f.join(",")}`).join(" | "));
-    c.ok("the old anchors keep their homes: #program-automations holds the switches, #topaz the 1080p card, #coaching the coaching card", (() => {
+    c.ok("the old anchors keep their homes: #program-automations holds the switches, #topaz the Topaz card, #coaching the coaching card", (() => {
       const byId = (id: string) => all(NEW.OWNER.root, (e) => e.attrs.id === id)[0];
-      return h2Count(byId("program-automations"), "Content program automations") === 1 && h2Count(byId("topaz"), "1080p video pass") === 1 && h2Count(byId("coaching"), "Comms coaching") === 1 && h2Count(byId("calendly"), "Calendly & content-program calls") === 1 && h2Count(byId("program-reminders"), "Program reminders") === 1;
+      return h2Count(byId("program-automations"), "Content program automations") === 1 && h2Count(byId("topaz"), "Topaz pass") === 1 && h2Count(byId("coaching"), "Comms coaching") === 1 && h2Count(byId("calendly"), "Calendly & content-program calls") === 1 && h2Count(byId("program-reminders"), "Program reminders") === 1;
     })());
     c.ok("#notification-schedule sits inside Internal alerts, in the communication group", (() => {
       const n = all(NEW.OWNER.root, (e) => e.attrs.id === "notification-schedule")[0];

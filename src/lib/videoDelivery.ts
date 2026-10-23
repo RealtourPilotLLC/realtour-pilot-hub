@@ -125,6 +125,8 @@ export type VideoRow = {
   send: VideoSend | null;
   /** A 1080p file the sound check held (the held lane): the file to listen to and decide on. */
   heldRender: { jobId: string; fileName: string; dropboxUrl: string | null; lastCheck: string | null } | null;
+  /** "Run Topaz again" (Oct 23 2026): a finished or held Topaz file not sent yet (readyToSend's offer). */
+  rerun?: import("@/lib/topazRerun").RerunOffer | null;
 };
 
 export type VideoDeliveryBoard = {
@@ -326,11 +328,11 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
     // The Settings rule's "already 1080p" original IS the checked file (Oct 22
     // 2026, audit C2): the button sends it from the Final folder exactly as it
     // sends a render (videoAryeoPush), so it keeps the button.
-    if (r.file.source !== "topaz-1080p" && !r.originalIsFinal) return `This is the editor's own file (the 1080p pass did not produce one${r.file.why ? `: ${scrubWhy(r.file.why).replace(/[.\s]+$/, "")}` : ""}), so it goes up by hand.`;
+    if (r.file.source !== "topaz-1080p" && !r.originalIsFinal) return `This is the editor's own file (the Topaz pass did not produce one${r.file.why ? `: ${scrubWhy(r.file.why).replace(/[.\s]+$/, "")}` : ""}), so it goes up by hand.`;
     if (!connected) return "The hub's Aryeo login is not set up yet, so this one goes up by hand. Jordan adds it on Connections, Aryeo hub login.";
     // A failed read of the upload status is not "never checked" (audit B12).
     if (r.pushUnknown) return null;
-    if (!r.push) return "The 1080p file was never checked, so the hub does not send it on its own. Upload it by hand.";
+    if (!r.push) return "The Topaz file was never checked, so the hub does not send it on its own. Upload it by hand.";
     return null;
   };
 
@@ -381,11 +383,12 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
           const lane: VideoLane = heldWhy ? "held" : rend ? "finishing" : "sending";
           push({
             ...common, lane,
-            stage: rend ? (rend.held ? "1080p file held" : "In the 1080p pass") : pushLine?.progress === "on-listing" || r?.uploaded ? "On Aryeo, not sent yet" : pushLine?.progress === "uploading" ? "Uploading to Aryeo" : "Approved, ready to send",
+            stage: rend ? (rend.held ? "Topaz file held" : "In the Topaz pass") : pushLine?.progress === "on-listing" || r?.uploaded ? "On Aryeo, not sent yet" : pushLine?.progress === "uploading" ? "Uploading to Aryeo" : "Approved, ready to send",
             promiseWords: promiseWords(promise, now), late, dueToday, lateHours: late ? hoursBetween(promise!.getTime(), nowMs) : null,
             approvedAtISO: approvedAt, deliveredAtISO: null, deliveredBy: null, push: pushLine, heldWhy,
             waitingSinceISO: rend ? null : approvedAt,
             heldRender: rend?.held ? { jobId: rend.held.jobId, fileName: rend.held.fileName, dropboxUrl: rend.held.dropboxUrl, lastCheck: rend.held.lastCheck } : null,
+            rerun: r?.rerun ?? rend?.rerun ?? null,
             send: r ? {
               approvedBy: r.approvedBy, fileSource: r.file.source, fileName: r.file.fileName, fileSays: r.file.says.replace(/\s*[\u2014\u2013]\s*/g, ": "), downloadHref: r.file.downloadHref, watchHref: r.file.watchHref,
               uploadFingerprint: r.uploadFingerprint ?? null,

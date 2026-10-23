@@ -1,12 +1,13 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
-import { Check, ChevronDown, CircleDashed, Eye, FileText, History, Loader2, MessageSquareText, PenLine, RotateCcw, Send, Sparkles } from "lucide-react";
+import { useState, useTransition } from "react";
+import { Check, ChevronDown, CircleDashed, Eye, FileText, History, Loader2, MessageSquareText, PenLine, RefreshCw, RotateCcw, Send, Sparkles } from "lucide-react";
 import type { QueueItemUi } from "@/lib/aiQueue";
 import type { QuestionRequestUi } from "@/lib/questionRequests";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { useToast } from "@/components/ui/Toast";
+import { useDetailsMenu } from "@/components/ui/useDetailsMenu";
 import { useAiQueueWatch } from "@/components/content/useAiQueueWatch";
 import { ScriptView } from "@/components/script/ScriptView";
 import { WriterNotes, versionHow } from "@/components/content/WriterNotes";
@@ -18,7 +19,7 @@ import { lengthBand, trimInstruction } from "@/lib/scriptWriter/rules";
 // the Shorten offer and the validator can never drift from each other.
 import { GENERATION_POLICY } from "@/lib/contentPolicy/policy";
 import { VIDEO_FORMAT_LABEL, type VideoFormat } from "@/lib/contentPolicy/videoFormat";
-import { approveAndSendScriptAction, approveAndSendScriptsAction, approveScriptVersionAction, queueOwedScriptsAction, queueScriptRevisionAction, releaseScriptAction, resendQuestionRequestAction, restoreScriptVersionAction, retryAiJobAction, returnScriptAction, saveScriptText, sendQuestionRequestAction, undoQuestionRequestAction } from "@/app/content/actions";
+import { approveAndSendScriptAction, approveAndSendScriptsAction, approveScriptVersionAction, queueOwedScriptsAction, queueScriptRevisionAction, queueScriptRewriteAction, releaseScriptAction, resendQuestionRequestAction, restoreScriptVersionAction, retryAiJobAction, returnScriptAction, saveScriptText, sendQuestionRequestAction, undoQuestionRequestAction } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
 // Scripts tab (spec §22/§27): ONE review queue for both planning paths, the
@@ -42,8 +43,13 @@ import { approveAndSendScriptAction, approveAndSendScriptsAction, approveScriptV
 //               said in words on the card)
 //   More        everything else that was on the card: Approve only, send the
 //               approved version, Ask AI to revise (with Keep exactly),
+//               Write it again (Oct 23 2026: a fresh draft of the topic by
+//               the writer, as the next version; refused in words for a
+//               script that has gone to the client, lib/scriptRewriteRule),
 //               Shorten with AI, Version history (View, Restore), Back to the
-//               queue / Pull back from the client's portal
+//               queue / Pull back from the client's portal. The list is
+//               placed against the screen when it opens (useDetailsMenu), so
+//               the card's rounded, clipped edge never cuts it off.
 //   notes       one fold at the very bottom, "Writer's notes", closed, grey
 //
 // SEND QUESTION REQUEST (Oct 23 2026, Jordan). A visible button beside Edit on
@@ -92,7 +98,9 @@ export type ScriptUi = { id: string; title: string; status: string; historical: 
   /** Oct 22 2026: the topic's format (its own, else the account's default); null for a script with no topic. */
   topicFormat?: VideoFormat | null;
   /** Oct 22 2026 (audit M5): a bulk plan's script, the client's own bank: the client is never asked to approve it. */
-  bulkBank?: boolean };
+  bulkBank?: boolean;
+  /** Oct 23 2026: why "Write it again" is refused for this script (lib/scriptRewriteRule), or null when it may run. */
+  rewrite?: string | null };
 
 /**
  * The script's CURRENT version (Oct 23 2026). An automatic fix round that was
@@ -122,7 +130,7 @@ function NotesText({ text }: { text: string }) {
   return <>{text.split(/(https?:\/\/\S+)/g).map((part, i) => (i % 2 ? <a key={i} href={part} target="_blank" rel="noreferrer" className="text-brand underline break-all">{part}</a> : part))}</>;
 }
 /** A script's revision as the row shows it: the queued run, or a click whose answer has not been rendered yet. */
-type RevCtl = { server: QueueItemUi | null; sending: boolean; onRevise: (mode: "revise" | "tighten", instructions?: string, lockSections?: string[]) => void; onRetry: () => void };
+type RevCtl = { server: QueueItemUi | null; sending: boolean; sendingLabel?: string | null; onRevise: (mode: "revise" | "tighten", instructions?: string, lockSections?: string[]) => void; onRewrite: () => void; onRetry: () => void };
 
 /** Oct 14 2026: "Keep exactly" on a revision: these sections are copied back word for word by code. */
 const LOCKS: [string, string][] = [["hook", "Hook"], ["rehook", "Re-hook"], ["buildup", "Build up"], ["payoff", "Payoff"], ["close", "Close"], ["captionCta", "Caption CTA"]];
@@ -146,12 +154,13 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
   const { toast, show } = useToast();
   useAiQueueWatch(enrollmentId, queueActive);
   // Per-script "sending": a revision click never takes the panel's shared busy.
-  const [sending, setSending] = useState<Set<string>>(new Set());
+  // The value is what was pressed ("rewrite" for Write it again), for the chip before the server's answer is drawn.
+  const [sending, setSending] = useState<Map<string, string | null>>(new Map());
   // Oct 20 2026 (audit D5): the queue's ticked versions, for "Approve & send N".
   const [picked, setPicked] = useState<Set<string>>(new Set());
-  const mark = (id: string, on: boolean) => setSending((cur) => { const next = new Set(cur); if (on) next.add(id); else next.delete(id); return next; });
-  const send = async (id: string, fn: () => Promise<QueueResult>) => {
-    mark(id, true);
+  const mark = (id: string, on: boolean, label: string | null = null) => setSending((cur) => { const next = new Map(cur); if (on) next.set(id, label); else next.delete(id); return next; });
+  const send = async (id: string, fn: () => Promise<QueueResult>, label: string | null = null) => {
+    mark(id, true, label);
     let r: QueueResult;
     try { r = await fn(); } catch { r = { ok: false, message: "Couldn't reach the server. Try again." }; }
     show(r.ok || r.runId ? "ok" : "err", r.message);
@@ -161,9 +170,11 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
   const revCtl = (s: ScriptUi): RevCtl => {
     const server = revising[s.id] ?? null;
     return {
-      server, sending: sending.has(s.id),
-      onRevise: (mode, instructions = "", lockSections = []) => void send(s.id, () => queueScriptRevisionAction(s.id, mode, instructions, lockSections)),
-      onRetry: () => { if (server) void send(s.id, () => retryAiJobAction(server.runId)); },
+      server, sending: sending.has(s.id), sendingLabel: sending.get(s.id) ?? null,
+      onRevise: (mode, instructions = "", lockSections = []) => void send(s.id, () => queueScriptRevisionAction(s.id, mode, instructions, lockSections), mode),
+      // Oct 23 2026: "Write it again", queued and shown exactly like a revision.
+      onRewrite: () => void send(s.id, () => queueScriptRewriteAction(s.id), "rewrite"),
+      onRetry: () => { if (server) void send(s.id, () => retryAiJobAction(server.runId), server.label ?? null); },
     };
   };
   // Oct 14 2026: a draft the automatic check still flags comes first (the order only; the card never says why).
@@ -243,8 +254,9 @@ function ScriptItem({ s, busy, run, open, rev, onAsk }: { s: ScriptUi; busy: boo
   const [mode, setMode] = useState<"read" | "revise" | "edit">("read");
   // Oct 23 2026: what the last press on this card said (a refusal in words, or what was done).
   const [said, setSaid] = useState<{ ok: boolean; message: string } | null>(null);
-  const menu = useRef<HTMLDetailsElement>(null);
-  const closeMenu = () => menu.current?.removeAttribute("open");
+  // Oct 23 2026: More is placed against the screen when it opens (the card clipped it).
+  const menu = useDetailsMenu();
+  const closeMenu = () => menu.close(true);
   const cur = currentOf(s);
   // THE EDIT BOX LOADS ON CLICK (Oct 14 2026). It used to be seeded once, when
   // the page first drew: an AI revision that landed afterwards (Janice's v4)
@@ -306,6 +318,8 @@ function ScriptItem({ s, busy, run, open, rev, onAsk }: { s: ScriptUi; busy: boo
   // Oct 12: an AI revision of THIS script in the queue (the rest stay usable).
   const revBusy = !!rev && (rev.server?.state === "queued" || rev.server?.state === "running" || (rev.sending && rev.server?.state !== "failed"));
   const revFailed = !!rev && !revBusy && rev.server?.state === "failed" ? rev.server : null;
+  // What the busy chip says: the queued job's own label, else the press just made (before the server's answer is drawn).
+  const busyLabel = rev?.server && (rev.server.state === "queued" || rev.server.state === "running") ? rev.server.label ?? null : rev?.sendingLabel ?? null;
   // THE CLIENT'S OWN VERDICT (F09): our approval and their willingness to say
   // these words on camera are different facts. Neutral tones (Oct 23 2026).
   const verdict =
@@ -345,13 +359,13 @@ function ScriptItem({ s, busy, run, open, rev, onAsk }: { s: ScriptUi; busy: boo
         <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>{state}</span>
         {verdict && <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${verdict.cls}`} title={s.clientVerdictAt ? `on ${fmt(s.clientVerdictAt)}` : undefined}>{verdict.label}</span>}
         {filmedChip && <span className="shrink-0 rounded-full bg-success-soft px-2 py-0.5 text-xs font-medium text-success" title={filmedChip.title}>{filmedChip.label}</span>}
-        {revBusy && <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-brand-soft px-2 py-0.5 text-xs font-medium text-brand"><Loader2 className="size-3 animate-spin" />{rev?.server?.label === "tighten" ? "shortening…" : rev?.server?.label === "redraft" ? "redrafting…" : "revising…"}</span>}
+        {revBusy && <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-brand-soft px-2 py-0.5 text-xs font-medium text-brand"><Loader2 className="size-3 animate-spin" />{busyLabel === "tighten" ? "shortening…" : busyLabel === "redraft" ? "redrafting…" : busyLabel === "rewrite" ? "writing again…" : "revising…"}</span>}
       </summary>
       <div className="mt-2">
-        {revBusy && <p className="mb-1.5 text-[12px] text-muted"><Loader2 className="mr-1 inline size-3 animate-spin" />{rev?.server?.label === "tighten" ? "Shortening" : rev?.server?.label === "redraft" ? "Drafting again from the answers" : "Revising"} in the background. The new version appears here when it&rsquo;s ready; this one is kept.</p>}
+        {revBusy && <p className="mb-1.5 text-[12px] text-muted"><Loader2 className="mr-1 inline size-3 animate-spin" />{busyLabel === "tighten" ? "Shortening" : busyLabel === "redraft" ? "Drafting again from the answers" : busyLabel === "rewrite" ? "Writing it again from the topic" : "Revising"} in the background. The new version appears here when it&rsquo;s ready; this one is kept.</p>}
         {revFailed && (
           <p className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[12px] text-muted">
-            The AI revision didn&rsquo;t finish ({revFailed.error}).
+            {revFailed.label === "rewrite" ? "The fresh draft" : "The AI revision"} didn&rsquo;t finish ({revFailed.error}).
             <button onClick={rev?.onRetry} className={quiet}>Try again</button>
           </p>
         )}
@@ -407,12 +421,16 @@ function ScriptItem({ s, busy, run, open, rev, onAsk }: { s: ScriptUi; busy: boo
             {!s.historical && !canApprove && canSendApproved && <button disabled={busy} onClick={() => { setSaid(null); run(() => releaseScriptAction(s.id), setSaid); }} className={`${btn} min-h-9 bg-brand-action text-white`}><Send className="mr-1 inline size-3" />Send v{approvedNo ?? ""} to the client</button>}
             {!s.historical && cur && <button onClick={startEdit} className={`${quiet} min-h-9`}><PenLine className="mr-1 inline size-3" />Edit</button>}
             {canAsk && <button disabled={busy || revBusy || asking !== "idle"} onClick={() => { setSaid(null); setAsking("confirm"); }} className={`${quiet} min-h-9`} data-question-request><MessageSquareText className="mr-1 inline size-3" />Send Question Request</button>}
-            <details ref={menu} className="relative" data-more-menu>
-              <summary className={`${quiet} inline-flex min-h-9 cursor-pointer list-none items-center gap-1 marker:content-none`}>More <ChevronDown className="size-3" /></summary>
-              <div className="absolute left-0 z-20 mt-1 w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-surface p-1 shadow-lg">
+            {/* Oct 23 2026: placed against the screen when it opens (useDetailsMenu), so the card's clipped edge never cuts it off. */}
+            <details {...menu.detailsProps} className="relative" data-more-menu>
+              <summary {...menu.summaryProps} className={`${quiet} inline-flex min-h-9 cursor-pointer list-none items-center gap-1 marker:content-none [&::-webkit-details-marker]:hidden`}>More <ChevronDown className="size-3" /></summary>
+              <div {...menu.panelProps} className="absolute left-0 z-40 mt-1 w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-surface p-1 shadow-lg">
                 {!s.historical && canApprove && cur && <button disabled={busy} onClick={() => { closeMenu(); approve(false); }} className={menuItem}><Check className="size-3" />Approve only (send later)</button>}
                 {!s.historical && canApprove && canSendApproved && <button disabled={busy} onClick={() => { closeMenu(); setSaid(null); run(() => releaseScriptAction(s.id), setSaid); }} className={menuItem}><Send className="size-3" />Send the approved v{approvedNo ?? ""} to the client</button>}
                 {!s.historical && <button disabled={revBusy} onClick={() => { closeMenu(); setMode("revise"); }} className={menuItem}><Sparkles className="size-3" />Ask AI to revise</button>}
+                {/* Oct 23 2026: a fresh draft of the topic by the writer, as the next version. Greyed, with the reason, where it is refused. */}
+                {!s.historical && rev && <button disabled={revBusy || !!s.rewrite} onClick={() => { closeMenu(); setSaid(null); rev.onRewrite(); }} aria-describedby={s.rewrite ? `rewrite-why-${s.id}` : undefined} className={menuItem} data-rewrite><RefreshCw className="size-3" />Write it again</button>}
+                {!s.historical && rev && s.rewrite && <p id={`rewrite-why-${s.id}`} className="px-2.5 pb-1.5 text-[11px] leading-snug text-muted" data-rewrite-why>{s.rewrite}</p>}
                 {shorten && <button disabled={revBusy} onClick={() => { closeMenu(); onShorten(); }} className={menuItem}><Sparkles className="size-3" />Shorten with AI</button>}
                 {s.versions.length > 1 && <button onClick={() => { closeMenu(); setShowVersions(!showVersions); }} className={menuItem}><History className="size-3" />{showVersions ? "Hide" : "Show"} version history ({s.versions.length})</button>}
                 {/* Oct 20 2026 (audit D6): taking a script off the client's portal says so and takes a reason. */}

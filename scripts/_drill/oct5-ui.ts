@@ -418,8 +418,8 @@ async function main() {
     c.ok("Kyle: his desk (Oct 23 2026); his checklist is still one page away in five groups, in Jordan's order", !!kDesk && find(ops.tree, "HealthStrip").length === 0 && find(ops.tree, "DailyChecklist").length === 0 && list?.groups.map((g) => g.key).join() === "deliveries,messages,requests,scheduling,followups", list?.groups.map((g) => g.key).join());
     const { messagesBoard } = await import("@/lib/opsHome");
     const msgs = await messagesBoard({ viewer: { key: "kyle", role: "ADMIN", teamMemberId: kyleTm.id } });
-    const kReplies = kDesk?.tabs.find((t) => t.key === "replies")?.now.filter((i) => i.id.startsWith("reply:")) ?? [];
-    c.ok("…his Client Replies are the Messages screen's own waiting list, and his list's Messages group holds the same", kReplies.length === msgs.waiting.length && list?.groups[1].lines.length === msgs.waiting.length, `${kReplies.length} vs ${msgs.waiting.length}`);
+    const kReplies = kDesk?.sections.find((s) => s.key === "comms")?.now.filter((i) => i.id.startsWith("reply:")) ?? [];
+    c.ok("…his Client Communications are the Messages screen's own waiting list, and his list's Messages group holds the same", kReplies.length === msgs.waiting.length && list?.groups[1].lines.length === msgs.waiting.length, `${kReplies.length} vs ${msgs.waiting.length}`);
     c.ok("Kyle: no money anywhere, no owner list, no business section", find(ops.tree, "MoneyStat").length === 0 && find(ops.tree, "QuickAdd").length === 0 && !findBy(ops.raw, (e) => e.type === Suspense && nameOf(e.props.children?.type) === "OwnerBusiness").length);
 
     await signIn(james);

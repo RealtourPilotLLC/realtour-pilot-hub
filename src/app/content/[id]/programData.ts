@@ -20,6 +20,7 @@ import type { InterviewUi } from "@/components/content/InterviewPanel";
 import { interviewPlanningContext } from "@/lib/contentInterview";
 import { scriptWorkForMonth } from "@/lib/contentDrafting";
 import { scriptDecisionsFor } from "@/lib/scriptDecisions";
+import { LEGACY_CLIENT_STATUSES, rewriteRefusal } from "@/lib/scriptRewriteRule";
 import type { ScriptUi, VersionUi } from "@/components/content/ScriptsPanel";
 import type { FactUi } from "@/components/content/FactsPanel";
 import type { BatchUi, ReviewUi } from "@/components/content/ImportPanel";
@@ -230,6 +231,16 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
       filmed: verdicts.get(s.id)?.filmed ? { atISO: verdicts.get(s.id)!.filmed!.atISO, signal: verdicts.get(s.id)!.filmed!.signal } : null,
       topicFormat: s.topicId ? resolvedTopicFormat(topicFormats.get(s.topicId) ?? null, accountStyle) : null,
       bulkBank: !!s.monthId && bulkMonths.has(s.monthId),
+      // Oct 23 2026: "Write it again" and why it is greyed (lib/scriptRewriteRule; the action checks again, the ledger and siblings too).
+      rewrite: rewriteRefusal({
+        historical: s.historical || s.releaseState === "historical",
+        filmed: !!verdicts.get(s.id)?.filmed,
+        clientApproved: !!s.clientApprovedVersionId || !!s.clientApprovedAt || verdicts.get(s.id)?.decision === "APPROVED",
+        everShared: !!s.sharedVersionId || !!s.sharedAt || s.clientVisible || (LEGACY_CLIENT_STATUSES as readonly string[]).includes(s.status) || vs.some((v) => !!v.sharedAt || v.status === "SHARED"),
+        bulkBank: !!s.monthId && bulkMonths.has(s.monthId),
+        hasTopic: !!s.topicId,
+        hasMonth: !!s.monthId,
+      }),
     };
   });
   // 6.5: the client changed an answer after this script was drafted — nothing
