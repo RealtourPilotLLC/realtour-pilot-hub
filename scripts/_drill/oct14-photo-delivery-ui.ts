@@ -219,8 +219,9 @@ async function main() {
     c.ok("release: back to READY, hold fields cleared", rel.ok && (await stageOf()) === "READY" && (await prisma.photoJob.findUnique({ where: { id: job.id } }))?.holdReason === null, rel.message);
     const rel2 = await d.releaseJobHold(job.id, "Kyle");
     c.ok("releasing a job that is not held is refused", !rel2.ok);
+    // Oct 23 2026 (Jordan: "Paid Photo QC should be off"): the paid QC re-run is refused; no request flag is raised.
     const qc = await d.requestQcRerun(job.id, "Kyle");
-    c.ok("a QC re-run request raises qcRequestedAt and logs", qc.ok && !!(await prisma.photoJob.findUnique({ where: { id: job.id } }))?.qcRequestedAt);
+    c.ok("a paid QC re-run request is refused (paid QC off) and raises nothing", !qc.ok && /Paid photo QC is off/.test(qc.message) && !(await prisma.photoJob.findUnique({ where: { id: job.id } }))?.qcRequestedAt, qc.message);
 
     // =======================================================================
     c.head("4 · client QC profile");
@@ -366,6 +367,20 @@ async function main() {
     const daily = await actions.saveSettingsAction({ autoFixDailyMaxCredits: 40 });
     c.ok("the daily limit saves to autoFixDailyMaxCredits, and saving drops the retired keys", daily.ok && (await photoDeliverySettings()).autoFixDailyMaxCredits === 40 && !("aryeoTags" in (await getSetting<Record<string, unknown>>("photo_delivery:settings", {}))), daily.message);
     await actions.saveSettingsAction({ autoFixDailyMaxCredits: 100 });
+    // Oct 23 2026 (Jordan: "Paid Photo QC should be off. Only using the free version."):
+    // the paid QC's switches only save off, its budget and depth are no longer settings,
+    // and a stored "on" (paidQcAuto true, as production had) reads off.
+    const paidOn = await actions.saveSettingsAction({ qcEnabled: true });
+    const paidAuto = await actions.saveSettingsAction({ paidQcAuto: true });
+    const paidBudget = await actions.saveSettingsAction({ monthlyQcBudgetUsd: 50 } as never);
+    const paidDepth = await actions.saveSettingsAction({ maxBuildPhase: 3 } as never);
+    c.ok("paid QC: switching it on, or its budget or depth, is refused", [paidOn, paidAuto, paidBudget, paidDepth].every((r) => !r.ok && /Paid photo QC is off/.test(r.message)), JSON.stringify([paidOn, paidAuto, paidBudget, paidDepth].map((r) => r.message)));
+    await putSetting("photo_delivery:settings", { ...(await getSetting<Record<string, unknown>>("photo_delivery:settings", {})), qcEnabled: true, paidQcAuto: true }, "drill");
+    const storedOn = await photoDeliverySettings();
+    c.ok("…a stored qcEnabled / paidQcAuto true reads off (PAID_QC_OFF)", storedOn.qcEnabled === false && storedOn.paidQcAuto === false);
+    const paidOff = await actions.saveSettingsAction({ qcEnabled: false, paidQcAuto: false });
+    const storedOff = await getSetting<Record<string, unknown>>("photo_delivery:settings", {});
+    c.ok("…saving them off through the settings action stores them off, and nothing else moves", paidOff.ok && storedOff.qcEnabled === false && storedOff.paidQcAuto === false && storedOff.autoFixDailyMaxCredits === 100 && storedOff.adminCreditCap === 30, paidOff.message);
     c.ok("the rule picker lists every registry rule", options.length === RULES.length && RULES.length > 400 && options.every((o) => o.id && o.label && o.section), `${options.length} of ${RULES.length}`);
 
     // =======================================================================

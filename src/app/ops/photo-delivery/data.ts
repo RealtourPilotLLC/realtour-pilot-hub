@@ -193,7 +193,7 @@ export async function loadStrip(viewer: Viewer): Promise<StripData> {
   // A view-only viewer gets no credits at all (Oct 22 2026): not read, not sent.
   const readOnly = !!viewer.readOnly;
   const [credit, settings] = await Promise.all([readOnly ? null : creditView().catch(() => null), photoDeliverySettings()]);
-  return { credit: credit ? creditStrip(credit, viewer) : null, qcShadow: settings.qcShadow, qcEnabled: settings.qcEnabled, isOwner: viewer.isOwner, readOnly };
+  return { credit: credit ? creditStrip(credit, viewer) : null, qcShadow: settings.qcShadow, isOwner: viewer.isOwner, readOnly };
 }
 
 // ---- the queue (plan 9.3) --------------------------------------------------------------------
@@ -979,9 +979,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     requestedFeatures: Array.isArray(expected?.requestedFeatures) ? expected!.requestedFeatures.filter((x): x is string => typeof x === "string") : [],
     coverageCounts,
     coverageMet,
-    qcEnabled: settings.qcEnabled,
     freeCheck: settings.freeCheck,
-    paidQcAuto: settings.paidQcAuto,
     intake: (intake ?? []).map((b) => ({ ...b, sentAt: b.sentAt?.toISOString() ?? null, doneAt: b.doneAt?.toISOString() ?? null })),
     nowIso: now.toISOString(),
   };

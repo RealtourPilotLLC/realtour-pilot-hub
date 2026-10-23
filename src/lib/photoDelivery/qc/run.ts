@@ -16,7 +16,7 @@ import {
   type RuleOverride,
   type Severity,
 } from "../registry";
-import { photoDeliverySettings, type PhotoDeliverySettings, type QcModelSlot } from "../settings";
+import { PAID_QC_OFF, PAID_QC_OFF_MESSAGE, photoDeliverySettings, type PhotoDeliverySettings, type QcModelSlot } from "../settings";
 import { claimJob, logJobEvent, releaseJob, setStage, type JobStage } from "../jobState";
 import { alertOwnerAndKyle, opsRecipients } from "../notifyOps";
 import { derivativePathname, derivativeStore, readDerivativeBytes, type StoredRef } from "../blob";
@@ -1875,6 +1875,8 @@ const REQUESTABLE: JobStage[] = ["EDITED", "QC_REVIEW", "READY", "ON_HOLD", "FIX
  * only the gallery passes and the verdict are redone.
  */
 export async function requestQc(jobId: string, trigger: "INITIAL" | "MANUAL" | "POST_FIX", by: string, opts: { reinspect?: boolean } = {}): Promise<{ ok: true; message: string } | { ok: false; message: string }> {
+  // Oct 23 2026 (Jordan): the paid QC is off; nothing asks for it (settings.PAID_QC_OFF).
+  if (PAID_QC_OFF) return { ok: false, message: PAID_QC_OFF_MESSAGE };
   const who = String(by ?? "").trim().slice(0, 120) || "staff";
   const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, holdReason: true } });
   if (!job) return { ok: false, message: "Photo job not found." };
@@ -1943,6 +1945,9 @@ async function jobsToDrive(settings: PhotoDeliverySettings, take: number): Promi
  * timeoutMs), so the caller's step cap should be budgetMs plus about 3 min.
  */
 export async function driveQc(opts: { budgetMs: number; leaseBy: string; maxJobs?: number }): Promise<DriveSummary> {
+  // Oct 23 2026 (Jordan): "Paid Photo QC should be off. Only using the free
+  // version." No paid run starts or resumes, whatever is stored (settings.PAID_QC_OFF).
+  if (PAID_QC_OFF) return { ok: true, skipped: "Paid photo QC is off (only the free photo check runs)", jobs: [], ms: 0 };
   const start = now();
   const deadline = start + Math.max(0, opts.budgetMs);
   const settings = await photoDeliverySettings();

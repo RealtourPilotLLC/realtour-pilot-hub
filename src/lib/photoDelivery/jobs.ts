@@ -803,17 +803,10 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
       data: { finalsPath: source === "dropbox" ? folder : null, finalsFingerprint: fp, finalsCount: entries.length, finalsChangedAt: now, finalsStableAt: null, lastError: null },
     });
     await logJobEvent(jobId, "sync", `gallery changed (${source}): ${entries.length} photo${entries.length === 1 ? "" : "s"}`, { added, gone: gone.length });
-    // A photo already delivered on the listing is never a reason to check again (Oct 22 2026).
-    if (["QC_REVIEW", "READY", "FIXING", "ON_HOLD"].includes(job.stage) && (addedToDelivery > 0 || existing.some((e) => e.sourceKind !== "AUTOHDR" && e.status !== ON_LISTING && entries!.some((x) => !x.onListing && x.name === e.name && x.contentHash !== e.contentHash)))) {
-      // Oct 14 2026: with the paid QC on request only, the free photo check
-      // re-runs on a QC_REVIEW or READY job whose gallery changed after its
-      // last check (finalsChangedAt, autohdrCheck.ts); the paid QC only when
-      // it runs by itself.
-      if ((await photoDeliverySettings()).paidQcAuto) {
-        await prisma.photoJob.update({ where: { id: jobId }, data: { qcRequestedAt: now } });
-        await logJobEvent(jobId, "sync", "re-QC requested: the gallery changed after QC");
-      }
-    }
+    // Oct 14 2026: the free photo check re-runs on a QC_REVIEW or READY job
+    // whose gallery changed after its last check (finalsChangedAt,
+    // autohdrCheck.ts). Oct 23 2026 (Jordan: "Paid Photo QC should be off"):
+    // the paid QC is never asked for here any more.
   } else if (!job.finalsStableAt && entries.length > 0) {
     await prisma.photoJob.update({ where: { id: jobId }, data: { finalsStableAt: now, lastError: null } });
   }

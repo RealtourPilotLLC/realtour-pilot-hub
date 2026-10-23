@@ -73,9 +73,6 @@ export default async function PhotoDeliverySettingsPage() {
               autoFixDailyMaxCredits: settings.autoFixDailyMaxCredits,
               aryeoPush: settings.aryeoPush,
               sameDayAutoDeliver: settings.sameDayAutoDeliver,
-              paidQc: !settings.qcEnabled ? "off" : settings.paidQcAuto ? "auto" : "press",
-              monthlyQcBudgetUsd: settings.monthlyQcBudgetUsd,
-              maxBuildPhase: settings.maxBuildPhase,
               qcShadow: settings.qcShadow,
               qcFromDay: qcFrom && !Number.isNaN(qcFrom.getTime()) ? etDayKey(qcFrom) : "",
               displayConfidenceFloor: Math.round(settings.displayConfidenceFloor * 100),
@@ -90,7 +87,7 @@ export default async function PhotoDeliverySettingsPage() {
           />
         </Section>
         <Section icon={EyeOff} title="Checks switched off" count={off.length}>
-          <p className="mb-3 text-ui-status text-muted">Not checked on any shoot, by the paid QC or the free photo check, and not shown on jobs.</p>
+          <p className="mb-3 text-ui-status text-muted">Not checked on any shoot by the photo check, and not shown on jobs.</p>
           <SwitchedOffChecks rules={off.map((r) => ({ ruleId: r.ruleId, label: ruleById(r.ruleId)?.shortLabel ?? r.ruleId, reason: r.reason, by: r.by, when: etMonthDayTime(r.at) }))} />
         </Section>
         <Section icon={Users} title="Clients" count={profiles?.length ?? null}>

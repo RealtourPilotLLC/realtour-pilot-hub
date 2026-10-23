@@ -67,7 +67,20 @@ import { getSetting, putSetting } from "@/lib/settings";
 //   afterDeliveryCheck  a delivered job whose listing photos change (within
 //                  7 days) gets the free check on the new photos, and Kyle
 //                  and Jordan hear about it; the stage never moves.
+//
+// Oct 23 2026 (Jordan): "Paid Photo QC should be off. Only using the free
+// version. I don't need a paid QC, only paid fixes through AutoHDR." PAID_QC_OFF:
+// qcEnabled and paidQcAuto always read false, whatever is stored, and a save
+// stores them false; the engine (qc/run.ts driveQc, requestQc) refuses on its
+// own as well. The free check and the AutoHDR fixes are untouched. The paid
+// QC's other settings (monthlyQcBudgetUsd, maxBuildPhase) are kept in the
+// stored value but no screen shows them.
 // ---------------------------------------------------------------------------
+
+/** Paid (Claude) photo QC is off for good (Jordan, Oct 23 2026). Only the free check runs. */
+export const PAID_QC_OFF: boolean = true;
+/** What a person reads when something asks for the paid QC. */
+export const PAID_QC_OFF_MESSAGE = "Paid photo QC is off. Only the free photo check runs, by itself; Check again asks for it.";
 
 export type PhotoDeliverySettings = {
   enabled: boolean;
@@ -158,7 +171,8 @@ export async function photoDeliverySettings(): Promise<PhotoDeliverySettings> {
   const phase = raw.maxBuildPhase === 1 || raw.maxBuildPhase === 2 || raw.maxBuildPhase === 3 ? raw.maxBuildPhase : d.maxBuildPhase;
   return {
     enabled: bool(raw.enabled, d.enabled),
-    qcEnabled: bool(raw.qcEnabled, d.qcEnabled),
+    // PAID_QC_OFF (Oct 23 2026): never on, whatever is stored.
+    qcEnabled: PAID_QC_OFF ? false : bool(raw.qcEnabled, d.qcEnabled),
     qcShadow: bool(raw.qcShadow, d.qcShadow),
     maxBuildPhase: phase,
     fixRunnerEnabled: bool(raw.fixRunnerEnabled, d.fixRunnerEnabled),
@@ -172,7 +186,7 @@ export async function photoDeliverySettings(): Promise<PhotoDeliverySettings> {
     autoSubmit: bool(raw.autoSubmit, d.autoSubmit),
     autoSubmitFrom: typeof raw.autoSubmitFrom === "string" && !Number.isNaN(Date.parse(raw.autoSubmitFrom)) ? raw.autoSubmitFrom : d.autoSubmitFrom,
     freeCheck: bool(raw.freeCheck, d.freeCheck),
-    paidQcAuto: bool(raw.paidQcAuto, d.paidQcAuto),
+    paidQcAuto: PAID_QC_OFF ? false : bool(raw.paidQcAuto, d.paidQcAuto),
     autoFix: bool(raw.autoFix, d.autoFix),
     fixTargetUsd: num(raw.fixTargetUsd, d.fixTargetUsd, 0, 1_000),
     fixMaxUsd: num(raw.fixMaxUsd, d.fixMaxUsd, 0, 1_000),
@@ -192,7 +206,8 @@ export async function photoDeliverySettings(): Promise<PhotoDeliverySettings> {
 
 export async function savePhotoDeliverySettings(next: Partial<PhotoDeliverySettings>, by: string | null): Promise<PhotoDeliverySettings> {
   const cur = await photoDeliverySettings();
-  await putSetting(KEY, { ...cur, ...next }, by);
+  // PAID_QC_OFF (Oct 23 2026): the paid QC's two switches are stored off, whatever was asked.
+  await putSetting(KEY, { ...cur, ...next, ...(PAID_QC_OFF ? { qcEnabled: false, paidQcAuto: false } : {}) }, by);
   return photoDeliverySettings();
 }
 

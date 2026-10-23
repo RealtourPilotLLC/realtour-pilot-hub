@@ -5,13 +5,13 @@ import { after } from "next/server";
 import { requireAdmin, requireOwner, authEnforced } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import {
-  decideFindings, holdJob, releaseJobHold, requestQcRerun, saveClientQcProfile, setDeliveryOrder, setHero, setPhotoExcluded,
+  decideFindings, holdJob, releaseJobHold, saveClientQcProfile, setDeliveryOrder, setHero, setPhotoExcluded,
   DECISION_STATUSES, type DecisionStatus,
 } from "@/lib/photoDelivery/decisions";
 import { approveFixBatch } from "@/lib/photoDelivery/fixes";
 import { startDelivery, verifyDelivery } from "@/lib/photoDelivery/delivery";
 import { recordCreditSnapshot, saveCreditThresholds, creditThresholds } from "@/lib/photoDelivery/credits";
-import { photoDeliverySettings, savePhotoDeliverySettings, type PhotoDeliverySettings } from "@/lib/photoDelivery/settings";
+import { PAID_QC_OFF_MESSAGE, photoDeliverySettings, savePhotoDeliverySettings, type PhotoDeliverySettings } from "@/lib/photoDelivery/settings";
 import { etAt } from "@/lib/datetime";
 import type { RuleOverride } from "@/lib/photoDelivery/registry";
 
@@ -581,17 +581,15 @@ export async function requestQcAction(jobId: string): Promise<ActionResult> {
     const { by } = await actor();
     // Oct 22 2026 (photo audit H5): "Check again" is the FREE photo check
     // (AutoHDR describe, no credits), on a revision and a delivery problem too.
-    // The paid QC is asked for only when the free check is off and it is on.
+    // Oct 23 2026 (Jordan: "Paid Photo QC should be off"): it never asks for
+    // the paid QC, whatever the settings say.
     if (settings.enabled && settings.freeCheck) {
       const { requestFreeRecheck } = await import("@/lib/photoDelivery/autohdrCheck");
       const r = await requestFreeRecheck(jobId, by);
       if (r.ok) refresh(jobId);
       return r;
     }
-    if (!settings.qcEnabled) return { ok: false, message: "The photo check is switched off in Photo Delivery settings." };
-    const r = await requestQcRerun(jobId, by);
-    if (r.ok) refresh(jobId);
-    return { ok: r.ok, message: r.message };
+    return { ok: false, message: "The free photo check is switched off in Photo Delivery settings." };
   } catch (e) {
     return failed("QC request", e);
   }
@@ -745,13 +743,16 @@ export async function saveThresholdsAction(input: { warn: number; critical: numb
 
 type SettingsInput = Partial<Omit<PhotoDeliverySettings, "qcFrom">> & { qcFrom?: string | null };
 
-const BOOL_KEYS = ["enabled", "qcEnabled", "qcShadow", "fixRunnerEnabled", "autoSubmit", "freeCheck", "paidQcAuto", "autoFix", "showAutohdrPhotos", "sameDayAutoDeliver", "warpCv", "warpCompareOriginal", "freeCoverage", "afterDeliveryCheck"] as const;
+// Oct 23 2026 (Jordan: "Paid Photo QC should be off"): the paid QC's switches
+// (qcEnabled, paidQcAuto) may only be saved off, and its budget and depth
+// (monthlyQcBudgetUsd, maxBuildPhase) are no longer settings anyone changes.
+const PAID_QC_KEYS = ["qcEnabled", "paidQcAuto"] as const;
+const BOOL_KEYS = ["enabled", "qcShadow", "fixRunnerEnabled", "autoSubmit", "freeCheck", "autoFix", "showAutohdrPhotos", "sameDayAutoDeliver", "warpCv", "warpCompareOriginal", "freeCoverage", "afterDeliveryCheck"] as const;
 const NUM_RULES: Record<string, { min: number; max: number; int: boolean; label: string }> = {
   adminCreditCap: { min: 0, max: 10_000, int: true, label: "Kyle's approval limit" },
   autoFixDailyMaxCredits: { min: 0, max: 10_000, int: true, label: "Daily limit on automatic fixes" },
   displayConfidenceFloor: { min: 0, max: 1, int: false, label: "Confidence floor" },
   minLongEdgePx: { min: 300, max: 20_000, int: true, label: "Smallest photo allowed" },
-  monthlyQcBudgetUsd: { min: 0, max: 100_000, int: false, label: "Monthly QC budget" },
   fixTargetUsd: { min: 0, max: 1_000, int: false, label: "Fix target per shoot" },
   fixMaxUsd: { min: 0, max: 1_000, int: false, label: "Fix maximum per shoot" },
 };
@@ -764,6 +765,12 @@ export async function saveSettingsAction(input: SettingsInput): Promise<ActionRe
   }
   if (!input || typeof input !== "object") return { ok: false, message: "Nothing to save." };
   const next: Partial<PhotoDeliverySettings> = {};
+  for (const k of PAID_QC_KEYS) {
+    if (!(k in input)) continue;
+    if (input[k] !== false) return { ok: false, message: PAID_QC_OFF_MESSAGE };
+    next[k] = false;
+  }
+  if ("monthlyQcBudgetUsd" in input || "maxBuildPhase" in input) return { ok: false, message: PAID_QC_OFF_MESSAGE };
   for (const k of BOOL_KEYS) {
     if (k in input) {
       if (typeof input[k] !== "boolean") return { ok: false, message: `${k} must be on or off.` };
@@ -782,10 +789,6 @@ export async function saveSettingsAction(input: SettingsInput): Promise<ActionRe
     const { ARYEO_PUSH_MODES } = await import("@/lib/photoDelivery/settings");
     if (!(ARYEO_PUSH_MODES as readonly string[]).includes(String(input.aryeoPush))) return { ok: false, message: "Aryeo upload and delivery must be off or on." };
     next.aryeoPush = input.aryeoPush;
-  }
-  if ("maxBuildPhase" in input) {
-    if (input.maxBuildPhase !== 1 && input.maxBuildPhase !== 2 && input.maxBuildPhase !== 3) return { ok: false, message: "Which checks the paid QC runs must be 1, 2 or 3." };
-    next.maxBuildPhase = input.maxBuildPhase;
   }
   if ("asIsClientIds" in input) {
     // Oct 15 2026: the as-is clients (prep.ts), picked by name on the settings page.

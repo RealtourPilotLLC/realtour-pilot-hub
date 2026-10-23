@@ -2,7 +2,7 @@ import "server-only";
 
 import { prisma } from "@/lib/prisma";
 import { logJobEvent, releaseHold, setStage, JOB_STAGES, type JobStage } from "./jobState";
-import { photoDeliverySettings } from "./settings";
+import { PAID_QC_OFF, PAID_QC_OFF_MESSAGE, photoDeliverySettings } from "./settings";
 import { isExteriorFinding, ruleById, SEVERITIES, type RuleOverride, type Severity } from "./registry";
 import { MIN_OWN_WORDS, needsOwnWords, ownWordsOk } from "./careRules";
 import { houseOverrides, mergeOverrides } from "./houseRules";
@@ -409,6 +409,8 @@ export async function releaseJobHold(jobId: string, by: string): Promise<WriteRe
  * when a photo is replaced (PhotoJob.qcRequestedAt).
  */
 export async function requestQcRerun(jobId: string, by: string): Promise<WriteResult> {
+  // Oct 23 2026 (Jordan): the paid QC is off; "Check again" is the free check (autohdrCheck.requestFreeRecheck).
+  if (PAID_QC_OFF) return { ok: false, message: PAID_QC_OFF_MESSAGE };
   const who = clean(by, 120) || "staff";
   const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, qcRequestedAt: true } });
   if (!job) return { ok: false, message: "Photo job not found." };

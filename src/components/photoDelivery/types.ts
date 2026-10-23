@@ -57,7 +57,6 @@ export type CreditStripView = {
 export type StripData = {
   credit: CreditStripView | null;
   qcShadow: boolean;
-  qcEnabled: boolean;
   isOwner: boolean;
   /** Oct 22 2026: a view-only viewer: no credits chip or banner, no Credits or Settings tab, the view-only note instead. */
   readOnly?: boolean;
@@ -452,10 +451,8 @@ export type JobDetail = {
   requestedFeatures: string[];
   coverageCounts: CoverageCounts;
   coverageMet: { label: string; evidence: string | null }[];
-  qcEnabled: boolean;
-  /** Oct 14 2026: the free photo check runs by itself; the paid QC starts by itself. */
+  /** Oct 14 2026: the free photo check runs by itself. (Oct 23 2026: the paid QC is off; its switches are no longer sent.) */
   freeCheck: boolean;
-  paidQcAuto: boolean;
   /** Oct 14 2026: the hub's own sends to AutoHDR for this job (intake.ts), oldest first. */
   intake: IntakeView[];
   nowIso: string;

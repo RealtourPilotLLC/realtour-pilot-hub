@@ -73,7 +73,7 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
         title={h.street}
         subtitle={[h.clientName ?? "No client", h.cityLine].filter(Boolean).join(" · ")}
         sticky="desktop"
-        actions={<JobHeaderActions jobId={h.id} stage={h.stage} qcEnabled={data.qcEnabled} autohdr={!!h.autohdrPhotoshootId || data.photos.some((p) => p.sourceKind === "AUTOHDR")} readOnly={readOnly} />}
+        actions={<JobHeaderActions jobId={h.id} stage={h.stage} autohdr={!!h.autohdrPhotoshootId || data.photos.some((p) => p.sourceKind === "AUTOHDR")} readOnly={readOnly} />}
       />
       <div className="mx-auto max-w-[120rem] space-y-4 p-4 pb-0 sm:p-6 sm:pb-0">
         <GlobalStrip strip={strip} current="job" />
