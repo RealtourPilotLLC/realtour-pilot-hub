@@ -517,11 +517,11 @@ export type PlanningAsk = { action: "COMPLETE_ANSWERS" | "PICK_TOPICS" | null; t
 export function answersOrPickAsk(pl: { route: string; chosen: number; videosOwed: number; answersOwed: number; chosenBy: string | null; clientPlanned?: boolean }): PlanningAsk {
   const toPick = Math.max(0, pl.videosOwed - pl.chosen);
   if (pl.answersOwed > 0) return { action: "COMPLETE_ANSWERS", toPick, suppression: null, why: `${pl.answersOwed} picked topic(s) still owe answers` };
-  if (toPick === 0) return { action: null, toPick, suppression: "nothing_to_answer", why: "every topic is picked and no answers are owed — the scripts are ours" };
-  if (pl.clientPlanned) return { action: null, toPick, suppression: "topics_ours", why: "the client plans their own videos — no topics are asked of them" };
+  if (toPick === 0) return { action: null, toPick, suppression: "nothing_to_answer", why: "every topic is picked and no answers are owed: the scripts are ours" };
+  if (pl.clientPlanned) return { action: null, toPick, suppression: "topics_ours", why: "the client plans their own videos: no topics are asked of them" };
   const officePlanned = (pl.chosenBy ?? "").startsWith("office:");
   if (pl.route === "WRITTEN" && !officePlanned) return { action: "PICK_TOPICS", toPick, suppression: null, why: `${toPick} topic(s) still to pick in the portal (written route)` };
-  return { action: null, toPick, suppression: "topics_ours", why: pl.route === "CALL" ? "the topics come from the strategy call — picking them is ours, not the client's" : "the office planned this month — picking the topics is ours, not the client's" };
+  return { action: null, toPick, suppression: "topics_ours", why: pl.route === "CALL" ? "the topics come from the strategy call: picking them is ours, not the client's" : "the office planned this month: picking the topics is ours, not the client's" };
 }
 
 /**
@@ -1320,7 +1320,7 @@ async function evaluateMonth(
     const pf = await import("@/lib/planningFacts").then((m) => m.planningForMonth(month.id, { now })).catch(() => null);
     planningAsk = pf
       ? answersOrPickAsk({ route: pf.route, chosen: pf.planning.chosen, videosOwed: pf.planning.videosOwed, answersOwed: pf.planning.answersOwed, chosenBy: pf.chosenBy, clientPlanned: pf.clientPlanned })
-      : { action: null, toPick: 0, suppression: "planning_unreadable", why: "the month's topics could not be read — nothing is asked until they can be" };
+      : { action: null, toPick: 0, suppression: "planning_unreadable", why: "the month's topics could not be read: nothing is asked until they can be" };
     action = planningAsk.action;
     if (action !== "COMPLETE_ANSWERS") answersStarted = false;
     state.topicsToPick = planningAsk.toPick;
