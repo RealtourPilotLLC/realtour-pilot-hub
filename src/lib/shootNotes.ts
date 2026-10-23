@@ -134,10 +134,19 @@ export async function fileClientShootNote(opts: {
       }
     }
 
-    // Inside 24 hours of the shoot, the photographer hears it once.
+    // Inside 24 hours of the shoot, the photographer hears it once. Not when
+    // their photographer brief for that day already went (Oct 23 2026,
+    // lib/photographerBrief, while it is on): the note is an access change,
+    // so the updated brief carries it within five minutes, and one text is
+    // better than two.
     let pinged = false;
     const msLeft = p.shootDate.getTime() - now.getTime();
-    if (p.photographerId && msLeft > 0 && msLeft <= 24 * HOUR) {
+    const briefed = p.photographerId && msLeft > 0 && msLeft <= 24 * HOUR
+      ? await import("@/lib/photographerBrief")
+          .then(async ({ briefsSentFor }) => { const { etDayKey } = await import("@/lib/datetime"); return (await briefsSentFor([{ teamMemberId: p.photographerId!, day: etDayKey(p.shootDate!) }])).size > 0; })
+          .catch(() => false)
+      : false;
+    if (p.photographerId && msLeft > 0 && msLeft <= 24 * HOUR && !briefed) {
       const pingKey = `${SHOOT_NOTE_PING_PREFIX}${key}`;
       const claimed = await prisma.appSetting
         .create({ data: { key: pingKey, value: now.toISOString(), updatedBy: "shoot-notes" } })

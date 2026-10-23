@@ -109,6 +109,10 @@ async function weatherFor(lat: number, lng: number, atISO: string): Promise<Shoo
   }
 }
 
+/** The same forecast for the photographer brief's page (lib/photographerBrief,
+ *  Oct 23 2026): planning information only, never a go or no-go. */
+export const shootWeatherAt = (lat: number, lng: number, atISO: string): Promise<ShootWeather | null> => weatherFor(lat, lng, atISO);
+
 // ---- FAA UAS Facility Map grid ceiling (drone jobs; best-effort) ------------
 // The shoot card's airspace answer comes from the SHARED FAA module
 // (src/lib/faa.ts droneAirspace) — the free, keyless FAA UAS Facility Map that

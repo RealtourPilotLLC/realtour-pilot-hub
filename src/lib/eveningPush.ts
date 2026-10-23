@@ -259,7 +259,9 @@ export function composeShootBrief(s: OpsShoot, p: {
 
 export type BriefResult = { sent: number; skipped: string[]; accessTasks: number };
 
-async function sendShootBriefs(now: Date, day: OpsDay): Promise<BriefResult> {
+/** `textOff` (Oct 23 2026): the photographer brief (lib/photographerBrief) is on
+ *  and carries tomorrow's shoots, so this pass opens Kyle's access tasks only. */
+async function sendShootBriefs(now: Date, day: OpsDay, textOff = false): Promise<BriefResult> {
   const shoots = day.tomorrowShoots;
   const out: BriefResult = { sent: 0, skipped: [], accessTasks: 0 };
   if (shoots.length === 0) return out;
@@ -309,6 +311,7 @@ async function sendShootBriefs(now: Date, day: OpsDay): Promise<BriefResult> {
         out.accessTasks++;
       } catch { /* already open for this shoot day (P2002) */ }
     }
+    if (textOff) continue;
     if (!p.photographerId) { out.skipped.push(`${street(s.title)}: no photographer assigned`); continue; }
     if (!(await claim(`shoot-brief:${p.id}:${shootDay}`, JSON.stringify({ to: p.photographerId, at: now.toISOString() })))) continue;
     const photos = p.deliverables.some((d) => d.type === "PHOTOS");
@@ -374,7 +377,7 @@ async function markShootSeen(projectId: string, shootDay: string): Promise<void>
 
 /** Tomorrow's shoots that still need a look (a cheap read, so the heavy Ops Day
  *  build runs only when there is something to send). */
-async function briefsOwed(now: Date): Promise<boolean> {
+async function briefsOwed(now: Date, textOff = false): Promise<boolean> {
   const key = etDayKey(new Date(now.getTime() + DAY));
   const start = etAt(key, 0);
   const end = etAt(etDayKey(new Date(start.getTime() + 36 * HOUR)), 0);
@@ -385,7 +388,7 @@ async function briefsOwed(now: Date): Promise<boolean> {
   if (shoots.length === 0) return false;
   const keys = shoots.flatMap((s) => {
     const day = etDayKey(s.shootDate!);
-    return [`${SEEN_PREFIX}${s.id}:${day}`, ...(s.photographerId ? [`shoot-brief:${s.id}:${day}`] : [])];
+    return [`${SEEN_PREFIX}${s.id}:${day}`, ...(s.photographerId && !textOff ? [`shoot-brief:${s.id}:${day}`] : [])];
   });
   const done = new Set((await prisma.appSetting.findMany({ where: { key: { in: keys } }, select: { key: true } })).map((r) => r.key));
   // A photographer assigned after the first look still gets a brief.
@@ -406,16 +409,20 @@ export async function runEveningAutomations(now: Date = new Date()): Promise<Eve
   else if (hour < PUSH_FROM || hour >= PUSH_TO) pushWhy = `ET hour ${hour}, the wrap goes at 6 PM`;
   else if (etDow(now) === 0) pushWhy = "Sunday: no wrap";
   else if (await prisma.appSetting.findUnique({ where: { key: `evening-push:${dayKey}` }, select: { key: true } })) pushWhy = "already sent today";
+  // THE PHOTOGRAPHER BRIEF (Oct 23 2026, lib/photographerBrief) replaces this
+  // text while it is on; the access tasks below still open for Kyle.
+  const { photographerBriefSettings } = await import("@/lib/photographerBrief");
+  const textOff = (await photographerBriefSettings()).enabled;
   let briefWhy: string | null = null;
   if (!rules.photographerBrief.enabled) briefWhy = "switched off (Settings, Internal alerts, Night-before shoot brief)";
   else if (hour < BRIEF_FROM || hour >= BRIEF_TO) briefWhy = `ET hour ${hour}, briefs go from 6 PM`;
-  else if (!(await briefsOwed(now))) briefWhy = "every shoot tomorrow has its brief";
+  else if (!(await briefsOwed(now, textOff))) briefWhy = textOff ? "every shoot tomorrow has been looked at (the photographer brief sends the texts)" : "every shoot tomorrow has its brief";
   if (pushWhy && briefWhy) return { push: { skipped: pushWhy }, briefs: { skipped: briefWhy }, accessClosed };
 
   // ONE Ops Day build for both, the same read Home renders (test clients out).
   const { buildOpsDay } = await import("@/lib/opsDay");
   const day = await buildOpsDay({ includeTest: false });
-  const briefs = briefWhy ? { skipped: briefWhy } : await sendShootBriefs(now, day);
+  const briefs = briefWhy ? { skipped: briefWhy } : await sendShootBriefs(now, day, textOff);
   const push = pushWhy ? { skipped: pushWhy } : await sendEveningWrap(now, day);
   return { push, briefs, accessClosed };
 }

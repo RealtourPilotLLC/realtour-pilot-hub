@@ -161,6 +161,18 @@ export async function GET(req: NextRequest) {
           }
           return true;
         }
+        // A photographer brief (lib/photographerBrief) answers to its own switch the same way.
+        if (kind === "photographer_brief") {
+          if (!switchOn.has("photographerBrief")) {
+            const { photographerBriefSettings } = await import("@/lib/photographerBrief");
+            switchOn.set("photographerBrief", await photographerBriefSettings().then((r) => r.enabled).catch(() => false));
+          }
+          if (!switchOn.get("photographerBrief")) {
+            switchedOff.push("photographer_brief: Photographer brief is off");
+            return false;
+          }
+          return true;
+        }
         if (!isClientKind(kind)) return true; // team texts ignore the window by design
         if (windowOpen === null) windowOpen = await clientTextWindowOpen();
         if (!windowOpen) return false;
@@ -193,7 +205,9 @@ export async function GET(req: NextRequest) {
                 ? await import("@/lib/uploadGaps").then(({ recordDrainedUploadGapText }) => recordDrainedUploadGapText(row))
                 : kind === "instructions_missing"
                   ? await import("@/lib/missingInstructions").then(({ recordDrainedInstructionsText }) => recordDrainedInstructionsText(row, providerId))
-                  : await import("@/lib/notify").then(({ recordDrainedStaffSms }) => recordDrainedStaffSms(row, providerId));
+                  : kind === "photographer_brief"
+                    ? await import("@/lib/photographerBrief").then(({ recordDrainedBriefText }) => recordDrainedBriefText(row, providerId))
+                    : await import("@/lib/notify").then(({ recordDrainedStaffSms }) => recordDrainedStaffSms(row, providerId));
         if (note) recovered.push(note);
       },
     });
@@ -229,6 +243,17 @@ export async function GET(req: NextRequest) {
   // Best-effort by construction — sweepReplySla never throws — and the step()
   // wrapper keeps even a surprise failure from blocking Gmail polling.
   await step("replySla", () => sweepReplySla());
+
+  // THE PHOTOGRAPHER BRIEF (Oct 23 2026, lib/photographerBrief): at the send
+  // time on the business day before (Friday covers the weekend and Monday),
+  // each photographer gets one brief for their shoot day; afterwards an
+  // updated brief only when something material changes. Its own switch
+  // (Settings, Internal alerts, Photographer brief), OFF until Jordan turns it
+  // on. Ahead of the shoot-day text, which a sent brief stands in for.
+  await step("photographerBrief", async () => {
+    const { sweepPhotographerBriefs } = await import("@/lib/photographerBrief");
+    return sweepPhotographerBriefs();
+  }, { maxMs: 30_000 });
 
   // THE SPECIAL REQUESTS AT THE SHOOT (Oct 19 2026, lib/shootDayText): at each
   // appointment's start (and up to 30 minutes after, so a missed tick still
