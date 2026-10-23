@@ -184,6 +184,12 @@ export async function sendThreadText(
   }
   const from = await defaultOpenPhoneNumber();
   if (!from) return { ok: false, message: "OpenPhone isn't connected." };
+  // Oct 22 2026 (comms audit H6): no "your time is set" while a booking conflict is open for this client.
+  {
+    const { staffConfirmationRefusal } = await import("@/lib/bookingConflictHold");
+    const refused = await staffConfirmationRefusal({ clientId: clientId ?? null, body: text });
+    if (refused) return { ok: false, message: refused };
+  }
 
   // WHO IS TYPING (Sep 21 2026). Same reason as the Replies rail: this send goes
   // out through the OpenPhone API key, which belongs to Jordan, so the delivery

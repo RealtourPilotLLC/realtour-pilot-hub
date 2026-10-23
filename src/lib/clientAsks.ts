@@ -258,6 +258,68 @@ export type NewAsk = {
   by?: string | null;
 };
 
+// ---- the same ask twice (Oct 22 2026, comms audit M3) ----------------------------------------
+//
+// One ask per message was not enough: Nehemiah Lindo booked ONE shoot over
+// seven texts ("Hey I have another listing", "And a video", "Let's do it",
+// "can we do sooner" twice...) and Kyle's Scheduling screen showed seven open
+// asks; Joe Sutow's photo 38 staging was filed twice eleven seconds apart (the
+// photo part of his work order, and the same words from the message). Before
+// a new row is made, an OPEN ask for the same client, kind and job (or both
+// with no job) asked within the window is looked for:
+//   · the same words (normalized), or one's words inside the other's: the
+//     same ask. The open one stays and takes the longer words;
+//   · a SCHEDULING ask with no job yet in the same conversation (the window
+//     below): the same booking being arranged. The open one stays and the new
+//     words are added to it, so Kyle reads the whole exchange on one card;
+//   · never across a job's delivery (the one asked before it closes with it);
+//   · a keyed photo-part ask (photo-office: / photo-shared:, lib/briefPhotoAsks)
+//     arriving after a plain message ask with the same words replaces it: the
+//     keyed one carries the office question and is what briefPhotoAsks reads
+//     back by its key, so the plain one is set aside as filed again.
+// ---------------------------------------------------------------------------------------------
+/** How far back an open ask counts as the same one. */
+export const ASK_DUPLICATE_WINDOW_MS = 48 * 3_600_000;
+/** How far back an open scheduling ask counts as the same booking conversation. */
+export const SCHEDULING_CONVERSATION_MS = 24 * 3_600_000;
+const KEYED_PHOTO_PREFIXES = ["photo-office:", "photo-shared:"];
+const isKeyedPhotoAsk = (key: string | null | undefined) => KEYED_PHOTO_PREFIXES.some((p) => (key ?? "").startsWith(p));
+/** Asks filed from a client's message (or its work order's photo part): the only ones this check merges.
+ *  A staff note, an order note, a wrap-up line keep their own keys and their own closing rules. */
+const fromAMessage = (key: string) => key.startsWith("msg:") || key.startsWith("ask:") || isKeyedPhotoAsk(key);
+
+/** Pure: do these two asks' words say the same thing? Equal once normalized, or one inside the other (12+ characters). */
+export function sameAskWords(a: string, b: string): boolean {
+  const x = norm(a);
+  const y = norm(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  return short.length >= 12 && long.includes(short);
+}
+
+/**
+ * Pure: is `incoming` the same ask as the open `existing` one? `same-words`
+ * (any kind), `same-booking` (a scheduling ask in the same conversation), or
+ * null. Both must be the same client, kind and job (null = no job).
+ */
+export function duplicateAskReason(
+  existing: { clientId: string; kind: string; projectId: string | null; text: string; askedAt: Date; source?: string | null },
+  incoming: { clientId: string; kind: string; projectId: string | null; text: string; askedAt: Date; source?: string | null },
+): "same-words" | "same-booking" | null {
+  if (existing.clientId !== incoming.clientId || existing.kind !== incoming.kind || (existing.projectId ?? null) !== (incoming.projectId ?? null)) return null;
+  const gap = Math.abs(incoming.askedAt.getTime() - existing.askedAt.getTime());
+  if (gap <= ASK_DUPLICATE_WINDOW_MS && sameAskWords(existing.text, incoming.text)) return "same-words";
+  // The same booking: both from the client's own texts, emails or calls.
+  // A booking still being arranged has no job yet (Nehemiah's "I have another
+  // listing ... can we do sooner"). An ask on a job keeps its own row: the
+  // job's delivery closes the ones asked before it (closeAsksOnDeliveredJobs),
+  // never one asked after.
+  const theirs = (src: string | null | undefined) => src === "text" || src === "email" || src === "call";
+  if (incoming.kind === "SCHEDULING" && !incoming.projectId && !existing.projectId && gap <= SCHEDULING_CONVERSATION_MS && theirs(existing.source) && theirs(incoming.source)) return "same-booking";
+  return null;
+}
+
 /** File an ask once. A second filing under the same key returns the first (whatever its state: a replay never reopens a closed ask). */
 export async function createAsk(a: NewAsk): Promise<{ id: string; created: boolean } | null> {
   const text = (a.text ?? "").trim();
@@ -268,6 +330,40 @@ export async function createAsk(a: NewAsk): Promise<{ id: string; created: boole
   const prior = await prisma.clientAsk.findUnique({ where: { dedupeKey }, select: { id: true } });
   if (prior) return { id: prior.id, created: false };
   const now = new Date();
+  // THE SAME ASK, FILED AGAIN (comms audit M3, above).
+  const askedAt = a.askedAt ?? now;
+  const open = !fromAMessage(dedupeKey) ? [] : await prisma.clientAsk.findMany({
+    where: { clientId: a.clientId, kind, projectId, state: "OPEN", askedAt: { gte: new Date(askedAt.getTime() - ASK_DUPLICATE_WINDOW_MS), lte: new Date(askedAt.getTime() + ASK_DUPLICATE_WINDOW_MS) } },
+    orderBy: { askedAt: "asc" },
+    select: { id: true, clientId: true, kind: true, projectId: true, text: true, summary: true, askedAt: true, dedupeKey: true, historyJson: true, source: true },
+  });
+  const incoming = { clientId: a.clientId, kind, projectId, text, askedAt, source: String(a.source ?? "") };
+  let twin = open.map((o) => ({ o, why: duplicateAskReason(o, incoming) })).find((x) => x.why);
+  if (twin && projectId) {
+    // Never across the job's delivery: the one asked before it closes with it.
+    const p = await prisma.project.findUnique({ where: { id: projectId }, select: { deliveredAt: true } });
+    const lo = Math.min(twin.o.askedAt.getTime(), askedAt.getTime());
+    const hi = Math.max(twin.o.askedAt.getTime(), askedAt.getTime());
+    if (p?.deliveredAt && p.deliveredAt.getTime() > lo && p.deliveredAt.getTime() <= hi) twin = undefined;
+  }
+  const replacing = twin && isKeyedPhotoAsk(dedupeKey) && !isKeyedPhotoAsk(twin.o.dedupeKey) && twin.why === "same-words" ? twin.o : null;
+  if (twin && !replacing) {
+    const o = twin.o;
+    const by = a.by?.trim() || "hub";
+    const longer = twin.why === "same-words" && norm(text).length > norm(o.text).length ? text : null;
+    const added = twin.why === "same-booking" && !norm(o.text).includes(norm(text)) ? `${o.text}\n${text}` : null;
+    if (longer || added) {
+      await prisma.clientAsk.update({
+        where: { id: o.id },
+        data: {
+          text: clip(longer ?? added ?? o.text, 4000),
+          ...(a.summary?.trim() && twin.why === "same-booking" ? { summary: clip(a.summary.trim(), 240) } : {}),
+          historyJson: pushHistory(o.historyJson, { at: now.toISOString(), by, what: twin.why === "same-booking" ? `the next message about the same booking, from ${a.source}` : `the same ask again, from ${a.source}` }),
+        },
+      }).catch(() => null);
+    }
+    return { id: o.id, created: false };
+  }
   const holds = kind === "SCHEDULING" ? false : a.holdsDelivery ?? defaultHolds(kind, a.source);
   try {
     const row = await prisma.clientAsk.create({
@@ -282,7 +378,7 @@ export async function createAsk(a: NewAsk): Promise<{ id: string; created: boole
         source: a.source,
         sourceRef: a.sourceRef ?? null,
         askedBy: a.askedBy?.trim() ? a.askedBy.trim().slice(0, 120) : null,
-        askedAt: a.askedAt ?? now,
+        askedAt,
         holdsDelivery: holds,
         taskId: a.taskId ?? null,
         revisionIssueId: a.revisionIssueId ?? null,
@@ -291,6 +387,9 @@ export async function createAsk(a: NewAsk): Promise<{ id: string; created: boole
       },
       select: { id: true },
     });
+    if (replacing) {
+      await markNotNeeded(replacing.id, a.by?.trim() || "hub", "Filed again as the question for Jordan or Kyle on this job (the same words).").catch(() => null);
+    }
     return { id: row.id, created: true };
   } catch (e) {
     // Two readers of the same message at once: the unique key settles it.

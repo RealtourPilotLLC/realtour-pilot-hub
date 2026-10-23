@@ -123,9 +123,12 @@ const waitingOnce = cache(async (nowMs: number, ex: string): Promise<WaitingClie
   const scope = { excludeClientIds: ex ? ex.split(",") : [] };
   // One slice of the request's one comms scan, both families (audit F4).
   const { phone, email } = await unansweredCommsBoards(now, scope);
+  // A thread on a holding line ("I'll confirm soon", audit H4) is behind once
+  // its answer is past due, however young the question; until then it is not.
+  const behindOf = (g: CommsGroup) => (g.holding ? g.holding.overdue : g.oldestHours >= MESSAGE_BEHIND_HOURS);
   return [
-    ...phone.map((g) => ({ family: "phone" as const, group: g, behind: g.oldestHours >= MESSAGE_BEHIND_HOURS })),
-    ...email.map((g) => ({ family: "email" as const, group: g, behind: g.oldestHours >= MESSAGE_BEHIND_HOURS })),
+    ...phone.map((g) => ({ family: "phone" as const, group: g, behind: behindOf(g) })),
+    ...email.map((g) => ({ family: "email" as const, group: g, behind: behindOf(g) })),
   ].sort((a, b) => b.group.oldestHours - a.group.oldestHours);
 });
 

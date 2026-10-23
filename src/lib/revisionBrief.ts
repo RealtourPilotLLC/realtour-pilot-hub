@@ -711,6 +711,18 @@ async function routePhotoPart(briefId: string): Promise<void> {
   }
 }
 
+/** The task's lane from what the items ask for (Oct 22 2026, video audit H3b,
+ *  lib/revisionLane): a video item puts it on the editor's card, photo items
+ *  only on Kyle's photo card. Dynamic and never throws. */
+async function settleLane(briefId: string): Promise<void> {
+  try {
+    const { settleRevisionLane } = await import("@/lib/revisionLane");
+    await settleRevisionLane(briefId);
+  } catch (e) {
+    console.error("[revision brief] settling the lane failed", briefId, e);
+  }
+}
+
 /** The work order's items as revision issues (§8.3) — one per item × video it
  *  names, idempotent on that source, reconciling after a re-read. Dynamic
  *  import: revisionIssues reads this module's slot helpers' home (reviewCuts)
@@ -881,6 +893,7 @@ async function analyzeBriefOnce(briefId: string, ctx?: AnalyzeCtx): Promise<bool
       await routeToCreativeReview(briefId);
       await ingestBriefIssues(briefId);
       await routePhotoPart(briefId);
+      await settleLane(briefId);
       return true;
     }
     // When every item lands on the SAME one video, the brief itself is about
@@ -930,6 +943,7 @@ async function analyzeBriefOnce(briefId: string, ctx?: AnalyzeCtx): Promise<bool
     await routeToCreativeReview(briefId);
     await ingestBriefIssues(briefId);
     await routePhotoPart(briefId);
+    await settleLane(briefId);
     return true;
   } catch (e) {
     console.error("[revision brief] reading failed", briefId, e);

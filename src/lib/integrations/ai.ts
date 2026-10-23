@@ -1,6 +1,7 @@
 import "server-only";
 import { getSecret } from "./connections";
 import { recordAiUsage } from "@/lib/aiUsage";
+import { AiUnavailableError, aiOutageReason, noteAiSuccess, recordAiOutage } from "@/lib/aiOutage";
 
 // ---------------------------------------------------------------------------
 // AI assistant (Anthropic / Claude). Powers two things, both DRAFT-ONLY — the
@@ -140,6 +141,14 @@ export async function postMessages(body: Record<string, unknown> | string, key: 
       const sent = typeof body === "string" ? /"model"\s*:\s*"([^"]+)"/.exec(body)?.[1] : typeof body.model === "string" ? body.model : undefined;
       void recordAiUsage({ feature: opts.feature ?? "photo_qc", model: r.model ?? sent ?? "unknown", usage: usageOf(r) });
     }
+    // An answer: any spend-limit outage on record is over (lib/aiOutage).
+    void noteAiSuccess();
+  } else {
+    // A SPEND LIMIT, AN EMPTY BALANCE OR A REFUSED KEY (Oct 22 2026, comms
+    // audit H5): written to the ledger as a failure by feature, and the owner
+    // is told once (lib/aiOutage). Not awaited, never throws.
+    const reason = aiOutageReason(res.status, (json as AnthropicResponse | null)?.error?.message ?? text.slice(0, 300));
+    if (reason) void recordAiOutage({ feature: opts.feature ?? "photo_qc", reason, status: res.status, message: (json as AnthropicResponse | null)?.error?.message ?? null });
   }
   return { status: res.status, json, requestId: res.headers.get("request-id"), retryAfter: res.headers.get("retry-after") };
 }
@@ -179,6 +188,10 @@ async function callMessages(body: Record<string, unknown>, key: string, opts: { 
     const json = (res.json && typeof res.json === "object" ? res.json : {}) as AnthropicResponse;
     if (res.status >= 200 && res.status < 300) return json;
     lastErr = new Error(json.error?.message || `Anthropic ${res.status}`);
+    // A spend limit, an empty balance or a refused key: not retryable, and
+    // callers must be able to tell it from "no decision" (lib/aiOutage).
+    const outage = aiOutageReason(res.status, json.error?.message);
+    if (outage) throw new AiUnavailableError(outage, res.status, lastErr.message);
     const retryable = res.status === 429 || res.status === 529 || (res.status >= 500 && res.status < 600);
     if (!retryable) throw lastErr;
   }
@@ -949,7 +962,9 @@ Rules:
       reason: typeof p.reason === "string" ? p.reason.slice(0, 300) : "",
       asks: parseBrainAsks((p as { asks?: unknown }).asks, orderIds),
     };
-  } catch {
+  } catch (e) {
+    // A spend limit or a refused key is not "no decision" (comms audit H5): the caller queues a retry.
+    if (e instanceof AiUnavailableError) throw e;
     return null;
   }
 }
@@ -1053,7 +1068,9 @@ Rules:
       flags: Array.isArray(p.flags) ? p.flags.filter((f): f is string => typeof f === "string").slice(0, 4) : [],
       reason: typeof p.reason === "string" ? p.reason.slice(0, 300) : "",
     };
-  } catch {
+  } catch (e) {
+    // A spend limit or a refused key: the Slack poll gives the message back and retries it (comms audit H5).
+    if (e instanceof AiUnavailableError) throw e;
     return null;
   }
 }
@@ -1304,7 +1321,8 @@ Respond as strict JSON: {"title": "<imperative action, max 8 words>", "detail": 
     const parsed = JSON.parse(m[0]) as { title?: string; detail?: string };
     if (!parsed.title) return null;
     return { title: parsed.title.slice(0, 80), detail: (parsed.detail ?? "").slice(0, 240) };
-  } catch {
+  } catch (e) {
+    if (e instanceof AiUnavailableError) throw e; // comms audit H5
     return null;
   }
 }

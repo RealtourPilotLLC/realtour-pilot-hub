@@ -1,6 +1,7 @@
 import { Sparkles } from "lucide-react";
-import { ownerAiSpend, canSeeAiSpend, type AiSpendLine } from "@/lib/aiUsage";
-import { etDate } from "@/lib/datetime";
+import { ownerAiSpend, canSeeAiSpend, aiFeatureLabel, type AiSpendLine } from "@/lib/aiUsage";
+import { aiOutageNow, readAiFailures } from "@/lib/aiOutage";
+import { etDate, etDateTime, etDayKey } from "@/lib/datetime";
 import { usd2 } from "@/lib/money";
 
 // AI SPEND, on Finance → Overview (Oct 22 2026). What the hub's own Anthropic
@@ -11,6 +12,17 @@ import { usd2 } from "@/lib/money";
 export async function AiSpendCard() {
   if (!(await canSeeAiSpend())) return null;
   const spend = await ownerAiSpend().catch(() => null);
+  // REFUSALS (Oct 22 2026, comms audit H5): calls the AI turned away for a
+  // spend limit, an empty balance or a refused key, by feature, and whether it
+  // is refusing right now (lib/aiOutage).
+  const now = new Date();
+  const [refusals, outage] = await Promise.all([
+    readAiFailures(etDayKey(new Date(now.getTime() - 29 * 86_400_000)), etDayKey(now)).catch(() => []),
+    aiOutageNow().catch(() => null),
+  ]);
+  const refusedBy = new Map<string, number>();
+  for (const r of refusals) refusedBy.set(r.feature, (refusedBy.get(r.feature) ?? 0) + r.count);
+  const refusedTotal = [...refusedBy.values()].reduce((a, b) => a + b, 0);
   if (!spend) {
     return (
       <section className="rounded-2xl border border-border bg-surface p-4 sm:p-5">
@@ -30,6 +42,21 @@ export async function AiSpendCard() {
       <p className="mb-3 text-xs text-muted">
         Estimated from list prices, {spend.totalCalls.toLocaleString("en-US")} calls on the hub&rsquo;s own key. The Anthropic invoice is the final word.
       </p>
+      {outage || refusedTotal > 0 ? (
+        <div className="mb-3 rounded-xl border border-danger/40 bg-danger/5 p-3 text-sm">
+          {outage ? (
+            <p className="font-semibold text-danger">
+              The AI is refusing the hub&rsquo;s calls since {etDateTime(outage.since)} ({outage.reason === "credit" ? "the credit balance ran out" : outage.reason === "auth" ? "the key was refused" : "the usage limit was reached"}). Texts and emails are read again when it answers.
+            </p>
+          ) : null}
+          {refusedTotal > 0 ? (
+            <p className="mt-1 text-xs text-muted">
+              {refusedTotal.toLocaleString("en-US")} refused call{refusedTotal === 1 ? "" : "s"} in {spend.days} days:{" "}
+              {[...refusedBy.entries()].sort((a, b) => b[1] - a[1]).map(([f, n]) => `${aiFeatureLabel(f)} ${n}`).join(", ")}.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       {spend.totalCalls === 0 ? (
         <p className="rounded-xl bg-surface-2/50 p-3 text-sm text-muted">Nothing recorded yet. Calls show up here as they happen.</p>
       ) : (

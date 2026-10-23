@@ -157,7 +157,12 @@ async function main() {
         ["one page", ["123 Main St"], []], ["two pages", ["123 Main St", "45 Oak Ave"], []], ["one video only", [], one],
         ["several videos only", [], two], ["a page and a video", ["9 Elm Rd"], one], ["pages and videos", ["9 Elm Rd", "1 Pine Ct"], two],
       ] as const) {
-        const before = OLD.digest.nagText("Harrison", [...s], [...split]);
+        // Oct 22 2026 (comms audit, LOW): the one sentence changed on purpose:
+        // pay is fixed and hidden from the team, so no payroll words.
+        const before = OLD.digest.nagText("Harrison", [...s], [...split]).replace(
+          "Finish tonight — files in Dropbox + the page submitted. The shoot is added to your payroll when you submit:",
+          "Please finish tonight: files in Dropbox, then submit the page here:",
+        );
         const after = digest.nagText("Harrison", [...s], [...split]);
         for (const k of ["upload_chaser_greeting", ...(s.length ? ["upload_chaser_shoots"] : []), ...(split.length === 1 ? ["upload_chaser_video_one"] : split.length > 1 ? ["upload_chaser_video_many"] : [])]) covered.add(k);
         same("upload_chaser", label, before, after);

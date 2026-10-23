@@ -138,6 +138,10 @@ function snippetOf(body: string, max = 80): string {
 }
 
 export type UnansweredInbound = {
+  /** HOLDING LINE (Oct 22 2026, audit H4): our last word was "I'll confirm
+   *  soon" / "let me check", and the answer is due at this time. Null on every
+   *  other thread. The pager waits for it (pagerView). */
+  holdingDueAt: Date | null;
   clientId: string;
   clientName: string;
   clientAvatarUrl: string | null; // the agent's Aryeo headshot — the home card names them by face too
@@ -219,9 +223,35 @@ export async function findUnansweredInbound(
         threadKey: t.key,
         groupKey: t.groupKey,
         inboxes: t.inboxes ?? [],
+        holdingDueAt: t.holding?.dueAt ?? null,
       };
     })
     .sort((a, b) => b.ageMin - a.ageMin);
+}
+
+/** How long past its due time a holding line can still ring the pager. */
+const HOLDING_PAGE_WINDOW_MS = SCAN_DAYS * 86_400_000;
+
+/**
+ * WHAT THE PAGER SEES OF A HOLDING LINE (Oct 22 2026, audit H4). "I'll confirm
+ * soon" keeps the thread on every list as waiting on us (lib/holdingReply),
+ * but it is a promise with a time on it, so the pager does not ring before
+ * the answer is due. After that the wait is counted FROM the due time (this
+ * waiting episode began when the promise ran out) and the tier keys carry it,
+ * so a second holding line is a new episode. A promise already overdue by
+ * more than the pager's own week (Jeff Scott's Oct 12 "I'll let you know",
+ * found by the audit) is on the lists, not paged: before this change it rang
+ * nobody either. Pure.
+ */
+export function pagerView(waiting: UnansweredInbound[], now: Date): UnansweredInbound[] {
+  const out: UnansweredInbound[] = [];
+  for (const w of waiting) {
+    if (!w.holdingDueAt) { out.push(w); continue; }
+    const past = now.getTime() - w.holdingDueAt.getTime();
+    if (past < 0 || past > HOLDING_PAGE_WINDOW_MS) continue;
+    out.push({ ...w, occurredAt: w.holdingDueAt, ageMin: Math.floor(past / 60_000) });
+  }
+  return out;
 }
 
 // Has this tier already been announced for this exact inbound message?
@@ -253,7 +283,8 @@ export async function sweepReplySla(): Promise<{ checked: number; tier1: number;
     // pill's. Every message it wakes someone about is one a person can act on
     // in the next few minutes. Unanswered EMAIL has its own, quieter lane below
     // (Sep 26 2026): bell only, covered hours only, and never a backlog.
-    const waiting = await findUnansweredInbound(now, { families: ["phone"], windowDays: SCAN_DAYS });
+    // A holding line is not paged before its answer is due (audit H4).
+    const waiting = pagerView(await findUnansweredInbound(now, { families: ["phone"], windowDays: SCAN_DAYS }), now);
     counts.checked = waiting.length;
     // WHOSE IT IS (§9, Sep 26): the open reply task's owner — Kyle, as a rule.
     const owners = await replyOwners(waiting.map((w) => w.clientId), "phone");
@@ -494,7 +525,7 @@ export async function sweepEmailSla(now: Date = new Date()): Promise<EmailSlaCou
   const counts: EmailSlaCounts = { enabled: true, checked: 0, eligible: 0, tier1: 0, tier2: 0, inHours };
   // Never nights or weekends: nothing is even read out of cover.
   if (!inHours) return counts;
-  const waiting = await findUnansweredInbound(now, { families: ["email"], windowDays: SCAN_DAYS });
+  const waiting = pagerView(await findUnansweredInbound(now, { families: ["email"], windowDays: SCAN_DAYS }), now);
   counts.checked = waiting.length;
   // The watermark: a wait that began before the lane was switched on is the
   // backlog, and the backlog is listed, never rung.

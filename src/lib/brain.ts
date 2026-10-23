@@ -3,6 +3,7 @@ import { etStamp } from "@/lib/conversationContext";
 import { prisma } from "@/lib/prisma";
 import { getSecret } from "@/lib/integrations/connections";
 import { decideCommTask, decideSlackTask, type BrainContext, type BrainDecision, type SlackDecision, type SlackCandidate } from "@/lib/integrations/ai";
+import { isAiUnavailable } from "@/lib/aiOutage";
 import { etDate, etDateTime, etDayStartUtc, etAddDays } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
@@ -12,7 +13,8 @@ import { etDate, etDateTime, etDayStartUtc, etAddDays } from "@/lib/datetime";
 // message to the right order, write a specific title, set priority from real
 // context, merge duplicates, and flag what matters. Returns null when the AI
 // isn't connected or anything fails, so callers safely fall back to their old
-// behavior.
+// behavior. Throws an AiUnavailableError (lib/aiOutage) when the AI refused
+// for a spend limit or a refused key: that one is retried, not "no decision".
 // ---------------------------------------------------------------------------
 
 export type { BrainDecision } from "@/lib/integrations/ai";
@@ -157,7 +159,11 @@ export async function routeCommTask(input: {
     const decision = await decideCommTask(ctx, key);
     if (!decision) return null;
     return { ...decision, taskType: brainTaskType(decision, input.channel) };
-  } catch {
+  } catch (e) {
+    // The AI refused (a spend limit, an empty balance, a refused key): the
+    // caller must know, so the message is read again later instead of being
+    // treated as "no decision" (comms audit H5, lib/aiOutage).
+    if (isAiUnavailable(e)) throw e;
     return null;
   }
 }
@@ -272,7 +278,8 @@ export async function routeSlackTask(opts: {
       candidates,
       openSlackTasks: openSlack.map((t) => ({ id: t.id, title: t.title })),
     }, key);
-  } catch {
+  } catch (e) {
+    if (isAiUnavailable(e)) throw e; // the Slack poll retries the message (comms audit H5)
     return null;
   }
 }

@@ -137,6 +137,18 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focu
         <div className="rounded-xl bg-surface-2 p-3">
           <p className="whitespace-pre-wrap text-sm leading-relaxed">{card.lastInbound}</p>
         </div>
+        {/* Oct 22 2026 (audit H4): our last word was a holding line, so the answer is still owed. */}
+        {card.holding && (
+          <p data-holding className="mt-2 text-xs text-muted">
+            We said &ldquo;{card.holding.text}&rdquo; ({etMonthDayTime(card.holding.atISO)}). Answer due by {etMonthDayTime(card.holding.dueISO)}.
+          </p>
+        )}
+        {card.schedulingAsks.length > 0 && (
+          <p data-scheduling-asks className="mt-1 text-xs text-muted">
+            Open scheduling request: {card.schedulingAsks[card.schedulingAsks.length - 1]}
+            {card.schedulingAsks.length > 1 ? ` (and ${card.schedulingAsks.length - 1} more)` : ""}
+          </p>
+        )}
 
         {card.turns.length > 1 && (
           <button

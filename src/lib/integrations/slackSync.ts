@@ -15,7 +15,7 @@ import { etAt, etDayKey } from "@/lib/datetime";
 // for a roster that has lost it — cached ten minutes; the poll runs hourly.
 const ME_FALLBACK = "U07D2KJH1JP"; // Jordan
 let meCache: { at: number; id: string } | null = null;
-async function jordanSlackId(): Promise<string> {
+export async function jordanSlackId(): Promise<string> {
   if (meCache && Date.now() - meCache.at < 10 * 60_000) return meCache.id;
   let id = ME_FALLBACK;
   try {
@@ -577,7 +577,14 @@ async function decideSlackMessage(opts: SlackRouteInput, text: string, claim: Ex
       // text did not. Rules 1–3 still win, so this only fills a gap.
       addressee = addresseeFor(title);
     }
-  } catch { /* fall through to single-message helper */ }
+  } catch (e) {
+    // THE AI REFUSED (comms audit H5): a spend limit or a refused key is not
+    // "no decision". The message is given back (routeSlackMessage releases
+    // the claim) and the poll, whose cursor stays behind it, reads it again
+    // once the AI answers. Anything else falls through to the helper below.
+    const { isAiUnavailable } = await import("@/lib/aiOutage");
+    if (isAiUnavailable(e)) throw e;
+  }
   if (decided) {
     await finishRoute(claim, decided.outcome, decided.card);
     return decided.result;
@@ -600,7 +607,12 @@ async function decideSlackMessage(opts: SlackRouteInput, text: string, claim: Ex
           detail = todo.detail || text;
         }
       }
-    } catch { /* fall back to raw text */ }
+    } catch (e) {
+      // The AI refused: give the message back for the next poll (comms audit H5), never a raw-text card.
+      const { isAiUnavailable } = await import("@/lib/aiOutage");
+      if (isAiUnavailable(e)) throw e;
+      /* anything else: fall back to raw text */
+    }
     if (decided) {
       await finishRoute(claim, decided.outcome, decided.card);
       return decided.result;
@@ -621,6 +633,10 @@ async function decideSlackMessage(opts: SlackRouteInput, text: string, claim: Ex
         status: "OPEN",
         contactName: opts.senderName ?? undefined,
         projectId: projectId ?? null,
+        // The same client too (Oct 22 2026, comms audit M3): card fdmx2h1a
+        // rolled Sharra's photos, Logan's sign, Jeff Scott's reel and
+        // Nehemiah's booking onto one card because none named a job.
+        clientId: clientId ?? null,
         assignedKey: addressee?.key ?? null,
         createdAt: { gte: new Date(Date.now() - 24 * 3600_000) },
       },

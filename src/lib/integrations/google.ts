@@ -4,6 +4,8 @@ import { getSecret } from "./connections";
 import { cleanText, clip, stripQuotedReply } from "@/lib/text";
 import { originOrBase } from "@/lib/appUrl";
 import { fetchWithTimeout } from "@/lib/http";
+import { forwardedSenderAddress, messageIdKey, sameSenderName, streetMatchAllowed } from "@/lib/mailMatch";
+import { isHoldingReply } from "@/lib/holdingReply";
 
 // ---------------------------------------------------------------------------
 // Google / Gmail integration (OAuth2 with offline refresh tokens, read-only).
@@ -471,6 +473,27 @@ async function gmailAccounts(): Promise<{ email: string; refreshToken: string }[
   }
 }
 
+/**
+ * READ ONLY (Oct 22 2026, comms audit H2 repair): the sender address of each
+ * message in one connected mailbox, by its Gmail id (null when it cannot be
+ * read). One metadata read per message; nothing is changed in Gmail.
+ */
+export async function gmailSenderAddresses(mailbox: string, messageIds: string[]): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  const acct = (await gmailAccounts()).find((a) => a.email.toLowerCase() === mailbox.toLowerCase());
+  if (!acct) return out;
+  const token = await accessTokenFor(acct.refreshToken);
+  for (const id of messageIds) {
+    try {
+      const msg = await gmail<GmailMsg>(`/messages/${encodeURIComponent(id)}?format=metadata&metadataHeaders=From`, token);
+      out.set(id, parseFrom(header(msg, "From")).email || null);
+    } catch {
+      out.set(id, null);
+    }
+  }
+  return out;
+}
+
 /** The connected mailboxes' addresses — no tokens leave this file (§9 mailbox
  *  health: "connected" is its own line, separate from "reading"). */
 export async function connectedGmailMailboxes(): Promise<string[]> {
@@ -561,6 +584,8 @@ function parseFrom(from: string): { name: string; email: string } {
 // list (no "new lead" tasks from unknown senders). info@ is Jordan's personal
 // account, so unknown senders there are usually personal mail, not leads.
 const CLIENTS_ONLY_MAILBOXES = ["info@realtourpilot.com"];
+/** The WebhookEvent provider that claims an email's RFC Message-ID across our inboxes (comms audit M3). */
+export const GMAIL_MID_PROVIDER = "gmail-mid";
 
 // THE MAILBOXES THE HUB IS SUPPOSED TO BE READING (§9, Sep 26 2026). info@ is
 // Jordan's (known clients only); hello@ is Kyle's login and the ONLY path an
@@ -1081,7 +1106,7 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
   // src/lib/staffEmail.ts). Who counts as staff, and which client an address
   // we wrote to belongs to: the same email → contact → agent fold the inbound
   // path uses below.
-  const { staffAddressBook, staffReplyRow } = await import("@/lib/staffEmail");
+  const { staffAddressBook, staffReplyRow, isStaffAddress } = await import("@/lib/staffEmail");
   const { GMAIL_SENT_SOURCE, threadSubject, outboundIsAnswer } = await import("@/lib/replyQueue");
   const book = await staffAddressBook();
   const connectedMailboxes = new Set(accounts.map((a) => a.email.toLowerCase()));
@@ -1277,12 +1302,25 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
           }
         }
 
+        // ONE OF US WROTE IT (Oct 22 2026, comms audit H3): a staff address
+        // (every login and roster email, our domain, Jordan's own gmail) is
+        // staff BEFORE any client lookup. A HubSpot contact had linked info@
+        // and Jordan's gmail to a client named "Jordan Spackman", and 62 of
+        // our own emails (forwards to hello@, notes to Kyle) were logged as
+        // that client's, with tasks on it that belonged to Alex, Bernadette
+        // and Jeff Scott. A staff FORWARD of a client's email is that
+        // client's, read by the forwarded sender's address; anything else
+        // from staff is matched by the street it names (hello@ only), else
+        // logged unmatched. Staff never become a lead.
+        const fromStaff = isStaffAddress(email, book);
+        const forwardedFrom = fromStaff ? forwardedSenderAddress(subject, fullBody || snippet, (a) => isStaffAddress(a, book)) : null;
+        const lookupAddress = fromStaff ? forwardedFrom : email;
         // Resolve the sender to a client account FIRST (email → synced contact →
         // agent), so a KNOWN client who emails from a brokerage role address
         // (info@/team@/hello@) is never dropped by the human/lead filter below.
-        let senderClient = clientByEmail.get(email);
-        if (!senderClient) {
-          const cid = contactClientByEmail.get(email);
+        let senderClient = lookupAddress ? clientByEmail.get(lookupAddress) : undefined;
+        if (!senderClient && lookupAddress) {
+          const cid = contactClientByEmail.get(lookupAddress);
           if (cid) senderClient = clients.find((c) => c.id === cid);
         }
         // WHO WROTE, by name (Sep 28): the From display name when there is one
@@ -1294,13 +1332,16 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
         // synced contact's address is not proof of whose row it is, so it
         // doesn't lend a name.)
         const displayName = name && name.toLowerCase() !== email && !name.includes("@") ? name : null;
-        const writerName = displayName ?? clientByEmail.get(email)?.name ?? (email || null);
+        // A forward is written by the client it forwards (H3); a staff note by the staff member.
+        const writerName = forwardedFrom && senderClient
+          ? clientByEmail.get(forwardedFrom)?.name ?? senderClient.name ?? forwardedFrom
+          : displayName ?? (fromStaff ? null : clientByEmail.get(email)?.name) ?? (email || null);
         if (senderClient) senderClient = toAgent(senderClient); // fold assistant → agent
 
         // Drop marketing / invoices / automated / vendor mail — but ONLY for senders
         // we don't already know. A known client always gets logged + a reply task,
         // even from a role address the lead filter would otherwise reject.
-        if (!senderClient && !isLikelyHuman(email, listUnsub, subject, name)) return 0;
+        if (!senderClient && !fromStaff && !isLikelyHuman(email, listUnsub, subject, name)) return 0;
 
         // Already replied to (latest thread message is from us)? Still logged to
         // comms memory below, but it won't create a task — and since Sep 16 our
@@ -1332,9 +1373,16 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
         // client's email to a DIFFERENT client: a fuzzy street match — e.g. the town
         // "West Chester" inside the street "1244 West Chester Pike" — must not hijack
         // a known sender's mail onto someone else's job. Keep it on the real sender.
-        if (!project) {
+        // H2 (Oct 22 2026, lib/mailMatch): never for a sender we do not know
+        // in Jordan's personal inbox. A memorial email or a refund notice that
+        // names a town is not a client's mail. The one exception is the client
+        // themself writing from an address the hub does not have yet: the
+        // name on the mail is the name of the client whose job it names.
+        const streetOk = streetMatchAllowed({ mailbox: account.email, senderKnown: !!senderClient });
+        if (!project && (streetOk || (!fromStaff && displayName))) {
           const gp = await findProjectByText(`${subject ?? ""} ${text}`);
-          if (gp && (!senderClient || gp.clientId === senderClient.id)) {
+          const gpName = gp ? clients.find((c) => c.id === gp.clientId)?.name ?? null : null;
+          if (gp && (!senderClient || gp.clientId === senderClient.id) && (streetOk || sameSenderName(displayName, gpName))) {
             project = { id: gp.id, title: gp.title, status: gp.status };
             projectNamed = true; // global match = the street was in the mail
             resolvedClientId = gp.clientId;
@@ -1361,13 +1409,39 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
         // so a missed lead is at least auditable instead of leaving zero trace.
         // The SENDER is the contact; the client is the account it's about.
         const unknownOnPersonal = !resolvedClientId && CLIENTS_ONLY_MAILBOXES.includes(account.email);
+        // THE SAME EMAIL IN BOTH INBOXES (Oct 22 2026, comms audit M3). A
+        // client who writes to info@ and hello@ sends ONE message with one
+        // RFC Message-ID; each inbox gives it its own Gmail id, so it was
+        // logged twice (and read twice by the AI). The first inbox to read it
+        // claims the Message-ID; a later copy that the first one filed to a
+        // client is not logged or read again (our reply in this inbox's thread
+        // is still recorded, below). A first copy that found no client
+        // (info@ never makes a lead) lets the team inbox read its own copy.
+        const midKey = messageIdKey(header(msg, "Message-ID") || header(msg, "Message-Id"));
+        if (midKey) {
+          const claim = await prisma.webhookEvent.findFirst({ where: { provider: GMAIL_MID_PROVIDER, externalId: `mid:${midKey}` }, select: { payload: true } }).catch(() => null);
+          const first = (() => { try { return claim ? (JSON.parse(claim.payload) as { mailbox?: string; clientId?: string | null }) : null; } catch { return null; } })();
+          if (first && first.mailbox !== account.email && first.clientId) {
+            if (sentReply) await logSentReply({ threadId, msg: sentReply, mailbox: account.email, token, clientId: resolvedClientId, clientName: resolvedClientName, projectId: project?.id ?? null });
+            return 0;
+          }
+          if (!claim) {
+            await prisma.webhookEvent.create({
+              data: { provider: GMAIL_MID_PROVIDER, eventType: "email", externalId: `mid:${midKey}`, payload: JSON.stringify({ mailbox: account.email, clientId: resolvedClientId, dedupe }), status: "PROCESSED", processedAt: new Date() },
+            }).catch(() => null);
+          }
+        }
+        // A staff note that is not a forward (H3) is our own words: it is never
+        // logged as the client's message (the reply queue would read the client
+        // as waiting on us), only the to-do below goes on the client it names.
+        const staffNote = fromStaff && !forwardedFrom;
         await logComm({
           channel: "email",
           direction: "in",
           minRole: unknownOnPersonal ? "OWNER" : undefined,
-          clientId: resolvedClientId,
-          clientName: resolvedClientName,
-          projectId: project?.id ?? null,
+          clientId: staffNote ? null : resolvedClientId,
+          clientName: staffNote ? null : resolvedClientName,
+          projectId: staffNote ? null : project?.id ?? null,
           contactName: name || resolvedClientName || null,
           subject,
           // Full body (logComm caps at 6000) so the Hub + the task full-view
@@ -1429,6 +1503,19 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
               return raised ? 1 : 0;
             }
           }
+          // ITS ASKS ARE FILED ANYWAY (Oct 22 2026, comms audit M6). Kyle
+          // answering inside the 5-minute scan used to skip ask filing
+          // altogether, so "can we move the shoot to Friday" answered "let me
+          // check" from his phone never reached the Scheduling screen. The
+          // asks are filed and marked as answered by our reply (lib/answeredAsks):
+          // a holding reply leaves them open.
+          if (resolvedClientId) {
+            const { fileAnsweredEmailAsks } = await import("@/lib/answeredAsks");
+            await fileAnsweredEmailAsks({
+              clientId: resolvedClientId, clientName: resolvedClientName, contactName: writerName,
+              message: text, projectId: project?.id ?? null, replyAt: sentReply?.at ?? null, mailbox: account.email, threadId, sentReplyId: sentReply?.id ?? null, inboundExternalId: `gmail-${dedupe}`,
+            }).catch((e) => console.error("[gmail] filing an answered email's asks failed", e));
+          }
           return 0; // logged above; don't create a task for handled mail
         }
 
@@ -1449,6 +1536,9 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
             threadRef,
           });
           return 1;
+        } else if (fromStaff) {
+          // Our own mail that names no client (H3): logged above, never a lead.
+          return 0;
         } else if (CLIENTS_ONLY_MAILBOXES.includes(account.email)) {
           // info@ is Jordan's personal account — only surface known clients,
           // never manufacture "leads" from his personal mail. hello@ still does.
@@ -1591,6 +1681,12 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
     const tail = await threadTail(threadId, tk);
     if (!tail) continue; // unreadable — never close on ignorance
     if (tail.reply) {
+      // A HOLDING REPLY IS NOT AN ANSWER (Oct 22 2026, comms audit H4): "let
+      // me check and I'll get back to you" leaves the task open. Our reply's
+      // words are on its logged row (logSentReply's key); unread words close
+      // as before.
+      const said = await prisma.commLog.findUnique({ where: { externalId: `gmail-sent-${threadId}-${tail.reply.id}` }, select: { body: true } }).catch(() => null);
+      if (said && isHoldingReply(said.body)) continue;
       await prisma.smartTask.update({ where: { id: t.id }, data: { status: "COMPLETED", completedAt: new Date() } });
       closed++;
       continue;

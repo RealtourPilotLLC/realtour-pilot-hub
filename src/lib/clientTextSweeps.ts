@@ -423,6 +423,31 @@ async function clientHasOpenQuestion(clientId: string): Promise<boolean> {
  *  a rescheduled shoot gets a fresh confirmation, but a same-day time tweak
  *  doesn't re-text. `texted` is shared with the delivery sweep — one auto-text
  *  per client per cron tick. */
+/**
+ * THE BOOKING-CONFLICT HOLD on one job's confirmation text (Oct 22 2026, comms
+ * audit H6). Erica Walker's "Double-booked?" task opened at 5:20:05 PM and a
+ * message telling her the time was set went 33 seconds later. While a conflict
+ * task is open on this job (the hub's double-booked post-check, a schedule
+ * clash, a reassessment: lib/bookingConflictHold) a person is still deciding
+ * whether the time stands, so the confirmation waits. No time floor, like the
+ * address hold: confirming a time that may move is worse than a late text.
+ * The reason goes on the open confirmation task(s), which stay OPEN; the first
+ * tick after the conflict task is closed sends it. Returns the sweep's note
+ * when held, else null.
+ */
+export async function confirmationConflictHold(p: { id: string; title: string; client: { name: string } }, taskIds: string[]): Promise<string | null> {
+  const { openConflictFor, conflictHoldSummary } = await import("@/lib/bookingConflictHold");
+  const conflict = await openConflictFor({ projectId: p.id });
+  if (!conflict) return null;
+  if (taskIds.length > 0) {
+    await prisma.smartTask.updateMany({
+      where: { id: { in: taskIds } },
+      data: { summary: conflictHoldSummary(conflict, p.client.name) },
+    }).catch(() => {});
+  }
+  return `${p.title}: booking conflict open (${conflict.title}), confirmation held`;
+}
+
 export async function sweepConfirmationTexts(texted: Set<string> = new Set()): Promise<{ sent: number; skipped: number; notes: string[] }> {
   const notes: string[] = [];
   const { autoTextRules } = await import("@/lib/settings");
@@ -560,6 +585,9 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
       }
       skipped++; notes.push(`${p.title}: address change pending — confirmation held`); continue;
     }
+    // A BOOKING CONFLICT IS OPEN (Oct 22 2026, comms audit H6).
+    const conflictNote = await confirmationConflictHold(p, taskIdsForHold);
+    if (conflictNote) { skipped++; notes.push(conflictNote); continue; }
     // Someone already sent it by hand (the old send button / a hand-typed text
     // the webhook recognized) → nothing owed.
     const already = await prisma.smartTask.findFirst({

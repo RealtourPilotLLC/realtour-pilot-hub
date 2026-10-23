@@ -1441,6 +1441,13 @@ export async function closeClientReplyTask(clientId: string, projectId?: string 
 // recent inbound we logged for this client. Falls back to closing all the
 // client's reply tasks only when the order genuinely can't be determined.
 export async function closeReplyForOutbound(clientId: string, text: string): Promise<boolean> {
+  // A HOLDING LINE ANSWERS NOTHING (Oct 22 2026, comms audit H4). Kyle's
+  // "Let me check other options to do it sooner, I'll confirm soon" closed
+  // Nehemiah Lindo's reply task 47 ms after it went out, and the booking left
+  // every comms surface with nothing booked. The task stays open until a real
+  // answer (lib/holdingReply; the reply queue shows it with a due time).
+  const { isHoldingReply } = await import("@/lib/holdingReply");
+  if (isHoldingReply(text)) return false;
   let projectId: string | null = null;
   try {
     const { findClientProjectByText } = await import("@/lib/contacts");

@@ -1022,6 +1022,11 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
   // time for the 24-hour rule to read, so it stayed changeable forever beside
   // the held session it was.
   const filmedJobs = new Set(shoots.filter((s) => s.shootDate && s.shootDate < now).map((s) => s.id));
+  // Oct 22 2026 (comms audit H6): a booking with a conflict open (the hub's
+  // double-booked post-check, a clash) is not shown as "Booked": the label
+  // says the time is being confirmed, and the session card says Kyle will.
+  const { conflictRequestIds, conflictSessionKeys, CONFIRMING_LABEL } = await import("@/lib/bookingConflictHold");
+  const [heldRequests, heldSessions] = await Promise.all([conflictRequestIds(enrollment.clientId), conflictSessionKeys(enrollment.clientId)]);
   const out: PortalScheduleMonth[] = [];
   for (const m of months) {
     const [gates, capacity, rows] = await Promise.all([
@@ -1036,7 +1041,7 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
     // The view W1-B exports carries no notes; the client's own "what works"
     // text lives there ("Preferred: …"), so read it for the rows shown.
     const shown = rows.slice(0, 6);
-    const sessionsPart = await scheduleSessionsFor(progress?.get(progressKey(enrollment.id, m.id, m.monthKey)) ?? null, enrollment, m.id, clientMonthProgress, sessionAddressViews);
+    const sessionsPart = await scheduleSessionsFor(progress?.get(progressKey(enrollment.id, m.id, m.monthKey)) ?? null, enrollment, m.id, clientMonthProgress, sessionAddressViews, heldSessions);
     // A24 (batch-3 review): which sessions are already held — the same
     // occupancy createSessionRequest refuses on, so a tab is never offered for
     // a session a pending ask or a hand booking already holds.
@@ -1059,7 +1064,7 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
       officePlanned: gate.planningMode === "WRITTEN" && !!m.planningChosenBy?.startsWith("office:"),
       capacity: { allowed: capacity.allowed, used: capacity.used, remaining: capacity.remaining },
       requests: shown.map((r) => ({
-        id: r.id, status: r.status, label: r.label, bookingState: r.bookingState, creativeName: r.creativeName,
+        id: r.id, status: r.status, label: r.status === "CONFIRMED" && heldRequests.has(r.id) ? CONFIRMING_LABEL : r.label, bookingState: r.bookingState, creativeName: r.creativeName,
         canChange: (r.status === "REQUESTED" || r.status === "CONFIRMED") && !r.changePending &&
           !(r.status === "REQUESTED" && (IN_FLIGHT_STATES as readonly string[]).includes(r.bookingState)) &&
           !(r.slotStart && within24hElapsed(r.slotStart, now)) &&
@@ -1104,6 +1109,8 @@ async function scheduleSessionsFor(
   monthId: string,
   toClient: typeof import("@/lib/monthProgress").clientMonthProgress,
   addressViews: typeof import("@/lib/sessionAddress").sessionAddressViews,
+  /** Oct 22 2026 (H6): sessions with an open booking conflict (bookingConflictHold.conflictSessionKeys). */
+  conflicted: Set<string> = new Set(),
 ): Promise<Pick<PortalScheduleMonth, "sessions" | "sessionsRequired" | "sessionsMissing">> {
   if (!p || p.clientId !== enrollment.clientId) return { sessions: [], sessionsRequired: 1, sessionsMissing: 0 };
   const cards = toClient(p).sessions.cards;
@@ -1122,7 +1129,7 @@ async function scheduleSessionsFor(
       return {
         key: f.key, sessionIndex: f.sessionIndex, startISO: f.startsAtISO, state: cards[i]?.state ?? "BOOKED", label: cards[i]?.label ?? "Booked",
         area: v?.area ?? null, addressNeeded: v?.needed ?? false, addressNote: v?.note ?? null,
-        kyleConfirming: reassessing.has(f.key),
+        kyleConfirming: reassessing.has(f.key) || conflicted.has(f.key),
       };
     }),
   };

@@ -322,6 +322,10 @@ export async function sweepRepliedOpenPhoneTasks(): Promise<number> {
       // authority, so the task stays open — a stale "waiting" costs Kyle a
       // glance, a false "answered" costs a client.
       if (!(await outboundWasHuman(t.clientId, latest))) continue;
+      // …and a holding line ("I'll confirm soon", Oct 22 2026, audit H4) is a
+      // person promising the answer, not giving it: the task stays open.
+      const { isHoldingReply } = await import("@/lib/holdingReply");
+      if (isHoldingReply(latest.text ?? latest.body ?? "")) continue;
       const r = await prisma.smartTask.updateMany({
         where: { id: t.id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
         data: { status: "COMPLETED", completedAt: new Date() },

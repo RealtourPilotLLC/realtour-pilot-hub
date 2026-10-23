@@ -8,6 +8,7 @@ import { phoneKey } from "@/lib/integrations/openphone";
 import { classifyComm, isReaction, PRAISE_ONLY } from "@/lib/comms";
 import { stripQuotedReply } from "@/lib/text";
 import { HUB_REPLY_SOURCE, HUB_SMS_PREFIXES, HUB_SMS_SOURCES, isHubSms, isHubSmsSource } from "@/lib/hubSms";
+import { holdingReplyDueAt, isHoldingReply, type HoldingLine } from "@/lib/holdingReply";
 
 // ---------------------------------------------------------------------------
 // THE ONE ANSWER TO "WHO IS WAITING ON A REPLY".
@@ -454,6 +455,16 @@ export type WaitingThread = {
    *  in — who on our side was emailed. Empty for phone threads and for ledger
    *  rows (no message behind them). */
   inboxes?: string[];
+  /** HOLDING LINE (Oct 22 2026, audit H4): our last word on this thread was
+   *  "I'll confirm soon" / "let me check" (lib/holdingReply), so the answer is
+   *  still owed. When it is due, and what we said. Null on every other thread. */
+  holding?: HoldingLine | null;
+  /** The client's open SCHEDULING asks (lib/clientAsks; their own words, a
+   *  text, email or call), newest last. A reply never hides them (audit H4). */
+  schedulingAsks?: { id: string; summary: string; askedAt: Date }[];
+  /** TRUE when the row exists only because the client has an open scheduling
+   *  ask and no other card (see schedulingAskThreads). */
+  fromAsk?: boolean;
 };
 
 export type UnansweredOptions = {
@@ -524,6 +535,10 @@ type Bucket = {
   /** true oldest still-owed message, survives the display cap */
   firstAt: Date | null;
   rows: Row[]; // recent dialogue for `turns`
+  /** our newest holding line on this thread while its messages are still owed (audit H4) */
+  holding: { at: Date; text: string } | null;
+  /** every holding line since the last real answer, for the auto-close test (handledCut) */
+  holdAts: Date[];
 };
 
 const fmtPhone = (k: string) =>
@@ -663,6 +678,10 @@ export type Obligation = {
    *  its message is no longer on the live card and nothing anybody ticks there
    *  can be a decision about it. */
   repliedElsewhere: boolean;
+  /** HOLDING LINE (Oct 22 2026, audit H4): everything we have said since the
+   *  message it is owed on is "I'll let you know" / "let me check", so it is
+   *  still owed, and due at this time. Null otherwise. */
+  holding: HoldingLine | null;
 };
 
 /** The obligation's thread identity, derived from the stored task alone.
@@ -816,6 +835,12 @@ export const OPENPHONE_GREETING_SOURCE = "auto-openphone-greeting";
  * longer than an hour.
  */
 const REPLY_BURST_MS = 60 * 60 * 1000;
+
+/** How long after a holding line a closed reply task reads as that line's own
+ *  auto-close (audit H4): the OpenPhone receiver closes in milliseconds, the
+ *  Gmail sync on its next five-minute pass (plus LOG_LAG_CAP_MS of slack). */
+const HOLDING_CLOSE_SLACK_PHONE_MS = 2 * 60_000;
+const HOLDING_CLOSE_SLACK_EMAIL_MS = 20 * 60_000;
 
 /** How far back the burst read looks for the reply that followed a request.
  *  Bounded because this is a render path; when the bound bites we simply do not
@@ -1310,6 +1335,54 @@ export async function openObligations(
     if (rp && !bestByPhone.has(rp)) bestByPhone.set(rp, m);
   }
 
+  // HOLDING LINES (Oct 22 2026, audit H4). The aggregates above know WHEN we
+  // last wrote, not WHAT: Jeff Scott's Oct 12 "Let me check on this and I'll
+  // let you know!" read as the answer to his question about the reel's sound,
+  // and his open request left every comms surface. One bounded read of what
+  // we said to these clients since the oldest message any of them is owed;
+  // a request is answered only by something that is not a holding line.
+  const holdFloor = new Date(
+    Math.min(
+      now.getTime(),
+      ...filed.map((f) =>
+        Math.min(
+          f.t.createdAt.getTime(),
+          (f.t.clientId ? bestByClient.get(f.t.clientId)?.at.getTime() : undefined) ?? Infinity,
+          (f.perRequest ? bestByProject.get(`${f.t.clientId}|${f.t.projectId}|${f.family}`)?.at.getTime() : undefined) ?? Infinity,
+        ),
+      ),
+    ),
+  );
+  const holdRows = clientIds.length
+    ? await prisma.commLog.findMany({
+        where: { clientId: { in: clientIds }, ...substantiveOut, occurredAt: { gte: holdFloor } },
+        orderBy: { occurredAt: "desc" },
+        take: OBLIGATION_OUTBOUND_SCAN,
+        select: { clientId: true, channel: true, body: true, occurredAt: true },
+      })
+    : [];
+  const holdCapped = holdRows.length >= OBLIGATION_OUTBOUND_SCAN;
+  const holdOldest = holdRows.length ? holdRows[holdRows.length - 1].occurredAt : null;
+  const saidByLane = new Map<string, { at: Date; text: string; holding: boolean }[]>(); // newest first
+  for (const r of holdRows) {
+    if (!r.clientId) continue;
+    const k = `${r.clientId}|${r.channel === "email" ? "email" : "phone"}`;
+    const text = r.channel === "email" ? cleanEmailBody(r.body ?? "") : r.body ?? "";
+    const list = saidByLane.get(k) ?? [];
+    list.push({ at: r.occurredAt, text: text.replace(/\s+/g, " ").trim(), holding: isHoldingReply(text) });
+    saidByLane.set(k, list);
+  }
+  /** What we said on this lane since `at`. `real` unless every reply we can
+   *  see since then is a holding line; whenever the read cannot answer (a
+   *  lead, nothing in reach, the bound bit) it is `real`, the old read. */
+  const saidSince = (clientId: string | null, family: WaitingFamily, at: Date): { real: boolean; holding: { at: Date; text: string } | null } => {
+    if (!clientId) return { real: true, holding: null };
+    if (holdCapped && holdOldest && holdOldest > at) return { real: true, holding: null };
+    const list = (saidByLane.get(`${clientId}|${family}`) ?? []).filter((x) => x.at >= at);
+    if (list.length === 0 || list.some((x) => !x.holding)) return { real: true, holding: null };
+    return { real: false, holding: { at: list[0].at, text: list[0].text } };
+  };
+
   // Human exits that end an obligation without an answer: the thread tick and
   // the spam mute. Both are CUT POINTS, exactly as they are for a live thread.
   const [acks, mutes] = await Promise.all([
@@ -1386,7 +1459,8 @@ export async function openObligations(
     // Whatever the router did with anybody's projectId, a row the old read
     // showed still gets shown; all the split may do is say WHICH property it is
     // about and print that property's words.
-    const answeredClientWide = !!(lastOut && lastOut >= clientRefAt);
+    // …and a holding line since then answered nothing (audit H4).
+    const answeredClientWide = !!(lastOut && lastOut >= clientRefAt) && saidSince(t.clientId, family, clientRefAt).real;
 
     // …and the two questions that are only asked of a split request.
     //
@@ -1408,9 +1482,12 @@ export async function openObligations(
     if (f.perRequest) {
       const onThisOrder = lastOutProject.get(`${t.clientId}|${t.projectId}|${family}`);
       const firstBack = firstReplyAfter(t.clientId, family, ownRefAt);
+      // Only holding lines since they asked: nothing settled it (audit H4).
+      const ownReal = saidSince(t.clientId, family, ownRefAt).real;
       const settledOnOwnOrder =
-        !!(onThisOrder && onThisOrder >= ownRefAt) ||
-        !!(firstBack && firstBack.getTime() - ownRefAt.getTime() <= REPLY_BURST_MS);
+        ownReal &&
+        (!!(onThisOrder && onThisOrder >= ownRefAt) ||
+          !!(firstBack && firstBack.getTime() - ownRefAt.getTime() <= REPLY_BURST_MS));
       if (settledOnOwnOrder) {
         // Its own question is answered. If the client-wide read agrees nothing
         // is owed, the request is done. If it does NOT — they have said
@@ -1424,7 +1501,7 @@ export async function openObligations(
         // Owed. Can the live card be showing it? Only if it arrived after our
         // last reply. When it did not, this row is the ONLY place the question
         // can appear, and a tick on the conversation is not a decision about it.
-        repliedElsewhere = !!(lastOut && lastOut >= ownRefAt);
+        repliedElsewhere = !!(lastOut && lastOut >= ownRefAt) && ownReal;
       }
     } else if (answeredClientWide) {
       continue;
@@ -1445,6 +1522,7 @@ export async function openObligations(
     if (ownAck && ownAck >= refAt) continue;
     const ack = ackAt.get(threadAckKey(family, threadKey));
     if (ack && ack >= refAt && !repliedElsewhere) continue;
+    const held = saidSince(t.clientId, family, refAt);
 
     out.push({
       taskId: t.id,
@@ -1468,6 +1546,7 @@ export async function openObligations(
       propertyAddress: t.propertyAddress,
       rowKey: f.rowKey,
       repliedElsewhere,
+      holding: !held.real && held.holding ? { ...held.holding, dueAt: holdingReplyDueAt(held.holding.at) } : null,
     });
   }
   // Longest wait first — the same order every other comms surface uses.
@@ -1616,6 +1695,129 @@ async function ledgerThreads(
       turns: [{ role: "client", text: x.lastInboundText, at: x.lastInboundAt.toISOString() }],
       openTaskId: x.taskId,
       fromLedger: true,
+      holding: x.holding,
+    });
+  }
+  return out;
+}
+
+/** How far back an open scheduling ask keeps a client on the work lists. */
+const SCHEDULING_ASK_DAYS = 14;
+
+/**
+ * OPEN SCHEDULING ASKS STAY VISIBLE (Oct 22 2026, audit H4). A scheduling ask
+ * (lib/clientAsks: "book my next shoot", "can we do sooner") is closed only by
+ * a person on the Scheduling screen; our reply never closes it. But the
+ * Messages lists are built from replies, so "Let me check other options to do
+ * it sooner, I'll confirm soon" took Nehemiah Lindo's booking off them while
+ * nothing was booked. Now, on the work lists (`includeOwed`; the pager never):
+ *   · every card carries its client's open scheduling asks (`schedulingAsks`);
+ *   · a client with an open scheduling ask and no card in that ask's lane (a
+ *     text or a call: phone; an email: email) gets one (`fromAsk`), keyed on
+ *     the conversation (`c:<clientId>`, or `e:client:<clientId>`) so the
+ *     Handled tick there clears it, as a person's decision.
+ * Only the client's own words (a text, an email, a call), from the last
+ * SCHEDULING_ASK_DAYS, on a job not delivered since they asked
+ * (clientAsks.closesOnDelivery). Mutates `shown`; returns the new rows.
+ */
+async function withSchedulingAsks(
+  shown: WaitingThread[],
+  o: { now: Date; families: WaitingFamily[]; excludeClientIds?: string[] },
+): Promise<WaitingThread[]> {
+  const ex = o.excludeClientIds ?? [];
+  const asks = await prisma.clientAsk
+    .findMany({
+      where: {
+        kind: "SCHEDULING",
+        state: "OPEN",
+        source: { in: ["text", "email", "call"] },
+        askedAt: { gte: new Date(o.now.getTime() - SCHEDULING_ASK_DAYS * 86_400_000), lte: o.now },
+        ...(ex.length ? { clientId: { notIn: ex } } : {}),
+      },
+      orderBy: { askedAt: "asc" },
+      select: { id: true, clientId: true, projectId: true, text: true, summary: true, askedAt: true, source: true },
+    })
+    .catch(() => [] as { id: string; clientId: string; projectId: string | null; text: string; summary: string | null; askedAt: Date; source: string }[]);
+  if (asks.length === 0) return [];
+  const projectIds = [...new Set(asks.map((a) => a.projectId).filter((x): x is string => !!x))];
+  const [projects, { closesOnDelivery }] = await Promise.all([
+    projectIds.length ? prisma.project.findMany({ where: { id: { in: projectIds } }, select: { id: true, status: true, deliveredAt: true } }) : Promise.resolve([]),
+    import("@/lib/clientAsks"),
+  ]);
+  const projectById = new Map(projects.map((p) => [p.id, p]));
+  const live = asks.filter((a) => !closesOnDelivery({ kind: "SCHEDULING", askedAt: a.askedAt }, a.projectId ? projectById.get(a.projectId) : null));
+  const byClient = new Map<string, typeof live>();
+  for (const a of live) {
+    const list = byClient.get(a.clientId) ?? [];
+    list.push(a);
+    byClient.set(a.clientId, list);
+  }
+  const line = (a: (typeof live)[number]) => ({ id: a.id, summary: (a.summary ?? "").trim() || a.text.replace(/\s+/g, " ").trim().slice(0, 140), askedAt: a.askedAt });
+  for (const t of shown) {
+    const list = t.clientId ? byClient.get(t.clientId) : undefined;
+    if (list?.length) t.schedulingAsks = list.map(line);
+  }
+  // Per lane (a text or a call: phone; an email: email), so a one-lane read
+  // (the phone board) and a two-lane read (Messages) list the same rows.
+  const carded = new Set(shown.filter((t) => t.clientId).map((t) => `${t.family}:${t.clientId}`));
+  const laneOf = (source: string): WaitingFamily => (source === "email" ? "email" : "phone");
+  const rows: { clientId: string; list: typeof live; newest: (typeof live)[number]; family: WaitingFamily; key: string }[] = [];
+  for (const [clientId, all] of byClient) {
+    for (const family of o.families) {
+      if (carded.has(`${family}:${clientId}`)) continue;
+      const list = all.filter((a) => laneOf(a.source) === family);
+      if (list.length === 0) continue;
+      rows.push({ clientId, list, newest: list[list.length - 1], family, key: family === "email" ? `e:client:${clientId}` : `c:${clientId}` });
+    }
+  }
+  if (rows.length === 0) return [];
+  const [clients, acks] = await Promise.all([
+    prisma.client.findMany({
+      where: { id: { in: rows.map((r) => r.clientId) } },
+      select: { id: true, name: true, phone: true, segment: true, socialClient: true, socialPlan: true, parent: { select: { segment: true } } },
+    }),
+    prisma.appSetting.findMany({ where: { key: { in: rows.map((r) => threadAckKey(r.family, r.key)) } }, select: { key: true, value: true } }),
+  ]);
+  const clientById = new Map(clients.map((c) => [c.id, c]));
+  const ackAt = new Map<string, Date>();
+  for (const a of acks) {
+    const v = parseAckValue(a.value);
+    if (v) ackAt.set(a.key, v.at);
+  }
+  const out: WaitingThread[] = [];
+  for (const r of rows) {
+    // A person ticked this conversation Handled after the newest ask: their call.
+    const ack = ackAt.get(threadAckKey(r.family, r.key));
+    if (ack && ack >= r.newest.askedAt) continue;
+    const client = clientById.get(r.clientId);
+    const phone = client?.phone ? phoneKey(client.phone) || null : null;
+    const first = r.list[0];
+    out.push({
+      key: r.key,
+      family: r.family,
+      groupKey: r.key.slice(2),
+      clientId: r.clientId,
+      clientIds: [r.clientId],
+      clientName: client?.name ?? null,
+      contactName: null,
+      displayName: client?.name ?? "Client",
+      phone: phone && phone.length === 10 ? phone : null,
+      isClient: true,
+      isTeam: false,
+      isVip: VIP_SEGMENTS.has(client?.segment ?? "") || VIP_SEGMENTS.has(client?.parent?.segment ?? ""),
+      segment: client?.segment ?? null,
+      socialPlan: client?.socialClient ? client?.socialPlan ?? "yes" : null,
+      propertyAddress: null,
+      projectId: r.newest.projectId,
+      pending: r.list.slice(-PENDING_SHOWN).map((a) => ({ channel: a.source === "email" ? ("email" as const) : a.source === "call" ? ("call" as const) : ("text" as const), subject: null, body: a.text, at: a.askedAt })),
+      courtesy: [],
+      courtesyOnly: false,
+      waitingSince: first.askedAt,
+      hoursWaiting: Math.max(0, Math.round((o.now.getTime() - first.askedAt.getTime()) / 3_600_000)),
+      turns: r.list.map((a) => ({ role: "client" as const, text: a.text, at: a.askedAt.toISOString() })),
+      openTaskId: null,
+      schedulingAsks: r.list.map(line),
+      fromAsk: true,
     });
   }
   return out;
@@ -1645,6 +1847,9 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
   // The walk's own rules, applied as it used to apply them, card by card.
   const out = scanned.filter((t) => (includeCourtesy || !t.courtesyOnly) && (includeTeam || !t.isTeam) && (includeUnmatched || !!t.clientId));
   if (opts.includeOwed) out.push(...(await ledgerThreads(out, { now, families, windowDays, includeUnmatched, includeTeam, excludeClientIds: opts.excludeClientIds })));
+  // Open scheduling asks ride on the work lists (never the pager): on the
+  // client's card, or as a row of their own (audit H4).
+  if (opts.includeOwed) out.push(...(await withSchedulingAsks(out, { now, families, excludeClientIds: opts.excludeClientIds })));
 
   // Longest wait first — VIPs ahead of the rest of an equal wait. The message
   // that's been sitting two days is the one that costs us a client, not the one
@@ -1851,6 +2056,8 @@ async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
       courtesy: [],
       firstAt: null,
       rows: [],
+      holding: null,
+      holdAts: [],
     };
     buckets.set(id.key, b);
     if (b.family === "email") emailKeysSeen.add(id.groupKey);
@@ -1860,7 +2067,7 @@ async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
   /** Our side answered — drop what was owed, WITHIN THIS CHANNEL FAMILY. A
    *  text reply must never clear a genuinely unanswered email (and vice versa);
    *  that was one of the reviewed rules the old boards each kept separately. */
-  const clearFor = (r: Row, key: string, how: "outbound" | "teammate", opts: { callsOnly?: boolean } = {}) => {
+  const clearFor = (r: Row, key: string, how: "outbound" | "teammate", opts: { callsOnly?: boolean; holding?: { at: Date; text: string } } = {}) => {
     const family: WaitingFamily = r.channel === "email" ? "email" : "phone";
     const kill = new Set<string>([key]);
     if (family === "email") {
@@ -1930,9 +2137,21 @@ async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
         b.firstAt = b.pending.reduce<Date | null>((min, m) => (!min || m.at < min ? m.at : min), null);
         continue;
       }
+      if (opts.holding) {
+        // A HOLDING LINE ANSWERS NOTHING YET (Oct 22 2026, audit H4): what
+        // they asked stays owed, and the thread remembers what we promised
+        // and when. A thread with nothing owed has nothing to hold.
+        if (b.pending.length > 0) {
+          b.holding = opts.holding;
+          b.holdAts.push(opts.holding.at);
+        }
+        continue;
+      }
       b.pending = [];
       b.courtesy = [];
       b.firstAt = null;
+      b.holding = null;
+      b.holdAts = [];
     }
   };
 
@@ -1974,7 +2193,11 @@ async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
         continue;
       }
       if (!outboundIsAnswer(r)) continue;
-      clearFor(r, id.key, ours);
+      // "I'll confirm soon", "let me check" (lib/holdingReply): a promise of
+      // an answer, not the answer. The thread stays waiting on us, with a due
+      // time (audit H4).
+      const said = r.channel === "email" ? cleanEmailBody(r.body ?? "") : r.body ?? "";
+      clearFor(r, id.key, ours, isHoldingReply(said) ? { holding: { at: r.occurredAt, text: said.replace(/\s+/g, " ").trim() } } : {});
       continue;
     }
 
@@ -2220,7 +2443,9 @@ async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
   // is untouched: its map is the Gmail sync's reply detection, a real answer.
   const handledTasks = handled.rows;
   const perRequestTicks = handled.perRequest;
-  const handledByClient = { phone: new Map<string, Date>(), email: new Map<string, Date>() };
+  // Every close per client and lane, not only the newest: a close that a
+  // HOLDING LINE made (below) is skipped, and the close before it still cuts.
+  const handledByClient = { phone: new Map<string, Date[]>(), email: new Map<string, Date[]>() };
   for (const h of handledTasks) {
     if (!h.clientId || !h.completedAt) continue;
     const lane = h.source === "gmail" ? "email" : "phone";
@@ -2228,8 +2453,28 @@ async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
     const tick = lane === "phone" ? perRequestTicks.get(h.id) : undefined;
     if (tick && Math.abs(h.completedAt.getTime() - tick.getTime()) <= REQUEST_TICK_WINDOW_MS) continue;
     const m = handledByClient[lane];
-    if ((m.get(h.clientId) ?? new Date(0)) < h.completedAt) m.set(h.clientId, h.completedAt);
+    const list = m.get(h.clientId) ?? [];
+    list.push(h.completedAt);
+    m.set(h.clientId, list);
   }
+  /** The newest close that is a decision about this thread. A reply task the
+   *  holding line itself closed (the OpenPhone receiver closed Nehemiah
+   *  Lindo's 47 ms after "I'll confirm soon"; the Gmail sync closes a mailed
+   *  one on its next pass) is not one: it answered nothing (audit H4). Since
+   *  Oct 22 2026 closeReplyForOutbound no longer closes on a holding line, so
+   *  this only reads the rows written before that, and the email lane. A
+   *  person's Handled tick writes its own thread ack, which still cuts. */
+  const handledCut = (b: Bucket): Date | undefined => {
+    if (!b.clientId) return undefined;
+    const list = handledByClient[b.family].get(b.clientId) ?? [];
+    const slack = b.family === "email" ? HOLDING_CLOSE_SLACK_EMAIL_MS : HOLDING_CLOSE_SLACK_PHONE_MS;
+    let best: Date | undefined;
+    for (const at of list) {
+      if (b.holdAts.some((h) => at >= h && at.getTime() - h.getTime() <= slack)) continue;
+      if (!best || at > best) best = at;
+    }
+    return best;
+  };
   const ackByKey = new Map<string, Date>();
   for (const a of emailAcks) {
     // "<ISO>" (the email ticks written before Sep 16) and "<ISO>|<reason>"
@@ -2276,7 +2521,7 @@ async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
     // visible with its wait measured from the first surviving message.
     const cut: Date[] = [];
     if (b.clientId) {
-      const h = handledByClient[b.family].get(b.clientId);
+      const h = handledCut(b);
       if (h) cut.push(h);
       if (b.family === "email") {
         const a1 = ackByKey.get(emailAckKey(b.clientId, b.groupKey));
@@ -2329,6 +2574,12 @@ async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
     const isTeam = !b.clientId && !!teamName;
 
     const waitingSince = b.firstAt ?? b.courtesy[0]?.at ?? b.rows[b.rows.length - 1].occurredAt;
+    // The holding line still stands only while something it answered is still
+    // owed: a cut after it (a Handled tick) or a later real answer cleared it,
+    // and a new message after it is waiting in its own right.
+    const holding = b.holding && b.pending.length > 0 && b.pending.some((m) => m.at <= b.holding!.at)
+      ? { at: b.holding.at, text: b.holding.text, dueAt: holdingReplyDueAt(b.holding.at) }
+      : null;
     out.push({
       key: b.key,
       family: b.family,
@@ -2361,6 +2612,7 @@ async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
       })),
       openTaskId: task?.id ?? null,
       inboxes: [...new Set([...b.pending, ...b.courtesy].flatMap((m) => m.mailboxes ?? []))],
+      holding,
     });
   }
   return out;
@@ -2415,6 +2667,10 @@ export type ReplyCard = {
    *  so `turns` is the one message the obligation was raised on. The draft
    *  engine has no thread to work from here — say so rather than inventing one. */
   fromLedger: boolean;
+  /** Our holding line, when our last word was one (audit H4): what we said, when, and when the answer is due. */
+  holding: { text: string; atISO: string; dueISO: string } | null;
+  /** The client's open scheduling asks, one line each (audit H4). */
+  schedulingAsks: string[];
 };
 
 export type ReplyQueue = {
@@ -2450,6 +2706,8 @@ function toCard(t: WaitingThread): ReplyCard {
     openTaskId: t.openTaskId,
     likelyHandled: t.courtesyOnly,
     fromLedger: !!t.fromLedger,
+    holding: t.holding ? { text: t.holding.text, atISO: t.holding.at.toISOString(), dueISO: t.holding.dueAt.toISOString() } : null,
+    schedulingAsks: (t.schedulingAsks ?? []).map((a) => a.summary),
   };
 }
 

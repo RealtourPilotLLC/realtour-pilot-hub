@@ -404,14 +404,14 @@ export async function adoptTopicVideoAction(enrollmentId: string, chainVideoId: 
 
 // ---- the program conversation (CP-13) ---------------------------------------------------
 
-/** Reply on the client's program conversation. Answers every waiting message and closes the desk task. */
-export async function postProgramMessageAction(enrollmentId: string, body: string, replyToId: string | null): Promise<Result> {
+/** Reply on the client's program conversation. Answers the waiting messages in the conversation (not those under a script) and closes the desk task when nothing else waits; `closeRun: false` answers nothing (comms audit C1). */
+export async function postProgramMessageAction(enrollmentId: string, body: string, replyToId: string | null, opts: { closeRun?: boolean } = {}): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {
     const { getCurrentUser } = await import("@/lib/auth/user");
     const me = await getCurrentUser().catch(() => null);
     const { postStaffMessage } = await import("@/lib/programMessages");
-    const r = await postStaffMessage(String(enrollmentId ?? ""), { id: me?.id ?? null, name: me?.realName ?? me?.name ?? null, email: me?.email ?? null }, String(body ?? ""), replyToId ?? null);
+    const r = await postStaffMessage(String(enrollmentId ?? ""), { id: me?.id ?? null, name: me?.realName ?? me?.name ?? null, email: me?.email ?? null }, String(body ?? ""), replyToId ?? null, { closeRun: opts?.closeRun !== false });
     touch(enrollmentId);
     return { ok: r.ok, message: r.message };
   } catch (e) { return fail(e); }

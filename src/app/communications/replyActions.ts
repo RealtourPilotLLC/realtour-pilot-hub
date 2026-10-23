@@ -160,6 +160,12 @@ export async function sendReply(key: string, text: string, intentId?: string): P
   if (!card.phone) {
     return { ok: false, message: "No number on file for this conversation. Reply from Messages · All instead." };
   }
+  // Oct 22 2026 (comms audit H6): no "your time is set" while a booking conflict is open for this client.
+  {
+    const { staffConfirmationRefusal } = await import("@/lib/bookingConflictHold");
+    const refused = await staffConfirmationRefusal({ clientId: card.clientId, body });
+    if (refused) return { ok: false, message: refused };
+  }
 
   const from = await defaultOpenPhoneNumber();
   if (!from) return { ok: false, message: "OpenPhone isn't connected." };

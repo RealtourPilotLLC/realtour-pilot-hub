@@ -10,9 +10,10 @@
 // job's client asks (lib/briefPhotoAsks), never the editor or the Video
 // Review Room.
 //
-//   1. pure: the backstop ("photo 38" is a photo item whatever the model
-//      said, unless a video is named), echoes, office questions, the split
-//      of open questions
+//   1. pure: the backstop ("photo 38" is a photo item when the model said
+//      "unclear" or gave no label, unless a video is named; the model's own
+//      label always wins, audit C2), echoes, office questions, the split of
+//      open questions
 //   2. Joe's real sequence on 859 N Lawrence St:
 //      a. a video-only text ("the Cafe La Maude sign twice"): unchanged: the
 //         video reopens, one editor issue, no photo ask, photos untouched
@@ -25,8 +26,8 @@
 //         its words join the same photo-38 question; its video question stays
 //   3. a mixed text: the video part to the review room (with everything they
 //      said), the photo part to the photo job (with everything they said)
-//   4. the backstop at work: the model calls "virtually stage photo 12" a
-//      video change on a job with no staging ordered: a photo item, an office
+//   4. the backstop at work: the model calls "virtually stage photo 12"
+//      unclear on a job with no staging ordered: a photo item, an office
 //      question (scope or price), not an editor change
 //   5. an unclear ask never takes over the open video card; an item about
 //      both / unclear shows in both places, labelled
@@ -153,11 +154,11 @@ async function main() {
   // =========================================================================
   c.head("1 · pure: what each item is about");
   // =========================================================================
-  c.ok("'Virtually stage the upper patio (photo 38)' is a photo item even when the model says video", M.itemMediumOf("Virtually stage the upper patio (photo 38).", "video") === "photo");
+  c.ok("'Virtually stage the upper patio (photo 38)' is a photo item when the model said unclear or nothing; the model's own label wins (audit C2)", M.itemMediumOf("Virtually stage the upper patio (photo 38).") === "photo" && M.itemMediumOf("Virtually stage the upper patio (photo 38).", "unclear") === "photo" && M.itemMediumOf("Virtually stage the upper patio (photo 38).", "video") === "video");
   c.ok("…'pic 11', 'photos', 'twilight', 'lot lines', 'floor plan', 'virtual staging': photos", ["Restage pic 11 with a dining table", "Brighten the photos", "Add a twilight", "Draw the lot lines", "Fix the floor plan", "Redo the virtual staging"].every((t) => M.itemMediumOf(t) === "photo"));
   c.ok("…unless a video is named: 'the twilight photo as the video's opening' keeps the model's label (video)", M.itemMediumOf("Use the twilight photo as the video's opening", "video") === "video" && M.itemMediumOf("Use the twilight photo as the video's opening") === "both");
   c.ok("…V1 or a timestamp names a video: 'photo at 0:12 in V1' is not forced to photos", M.itemMediumOf("The photo at 0:12 in V1 is dark", "video") === "video");
-  c.ok("the Cafe La Maude sign in the video: video; a model 'photo' against a named video reads as both", M.itemMediumOf("Remove one of the two Cafe La Maude signs from the video.") === "video" && M.itemMediumOf("Remove one of the two Cafe La Maude signs from the video.", "photo") === "both");
+  c.ok("the Cafe La Maude sign in the video: video; the model's own label stands", M.itemMediumOf("Remove one of the two Cafe La Maude signs from the video.") === "video" && M.itemMediumOf("Remove one of the two Cafe La Maude signs from the video.", "photo") === "photo");
   c.ok("no words either way: the model's label, else video (rows written before labels stay video)", M.itemMediumOf("Make it brighter", "unclear") === "unclear" && M.itemMediumOf("Make it brighter") === "video" && M.mediumOfItem({}) === "video");
   c.ok("a staging 'scene' is not a video ('new virtual staging scene not previously ordered')", M.itemMediumOf("Virtually stage photo 38. This is a new virtual staging scene not previously ordered.") === "photo");
   c.ok("labels: both and unclear say so; one medium says nothing", M.mediumLabel("both") === "Photos and video" && M.mediumLabel("unclear") === "Photos or video? Not clear" && M.mediumLabel("photo") === null && M.mediumLabel("video") === null);
@@ -274,14 +275,14 @@ async function main() {
   c.ok("…and the photos reopen for it", (await prisma.photoJob.findUniqueOrThrow({ where: { id: X.job.id } })).stage === "REVISION_REQUESTED");
 
   // =========================================================================
-  c.head("4 · the backstop: the model calls 'virtually stage photo 12' a video change; no staging was ordered");
+  c.head("4 · the backstop: the model calls 'virtually stage photo 12' unclear; no staging was ordered");
   // =========================================================================
   const R = await mkJob({ street: "40 Ray Rd", client: "Ray Nostaging", staging: false });
   const stage12 = "Can you virtually stage photo 12 as a living room?";
-  answers.push({ match: /stage photo 12/, items: [item({ area: "Graphics & effects", ask: "Virtually stage photo 12 as a living room.", kind: "REFINEMENT", quote: stage12, medium: "video" })], questions: [] });
+  answers.push({ match: /stage photo 12/, items: [item({ area: "Graphics & effects", ask: "Virtually stage photo 12 as a living room.", kind: "REFINEMENT", quote: stage12, medium: "unclear" })], questions: [] });
   await textIn(R, stage12, { asks: [{ kind: "SPECIAL_REQUEST", text: stage12, summary: "Stage photo 12", medium: "photo", projectHint: R.project.id }] });
   const bR = await briefFor(R.project.id, "stage photo 12");
-  c.ok("stored as a photo item, whatever the model said", itemsOf(bR).items?.[0]?.medium === "photo");
+  c.ok("stored as a photo item: the model was not sure and the words name a photo", itemsOf(bR).items?.[0]?.medium === "photo");
   c.ok("not an editor change: no issue, not on the brief, no card, the video not reopened", (await issuesOf(bR.id)) === 0 && (await getRevisionBriefs(R.project.id, true)).length === 0 && (await openCreativeReviews(R.project.id)).length === 0 && (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: R.sub.id } })).status === "APPROVED");
   const asksR = await openAsks(R.project.id);
   c.ok("an office question (scope or price) on the photo job, for Jordan or Kyle", asksR.length === 1 && (asksR[0].dedupeKey ?? "").startsWith(`${M.PHOTO_OFFICE_KEY_PREFIX}${R.project.id}:12`) && /Not on the order/.test(asksR[0].summary ?? ""), asksR.map((a) => `${a.dedupeKey} ${a.summary}`).join(" | "));

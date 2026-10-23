@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { OWNER_PERSONAL_ADDRESSES } from "@/lib/mailMatch";
 
 // ---------------------------------------------------------------------------
 // WHO ON OUR SIDE ANSWERED AN EMAIL (Oct 14 2026).
@@ -40,15 +41,19 @@ export function emptyAddressBook(): StaffAddressBook {
   return { addresses: new Set(), memberByAddress: new Map() };
 }
 
-/** The staff address book: the active roster's emails and every active login's
- *  email (a login carries its TeamMember link when there is one). One read per
- *  sync; never throws. */
+/** The staff address book: every roster email and every login's email (a
+ *  login carries its TeamMember link when there is one), plus Jordan's own
+ *  addresses (lib/mailMatch). One read per sync; never throws.
+ *  Oct 22 2026 (comms audit H3): every row, not only the active ones, and
+ *  Jordan's personal gmail: a staff address is staff before any client
+ *  lookup, so an old contact row can never file our own mail to a client. */
 export async function staffAddressBook(): Promise<StaffAddressBook> {
   const book = emptyAddressBook();
+  for (const a of OWNER_PERSONAL_ADDRESSES) book.addresses.add(a);
   try {
     const [members, logins] = await Promise.all([
-      prisma.teamMember.findMany({ where: { active: true }, select: { id: true, name: true, email: true } }),
-      prisma.appUser.findMany({ where: { status: "ACTIVE" }, select: { email: true, teamMemberId: true } }),
+      prisma.teamMember.findMany({ select: { id: true, name: true, email: true } }),
+      prisma.appUser.findMany({ select: { email: true, teamMemberId: true } }),
     ]);
     const byId = new Map(members.map((m) => [m.id, m]));
     for (const m of members) {
