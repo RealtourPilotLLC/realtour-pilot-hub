@@ -273,14 +273,15 @@ export function renderPortalInviteEmail(f: { firstName: string; clientName: stri
 }
 
 /** The one-time sign-in link a person asked for on /portal/login (15 minutes). */
-export function renderSignInLinkEmail(f: { firstName: string; url: string }): string {
+/** `lifetime`: how long THIS link lasts, in words (Oct 23 2026: the copy said 15 minutes for every link). */
+export function renderSignInLinkEmail(f: { firstName: string; url: string; lifetime?: string }): string {
   return [
     `Hi ${f.firstName},`,
     "",
     "Here's your one-time link to sign in to your Realtour Pilot content portal:",
     f.url,
     "",
-    "It works once and expires in 15 minutes. If you didn't ask for it, you can ignore this email and nothing changes.",
+    `It works once and expires in ${f.lifetime ?? "15 minutes"}. If you didn't ask for it, you can ignore this email and nothing changes.`,
     "",
     "The Realtour Pilot team",
   ].join("\n");

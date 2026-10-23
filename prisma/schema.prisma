@@ -3186,6 +3186,24 @@ model ClientUser {
   updatedAt           DateTime  @updatedAt
 }
 
+// Oct 23 2026 (Arielle Roemer never got in): every sign-in link is its own row,
+// so a newer email no longer kills the link in an older one. Single use each
+// (usedAt, set by a conditional update). Emailed links last 7 days, typed ones
+// 15 minutes. ClientUser.loginTokenHash/loginTokenExpiresAt are the LEGACY
+// one-link columns: still read until the links already in inboxes expire,
+// never written again. Plain ref clientUserId -> ClientUser.
+model ClientLoginToken {
+  id           String    @id @default(cuid())
+  clientUserId String
+  tokenHash    String    @unique // sha256 of the raw link token
+  purpose      String    @default("TYPED") // EMAILED | TYPED | STAFF
+  expiresAt    DateTime
+  usedAt       DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([clientUserId])
+}
+
 // One person's seat on one enrollment. Re-read on EVERY request (revokedAt IS
 // NULL) so revocation is immediate despite a stateless cookie. Roles decide
 // who may approve edits, request changes, edit the brand profile and connect

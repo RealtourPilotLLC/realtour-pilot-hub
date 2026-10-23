@@ -156,32 +156,46 @@ export function refusalMessage(viewer: PortalViewer, permission: PortalPermissio
 // value lives in exactly two places — the URL the person opens and, when the
 // switch is on, the outbox row that emails it.
 //
-// HOW LONG (Oct 5 2026). The link a person asks for by typing their email
-// lasts 15 minutes: they are at the sign-in page waiting for it. A link that
-// arrives inside an email we sent on our own clock — a review reminder, a
-// script ready to approve — lasts 24 hours: it is read whenever the inbox is.
+// HOW LONG (Oct 5 2026; Oct 23 2026). The link a person asks for by typing
+// their email lasts 15 minutes: they are at the sign-in page waiting for it. A
+// link that arrives inside an email we sent on our own clock — a review
+// reminder, a script ready to approve — lasts 7 days: it is read whenever the
+// inbox is (Arielle Roemer opened a 24-hour link the next morning).
+//
+// SEVERAL LIVE LINKS (Oct 23 2026). Each link is its own ClientLoginToken row,
+// single use. Minting a new one no longer voids the last, so the link in last
+// week's email still opens while this week's is fresh. The old one-link
+// columns on ClientUser are read (links already in inboxes) and never written.
 // And OPENING a link no longer spends it (src/app/portal/auth/[token]): mail
 // scanners and iMessage previews fetch every link they see, so the page asks
 // for one press and only that press signs the person in.
 // ---------------------------------------------------------------------------
 
 export const LOGIN_TOKEN_TTL_MS = 15 * 60_000;
-export const EMAILED_LINK_TTL_MS = 24 * 3600_000;
+export const EMAILED_LINK_TTL_MS = 7 * 24 * 3600_000;
 const hashToken = (raw: string) => createHash("sha256").update(raw).digest("hex");
 const loginUrl = (raw: string) => `${appBase()}/portal/auth/${raw}`;
 
-/** A person holds a live link they asked for by email address (a 15-minute
- *  one) — the one minting must not cut off. A longer-lived emailed link may be
- *  replaced: the newest email carries the working one. */
+/** A legacy one-link expiry that is a live 15-minute (typed) link. Kept for
+ *  callers that still read ClientUser.loginTokenExpiresAt; since Oct 23 2026
+ *  minting no longer voids anything, so nothing needs protecting from it. */
 export function holdsTypedLoginLink(expiresAt: Date | null | undefined, now: Date = new Date()): boolean {
   return !!expiresAt && expiresAt.getTime() > now.getTime() && expiresAt.getTime() - now.getTime() <= LOGIN_TOKEN_TTL_MS;
 }
 
-async function mintToken(clientUserId: string, ttlMs: number = LOGIN_TOKEN_TTL_MS): Promise<{ raw: string; expiresAt: Date }> {
+export type LoginTokenPurpose = "EMAILED" | "TYPED" | "STAFF";
+
+/** Does this person hold an unused, unexpired link they asked for by typing their address? (The typed-request throttle; emailed links never count.) */
+export async function holdsLiveTypedLink(clientUserId: string, now: Date = new Date()): Promise<Date | null> {
+  const row = await prisma.clientLoginToken.findFirst({ where: { clientUserId, purpose: "TYPED", usedAt: null, expiresAt: { gt: now } }, orderBy: { expiresAt: "desc" }, select: { expiresAt: true } });
+  return row?.expiresAt ?? null;
+}
+
+async function mintToken(clientUserId: string, ttlMs: number = LOGIN_TOKEN_TTL_MS, purpose: LoginTokenPurpose = "TYPED"): Promise<{ raw: string; expiresAt: Date }> {
   const raw = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + ttlMs);
-  // One live token per person: minting again voids the previous link.
-  await prisma.clientUser.update({ where: { id: clientUserId }, data: { loginTokenHash: hashToken(raw), loginTokenExpiresAt: expiresAt } });
+  // Its own row: every link already sent keeps working until it is used or expires.
+  await prisma.clientLoginToken.create({ data: { clientUserId, tokenHash: hashToken(raw), expiresAt, purpose } });
   return { raw, expiresAt };
 }
 
@@ -208,6 +222,14 @@ export type LoginConsumption =
  */
 export async function peekLoginToken(raw: string): Promise<{ ok: true; clientUserId: string } | { ok: false; reason: "invalid" }> {
   if (!/^[A-Za-z0-9_-]{40,60}$/.test(raw)) return { ok: false, reason: "invalid" };
+  const row = await prisma.clientLoginToken.findUnique({ where: { tokenHash: hashToken(raw) }, select: { clientUserId: true, usedAt: true, expiresAt: true } });
+  if (row) {
+    if (row.usedAt || row.expiresAt.getTime() <= Date.now()) return { ok: false, reason: "invalid" };
+    const person = await prisma.clientUser.findUnique({ where: { id: row.clientUserId }, select: { status: true } });
+    if (!person || person.status === "DISABLED") return { ok: false, reason: "invalid" };
+    return { ok: true, clientUserId: row.clientUserId };
+  }
+  // A link minted before Oct 23 2026 (the one-link columns), still in an inbox.
   const holder = await prisma.clientUser.findUnique({ where: { loginTokenHash: hashToken(raw) }, select: { id: true, status: true, loginTokenExpiresAt: true } });
   if (!holder || holder.status === "DISABLED" || !holder.loginTokenExpiresAt || holder.loginTokenExpiresAt.getTime() <= Date.now()) return { ok: false, reason: "invalid" };
   // Oct 22 2026: whose link it is, so the sign-in page can pass a person who is
@@ -218,6 +240,24 @@ export async function peekLoginToken(raw: string): Promise<{ ok: true; clientUse
 export async function consumeLoginToken(raw: string): Promise<LoginConsumption> {
   if (!/^[A-Za-z0-9_-]{40,60}$/.test(raw)) return { ok: false, reason: "invalid" };
   const hash = hashToken(raw);
+  // Oct 23 2026: a link row. Same rules as below, the row is the lock: the
+  // conditional update (unused AND unexpired) wins once, and only this link is
+  // spent; the person's other links keep working.
+  const row = await prisma.clientLoginToken.findUnique({ where: { tokenHash: hash }, select: { id: true, clientUserId: true } });
+  if (row) {
+    const person = await prisma.clientUser.findUnique({ where: { id: row.clientUserId }, select: { id: true, email: true, status: true } });
+    if (!person || person.status === "DISABLED") return { ok: false, reason: "invalid" };
+    const seats = await liveMemberships(person.id);
+    if (seats.length === 0) {
+      await prisma.clientLoginToken.updateMany({ where: { id: row.id, usedAt: null }, data: { usedAt: new Date() } });
+      return { ok: false, reason: "noaccess" };
+    }
+    const spent = await prisma.clientLoginToken.updateMany({ where: { id: row.id, usedAt: null, expiresAt: { gt: new Date() } }, data: { usedAt: new Date() } });
+    if (spent.count !== 1) return { ok: false, reason: "invalid" };
+    await prisma.clientUser.update({ where: { id: person.id }, data: { lastLoginAt: new Date(), status: "ACTIVE" } });
+    await prisma.clientMembership.updateMany({ where: { id: { in: seats.map((m) => m.id) }, clientUserId: person.id, acceptedAt: null, revokedAt: null }, data: { acceptedAt: new Date() } });
+    return { ok: true, clientUserId: person.id, email: person.email };
+  }
   const holder = await prisma.clientUser.findUnique({ where: { loginTokenHash: hash }, select: { id: true, email: true, status: true } });
   if (!holder || holder.status === "DISABLED") return { ok: false, reason: "invalid" };
   // Live AND inside the rollout scope (R03): a person whose only seats are on
@@ -930,8 +970,8 @@ export async function mintLoginLink(membershipId: string, byAppUserId: string | 
     if (!d.ok) throw new Error(`${target.name || "This client"} is not in the program rollout for signing in (${d.reason}). Use their portal link, or add them in ${SCOPE_HOME}.`);
   }
   // A link that goes into one of our emails (a reminder, a script to approve)
-  // lasts 24 hours; staff opening one themselves keep the 15 minutes.
-  const { raw, expiresAt } = await mintToken(m.clientUserId, opts.emailed ? EMAILED_LINK_TTL_MS : LOGIN_TOKEN_TTL_MS);
+  // lasts 7 days (Oct 23 2026); staff opening one themselves keep the 15 minutes.
+  const { raw, expiresAt } = await mintToken(m.clientUserId, opts.emailed ? EMAILED_LINK_TTL_MS : LOGIN_TOKEN_TTL_MS, opts.emailed ? "EMAILED" : "STAFF");
   console.info(`[portal] login link minted for membership ${membershipId} by ${byAppUserId ?? "unknown"} (expires ${expiresAt.toISOString()})`);
   return { url: loginUrl(raw), expiresAt };
 }
@@ -990,7 +1030,11 @@ async function recordLoginRequest(personId: string, why: string): Promise<void> 
 export async function requestLoginLink(emailRaw: string): Promise<void> {
   const email = emailRaw.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return;
-  const person = await prisma.clientUser.findUnique({ where: { email }, select: { id: true, name: true, status: true, loginTokenExpiresAt: true } });
+  // ANY ADDRESS WE KNOW FOR THEM (Oct 23 2026): Arielle Roemer typed her Gmail
+  // (her client email) while her seat signs in with her Fox & Roach address,
+  // and nothing came. An address that is no account's falls back to the client
+  // records; one clear person gets a link, sent to the address they typed.
+  const person = (await prisma.clientUser.findUnique({ where: { email }, select: { id: true, name: true, status: true } })) ?? (await personForKnownAddress(email));
   if (!person || person.status === "DISABLED") return;
   // Live seats the rollout lets them OPEN (portal_sign_in — liveMemberships).
   const seats = await liveMemberships(person.id);
@@ -1030,14 +1074,15 @@ export async function requestLoginLink(emailRaw: string): Promise<void> {
 
   // Throttle on a link THEY asked for (15 minutes). A 24-hour link from one of
   // our emails does not stop them getting a fresh one by typing their address.
-  if (holdsTypedLoginLink(person.loginTokenExpiresAt)) {
-    console.info(`[portal] sign-in link requested for ${person.id} while one is still live (until ${person.loginTokenExpiresAt!.toISOString()}) — not re-sent`);
+  const typedUntil = await holdsLiveTypedLink(person.id);
+  if (typedUntil) {
+    console.info(`[portal] sign-in link requested for ${person.id} while a typed one is still live (until ${typedUntil.toISOString()}) — not re-sent`);
     return;
   }
 
-  const { raw, expiresAt } = await mintToken(person.id);
+  const { raw, expiresAt } = await mintToken(person.id, LOGIN_TOKEN_TTL_MS, "TYPED");
   const { renderSignInLinkEmail } = await import("@/lib/welcomeEmail");
-  const body = renderSignInLinkEmail({ firstName: (person.name ?? "").split(/\s+/)[0] || "there", url: loginUrl(raw) });
+  const body = renderSignInLinkEmail({ firstName: (person.name ?? "").split(/\s+/)[0] || "there", url: loginUrl(raw), lifetime: "15 minutes" });
   const { sendThroughOutbox, portalLoginKey } = await import("@/lib/outbox");
   try {
     const r = await sendThroughOutbox({ channel: "email", toRef: email, body, dedupeKey: portalLoginKey(person.id, expiresAt), clientId: earning.clientId, requestedBy: "portal-login" });
@@ -1047,6 +1092,35 @@ export async function requestLoginLink(emailRaw: string): Promise<void> {
     // form never says whether an address exists).
     console.warn(`[portal] sign-in link for ${person.id} refused: ${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+/**
+ * The ONE person a typed address belongs to when no portal account has it
+ * (Oct 23 2026): the address is the client's own (Client.email, backupEmail,
+ * or one of the program's "also" emails), and the client's live seats name a
+ * single person (the OWNER seat when there are several). Anything else,
+ * nobody: two people behind one address is a guess we do not make.
+ */
+async function personForKnownAddress(email: string): Promise<{ id: string; name: string | null; status: string } | null> {
+  const [clients, enrollments] = await Promise.all([
+    prisma.client.findMany({ where: { OR: [{ email: { equals: email, mode: "insensitive" } }, { backupEmail: { equals: email, mode: "insensitive" } }] }, select: { id: true } }),
+    prisma.contentEnrollment.findMany({ where: { overridesJson: { contains: email, mode: "insensitive" } }, select: { clientId: true, overridesJson: true } }),
+  ]);
+  const { alsoEmailsFromOverrides } = await import("@/lib/clientEmailMonitor");
+  const clientIds = new Set([
+    ...clients.map((c) => c.id),
+    ...enrollments.filter((e) => alsoEmailsFromOverrides(e.overridesJson).some((a) => a.toLowerCase() === email)).map((e) => e.clientId),
+  ]);
+  if (clientIds.size === 0) return null;
+  const seats = await prisma.clientMembership.findMany({ where: { clientId: { in: [...clientIds] }, revokedAt: null }, select: { clientUserId: true, role: true } });
+  const people = [...new Set(seats.map((s) => s.clientUserId))];
+  const owners = [...new Set(seats.filter((s) => s.role === "OWNER").map((s) => s.clientUserId))];
+  const pick = people.length === 1 ? people[0] : owners.length === 1 ? owners[0] : null;
+  if (!pick) {
+    if (people.length > 1) console.info(`[portal] sign-in link asked for a known client address that names ${people.length} people — nothing sent`);
+    return null;
+  }
+  return prisma.clientUser.findUnique({ where: { id: pick }, select: { id: true, name: true, status: true } });
 }
 
 async function nextCount(key: string): Promise<number> {
@@ -1359,6 +1433,7 @@ export async function changeSeatEmail(input: { enrollmentId: string; membershipI
       // stay with it. An unused sign-in link was minted for the OLD address:
       // cleared, so nothing sent there still opens the account.
       prisma.clientUser.update({ where: { id: person.id }, data: { email, loginTokenHash: null, loginTokenExpiresAt: null } }),
+      prisma.clientLoginToken.deleteMany({ where: { clientUserId: person.id, usedAt: null } }),
       prisma.auditLog.create({
         data: {
           actor: input.actor ?? "unknown", action: "portal_sign_in_email_change", target: seat.clientId,
