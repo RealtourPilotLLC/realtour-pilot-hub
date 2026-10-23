@@ -143,7 +143,8 @@ export function CoveragePanel() {
     { label: "Photos in the delivery", have: c.photos, ordered: want.get("Photos ordered (at least)") ?? null },
     { label: "Aerial photos", have: c.aerial, ordered: want.get("Drone photos") ?? null },
     { label: "Twilight photos", have: c.twilight, ordered: want.get("Twilight photos") ?? want.get("Virtual twilight photos") ?? null },
-    { label: "Virtually staged", have: c.staged, ordered: want.get("Virtually staged photos") ?? null },
+    // Only a count reads "of N ordered" (an order that does not say how many is said in "What was ordered").
+    { label: "Virtually staged", have: c.staged, ordered: /^\d+$/.test(want.get("Virtually staged photos") ?? "") ? want.get("Virtually staged photos")! : null },
   ];
   return (
     <div className="space-y-4">

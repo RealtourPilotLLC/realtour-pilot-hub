@@ -2,6 +2,7 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import { prisma } from "@/lib/prisma";
+import { stagedPhotosOrdered } from "@/lib/stagingCount";
 import { actualFolderPaths } from "@/lib/dropboxFolders";
 import { dbx, DropboxError } from "@/lib/integrations/dropbox";
 import { Aryeo } from "@/lib/integrations/aryeo";
@@ -109,6 +110,12 @@ type ExpectedDeliverables = {
   twilightReal?: number;
   twilightVirtual?: number;
   virtualStagingCount?: number;
+  /**
+   * Oct 23 2026: staging is on the order but a line does not say how many
+   * (stagingCount.ts). virtualStagingCount is then what the lines that do say
+   * add up to (often 0); nothing guesses the rest.
+   */
+  virtualStagingUnknown?: boolean;
   /** Oct 14 2026: virtual decluttering ordered (photos). */
   virtualDeclutterCount?: number;
   floorPlan?: boolean;
@@ -128,7 +135,8 @@ export async function expectedFor(projectId: string): Promise<ExpectedDeliverabl
     where: { id: projectId },
     select: {
       title: true, addressLine: true, city: true, state: true, squareFeet: true, photoTarget: true, removalNotes: true, shotOrderNotes: true, editSpec: true, notes: true,
-      deliverables: { where: { removedFromOrderAt: null, waivedAt: null }, select: { type: true, quantity: true, productTitle: true, label: true } },
+      deliverables: { select: { type: true, quantity: true, productTitle: true, label: true, removedFromOrderAt: true, waivedAt: true } },
+      orderItems: { select: { title: true, quantity: true, isCanceled: true } },
     },
   });
   const out: ExpectedDeliverables = { requestedFeatures: [], source: {} };
@@ -144,7 +152,16 @@ export async function expectedFor(projectId: string): Promise<ExpectedDeliverabl
     out.maxPhotos = p.photoTarget;
     out.source.maxPhotos = "culling target (project)";
   }
+  // Oct 23 2026 (Jordan): the staged photos ordered, counted the one way
+  // (stagingCount.ts): the line's quantity, or a custom line's stated number.
+  const staging = stagedPhotosOrdered(p.orderItems, p.deliverables);
+  if (staging.ordered) {
+    out.virtualStagingCount = staging.known;
+    if (staging.count == null) out.virtualStagingUnknown = true;
+    out.source.virtualStagingCount = `order: ${staging.lines.map((l) => `${l.title} ${l.how === "title" ? "(the number in its name)" : l.how === "quantity" ? `× ${l.quantity}` : "(no count on it)"}`).join(", ")}`.slice(0, 200);
+  }
   for (const d of p.deliverables) {
+    if (d.removedFromOrderAt || d.waivedAt) continue;
     const title = `${d.productTitle ?? ""} ${d.label ?? ""}`.toLowerCase();
     const q = Math.max(1, d.quantity ?? 1);
     if (/declutter/.test(title)) {
@@ -162,8 +179,7 @@ export async function expectedFor(projectId: string): Promise<ExpectedDeliverabl
         out.source.twilightReal = `deliverable: ${d.productTitle ?? "twilight"}`;
       }
     } else if (d.type === "VIRTUAL_STAGING") {
-      out.virtualStagingCount = (out.virtualStagingCount ?? 0) + q;
-      out.source.virtualStagingCount = `deliverable: ${d.productTitle ?? "virtual staging"}`;
+      // Counted above, from the order (stagingCount.ts).
     } else if (d.type === "FLOORPLAN") {
       out.floorPlan = true;
       out.source.floorPlan = `deliverable: ${d.productTitle ?? "floor plan"}`;

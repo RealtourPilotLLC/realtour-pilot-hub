@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { clip } from "@/lib/text";
+import { stagedPhotosOrdered } from "@/lib/stagingCount";
 import { photoNumbers } from "@/lib/photoDelivery/careRules";
 import { PHOTO_OFFICE_KEY_PREFIX, PHOTO_SHARED_KEY_PREFIX, isEcho, isOfficeQuestion, isPhotoOnly, itemMediumOf, itemPhotoNumbers, mediumOfItem, type ItemMedium } from "@/lib/itemMedium";
 
@@ -138,18 +139,27 @@ async function route(briefId: string, dryRun: boolean, now: Date, itemsJsonOverr
     where: { id: briefId },
     select: {
       id: true, projectId: true, source: true, originalText: true, itemsJson: true, createdAt: true, requestedBy: true, decisionId: true,
-      project: { select: { title: true, clientId: true, client: { select: { name: true } }, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, quantity: true } } } },
+      project: {
+        select: {
+          title: true, clientId: true, client: { select: { name: true } },
+          orderItems: { select: { title: true, quantity: true, isCanceled: true } },
+          deliverables: { select: { type: true, quantity: true, productTitle: true, label: true, removedFromOrderAt: true, waivedAt: true } },
+        },
+      },
     },
   });
   if (!brief?.project?.clientId || VIDEO_ONLY_SOURCES.has(brief.source) || brief.decisionId) return null;
   // A job with no photo work has no photo side to send anything to.
-  if (!brief.project.deliverables.some((d) => d.type !== "VIDEO" && d.type !== "SOCIAL_REEL")) return null;
+  if (!brief.project.deliverables.some((d) => !d.removedFromOrderAt && d.type !== "VIDEO" && d.type !== "SOCIAL_REEL")) return null;
   const clientId = brief.project.clientId;
   const doc = parse(itemsJsonOverride ?? brief.itemsJson);
   const items = Array.isArray(doc.items) ? doc.items : [];
   const words = brief.originalText;
   const plan: PhotoPartPlan = { briefId, projectId: brief.projectId, steps: [], echoes: [], reopened: false, dryRun };
-  const stagingOrdered = brief.project.deliverables.some((d) => d.type === "VIRTUAL_STAGING");
+  // Oct 23 2026 (Jordan): staged photos ordered = the staging line's quantity,
+  // or the number a custom line's title states; not known otherwise (stagingCount.ts).
+  const staging = stagedPhotosOrdered(brief.project.orderItems, brief.project.deliverables);
+  const stagingOrdered = staging.ordered;
 
   const fresh = (it: Item) => {
     if (isEcho(it.quote, words)) { plan.echoes.push(it.ask); return false; }
@@ -180,8 +190,9 @@ async function route(briefId: string, dryRun: boolean, now: Date, itemsJsonOverr
     // then); the client's words are on the ask either way.
     const qs = officeQs.map((q) => (/[?!]$/.test(q) ? q : `${q}.`)).join(" ");
     // Oct 22 2026 (photo audit M11, 859 N Lawrence St): staging IS on that
-    // order; only the count ordered was exceeded. Said so (officeWhy).
-    const stagedOrdered = brief.project.deliverables.filter((d) => d.type === "VIRTUAL_STAGING").reduce((s, d) => s + Math.max(1, d.quantity ?? 1), 0) * STAGED_PHOTOS_PER_LINE;
+    // order; only the count ordered was exceeded. Said so (officeWhy). Oct 23:
+    // the count is the order's own (no "3 per line"), or not known.
+    const stagedOrdered = staging.ordered ? staging.count : 0;
     const summary = clip(asks ? `${asks}. ${officeWhy(office.map((it) => `${it.ask ?? ""} ${it.detail ?? ""} ${it.quote ?? ""}`), stagedOrdered)}` : qs, 240);
     plan.steps.push({ what: "office", key: `${PHOTO_OFFICE_KEY_PREFIX}${brief.projectId}:${nums || "job"}`, medium: "photo", summary, core: clip(asks || qs, 200), action: "create", askId: null, items: office.map((it) => it.ask), questions: officeQs });
   }
@@ -262,21 +273,18 @@ async function route(briefId: string, dryRun: boolean, now: Date, itemsJsonOverr
 }
 
 /**
- * Staged photos one "Virtual Staging" order line buys (photo audit M11: 859 N
- * Lawrence St's one line covered 3 photos, "only the count of 3 was exceeded";
- * the books read "pics + 3 virtual staging" the same way).
- */
-export const STAGED_PHOTOS_PER_LINE = 3;
-
-/**
  * Why an office question is the office's (pure; photo audit M11). Staging
  * asked for on an order that has staging is more than was ordered, never "not
- * on the order": "More than the 3 staged photos ordered: confirm …".
+ * on the order": "More than the 1 staged photo ordered: confirm …".
+ * `stagedOrdered`: the staged photos the order buys (stagingCount.ts), 0 when
+ * it has no staging, null when staging is on it but no line says how many
+ * (Oct 23 2026: never a guess; the office is asked the count too).
  */
-export function officeWhy(itemWords: string[], stagedOrdered: number): string {
+export function officeWhy(itemWords: string[], stagedOrdered: number | null): string {
   const tail = "confirm the scope or price with the client first.";
   const staging = itemWords.some((w) => /\bstag(?:e|ed|ing)\b/i.test(w));
-  if (staging && stagedOrdered > 0) return `More than the ${stagedOrdered} staged photo${stagedOrdered === 1 ? "" : "s"} ordered: ${tail}`;
+  if (staging && stagedOrdered == null) return "Virtual staging is on the order, but not how many photos: confirm the count, scope or price with the client first.";
+  if (staging && stagedOrdered != null && stagedOrdered > 0) return `More than the ${stagedOrdered} staged photo${stagedOrdered === 1 ? "" : "s"} ordered: ${tail}`;
   return `Not on the order: ${tail}`;
 }
 

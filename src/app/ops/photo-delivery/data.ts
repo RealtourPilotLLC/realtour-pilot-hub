@@ -573,7 +573,7 @@ export function cvSummary(json: string | null): CvMetric[] {
 }
 
 type Expected = {
-  minPhotos?: number; maxPhotos?: number; droneCount?: number; twilightReal?: number; twilightVirtual?: number; virtualStagingCount?: number;
+  minPhotos?: number; maxPhotos?: number; droneCount?: number; twilightReal?: number; twilightVirtual?: number; virtualStagingCount?: number; virtualStagingUnknown?: boolean;
   floorPlan?: boolean; sqft?: number; propertyType?: string; requestedFeatures?: string[]; specialInstructions?: string; source?: Record<string, string>;
   bedrooms?: number; bathrooms?: number;
 };
@@ -590,7 +590,8 @@ function expectedRows(e: Expected | null): ExpectedView {
   add("droneCount", "Drone photos", typeof e.droneCount === "number" ? String(e.droneCount) : null);
   add("twilightReal", "Twilight photos", typeof e.twilightReal === "number" ? String(e.twilightReal) : null);
   add("twilightVirtual", "Virtual twilight photos", typeof e.twilightVirtual === "number" ? String(e.twilightVirtual) : null);
-  add("virtualStagingCount", "Virtually staged photos", typeof e.virtualStagingCount === "number" ? String(e.virtualStagingCount) : null);
+  // Oct 23 2026: a staging line that does not say how many is said so, never guessed (stagingCount.ts).
+  add("virtualStagingCount", "Virtually staged photos", e.virtualStagingUnknown ? "Not on the order: ask the office" : typeof e.virtualStagingCount === "number" ? String(e.virtualStagingCount) : null);
   add("floorPlan", "Floor plan", e.floorPlan ? "Ordered" : null);
   add("sqft", "Size", typeof e.sqft === "number" ? `${e.sqft.toLocaleString("en-US")} sq ft (top of the ordered band)` : null);
   add("propertyType", "Property type", typeof e.propertyType === "string" && e.propertyType ? e.propertyType : null);
