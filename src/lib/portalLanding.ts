@@ -45,6 +45,9 @@ export const PORTAL_LANDING = {
   strategy: "?tab=plan&pv=strategy",
   messages: "?tab=messages",
   brand: "?tab=brand",
+  /** One topic's open questions (CP-08's shape; Oct 23 2026, a question request). */
+  topicQuestions: (interviewId: string, enrollmentId?: string | null) =>
+    /^[a-z0-9]{10,40}$/.test(interviewId) ? `?${enrollmentId && /^[a-z0-9]{10,40}$/.test(enrollmentId) ? `e=${enrollmentId}&` : ""}tab=topics&iv=${interviewId}` : "?tab=plan",
   /** An office reply under a script, on the Scripts view, scrolled to it
    *  (the shape programMessages.scriptReplyLink uses). */
   scriptReply: (enrollmentId: string, messageId: string) =>

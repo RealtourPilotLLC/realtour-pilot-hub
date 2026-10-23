@@ -1981,6 +1981,50 @@ export async function returnScriptAction(scriptId: string, note: string): Promis
   } catch (e) { return fail(e); }
 }
 
+/**
+ * SEND QUESTION REQUEST (Oct 23 2026, Jordan): withdraw a draft the client has
+ * not seen, ask the client three to five AI-written questions about its topic,
+ * and email them a one-tap link to answer (lib/questionRequests). The same
+ * guard as "Ask AI to revise": owner, admin and the creative manager, never
+ * while previewing as someone else (requireRole refuses view-as).
+ */
+export async function sendQuestionRequestAction(scriptId: string): Promise<Result & { requestId?: string }> {
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const s = await prisma.contentScript.findUnique({ where: { id: String(scriptId ?? "") }, select: { id: true, enrollmentId: true } });
+    if (!s) return { ok: false, message: "That script no longer exists." };
+    const { sendQuestionRequest } = await import("@/lib/questionRequests");
+    const r = await sendQuestionRequest(s.id, { email: me.email, appUserId: me.id });
+    path(s.enrollmentId);
+    return { ok: true, message: r.message, requestId: r.requestId };
+  } catch (e) { return fail(e); }
+}
+
+/** Undo a question request: the withdrawn draft is the topic's script again, and no further email goes. */
+export async function undoQuestionRequestAction(requestId: string): Promise<Result> {
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { undoQuestionRequest } = await import("@/lib/questionRequests");
+    const r = await undoQuestionRequest(String(requestId ?? ""), { email: me.email, appUserId: me.id });
+    path(r.enrollmentId);
+    return { ok: true, message: r.message };
+  } catch (e) { return fail(e); }
+}
+
+/** Resend a question request: a new email with a new one-tap link. */
+export async function resendQuestionRequestAction(requestId: string): Promise<Result> {
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { resendQuestionRequest } = await import("@/lib/questionRequests");
+    const r = await resendQuestionRequest(String(requestId ?? ""), { email: me.email, appUserId: me.id });
+    path(r.enrollmentId);
+    return { ok: r.outcome === "sent" || r.outcome === "skipped", message: r.message };
+  } catch (e) { return fail(e); }
+}
+
 // ---- client facts ---------------------------------------------------------------------------
 export async function factDecision(factId: string, decision: "ACCEPT" | "REJECT" | "UNDO", opts: { scope?: FactScope; monthId?: string | null; projectId?: string | null; category?: FactCategory } = {}): Promise<Result> {
   try { await requireCreativeLead(); } catch (e) { return fail(e); }

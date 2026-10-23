@@ -24,7 +24,7 @@ import { type VideoStyle, type VideoFormat, type SkitCastMember, asVideoStyle, c
 export type JsonSchema = Record<string, unknown>;
 
 export type PromptBundle = {
-  name: "strategy" | "topic-bank" | "script" | "interview-plan" | "interview-follow-up" | "caption";
+  name: "strategy" | "topic-bank" | "script" | "interview-plan" | "interview-follow-up" | "caption" | "question-request";
   system: string;
   user: string;
   outputSchema: JsonSchema;
@@ -1142,6 +1142,86 @@ export function buildInterviewPlanPrompt(ctx: ClientContext, opts: { topic: Topi
     .filter(Boolean)
     .join("\n");
   return { name: "interview-plan", system, user, outputSchema: INTERVIEW_PLAN_OUTPUT_SCHEMA, stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
+}
+
+// ---------------------------------------------------------------------------
+// 4b. A QUESTION REQUEST (Oct 23 2026, Jordan): "AI creates the questions
+// based on the topic, the client, and what we know about them, and anything
+// they talked about on the strategy call for that month, if applicable." The
+// office withdrew a draft that did not have enough of the client in it; three
+// to five questions go to the client for that ONE topic, each on one of the
+// six house roles (assembleScriptInputs reads answers by role), each one the
+// client can answer on a phone in a sentence or two.
+// ---------------------------------------------------------------------------
+
+export const QUESTION_REQUEST_OUTPUT_SCHEMA: JsonSchema = {
+  type: "object",
+  required: ["questions"],
+  additionalProperties: false,
+  properties: {
+    questions: {
+      type: "array",
+      minItems: 3,
+      maxItems: 5,
+      description: "Three to five questions, in the order the client should answer them. Each id at most once.",
+      items: {
+        type: "object",
+        required: ["id", "ask"],
+        additionalProperties: false,
+        properties: {
+          id: { type: "string", enum: ["audienceProblem", "pointOfView", "talkingPoints", "evidence", "story", "nextAction"], description: "The house role this question fills." },
+          ask: { type: "string", description: "The question as the client reads it on a phone: one short sentence (under 25 words), plain words, specific to this topic and this client. No em dashes." },
+        },
+      },
+    },
+  },
+};
+
+export function buildQuestionRequestPrompt(ctx: ClientContext, opts: {
+  topic: Topic;
+  plan: readonly InterviewQuestion[];
+  /** This month's strategy call about the topic, already confidential- and other-client-scrubbed. Empty = no call this month. */
+  callText: string;
+  /** Answers the client already gave on this topic (so nothing is asked twice). */
+  priorAnswers: { question: string; answer: string }[];
+}): PromptBundle {
+  assertClientScoped(ctx, opts.topic);
+  const system = [
+    "You write the few questions a Realtour Pilot client answers about ONE video topic, so the office can finish that video's script in the client's own voice.",
+    "",
+    "The office read the draft and it did not have enough of the client in it. Your questions get what is missing: the client's real stories, numbers they can stand behind, and their honest opinions on this topic.",
+    "",
+    "RULES:",
+    "- Three to five questions. Fewer is better when fewer will do.",
+    "- Each question fills ONE of the house roles below (its id), each id at most once. Always include pointOfView and talkingPoints. Include audienceProblem unless the topic already says plainly what the viewer gets wrong or worries about.",
+    "- One short sentence each, under 25 words, plain words a client answers on a phone in a sentence or two. No stacked questions, no jargon, no em dashes.",
+    "- Specific to this topic and this client. Name the actual subject (the town, the situation, the kind of buyer or seller), never \"this topic\".",
+    "- Ask for THEIR experience: a time it happened, a number from their own business, what they tell their own clients. Never suggest the answer, never offer an example, a number or a story for them to agree with.",
+    "- Never ask for what the client file, the earlier answers or this month's call already settle. Build on it: ask them to go one level deeper.",
+    "- The call, the file and the earlier answers are background for YOU. Never quote them, never mention a call, a note or anything said in private, and never name another person, a price or a deal from them.",
+    "",
+    NO_INVENTION_RULE,
+    "",
+    "OUTPUT: one JSON object matching the schema.",
+  ].join("\n");
+  const user = [
+    contextBlock(ctx),
+    "",
+    `TOPIC: ${opts.topic.title}${opts.topic.pillarRef.pillarName ? ` (pillar: ${opts.topic.pillarRef.pillarName})` : ""}`,
+    opts.topic.description ? `TOPIC CONCEPT: ${opts.topic.description}` : "",
+    opts.topic.audienceNeed ? `AUDIENCE NEED: ${opts.topic.audienceNeed}` : "",
+    opts.topic.intendedMessage ? `INTENDED TAKEAWAY: ${opts.topic.intendedMessage}` : "",
+    opts.priorAnswers.length ? `\nWHAT THE CLIENT ALREADY ANSWERED ABOUT THIS TOPIC (do not ask it again; go deeper):\n${opts.priorAnswers.map((a) => `- Q: ${a.question}\n  A: ${a.answer}`).join("\n")}` : "",
+    opts.callText.trim()
+      ? `\nTHIS MONTH'S STRATEGY CALL, the parts about this topic (background only, never quoted or mentioned; speaker labels show who said what, and only the client's own lines are the client's experience):\n${opts.callText.trim()}`
+      : "\nTHIS MONTH'S STRATEGY CALL: none held, or it did not cover this topic.",
+    "",
+    "THE HOUSE ROLES (pick three to five; each id at most once):",
+    ...opts.plan.map((q) => `- id "${q.id}" · ${q.rule} · captures: ${q.captures}`),
+  ]
+    .filter((l) => l !== "")
+    .join("\n");
+  return { name: "question-request", system, user, outputSchema: QUESTION_REQUEST_OUTPUT_SCHEMA, stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
 }
 
 // ---------------------------------------------------------------------------

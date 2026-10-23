@@ -81,6 +81,7 @@ export const REMINDER_ACTION_LABELS: Record<ReminderTemplateAction, string> = {
   CONFIRM_ADDRESS: "Confirm the filming address", APPROVE_SCRIPTS: "Approve scripts before filming",
   BRAND_KIT: "Send the logo and brand colors (weekly)",
   PICK_TOPICS: "Pick this month's topics",
+  QUESTION_REQUEST: "Answer a few questions about one topic",
 };
 
 /** Same pure renderer as sending, with fictional sample values and no links. */
@@ -98,6 +99,7 @@ export function previewPolicyTemplate(policy: PolicyObject, action: ReminderTemp
     sessionWhen: "[confirmed filming time]", areaText: "[client's general area]", addressLink: "[this session's address link]",
     sessionDay: "[confirmed filming day]", approvalDeadline: "[session time minus the saved approval lead time]",
     firstCallAtET: null, callLink: "[strategy call link]", setupMissing: ["logo", "brand colors"],
+    topicTitle: "[the topic]", questionCount: 4,
   };
   return { id: template.id, body: renderReminder(template, vars) };
 }

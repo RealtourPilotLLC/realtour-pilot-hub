@@ -123,7 +123,7 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
           <ScriptUploadPanel enrollmentId={id} monthId={uploadMonth.id} monthName={monthShort} clientName={client.name.split(" ")[0] || client.name} batches={uploads.batches} monthHasScripts={uploads.monthHasScripts} />
         )}
         <ScriptRequestsPanel groups={requests} />
-        <ScriptsPanel enrollmentId={id} scripts={d.scripts} queueCount={d.queueCount} scriptOwner={d.scriptOwner} owed={d.owed} revising={d.revising} drafting={d.drafting} queueActive={d.queueActive} />
+        <ScriptsPanel enrollmentId={id} scripts={d.scripts} queueCount={d.queueCount} scriptOwner={d.scriptOwner} owed={d.owed} revising={d.revising} drafting={d.drafting} queueActive={d.queueActive} questionRequests={d.questionRequests} />
       </div>
     );
   }
