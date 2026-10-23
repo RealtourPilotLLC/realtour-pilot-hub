@@ -169,8 +169,10 @@ export const WRITER_VERSION = "writer.v2.6-2026-10-23";
 //      the brief's topic, angle, her proof and her own words, with a short
 //      prompt: the five parts and what each does, her voice, 55 to 85 words,
 //      the close, no dashes or durations, never invent or put words in
-//      anyone's mouth, her phrases where they fit; and three hand-written
-//      scripts as examples of the bar (shape and voice, never content).
+//      anyone's mouth, her phrases where they fit; and, as the bar, up to
+//      three scripts Jordan approved and sent to OTHER clients, read from the
+//      hub at draft time (scriptWriter/barExamples: shape and voice, never
+//      content; none qualifying, none shown).
 //      Every other rule left the prompt for code (advice) or the brief.
 //   2. THE REVIEW READS IT AS A VIEWER FIRST: one thought, she would say it,
 //      the hook lands and the rest follows, nothing invented; then a 1 to 10
@@ -431,6 +433,10 @@ export type ScriptParts = { hook: string; points: { role: string | null; text: s
 export const spokenTextOf = (p: ScriptParts) => [p.hook, ...p.points.map((x) => x.text), p.close].filter(Boolean).join("\n");
 
 const DASH_RE = /[‒–—―]|(?<!-)--(?!-)/;
+/** An em dash, an en dash or a double hyphen used as punctuation (pure). */
+export function hasDash(text: string): boolean {
+  return DASH_RE.test(text ?? "");
+}
 const DURATION_RES = [
   /[([]\s*~?\d+(?:\.\d+)?\s*(?:s|secs?|seconds?|mins?|minutes?)\s*[)\]]/i, // (10 seconds) [30s]
   /[([]\s*\d{1,2}:\d{2}\s*[)\]]/, // [0:15]

@@ -21,8 +21,9 @@ import { readWriter, type TopicBrief, type WriterPassage, type WriterRecord, typ
 //   brief       the topic brief: one angle, one proof, her phrases, what is
 //               kept and what is left out         (claude-sonnet-5-5, medium)
 //   draft       v2.6: ONE call writes the whole script, all five parts
-//               together, from the brief and her own words, with three
-//               examples of the bar                (claude-sonnet-5-5, high)
+//               together, from the brief and her own words, with up to
+//               three scripts Jordan approved and sent to other clients as
+//               the bar (barExamples.ts)           (claude-sonnet-5-5, high)
 //   review      v2.6: reads it as a viewer FIRST (one thought, she would say
 //               it, the hook lands and the rest follows, nothing invented)
 //               and gives a 1 to 10 read; then code's hard checks (the 110

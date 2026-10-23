@@ -51,9 +51,12 @@
 //       filmed are never the proof
 //   18. the live deal never reaches the script (v2.5); the build-up advice;
 //       the brief's contradiction rule
-//   19. v2.6 itself: the short prompt in full and the examples of the bar
-//       (never the one on this topic); the review's four questions and its
-//       read; calls per script; a v2.5 record mid-loop
+//   19. v2.6 itself: the short prompt in full; the bar: scripts Jordan
+//       approved and sent to OTHER clients, picked at draft time (never
+//       hers, never one another login approved, never over length, dashed,
+//       imported or a skit, one per client; none qualifying, none shown);
+//       the review's four questions and its read; calls per script; a v2.5
+//       record mid-loop
 //   Sections 2 to 18 were re-pointed for v2.6 where the behaviour changed on
 //   purpose: the hooks step, the trims, the fix rounds that patched one part,
 //   the runner-up hook, the craft gate and the third round are gone, and the
@@ -139,6 +142,21 @@ const HOOK_WIN_B = "I loved working in senior living. So why did I leave?";
 const REWRITE_HOOK = "Most of what you would fix before listing is not what the buyers judge.";
 /** v2.6: a seller's line nobody said, as the Doorknob hook had one (code fails it: a quotation her sources do not contain). */
 const INVENTED_QUOTE_LINE = "My seller told me, \"I'm not replacing a doorknob for them. If they push, they can walk.\" It cost her $4,700.";
+
+/** v2.6, the bar (scriptWriter/barExamples): an OWNER login and a creative manager's (ADMIN), and the hooks of the scripts seeded as released. */
+const OWNER_EMAIL = "owner@drill.test";
+const JAMES_EMAIL = "james@drill.test";
+const HOOK_ONE_OLD = "Older pick from the first agent, never shown beside her newer one.";
+const HOOK_ONE_NEW = "Newer pick from the first agent, shown first because it went out last.";
+const HOOK_TWO_JAMES = "A script the creative manager approved, never the bar.";
+const HOOK_TWO_LONG = "A script that runs far past the cap for the drill.";
+const HOOK_TWO_DASH = "A script whose build-up carries a dash for the drill.";
+const HOOK_TWO_SHORT = "A script too short to be the bar for the drill.";
+const HOOK_TWO_GOOD = "Steady pick from the second agent, sent early in the month.";
+const HOOK_THREE_IMPORT = "An imported script from the filmed archive, never the bar.";
+const HOOK_THREE_SKIT = "A skit with two speakers that the bar never shows.";
+const HOOK_THREE_SAME = "Third agent pick that shares its title with a drill topic.";
+const HOOK_HERS = "One of her own released scripts, never her own bar.";
 
 // ---- the fake Anthropic API ------------------------------------------------------
 type Req = { step: string; body: Record<string, unknown>; headers: Record<string, string>; system: string; prompt: string };
@@ -320,6 +338,37 @@ async function main() {
     const same = await histScript("Why Pre-Listing Inspections Can Make Sellers More Money", "You fix the repairs that protect your sale. You use your own people. You control the cost.");
     await histScript("Why Honesty Matters More Than Winning", "I tell you the truth even when it is not what you want to hear.");
     await prisma.appSetting.create({ data: { key: pipe.WRITER_SWITCH_KEY, value: JSON.stringify({ on: true }) } });
+    // v2.6, THE BAR (scriptWriter/barExamples): scripts approved by an OWNER login and sent to OTHER clients.
+    // An owner and a creative manager (ADMIN); three other clients; one of hers.
+    await prisma.appUser.create({ data: { email: OWNER_EMAIL, role: "OWNER", status: "ACTIVE" } });
+    await prisma.appUser.create({ data: { email: JAMES_EMAIL, role: "ADMIN", status: "ACTIVE" } });
+    const { createScriptVersion } = await import("@/lib/contentScripts");
+    const barClient = async (name: string) => { const cl = await prisma.client.create({ data: { name } }); const en = await prisma.contentEnrollment.create({ data: { clientId: cl.id, package: "Pro", videosPerMonth: 4, sessionsPerMonth: 1, sessionHours: 2 } }); return { clientId: cl.id, enrollmentId: en.id }; };
+    /** One released script: the hook given, a 12-word re-hook, a build-up of `build` words, a 14-word payoff, a 12-word close. */
+    const sent = async (who: { enrollmentId: string }, title: string, hook: string, o: { at: string; by?: string; source?: string; build?: number; dash?: boolean; skit?: boolean }) => {
+      const build = `${words(o.build ?? 20, 2).replace(/\.$/, "")}${o.dash ? " — and that is the point" : ""}.`;
+      const r = await createScriptVersion({ enrollmentId: who.enrollmentId, parts: { title, hook, points: [{ role: "re-hook", text: words(12, 1) }, { role: "build-up", text: build }, { role: "payoff", text: words(14, 4) }], close: words(12, 6), ...(o.skit ? { speakerLabels: ["AGENT", "BUYER"] } : {}) }, source: "AI", createdBy: "drill", status: "INTERNAL_REVIEW" });
+      // Every version written through the hub loses its dashes (the no-dash rule), so a dashed script is put on the row as an older one would sit there.
+      if (o.dash) await prisma.contentScriptVersion.update({ where: { id: r.versionId }, data: { pointsJson: JSON.stringify([{ role: "re-hook", text: words(12, 1) }, { role: "build-up", text: build }, { role: "payoff", text: words(14, 4) }]) } });
+      await prisma.contentScript.update({ where: { id: r.scriptId }, data: { source: o.source ?? "ai", approvedAt: new Date(o.at), approvedBy: o.by ?? OWNER_EMAIL, sharedAt: new Date(o.at), approvedVersionId: r.versionId, sharedVersionId: r.versionId } });
+      return r.scriptId;
+    };
+    const barOne = await barClient("Olivia Barrow");
+    const barTwo = await barClient("Peter Quillon");
+    const barThree = await barClient("Rosa Dimarco");
+    const BAR = {
+      oneOld: await sent(barOne, "Staging Before You List", HOOK_ONE_OLD, { at: "2026-10-10T15:00:00Z" }),
+      oneNew: await sent(barOne, "Why Your First Weekend Matters", HOOK_ONE_NEW, { at: "2026-10-12T15:00:00Z" }),
+      twoJames: await sent(barTwo, "A Script James Approved", HOOK_TWO_JAMES, { at: "2026-10-15T15:00:00Z", by: JAMES_EMAIL }),
+      twoLong: await sent(barTwo, "A Script That Runs Long", HOOK_TWO_LONG, { at: "2026-10-14T15:00:00Z", build: 82 }),
+      twoDash: await sent(barTwo, "A Script With A Dash", HOOK_TWO_DASH, { at: "2026-10-13T15:00:00Z", dash: true }),
+      twoShort: await sent(barTwo, "A Script That Is Too Short", HOOK_TWO_SHORT, { at: "2026-10-12T16:00:00Z", build: 2 }),
+      twoGood: await sent(barTwo, "Pricing The First Week", HOOK_TWO_GOOD, { at: "2026-10-05T15:00:00Z" }),
+      threeImport: await sent(barThree, "An Imported Script", HOOK_THREE_IMPORT, { at: "2026-10-11T15:00:00Z", source: "import" }),
+      threeSkit: await sent(barThree, "A Skit", HOOK_THREE_SKIT, { at: "2026-10-10T16:00:00Z", skit: true }),
+      threeSame: await sent(barThree, TOPIC_A, HOOK_THREE_SAME, { at: "2026-10-09T15:00:00Z" }),
+      hers: await sent({ enrollmentId: f.enrollmentId }, "One Of Her Own", HOOK_HERS, { at: "2026-10-20T15:00:00Z" }),
+    };
 
     // =======================================================================
     c.head("1 · the model path (claude-opus-5-5, structured output, effort, no forced tool)");
@@ -799,7 +848,7 @@ async function main() {
         "But my house is different. Maybe it is. But that doesn't automatically mean it'll sell for more. The market has changed. But some homeowners still expect a bidding war by Sunday. Buyers have options. Your neighbor's sale isn't the whole story, and pricing, preparation, and marketing all matter. That's why I study what's selling, what's sitting, and what buyers are passing over. I'll give you honest advice on what to do next. There are still great opportunities. And your home is different! That's why it deserves a strategy built for today's market. Let's talk.",
         "The repairs you think your house needs before you sell? They might not be where your money should go. Sometimes, fresh paint and rearranging furniture do more than an expensive renovation. But preparation goes deeper than appearances. Buyers and their agents are also looking at the roof, major systems, and any signs of potentially costly problems. That's why I recommend a pre-listing inspection. We can identify issues early and decide what to repair, refresh, or leave alone before negotiations. I'm here to help you see your home through their eyes. Before you change everything, let's talk about what actually matters.",
       ].join("\n");
-      const allRules = [prompts.RETRIEVAL_SYSTEM, prompts.BRIEF_SYSTEM, prompts.WRITER_SYSTEM, prompts.REVIEW_SYSTEM, prompts.DRAFT_ASK, prompts.REWRITE_ASK, rules.CLOSE_RULE, rules.HOUSE_CRAFT_RULES, rules.WORDING_RULE, rules.HOMEOWNER_LANGUAGE_RULE, rules.trimInstruction(98), JSON.stringify([prompts.BRIEF_SCHEMA, prompts.DRAFT_SCHEMA, prompts.REVIEW_SCHEMA, prompts.BAR_EXAMPLES])].join("\n");
+      const allRules = [prompts.RETRIEVAL_SYSTEM, prompts.BRIEF_SYSTEM, prompts.WRITER_SYSTEM, prompts.REVIEW_SYSTEM, prompts.DRAFT_ASK, prompts.REWRITE_ASK, rules.CLOSE_RULE, rules.HOUSE_CRAFT_RULES, rules.WORDING_RULE, rules.HOMEOWNER_LANGUAGE_RULE, rules.trimInstruction(98), JSON.stringify([prompts.BRIEF_SCHEMA, prompts.DRAFT_SCHEMA, prompts.REVIEW_SCHEMA])].join("\n");
       const leaked = rules.pastedRuns(FINALS, allRules, 5);
       c.ok("no run of five or more words from Jordan's three finals appears in any rule, system prompt or schema", leaked.length === 0, leaked.join(" | "));
       c.ok("…nor their signature phrases", !/fiercely protect|every bit as scary|my house is different|bidding war|first home or your next chapter|through their eyes|senior living/i.test(allRules));
@@ -885,7 +934,7 @@ async function main() {
     {
       c.ok("a format agreed on the call: house craft, the retrieval, the brief (never internal talk), and the writer is told it", rules.HOUSE_CRAFT_RULES.includes("A format agreed on the call (word association, two voices, a trend alert) is a creative decision the script follows, not production talk.") && prompts.RETRIEVAL_SYSTEM.includes("A FORMAT AGREED ON THE CALL for this video (word association, two voices, a trend alert) is a creative decision the script follows, never internal talk") && prompts.BRIEF_SYSTEM.includes("A format agreed on the call for this video is never internal talk and never excluded") && /\nAgreed format: word association, dry humor\.\n/.test(prompts.writerBriefText({ topic: { title: "t" } } as never, pipe.briefFrom({ creativeIdeas: [{ text: "Agreed format: word association, dry humor.", source: "call" }] } as never, []))));
       c.ok("WRITER_VERSION is writer.v2.6-2026-10-23, on every writer run and in the writer's prompt", rules.WRITER_VERSION === "writer.v2.6-2026-10-23" && (await prisma.programAiRun.count({ where: { kind: "script_review", promptVersion: "writer.v2.6-2026-10-23" } })) > 0 && /\(writer\.v2\.6-2026-10-23\)/.test(prompts.WRITER_SYSTEM));
-      c.ok("no dash in any rule, prompt or example the model reads (it copies punctuation; the no-dash rule's own text aside)", ![prompts.RETRIEVAL_SYSTEM, prompts.BRIEF_SYSTEM, prompts.WRITER_SYSTEM, prompts.REVIEW_SYSTEM, prompts.DRAFT_ASK, prompts.REWRITE_ASK, rules.CLOSE_RULE, rules.HOUSE_CRAFT_RULES, rules.HOMEOWNER_LANGUAGE_RULE, ...rules.REVIEW_CHECKS.map((x) => x.passes), JSON.stringify(prompts.BAR_EXAMPLES)].some((t) => /[‒–—―]/.test(t.split(rules.NO_DASH_RULE).join(""))));
+      c.ok("no dash in any rule or prompt the model reads (an example with one is never picked, 19.1) (it copies punctuation; the no-dash rule's own text aside)", ![prompts.RETRIEVAL_SYSTEM, prompts.BRIEF_SYSTEM, prompts.WRITER_SYSTEM, prompts.REVIEW_SYSTEM, prompts.DRAFT_ASK, prompts.REWRITE_ASK, rules.CLOSE_RULE, rules.HOUSE_CRAFT_RULES, rules.HOMEOWNER_LANGUAGE_RULE, ...rules.REVIEW_CHECKS.map((x) => x.passes)].some((t) => /[‒–—―]/.test(t.split(rules.NO_DASH_RULE).join(""))));
     }
     // =======================================================================
     c.head("16 · the model map: each step's model and effort; the cached prefix of the second review; the cost of each model");
@@ -1132,27 +1181,52 @@ async function main() {
     // thinking about the topic, or the agent and what they said completely.
     // Like it's overanalyzing and overcompensating, maybe?"
     // =======================================================================
-    c.head("19.1 · the drafting prompt: the short rule list, and three hand-written scripts as the bar (never the one on this topic)");
+    c.head("19.1 · the drafting prompt: the short rule list; the bar is scripts Jordan approved and sent to OTHER clients, picked at draft time");
     {
       const sys = prompts.WRITER_SYSTEM;
       c.ok("the five parts and what each does, written as ONE thought", sys.includes("Write the whole script as ONE thought, in five parts that follow from each other:") && ["- HOOK: the first line. It lands on its own", "- RE-HOOK: the next line raises it", "- BUILD-UP: what makes it true: her proof from the brief", "- PAYOFF: the answer to the hook, in a line the viewer could repeat.", "- CLOSE: a call to action tied to the message, or a line that pays off the hook."].every((x) => sys.includes(x)));
       c.ok("her voice (first person, as she talks; her phrases where they fit); 55 to 85 words; no dashes or durations; never invent, never words in anyone's mouth", sys.includes("Her voice: she is the one speaking, in the first person, the way she talks. Use her phrases where they fit.") && sys.includes("Length: 55 to 85 spoken words.") && sys.includes("No em dashes or en dashes. No durations or timing notes.") && sys.includes("Never invent a fact, a number, a quote or a story, and never put words in anyone else's mouth: only what her sources say."));
       c.ok("…and nothing else: none of the old rule blocks, and a short prompt (under 2,000 characters; v2.5's was over 9,000)", sys.length < 2000 && !/HOUSE CRAFT|HER MATERIAL, OUR WORDING|PLAIN WORDS FOR HOMEOWNERS|OUR ASSUMPTIONS ARE NOT|BACKGROUND IS NOT|NEITHER VERSION WINS|CLOSE \(Jordan|LENGTH \(Jordan|TRUTH:|THE FRAMEWORK/.test(sys), String(sys.length));
-      c.ok("the examples are labelled shape and voice, never content", sys.includes("The examples show the bar, in shape and voice. They are other videos: never copy their content, lines, facts or stories."));
+      c.ok("the examples are named for what they are (approved and sent to other clients), shape and voice, never content", sys.includes("Any examples below are scripts Jordan approved and sent to other clients: they show the bar, in shape and voice. Never copy their content, lines, facts or stories."));
       const draftA = reqs.find((r) => r.step === "draft" && r.prompt.includes(TOPIC_A))?.prompt ?? "";
-      const exHooks = prompts.BAR_EXAMPLES.map((e) => e.hook);
-      c.ok("the draft prompt carries three of the hand-written scripts, each in its five labelled parts, labelled as the bar", /EXAMPLES OF THE BAR \(3 scripts written to this standard for OTHER videos\. They show the shape and the voice: one thought from the first line to the last, short spoken sentences, a hook that lands at once\. Never copy their content, lines, facts or stories\.\)/.test(draftA) && (draftA.match(/--- Example \d ---\nHOOK: /g) ?? []).length === 3 && exHooks.slice(0, 3).every((h) => draftA.includes(`HOOK: ${h}`)) && draftA.includes("HOOK: People lose houses over doorknobs."));
-      const door = prompts.barExamplesFor("I Once Watched a Deal Fall Apart Over a Doorknob");
-      const nest = prompts.barExamplesFor("Empty Nesters Are Upsizing, Not Downsizing");
-      c.ok("never the one on this topic: writing Erica's Doorknob video shows the other three, never \"People lose houses over doorknobs.\"; Empty Nesters likewise", door.length === 3 && !door.some((e) => /doorknob/i.test(e.hook)) && nest.length === 3 && !nest.some((e) => /empty nesters/i.test(e.hook)) && door.some((e) => /empty nesters/i.test(e.hook)), door.map((e) => e.hook.slice(0, 30)).join(" | "));
-      const ctxD = { clientName: "Erica Walker", guardBlock: "", boundaries: ["Never mention her divorce"], topic: { title: "I Once Watched a Deal Fall Apart Over a Doorknob" }, answers: [], voiceRefs: [], captionExamples: [] } as never;
+      const draftB = reqs.find((r) => r.step === "draft" && r.prompt.includes(TOPIC_B))?.prompt ?? "";
+      const SKIPPED = [HOOK_ONE_OLD, HOOK_TWO_JAMES, HOOK_TWO_LONG, HOOK_TWO_DASH, HOOK_TWO_SHORT, HOOK_THREE_IMPORT, HOOK_THREE_SKIT, HOOK_HERS];
+      c.ok("topic A's draft: the most recent qualifying script of each OTHER client, in five labelled parts, under the label \"scripts Jordan approved and sent to other clients\"", /EXAMPLES OF THE BAR \(2 scripts Jordan approved and sent to other clients\. They show the shape and the voice: one thought from the first line to the last, short spoken sentences, a hook that lands at once\. Never copy their content, lines, facts or stories\.\)/.test(draftA) && draftA.indexOf(`--- Example 1 ---\nHOOK: ${HOOK_ONE_NEW}`) > 0 && draftA.indexOf(`--- Example 2 ---\nHOOK: ${HOOK_TWO_GOOD}`) > draftA.indexOf(HOOK_ONE_NEW), (/EXAMPLES OF THE BAR[^\n]*/.exec(draftA) ?? ["none"])[0]);
+      c.ok("…never her own, one James approved, one over 110 or under 55 words, one with a dash, an imported one, a skit, or one on the same topic; at most one per client (the older of Olivia's is not shown)", SKIPPED.every((h) => !draftA.includes(h)) && !draftA.includes(HOOK_THREE_SAME), SKIPPED.filter((h) => draftA.includes(h)).join(" | ") || "none");
+      c.ok("…topic B's draft (not that topic) also gets the third client's script: three, most recently sent first", (draftB.match(/--- Example \d ---\nHOOK: /g) ?? []).length === 3 && draftB.indexOf(HOOK_ONE_NEW) < draftB.indexOf(HOOK_THREE_SAME) && draftB.indexOf(HOOK_THREE_SAME) < draftB.indexOf(HOOK_TWO_GOOD) && SKIPPED.every((h) => !draftB.includes(h)));
+      const runA = await prisma.programAiRun.findFirst({ where: { kind: "script_draft", promptKey: "writer-draft", scopeJson: { contains: tA } }, orderBy: { createdAt: "asc" }, select: { inputRefsJson: true } });
+      c.ok("the draft's run records which scripts were shown", (JSON.parse(runA?.inputRefsJson ?? "{}") as { barExampleScriptIds?: string[] }).barExampleScriptIds?.join() === [BAR.oneNew, BAR.twoGood].join(), runA?.inputRefsJson?.slice(0, 200));
+      const blk = (r: Req | undefined) => ((r?.body.messages as { content: { text: string }[] }[] | undefined)?.[0].content ?? [])[0]?.text ?? "";
+      const dB = reqs.find((r) => r.step === "draft" && r.prompt.includes(TOPIC_B));
+      const rwB = reqs.find((r) => r.step === "rewrite" && r.prompt.includes(TOPIC_B));
+      const rvB = reqs.filter((r) => r.step === "review" && r.prompt.includes(TOPIC_B));
+      c.ok("deterministic for a topic: the draft and its rewrite carry the same examples block, byte for byte (the cached block stays stable); both reviews show the same bar", !!dB && !!rwB && blk(dB) === blk(rwB) && rvB.length === 2 && rvB.every((r) => r.prompt.includes(HOOK_ONE_NEW) && r.prompt.includes(HOOK_THREE_SAME)));
+      const bar = await import("@/lib/scriptWriter/barExamples");
+      const again1 = await bar.barExamplesFor({ enrollmentId: f.enrollmentId, topicTitle: TOPIC_B });
+      const again2 = await bar.barExamplesFor({ enrollmentId: f.enrollmentId, topicTitle: TOPIC_B });
+      c.ok("…and asking twice gives the same scripts in the same order", again1.map((x) => x.scriptId).join() === again2.map((x) => x.scriptId).join() && again1.map((x) => x.scriptId).join() === [BAR.oneNew, BAR.threeSame, BAR.twoGood].join());
+      c.ok("…for one of the other clients, its own scripts are never shown and hers can be", (await bar.barExamplesFor({ enrollmentId: barOne.enrollmentId, topicTitle: TOPIC_B })).map((x) => x.scriptId).join() === [BAR.hers, BAR.threeSame, BAR.twoGood].join());
+      c.ok("offline as of a past moment: only scripts sent by then", (await bar.barExamplesFor({ enrollmentId: f.enrollmentId, topicTitle: TOPIC_B, asOf: new Date("2026-10-06T00:00:00Z") })).map((x) => x.scriptId).join() === BAR.twoGood);
+      // The picker itself (pure), on hand-built candidates.
+      const cand = (id: string, o: Partial<import("@/lib/scriptWriter/barExamples").BarCandidate> & { build?: number } = {}) => ({ scriptId: id, enrollmentId: o.enrollmentId ?? `e-${id}`, clientId: o.clientId ?? `c-${id}`, title: o.title ?? `Script ${id}`, topicTitle: o.topicTitle ?? null, source: o.source ?? "ai", historical: o.historical ?? false, approvedBy: o.approvedBy === undefined ? OWNER_EMAIL : o.approvedBy, approvedAt: o.approvedAt === undefined ? new Date("2026-10-01") : o.approvedAt, sharedAt: o.sharedAt === undefined ? new Date("2026-10-01") : o.sharedAt, version: o.version ?? { hook: `Hook ${id} for the drill.`, pointsJson: JSON.stringify([{ text: words(12, 1) }, { text: words(o.build ?? 20, 2) }, { text: words(14, 4) }]), close: words(12, 6) } });
+      const pick = (cs: ReturnType<typeof cand>[], owners = [OWNER_EMAIL]) => bar.pickBarExamples(cs, { enrollmentId: "mine", topicTitle: TOPIC_A, owners }).map((x) => x.scriptId).join();
+      c.ok("pure: never the same enrollment; never one another login approved; the approver read from a stamp like \"info@... (via ...)\"", pick([cand("a", { enrollmentId: "mine" }), cand("b", { approvedBy: JAMES_EMAIL }), cand("c", { approvedBy: `${OWNER_EMAIL.toUpperCase()} (via Claude)` })]) === "c");
+      c.ok("pure: never over 110 or under 55 spoken words, a dash, an import, a historical one, an unsent or unapproved one, or a skit", pick([cand("long", { build: 82 }), cand("short", { build: 2 }), cand("dash", { version: { hook: "A hook — with a dash.", pointsJson: JSON.stringify([{ text: words(12, 1) }, { text: words(20, 2) }, { text: words(14, 4) }]), close: words(12, 6) } }), cand("imp", { source: "import" }), cand("hist", { historical: true }), cand("unsent", { sharedAt: null }), cand("unapproved", { approvedAt: null }), cand("skit", { version: { hook: "Skit hook for the drill.", pointsJson: JSON.stringify([{ text: words(12, 1) }, { text: words(20, 2) }, { text: words(14, 4) }]), close: words(12, 6), speakerLabelsJson: JSON.stringify(["AGENT", "BUYER"]) } }), cand("ok")]) === "ok");
+      c.ok("pure: not the five parts (two talking points) is skipped; at most one per client; up to three, most recently sent first", pick([cand("two", { version: { hook: "Hook two points.", pointsJson: JSON.stringify([{ text: words(30, 1) }, { text: words(30, 2) }]), close: words(12, 6) } })]) === "" && pick([cand("x1", { clientId: "same", sharedAt: new Date("2026-10-02") }), cand("x2", { clientId: "same", sharedAt: new Date("2026-10-03") }), cand("y", { sharedAt: new Date("2026-10-01") }), cand("z", { sharedAt: new Date("2026-09-01") }), cand("w", { sharedAt: new Date("2026-08-01") })]) === "x2,y,z");
+      c.ok("pure: nothing qualifies (no owner login, or no candidate) → no examples", pick([cand("ok")], []) === "" && pick([]) === "");
+      const ctxNone = { clientName: "Erica Walker", guardBlock: "", boundaries: [], barExamples: [], facts: [], strategyText: null, topic: { title: "I Once Watched a Deal Fall Apart Over a Doorknob" }, answers: [], voiceRefs: [], captionExamples: [] } as never;
       const bD = pipe.briefFrom({ videoType: "educational", angle: "Deals die of frustration, not doorknobs.", proof: null, mustKeep: [{ text: "She stays the calm one", source: "P3" }], herPhrases: [{ text: "how do we get there?", source: "P3" }], excluded: [{ text: "A specific doorknob deal as if she had witnessed it", reason: "She did not tell a doorknob story." }] } as never, []);
-      const pD = prompts.buildDraftPrompt(ctxD, bD, []).prompt;
-      c.ok("…and that prompt carries her boundaries, her phrases, what to leave out (\"a specific doorknob deal\") and no proof to make a story from", !pD.includes("People lose houses over doorknobs.") && /HER BOUNDARIES \(never cross these\):\n- Never mention her divorce/.test(pD) && /Her phrases \(use them where they fit\):\n- "how do we get there\?"/.test(pD) && /Leave out:\n- A specific doorknob deal as if she had witnessed it \(She did not tell a doorknob story\.\)/.test(pD) && /Her proof: None from her/.test(pD));
-      const sw = (t: string) => (t.match(/[A-Za-z0-9$'’,.?:]+/g) ?? []).filter((x) => /[A-Za-z0-9]/.test(x)).length;
-      const counts = prompts.BAR_EXAMPLES.map((e) => sw([e.hook, e.rehook, e.buildup, e.payoff, e.close].join(" ")));
-      c.ok("the four hand-written scripts each run 55 to 85 spoken words, with no dash and no duration", counts.every((n) => n >= 55 && n <= 85) && prompts.BAR_EXAMPLES.every((e) => !rules.hardNumbers({ hook: e.hook, points: [{ role: "re-hook", text: e.rehook }, { role: "build-up", text: e.buildup }, { role: "payoff", text: e.payoff }], close: e.close }, JSON.stringify(e)).findings.some((x) => x.level === "must-fix")), counts.join(","));
-      c.ok("the review is shown the same bar", (reqs.find((r) => r.step === "review" && r.prompt.includes(TOPIC_A))?.prompt ?? "").includes("HOOK: People lose houses over doorknobs."));
+      const pD = prompts.buildDraftPrompt(ctxNone, bD, []).prompt;
+      c.ok("with no examples, the draft and the review prompts carry no examples block (rules only); the brief still carries her phrases, what to leave out and no proof to make a story from", !/EXAMPLES OF THE BAR|--- Example 1 ---/.test(pD) && !/EXAMPLES OF THE BAR/.test(prompts.buildReviewPrompt(ctxNone, bD, [], { body: "x" }).prompt) && /Her phrases \(use them where they fit\):\n- "how do we get there\?"/.test(pD) && /Leave out:\n- A specific doorknob deal as if she had witnessed it \(She did not tell a doorknob story\.\)/.test(pD) && /Her proof: None from her/.test(pD));
+      // End to end with no owner login left: the offline draft is written from the rules alone.
+      await prisma.appUser.update({ where: { email: OWNER_EMAIL }, data: { status: "DISABLED" } });
+      ctl.reviews.set("H", [[]]);
+      const n0 = reqs.length;
+      await pipe.draftOffline({ topicId: tH, monthId: f.monthId, requestedBy: STAFF });
+      const noneDraft = reqs.slice(n0).find((r) => r.step === "draft");
+      await prisma.appUser.update({ where: { email: OWNER_EMAIL }, data: { status: "ACTIVE" } });
+      c.ok("…end to end: with no owner login, the offline draft and its review have no examples block", !!noneDraft && !/EXAMPLES OF THE BAR/.test(noneDraft.prompt) && reqs.slice(n0).filter((r) => r.step === "review").every((r) => !/EXAMPLES OF THE BAR/.test(r.prompt)));
+      c.ok("the review is shown the same bar as the writer", (reqs.find((r) => r.step === "review" && r.prompt.includes(TOPIC_A))?.prompt ?? "").includes(`HOOK: ${HOOK_ONE_NEW}`));
     }
 
     c.head("19.2 · the review reads it as a viewer FIRST: four questions, a read, one note; code's hard checks after");

@@ -13,7 +13,8 @@
 //                                                                 (medium)
 //   3. writer     v2.6: ONE call writes the whole script (HOOK, RE-HOOK,
 //                 BUILD-UP, PAYOFF, CLOSE) from the brief and her own words,
-//                 with a short prompt and three examples of the bar; the same
+//                 with a short prompt and, as the bar, up to three scripts
+//                 Jordan approved and sent to other clients; the same
 //                 system prompt writes the one whole rewrite and a person's or
 //                 a client's revision                             (high)
 //   4. review     v2.6: reads the script as a viewer FIRST (one thought, she
@@ -32,7 +33,7 @@
 // No dash is used as punctuation in any prompt text: the model mirrors it.
 // ---------------------------------------------------------------------------
 
-import { CLOSE_RULE, HOMEOWNER_LANGUAGE_RULE, TOPIC_LABEL_RULE, ASSUMPTION_RULE, BACKGROUND_RULE, WORDING_RULE, HOUSE_CRAFT_RULES, WRITER_LENGTH, WRITER_VERSION, BRIEF_MUST_KEEP_MAX, estimateSeconds, contentWordsOf } from "./rules";
+import { CLOSE_RULE, HOMEOWNER_LANGUAGE_RULE, TOPIC_LABEL_RULE, ASSUMPTION_RULE, BACKGROUND_RULE, WORDING_RULE, HOUSE_CRAFT_RULES, WRITER_LENGTH, WRITER_VERSION, BRIEF_MUST_KEEP_MAX, estimateSeconds } from "./rules";
 import type { TopicBrief, WriterFact, WriterPassage } from "./record";
 
 export type JsonSchema = Record<string, unknown>;
@@ -77,6 +78,8 @@ export type WriterContext = {
   captionExamples: string[];
   /** v2.6: her creative identity's boundaries (never cross these), shown to the writer. */
   boundaries?: string[];
+  /** v2.6: the bar: up to three scripts Jordan approved and sent to OTHER clients (scriptWriter/barExamples), five parts each. */
+  barExamples?: { hook: string; rehook: string; buildup: string; payoff: string; close: string }[];
 };
 
 export type SourceDoc = { id: string; label: string; kind: "call" | "older" | "excerpts"; text: string };
@@ -311,74 +314,22 @@ export function briefText(b: TopicBrief): string {
 //    prompt writes the one whole rewrite and a person's or a client's revision
 // ---------------------------------------------------------------------------
 
-/**
- * THE BAR (Oct 23 2026). Four of Erica Walker's October scripts as the
- * creative lead rewrote them by hand from her own words on the Oct 20 call
- * (scripts/_live/oct23-erica-scripts-rewrite.ts), after the patched versions
- * stopped making sense. The prompt shows three of them as examples of the
- * SHAPE and the VOICE (one thought, short spoken sentences, a hook that lands
- * in the first line), never as content: the one on the topic being written is
- * never shown (barExamplesFor), so no video gets its own answer.
- */
-export const BAR_EXAMPLES: readonly { topic: string; hook: string; rehook: string; buildup: string; payoff: string; close: string }[] = [
-  {
-    topic: "I Once Watched a Deal Fall Apart Over a Doorknob",
-    hook: "People lose houses over doorknobs.",
-    rehook: "Not because the doorknob matters. Because by the end, both sides are frustrated and done.",
-    buildup: "That's when I stay the calm one. I hold back my own frustration and put myself in both people's shoes. One wants to sell. One wants to buy.",
-    payoff: "Same goal. So the question isn't who wins the doorknob. It's: how do we get there?",
-    close: "If something small is about to cost you the deal, call me before it does.",
-  },
-  {
-    topic: "Empty Nesters Are Upsizing, Not Downsizing",
-    hook: "The kids moved out. So why are so many empty nesters buying bigger?",
-    rehook: "Where I'm working right now, it's all empty nesters, about 6,000 square feet, with giant pools for the grandkids.",
-    buildup: "It's called a magnet home: it pulls your kids and grandkids back, and makes them want to stay.",
-    payoff: "So if you want more space, not less, don't feel like you're weird. This is the trend.",
-    close: "Tell me who you picture coming home, and let's plan the space for them.",
-  },
-  {
-    topic: "Your Backyard Vision Starts With the Lot, Not the Landscaper",
-    hook: "My clients pictured a pool right off the kitchen. The only lot left said no.",
-    rehook: "It was a walkout basement lot. So we rethought the backyard instead of giving it up.",
-    buildup: "Now it's a deck with views up top and a patio below, leading to the pool. Still going to be amazing.",
-    payoff: "A sloped lot isn't a problem. It's a decision that shapes everything from the garage to the backyard.",
-    close: "Picture your backyard first, then let's make sure the lot can give it to you.",
-  },
-  {
-    topic: "More Space, or Space That Actually Works?",
-    hook: "Feeling cramped doesn't always mean you need a bigger house.",
-    rehook: "Sometimes it does. One full bathroom and three kids is a space problem.",
-    buildup: "But my townhouse clients already have the square footage, just across three levels. They want it on two, open, so they can see the kids while they cook.",
-    payoff: "So before you shop bigger, name what isn't working: more space, or space that works better?",
-    close: "Tell me what's not working, and we'll find the home that fixes it.",
-  },
-];
-/** How many examples a prompt shows (v2.6). */
-export const BAR_EXAMPLES_SHOWN = 3;
-
-/**
- * The examples for one topic (v2.6, pure): BAR_EXAMPLES_SHOWN of them, never
- * the one written for this topic (the same title, or three or more of its
- * content words), so the writer is shown the bar, not this video's answer.
- */
-export function barExamplesFor(topicTitle: string): (typeof BAR_EXAMPLES)[number][] {
-  const key = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  const mine = contentWordsOf(topicTitle ?? "");
-  const sameTopic = (t: string) => key(t) === key(topicTitle ?? "") || [...contentWordsOf(t)].filter((w) => mine.has(w)).length >= 3;
-  return BAR_EXAMPLES.filter((e) => !sameTopic(e.topic)).slice(0, BAR_EXAMPLES_SHOWN);
-}
-
 /** A script in the five labelled parts, as the examples, the rewrite and the review show it. Pure. */
 export function partsBlock(p: { hook: string; rehook: string; buildup: string; payoff: string; close: string }): string {
   return [`HOOK: ${p.hook}`, `RE-HOOK: ${p.rehook}`, `BUILD-UP: ${p.buildup}`, `PAYOFF: ${p.payoff}`, `CLOSE: ${p.close}`].join("\n");
 }
 
-function examplesBlock(topicTitle: string): string {
-  const xs = barExamplesFor(topicTitle);
+/**
+ * The examples of the bar (v2.6): scripts Jordan approved and sent to OTHER
+ * clients, chosen at draft time by scriptWriter/barExamples (never this
+ * client's, never this topic, up to three). Only their five parts are shown.
+ * None qualify → no block: the writer works from the rules alone.
+ */
+function examplesBlock(ctx: Pick<WriterContext, "barExamples">): string {
+  const xs = (ctx.barExamples ?? []).slice(0, 3);
   if (!xs.length) return "";
   return [
-    `EXAMPLES OF THE BAR (${xs.length} scripts written to this standard for OTHER videos. They show the shape and the voice: one thought from the first line to the last, short spoken sentences, a hook that lands at once. Never copy their content, lines, facts or stories.)`,
+    `EXAMPLES OF THE BAR (${xs.length} script${xs.length === 1 ? "" : "s"} Jordan approved and sent to other clients. They show the shape and the voice: one thought from the first line to the last, short spoken sentences, a hook that lands at once. Never copy their content, lines, facts or stories.)`,
     ...xs.map((e, i) => `--- Example ${i + 1} ---\n${partsBlock(e)}`),
   ].join("\n\n");
 }
@@ -404,7 +355,7 @@ Length: ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]} spoken words.
 No em dashes or en dashes. No durations or timing notes.
 Never invent a fact, a number, a quote or a story, and never put words in anyone else's mouth: only what her sources say.
 
-The examples show the bar, in shape and voice. They are other videos: never copy their content, lines, facts or stories.
+Any examples below are scripts Jordan approved and sent to other clients: they show the bar, in shape and voice. Never copy their content, lines, facts or stories.
 
 Answer with one JSON object. hook, rehook, buildup, payoff and close are the five parts. title is a working title for the office. captionCta is a short written line for the caption. rationale is a one-line note each for the creative director (why the hook works, the viewer's takeaway, how her strategy shaped it), never spoken. gaps lists anything the script needed that her sources do not cover, as a question to ask her.
 (${WRITER_VERSION})`;
@@ -485,7 +436,7 @@ function writerUser(ctx: WriterContext, brief: TopicBrief, passages: WriterPassa
       `CLIENT: ${ctx.clientName}. She is the one speaking.`,
       ctx.guardBlock,
       (ctx.boundaries ?? []).length ? ["HER BOUNDARIES (never cross these):", ...(ctx.boundaries ?? []).map((b) => `- ${b}`)].join("\n") : "",
-      examplesBlock(ctx.topic.title),
+      examplesBlock(ctx),
     ],
     [
       writerBriefText(ctx, brief),
@@ -575,7 +526,7 @@ export type ReviewOut = { sense?: { pass?: boolean; reason?: string }; voice?: {
  */
 export function buildReviewPrompt(ctx: WriterContext, brief: TopicBrief, passages: WriterPassage[], script: { body: string }, callText: string | null = null): StepPrompt {
   return segmented(REVIEW_SYSTEM, REVIEW_SCHEMA, [
-    [`CLIENT: ${ctx.clientName}. She is the one speaking.`, ctx.strategyText ? `HER APPROVED STRATEGY (a source for claims about her, never script material on its own):\n${ctx.strategyText}` : "", examplesBlock(ctx.topic.title), fullCallBlock(callText)],
+    [`CLIENT: ${ctx.clientName}. She is the one speaking.`, ctx.strategyText ? `HER APPROVED STRATEGY (a source for claims about her, never script material on its own):\n${ctx.strategyText}` : "", examplesBlock(ctx), fullCallBlock(callText)],
     [writerBriefText(ctx, brief), passagesBlock(passages), answersBlock(ctx), factsBlock(ctx.facts)],
   ], [
     `SCRIPT:\n${script.body}`,
