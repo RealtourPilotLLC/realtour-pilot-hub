@@ -1,14 +1,18 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Check, Loader2, Send } from "lucide-react";
+import { Check, Loader2, Plus, RotateCcw, Send, X } from "lucide-react";
 import { approveAryeoAction } from "@/app/ops/photo-delivery/actions";
 import { sendThreadText } from "@/app/communications/threadActions";
-import { dismissTask, sendConfirmationText } from "@/app/actions";
+import { createManualTask, dismissTask, draftTaskReply, sendConfirmationText } from "@/app/actions";
+import { generateReply, sendReply } from "@/app/communications/replyActions";
+import { sendEmailReply } from "@/app/emailActions";
+import { postProgramMessageAction } from "@/app/content/[id]/workspaceActions";
+import { acceptTaskAction, assignTaskAction, completeTaskAction, escalateTaskAction, flagBlockerAction, submitForVerificationAction, updateTaskAction } from "@/app/delegation/actions";
 import { sendPhotographerBriefNow } from "@/app/shoot/brief/actions";
-import { closeoutTickAction, deskFollowUpAction, deskWaitAction, finishDayAction, type DeskResult, type FollowUpInput, type WaitInput } from "@/app/deskActions";
+import { closeoutTickAction, deskFollowUpAction, deskWaitAction, draftProgramReplyAction, finishDayAction, type DeskResult, type FollowUpInput, type WaitInput } from "@/app/deskActions";
 import type { CheckKey } from "@/lib/officeDesk";
 import { cn } from "@/lib/utils";
 
@@ -216,5 +220,164 @@ export function FinishDay({ dayKey, disabled }: { dayKey: string; disabled: bool
       </button>
       <Said msg={msg} />
     </div>
+  );
+}
+
+const mintIntent = () => (globalThis.crypto?.randomUUID?.() ?? `${Math.random().toString(36)}${Math.random().toString(36)}`).replace(/[^A-Za-z0-9]/g, "").slice(0, 32);
+
+/** EVERY CONVERSATION OPENS WITH A DRAFT (Jordan's huddle with Kyle, Oct 23
+ *  2026). The reply engine writes it when the panel opens (texts: the Replies
+ *  queue's own drafter; email: the Gmail task's drafter; Content Program: the
+ *  same drafter given the program conversation); Kyle sends it as is, or edits
+ *  and sends. Each send goes through that channel's own send (one press, one
+ *  message: a text carries the press's identity, so a double press never sends
+ *  twice). Nothing is sent without a press. */
+export function DraftReply({ mode, threadKey, taskId, enrollmentId, initialDraft = null, autoDraft = true }: {
+  mode: "text" | "email" | "program";
+  threadKey?: string | null;
+  taskId?: string | null;
+  enrollmentId?: string | null;
+  initialDraft?: string | null;
+  autoDraft?: boolean;
+}) {
+  const { busy, msg, run, setMsg } = useRun();
+  const [text, setText] = useState(initialDraft ?? "");
+  const [drafting, setDrafting] = useState(false);
+  const [note, setNote] = useState<string | null>(initialDraft ? "Draft ready. Read it before sending." : null);
+  const asked = useRef(false);
+  const draft = async () => {
+    setDrafting(true);
+    setNote("Writing a draft…");
+    try {
+      const r = mode === "text" && threadKey ? await generateReply(threadKey)
+        : mode === "email" && taskId ? await draftTaskReply(taskId).then((x) => ({ ok: x.ok, message: x.ok ? "Draft ready. Read it before sending." : x.error ?? "Could not draft a reply.", draft: x.text }))
+        : mode === "program" && enrollmentId ? await draftProgramReplyAction(enrollmentId)
+        : { ok: false, message: "No draft for this one: write the reply.", draft: undefined };
+      if (r.ok && r.draft) setText((cur) => (cur.trim() ? cur : r.draft!));
+      setNote(r.message);
+    } catch {
+      setNote("Could not draft a reply just now: write it, or try again.");
+    } finally {
+      setDrafting(false);
+    }
+  };
+  useEffect(() => {
+    if (!autoDraft || initialDraft || asked.current) return;
+    asked.current = true;
+    void draft();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const send = () => run(async () => {
+    const body = text.trim();
+    if (mode === "text" && threadKey) return sendReply(threadKey, body, mintIntent()).then((r) => ({ ok: r.ok, message: r.ok ? "Sent. It leaves the list once the reply is logged." : r.message }));
+    if (mode === "email" && taskId) return sendEmailReply(taskId, body).then((r) => ({ ok: r.ok, message: r.message }));
+    if (mode === "program" && enrollmentId) return postProgramMessageAction(enrollmentId, body, null);
+    return { ok: false, message: "This conversation can only be answered in Messages." };
+  });
+  if (msg?.ok) return <Said msg={msg} />;
+  return (
+    <div className="space-y-2" data-control="draft-reply" data-mode={mode}>
+      <label className="block text-sm font-medium" htmlFor={`desk-reply-${mode}`}>{mode === "program" ? "Reply on Content Program" : mode === "email" ? "Reply by email" : "Text back"}</label>
+      <textarea
+        id={`desk-reply-${mode}`}
+        value={text}
+        onChange={(e) => { setText(e.target.value); if (msg) setMsg(null); }}
+        rows={5}
+        className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-brand"
+        placeholder={drafting ? "Writing a draft…" : "Write the reply"}
+      />
+      {note && <p className="text-[12px] text-muted" data-draft-note>{note}</p>}
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" disabled={busy || drafting || !text.trim()} onClick={send} className={PRIMARY}>
+          {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Send aria-hidden className="size-4" />} Send
+        </button>
+        <button type="button" disabled={busy || drafting} onClick={() => { setText(""); void draft(); }} className={QUIET}>
+          <RotateCcw aria-hidden className="size-4" /> New draft
+        </button>
+        <Said msg={msg} />
+      </div>
+    </div>
+  );
+}
+
+/** A task assigned to Kyle through delegation: Accept until he has, then Update,
+ *  Flag a blocker, Submit for verification (when it needs one) or Complete, Escalate. */
+export function DelegationControls({ taskId, state, needsVerification }: { taskId: string; state: string; needsVerification: boolean }) {
+  const { busy, msg, run } = useRun();
+  const [note, setNote] = useState("");
+  if (msg?.ok) return <Said msg={msg} />;
+  return (
+    <div className="space-y-2" data-control="delegation">
+      {state === "ASSIGNED" && (
+        <button type="button" disabled={busy} onClick={() => run(() => acceptTaskAction(taskId))} className={PRIMARY}>
+          <Check aria-hidden className="size-4" /> Accept
+        </button>
+      )}
+      <input aria-label="An update, a blocker or a reason" value={note} onChange={(e) => setNote(e.target.value)} placeholder="An update, a blocker or a reason" className="min-h-11 w-full rounded-lg border border-border bg-surface px-2 text-sm" />
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" disabled={busy || note.trim().length < 3} onClick={() => run(() => updateTaskAction(taskId, note))} className={QUIET}>Update</button>
+        <button type="button" disabled={busy || note.trim().length < 3} onClick={() => run(() => flagBlockerAction(taskId, note))} className={QUIET}>Flag a blocker</button>
+        {needsVerification
+          ? <button type="button" disabled={busy} onClick={() => run(() => submitForVerificationAction(taskId))} className={QUIET}>Submit for verification</button>
+          : <button type="button" disabled={busy} onClick={() => run(() => completeTaskAction(taskId, note || undefined))} className={QUIET}>Complete</button>}
+        <button type="button" disabled={busy || note.trim().length < 3} onClick={() => run(() => escalateTaskAction(taskId, note))} className={QUIET}>Escalate</button>
+      </div>
+      <Said msg={msg} />
+    </div>
+  );
+}
+
+/** "+ Add task" (Jordan's mockup): a task for Kyle himself (the Tasks page's own
+ *  add), or assigned to someone else through delegation. Its own small panel;
+ *  off in the owner's preview. */
+export function AddTaskButton({ people, me, readOnly = false, initialOpen = false }: { people: { key: string; name: string }[]; me: string | null; readOnly?: boolean; initialOpen?: boolean }) {
+  const [open, setOpen] = useState(initialOpen);
+  const { busy, msg, run, setMsg } = useRun();
+  const [title, setTitle] = useState("");
+  const [who, setWho] = useState(me ?? "kyle");
+  const [due, setDue] = useState("");
+  const [note, setNote] = useState("");
+  const close = () => { setOpen(false); setMsg(null); };
+  const save = () => run(async () => {
+    if (who === (me ?? "kyle")) return createManualTask({ title, notes: note || undefined, dueDate: due || undefined, assignedKey: who });
+    return assignTaskAction({ title, outcome: note || undefined, assigneeKey: who, dueAt: due || undefined });
+  });
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)} disabled={readOnly} data-add-task className={PRIMARY} title={readOnly ? "Read-only preview" : undefined}>
+        <Plus aria-hidden className="size-4" /> Add task
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-50 flex justify-end" data-add-task-panel>
+          <button type="button" aria-label="Close" onClick={close} className="absolute inset-0 bg-black/30" />
+          <aside role="dialog" aria-modal="true" aria-labelledby="add-task-title" className="relative flex h-full w-full max-w-md flex-col gap-3 overflow-y-auto border-l border-border bg-surface p-4 shadow-xl">
+            <div className="flex items-center gap-2">
+              <h2 id="add-task-title" className="flex-1 text-base font-semibold">Add a task</h2>
+              <button type="button" autoFocus onClick={close} aria-label="Close" className="inline-flex size-11 items-center justify-center rounded-lg hover:bg-surface-2"><X aria-hidden className="size-5" /></button>
+            </div>
+            {msg?.ok ? <Said msg={msg} /> : (
+              <>
+                <label className="text-sm font-medium" htmlFor="add-task-what">What needs doing</label>
+                <input id="add-task-what" value={title} onChange={(e) => setTitle(e.target.value)} className="min-h-11 rounded-lg border border-border bg-surface px-2 text-sm" />
+                <label className="text-sm font-medium" htmlFor="add-task-who">Who</label>
+                <select id="add-task-who" value={who} onChange={(e) => setWho(e.target.value)} className="min-h-11 rounded-lg border border-border bg-surface px-2 text-sm">
+                  {people.map((p) => <option key={p.key} value={p.key}>{p.key === me ? `Me (${p.name})` : p.name}</option>)}
+                </select>
+                <label className="text-sm font-medium" htmlFor="add-task-due">Due (optional)</label>
+                <input id="add-task-due" type="date" value={due} onChange={(e) => setDue(e.target.value)} className="min-h-11 rounded-lg border border-border bg-surface px-2 text-sm" />
+                <label className="text-sm font-medium" htmlFor="add-task-note">{who === (me ?? "kyle") ? "Notes (optional)" : "The outcome you want (optional)"}</label>
+                <textarea id="add-task-note" value={note} onChange={(e) => setNote(e.target.value)} rows={3} className="rounded-lg border border-border bg-surface px-2 py-1.5 text-sm" />
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" disabled={busy || title.trim().length < 3} onClick={save} className={PRIMARY}>
+                    {busy && <Loader2 aria-hidden className="size-4 animate-spin" />} {who === (me ?? "kyle") ? "Add to my tasks" : "Assign"}
+                  </button>
+                  <Said msg={msg} />
+                </div>
+              </>
+            )}
+          </aside>
+        </div>
+      )}
+    </>
   );
 }
