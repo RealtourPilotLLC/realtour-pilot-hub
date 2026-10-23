@@ -207,7 +207,8 @@ async function main() {
     c.ok("…a tie is not better: the current version stays", !rules.isBetterAttempt({ mustFix: 1, craft: craft(3), words: 70 }, { mustFix: 1, craft: craft(3), words: 70 }) && rules.bestAttempt([{ mustFix: 1, words: 70 }, { mustFix: 1, words: 70 }]) === 0);
     c.ok("Bernadette's Saturday rounds (v10 8 must-fix → v11 6 → v12 4) each beat the one before by this rule", rules.isBetterAttempt({ mustFix: 6, craft: craft(2, 2, 3, 2, 2), words: 77 }, { mustFix: 8, craft: craft(2, 2, 3, 2, 3), words: 75 }) && rules.isBetterAttempt({ mustFix: 4, craft: craft(2, 2, 3, 2, 3), words: 72 }, { mustFix: 6, craft: craft(2, 2, 3, 2, 2), words: 77 }));
     const loopSrc = read("src/lib/scriptJudge.ts");
-    c.ok("the new writer's fix rounds and cap trim are candidates too, settled by the same rule", /candidate: true \} : \{ round: j\.fixRounds \+ 1, trimmed: !!j\.trimmed, aimTrimmed: !!j\.aimTrimmed, candidate: true \}/.test(loopSrc) && /candidateWins\(cand, parent/.test(loopSrc) && /makeVersionCurrent\(scriptId, cand\.v\.id, \{ expectCurrentId: v\.id \}\)/.test(loopSrc));
+    // Oct 23 2026 (writer v2.6): the new writer's automatic round is its ONE whole rewrite (no fix rounds, no cap trim); it is a candidate too.
+    c.ok("the new writer's one whole rewrite is a candidate too, settled by the same rule", /autoFix: \{ round: j\.fixRounds \+ 1, rewrite: true, candidate: true \}/.test(loopSrc) && /candidateWins\(cand, parent/.test(loopSrc) && /makeVersionCurrent\(scriptId, cand\.v\.id, \{ expectCurrentId: v\.id \}\)/.test(loopSrc));
 
     // =======================================================================
     c.head("1 · the card shows the script, not the machinery");

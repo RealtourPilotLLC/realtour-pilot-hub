@@ -12,8 +12,8 @@
 //   passed       judged and passed (fixRounds says how many fixes it took)
 //   flagged      still failing after the last round, or the fix could not run
 //   not_checked  the judge call itself failed; the draft stands unjudged
-//   trimming     (Oct 22 2026, the new writer only) the fix rounds are spent and
-//                the script is still over the 110-word cap: one trim pass owed
+//   trimming     (Oct 22 2026, the new writer v2.1 to v2.5) a trim pass owed;
+//                since v2.6 no trim runs (read as pending, or as fixing once reviewed)
 //   set_aside    (Oct 23 2026) an automatic fix round (or cap trim) that was
 //                reviewed and was NOT better than the version it was fixing:
 //                it stays in the history and never became the current version
@@ -26,7 +26,9 @@
 // stays current, carrying the rounds spent on it (fixRounds).
 //
 // Oct 22 2026: a draft by the new script writer (src/lib/scriptWriter) is
-// checked by its independent creative review instead of this judge. Its record
+// checked by its independent creative review instead of this judge (v2.6:
+// the viewer's read first, then code's hard checks; at most ONE whole
+// rewrite, fixRounds 1, never a part patch; `reads` is its 1 to 10 read). Its record
 // is the same shape with `writer: 2` and the review's checks (`checks`, 13 since v2.3, each
 // must-fix or flag), the code's hard numbers (`hard`), the word count and
 // whether the trim pass ran. readJudge keeps those fields, so every state
@@ -65,8 +67,10 @@ export type JudgeRecord = {
   /** The trim pass for the 110-word cap ran. */
   trimmed?: boolean;
   summary?: string | null;
-  /** v2.3: the review's craft block (hook, re-hook, build-up, payoff, close scored 1 to 5, a note each). */
+  /** v2.3: the review's craft block (hook, re-hook, build-up, payoff, close scored 1 to 5, a note each). v2.6: null. */
   craft?: CraftScores | null;
+  /** v2.6: the review's 1 to 10 read as a viewer (which of two versions reads better). */
+  reads?: number | null;
   /**
    * Oct 22 2026 (v2.1): the ONE aim trim (v2.3: toward 65 to 75, for a passing draft
    * over 78) ran (aimTrimmed); on the version it produced, aimTrimOf names the
@@ -106,7 +110,7 @@ export function attemptScoreOf(j: JudgeRecord | null, words: number | null | und
   const w = j.words || words || 0;
   if (j.writer === 2) {
     if (!(j.checks ?? []).length) return null;
-    return { mustFix: (j.checks ?? []).filter((c) => !c.pass && c.level === "must-fix").length, craft: j.craft ?? null, words: w, story: !!story };
+    return { mustFix: (j.checks ?? []).filter((c) => !c.pass && c.level === "must-fix").length, craft: j.craft ?? null, reads: j.reads ?? null, words: w, story: !!story };
   }
   if (!j.criteria.length) return null;
   return { mustFix: j.criteria.filter((c) => !c.pass).length, craft: null, words: w, story: !!story };
@@ -168,6 +172,7 @@ export function readJudge(validationJson: string | null | undefined): JudgeRecor
       ...(j.writer === 2
         ? {
             writer: 2 as const, checks: Array.isArray(j.checks) ? j.checks : [], hard: Array.isArray(j.hard) ? j.hard : [], words: Number(j.words) || 0, trimmed: j.trimmed === true, summary: typeof j.summary === "string" ? j.summary : null, craft: j.craft && typeof j.craft === "object" ? j.craft : null,
+            reads: typeof j.reads === "number" && Number.isFinite(j.reads) ? j.reads : null,
             aimTrimmed: j.aimTrimmed === true, aimTrimOf: typeof j.aimTrimOf === "string" ? j.aimTrimOf : null, ...(j.trimKind === "aim" || j.trimKind === "cap" || j.trimKind === "first" ? { trimKind: j.trimKind } : {}),
           }
         : {}),

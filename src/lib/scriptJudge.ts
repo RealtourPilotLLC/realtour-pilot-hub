@@ -5,7 +5,7 @@ import { timeoutBefore } from "@/lib/integrations/ai";
 import { buildScriptJudgePrompt, judgeCriteriaFor, JUDGE_CRITERIA_TEXT, type JudgeCriterion, type ScriptAngle } from "@/lib/contentPolicy";
 import { MAX_FIX_ROUNDS, readJudge, readAngle, attemptScoreOf, type JudgeRecord, type JudgeCriterionResult } from "@/lib/scriptJudgeRecord";
 import { pointsFromJson, createScriptVersion, makeVersionCurrent, type VersionParts } from "@/lib/contentScripts";
-import { bestAttempt, isBetterAttempt, mustFixFailures, type AttemptScore } from "@/lib/scriptWriter/rules";
+import { bestAttempt, isBetterAttempt, mustFixFailures, MAX_REWRITES, type AttemptScore } from "@/lib/scriptWriter/rules";
 
 // ---------------------------------------------------------------------------
 // THE AUTOMATIC CHECK AND FIX (Oct 14 2026). Jordan: "I want this to be as
@@ -31,15 +31,22 @@ import { bestAttempt, isBetterAttempt, mustFixFailures, type AttemptScore } from
 //      review queue (the card says nothing about it: Oct 23 2026).
 //
 // NEVER A WORSE VERSION (Oct 23 2026). Jordan: "I don't need to see that it
-// needs fixes; I just need it to be fixed." Each fix round (and the new
-// writer's cap trim) is written into the history as a CANDIDATE: the
+// needs fixes; I just need it to be fixed." Each fix round (the new writer:
+// its one whole rewrite) is written into the history as a CANDIDATE: the
 // script's current version does not move. The candidate is judged, then
 // becomes current only when it is better (rules.isBetterAttempt: fewer
-// must-fix failures, then the craft total, then the length rule). Otherwise
+// must-fix failures, then how well it reads (v2.6: the review's 1 to 10 read;
+// before, the craft total), then the length rule). Otherwise
 // it is set_aside, the version it was fixing stays current with the round
 // counted, and the next round starts from that better version again. When the
 // rounds run out still failing, the best version is the current one, flagged
 // quietly. Every round stays in the history.
+// THE NEW WRITER (Oct 22 2026; v2.6 on Oct 23 2026, writerReviewStep): its
+// draft is read by its own review (the viewer's read first, then code's hard
+// checks) and gets at most ONE whole rewrite with the review's note, never a
+// patch of one part, never a trim; the rewrite is a candidate like any round.
+// The old judge's two fix rounds below are the old writer's (every client the
+// switch is off for, and every skit), unchanged.
 // Missing facts are never "fixed": the judge is told a gap is not a failure.
 // Approval and sharing are untouched: every version lands in Jordan's review
 // queue exactly as before. A failed judge call never blocks a draft: it
@@ -230,85 +237,40 @@ function quotaOf(e: unknown): "client" | "program" {
 }
 
 /**
- * THE TRIM THAT LOST SUBSTANCE IS UNDONE (Oct 22 2026, v2.1). Jordan: "aim for
- * 55 - 85 words without making it dry, or incomplete". When the one trim pass
- * toward WRITER_LENGTH.trimTo (automatic, or a person's "Fix with AI") breaks a must-fix
- * check other than length (Enough substance, when a must-keep point went),
- * the version it was trimmed from is copied forward as the newest version,
- * with its review and a note saying why; the trimmed attempt stays in the
- * trail. "Longer than the 55 to 85 aim" stays on it as advice. v2.3: when the
- * kept version says the very line the trim's review failed on (the same close,
- * the same hook), it is copied forward FLAGGED, with that check failing on it.
- */
-async function restoreBeforeTrim(current: VersionRow, record: JudgeRecord, requestedBy: string): Promise<{ versionId: string; state: JudgeRecord["state"] }> {
-  const from = record.aimTrimOf ? await prisma.contentScriptVersion.findUnique({ where: { id: record.aimTrimOf } }) : null;
-  if (!from || from.scriptId !== current.scriptId) {
-    // Nothing to go back to: the trimmed version stands, flagged for a person.
-    await writeJudge(current.id, { ...record, state: "flagged" });
-    return { versionId: current.id, state: "flagged" };
-  }
-  const { keptLongerNote, carryConflicts, partsOfVersion, trimFailWhy } = await import("@/lib/scriptWriter/pipeline");
-  // v2.3: the close is must-fix now, so a trim can be undone for more than a lost must-keep point; say which.
-  const trimFails = (record.checks ?? []).filter((c) => !c.pass && c.level === "must-fix");
-  const why = trimFailWhy(trimFails);
-  await writeJudge(current.id, { ...record, state: "flagged", error: `This trim ${why}; v${from.versionNo} is kept.` });
-  const s = await prisma.contentScript.findUnique({ where: { id: current.scriptId } });
-  if (!s) return { versionId: current.id, state: "flagged" };
-  const { keptLongerConflicts, WRITER_LENGTH } = await import("@/lib/scriptWriter/rules");
-  let bag: Record<string, unknown> = {};
-  try { bag = from.validationJson ? (JSON.parse(from.validationJson) as Record<string, unknown>) : {}; } catch { bag = {}; }
-  let gaps: never[] | null = null;
-  try { gaps = from.gapsJson ? JSON.parse(from.gapsJson) : null; } catch { gaps = null; }
-  const fj = readJudge(from.validationJson);
-  // v2.3: the kept version may not say the line the trim's review failed on (the same close, the same hook): then it is flagged.
-  const conflicts = keptLongerConflicts({ parts: partsOfVersion(current), checks: record.checks ?? [] }, partsOfVersion(from));
-  // Its review as it stood before the trim was asked for ("trimming" meant: passed, then trimmed).
-  const settled: JudgeRecord["state"] | null = !fj ? null
-    : conflicts.length ? "flagged"
-    : fj.state === "passed" || fj.state === "flagged" || fj.state === "not_checked" ? fj.state
-    : (fj.checks ?? []).some((c) => !c.pass && c.level === "must-fix") ? "flagged" : "passed";
-  const keptChecks = fj && conflicts.length ? carryConflicts(fj.checks ?? [], record.checks ?? [], conflicts) : fj?.checks;
-  const note = keptLongerNote(`v${from.versionNo}`, from.spokenWordCount ?? 0, conflicts, trimFails);
-  // A plain variable: the version's bag carries the note beside the usual keys.
-  const validation = {
-    ...bag, ok: bag.ok !== false, findings: (bag.findings as never[]) ?? [], angle: bag.angle ?? null,
-    ...(fj && settled ? { judge: { ...fj, state: settled, aimTrimmed: true, aimTrimOf: null, trimKind: undefined, keptVersionNo: from.versionNo, ...(conflicts.length ? { checks: keptChecks, error: note } : {}) } } : {}),
-    lengthNote: note,
-  };
-  const r = await createScriptVersion({
-    scriptId: s.id, enrollmentId: s.enrollmentId, monthId: s.monthId, topicId: s.topicId, parts: partsOf(from), source: "AI", createdBy: requestedBy, status: "INTERNAL_REVIEW",
-    basedOnVersionId: current.id, interviewId: s.interviewId, callRecordId: s.callRecordId, strategyVersionId: from.strategyVersionId, policyVersionId: from.policyVersionId, aiRunId: from.aiRunId,
-    validation, gaps, changeSummary: `Creative review: kept v${from.versionNo}; the trim toward ${WRITER_LENGTH.trimTo[0]} to ${WRITER_LENGTH.trimTo[1]} words ${why}.${conflicts.length ? ` Flagged: the trim's review failed a line v${from.versionNo} says too.` : ""}`,
-  });
-  return { versionId: r.versionId, state: settled ?? "flagged" };
-}
-
-/**
- * ONE STEP OF THE NEW WRITER'S REVIEW LOOP (Oct 22 2026, src/lib/scriptWriter).
+ * ONE STEP OF THE NEW WRITER'S REVIEW (v2.6, Oct 23 2026: ONE THOUGHT).
  *
- *   pending / not_checked → the independent creative review (12 checks, the craft block + the
- *                           code's hard numbers). Then, by nextWriterStep:
- *                           passed; or the trim pass when only the length
- *                           fails; or a fix round (two at most); or, still over
- *                           the 110-word cap, the trim pass; or FLAGGED (the
- *                           better attempt kept, sorted first in the queue).
- *   fixing                → a fix round from the review's notes (it trims too
- *                           when over the cap), judged again.
- *   trimming              → the trim pass, judged again.
+ *   pending / not_checked → the review (scriptWriter/pipeline.reviewVersion):
+ *                           the viewer's read (one thought, she would say it,
+ *                           the hook lands and the rest follows, nothing
+ *                           invented) and code's hard checks (the 110 cap, no
+ *                           dashes, no durations, her numbers, her quotes, no
+ *                           live deal). Then, by nextWriterStep: passed; or the
+ *                           ONE whole rewrite owed (fixing); or, the rewrite
+ *                           already spent, FLAGGED (quietly; the card never
+ *                           says so).
+ *   fixing                → the whole rewrite with the review's note
+ *                           (contentGeneration.reviseScript, autoFix.rewrite),
+ *                           written into the history as a CANDIDATE; then its
+ *                           own review. It becomes the current version only
+ *                           when it reads better (rules.isBetterAttempt);
+ *                           otherwise it is set aside. Either way the script
+ *                           then passes or is flagged: never a second rewrite,
+ *                           never a patch of one part, no trim.
+ *   trimming              → a v2.5 state (its trims are gone): read as fixing
+ *                           when the version was reviewed, else as pending.
  *
- * A script already shared with the client is never changed here: no review,
- * no fix and no trim run on it (the shared version stays exactly what the
- * client saw; this draft waits for a person).
+ * A script already shared with the client is never changed here: no review
+ * and no rewrite run on it (the shared version stays exactly what the client
+ * saw; this draft waits for a person).
  */
 async function writerReviewStep(
   scriptId: string, v: VersionRow, j: JudgeRecord, shared: boolean,
   o: { requestedBy: string; unattended: boolean; deadline: number | null; timeFor: (ms: number) => boolean },
 ): Promise<AutoCheckResult | "continue"> {
   const w = await import("@/lib/scriptWriter/pipeline");
-  const { trimInstruction } = await import("@/lib/scriptWriter/rules");
   const stay = (reason: string): AutoCheckResult => ({ state: j.state, fixRounds: j.fixRounds, versionId: v.id, reason });
   if (shared) {
-    if (j.state === "pending" || j.state === "fixing" || j.state === "trimming") await writeJudge(v.id, { ...j, state: "not_checked", attempts: MAX_JUDGE_ATTEMPTS, error: "This script was already shared with the client, so the automatic review and fixes do not run on it." });
+    if (j.state === "pending" || j.state === "fixing" || j.state === "trimming") await writeJudge(v.id, { ...j, state: "not_checked", attempts: MAX_JUDGE_ATTEMPTS, error: "This script was already shared with the client, so the automatic review and rewrite do not run on it." });
     return { state: "skipped", fixRounds: j.fixRounds, versionId: v.id, reason: "already shared with the client" };
   }
   const pausedOrRefused = (e: unknown): AutoCheckResult | null => {
@@ -321,127 +283,84 @@ async function writerReviewStep(
     return null;
   };
 
-  // v2.4 (the length fix): the writer's own draft over trimAbove is trimmed toward the aim BEFORE its first
-  // review (Sonnet drafts at 87 words on average; the trim used to wait for a passing review that never came).
-  // A told personal story is not: it may use up to the cap.
-  if (j.state === "pending" && !j.fixRounds && !j.trimmed && !j.aimTrimmed && !j.aimTrimOf && !(j.checks ?? []).length) {
-    const rec = await w.latestWriterRecord(scriptId, v.id);
-    const words = v.spokenWordCount ?? 0;
-    if (rec && w.nextWriterStep({ reviewed: false, mustFails: [], words, fixRounds: 0, trimmed: false, story: rec.brief.videoType === "story" }) === "aim-trim") {
-      await writeJudge(v.id, { ...j, state: "trimming", trimKind: "first", words });
-      return "continue";
-    }
-  }
-
   /** The review's answer as a judge record on top of `base` (the version's own owed record). */
   const recordOf = (base: JudgeRecord, r: Awaited<ReturnType<typeof w.reviewVersion>>): JudgeRecord => {
     const failing = r.checks.filter((c) => !c.pass);
     return {
-      ...base, writer: 2, checks: r.checks, hard: r.hard, craft: r.craft, words: r.words, summary: r.summary, trimmed: !!base.trimmed,
+      ...base, writer: 2, checks: r.checks, hard: r.hard, craft: null, reads: r.reads, words: r.words, summary: r.summary, trimmed: !!base.trimmed,
       criteria: r.checks.map((c) => ({ key: c.key, pass: c.pass, note: c.reason })), issues: failing.map((c) => `${c.n}. ${c.label}: ${c.reason}`),
       fixInstruction: r.fixInstruction, checkedAt: new Date().toISOString(), runId: r.runId, error: null,
     };
   };
-  /** What a reviewed CURRENT version does next (pass, flag, a fix round, a trim). */
-  const settleCurrent = async (cv: VersionRow, record: JudgeRecord, next: ReturnType<typeof w.nextWriterStep>): Promise<AutoCheckResult | "continue"> => {
-    if (next === "revert") {
-      // Oct 22 2026 (v2.1): the aim trim dropped a must-keep point: the longer passing version stands.
-      // v2.3: flagged instead when it says the line the trim's review failed on.
-      const kept = await restoreBeforeTrim(cv, record, o.requestedBy);
-      return { state: kept.state, fixRounds: record.fixRounds, versionId: kept.versionId, reason: kept.state === "flagged" ? "the trim failed a must-fix check; the longer version is kept, flagged: it says the line the trim failed on" : "the trim failed a must-fix check; the longer version is kept" };
-    }
+  /** What a reviewed CURRENT version does next: passed, the one rewrite owed, or flagged (the better version current). */
+  const settle = async (cv: VersionRow, record: JudgeRecord): Promise<AutoCheckResult | "continue"> => {
+    const next = w.nextWriterStep({ mustFails: mustFixFailures(record.checks ?? []), rewrites: record.fixRounds });
     if (next === "pass") {
       await writeJudge(cv.id, { ...record, state: "passed" });
       return { state: "passed", fixRounds: record.fixRounds, versionId: cv.id };
     }
-    if (next === "flag" || next === "review") {
+    if (next === "flag") {
       const kept = await finishFlagged(cv, record, o.requestedBy);
       return { state: "flagged", fixRounds: record.fixRounds, versionId: kept };
     }
-    await writeJudge(cv.id, { ...record, state: next === "fix" ? "fixing" : "trimming", ...(next === "fix" ? {} : { trimKind: next === "aim-trim" ? ("aim" as const) : ("cap" as const) }) });
+    await writeJudge(cv.id, { ...record, state: "fixing" });
     return "continue";
   };
-
-  if (j.state === "pending" || (j.state === "not_checked" && j.attempts < MAX_JUDGE_ATTEMPTS)) {
-    if (!o.timeFor(JUDGE_MIN_START_MS)) return stay("out of time");
-    let r: Awaited<ReturnType<typeof w.reviewVersion>>;
+  /** The review of one version, or the reason it could not run (recorded on the version). */
+  const review = async (target: { v: VersionRow; j: JudgeRecord }): Promise<{ r: Awaited<ReturnType<typeof w.reviewVersion>> } | { result: AutoCheckResult }> => {
     try {
-      r = await w.reviewVersion(v.id, { requestedBy: o.requestedBy, unattended: o.unattended, deadline: o.deadline });
+      return { r: await w.reviewVersion(target.v.id, { requestedBy: o.requestedBy, unattended: o.unattended, deadline: o.deadline }) };
     } catch (e) {
       const known = pausedOrRefused(e);
-      if (known) return known;
+      if (known) return { result: known };
       const msg = e instanceof Error ? e.message : String(e);
-      await writeJudge(v.id, { ...j, state: "not_checked", attempts: j.attempts + 1, error: msg.slice(0, 300), checkedAt: new Date().toISOString() });
-      return { state: "not_checked", fixRounds: j.fixRounds, versionId: v.id, reason: msg };
+      await writeJudge(target.v.id, { ...target.j, state: "not_checked", attempts: target.j.attempts + 1, error: msg.slice(0, 300), checkedAt: new Date().toISOString() });
+      return { result: { state: "not_checked", fixRounds: j.fixRounds, versionId: v.id, reason: msg } };
     }
-    const record = recordOf(j, r);
-    return settleCurrent(v, record, w.nextWriterStep({ mustFails: r.mustFails, words: r.words, fixRounds: j.fixRounds, trimmed: !!j.trimmed, aimTrimmed: !!j.aimTrimmed, isAimTrim: !!j.aimTrimOf, maxFixRounds: MAX_FIX_ROUNDS, story: r.story }));
+  };
+
+  const reviewed = (j.checks ?? []).length > 0;
+  if (j.state === "pending" || (j.state === "not_checked" && j.attempts < MAX_JUDGE_ATTEMPTS) || (j.state === "trimming" && !reviewed)) {
+    if (!o.timeFor(JUDGE_MIN_START_MS)) return stay("out of time");
+    const got = await review({ v, j });
+    if ("result" in got) return got.result;
+    return settle(v, recordOf(j, got.r));
   }
 
   if (j.state === "fixing" || j.state === "trimming") {
-    const trim = j.state === "trimming";
-    const first = trim && j.trimKind === "first";
-    const aim = trim && j.trimKind === "aim";
-    // Oct 23 2026 (never a worse version): a fix round and the cap trim are CANDIDATES. The aim trims keep their
-    // own rule: the pre-review one has nothing reviewed to compare, and one that loses a must-keep point is undone.
-    const candidateRound = !first && !aim;
-    if (candidateRound) {
-      const owed = await owedCandidate(scriptId, v.id);
-      if (owed) {
-        const parent = { v, j };
-        const story = (await w.latestWriterRecord(scriptId, v.id))?.brief.videoType === "story";
-        // A candidate whose review could not run after every retry is set aside: it can never be shown better.
-        if (owed.j.state === "not_checked" && owed.j.attempts >= MAX_JUDGE_ATTEMPTS) {
-          const pj = await setAside(owed, parent, owed.j.error ?? "The creative review could not run on this round.");
-          return settleCurrent(v, pj, w.nextWriterStep({ mustFails: mustFixFailures(pj.checks ?? []), words: pj.words || v.spokenWordCount || 0, fixRounds: pj.fixRounds, trimmed: !!pj.trimmed, aimTrimmed: !!pj.aimTrimmed, isAimTrim: false, maxFixRounds: MAX_FIX_ROUNDS, story }));
+    // The rewrite, once written, is a candidate owed its review: it becomes current only when it reads better.
+    const owed = await owedCandidate(scriptId, v.id);
+    if (owed) {
+      const parent = { v, j };
+      const story = (await w.latestWriterRecord(scriptId, v.id))?.brief.videoType === "story";
+      // A candidate whose review could not run after every retry is set aside: it can never be shown better.
+      if (owed.j.state === "not_checked" && owed.j.attempts >= MAX_JUDGE_ATTEMPTS) return settle(v, await setAside(owed, parent, owed.j.error ?? "The creative review could not run on this rewrite."));
+      if (!o.timeFor(JUDGE_MIN_START_MS)) return stay("out of time");
+      const got = await review(owed);
+      if ("result" in got) return got.result;
+      const cand = { v: owed.v, j: recordOf(owed.j, got.r) };
+      if (candidateWins(cand, parent, !!(got.r.story ?? story))) {
+        // It reads better: it becomes the current version (a person's approve or edit in between wins, and it is set aside).
+        if (!(await makeVersionCurrent(scriptId, cand.v.id, { expectCurrentId: v.id }))) {
+          await setAside(cand, parent, "The script changed while this rewrite ran.");
+          return { state: "skipped", fixRounds: j.fixRounds, versionId: v.id, reason: "the script changed while the rewrite ran" };
         }
-        if (!o.timeFor(JUDGE_MIN_START_MS)) return stay("out of time");
-        let r: Awaited<ReturnType<typeof w.reviewVersion>>;
-        try {
-          r = await w.reviewVersion(owed.v.id, { requestedBy: o.requestedBy, unattended: o.unattended, deadline: o.deadline });
-        } catch (e) {
-          const known = pausedOrRefused(e);
-          if (known) return known;
-          const msg = e instanceof Error ? e.message : String(e);
-          await writeJudge(owed.v.id, { ...owed.j, state: "not_checked", attempts: owed.j.attempts + 1, error: msg.slice(0, 300), checkedAt: new Date().toISOString() });
-          return { state: "not_checked", fixRounds: j.fixRounds, versionId: v.id, reason: msg };
-        }
-        const cand = { v: owed.v, j: recordOf(owed.j, r) };
-        if (candidateWins(cand, parent, !!(r.story ?? story))) {
-          // Better: it becomes the current version (a person's approve or edit in between wins, and it is set aside).
-          if (!(await makeVersionCurrent(scriptId, cand.v.id, { expectCurrentId: v.id }))) {
-            await setAside(cand, parent, "The script changed while this round ran.");
-            return { state: "skipped", fixRounds: j.fixRounds, versionId: v.id, reason: "the script changed while the round ran" };
-          }
-          return settleCurrent(cand.v, cand.j, w.nextWriterStep({ mustFails: r.mustFails, words: r.words, fixRounds: cand.j.fixRounds, trimmed: !!cand.j.trimmed, aimTrimmed: !!cand.j.aimTrimmed, isAimTrim: false, maxFixRounds: MAX_FIX_ROUNDS, story: r.story }));
-        }
-        // Not better: it stays in the history; the version it was fixing stays current with the round counted.
-        const pj = await setAside(cand, parent);
-        return settleCurrent(v, pj, w.nextWriterStep({ mustFails: mustFixFailures(pj.checks ?? []), words: pj.words || v.spokenWordCount || 0, fixRounds: pj.fixRounds, trimmed: !!pj.trimmed, aimTrimmed: !!pj.aimTrimmed, isAimTrim: false, maxFixRounds: MAX_FIX_ROUNDS, story: r.story }));
+        return settle(cand.v, cand.j);
       }
+      // Not better: it stays in the history; the version it rewrote stays current with the rewrite counted.
+      return settle(v, await setAside(cand, parent));
     }
+    // The rewrite is spent (or a v2.5 record already spent its rounds): flagged as it stands, the better version current.
+    if (j.fixRounds >= MAX_REWRITES) return settle(v, j);
     if (!o.timeFor(FIX_MIN_START_MS)) return stay("out of time");
     try {
       const { reviseScript } = await import("@/lib/contentGeneration");
-      const { WRITER_LENGTH } = await import("@/lib/scriptWriter/rules");
-      // The brief's must-keep points ride in every trim and fix: none may be dropped to hit a number.
-      const rec = await w.latestWriterRecord(scriptId, v.id);
-      const mustKeep = w.mustKeepTexts(rec?.brief);
-      const story = rec?.brief.videoType === "story";
-      await reviseScript(scriptId, trim ? trimInstruction(j.words ?? 0, mustKeep, { story }) : w.writerFixInstruction(j, mustKeep, { story }), o.requestedBy, "REVISION", {
-        autoFix: first
-          // v2.4: the pre-review aim trim; over the cap, it is the cap trim too.
-          ? { round: 0, trim: "aim", preReview: true, trimmed: (j.words ?? 0) > WRITER_LENGTH.cap }
-          : aim
-          ? { round: j.fixRounds, trim: "aim", trimmed: !!j.trimmed, aimTrimOf: v.id }
-          : trim ? { round: j.fixRounds, trim: "cap", aimTrimmed: !!j.aimTrimmed, candidate: true } : { round: j.fixRounds + 1, trimmed: !!j.trimmed, aimTrimmed: !!j.aimTrimmed, candidate: true },
-        unattended: o.unattended, deadline: o.deadline,
-      });
+      await reviseScript(scriptId, w.rewriteInstruction(j), o.requestedBy, "REVISION", { autoFix: { round: j.fixRounds + 1, rewrite: true, candidate: true }, unattended: o.unattended, deadline: o.deadline });
     } catch (e) {
       const known = pausedOrRefused(e);
       if (known) return known;
       const msg = e instanceof Error ? e.message : String(e);
-      await writeJudge(v.id, { ...j, state: "flagged", error: `The automatic ${trim ? "trim" : "fix"} could not run: ${msg.slice(0, 200)}` });
+      await writeJudge(v.id, { ...j, state: "flagged", error: `The automatic rewrite could not run: ${msg.slice(0, 200)}` });
       return { state: "flagged", fixRounds: j.fixRounds, versionId: v.id, reason: msg };
     }
     return "continue";
@@ -460,8 +379,7 @@ async function writerReviewStep(
 export async function autoCheckScript(scriptId: string, opts: { requestedBy?: string | null; unattended: boolean; deadline?: number | null }): Promise<AutoCheckResult> {
   const deadline = opts.deadline ?? Date.now() + DEFAULT_BUDGET_MS;
   const timeFor = (ms: number) => deadline - Date.now() >= ms;
-  // Two fix rounds and (the new writer) the cap trim and the aim trim, each followed by a check;
-  // v2.4: and the aim trim of the draft before its first review; v2.5: and the third fix round (pipeline.thirdRoundFor).
+  // Two fix rounds (the old judge) or the new writer's one rewrite, each followed by a check; room to spare.
   for (let guard = 0; guard < 2 * (MAX_FIX_ROUNDS + 5) + 1; guard++) {
     const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { currentVersionId: true, historical: true, sharedVersionId: true } });
     if (!s?.currentVersionId || s.historical) return { state: "skipped", fixRounds: 0, versionId: null, reason: "no live version" };

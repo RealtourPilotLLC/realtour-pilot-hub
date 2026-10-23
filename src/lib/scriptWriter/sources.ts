@@ -417,6 +417,8 @@ export async function gatherForTopic(o: GatherOpts): Promise<Gathered> {
     speakerNames: names,
     strategyText,
     identityBlock: creativeIdentityBlock(built.ctx.creativeIdentity),
+    // v2.6: her boundaries on their own, for the writer's short prompt (the identity block is the brief's).
+    boundaries: (built.ctx.creativeIdentity?.boundaries ?? []).map((b) => b.text).filter(Boolean).slice(0, 8),
     guardBlock: creativeGuardBlock(guard),
     monthPriorities: built.ctx.monthPriorities ?? [],
     topic: { title: t.title, pillar: pillarName, description: t.concept, intendedMessage: t.intendedMessage, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, whyChosen },

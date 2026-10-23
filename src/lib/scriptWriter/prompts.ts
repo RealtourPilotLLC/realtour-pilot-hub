@@ -1,25 +1,27 @@
 // ---------------------------------------------------------------------------
-// THE SCRIPT WRITER'S PROMPTS (Oct 22 2026). Pure: strings and JSON schemas,
-// no provider call. Five steps, each its own system prompt (stable, so the API
-// caches it) and its own structured-output schema:
+// THE SCRIPT WRITER'S PROMPTS (Oct 22 2026; v2.6 Oct 23 2026). Pure: strings
+// and JSON schemas, no provider call. Four steps, each its own system prompt
+// (stable, so the API caches it) and its own structured-output schema:
 //
 //   1. retrieval  read the topic's call(s) in full and older call windows;
 //                 quote, verbatim, every passage where the client talks about
 //                 this topic; mark what a buyer or seller should hear and what
 //                 is internal talk                                (medium)
-//   2. brief      the topic brief: one message, viewer, why chosen, what she
+//   2. brief      the topic brief: one angle, one proof, the viewer, what she
 //                 said, must-keep / optional / excluded, contradictions, the
 //                 close type; facts, opinions, ideas and OUR assumptions apart
 //                                                                 (medium)
-//   3. hooks      five hooks, each with its re-hook, scored on eight points
-//                 (v2.3: tension added); code picks the winner    (high)
-//   4. draft      the five-part script from the brief and the winning hook;
-//                 the same system prompt writes every fix, trim and revision
-//                                                                 (high)
-//   5. review     the independent creative review: Jordan's 12 checks, pass
-//                 or fail with a reason, the craft block (v2.3: the five parts
-//                 scored 1 to 5, a psychology note each) and one fix
-//                 instruction                                     (medium)
+//   3. writer     v2.6: ONE call writes the whole script (HOOK, RE-HOOK,
+//                 BUILD-UP, PAYOFF, CLOSE) from the brief and her own words,
+//                 with a short prompt and three examples of the bar; the same
+//                 system prompt writes the one whole rewrite and a person's or
+//                 a client's revision                             (high)
+//   4. review     v2.6: reads the script as a viewer FIRST (one thought, she
+//                 would say it, the hook lands and the rest follows, nothing
+//                 invented), a 1 to 10 read, and one note for the rewrite
+//                                                                 (medium)
+// (v2.2 to v2.5 had a fifth step, five scored hooks before the draft, and a
+// review of twelve checks and a craft block; both are gone.)
 // The models and efforts per step: scriptWriter/pipeline STEP_MODEL and
 // STEP_EFFORT. v2.3: each user message is built in segments (StepPrompt
 // blocks): the long stable material first, ending in a cache breakpoint, the
@@ -30,7 +32,7 @@
 // No dash is used as punctuation in any prompt text: the model mirrors it.
 // ---------------------------------------------------------------------------
 
-import { CLOSE_RULE, HOMEOWNER_LANGUAGE_RULE, TOPIC_LABEL_RULE, ASSUMPTION_RULE, BACKGROUND_RULE, NO_DURATION_RULE, NO_DASH_RULE, LENGTH_RULE, NEITHER_WINS_RULE, WORDING_RULE, HOUSE_CRAFT_RULES, REVIEW_CHECKS, MODEL_CHECK_KEYS, CRAFT_PARTS, HOOK_CRITERIA, WRITER_LENGTH, WRITER_VERSION, BRIEF_MUST_KEEP_MAX, estimateSeconds } from "./rules";
+import { CLOSE_RULE, HOMEOWNER_LANGUAGE_RULE, TOPIC_LABEL_RULE, ASSUMPTION_RULE, BACKGROUND_RULE, WORDING_RULE, HOUSE_CRAFT_RULES, WRITER_LENGTH, WRITER_VERSION, BRIEF_MUST_KEEP_MAX, estimateSeconds, contentWordsOf } from "./rules";
 import type { TopicBrief, WriterFact, WriterPassage } from "./record";
 
 export type JsonSchema = Record<string, unknown>;
@@ -73,6 +75,8 @@ export type WriterContext = {
   relatedScripts: { title: string; text: string; label: string }[];
   answers: { question: string; answer: string }[];
   captionExamples: string[];
+  /** v2.6: her creative identity's boundaries (never cross these), shown to the writer. */
+  boundaries?: string[];
 };
 
 export type SourceDoc = { id: string; label: string; kind: "call" | "older" | "excerpts"; text: string };
@@ -134,15 +138,6 @@ function scriptsBlock(ctx: WriterContext): string {
 }
 
 const TARGET_LINE = `TARGET LENGTH: about ${WRITER_LENGTH.target} spoken words (about ${estimateSeconds(WRITER_LENGTH.target)} seconds), inside ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]}; ${WRITER_LENGTH.cap} is the hard cap.`;
-
-/** The draft's closing line (Oct 22 2026, v2.1): the number, plainly, and what must survive it. */
-export const DRAFT_LENGTH_ASK = `Write the script in about ${WRITER_LENGTH.target} spoken words (${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]}; ${WRITER_LENGTH.cap} is the hard cap). The brief's must-keep points are the only things that must survive; optional material, a second example and extra setup go first. Never dry or incomplete. Count the spoken words before you answer.`;
-/** v2.4: a told personal story may use up to the cap (Jordan's own story finals run 94 to 110). */
-export const DRAFT_LENGTH_ASK_STORY = `This is her told personal story: tell it in order, in about ${WRITER_LENGTH.storyTarget} spoken words and never more than ${WRITER_LENGTH.cap} (the hard cap); never pad it to reach a number. The brief's must-keep beats are the only things that must survive. Never dry or incomplete. Count the spoken words before you answer.`;
-/** The draft's closing length line for this brief (v2.4). */
-export function draftLengthAsk(brief: Pick<TopicBrief, "videoType">): string {
-  return brief.videoType === "story" ? DRAFT_LENGTH_ASK_STORY : DRAFT_LENGTH_ASK;
-}
 
 // ---------------------------------------------------------------------------
 // 1. Retrieval
@@ -312,90 +307,107 @@ export function briefText(b: TopicBrief): string {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Five hooks
+// 3. The writer (v2.6): ONE call writes the whole script; the same system
+//    prompt writes the one whole rewrite and a person's or a client's revision
 // ---------------------------------------------------------------------------
 
-export const HOOKS_SYSTEM = `You write FIVE hooks for ONE monthly personal-brand video of a Realtour Pilot client (a real estate professional), each with the re-hook that would follow it, and you score each one honestly. The best one will be chosen by its scores; do not inflate them.
+/**
+ * THE BAR (Oct 23 2026). Four of Erica Walker's October scripts as the
+ * creative lead rewrote them by hand from her own words on the Oct 20 call
+ * (scripts/_live/oct23-erica-scripts-rewrite.ts), after the patched versions
+ * stopped making sense. The prompt shows three of them as examples of the
+ * SHAPE and the VOICE (one thought, short spoken sentences, a hook that lands
+ * in the first line), never as content: the one on the topic being written is
+ * never shown (barExamplesFor), so no video gets its own answer.
+ */
+export const BAR_EXAMPLES: readonly { topic: string; hook: string; rehook: string; buildup: string; payoff: string; close: string }[] = [
+  {
+    topic: "I Once Watched a Deal Fall Apart Over a Doorknob",
+    hook: "People lose houses over doorknobs.",
+    rehook: "Not because the doorknob matters. Because by the end, both sides are frustrated and done.",
+    buildup: "That's when I stay the calm one. I hold back my own frustration and put myself in both people's shoes. One wants to sell. One wants to buy.",
+    payoff: "Same goal. So the question isn't who wins the doorknob. It's: how do we get there?",
+    close: "If something small is about to cost you the deal, call me before it does.",
+  },
+  {
+    topic: "Empty Nesters Are Upsizing, Not Downsizing",
+    hook: "The kids moved out. So why are so many empty nesters buying bigger?",
+    rehook: "Where I'm working right now, it's all empty nesters, about 6,000 square feet, with giant pools for the grandkids.",
+    buildup: "It's called a magnet home: it pulls your kids and grandkids back, and makes them want to stay.",
+    payoff: "So if you want more space, not less, don't feel like you're weird. This is the trend.",
+    close: "Tell me who you picture coming home, and let's plan the space for them.",
+  },
+  {
+    topic: "Your Backyard Vision Starts With the Lot, Not the Landscaper",
+    hook: "My clients pictured a pool right off the kitchen. The only lot left said no.",
+    rehook: "It was a walkout basement lot. So we rethought the backyard instead of giving it up.",
+    buildup: "Now it's a deck with views up top and a patio below, leading to the pool. Still going to be amazing.",
+    payoff: "A sloped lot isn't a problem. It's a decision that shapes everything from the garage to the backyard.",
+    close: "Picture your backyard first, then let's make sure the lot can give it to you.",
+  },
+  {
+    topic: "More Space, or Space That Actually Works?",
+    hook: "Feeling cramped doesn't always mean you need a bigger house.",
+    rehook: "Sometimes it does. One full bathroom and three kids is a space problem.",
+    buildup: "But my townhouse clients already have the square footage, just across three levels. They want it on two, open, so they can see the kids while they cook.",
+    payoff: "So before you shop bigger, name what isn't working: more space, or space that works better?",
+    close: "Tell me what's not working, and we'll find the home that fixes it.",
+  },
+];
+/** How many examples a prompt shows (v2.6). */
+export const BAR_EXAMPLES_SHOWN = 3;
 
-A HOOK captures attention in one breath (about 6 to 16 spoken words): a relatable belief or misconception the viewer holds, an unexpected contrast, a question the viewer is already asking, a real problem, or a compelling moment from her own experience. It carries its own tension: a cost, a reversal or an unanswered question. A bare wish or belief with nothing at stake is not a hook. Never a greeting, never her name, never "Today I want to talk about", never "Here are 3 tips", never opening by naming the audience ("Sellers, ...").
-A RE-HOOK adds a fact, a turn or a stake that is not in the hook, and sets up what the payoff will prove. It never opens with a hedge (Maybe, Not exactly), never restates the hook's subject in other words, and never only explains why the hook is true.
-Make the five genuinely different (different levers, different first words, different shapes), all true to the brief: nothing her sources do not support. At most two of the five are a viewer's sentence spoken in the first person. When this month's other videos are listed, open this one differently from all of them.
-
-THE HOOK DOES THE VIDEO'S JOB (the brief says which video this is):
-- A PERSONAL STORY opens on HER moment: the tension or the turn in her own story, in her voice (what she loved and left, what she expected and what happened instead, the question her story answers). Not a line a viewer would say, not a question to the viewer: the viewer leans in because something happened to her. At least three of the five hooks are her moment.
-- An EDUCATIONAL video voices the viewer's own belief or misconception, in the words a homeowner or buyer would actually say, or a question they are already asking; the interviewer's question (the brief's "what we asked") is often the best way in.
-- A fun fact about her is a weak hook.
-fit: "her_moment" when the hook opens on her own tension or turn, "viewer_line" when it is a line the viewer would say or a question they are asking, "other" otherwise. For a personal story the best her_moment hook is chosen first; score honestly anyway.
-
-SCORE each hook 1 to 5 on: relevance (immediately relevant to the viewer), curiosity, tension (5 = a real cost, reversal or unanswered question is at stake for the viewer or for her; 1 = a bare wish or belief with nothing at stake), specificity, naturalDelivery (easy to say out loud, sounds like a person), accuracy (5 = fully supported by her sources; under 4 = it claims or implies something she did not say), herVoice, payoffConnection (the brief's central message answers it). A hook is only chosen when its curiosity and its tension are both strong, and the hooks are ranked by curiosity, tension, specificity and payoffConnection: score those four with care, never generously. One short note per hook.
-Never build a hook or a re-hook on anything the brief lists as excluded (a deal still in progress, a story she already told on camera): a hook that tells one is set aside.
-
-${WORDING_RULE}
-${HOUSE_CRAFT_RULES}
-${HOMEOWNER_LANGUAGE_RULE}
-${TOPIC_LABEL_RULE}
-${NO_DASH_RULE}`;
-
-export const HOOKS_SCHEMA: JsonSchema = obj({
-  hooks: arr(obj({
-    text: str("The hook, spoken."),
-    rehook: str("The re-hook that would follow it, spoken."),
-    lever: str("The lever in two or three words (belief, contrast, question, real problem, her moment ...)."),
-    fit: { type: "string", enum: ["her_moment", "viewer_line", "other"] },
-    scores: obj(Object.fromEntries(HOOK_CRITERIA.map((k) => [k, { type: "integer" }]))),
-    note: str(),
-  }), "Exactly five."),
-});
-
-/** v2.3: `siblings` are the hooks this month's other scripts for her open with (variety: never the same way twice). */
-export function buildHooksPrompt(ctx: WriterContext, brief: TopicBrief, opts: { siblings?: readonly string[] } = {}): StepPrompt {
-  const siblings = (opts.siblings ?? []).filter(Boolean);
-  const prompt = [
-    clientBlock(ctx, { strategy: false }),
-    topicBlock(ctx),
-    briefText(brief),
-    factsBlock(ctx.facts),
-    scriptsBlock({ ...ctx, relatedScripts: [] }),
-    siblings.length ? ["THIS MONTH'S OTHER VIDEOS FOR HER OPEN WITH (open this one differently: a different lever, different first words, a different shape; never reuse one):", ...siblings.map((h) => `- ${h}`)].join("\n") : "",
-    "Write exactly five hooks, each with its re-hook, and score them.",
-  ].filter(Boolean).join("\n\n");
-  return { system: HOOKS_SYSTEM, prompt, schema: HOOKS_SCHEMA };
+/**
+ * The examples for one topic (v2.6, pure): BAR_EXAMPLES_SHOWN of them, never
+ * the one written for this topic (the same title, or three or more of its
+ * content words), so the writer is shown the bar, not this video's answer.
+ */
+export function barExamplesFor(topicTitle: string): (typeof BAR_EXAMPLES)[number][] {
+  const key = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const mine = contentWordsOf(topicTitle ?? "");
+  const sameTopic = (t: string) => key(t) === key(topicTitle ?? "") || [...contentWordsOf(t)].filter((w) => mine.has(w)).length >= 3;
+  return BAR_EXAMPLES.filter((e) => !sameTopic(e.topic)).slice(0, BAR_EXAMPLES_SHOWN);
 }
 
-// ---------------------------------------------------------------------------
-// 4. The writer (draft, fix, trim, revise)
-// ---------------------------------------------------------------------------
+/** A script in the five labelled parts, as the examples, the rewrite and the review show it. Pure. */
+export function partsBlock(p: { hook: string; rehook: string; buildup: string; payoff: string; close: string }): string {
+  return [`HOOK: ${p.hook}`, `RE-HOOK: ${p.rehook}`, `BUILD-UP: ${p.buildup}`, `PAYOFF: ${p.payoff}`, `CLOSE: ${p.close}`].join("\n");
+}
 
-export const WRITER_SYSTEM = `You write ONE monthly personal-brand video script for a Realtour Pilot client (a real estate professional), from a topic brief. Realtour Pilot leads the creative direction; the client supplies the expertise, the experiences and the voice. The script turns her knowledge, stories and perspective into a short video a viewer would watch to the end, trust, and remember her by. It is not a listing video: never sell a property.
-(${WRITER_VERSION})
+function examplesBlock(topicTitle: string): string {
+  const xs = barExamplesFor(topicTitle);
+  if (!xs.length) return "";
+  return [
+    `EXAMPLES OF THE BAR (${xs.length} scripts written to this standard for OTHER videos. They show the shape and the voice: one thought from the first line to the last, short spoken sentences, a hook that lands at once. Never copy their content, lines, facts or stories.)`,
+    ...xs.map((e, i) => `--- Example ${i + 1} ---\n${partsBlock(e)}`),
+  ].join("\n\n");
+}
 
-THE FRAMEWORK: HOOK, RE-HOOK, BUILD-UP, PAYOFF, CLOSE.
-- HOOK: capture attention immediately with a relatable belief, an unexpected contrast, an interesting question, a real problem or a compelling moment of hers, carrying its own tension (a cost, a reversal or an unanswered question). No generic introduction, no greeting, no name.
-- RE-HOOK: a fact, a turn or a stake that is not in the hook: it raises the tension. Never opens with a hedge (Maybe, Not exactly), never restates the hook's subject in other words, never only explains why the hook is true.
-- BUILD-UP: enough context for the viewer to understand, built on her one real moment (the brief's proof: what happened, one number or detail, how it ended) and her actual expertise; no excess explanation.
-- PAYOFF: answer the hook's question in one line the viewer could repeat, then why it matters to them. How she helps appears once, in the payoff or the close, never both. A "My job is" or credential line that does not answer the hook is not a payoff.
-- CLOSE: complete the message naturally, by the close rule below.
-${CLOSE_RULE}
+/**
+ * THE WRITER'S SYSTEM PROMPT (v2.6). Only what matters: the five parts and
+ * what each does, her voice, the length, the close, no dashes or durations,
+ * never invent and never put words in anyone else's mouth, her phrases where
+ * they fit. Every other house rule is the brief's (it chooses the angle, the
+ * proof, what is kept and left out) or code's (advice on the record).
+ */
+export const WRITER_SYSTEM = `You write ONE short video script that a real estate agent will say to camera, in her own voice, from the topic brief and her own words below.
 
-${WORDING_RULE}
-${HOUSE_CRAFT_RULES}
+Write the whole script as ONE thought, in five parts that follow from each other:
+- HOOK: the first line. It lands on its own: the tension, surprise or question at the heart of this topic, in one breath.
+- RE-HOOK: the next line raises it with something the hook did not say: a turn, a stake or a fact.
+- BUILD-UP: what makes it true: her proof from the brief (what happened, or what she does), told in full spoken sentences.
+- PAYOFF: the answer to the hook, in a line the viewer could repeat.
+- CLOSE: a call to action tied to the message, or a line that pays off the hook.
 
-${LENGTH_RULE}
-${HOMEOWNER_LANGUAGE_RULE}
-${TOPIC_LABEL_RULE}
-${ASSUMPTION_RULE}
-${BACKGROUND_RULE}
+Her voice: she is the one speaking, in the first person, the way she talks. Use her phrases where they fit.
+Length: ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]} spoken words.
+No em dashes or en dashes. No durations or timing notes.
+Never invent a fact, a number, a quote or a story, and never put words in anyone else's mouth: only what her sources say.
 
-TRUTH: never invent a story, a client event, a number, a result, a credential, a market statistic, a motivation or an analogy she did not give. Never add a market claim because it sounds plausible. A faithful paraphrase of what she said is supported. What the sources do not support becomes a gap (kind, text, question) and the script says nothing about it.
-HER VOICE: her vocabulary and her strongest short phrases (the brief's "her phrases"), in sentences written for camera: short, natural, polished, the way she would say it on her best take across the table. Her rewrites and her lines are strong evidence for how it should sound; they do not decide the structure, the length or the topic.
-${NEITHER_WINS_RULE}
-EVIDENCE, NOT COPY: the passages are evidence of what she means; choose the strongest points and write them, do not reproduce the conversation.
+The examples show the bar, in shape and voice. They are other videos: never copy their content, lines, facts or stories.
 
-THE HOOK: use the chosen hook exactly as given unless your instruction says to change it. Build the re-hook from the chosen re-hook so it adds something new and sets up the payoff.
-PUNCTUATION: ${NO_DASH_RULE}
-${NO_DURATION_RULE}
-
-OUTPUT: one JSON object matching the schema. rehook, buildup and payoff are the three talking points, in that order. rationale is a short internal note for the creative director, one sentence each: why this hook works, the viewer's takeaway, and how her strategy shaped the script. It is never spoken and never shown to the client. captionCta is the written contact line for the caption, in the style of her caption examples when there are any.`;
+Answer with one JSON object. hook, rehook, buildup, payoff and close are the five parts. title is a working title for the office. captionCta is a short written line for the caption. rationale is a one-line note each for the creative director (why the hook works, the viewer's takeaway, how her strategy shaped it), never spoken. gaps lists anything the script needed that her sources do not cover, as a question to ask her.
+(${WRITER_VERSION})`;
 
 const GAP_ITEM = obj({ kind: { type: "string", enum: ["unsupported-claim", "missing-answer", "missing-source", "unverified-history", "insufficient-context", "placeholder"] }, text: str(), question: str("The one question that would close it, or an empty string.") });
 
@@ -410,147 +422,163 @@ export const DRAFT_SCHEMA: JsonSchema = obj({
   captionCta: str("The written contact line for the caption, or an empty string."),
   filmingNotes: str("Internal: a location, prop or delivery note when it matters, else an empty string. Never spoken, never a duration."),
   rationale: obj({ hook: str(), takeaway: str(), strategy: str() }),
-  sourcesUsed: arr(str("A passage or fact id, \"written answers\" or \"strategy\".")),
+  sourcesUsed: arr(str("A passage id, \"written answers\" or \"strategy\".")),
   gaps: arr(GAP_ITEM),
 });
 
 export type DraftOut = { title: string; hook: string; rehook: string; buildup: string; payoff: string; close: string; closeType: "cta" | "callback"; captionCta: string; filmingNotes: string; rationale: { hook: string; takeaway: string; strategy: string }; sourcesUsed: string[]; gaps: { kind: string; text: string; question: string }[] };
 
-/**
- * What every writer prompt starts with. v2.3 (prompt caching): `stable` is
- * the client, the topic, the brief and her material, the same in the draft
- * and in every fix, trim and revision of one script, so it sits in front of a
- * cache breakpoint; `chosen` (the hook to use) is per round and goes after it.
- */
 /** v2.5: the passages a writer prompt shows: never one a live deal's proof cited (brief.heldBack; it is never in the script). The review still reads them all. Pure. */
 export function writerPassages(brief: Pick<TopicBrief, "heldBack"> | null | undefined, passages: readonly WriterPassage[]): WriterPassage[] {
   const held = new Set((brief?.heldBack ?? []).filter((h) => h.kind === "live").flatMap((h) => h.ids));
   return passages.filter((p) => !held.has(p.id));
 }
 
-function writerUser(ctx: WriterContext, brief: TopicBrief, passages: WriterPassage[], chosen: { text: string; rehook: string } | null): { stable: string[]; chosen: string } {
-  return {
-    stable: [
-      clientBlock(ctx),
-      topicBlock(ctx),
-      briefText(brief),
-      passagesBlock(writerPassages(brief, passages)),
-      answersBlock(ctx),
-      factsBlock(ctx.facts),
-      scriptsBlock(ctx),
-      ctx.captionExamples.length ? ["HER CAPTION CTA EXAMPLES:", ...ctx.captionExamples.map((c) => `- ${c}`)].join("\n") : "",
+/**
+ * The brief as the writer and the reviewer read it (v2.6): the topic, what we
+ * asked her, the angle, her proof, the message, the viewer, what it must keep,
+ * her phrases, an agreed format, what is left out and the close. The brief's
+ * other lists (optional points, facts, opinions, contradictions, our
+ * assumptions) stay on the record: the writer is not asked to use them all.
+ */
+export function writerBriefText(ctx: Pick<WriterContext, "topic">, b: TopicBrief): string {
+  const format = (b.creativeIdeas ?? []).find((x) => /\bagreed\b[^.]{0,40}\bformat\b/i.test(x.text))?.text ?? null;
+  const proof = b.proof?.text ? b.proof.text : "None from her: the message itself, in her words, carries it. Do not make a story up.";
+  return [
+    "THIS VIDEO",
+    `Topic (a label, not a line to say): ${ctx.topic.title}`,
+    ...(b.whatWeAsked ? [`What we asked her: ${b.whatWeAsked}`] : []),
+    ...(b.angle ? [`The angle: ${b.angle}`] : []),
+    `Her proof: ${proof}`,
+    `The message: ${b.centralMessage}`,
+    `Who it is for: ${b.viewer}`,
+    ...(b.mustKeep.length ? ["It must keep:", ...b.mustKeep.map((m) => `- ${m.text}`)] : []),
+    ...((b.herPhrases ?? []).length ? ["Her phrases (use them where they fit):", ...(b.herPhrases ?? []).map((x) => `- "${x.text}"`)] : []),
+    ...(format ? [/^agreed format\b/i.test(format) ? format : `Agreed format: ${format}`] : []),
+    ...(b.excluded.length ? ["Leave out:", ...b.excluded.map((x) => `- ${x.text} (${x.reason})`)] : []),
+    `The close: ${b.closeType === "callback" ? "a line that pays off the hook (a soft invitation is still welcome)" : "a call to action tied to the message"}.`,
+    ...(b.videoType === "story" ? [`It is her told personal story: tell it in the order it happened. It may run to ${WRITER_LENGTH.cap} words, never padded.`] : []),
+  ].join("\n");
+}
+
+/** Her own words as the writer reads them (v2.6): the verbatim quotes, without the lines around them. */
+function herWordsBlock(passages: readonly WriterPassage[]): string {
+  if (!passages.length) return "HER OWN WORDS ON THIS: nothing on record beyond the brief. Say nothing about her experience that the brief does not give.";
+  return ["HER OWN WORDS ON THIS (verbatim from her calls: the material, not lines to paste):", ...passages.map((p) => `[${p.id}] "${p.quote}" (${p.source}${p.time ? ` at ${p.time}` : ""})`)].join("\n");
+}
+
+/** How she sounds (v2.6): at most two of her earlier scripts on other subjects. */
+function voiceBlock(ctx: Pick<WriterContext, "voiceRefs">): string {
+  const xs = ctx.voiceRefs.slice(0, 2);
+  if (!xs.length) return "";
+  return ["HOW SHE SOUNDS ON CAMERA (her earlier scripts; her voice, never their lines or their stories):", ...xs.map((s) => `--- ${s.title} ---\n${s.text}`)].join("\n");
+}
+
+/**
+ * The writer's user message (v2.6), the same for the draft, the rewrite and a
+ * revision of one script: who is speaking and the bar (cached), then this
+ * video's brief and her words (cached). Pure.
+ */
+function writerUser(ctx: WriterContext, brief: TopicBrief, passages: WriterPassage[]): string[][] {
+  return [
+    [
+      `CLIENT: ${ctx.clientName}. She is the one speaking.`,
+      ctx.guardBlock,
+      (ctx.boundaries ?? []).length ? ["HER BOUNDARIES (never cross these):", ...(ctx.boundaries ?? []).map((b) => `- ${b}`)].join("\n") : "",
+      examplesBlock(ctx.topic.title),
     ],
-    chosen: chosen ? `THE CHOSEN HOOK (use it word for word): ${chosen.text}\nTHE CHOSEN RE-HOOK (build the re-hook from it): ${chosen.rehook}` : "",
-  };
+    [
+      writerBriefText(ctx, brief),
+      herWordsBlock(writerPassages(brief, passages)),
+      answersBlock(ctx),
+      voiceBlock(ctx),
+      ctx.captionExamples.length ? ["HER CAPTION LINES (examples for captionCta):", ...ctx.captionExamples.slice(0, 4).map((c) => `- ${c}`)].join("\n") : "",
+    ],
+  ];
 }
 
-export function buildDraftPrompt(ctx: WriterContext, brief: TopicBrief, passages: WriterPassage[], chosen: { text: string; rehook: string } | null): StepPrompt {
-  const u = writerUser(ctx, brief, passages, chosen);
-  return segmented(WRITER_SYSTEM, DRAFT_SCHEMA, [u.stable], [u.chosen, draftLengthAsk(brief)]);
+/** The draft's last line (v2.6). */
+export const DRAFT_ASK = `Write the script: ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]} spoken words, one thought from the first line to the last.`;
+
+/** THE DRAFT (v2.6): one call writes all five parts. */
+export function buildDraftPrompt(ctx: WriterContext, brief: TopicBrief, passages: WriterPassage[]): StepPrompt {
+  return segmented(WRITER_SYSTEM, DRAFT_SCHEMA, writerUser(ctx, brief, passages), [DRAFT_ASK]);
 }
 
-/** A fix round, the trim pass, or a person's revision: the same writer, the current version and the instruction (kept whole). */
-export function buildReviseWriterPrompt(ctx: WriterContext, brief: TopicBrief, passages: WriterPassage[], current: { versionNo: number; body: string }, instruction: string, opts: { lockedLabels?: string[]; who: "review" | "trim" | "person" | "client" }): StepPrompt {
-  const whose = opts.who === "review" ? "THE INDEPENDENT REVIEW'S FIX INSTRUCTION" : opts.who === "trim" ? "THE TRIM INSTRUCTION" : opts.who === "client" ? "THE CLIENT'S REQUEST (a creative input: keep her legitimate intent and her facts; it does not decide the structure, the length or the topic)" : "THE CREATIVE DIRECTOR'S INSTRUCTION";
-  const u = writerUser(ctx, brief, passages, null);
-  return segmented(WRITER_SYSTEM, DRAFT_SCHEMA, [u.stable], [
+/** The rewrite's last line (v2.6): the whole script again, never a part patch. */
+export const REWRITE_ASK = `Write the script again, whole, as one thought from the first line to the last: ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]} spoken words. Do not patch the old version part by part; keep a line of it only where it still belongs in the new one.`;
+
+/**
+ * THE ONE WHOLE REWRITE (v2.6): the version that did not work and why (the
+ * reviewer's note as a viewer, and code's reasons), then the whole script
+ * again. Nothing is locked or copied back.
+ */
+export function buildRewritePrompt(ctx: WriterContext, brief: TopicBrief, passages: WriterPassage[], previous: { versionNo: number; body: string }, why: string): StepPrompt {
+  return segmented(WRITER_SYSTEM, DRAFT_SCHEMA, writerUser(ctx, brief, passages), [
+    `THE VERSION THAT DID NOT WORK (v${previous.versionNo}):\n${previous.body.trim()}`,
+    `WHY (a viewer's read of it, and code's checks):\n${why.trim()}`,
+    REWRITE_ASK,
+  ]);
+}
+
+/** A person's or a client's revision, or a person's length trim: the current version and the instruction (kept whole). */
+export function buildReviseWriterPrompt(ctx: WriterContext, brief: TopicBrief, passages: WriterPassage[], current: { versionNo: number; body: string }, instruction: string, opts: { lockedLabels?: string[]; who: "trim" | "person" | "client" }): StepPrompt {
+  const whose = opts.who === "trim" ? "THE TRIM INSTRUCTION" : opts.who === "client" ? "THE CLIENT'S REQUEST (a creative input: keep her legitimate intent and her facts; it does not decide the structure, the length or the topic)" : "THE CREATIVE DIRECTOR'S INSTRUCTION";
+  return segmented(WRITER_SYSTEM, DRAFT_SCHEMA, writerUser(ctx, brief, passages), [
     `CURRENT VERSION (v${current.versionNo}):\n${current.body}`,
     `${whose}:\n${instruction.trim()}`,
     [
-      "REVISION RULES: change what the instruction asks and keep every other line word for word where you can. Keep the hook unless the instruction is about the hook.",
-      "Check the instruction against her sources. When it contradicts what she said (a date, an order of events, a reason), follow the instruction for the script and add a gap that names the contradiction; never invent a reconciliation.",
+      "REVISION RULES: change what the instruction asks and keep every other line where you can; the script still reads as one thought.",
+      ...(opts.who === "client" ? ["Neither version wins automatically: keep the strongest facts and wording of each, on the topic's one message."] : []),
+      "When the instruction contradicts what she said (a date, an order of events, a reason), follow the instruction for the script and add a gap that names the contradiction; never invent a reconciliation.",
       ...(opts.lockedLabels?.length ? [`KEEP EXACTLY (copied back word for word after you answer; return them unchanged): ${opts.lockedLabels.join(", ")}.`] : []),
       "Return the whole script, the rationale for this version and any gaps.",
     ].join("\n"),
   ]);
 }
 
-/**
- * A fix round that starts again from the RUNNER-UP hook (Oct 22 2026, the
- * listening fix): the review failed the hook, so the round is a fresh draft
- * from the next hook, carrying the review's notes. Same system prompt and
- * schema as every draft. v2.4 (keep the good hook): the runner-up's HOOK
- * only, never its re-hook (unreviewed, it carried new claims in during the
- * retest), and `keep` names the parts that passed, kept word for word (code
- * copies them back).
- */
-export function buildRedraftPrompt(ctx: WriterContext, brief: TopicBrief, passages: WriterPassage[], hook: { text: string }, previous: { versionNo: number; body: string }, instruction: string, opts: { keep?: string[] } = {}): StepPrompt {
-  const u = writerUser(ctx, brief, passages, null);
-  return segmented(WRITER_SYSTEM, DRAFT_SCHEMA, [u.stable], [
-    `THE CHOSEN HOOK (use it word for word): ${hook.text}`,
-    `THE PREVIOUS VERSION (v${previous.versionNo}), which failed the review on its hook:\n${previous.body}`,
-    `THE INDEPENDENT REVIEW'S FIX INSTRUCTION:\n${instruction.trim()}`,
-    [
-      "REDRAFT RULES: this round starts again from THE CHOSEN HOOK above (the next-best hook, not the one that failed): use it word for word, write a re-hook that adds a fact, a turn or a stake this hook does not have (from her sources only), and write the rest so every beat follows from the new opening. Keep a line of the previous version only where it still fits. Fix everything else the review names. Return the whole script, the rationale for this version and any gaps.",
-      ...(opts.keep?.length ? [`KEEP EXACTLY (these passed the review; copied back word for word after you answer; return them unchanged): ${opts.keep.join(", ")}.`] : []),
-    ].join("\n"),
-    draftLengthAsk(brief),
-  ]);
-}
-
 // ---------------------------------------------------------------------------
-// 5. The independent creative review
+// 4. The review (v2.6): it reads the script as a viewer FIRST
 // ---------------------------------------------------------------------------
 
-export const REVIEW_SYSTEM = `You are the INDEPENDENT CREATIVE REVIEWER for ONE monthly personal-brand video script written for a Realtour Pilot client (a real estate professional). You did not write it. You judge it against its topic brief and against what the client actually said: the passages with the lines around them, THE FULL CALL, her facts and her written answers, not only the quotes the writer picked. The bar is the creative director's own finals: a hook with real tension, a re-hook that raises it, her own story as the proof, the insight that matters to the viewer, her voice at its best, and a close the viewer remembers because it answers the hook.
+export const REVIEW_SYSTEM = `You read ONE short video script the way a viewer would hear it, before anything else. A real estate agent will say it to camera, in her own voice. You did not write it.
 
-Score every check pass or fail with one specific reason. No inflated scores: a script is not good because it reads smoothly or because it repeats her words. Fail a check for a real problem the creative director would send back; pass it otherwise.
-${REVIEW_CHECKS.map((c) => `${c.n}. ${c.key} (${c.label}, ${c.level}): passes when ${c.passes}`).join("\n")}
+Read the SCRIPT once, start to finish, as someone scrolling would hear it. Then answer four questions, each pass or fail with one specific reason:
+- sense: does it make sense from start to finish as ONE thought? Each line follows from the one before; nothing contradicts itself; no fragments a person would not say.
+- voice: would THIS agent say it, in these words? She is the one speaking, in the first person. A line in a client's or a viewer's voice that she would not say as herself fails, and so do words she would not use.
+- hook: does the hook land in the first line, on its own? Do the re-hook, the build-up and the payoff follow from it, so the payoff answers it?
+- invented: is anything invented? Check every fact, number, story and quote against her sources below (her words, THE FULL CALL, her facts, her written answers); a faithful paraphrase counts. A story she did not tell, a number she did not give, or words put in someone's mouth that she never reported fail.
 
-HOW TO JUDGE
-- her_meaning: compare against the passages and the full call. A reason, a sequence of events or a claim bent away from what she said fails, and so does a chronology that does not match her account.
-- story: for a personal story, the progression is understandable and in order (what she loved, her actual reason for the change, what she expected, the turn, the insight, how she helps now). A list of facts about her, a biography, or a story missing her real reason fails.
-- rehook: it adds a fact, a turn or a stake the hook does not have. A re-hook that opens with a hedge (Maybe, Not exactly), restates the hook's subject in other words, or only explains why the hook is true fails.
-- substance: every must-keep POINT of the brief is present in meaning (a faithful plain version counts), and so is the insight; how she helps appears once, in the payoff or the close, never both. Missing one fails. When she told a story about this topic (her answer when the interviewer asked for an example, or the brief's proof when it is her story), a script that leaves it out fails, and a restated opinion in its place is not the proof. A script under ${WRITER_LENGTH.aim[0]} words passes only if nothing must-keep is missing and it is not dry or incomplete.
-- payoff: it answers the hook's question in one line the viewer could repeat, and lands why it matters to the viewer. A "My job" or credential line that does not answer the hook fails, and a fun fact about her (who her favorite clients are, a hobby, an award) is not a payoff.
-- claims: each factual line traces to something she said ANYWHERE in the full call, a passage (a passage from one of her earlier calls is hers too), a client fact, her written answers or her approved strategy; a faithful paraphrase is supported. The topic description, intended message, audience need, business goal, anything marked "our assumption" and a reader's summary at the top of a call do not count. A market statement she did not make fails, and so does any part of a deal the brief excludes as still in progress, even in general terms.
-- close: at most two beats: first a line that calls back a concrete word or image from the hook (or from the re-hook), then, with a service angle, a warm invitation that names this video's specific next step in her voice. "Let's talk" as the whole invitation, an invitation that opens "Thinking about X?", a close with nothing from the hook, a slogan or an aphorism fails. A callback alone passes only for a story with no service angle.
-- her_voice: it sounds like her at her best on camera: her vocabulary and her strongest short phrases in tight, natural, polished spoken sentences. Her transcript sentences pasted in (rambling, filler, restarts) fail; so do industry terms spoken to homeowners ("buyer avatar", "comps", "CMA"), even when they are a phrase of hers, and opening by naming the audience ("Sellers, ...").
-- length: counted by code and given to you; judge only whether the words are well spent (that is check 12). Over ${WRITER_LENGTH.cap} words is must-fix; ${WRITER_LENGTH.aim[1] + 1} to ${WRITER_LENGTH.cap} is advice only.
-- A format agreed on the call (word association, two voices, a trend alert) is a creative decision the script follows; following it is never a fault.
-- You never ask for anything to be invented. A missing fact the sources do not have is a gap, not a reason to fail substance, unless the brief marked it must-keep.
+reads: 1 to 10, how well it works for a viewer as one thought, against the bar of the examples (10: film it as written; 5: it works, but a viewer would drift; 3 or under: it does not make sense).
+note: when any question fails, ONE note to the writer about the script as a whole: what is wrong and what the rewrite should do, from her sources only. Never a list of parts to patch. An empty string when all four pass.
+summary: one sentence on the script.
+Judge what is on the page. A fact her sources do not have is not a fault when the script leaves it out; inventing one is.`;
 
-CRAFT (check 13, the craft block): the checks above ask whether the script complies; the craft block asks whether it WORKS on a viewer. Score each part 1 to 5 with one line on the psychology behind it:
-${CRAFT_PARTS.map((p) => `- ${p.key}: ${p.asks}.`).join("\n")}
-5 is a part the creative director would film as written; 4 he would keep; 3 works but could be stronger (a flag, not a reason to send it back); 2 or under he would send back. The craft check passes on a total of 19 or more with no part at 2 or under. Reading smoothly, or repeating her words, is not craft. Score what is on the page, never what it could become.
-TENSION is more than a cost said out loud. An implied stake (what the viewer stands to lose, left unsaid), a surprise (a turn the viewer did not see coming) and humor in a comedic format agreed on the call (a deadpan line that turns on its own words) all carry tension: score them as tension, not as its absence.
-A build-up is one beat in full spoken sentences (what happened, then what changed); a list after a colon or a run of fragments is weaker than the same beat told.
-
-fixInstruction: when any check fails or any craft part is 3 or under, one instruction to the writer saying exactly what to change, using only the sources (and, over the cap, what to cut). An empty string when everything passes. summary: one sentence on the script overall.
-
-${WORDING_RULE}
-${HOUSE_CRAFT_RULES}`;
-
-const CRAFT_PART_SCHEMA = obj({ score: { type: "integer", description: "1 to 5." }, note: str("One line: the psychology of this part.") });
+const ANSWER = obj({ pass: { type: "boolean" }, reason: str("One specific reason.") });
 export const REVIEW_SCHEMA: JsonSchema = obj({
-  checks: arr(obj({ key: { type: "string", enum: [...MODEL_CHECK_KEYS] }, pass: { type: "boolean" }, reason: str() }), "All twelve checks, each once (craft is the craft block)."),
-  craft: obj(Object.fromEntries(CRAFT_PARTS.map((p) => [p.key, CRAFT_PART_SCHEMA])), "The five parts, each scored 1 to 5 with a one-line psychology note."),
-  fixInstruction: str(),
+  sense: ANSWER,
+  voice: ANSWER,
+  hook: ANSWER,
+  invented: ANSWER,
+  reads: { type: "integer", description: "1 to 10: how well it works for a viewer as one thought." },
+  note: str("When any question fails: one note on the script as a whole for the rewrite. Else an empty string."),
   summary: str(),
 });
+export type ReviewOut = { sense?: { pass?: boolean; reason?: string }; voice?: { pass?: boolean; reason?: string }; hook?: { pass?: boolean; reason?: string }; invented?: { pass?: boolean; reason?: string }; reads?: number; note?: string; summary?: string };
 
 /**
- * v2.3 (prompt caching): two stable segments, each ending in a cache
- * breakpoint: the client and the full call (the same for every review of a
- * month's topics from one call), then the topic, the brief and her material
- * (the same for every round of this script); the version under review and
- * code's numbers come after. A second review round reads both from the cache.
+ * The review's prompt (v2.6). Two cached segments: who is speaking, the bar
+ * and the full call (the same for a month's topics from one call); then this
+ * video's brief and her sources (the same for both reviews of one script).
+ * The script comes last, and nothing of code's checks is shown: the reviewer
+ * reads it as a viewer first.
  */
-export function buildReviewPrompt(ctx: WriterContext, brief: TopicBrief, passages: WriterPassage[], script: { body: string; closeType: string | null }, numbers: { words: number; seconds: number; hookWords: number; hard: string[] }, callText: string | null = null): StepPrompt {
+export function buildReviewPrompt(ctx: WriterContext, brief: TopicBrief, passages: WriterPassage[], script: { body: string }, callText: string | null = null): StepPrompt {
   return segmented(REVIEW_SYSTEM, REVIEW_SCHEMA, [
-    [clientBlock(ctx), fullCallBlock(callText)],
-    [
-      topicBlock(ctx),
-      briefText(brief),
-      passagesBlock(passages),
-      answersBlock(ctx),
-      factsBlock(ctx.facts),
-      ctx.relatedScripts.length ? scriptsBlock({ ...ctx, voiceRefs: [] }) : "",
-    ],
+    [`CLIENT: ${ctx.clientName}. She is the one speaking.`, ctx.strategyText ? `HER APPROVED STRATEGY (a source for claims about her, never script material on its own):\n${ctx.strategyText}` : "", examplesBlock(ctx.topic.title), fullCallBlock(callText)],
+    [writerBriefText(ctx, brief), passagesBlock(passages), answersBlock(ctx), factsBlock(ctx.facts)],
   ], [
-    `SCRIPT TO REVIEW:\n${script.body}`,
-    `THE WRITER SAYS THE CLOSE IS: ${script.closeType ?? "not stated"}`,
-    `COUNTED BY CODE: ${numbers.words} spoken words, about ${numbers.seconds} seconds; hook ${numbers.hookWords} words.${numbers.hard.length ? ` Hard checks that failed: ${numbers.hard.join(" ")}` : " Hard checks: no greeting, no dash, no duration, no unsupported figure, no deal still in progress, no transcript sentence pasted in, no hedge or echo in the re-hook, a close that calls back the hook or the re-hook, every part inside its budget, a build-up in full sentences."}`,
-    "Review it: all twelve checks, and the craft block (the five parts scored 1 to 5, a psychology note each).",
+    `SCRIPT:\n${script.body}`,
+    "Read it as a viewer first, start to finish. Then answer the four questions, the read, the note and the summary.",
   ]);
 }
