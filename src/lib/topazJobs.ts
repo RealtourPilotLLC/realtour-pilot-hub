@@ -3731,7 +3731,7 @@ export async function rerunTopazJob(jobId: string, by: string | null): Promise<{
     .catch(() => {});
   return {
     ok: true,
-    message: `Sent back through Topaz from the editor's original file${credits != null ? `, about ${credits} credits` : ""}. It's under With Topaz until the new file is back and checked; the previous Topaz file is kept in superseded/.`,
+    message: `Sent back through Topaz from the editor's original file${credits != null ? `, about ${credits} credits` : ""}. It starts with the free price check, so every limit still applies. It shows under With Topaz until the new file is back and checked; the previous Topaz file is kept in superseded/.`,
   };
 }
 

@@ -83,7 +83,7 @@ const RENDER: Meta = { ...SOURCE, width: 1920, height: 1080, sizeBytes: 40_000_0
 const PROBE = new Map<string, Meta>();
 const topazOut = (id: string) => `https://topaz.invalid/out/${id}.mp4`;
 const topaz = { create: 0, accept: [] as string[], put: 0, complete: [] as string[], cancel: [] as string[], del: [] as string[] };
-const STATUS = new Map<string, { status: string; downloadUrl: string | null }>();
+const STATUS = new Map<string, { status: string; downloadUrl: string | null; progress?: number }>();
 interceptModule(
   (r) => isMod(r, "integrations/topaz"),
   wrapOnce<Record<string | symbol, unknown>>((m) => new Proxy(m, {
@@ -113,7 +113,7 @@ interceptModule(
         case "videoStatus":
           return async (id: string) => {
             const s = STATUS.get(id) ?? { status: "processing", downloadUrl: null };
-            return { status: s.status, downloadUrl: s.downloadUrl, credits: s.status === "complete" ? 16 : null, progress: null, message: null, raw: {} };
+            return { status: s.status, downloadUrl: s.downloadUrl, credits: s.status === "complete" ? 16 : null, progress: s.progress ?? null, message: null, raw: {} };
           };
         case "cancelVideoRequest": case "cancelEstimate": return async (id: string) => { topaz.cancel.push(id); return true; };
         case "deleteVideoFiles": return async (id: string) => { topaz.del.push(id); return true; };
@@ -333,6 +333,7 @@ async function main() {
     const r = await press(L.jobId, as("ADMIN"));
     const j = await jobOf(L.jobId);
     c.ok("Kyle (the office) may press it, and the answer names the cost and the price check", r.ok && /about 16 credits/.test(r.message) && /free price check/.test(r.message) && /kept in superseded/.test(r.message), r.message);
+    c.ok("…and says it goes from the editor's original file and shows under With Topaz (Jordan, Oct 23 2026)", /from the editor's original file/.test(r.message) && /With Topaz/.test(r.message), r.message);
     c.ok("the SAME row back to queued (one render per cut), forced past the already-finished rule", j.id === L.jobId && j.state === "queued" && j.resolution === "force-pass" && (await prisma.topazJob.count({ where: { submissionId: L.subId } })) === 1);
     c.ok("…a clean sheet: no request, no price, no file, no check, no card", !j.requestId && j.estimateCredits == null && !j.acceptedAt && !j.finalPath && !j.savedAt && !j.outputCheck && !j.taskId && !j.creditsCharged);
     c.ok("…and its clock starts again now (the stall checks never read the days-old createdAt)", !!j.startedAt && Date.now() - j.startedAt.getTime() < 60_000 && j.createdAt.getTime() <= j.startedAt.getTime());
@@ -347,6 +348,7 @@ async function main() {
     c.ok("the timeline says who ran it again and where the old file is", !!act && /by Kyle Drill/.test(act.body) && /superseded/.test(act.body), act?.body ?? "");
     const { ready, rendering } = await rowOf(L.projectId, L.subId);
     c.ok("nothing is offered while it runs: no ready row, \"The Topaz pass is queued — nothing to send yet.\"", !ready && rendering?.says === "The Topaz pass is queued — nothing to send yet." && !rendering.rerun, rendering?.says ?? "");
+    c.ok("the row out of Ready to send says where it is and when it was run again, and by whom", rendering?.topaz?.jobId === L.jobId && rendering.topaz.state === "queued" && rendering.topaz.percent === null && rendering.topaz.rerun?.by === "Kyle Drill" && rendering.topaz.rerun.atISO === hist[0].at && rendering.topaz.startedAtISO === j.startedAt?.toISOString(), JSON.stringify(rendering?.topaz));
     const again = await press(L.jobId, as("ADMIN"));
     c.ok("a second press is refused: already running", !again.ok && again.message === rr.RERUN_SAYS.running, again.message);
   }
@@ -368,6 +370,20 @@ async function main() {
     c.ok("the same cut uploaded and started", s3 === "processing" && topaz.complete.includes(j.requestId!), s3);
     let row = await rowOf(L.projectId, L.subId);
     c.ok("while Topaz works: still nothing to send", !row.ready && row.rendering?.says === "The Topaz pass is running — nothing to send yet.", row.rendering?.says ?? "");
+    // Topaz's own percent, kept off its status poll for the With Topaz row.
+    STATUS.set(j.requestId!, { status: "processing", downloadUrl: null, progress: 41.6 });
+    // PGlite stamps acceptedAt with now() in this machine's local time (UTC-4 in
+    // ET), which reads as four hours old to the stall check; Neon runs in UTC.
+    await prisma.topazJob.update({ where: { id: L.jobId }, data: { nextAttemptAt: null, acceptedAt: new Date() } });
+    const sp = await tj.advanceTopazJob(L.jobId);
+    j = await jobOf(L.jobId);
+    row = await rowOf(L.projectId, L.subId);
+    c.ok("Topaz's own percent is kept while it renders, and the row shows it", sp === "processing" && j.renderProgress === 42 && row.rendering?.topaz?.state === "processing" && row.rendering.topaz.percent === 42, `${sp} ${j.renderProgress} ${JSON.stringify(row.rendering?.topaz)}`);
+    const { videoDeliveryBoard: vdb } = await import("@/lib/videoDelivery");
+    const fb = await vdb({ fresh: true }).catch((e: Error) => { console.log("  (board)", e.message); return null; });
+    const frow = fb?.lanes.finishing.find((r) => r.submissionId === L.subId);
+    c.ok("the Video Review Room lists it under With Topaz (the finishing lane) with its progress and re-run stamp, not in Ready to send", !!frow && frow.topaz?.percent === 42 && frow.topaz.rerun?.by === "Kyle Drill" && !fb!.lanes.sending.some((r) => r.submissionId === L.subId), JSON.stringify(frow?.topaz));
+    await prisma.topazJob.update({ where: { id: L.jobId }, data: { nextAttemptAt: null } });
     STATUS.set(j.requestId!, { status: "complete", downloadUrl: topazOut(j.requestId!) });
     PROBE.set(topazOut(j.requestId!), RENDER);
     const s4 = await tj.advanceTopazJob(L.jobId);
@@ -383,6 +399,21 @@ async function main() {
     c.ok("…and it can be run again too (still not sent)", row.ready?.rerun?.jobId === L.jobId);
     const open = await prisma.smartTask.count({ where: { dedupeKey: `topaz-deliver-${L.jobId}`, status: "OPEN" } });
     c.ok("Kyle has a fresh upload card for the new file (the old one stays closed)", open === 1 && (await prisma.smartTask.count({ where: { dedupeKey: { startsWith: `topaz-rerun-card:${L.jobId}:` }, status: "CANCELLED" } })) === 1);
+  }
+
+  // =========================================================================
+  c.head("§4b · always the editor's original: refused once the hub no longer holds it");
+  // =========================================================================
+  {
+    const O = await mkDone("12 Original Ln");
+    const sendsOriginal = src("src/lib/topazJobs.ts");
+    c.ok("the pass reads the cut's own upload (the editor's original), never the Topaz file", /async function stepQueued[\s\S]{0,200}if \(!sub\?\.blobUrl\)/.test(sendsOriginal) && /const res = await fetch\(sub\.blobUrl/.test(sendsOriginal));
+    await prisma.reviewSubmission.update({ where: { id: O.subId }, data: { blobUrl: null } });
+    const before = await jobOf(O.jobId);
+    const r = await press(O.jobId, as("ADMIN"));
+    const after = await jobOf(O.jobId);
+    c.ok("with the original released, the press is refused in words and nothing moves", !r.ok && r.message === rr.RERUN_SAYS.noOriginal && after.state === "done" && after.finalPath === before.finalPath && FS.has(before.finalPath!), r.message);
+    c.ok("…and the button is not drawn for it", rr.rerunRefusal({ state: "done", finalPath: "/x/a.mp4", savedAt: new Date(), heldPath: null, deliveredAt: null, cutStatus: "APPROVED", sentToClientAt: null, monthly: false, onListing: false, push: null, originalHeld: false }) === rr.RERUN_SAYS.noOriginal);
   }
 
   // =========================================================================
@@ -513,6 +544,7 @@ async function main() {
     const deskLib = await import("@/lib/officeDesk");
     c.ok("Kyle's desk: the side panel renders it, labelled \"Run Topaz again\"", /case "topaz-rerun":\s*\n\s*return <RerunTopaz /.test(desk) && deskLib.actionLabel({ kind: "topaz-rerun", jobId: "x", street: "y", video: "Listing video", credits: 1, limit: 2 }) === "Run Topaz again");
     c.ok("Kyle's desk: Review & Deliver's approved-video rows carry it too (never in a preview)", /i\.group !== "video" \? \[\] : i\.actions\.filter\(/.test(desk) && /readOnly \|\| i\.group !== "video"/.test(desk) && /data-row-rerun=\{i\.id\}/.test(desk) && /<RerunTopaz key=\{a\.jobId\}/.test(desk));
+    c.ok("the Video Review Room: a With Topaz list in Ready to send (step, percent, run-again stamp), refreshing while one is in the pass", /With Topaz \(\{finishing\.length\}\)/.test(room) && /<WithTopazRow key=\{r\.key\} r=\{r\} \/>/.test(room) && /Run through Topaz again \{etDateTime/.test(room) && /\(moving \|\| finishing\.length > 0\) && <AutoRefresh/.test(room) && /with Topaz` : null/.test(room));
     const button = src("src/components/ops/RerunTopaz.tsx");
     c.ok("the button asks first and shows the cost before it spends; it calls the guarded action", /setAsking\(true\)/.test(button) && /rerunCostLine/.test(button) && /rerunTopazAction/.test(button) && !/from "@\/lib\/topazJobs"/.test(button));
 

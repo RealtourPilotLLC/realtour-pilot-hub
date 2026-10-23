@@ -416,7 +416,7 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
     } else if (phase === "review") {
       // the cut itself is listed from the review queue below (it names the reviewer)
     } else if (phase === "ready" || phase === "held" || phase === "finishing") {
-      delivery.push({ ...base, id: `video:${r.key}`, what: `${r.label}: ${phase === "held" ? "held" : phase === "finishing" ? "in the 1080p pass" : "approved, ready to send"}`, blocked: phase === "held" ? r.heldWhy ?? "Held" : null, waitingSinceISO: r.waitingSinceISO ?? r.approvedAtISO, owner: phase === "finishing" ? "The 1080p pass" : officeName, href: r.reviewHref ?? `/review/${r.projectId}` });
+      delivery.push({ ...base, id: `video:${r.key}`, what: `${r.label}: ${phase === "held" ? "held" : phase === "finishing" ? "with Topaz" : "approved, ready to send"}`, blocked: phase === "held" ? r.heldWhy ?? "Held" : null, waitingSinceISO: r.waitingSinceISO ?? r.approvedAtISO, owner: phase === "finishing" ? "Topaz" : officeName, href: r.reviewHref ?? `/review/${r.projectId}` });
     }
   }
   // Unassigned edit jobs the video board did not list (monthly content and the like).
