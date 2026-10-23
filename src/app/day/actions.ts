@@ -427,7 +427,14 @@ export async function sendSlackToKyle(text: string): Promise<{ ok: boolean; erro
   return sent ? { ok: true } : { ok: false, error: "Slack didn't accept it — check the connection." };
 }
 
-/** Jordan pressed Create on a drafted task for Kyle's queue. */
+/**
+ * Jordan pressed Create on a drafted task for Kyle's queue. A thin wrapper
+ * over delegation (Oct 23 2026, lib/delegation): one canonical SmartTask on
+ * Kyle's key, with who assigned it and when, his acceptance and every state
+ * change on its record, and Kyle told through his own notification settings
+ * (the bell, and Slack or text as his "task" row says). A double press makes
+ * one task, not two.
+ */
 export async function createTaskForKyle(input: {
   title: string;
   detail?: string;
@@ -436,33 +443,37 @@ export async function createTaskForKyle(input: {
   await requireOwner();
   const title = input.title.trim();
   if (!title) return { ok: false, error: "A task needs a title." };
-  const kyle = await prisma.teamMember.findFirst({
-    where: { name: { contains: "Kyle" }, active: true },
-    select: { id: true },
-  });
-  const row = await prisma.smartTask.create({
-    data: {
-      taskType: "internal_instruction",
-      title: title.slice(0, 140),
-      summary: (input.detail || `From Jordan's day assistant: ${title}`).slice(0, 500),
-      description: input.detail || null,
-      reasonCreated: "Asked for by Jordan on My Day",
-      source: "assistant",
-      priority: "MEDIUM",
-      dueAt: input.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(input.dueDate) ? etEndOfDay(input.dueDate) : null,
-      ownerId: kyle?.id ?? null,
-      // Every screen that lists Kyle's work keys on assignedKey; ownerId alone
-      // read "unassigned" (Oct 23 2026, the Sep 8 chase-task bug again).
-      assignedKey: "kyle",
+  const [{ assignTask }, { getCurrentUser }, { addressableKeys }, { listAssignees, slugForName }] = await Promise.all([
+    import("@/lib/delegation"),
+    import("@/lib/auth/user"),
+    import("@/lib/auth/guards"),
+    import("@/lib/assignees"),
+  ]);
+  const me = await getCurrentUser().catch(() => null);
+  // Kyle's roster key (his first name), the key every screen listing his work reads.
+  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" }, active: true }, select: { name: true } });
+  const roster = await listAssignees();
+  const kyleKey = kyle ? slugForName(kyle.name) : roster.some((a) => a.key === "kyle") ? "kyle" : null;
+  if (!kyleKey) return { ok: false, error: "Couldn't find Kyle on the team roster." };
+  const r = await assignTask(
+    {
+      email: (me?.email ?? "owner@localhost").toLowerCase(),
+      name: (me?.name ?? "Jordan").trim().split(/\s+/)[0] || "Jordan",
+      role: "OWNER",
+      keys: me ? await addressableKeys(me).catch(() => new Set<string>()) : new Set(["jordan"]),
+      teamMemberId: me?.teamMemberId ?? null,
     },
-    select: { id: true },
-  });
-  try {
-    const { opsAlert } = await import("@/lib/notify");
-    await opsAlert(`📋 Jordan added a task for you: “${title}”`);
-  } catch { /* the task is what matters */ }
+    {
+      title,
+      outcome: input.detail?.trim() || undefined,
+      assigneeKey: kyleKey,
+      dueAt: input.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(input.dueDate) ? etEndOfDay(input.dueDate).toISOString() : undefined,
+    },
+    { source: "assistant" },
+  );
   revalidatePath("/day");
-  return { ok: true, id: row.id };
+  revalidatePath("/");
+  return r.ok ? { ok: true, id: r.taskId } : { ok: false, error: r.message };
 }
 
 /** Search projects to attach a to-do to — used by the quick-add box. */

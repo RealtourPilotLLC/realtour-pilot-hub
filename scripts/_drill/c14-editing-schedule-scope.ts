@@ -179,6 +179,16 @@ async function main() {
     const dials = await getOwnerDials({ excludeClientIds: [fixture.id] });
     const dialHtml = renderToStaticMarkup(createElement(QualityDials, { dials, includeTest: true }));
     c.ok("SLA dial labels its existing sample definition and links to matching explicit scope", dialHtml.includes("in the SLA sample") && dialHtml.includes('href="/editing?test=1"') && dialHtml.includes("also includes waiting and upcoming projects"));
+    // Oct 23 2026: the owner's "/" is his own dashboard (components/owner/
+    // OwnerHome), which takes the explicit scope as a prop; today's shoot
+    // cards and the week strip live on the shared dashboard, the creative
+    // manager's home, where the scope is checked now. The SLA dials left
+    // every home with the owner's old trends section; their own scope is the
+    // check just above.
+    const ownerHomeTest = await home({ searchParams: Promise.resolve({ test: "1" }) });
+    c.ok("the owner's dashboard takes the explicit record scope", (elements(ownerHomeTest, "OwnerHome")[0] as { includeTest?: boolean } | undefined)?.includeTest === true);
+    const creativeLead = await user("Scope Creative", "CREATIVE_MANAGER");
+    await signIn(creativeLead);
     const homeTest = await settleHome(await home({ searchParams: Promise.resolve({ test: "1" }) }));
     // Oct 19 2026 (night): today's shoot cards and the week strip are on the
     // dashboard again (/ops redirects there); with no shoot today the card is
@@ -186,7 +196,7 @@ async function main() {
     const week = elements(homeTest, "WeekStrip")[0];
     const hrefsIn = (tree: unknown): string[] => Array.isArray(tree) ? tree.flatMap(hrefsIn) : isValidElement<Props>(tree) ? [...(typeof tree.props.href === "string" ? [tree.props.href] : []), ...Object.values(tree.props).flatMap(hrefsIn)] : [];
     const noShootsToday = elements(homeTest, "div").find((d) => d["data-todays-shoots"] === "none");
-    c.ok("the dashboard composes explicit record scope through today's shoots (week strip) and SLA presentations", (week ? week.includeTest === true : !!noShootsToday && hrefsIn(noShootsToday.children).includes("/schedule?test=1")) && elements(homeTest, "QualityDials")[0]?.includeTest === true);
+    c.ok("the shared dashboard composes explicit record scope through today's shoots (week strip)", week ? week.includeTest === true : !!noShootsToday && hrefsIn(noShootsToday.children).includes("/schedule?test=1"));
     c.ok("scope reads preserve assignments, manual work, source tasks, settings and client-send boundary", before === await sourceSnapshot() && await prisma.outboxMessage.count() === 0 && fence.blocked.length === 0 && fence.faked.length === 0);
     c.summary();
   } finally { fence.restore(); await db.stop(); }

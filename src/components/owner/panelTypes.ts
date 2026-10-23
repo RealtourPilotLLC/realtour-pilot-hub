@@ -1,0 +1,27 @@
+// What a side panel on Jordan's dashboard shows. Plain data only: the server
+// sections build these and the client shell renders them, so nothing here
+// may hold a function or a Date.
+import type { AssignSeed, ClientIssueRow, Tone } from "@/lib/ownerDashboard";
+import type { DelegatedRow, EmailRow, MeetingRow } from "@/lib/ownerWork";
+
+export type RosterOption = { key: string; name: string };
+
+export type ListRow = {
+  id: string;
+  title: string;
+  sub?: string | null;
+  tone?: Tone | null;
+  href?: string | null;
+  assign?: AssignSeed | null;
+  /** clicking the row opens this panel instead of following href */
+  open?: PanelSpec | null;
+};
+
+export type PanelSpec =
+  | { kind: "assign"; seed: AssignSeed; heading?: string }
+  | { kind: "task"; task: DelegatedRow }
+  | { kind: "list"; title: string; subtitle?: string | null; rows: ListRow[]; empty?: string }
+  | { kind: "email"; row: EmailRow }
+  | { kind: "issue"; row: ClientIssueRow }
+  | { kind: "meeting"; row: MeetingRow }
+  | { kind: "info"; title: string; lines: { label: string; value: string }[] };

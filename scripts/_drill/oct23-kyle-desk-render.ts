@@ -205,7 +205,10 @@ async function main() {
     await signIn(owner);
     const oTree = await settle(await home({}));
     const oNames = namesOf(oTree);
-    c.ok("the owner keeps his dashboard (tiles, needs attention, Kyle's day, the problems board, money), no desk", ["HealthStrip", "NeedsAttention", "KylesDayCard"].every((n) => oNames.includes(n)) && !oNames.includes("OfficeDesk"), oNames.filter((n) => /Health|Needs|Kyles|Office|Caught/.test(n)).join());
+    // Oct 23 2026: the owner's home is his own dashboard now (components/owner/
+    // OwnerHome, held by oct23-owner-dashboard-render); what matters here is
+    // that it is not Kyle's desk.
+    c.ok("the owner keeps his own dashboard, no desk", oNames.includes("OwnerHome") && !oNames.includes("OfficeDesk"), oNames.filter((n) => /Owner|Office/.test(n)).join());
     await signIn(james);
     const jTree = await settle(await home({}));
     const jNames = namesOf(jTree);

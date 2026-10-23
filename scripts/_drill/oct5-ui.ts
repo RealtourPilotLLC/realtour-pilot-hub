@@ -127,7 +127,7 @@ function words(n: any, out: string[] = []): string[] {
 const textOfTree = (n: any) => words(n).join(" ").replace(/\s+/g, " ");
 const decode = (s: string) => s.replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 const text = (html: string) => decode(html.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
-const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "OfficeDeskSection"]);
+const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "OfficeDeskSection", "OwnerHome", "FinanceSection", "ProductionSection", "ClientIssuesSection", "TeamSection", "MeetingsSection", "CreativeSection", "EmailSectionView", "DelegatedSection", "WeeklySection", "TaskOpen"]);
 async function settle(tree: any): Promise<any> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settle));
   if (!isValidElement(tree)) return tree;
@@ -392,23 +392,31 @@ async function main() {
       return { raw, tree: await settle(raw) };
     };
     const attentionOf = (tree: any) => (find(tree, "NeedsAttention")[0]?.props.attention ?? { items: [] }) as import("../../src/lib/opsHome").Dashboard["attention"];
+    // Oct 23 2026: the owner's "/" is his own dashboard (components/owner/
+    // OwnerHome; oct23-owner-dashboard-render holds it in full). The shared
+    // dashboard's checks below run on the review seat's home (James here),
+    // which is that dashboard; the owner's keep their point on his.
+    await signIn(james);
+    const shared = await render();
+    c.ok("the dashboard: the health tiles first, then the shoots and needs attention (no needs wall, no behind card)", find(shared.tree, "NeedsToday").length === 0 && find(shared.tree, "BehindCard").length === 0 && find(shared.tree, "HealthStrip").length === 1 && find(shared.tree, "NeedsAttention").length === 1);
+    const health = find(shared.tree, "HealthStrip")[0]?.props.health as import("../../src/lib/opsHome").Dashboard["health"];
+    c.ok("videos are one number of the QC & review tile (ready to send), never a second card", !!health.qc && typeof health.qc.readyToSend === "number");
+    const sharedWords = textOfTree(shared.tree);
+    c.ok("…and the old three-paragraph delivery card is gone (no second count of the same videos)", !sharedWords.includes("Operations owns the handoff") && !sharedWords.includes("ready for delivery"));
+    const shootsBlock = findBy(shared.tree, (e) => nameOf(e.type) === "DayBlock" && e.props.id === "shoots")[0];
+    // (With no shoot today the card is one line, "No shoots today": components/home/TodaysShoots.)
+    const noShoots = findBy(shared.tree, (e) => e.props?.id === "shoots" && e.props["data-todays-shoots"] === "none").length === 1;
+    c.ok("…the full shoot cards (access, weather, week ahead) are on the dashboard, not removed", shootsBlock ? find(shootsBlock, "ShootList").length === 1 && find(shootsBlock, "WeekStrip").length === 1 : noShoots && sharedWords.includes("No shoots today"));
+    const suspended = (raw: any, name: string) => findBy(raw, (e) => e.type === Suspense && nameOf(e.props.children?.type) === name).length === 1;
+    c.ok("the slow sections stream behind their own Suspense: today's shoots and Kyle's day", ["TodaysShoots", "KylesDaySection"].every((n) => suspended(shared.raw, n)));
     await signIn(jordan);
     const owner = await render();
-    c.ok("owner: the health tiles first, then the shoots and needs attention (no needs wall, no behind card)", find(owner.tree, "NeedsToday").length === 0 && find(owner.tree, "BehindCard").length === 0 && find(owner.tree, "HealthStrip").length === 1 && find(owner.tree, "NeedsAttention").length === 1 && find(owner.tree, "OwnerWeekCard").length === 1);
-    const health = find(owner.tree, "HealthStrip")[0]?.props.health as import("../../src/lib/opsHome").Dashboard["health"];
-    c.ok("owner: videos are one number of the QC & review tile (ready to send), never a second card", !!health.qc && typeof health.qc.readyToSend === "number");
-    const ownerWords = textOfTree(owner.tree);
-    c.ok("…and the old three-paragraph delivery card is gone (no second count of the same videos)", !ownerWords.includes("Operations owns the handoff") && !ownerWords.includes("ready for delivery"));
-    const shootsBlock = findBy(owner.tree, (e) => nameOf(e.type) === "DayBlock" && e.props.id === "shoots")[0];
-    // (With no shoot today the card is one line, "No shoots today": components/home/TodaysShoots.)
-    const noShoots = findBy(owner.tree, (e) => e.props?.id === "shoots" && e.props["data-todays-shoots"] === "none").length === 1;
-    c.ok("…the full shoot cards (access, weather, week ahead) are on the dashboard, not removed", shootsBlock ? find(shootsBlock, "ShootList").length === 1 && find(shootsBlock, "WeekStrip").length === 1 : noShoots && ownerWords.includes("No shoots today"));
-    const suspended = (raw: any, name: string) => findBy(raw, (e) => e.type === Suspense && nameOf(e.props.children?.type) === name).length === 1;
-    c.ok("the slow sections stream behind their own Suspense: today's shoots, Kyle's day, shoot issues, the week, the owner's money", ["TodaysShoots", "KylesDaySection", "OwnerShootIssues", "OwnerWeekSection", "OwnerBusiness"].every((n) => suspended(owner.raw, n)));
-    c.ok("…and they still compose: money strip and the folded trends are there once streamed",
-      find(owner.tree, "MoneyStat").length === 4 && findBy(owner.tree, (e) => e.type === "summary" && textOfTree(e.props.children).includes("Trends and quality")).length === 1);
-    c.ok("the footer that repeated the sidebar and the checklist links row are gone", findBy(owner.tree, (e) => e.type === "nav" && e.props["aria-label"] === "Your work destinations").length === 0 && find(owner.tree, "ChecklistLinks").length === 0);
-    c.ok("Oct 13 2026: the standing 'How the day runs' rules block is gone", findBy(owner.tree, (e) => e.type === "summary" && textOfTree(e.props.children).includes("How the day runs")).length === 0);
+    const ownerHome = find(owner.raw, "OwnerHome")[0];
+    const ownerInner = ownerHome ? await (ownerHome.type as (p: unknown) => Promise<unknown>)(ownerHome.props) : null;
+    c.ok("owner: his own dashboard, every section streaming behind its own Suspense (money, production, clients, team, meetings, scripts, email, delegated, the week)", !!ownerInner && ["FinanceSection", "ProductionSection", "ClientIssuesSection", "TeamSection", "MeetingsSection", "CreativeSection", "EmailSectionView", "DelegatedSection", "WeeklySection"].every((n) => suspended(ownerInner, n)));
+    c.ok("…and they still compose: the five money figures are there once streamed, and no shared tiles or needs wall", findBy(owner.tree, (e) => typeof e.props?.["data-figure"] === "string").length === 5 && find(owner.tree, "HealthStrip").length === 0 && find(owner.tree, "NeedsToday").length === 0);
+    c.ok("the footer that repeated the sidebar and the checklist links row are gone", [owner.tree, shared.tree].every((t) => findBy(t, (e) => e.type === "nav" && e.props["aria-label"] === "Your work destinations").length === 0 && find(t, "ChecklistLinks").length === 0));
+    c.ok("Oct 13 2026: the standing 'How the day runs' rules block is gone", [owner.tree, shared.tree].every((t) => findBy(t, (e) => e.type === "summary" && textOfTree(e.props.children).includes("How the day runs")).length === 0));
 
     await signIn(kyle);
     const ops = await render();

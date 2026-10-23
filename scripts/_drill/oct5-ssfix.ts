@@ -93,6 +93,8 @@ seam((r) => r === "@/lib/cutUploadFinishReceipt" || /[\\/]lib[\\/]cutUploadFinis
 seam((r) => r === "@vercel/blob/client");
 seam((r) => r === "@/lib/ownerPulse" || /[\\/]lib[\\/]ownerPulse(\.ts)?$/.test(r));
 seam((r) => r === "@/lib/opsDay" || /[\\/]lib[\\/]opsDay(\.ts)?$/.test(r));
+// Oct 23 2026: the owner's dashboard reads the books through Finance's own engine.
+seam((r) => r === "@/lib/bookkeeping" || /[\\/]lib[\\/]bookkeeping(\.ts)?$/.test(r));
 
 // ---- the network: Slack counted, the blob host answered, the rest refused ---
 type SlackPost = { channel: string; text: string };
@@ -686,7 +688,7 @@ async function main() {
     // =========================================================================
     await section("§15 · Home: money that couldn't load says so; an untimed shoot; held renders (items 17, 15)", async () => {
       const { default: home } = await import("@/app/page");
-      const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots"]);
+      const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "OwnerHome", "FinanceSection", "ProductionSection", "ClientIssuesSection", "TeamSection", "MeetingsSection", "CreativeSection", "EmailSectionView", "DelegatedSection", "WeeklySection", "TaskOpen"]);
       const settle = async (tree: unknown): Promise<unknown> => {
         if (Array.isArray(tree)) return Promise.all(tree.map(settle));
         if (!isValidElement<Props>(tree)) return tree;
@@ -695,6 +697,7 @@ async function main() {
       };
       // The day's reads, with today's one shoot made untimed and two renders on the delivery board (one held).
       fakes.ownerPulse = (async () => { throw new Error("drill: the books read failed"); }) as never;
+      fakes.revenueByProcessor = (async () => { throw new Error("drill: the books read failed"); }) as never;
       const opsDay = await import("@/lib/opsDay");
       const realBuild = (opsDay as unknown as { buildOpsDay: (...a: unknown[]) => Promise<Record<string, unknown>> }).buildOpsDay;
       fakes.buildOpsDay = (async (...a: unknown[]) => {
@@ -719,10 +722,14 @@ async function main() {
         await as(uJames);
         reviewTree = await settle(await home({}));
       } finally {
-        delete fakes.ownerPulse; delete fakes.buildOpsDay;
+        delete fakes.ownerPulse; delete fakes.revenueByProcessor; delete fakes.buildOpsDay;
       }
       const all = textOf(tree);
-      c.ok("the books read failed: the owner's money strip SAYS it couldn't load (it used to vanish)", named(tree, "p").some((p) => p["data-money-unavailable"] !== undefined && textOf(p.children).includes("The books (profit, bank, owed to you)")), all.slice(0, 200));
+      // Oct 23 2026: the owner's money is his dashboard's Financial Position;
+      // a failed books read greys the profit figure in words, never $0.
+      const withProp = (t: unknown, key: string, value: string): Props[] => Array.isArray(t) ? t.flatMap((x) => withProp(x, key, value)) : !isValidElement<Props>(t) ? [] : [...(t.props[key] === value ? [t.props] : []), ...Object.values(t.props).flatMap((v) => withProp(v, key, value))];
+      const profit = withProp(tree, "data-figure", "profit")[0];
+      c.ok("the books read failed: the owner's profit SAYS it couldn't load (it used to vanish)", !!profit && profit["data-value"] === "unknown" && textOf(profit.children).includes("Couldn't load") && textOf(profit.children).includes("Revenue didn't load"), all.slice(0, 200));
       const cards = named(reviewTree, "ShootList")[0]?.shoots as { title: string }[] | undefined;
       c.ok("today's shoot is on James's dashboard as a full shoot card (the today line left with his desk)", !!cards?.some((s) => s.title.startsWith("77 Untimed Way")) && named(reviewTree, "ShootsTodayLine").length === 0, cards?.map((s) => s.title).join(" | "));
       c.ok("the dashboard never calls a held 1080p file \"processing\" (no to-send row; the wording lives in the Video Review Room)", named(reviewTree, "NeedsToday").length === 0 && !textOf(reviewTree).includes("still processing"));

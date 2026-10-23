@@ -528,7 +528,10 @@ async function main() {
     assignedToKyle = [];
     const { acceptTaskAction } = await import("@/app/delegation/actions");
     const stubbed = await acceptTaskAction(k2.id);
-    c.ok("until the delegation build merges, its actions say plainly that nothing was saved (never a pretend success)", !stubbed.ok && stubbed.message.includes("Nothing was saved"));
+    // Oct 23 2026: the delegation build has merged (lib/delegation); its real
+    // actions still never pretend: accepting a task nobody delegated through
+    // it (this fixture's task carries no delegation record) is refused in words.
+    c.ok("the delegation actions never pretend: accepting a task that was never delegated is refused, in words", !stubbed.ok && /wasn't delegated|nothing to accept|Nothing was saved/.test(stubbed.message), stubbed.message);
     // The next business day card.
     const nd = d.nextDay;
     const nextVisitIds = sec(d, "shoots").now.concat(sec(d, "shoots").ok, sec(d, "shoots").waiting).filter((x) => x.day === "next").map((x) => x.id);

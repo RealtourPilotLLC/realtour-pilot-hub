@@ -35,6 +35,7 @@ import { ContentActionsCard } from "@/components/home/ContentActionsCard";
 import { monthlyContentActions, type ContentActions } from "@/lib/contentActions";
 import { officeDeskFor, type OfficeDesk as OfficeDeskData } from "@/lib/officeDesk";
 import { OfficeDesk } from "@/components/desk/OfficeDesk";
+import { OwnerHome } from "@/components/owner/OwnerHome";
 import { AddTaskButton } from "@/components/desk/DeskControls";
 import { creativeDeskFor, type CreativeDesk as CreativeDeskData } from "@/lib/creativeDesk";
 import { CreativeDesk } from "@/components/creativeDesk/CreativeDesk";
@@ -270,6 +271,20 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   // rather than letting a null viewer read as owner (Sep 2 review).
   if (!me && authEnforced()) redirect("/login");
   const isOwner = !me || me.role === "OWNER";
+  // JORDAN'S DASHBOARD (Oct 23 2026, his spec §4 and mockup): the owner's
+  // whole home, components/owner/OwnerHome (business oversight, then his own
+  // work). The owner-only cards further down (the money line and strip, this
+  // week, shoot issues) are no longer reached for him; the creative manager's
+  // and the review seat's homes below are unchanged. An owner previewing
+  // someone ("view as") has that person's role here, so he sees their home.
+  if (isOwner) {
+    return (
+      <OwnerHome
+        me={me ? { email: me.email, name: me.name, impersonating: me.impersonating } : null}
+        includeTest={sp?.test === "1"}
+      />
+    );
+  }
   // THE CREATIVE MANAGER'S DASHBOARD (Jordan, Oct 21 2026: "he should see and
   // oversee the whole creative process, but doesn't need the same tasks as
   // Kyle"). The same pieces, creative ones only: the red line, shoots on time,

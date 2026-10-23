@@ -1176,6 +1176,21 @@ model SmartTask {
   // a bare status.
   blockedReason String?
 
+  // DELEGATION (Oct 23 2026, lib/delegation.ts; Jordan's dashboards spec §5).
+  // A person who hands this task to someone keeps oversight of it. Who
+  // assigned it (their login email, so "Delegated by me" is one indexed read),
+  // when, when the assignee accepted it, and the delegation record (JSON: the
+  // expected outcome, whether it needs verification, the source record, the
+  // acceptance deadline, the next step, the latest update, the completion
+  // evidence and every state change, reassignment included). Null on every
+  // task nobody delegated: the engines' own rows never carry them. Additive
+  // and nullable, so no existing row or reader changes.
+  delegatedBy String?
+  delegatedAt DateTime?
+  acceptedAt  DateTime?
+  delegation  String?
+
+  @@index([delegatedBy])
 }
 
 // Client feedback collected after delivery (via the post-delivery text's form

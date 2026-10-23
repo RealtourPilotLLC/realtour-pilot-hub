@@ -100,7 +100,9 @@ function propValues(tree: unknown, key: string): unknown[] {
   if (!isValidElement<Props>(tree)) return [];
   return [...(key in tree.props ? [tree.props[key]] : []), ...Object.values(tree.props).flatMap((part) => propValues(part, key))];
 }
-const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "ContentActionsSection", "OfficeDeskSection"]);
+const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "ContentActionsSection", "OfficeDeskSection",
+  // Oct 23 2026: Jordan's own dashboard (components/owner/OwnerHome) and its streamed sections.
+  "OwnerHome", "FinanceSection", "ProductionSection", "ClientIssuesSection", "TeamSection", "MeetingsSection", "CreativeSection", "EmailSectionView", "DelegatedSection", "WeeklySection", "TaskOpen"]);
 async function settle(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settle));
   if (!isValidElement<Props>(tree)) return tree;
@@ -471,9 +473,11 @@ async function main() {
     const redList = await settle(await listPage({}));
     // Oct 23 2026: Kyle's home is his desk, with no red line beside a card
     // (the "4 late" banner against the "3 late" card): its status line says
-    // "N late" once, from its own lists. The owner's dashboard keeps the line.
+    // "N late" once, from its own lists. The shared dashboard (the review
+    // seat's home) keeps the line; the owner's own dashboard says it stage by
+    // stage (Production health), held in §4b.
     const redKyle = await settle(await home({}));
-    await signIn(owner);
+    await signIn(james);
     const redDash = await settle(await home({}));
     behindOverride = { level: "ok", videosLate: 0, photosLate: 0, oldestLateHours: null, headline: null };
     const calmDash = await settle(await home({}));
@@ -484,15 +488,18 @@ async function main() {
     c.ok("…on the dashboard it sits above the health strip and opens the late shoots", namesOf(redDash).indexOf("BehindLine") >= 0 && namesOf(redDash).indexOf("BehindLine") < namesOf(redDash).indexOf("HealthStrip") && elements(redDash, "BehindLine")[0]?.href === "/jobs?f=late");
 
     // =====================================================================
-    c.head("§4 · the dashboard, as Jordan (owner)");
+    c.head("§4 · the shared dashboard (the review seat's home, as the owner's was until Oct 23)");
     // =====================================================================
-    await signIn(owner);
+    // Oct 23 2026: Jordan's "/" is his own dashboard (§4b below). The shared
+    // dashboard these checks were written for is the review seat's home now
+    // (James in this world: an office login holding the review seat), so the
+    // tiles, shoots in progress, needs attention and Kyle's day are held there.
+    await signIn(james);
     videoLanes = lanes;
     issuesOverride = { open: [{ id: "si1", client: "Real Agent", street: "1 Elm St", text: "Lockbox code didn't work", by: "Harrison", atISO: ago(H).toISOString(), href: `/projects/${pShot.id}` }], byClient: [{ client: "Real Agent", count: 3 }, { client: "Other", count: 1 }] };
     const dashBefore = JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } }));
     jobsCalls.length = 0;
     const ownerTree = await settle(await home({}));
-    issuesOverride = null;
     const ownerText = textOf(expand(ownerTree));
     const health = elements(ownerTree, "HealthStrip")[0]?.health as Dashboard["health"];
     c.ok("the dashboard reads the Shoots board without test records by default", jobsCalls.length >= 1 && jobsCalls.every((o) => o.includeTest === false));
@@ -516,15 +523,25 @@ async function main() {
     c.ok("…and the words: '3 late', due today and tomorrow, oldest 5 days; '2 need an owner'; '1 ready' (said once: not again under it)", ["3 late", "1 due today · 2 due tomorrow · oldest 5 days", "2 need an owner", "1 ready", "2 photo sets in QC"].every((w) => dashHtml.includes(w)) && !dashHtml.includes("1 video ready to send"), dashHtml.slice(dashHtml.indexOf("data-health-strip"), dashHtml.indexOf("data-health-strip") + 1500));
 
     // ---- shoots in progress ----
-    const table = elements(ownerTree, "ShootsInProgress")[0]?.jobs as Dashboard["jobs"];
+    // Oct 23 2026: Shoots in progress is the creative manager's card on the
+    // shared dashboard (the office's has none, and the owner has his own
+    // dashboard), so it is read from a creative manager's home.
+    const caraTm = await prisma.teamMember.create({ data: { name: "Cara Creative", role: "MANAGER", email: "cara@oct19.invalid" } });
+    const cara = await user("Cara Creative", caraTm.email!, "CREATIVE_MANAGER", caraTm.id);
+    await signIn(cara);
+    const cTree = await settle(await home({}));
+    const cHtml = renderToStaticMarkup(expand(cTree) as Parameters<typeof renderToStaticMarkup>[0]);
+    const cText = textOf(expand(cTree));
+    await signIn(james);
+    const table = elements(cTree, "ShootsInProgress")[0]?.jobs as Dashboard["jobs"];
     const expectRows = [...boardRows].sort(opsHome.jobOrder).slice(0, opsHome.DASHBOARD_ROWS);
     c.ok("Shoots in progress: the board's first ten rows, late first (the monthly ones included in that order)", table.rows.map((r) => r.projectId).join() === expectRows.map((r) => r.projectId).join() && table.rows.slice(0, 3).every((r) => r.late) && table.total === board.counts.total, table.rows.map((r) => r.street).join(" | "));
-    c.ok("…each row opens its job page; 'All shoots' opens /jobs; the rest are counted", expectRows.every((r) => dashHtml.includes(`href="/projects/${r.projectId}"`)) && dashHtml.includes('href="/jobs"') && dashHtml.includes(`${board.counts.total - opsHome.DASHBOARD_ROWS} more on the Shoots page`));
+    c.ok("…each row opens its job page; 'All shoots' opens /jobs; the rest are counted", expectRows.every((r) => cHtml.includes(`href="/projects/${r.projectId}"`)) && cHtml.includes('href="/jobs"') && cHtml.includes(`${board.counts.total - opsHome.DASHBOARD_ROWS} more on the Shoots page`));
     // Oct 22 2026: the owner's Monthly content CARD now sits above Shoots in
     // progress, so the divider is looked for inside that section only.
-    const inProgressHtml = dashHtml.slice(dashHtml.indexOf('aria-labelledby="in-progress-title"'));
-    c.ok("…monthly rows sit under a 'Monthly content' divider, after the listing rows", ownerText.includes("Monthly content") && inProgressHtml.indexOf("Monthly content") > inProgressHtml.indexOf("2 Pine Rd") && inProgressHtml.indexOf("Monthly content") < inProgressHtml.indexOf("1033 Preserve Ln"));
-    c.ok("…with the photos chip, the video chip ('Changes · John') and the requests chip ('2 photo · no owner')", ["Changes · John", "In QC", "2 photo · no owner", "1 video", "Not ordered"].every((w) => dashHtml.includes(w)));
+    const inProgressHtml = cHtml.slice(cHtml.indexOf('aria-labelledby="in-progress-title"'));
+    c.ok("…monthly rows sit under a 'Monthly content' divider, after the listing rows", cText.includes("Monthly content") && inProgressHtml.indexOf("Monthly content") > inProgressHtml.indexOf("2 Pine Rd") && inProgressHtml.indexOf("Monthly content") < inProgressHtml.indexOf("1033 Preserve Ln"));
+    c.ok("…with the photos chip, the video chip ('Changes · John') and the requests chip ('2 photo · no owner')", ["Changes · John", "In QC", "2 photo · no owner", "1 video", "Not ordered"].every((w) => cHtml.includes(w)));
 
     // ---- needs attention now ----
     const att = elements(ownerTree, "NeedsAttention")[0]?.attention as Dashboard["attention"];
@@ -537,7 +554,7 @@ async function main() {
     c.ok("…the video ready to send with a client request to check, Kyle's to send", item("send:")?.lead === "v-send Video Ave video:" && item("send:")?.text.startsWith("check the client's request, then send it") === true && item("send:")?.owner === "Kyle · 1 client request" && item("send:")?.action.label === "Check & send" && item("send:")?.action.href === `/review/${pEdit.id}?cut=v-send`, JSON.stringify(item("send:")));
     const oldTeam = await aging.listOldItems(new Date(), { excludeClientIds: [fixture.id] });
     const jordanWeekOld = oldTeam.people.find((p) => p.key === "jordan")?.weekOld ?? 0;
-    c.ok("…then Jordan's own week-old items; Kyle's week-old items fold into 'more' past the five", jordanWeekOld === 1 && item("old-mine")?.lead === "1 of your items" && item("old-mine")?.action.href === "/ops/checklist?who=me#earlier" && !item("old-ops") && att.more >= 1, `${att.items.map((i) => i.key).join(",")} more=${att.more}`);
+    c.ok("…the reader's own week-old items are theirs to open; Kyle's old items are never on another office login's list (the owner's view, below)", jordanWeekOld === 1 && (!item("old-mine") || item("old-mine")?.action.href === "/ops/checklist#earlier") && !item("old-ops"), `${att.items.map((i) => i.key).join(",")} more=${att.more}`);
     const kylesWeekOld = oldTeam.people.find((p) => p.key === "kyle")?.weekOld ?? 0;
     // With the videos, shoots and requests quiet, the owner's list has room for Kyle's old items.
     const savedJobs = jobsOverride;
@@ -555,30 +572,37 @@ async function main() {
     const kylesOwn = await opsHome.kyleChecklist({ now: new Date(), excludeClientIds: [fixture.id], person: { key: "kyle", teamMemberId: kyleTm.id } });
     c.ok("Kyle's day: done today and still open, from Kyle's own checklist, opening his list", day?.name === "Kyle" && day.you === false && day.done === kylesOwn.done.length && day.open === kylesOwn.stillOpen.total && day.href === "/ops/checklist?who=kyle" && ownerText.includes("Kyle’s day"), JSON.stringify(day));
     c.ok("…shown as a number and a bar, never sent to Jordan as a message", ownerText.includes("done today") && ownerText.includes("still open") && slack.length === 0 && await prisma.notification.count() === 0);
-    c.ok("Shoot issues (owner only): the open ones and what keeps happening by client (2+)", ownerText.includes("Lockbox code didn't work") && ownerText.includes("Real Agent 3 times") && !ownerText.includes("Other 1 times"));
     const dashIds = propValues(ownerTree, "id").filter((x): x is string => typeof x === "string");
     c.ok("Today's shoots is the shoot card (#shoots), with today's shoot on it", dashIds.includes("shoots") && (elements(ownerTree, "ShootList")[0]?.shoots as unknown[] | undefined)?.length === 1, dashIds.join(","));
-    const week = elements(ownerTree, "OwnerWeekCard")[0]?.week as import("../../src/lib/opsHome").OwnerWeek | null;
-    const inWeek = (d: Date | null) => !!d && d >= weekStart && d < now;
-    const expectShoots = projects.filter((p) => !p.synthetic && p.status !== "CANCELLED" && inWeek(p.shootDate)).length;
-    c.ok("This week (owner only): shoots done since Monday", week?.thisWeek.shoots === expectShoots, `${week?.thisWeek.shoots} vs ${expectShoots}`);
+    const sorder = namesOf(ownerTree);
+    const sat = (n: string) => sorder.indexOf(n);
+    c.ok("the shared dashboard's order: the tiles, needs attention, Kyle's day; no money anywhere on it", sat("FlaggedBanner") === -1 && sat("HealthStrip") >= 0 && sat("HealthStrip") < sat("NeedsAttention") && sat("NeedsAttention") < sat("KylesDayCard") && ["OwnerMoneyLine", "MoneyStat", "OwnerWeekCard", "ShootIssuesCard"].every((n) => sat(n) === -1), sorder.filter((n) => ["FlaggedBanner", "BehindLine", "OwnerMoneyLine", "HealthStrip", "NeedsAttention", "KylesDayCard", "OwnerWeekCard", "MoneyStat"].includes(n)).join(","));
+    c.ok("the old Home's duplicates are gone: no checklist, summary box, behind card, his list, needs wall, exceptions, stuck jobs", ["DailyChecklist", "SummaryBox", "BehindCard", "KylesDay", "QuickAdd", "NeedsToday", "ExceptionsCard", "StuckJobs", "NewClientCard", "ChecklistLinks"].every((n) => elements(ownerTree, n).length === 0) && elements(ownerTree, "PulseStrip").length <= 1);
+    c.ok("the dashboard render writes nothing", dashBefore === JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } })) && await prisma.outboxMessage.count() === 0);
+
+    // =====================================================================
+    c.head("§4b · Jordan's own dashboard (Oct 23 2026): what the owner-only cards said, in its sections");
+    // =====================================================================
+    await signIn(owner);
+    jobsCalls.length = 0;
+    const jordanBefore = JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } }));
+    const jordanTree = await settle(await home({}));
+    issuesOverride = null;
+    const jordanHtml = renderToStaticMarkup(jordanTree as Parameters<typeof renderToStaticMarkup>[0]);
+    c.ok("his dashboard reads the Shoots board without test records by default", jobsCalls.length >= 1 && jobsCalls.every((o) => o.includeTest === false));
+    c.ok("shoot issues (owner only): the open one is a bottleneck for him to decide; what keeps happening by client (2+) is a client-issue pattern", jordanHtml.includes("1 Elm St: Lockbox code didn") && jordanHtml.includes("Decide, or hand it on") && jordanHtml.includes("Real Agent · Shoot issues keep coming up") && !jordanHtml.includes("Other · Shoot issues keep coming up"));
+    const weekTiles = [...jordanHtml.matchAll(/data-measure="([a-z]+)"/g)].map((m) => m[1]);
+    c.ok("this week (owner only) is Weekly performance: photos and listing videos on time apart, revisions, replies, shoots covered", ["photos", "videos", "revisions", "replies", "shoots"].every((k) => weekTiles.includes(k)), weekTiles.join(","));
     if (weekOk) {
-      c.ok("This week: listing videos delivered, % on time against the promise (raw)", week?.thisWeek.listingVideos.delivered === 2 && week?.thisWeek.listingVideos.onTimePct === 50, JSON.stringify(week?.thisWeek.listingVideos));
-      c.ok("…but with 2 jobs the card says 'too few to judge', never '50% on time'", ownerText.includes("too few to judge") && !ownerText.includes("50% on time"));
-      c.ok("This week: monthly videos counted apart; revisions asked for", week?.thisWeek.monthlyVideos === 1 && week?.thisWeek.revisions === 1);
-      const inbound = texts.filter((m) => m.dir === "in" && inWeek(m.at)).length;
-      c.ok("This week: client texts answered within an hour", week?.thisWeek.replies.inbound === inbound && week?.thisWeek.replies.fast === 1, JSON.stringify(week?.thisWeek.replies));
+      const vid = jordanHtml.slice(jordanHtml.indexOf('data-measure="videos"'), jordanHtml.indexOf('data-measure="videos"') + 900);
+      c.ok("…with 2 listing videos the measure says 'Too few', never '50%' (1 of 2 on time)", vid.includes("Too few") && vid.includes("1 of 2 on time") && !vid.includes(">50%<"), vid.replace(/<[^>]+>/g, " ").slice(0, 200));
     } else {
       c.ok("(Monday just after midnight: the week's fixtures are skipped)", true);
     }
-    const oorder = namesOf(ownerTree);
-    const at = (n: string) => oorder.indexOf(n);
-    // Oct 22 2026 (Jordan's approved dashboards): what needs him first, then
-    // shoot issues, then the shoots and Kyle's day; this week and the money
-    // strip last, with a one-line money summary above the tiles.
-    c.ok("owner order (Oct 22 2026): the red line, the money in one line, the tiles, needs attention, shoot issues, shoots in progress, Kyle's day, then this week and money last", at("FlaggedBanner") === -1 && at("BehindLine") < at("OwnerMoneyLine") && at("OwnerMoneyLine") < at("HealthStrip") && at("HealthStrip") < at("NeedsAttention") && at("NeedsAttention") < at("ShootIssuesCard") && at("ShootIssuesCard") < at("ShootsInProgress") && at("ShootsInProgress") < at("KylesDayCard") && at("KylesDayCard") < at("OwnerWeekCard") && at("OwnerWeekCard") < at("MoneyStat"), oorder.filter((n) => ["FlaggedBanner", "BehindLine", "OwnerMoneyLine", "HealthStrip", "ShootsInProgress", "NeedsAttention", "KylesDayCard", "ShootIssuesCard", "OwnerWeekCard", "MoneyStat"].includes(n)).join(","));
-    c.ok("the old Home's duplicates are gone: no checklist, summary box, behind card, his list, needs wall, exceptions, stuck jobs", ["DailyChecklist", "SummaryBox", "BehindCard", "KylesDay", "QuickAdd", "NeedsToday", "ExceptionsCard", "StuckJobs", "NewClientCard", "ChecklistLinks"].every((n) => elements(ownerTree, n).length === 0) && elements(ownerTree, "PulseStrip").length <= 1);
-    c.ok("the dashboard render writes nothing", dashBefore === JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } })) && await prisma.outboxMessage.count() === 0);
+    const sections = ["finance", "production", "client-issues", "team", "meetings", "creative", "email", "delegated", "weekly"].map((id) => jordanHtml.indexOf(`data-section="${id}"`));
+    c.ok("owner order (Oct 23 2026, his mockup): money, production, client issues, team, meetings, scripts, email, delegated, the week", sections.every((i, k) => i > 0 && (k === 0 || i > sections[k - 1])), sections.join(","));
+    c.ok("…none of the shared cards on his (no tiles, needs attention, Kyle's day card, old money strip)", ["HealthStrip", "NeedsAttention", "KylesDayCard", "OwnerMoneyLine", "MoneyStat", "OwnerWeekCard"].every((n) => elements(jordanTree, n).length === 0));
+    c.ok("his dashboard render writes no task and sends nothing", jordanBefore === JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } })) && await prisma.outboxMessage.count() === 0);
 
     // =====================================================================
     c.head("§5 · Kyle's home is his desk (Oct 23 2026, Jordan's spec): his work, no money");
@@ -618,8 +642,16 @@ async function main() {
     // ---- the test-records view ----
     await signIn(owner);
     jobsCalls.length = 0;
+    const ownerTest = renderToStaticMarkup(await settle(await home({ searchParams: Promise.resolve({ test: "1" }) })) as Parameters<typeof renderToStaticMarkup>[0]);
+    c.ok("Show test records on the owner's dashboard: the Shoots board is read with them, and it says so", jobsCalls.some((o) => o.includeTest === true) && ownerTest.includes("Showing real and test records on the dashboard"));
+    // The shared dashboard's doors (Shoots in progress's "All shoots" among
+    // them) are the creative manager's; the clients-waiting number the review
+    // seat's.
+    await signIn(cara);
+    jobsCalls.length = 0;
+    const testHtml = renderToStaticMarkup(expand(await settle(await home({ searchParams: Promise.resolve({ test: "1" }) }))) as Parameters<typeof renderToStaticMarkup>[0]);
+    await signIn(james);
     const testDash = await settle(await home({ searchParams: Promise.resolve({ test: "1" }) }));
-    const testHtml = renderToStaticMarkup(expand(testDash) as Parameters<typeof renderToStaticMarkup>[0]);
     c.ok("Show test records: the Shoots board is read with them, and the doors keep the view", jobsCalls.some((o) => o.includeTest === true) && testHtml.includes('href="/jobs?f=late&amp;test=1"') && testHtml.includes('href="/jobs?test=1"') && testHtml.includes("Showing real and test records on the dashboard") && testHtml.includes(`href="/projects/${pEdit.id}"`));
     const testClients = (elements(testDash, "HealthStrip")[0]?.health as Dashboard["health"]).clients;
     const allWaiting = (await unansweredCommsBoard("phone", now)).length + (await unansweredCommsBoard("email", now)).length;
@@ -758,13 +790,14 @@ async function main() {
     for (const [who, u] of [["Jordan", owner], ["Kyle", kyle], ["James", james]] as const) {
       await signIn(u);
       const html = ssr(await settle(await home({})));
-      c.ok(`${who}'s dashboard: Monthly content ${who === "Kyle" ? "is not on it" : "is on it"} (Oct 20 2026: Jordan's and the creative manager's)`, who === "Kyle" ? !html.includes("data-content-actions") : html.includes("data-content-actions"));
+      // Oct 23 2026: Jordan's monthly content is his Scripts & creative decisions section.
+      c.ok(`${who}'s dashboard: Monthly content ${who === "Kyle" ? "is not on it" : "is on it"} (Oct 20 2026: Jordan's and the creative manager's)`, who === "Kyle" ? !html.includes("data-content-actions") : who === "Jordan" ? html.includes('data-section="creative"') : html.includes("data-content-actions"));
       // Oct 22 2026: the office's QC tile reads "Photos &amp; videos to send", and
       // its dashboard has no Shoots in progress card.
       // Oct 23 2026: Kyle's home is his desk (the five tabs and Do next).
-      const words = who === "Kyle" ? ["Daily checks", "Review &amp; Deliver", "Client Communications", "Today&#x27;s Shoots", "Requests &amp; Follow-Ups"] : who === "Jordan" ? ["Shoots on time", "Clients waiting", "Special requests", "QC &amp; review", "Shoots in progress", "Needs attention now"] : ["Shoots on time", "Clients waiting", "Special requests", "Photos &amp; videos to send", "Needs attention now"];
+      const words = who === "Kyle" ? ["Daily checks", "Review &amp; Deliver", "Client Communications", "Today&#x27;s Shoots", "Requests &amp; Follow-Ups"] : who === "Jordan" ? ["Financial Position", "Production health", "Bottlenecks requiring action", "Client issues", "Team coverage", "Meetings &amp; preparation", "Scripts &amp; creative decisions", "Email needing my reply", "Delegated by me", "Weekly performance"] : ["Shoots on time", "Clients waiting", "Special requests", "Photos &amp; videos to send", "Needs attention now"];
       c.ok(`${who}'s dashboard renders (tiles, needs attention, the list card; shoots in progress for the owner), no nested links, thumb-sized taps`, !html.startsWith("RENDER FAILED") && words.every((w) => html.includes(w)) && !nestedLink(html) && (html.match(/min-h-11/g) ?? []).length > (who === "Jordan" ? 8 : 5), `missing: ${words.filter((w) => !html.includes(w)).join(", ") || "none"} · nested ${nestedLink(html)} · taps ${(html.match(/min-h-11/g) ?? []).length}`);
-      c.ok(`${who}'s dashboard: money only for the owner`, who === "Jordan" ? html.includes("Profit this month") && html.includes("This week") : !html.includes("Profit this month") && !html.includes("This week") && !/\$\d/.test(html));
+      c.ok(`${who}'s dashboard: money only for the owner`, who === "Jordan" ? html.includes("MTD profit") && html.includes("Weekly performance") : !html.includes("Profit this month") && !html.includes("MTD profit") && !html.includes("This week") && !/\$\d/.test(html));
     }
     await signIn(kyle);
     const kyleHtml = ssr(await settle(await listPage({})));
