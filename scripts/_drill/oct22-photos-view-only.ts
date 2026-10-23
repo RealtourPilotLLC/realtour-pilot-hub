@@ -165,7 +165,8 @@ async function main() {
     const keyOf = (path: string) => access.PAGES.find((p) => p.href !== "/" && (path === p.href || path.startsWith(`${p.href}/`)))?.key ?? null;
     c.ok("the desk's paths resolve to photos (ahead of ops), the checklist to ops", keyOf("/ops/photo-delivery") === "photos" && keyOf(`/ops/photo-delivery/${job.id}`) === "photos" && keyOf(`/ops/photo-delivery/${job.id}/review`) === "photos" && keyOf("/ops/checklist") === "ops", `${keyOf("/ops/photo-delivery")} ${keyOf("/ops/checklist")}`);
     const { pageLabel } = await import("@/lib/usage");
-    c.ok("the People → Activity tab names it Photos", pageLabel(`/ops/photo-delivery/${job.id}`) === "Photos");
+    // Oct 23 2026: by its menu door's name, Photo Delivery.
+    c.ok("the People → Activity tab names it Photo Delivery, as its door", pageLabel(`/ops/photo-delivery/${job.id}`) === "Photo Delivery");
 
     const { proxy } = await import("@/proxy");
     const viaProxy = async (pathname: string, u: { id: string; email: string; role: string }) => {
@@ -185,7 +186,8 @@ async function main() {
     const labels = (h: string) => [...h.matchAll(/<a\b[^>]*>[\s\S]*?<span class="flex-1">([^<]+)<\/span>/g)].map((m) => m[1]);
     const section = (h: string, id: string) => h.match(new RegExp(`<section[^>]*data-sidebar-group="${id}"[^>]*>([\\s\\S]*?)</section>`))?.[1] ?? "";
     const jamesMenu = menu({ name: "James", email: james.email, role: "CREATIVE_MANAGER" });
-    c.ok("James's doors: Photos after Monthly Content, where the owner's menu has it", hrefs(section(jamesMenu, "work")).join() === "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay" && labels(section(jamesMenu, "work")).join() === "Dashboard,Videos,Editing Room,Monthly Content,Photos,Uploads,Shoots,My Performance", `${hrefs(section(jamesMenu, "work")).join()} / ${labels(section(jamesMenu, "work")).join()}`);
+    // Oct 23 2026 (Jordan): the doors read Video Delivery and Photo Delivery.
+    c.ok("James's doors: Photo Delivery after Monthly Content, where the owner's menu has it", hrefs(section(jamesMenu, "work")).join() === "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay" && labels(section(jamesMenu, "work")).join() === "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Uploads,Shoots,My Performance", `${hrefs(section(jamesMenu, "work")).join()} / ${labels(section(jamesMenu, "work")).join()}`);
     c.ok("…and still no Your list, no Messages", !hrefs(jamesMenu).includes("/ops/checklist") && !hrefs(jamesMenu).includes("/communications"));
     c.ok("a photos override takes the door away", !hrefs(menu({ name: "J", email: "j@x", role: "CREATIVE_MANAGER", permissions: JSON.stringify({ photos: false }) })).includes("/ops/photo-delivery"));
     c.ok("a photographer with a photos override gets no door (the pages would bounce them)", !hrefs(menu({ name: "H", email: "h@x", role: "PHOTOGRAPHER", permissions: JSON.stringify({ photos: true }) })).includes("/ops/photo-delivery"));

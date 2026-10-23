@@ -555,7 +555,7 @@ async function main() {
     c.ok("markVideoSent refuses it", !sent.ok, sent.message);
     const ex = await opsExceptionsBoard();
     const exRow = ex.rows.find((x) => x.id === `held:${A.jobId}`);
-    c.ok("exceptions board: an 'unverified-render' row with an owner and the next action", !!exRow && exRow.kind === "unverified-render" && !!exRow.owner && /Listen to the 1080p file or keep the original/.test(exRow.nextAction), exRow ? `${exRow.owner} — ${exRow.nextAction}` : "none");
+    c.ok("exceptions board: an 'unverified-render' row with an owner and the next action", !!exRow && exRow.kind === "unverified-render" && !!exRow.owner && /Listen to the Topaz file or keep the original/.test(exRow.nextAction), exRow ? `${exRow.owner} — ${exRow.nextAction}` : "none");
     c.ok("…and it is counted in the totals", ex.totals["unverified-render"].all >= 1);
     const retry = await tj.retryTopazJob(A.jobId);
     c.ok("'Try again' refuses a held file (no blind re-render)", !retry.ok, retry.message);

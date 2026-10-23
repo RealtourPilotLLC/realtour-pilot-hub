@@ -1,4 +1,5 @@
 import { requirePageAccess } from "@/lib/auth/guards";
+import { currentVisitStamps } from "@/lib/visitSubmission";
 import Link from "next/link";
 import { CheckCircle2, Camera, ArrowRight, Upload, FolderOpen, Scissors, CalendarPlus } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -80,7 +81,7 @@ export default async function UploadListPage() {
   // (upload access only; it never becomes theirs for pay or KPIs).
   const crewIds = mine && mine !== "__none__" ? await crewProjectIds(mine) : [];
   const scopeWhere = mine ? (crewIds.length ? { OR: [ownedBy(mine), { id: { in: crewIds } }] } : ownedBy(mine)) : {};
-  const shoots = await prisma.project.findMany({
+  const shoots = (await prisma.project.findMany({
     where: {
       AND: [
         scopeWhere,
@@ -113,8 +114,10 @@ export default async function UploadListPage() {
         select: { id: true, type: true, manual: true, capturedAt: true, uploadedAt: true },
       },
       _count: { select: { uploads: true } },
+      // Oct 23 2026 (lib/visitSubmission): which visit the stamps belong to.
+      appointments: { select: { startAt: true, status: true } },
     },
-  });
+  })).map((s) => currentVisitStamps(s, s.appointments, now));
 
   // "Over budget" chip: only SHOT jobs have raws in the folder, so we only spend
   // Dropbox calls on those (one call each, in parallel). A shoot is over budget

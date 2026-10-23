@@ -67,7 +67,7 @@ const groupOps = (key: string): ProgramReachOp[] => [...(PROGRAM_PILOT_GROUPS.fi
 export const ONBOARDING_TOGGLES: readonly OnboardingToggle[] = [
   {
     key: "accounts", label: "Portal account and sign-in", ops: groupOps("accounts"), switches: ["portal_invites", "portal_login_email"],
-    words: "They can have a portal account and sign in with their email address. Once their account exists, each approved monthly video is put in their portal automatically by the hourly check, as soon as its 1080p file is ready. That sends them no message.",
+    words: "They can have a portal account and sign in with their email address. Once their account exists, each approved monthly video is put in their portal automatically by the hourly check, as soon as its Topaz file is ready. That sends them no message.",
   },
   {
     key: "messages", label: "Messages I send myself", ops: groupOps("messages"), switches: [],

@@ -22,6 +22,7 @@ import { BeforeYouSend } from "@/components/jobs/BeforeYouSend";
 import { MarkSent } from "@/components/ops/MarkSent";
 import { MarkDelivered } from "@/components/ops/MarkDelivered";
 import { HeldRender } from "@/components/ops/HeldRender";
+import { RerunTopaz } from "@/components/ops/RerunTopaz";
 import { DeliveryFollowUps, PortalFinishing } from "@/components/ops/ReadyToSendCard";
 import { PushControls } from "@/components/videoDelivery/PushControls";
 import { SendAll, SendVideo } from "@/components/videoDelivery/SendVideo";
@@ -131,6 +132,9 @@ function ReadyRow({ r, checks, sendDesk = true }: { r: VideoRow; checks: React.R
       {sendDesk && !s.byHandWhy && s.asksUnknown && <p className="mt-1 text-sm font-medium text-warning">The client&rsquo;s requests could not be read just now. Reload before sending.</p>}
       {!sendDesk && !run && !s.uploaded && <p className="mt-1 text-sm text-muted">Waiting on the office to send it.</p>}
       <WatchFile href={s.watchHref} fileName={s.fileName} isRender={s.fileSource === "topaz-1080p"} />
+      {/* Run Topaz again beside Watch it (Jordan, Oct 23 2026): the office's
+          press, on a finished Topaz file not sent yet. */}
+      {sendDesk && r.rerun && <RerunTopaz jobId={r.rerun.jobId} street={r.street} credits={r.rerun.credits} limit={r.rerun.limit} />}
       {/* Upload to Aryeo only beside it (Jordan, Oct 23 2026): on the listing, not sent, until Send now. */}
       {canPress && <SendVideo submissionId={r.submissionId!} street={r.street} label={label} openAsks={s.openAsks} asksUnknown={s.asksUnknown} listingWarning={s.listingWarning} uploadOnly={label === "Upload to Aryeo and send"} />}
       {sendDesk && p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} canDeliverNow={p.canDeliverNow} canRelease={p.canRelease} uploadedOnly={p.uploadedOnly} />}
@@ -165,6 +169,8 @@ function HeldRow({ r, sendDesk = true }: { r: VideoRow; sendDesk?: boolean }) {
       <p className="mt-0.5 text-sm text-muted"><span className="font-medium text-foreground">{r.stage}</span> · <span className={cn(r.late && "font-semibold text-danger")}>{r.promiseWords}</span></p>
       {r.heldWhy && <p className="mt-1 text-sm font-medium text-warning">{r.heldWhy}</p>}
       {r.heldRender && <HeldRender jobId={r.heldRender.jobId} street={r.street} fileName={r.heldRender.fileName} dropboxUrl={r.heldRender.dropboxUrl} lastCheck={r.heldRender.lastCheck} />}
+      {/* A held Topaz file that doesn't sound or look right: run it again (Oct 23 2026, the office's press). */}
+      {sendDesk && r.rerun && <RerunTopaz jobId={r.rerun.jobId} street={r.street} credits={r.rerun.credits} limit={r.rerun.limit} />}
       {sendDesk && p && p.canStart && r.send && !r.send.byHandWhy && <SendVideo submissionId={r.submissionId!} street={r.street} label="Try again" openAsks={r.send.openAsks} asksUnknown={r.send.asksUnknown} listingWarning={null} />}
       {sendDesk && p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} canDeliverNow={p.canDeliverNow} canRelease={p.canRelease} uploadedOnly={p.uploadedOnly} />}
       {/* A held video can go back to the editor too (audit B18). */}
@@ -453,7 +459,7 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
         </Section>
 
         {/* ————— 2 · READY TO SEND ————— */}
-        {/* Kyle's "Ready to send" door lands here (Oct 22 2026, sidebarNavigation OFFICE_MENU). */}
+        {/* Kyle's door lands here (Oct 22 2026, sidebarNavigation OFFICE_MENU; labelled Video Delivery since Oct 23). */}
         {board && (
           <div id="ready-to-send" className="scroll-mt-24">
           <Section icon={Send} title="Ready to send" count={ready.length} flush action={deliveryDesk && sendAllIds.length >= 2 ? <SendAll submissionIds={sendAllIds} /> : undefined}>
@@ -470,7 +476,7 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
             )}
             {finishing.length > 0 && (
               <p className="border-t border-border px-5 py-3 text-sm text-muted">
-                <span className="font-medium text-foreground">Finishing the 1080p pass ({finishing.length}):</span>{" "}
+                <span className="font-medium text-foreground">Finishing the Topaz pass ({finishing.length}):</span>{" "}
                 {finishing.map((r) => `${r.street}${r.late ? " (late)" : ""}`).join(", ")}. They show up above when the file is back.
               </p>
             )}

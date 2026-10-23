@@ -122,7 +122,7 @@ export const SETTINGS_SEARCH_LABELS: Record<SettingsCardKey, string> = {
   "team-notifications": "Team notifications members mentions project messages bell Slack SMS phone channels",
   coaching: "Comms coaching audited team members report send notes",
   "review-room": "Review Room reviewer coverage primary backup fallback creative approver offer transfer covered hours upload retention Dropbox discovery",
-  topaz: "1080p video pass Topaz upscale enhancement limits credits",
+  topaz: "Topaz pass 1080p video upscale enhancement limits credits",
   "program-automations": "Content program automations switches enabled dependencies rollout pilot client scope AI script drafting call transcript discovery monthly",
   "program-reminders": "Program reminders policy rules templates email cadence timezone quiet hours snooze dry run ledger failed unknown",
   calendly: "Calendly content program calls event type mappings booking discovery monthly transcript matching Drive",

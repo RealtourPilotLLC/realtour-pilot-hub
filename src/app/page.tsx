@@ -35,6 +35,7 @@ import { ContentActionsCard } from "@/components/home/ContentActionsCard";
 import { monthlyContentActions, type ContentActions } from "@/lib/contentActions";
 import { officeDeskFor, type OfficeDesk as OfficeDeskData } from "@/lib/officeDesk";
 import { OfficeDesk } from "@/components/desk/OfficeDesk";
+import { AddTaskButton } from "@/components/desk/DeskControls";
 
 export const dynamic = "force-dynamic";
 
@@ -279,6 +280,13 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
     const nowMin0 = etMinutes(now0);
     const first = me?.name?.split(" ")[0] ?? "there";
     const deskP = officeDeskFor(me, { now: now0, includeTest }).catch((e: unknown) => { console.warn("officeDesk failed", (e as Error).message); return null; });
+    // "+ Add task" (Jordan's mockup, Oct 23 2026): for Kyle himself, or assigned to someone through delegation.
+    const deskRoster: Assignee[] = await listAssignees().catch(() => []);
+    const deskMe = me ? viewerAssigneeKey(me, deskRoster) : null;
+    const addPeople = [
+      ...deskRoster.filter((a) => a.key === deskMe),
+      ...deskRoster.filter((a) => a.key !== deskMe && a.kind !== "vendor"),
+    ].map((a) => ({ key: a.key, name: a.name }));
     return (
       <div>
         <AutoRefresh seconds={90} />
@@ -286,7 +294,8 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
         <PageHeader
           eyebrow="Dashboard"
           title={`${nowMin0 < 12 * 60 ? "Good morning" : nowMin0 < 18 * 60 ? "Good afternoon" : "Good evening"}, ${first}`}
-          subtitle={`${etFullDate(now0)} · updated ${etTime(now0)} ET`}
+          subtitle={<>Keep shoots prepared, clients informed, and media delivered.<span className="block text-[12px] text-muted-2">{etFullDate(now0)} · updated {etTime(now0)} ET</span></>}
+          actions={<AddTaskButton people={addPeople} me={deskMe} readOnly={!!me?.impersonating} />}
         />
         <div className="mx-auto max-w-7xl space-y-4 p-4 pb-16 sm:p-6">
           {includeTest && (

@@ -1,5 +1,6 @@
 "use server";
 
+import { currentVisitStamps } from "@/lib/visitSubmission";
 import { deliverableInProject, requireUploadAccess, requireUploadDeliverableAccess } from "@/lib/auth/guards";
 
 import { prisma } from "@/lib/prisma";
@@ -483,7 +484,7 @@ export async function finalizeUpload(
   // First finalize or a re-submit? The debrief gates and the raws-landed
   // handoff below only fire on the FIRST human submit (the transition), never
   // on edits/re-submits — see `firstFinalize` under the query for what counts.
-  const prior = await prisma.project.findUnique({
+  const priorRow = await prisma.project.findUnique({
     where: { id: projectId },
     select: {
       uploadedAt: true,
@@ -514,8 +515,15 @@ export async function finalizeUpload(
       // not the product names alone. waivedAt: an office "not required" owes
       // no handoff (O05's whole-wrap-up test).
       deliverables: { where: { removedFromOrderAt: null }, select: { id: true, type: true, label: true, notCompletedReason: true, videoStyle: true, waivedAt: true } },
+      // Oct 23 2026 (lib/visitSubmission): which visit the stamps belong to.
+      appointments: { select: { startAt: true, status: true } },
     },
   });
+  // Oct 23 2026 (615 Cliff Ln): on a job with several visits, this visit's
+  // submit is a FIRST submit even though an earlier visit's page was submitted:
+  // every stamp below is read for the current visit, and the whole-wrap-up
+  // stamp is written fresh. The earlier visit's time is kept on the timeline.
+  const prior = priorRow ? currentVisitStamps(priorRow, priorRow.appointments, new Date()) : null;
   const scope: "photos" | "video" | null = data.scope === "photos" || data.scope === "video" ? data.scope : null;
   // WHO is submitting (Jordan, Sep 15: the office can now re-open a submitted
   // page from /upload history "and also make adjustments"). A submitted page
@@ -1096,6 +1104,12 @@ export async function finalizeUpload(
     reportIsNew = made.count > 0;
   } else {
     await prisma.project.update(projectWrite);
+  }
+  // Oct 23 2026: a later visit's submit replaced the earlier visit's stamp;
+  // the earlier time stays on the job's timeline.
+  if (stampWhole && priorRow?.debriefSubmittedAt && prior?.visitFloor && !prior.debriefSubmittedAt) {
+    const { etDateTime: etWhen } = await import("@/lib/datetime");
+    await prisma.activity.create({ data: { projectId, type: "SYSTEM", body: `Earlier visit's upload page submitted ${etWhen(priorRow.debriefSubmittedAt)}; this visit's page was submitted ${etWhen(nowStamp)}.` } }).catch(() => {});
   }
   // Oct 22 2026: video 2 and on keep their own instructions on their own video
   // row (deliverableOutputs.saveLaterVideoInstructions). After the job's own

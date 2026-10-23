@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------------------
 
 /** What a person confirms before a held 1080p file is used anyway. */
-export const HELD_ATTESTATION = "I played the 1080p file through and the sound and picture are right";
+export const HELD_ATTESTATION = "I played the Topaz file through and the sound and picture are right";
 
 /** The two ways a held render ends — nothing else resolves one. */
 export type HeldChoice = "use-original" | "accept-processed";

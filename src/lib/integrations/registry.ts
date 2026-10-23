@@ -189,7 +189,7 @@ export const PROVIDERS: ProviderDef[] = [
     docsUrl: "https://developer.topazlabs.com/",
     capabilities: [
       "Every approved cut runs through your Proteus preset automatically",
-      "The 1080p file lands in the job's Final Video folder (the editor's original is kept)",
+      "The Topaz file lands in the job's Final Video folder (the editor's original is kept)",
       "Kyle gets a card with the file, the folder and the Aryeo link",
       "Spend limits per video, per day and per month — you set them",
     ],

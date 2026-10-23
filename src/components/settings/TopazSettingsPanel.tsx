@@ -119,7 +119,7 @@ export function TopazSettingsPanel({
             {/* SET IT AND FORGET IT (Jordan, Oct 22 2026). One plain line for what
                 happens on its own; everything adjustable is folded away below. */}
             <p className="text-[13px] leading-relaxed text-foreground/85" data-topaz-plain-line>
-              Videos the editor already exported at 1080p go out as they are; anything else gets the 1080p pass with the house setting.
+              Videos the editor already exported at 1080p go out as they are; anything else gets the Topaz pass with the house setting.
             </p>
           </div>
           <Toggle on={r.enabled} onChange={(v) => set({ enabled: v })} label="Run approved cuts through Topaz" />

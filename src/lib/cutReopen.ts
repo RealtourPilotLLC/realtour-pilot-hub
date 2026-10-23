@@ -84,7 +84,7 @@ export async function reopenBookkeeping(sub: Sub, opts: { by: string; why: strin
     const { standDownTopazForReopen } = await import("@/lib/topazJobs");
     await standDownTopazForReopen(sub.id);
   } catch (e) {
-    console.error("[reopen] 1080p pass", sub.id, e);
+    console.error("[reopen] Topaz pass", sub.id, e);
   }
   try {
     const where = opts.source === "review_room" ? "in the Review Room" : opts.source === "portal" ? "from the client portal" : opts.source === "text" ? "from a client text" : opts.source === "email" ? "from a client email" : "from a client call";

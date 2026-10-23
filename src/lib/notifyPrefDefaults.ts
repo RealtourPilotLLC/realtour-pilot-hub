@@ -70,7 +70,7 @@ export const NOTIFY_EVENTS = [
   // Sep 21 2026: the label said "A video waiting on review" while the switch
   // had just been given a second job — the 1080p file landing back from Topaz
   // — so a person turning it off had no way to know what else went quiet.
-  { key: "review_ready", label: "A video waiting on review, or a 1080p file back from Topaz", short: "Video in review", appliesTo: ["Owner", "Office", "Photographer"] },
+  { key: "review_ready", label: "A video waiting on review, or a finished Topaz file", short: "Video in review", appliesTo: ["Owner", "Office", "Photographer"] },
   { key: "shoot_change", label: "Shoot changes & feedback — reschedule, cancel, footage or instructions missing, cull, review feedback", short: "Shoot changes", appliesTo: ["Photographer", "Owner", "Office"] },
 ] as const satisfies readonly { key: string; label: string; short: string; appliesTo: readonly NotifyGroup[] }[];
 

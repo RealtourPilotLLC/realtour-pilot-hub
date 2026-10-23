@@ -1786,6 +1786,44 @@ export async function queueScriptRevisionAction(scriptId: string, mode: "revise"
   } catch (e) { return fail(e); }
 }
 
+/**
+ * "Write it again" on a script card (Oct 23 2026, Jordan: "Give me an option
+ * to re-run the script write on the scripts"). A fresh draft of the script's
+ * topic through the hub's own writer, generateScriptForTopic: the new writer
+ * for a client switched on to it, the skit writer for a skit topic, exactly
+ * as the first draft. Queued and guarded like "Ask AI to revise" above
+ * (requireCreativeLead: the owner, the office and the creative manager), one
+ * queued AI run under the same daily limits, attributed to whoever pressed it.
+ * It lands as the script's next version; every earlier version stays.
+ * Refused in plain words for a script that has gone to the client, that the
+ * client approved, whose video is filmed, imported history, or a bulk plan's
+ * own words (lib/scriptRewriteRule), and checked again before the writer runs.
+ */
+export async function queueScriptRewriteAction(scriptId: string): Promise<QueueResult> {
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { checkRewrite } = await import("@/lib/scriptRewrite");
+    const c = await checkRewrite(String(scriptId ?? ""));
+    if (!c.ok) return { ok: false, message: c.message };
+    const s = c.script;
+    const { assertWeWriteFor } = await import("@/lib/programStyle");
+    await assertWeWriteFor(s.enrollmentId);
+    const { enqueueAiJob, settleStaleRuns } = await import("@/lib/aiQueue");
+    await settleStaleRuns();
+    // One new version at a time: a revision of this script already on its way answers for it.
+    const revising = await prisma.programAiRun.findFirst({ where: { status: { in: ["QUEUED", "RUNNING"] }, dedupeKey: `revise:${s.id}` }, select: { id: true } });
+    if (revising) return { ok: false, message: "That script is already being revised. The new version appears on it when it's ready.", runId: revising.id };
+    const cur = await prisma.contentScript.findUnique({ where: { id: s.id }, select: { currentVersionId: true } });
+    const curNo = cur?.currentVersionId ? (await prisma.contentScriptVersion.findUnique({ where: { id: cur.currentVersionId }, select: { versionNo: true } }))?.versionNo ?? null : null;
+    const q = await enqueueAiJob({ job: { job: "script_topic", topicId: s.topicId, monthId: s.monthId, callRecordId: s.callRecordId, rewriteOf: s.id }, enrollmentId: s.enrollmentId, clientId: s.clientId, requestedBy: me.email, title: s.title });
+    if (!q.ok) return { ok: false, message: q.message, runId: q.runId ?? undefined };
+    kickQueue("click");
+    revalidatePath("/content");
+    return { ok: true, message: `Sent to be written again. The new version appears here when it's ready; ${curNo ? `v${curNo} and ` : ""}the rest of the history are kept.`, runId: q.runId };
+  } catch (e) { return fail(e); }
+}
+
 /** "Draft from the discovery call": every check the draft makes, at once; the AI in the background. STRATEGY duty owner only, as before. */
 export async function queueStrategyDraftAction(enrollmentId: string): Promise<QueueResult> {
   try { await requireCreativeLead(); } catch (e) { return fail(e); }
@@ -1814,6 +1852,8 @@ export async function retryAiJobAction(runId: string): Promise<QueueResult> {
     if (!prev || !prev.enrollmentId || !prev.clientId) return { ok: false, message: "That job isn't on file any more — reload the page." };
     const j = prev.job;
     let r: QueueResult;
+    // "Write it again" again: the same checks as the press (Oct 23 2026).
+    if (j.job === "script_topic" && j.rewriteOf) return queueScriptRewriteAction(j.rewriteOf);
     if (j.job === "script_topic") r = await queueTopicDraft(j.topicId, j.monthId, me.email);
     else if (j.job === "strategy_draft") return queueStrategyDraftAction(prev.enrollmentId);
     // "Apply with AI" again: the request is claimed again (its stopped job opened it).
