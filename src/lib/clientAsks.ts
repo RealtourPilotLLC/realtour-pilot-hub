@@ -500,6 +500,38 @@ export async function assignAskProject(id: string, projectId: string, by: string
   return { ok: true, message: `Put on ${streetOf(p.title) ?? "the job"}.` };
 }
 
+/**
+ * An ask filed under the WRONG client moves to another client's job: client
+ * and job together (Oct 23 2026: Olivia Vecere, Sharra Mercer's assistant,
+ * emailed Sharra's Sussex video changes; her client row folds onto Mike
+ * Flatley, so the ask was filed on Mike Flatley with no job).
+ * assignAskProject keeps an ask on its own client (the assistant fold aside)
+ * and refuses another client's job; this is the office's correction of a
+ * misfiled message, with the reason on the ask's history and the job's
+ * timeline. Open asks only.
+ */
+export async function refileAskToClientJob(id: string, projectId: string, by: string, why: string): Promise<AskResult> {
+  const reason = clip((why ?? "").replace(/\s+/g, " ").trim(), 300);
+  if (reason.length < 5) return { ok: false, message: "Say why the ask belongs to that client (a few words)." };
+  const ask = await prisma.clientAsk.findUnique({ where: { id }, select: { clientId: true, projectId: true, historyJson: true, state: true, summary: true, text: true } });
+  if (!ask) return { ok: false, message: "That ask is no longer here. Reload the page." };
+  if (ask.state !== "OPEN") return { ok: false, message: "Only an open ask moves to another client's job." };
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { clientId: true, title: true, client: { select: { name: true } } } });
+  if (!p?.clientId) return { ok: false, message: "That job is not in the hub." };
+  const street = streetOf(p.title) ?? "the job";
+  if (p.clientId === ask.clientId && ask.projectId === projectId) return { ok: true, message: `Already on ${street}.` };
+  const from = await prisma.client.findUnique({ where: { id: ask.clientId }, select: { name: true } });
+  const fromName = from?.name ?? "another client";
+  const toName = p.client?.name ?? "the job's client";
+  const r = await prisma.clientAsk.updateMany({
+    where: { id, state: "OPEN", clientId: ask.clientId, projectId: ask.projectId },
+    data: { clientId: p.clientId, projectId, historyJson: pushHistory(ask.historyJson, { at: new Date().toISOString(), by, what: `moved from ${fromName} to ${toName}, ${street}: ${reason}` }) },
+  });
+  if (!r.count) return { ok: false, message: "Someone changed that ask a moment ago. Reload the page." };
+  await timeline(projectId, `Client ask moved here from ${fromName} (${by}): ${clip(ask.summary || ask.text, 200)}. ${reason}`);
+  return { ok: true, message: `Moved to ${toName}, ${street}.` };
+}
+
 /** Added by hand from Kyle's Special requests screen. */
 export async function addAskByHand(input: { projectId: string; text: string; medium?: string | null; holdsDelivery?: boolean; by: string }): Promise<AskResult> {
   const text = (input.text ?? "").trim();

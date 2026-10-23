@@ -302,8 +302,6 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
       <TodaysShoots includeTest={includeTest} id="shoots" />
     </Suspense>
   );
-  const testToggle = <Link href={includeTest ? "/" : "/?test=1"} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">{includeTest ? "Hide test records" : "Show test records"}</Link>;
-
   return (
     <div>
       <AutoRefresh seconds={90} />
@@ -312,9 +310,9 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
         eyebrow="Dashboard"
         title={`${nowMin < 12 * 60 ? "Good morning" : nowMin < 18 * 60 ? "Good afternoon" : "Good evening"}, ${firstName}`}
         subtitle={`${etFullDate(now)} · updated ${etTime(now)} ET`}
-        // The "Show test records" button is the owner's (Oct 21 2026); a ?test=1
-        // link still keeps its scope for anyone it is handed to.
-        actions={isOwner ? testToggle : undefined}
+        // Oct 23 2026 (Jordan: "I don't need the show test records button
+        // anymore"): no button. Test (synthetic) clients stay hidden
+        // (syntheticClientIds); a hand-typed ?test=1 still reads them.
       />
       <div className="mx-auto max-w-6xl space-y-4 p-4 pb-16 sm:p-6">
         {includeTest && (

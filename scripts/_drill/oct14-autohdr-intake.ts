@@ -19,7 +19,7 @@
 //   5. files added later: a second shoot with only the new files
 //   6. a shoot someone already made in AutoHDR: LINKED, nothing sent
 //   7. a lost create reply: looked up, never repeated blindly
-//   8. paid QC no longer starts by itself (paidQcAuto off)
+//   8. paid QC no longer starts by itself (Oct 23 2026: it is off for good, PAID_QC_OFF)
 //   9. Kyle pushes the edits to Aryeo: rows carried over in place, findings
 //      kept; a half-finished push keeps the AutoHDR gallery
 //  10. shoots before the start date, delivered or video-only: untouched
@@ -287,11 +287,11 @@ async function main() {
     c.ok("…with an alert", (await prisma.notification.count({ where: { kind: "photo_autohdr_failed" } })) >= 1);
 
     // ======================================================================
-    c.head("8 · the paid QC waits to be asked");
+    c.head("8 · the paid QC never starts (off for good since Oct 23 2026)");
     const otherJob = await prisma.photoJob.create({ data: { projectId: (await mkProject("9 Paid Way")).id, stage: "EDITED" } });
     await prisma.photoAsset.create({ data: { jobId: otherJob.id, name: "x.jpg", sourceKind: "ARYEO", sourceUrl: "https://cdn.aryeo.com/x.jpg", contentHash: "h", status: "ACTIVE" } });
     const paid = await qc.driveQc({ budgetMs: 30_000, leaseBy: "drill" });
-    c.ok("an EDITED gallery is not picked up by the paid QC", !paid.jobs?.some((j) => (j as { jobId?: string }).jobId === otherJob.id) && (await prisma.photoQcRun.count({ where: { jobId: otherJob.id } })) === 0, JSON.stringify(paid).slice(0, 200));
+    c.ok("an EDITED gallery is not picked up by the paid QC (it is off: driveQc refuses)", /Paid photo QC is off/.test(paid.skipped ?? "") && !paid.jobs?.some((j) => (j as { jobId?: string }).jobId === otherJob.id) && (await prisma.photoQcRun.count({ where: { jobId: otherJob.id } })) === 0, JSON.stringify(paid).slice(0, 200));
 
     // ======================================================================
     c.head("9 · Kyle pushes the edits to Aryeo: same photos, same findings");

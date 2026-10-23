@@ -176,7 +176,9 @@ async function main() {
     const ts = text(settingsHtml);
     // Oct 15 2026 (settings audit): fixes and paid QC are one choice each; the dead switches and the mask padding are gone.
     c.ok("settings: fixes are one three-way choice", /Fixes/.test(ts) && /Only when someone approves/.test(ts) && /Automatic/.test(ts) && /not even one approved in the Fix Cart/.test(ts));
-    c.ok("settings: every setting is on the page", ["Photo Delivery on", "Send shoots to AutoHDR", "Bring the edits back into the hub", "Free photo check", "Daily limit on automatic fixes", "Kyle approves each job", "Advanced", "Paid QC (Claude)", "Only when someone presses Run QC", "Every gallery", "shadow mode", "Which checks the paid QC runs", "Kyle&rsquo;s approval limit", "Confidence floor", "Smallest photo allowed", "Track shoots from", "Monthly QC budget"].every((w) => ts.includes(w.replace("&rsquo;", "\u2019")) || ts.includes(w.replace("&rsquo;", "'"))), ts.slice(0, 200));
+    c.ok("settings: every setting is on the page", ["Photo Delivery on", "Send shoots to AutoHDR", "Bring the edits back into the hub", "Free photo check", "Daily limit on automatic fixes", "Kyle approves each job", "Advanced", "shadow mode", "Kyle&rsquo;s approval limit", "Confidence floor", "Smallest photo allowed", "Track shoots from"].every((w) => ts.includes(w.replace("&rsquo;", "\u2019")) || ts.includes(w.replace("&rsquo;", "'"))), ts.slice(0, 200));
+    // Oct 23 2026 (Jordan: "Paid Photo QC should be off. Only using the free version."): no paid QC option anywhere on the page.
+    c.ok("settings: no paid QC choice, budget or depth (the free check and the fixes stay)", !/Paid QC|Run QC|Every gallery|Monthly QC budget|Which checks the paid QC runs|Anthropic|no paid QC/.test(ts) && /Free photo check/.test(ts) && /Fix target per shoot/.test(ts) && /Fix maximum per shoot/.test(ts));
     c.ok("settings: the dead switches are gone", !/Auto-run fixes that cost no credits|Mirror status into Aryeo|Compare every photo with its original|Daily automatic credit limit|Mask padding/.test(ts));
     c.ok("settings: the client profile is listed with its override, without the SLA", /Render Client TEST/.test(ts) && /1 override/.test(ts) && !/h SLA|SLA hours/.test(ts));
 
@@ -262,10 +264,11 @@ async function main() {
     const summary = (jobHtml.split('aria-label="Job summary"')[1] ?? "").replace(/^[^>]*>/, "").split("</section>")[0];
     c.ok("shadow mode shows once on the job page: the Deliver bar's Advisory badge", /Advisory/.test(text(barOf(jobHtml))) && !/shadow/i.test(text(summary)) && !/advisory in shadow mode/i.test(tj), (text(summary).match(/.{0,60}shadow.{0,60}/i) ?? [""])[0]);
     const { JobHeaderActions } = await import("@/components/photoDelivery/JobHeaderActions");
-    const head = html(createElement(JobHeaderActions, { jobId: job.id, stage: "QC_REVIEW", qcEnabled: true, autohdr: true }));
+    const head = html(createElement(JobHeaderActions, { jobId: job.id, stage: "QC_REVIEW", autohdr: true }));
     const [inView, menu = ""] = head.split("<details");
-    c.ok("header: Review mode in view; Put on hold, Check again and Sync from AutoHDR under More", /Review mode/.test(text(inView)) && /<summary[^>]*>\s*More/.test(menu) && ["Put on hold", "Check again", "Sync from AutoHDR"].every((w) => text(menu).includes(w)) && /title="Runs the photo check again\."/.test(head) && !/Re-run QC|Check AutoHDR for changes|Anthropic/.test(head));
-    const held = html(createElement(JobHeaderActions, { jobId: job.id, stage: "ON_HOLD", qcEnabled: true }));
+    // Oct 23 2026 (Jordan: "Paid Photo QC should be off"): the header's Check again was the paid QC's; the free check's is on What's holding this.
+    c.ok("header: Review mode in view; Put on hold and Sync from AutoHDR under More, no paid Check again", /Review mode/.test(text(inView)) && /<summary[^>]*>\s*More/.test(menu) && ["Put on hold", "Sync from AutoHDR"].every((w) => text(menu).includes(w)) && !/Check again|Runs the photo check again/.test(head) && !/Re-run QC|Check AutoHDR for changes|Anthropic/.test(head));
+    const held = html(createElement(JobHeaderActions, { jobId: job.id, stage: "ON_HOLD" }));
     c.ok("on hold: Release hold in view, Review mode under More", /Release hold/.test(text(held.split("<details")[0])) && /Review mode/.test(text(held.split("<details")[1] ?? "")));
     const find = (node: unknown, type: unknown): { props: Record<string, unknown> } | null => {
       if (!node || typeof node !== "object") return null;

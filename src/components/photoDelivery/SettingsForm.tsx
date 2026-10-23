@@ -9,15 +9,16 @@ import { saveSettingsAction, searchClientsAction } from "@/app/ops/photo-deliver
 // ---------------------------------------------------------------------------
 // Photo Delivery switches and thresholds (plan 14), owner only, every field
 // with one plain line. Up front: what the hub does by itself. Behind
-// "Advanced": the paid QC and the delivery-check thresholds. Two pairs of
-// stored switches show as one choice each (fixes: fixRunnerEnabled + autoFix;
-// paid QC: qcEnabled + paidQcAuto) and Save writes both. Everything that can
-// spend money or reach a client defaults OFF (lib/photoDelivery/settings.ts).
-// The server action validates each value again.
+// "Advanced": the delivery-check thresholds. A pair of stored switches shows
+// as one choice (fixes: fixRunnerEnabled + autoFix) and Save writes both.
+// Everything that can spend money or reach a client defaults OFF
+// (lib/photoDelivery/settings.ts). The server action validates each value again.
+// Oct 23 2026 (Jordan: "Paid Photo QC should be off. Only using the free
+// version."): no paid QC choice, budget or depth here any more; the free
+// photo check and the paid AutoHDR fixes stay.
 // ---------------------------------------------------------------------------
 
 export type FixesMode = "off" | "approve" | "auto";
-export type PaidQcMode = "off" | "press" | "auto";
 export type AryeoMode = "off" | "on";
 
 export type SettingsValues = {
@@ -33,9 +34,6 @@ export type SettingsValues = {
   aryeoPush: AryeoMode;
   /** Same-day orders approve and deliver themselves when every check passes. */
   sameDayAutoDeliver: boolean;
-  paidQc: PaidQcMode;
-  monthlyQcBudgetUsd: number;
-  maxBuildPhase: 1 | 2 | 3;
   qcShadow: boolean;
   /** ET day key (YYYY-MM-DD) or "" */
   qcFromDay: string;
@@ -63,12 +61,6 @@ const FIXES: Option<FixesMode>[] = [
 const ARYEO_STAGES: Option<AryeoMode>[] = [
   { value: "off", label: "Off", help: "The hub never touches the Aryeo listing; Kyle uploads and delivers by hand." },
   { value: "on", label: "Kyle approves each job", help: "Jobs wait in Ready to review. Kyle reorders and checks, then presses Approve and deliver, or Approve and upload to Aryeo." },
-]
-
-const PAID_QC: Option<PaidQcMode>[] = [
-  { value: "off", label: "Off", help: "No Claude QC runs; the free photo check is separate." },
-  { value: "press", label: "Only when someone presses Run QC", help: "Runs on a job only when someone asks for it." },
-  { value: "auto", label: "Every gallery", help: "Checks every gallery as it lands, until the monthly budget is reached." },
 ];
 
 const input = "min-h-11 w-full rounded-lg border border-border-strong bg-surface-2 px-3 text-sm tabular-nums focus-visible:outline-2 focus-visible:outline-brand";
@@ -193,10 +185,6 @@ export function SettingsForm({ initial }: { initial: SettingsValues }) {
           autoFixDailyMaxCredits: v.autoFixDailyMaxCredits,
           aryeoPush: v.aryeoPush,
           sameDayAutoDeliver: v.sameDayAutoDeliver,
-          qcEnabled: v.paidQc !== "off",
-          paidQcAuto: v.paidQc === "auto",
-          monthlyQcBudgetUsd: v.monthlyQcBudgetUsd,
-          maxBuildPhase: v.maxBuildPhase,
           qcShadow: v.qcShadow,
           qcFrom: v.qcFromDay || null,
           displayConfidenceFloor: Math.round(v.displayConfidenceFloor) / 100,
@@ -260,25 +248,12 @@ export function SettingsForm({ initial }: { initial: SettingsValues }) {
           {initial.qcShadow && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-ui-status font-medium text-muted ring-1 ring-inset ring-border">Shadow mode on</span>}
         </summary>
         <div className="space-y-5 border-t border-border p-3">
-          <Choice name="pd-paid-qc" legend="Paid QC (Claude)" help="Claude vision checks, paid in Anthropic money, never AutoHDR credits." options={PAID_QC} value={v.paidQc} onChange={(m) => set("paidQc", m)} grid="sm:grid-cols-3" />
-          <div className="grid gap-4 sm:grid-cols-2">
-            <NumberField id="pd-budget" label="Monthly QC budget" suffix="USD" help="The paid QC pauses, and you are alerted, once the month's spend passes this." value={v.monthlyQcBudgetUsd} onChange={(n) => set("monthlyQcBudgetUsd", n)} min={0} max={100000} step={1} />
-            <div>
-              <label htmlFor="pd-phase" className="text-sm font-medium">Which checks the paid QC runs</label>
-              <select id="pd-phase" value={v.maxBuildPhase} onChange={(e) => set("maxBuildPhase", Number(e.target.value) as 1 | 2 | 3)} className={input} aria-describedby="pd-phase-help">
-                <option value={1}>The checklist&rsquo;s priority checks</option>
-                <option value={2}>Plus the second tier</option>
-                <option value={3}>Every check</option>
-              </select>
-              <p id="pd-phase-help" className="mt-1 text-ui-status text-muted">Checks that can be critical (privacy, wrong property, damaged files) always run.</p>
-            </div>
-          </div>
           <Switch label="Never hold a delivery for open issues (shadow mode)" help="A check never puts a job on hold and Mark as delivering is never blocked; the hub's own Aryeo delivery still waits for a clean checklist." checked={v.qcShadow} onChange={(on) => set("qcShadow", on)} />
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label htmlFor="pd-from" className="text-sm font-medium">Track shoots from</label>
               <input id="pd-from" type="date" value={v.qcFromDay} onChange={(e) => set("qcFromDay", e.target.value)} className={input} aria-describedby="pd-from-help" />
-              <p id="pd-from-help" className="mt-1 text-ui-status text-muted">Shoots before this day (Eastern) get no photo job and no paid QC; blank means since Photo Delivery started.</p>
+              <p id="pd-from-help" className="mt-1 text-ui-status text-muted">Shoots before this day (Eastern) get no photo job; blank means since Photo Delivery started.</p>
             </div>
             <NumberField id="pd-floor" label="Confidence floor" suffix="%" help="Findings below this go in a collapsed Low confidence drawer and never block delivery." value={v.displayConfidenceFloor} onChange={(n) => set("displayConfidenceFloor", n)} min={0} max={100} />
             <NumberField id="pd-edge" label="Smallest photo allowed" suffix="px" help="A photo whose long edge is shorter than this fails the delivery check." value={v.minLongEdgePx} onChange={(n) => set("minLongEdgePx", n)} min={300} max={20000} />

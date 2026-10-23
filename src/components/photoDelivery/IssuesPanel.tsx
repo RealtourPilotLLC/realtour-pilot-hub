@@ -154,7 +154,7 @@ export function IssuesPanel() {
   if (!ranQc && visible.length === 0) {
     return (
       <p className="rounded-xl border border-border bg-surface-2/40 p-4 text-sm text-muted">
-        QC has not run on this gallery yet.{data.freeCheck ? " The free photo check runs on its own once AutoHDR's edits are in." : data.qcEnabled && data.paidQcAuto ? " It starts on its own once the gallery has landed." : data.qcEnabled ? " Press Run QC once the photos are in." : " QC is switched off in Photo Delivery settings."}
+        QC has not run on this gallery yet.{data.freeCheck ? " The free photo check runs on its own once AutoHDR's edits are in." : " The free photo check is switched off in Photo Delivery settings."}
       </p>
     );
   }

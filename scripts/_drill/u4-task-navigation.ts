@@ -87,7 +87,8 @@ async function main() {
     c.ok("unmatched saved filter stays visible and can be cleared", noMatch.rows.length === 0 && elements(noMatch.board, "option").some((p) => p.value === "retired-source") && textOf(noMatch.board).includes("Clear filters"));
     const testView = await boardRows({ tab: "work", who: "all", test: "1" });
     c.ok("explicit test view retains both direct-client and project-linked fixture tasks", [testTask, projectFixture].every((t) => testView.rows.some((r) => r.id === t.id)) && testView.rows.length === 7);
-    c.ok("test toggle and owner filters retain current source/type scope", elements(filtered.board, "Link").some((p) => p.href === taskWorkHref({ who: "james", source: "review", type: "todo", showTest: true })));
+    // Oct 23 2026 (Jordan: "I don't need the show test records button anymore"): no toggle on the board; the filters keep their scope.
+    c.ok("no test-records toggle on the board; a typed test view says so", !elements(filtered.board, "Link").some((p) => typeof p.href === "string" && /[?&]test=1/.test(p.href)) && !/Show test records|Hide test records/.test(textOf(filtered.board)) && textOf(testView.board).includes("Showing real and test records") && !textOf(filtered.board).includes("test records"));
     const linked = await boardRows({ task: james.id });
     c.ok("bare task deep link does not disappear behind new My work default", linked.props.sp.who === "all" && linked.rows.some((r) => r.id === james.id));
     const slackLink = await open({ tab: "other", task: slack.id });

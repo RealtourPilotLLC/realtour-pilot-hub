@@ -64,8 +64,6 @@ export default async function YourListPage(props: { searchParams?: Promise<{ tes
   const minDay = etDayKey(etAddDays(now, 1));
   const maxDay = etDayKey(etAddDays(now, MAX_PUSH_DAYS));
   const mine = !forOps || viewerIsOps;
-  const self = `${CHECKLIST_PATH}${sp?.who === "kyle" && !isOwner && !viewerIsOps ? "?who=kyle" : ownerOwnList ? "?who=me" : ""}`;
-  const toggleHref = includeTest ? self : homeRecordHref(self, true);
   return (
     <div>
       <AutoRefresh seconds={90} />
@@ -74,11 +72,7 @@ export default async function YourListPage(props: { searchParams?: Promise<{ tes
         title={mine ? "Your list" : `${ops.name}’s list`}
         // The counts are said once, on the list's own header (audit A25).
         subtitle={`${etFullDate(now)} · updated ${etTime(now)} ET`}
-        actions={
-          <Link href={toggleHref} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">
-            {includeTest ? "Hide test records" : "Show test records"}
-          </Link>
-        }
+        // Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden.
       />
       <div className="mx-auto max-w-4xl space-y-4 p-4 pb-16 sm:p-6">
         <p className="text-sm">

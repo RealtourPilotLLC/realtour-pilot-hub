@@ -105,11 +105,7 @@ export default async function ShootsPage({ searchParams }: { searchParams: Promi
       <PageHeader
         title="Shoots"
         subtitle={subtitle}
-        actions={
-          <Link href={href(f, !includeTest)} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">
-            {includeTest ? "Hide test records" : "Show test records"}
-          </Link>
-        }
+        // Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden.
       />
       <ShootsScheduleTabs current="shoots" includeTest={includeTest} show={!me || canAccess(me, "schedule")} />
       <div className="mx-auto max-w-6xl space-y-4 p-4 pb-16 sm:p-6">

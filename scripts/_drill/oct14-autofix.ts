@@ -354,8 +354,10 @@ async function main() {
     c.ok("a changed gallery in review is checked again: only the new and the unread photo", w2.lastQcRunId !== firstRun && described.sort().join() === "95-3.jpg,95-4.jpg", described.join());
     c.ok("…the unchanged photos keep their findings; the unread one's 'could not look' is history", (await prisma.photoQcFinding.count({ where: { jobId: W9.job.id, ruleId: "KIT_PAPER_TOWEL_ROLLS", status: "OPEN" } })) === 1 && (await prisma.photoQcFinding.findUniqueOrThrow({ where: { id: notChecked!.id } })).status === "SUPERSEDED");
     fake.state.describe = prevDescribe;
+    // Oct 23 2026 (Jordan: "Paid Photo QC should be off. Only using the free version."): nothing asks for it.
+    const inspectedBefore = await prisma.photoAsset.count({ where: { jobId: W9.job.id, inspectedHash: { not: null } } });
     const rq = await decisions.requestQcRerun(W9.job.id, "Jordan");
-    c.ok("asking for the paid QC still has it inspect what only the free check looked at", rq.ok && (await prisma.photoAsset.count({ where: { jobId: W9.job.id, inspectedHash: { not: null } } })) === 0);
+    c.ok("asking for the paid QC is refused, and nothing the free check looked at is touched", !rq.ok && /Paid photo QC is off/.test(rq.message) && (await prisma.photoAsset.count({ where: { jobId: W9.job.id, inspectedHash: { not: null } } })) === inspectedBefore && !(await prisma.photoJob.findUniqueOrThrow({ where: { id: W9.job.id } })).qcRequestedAt, rq.message);
 
     c.head("isolation");
     c.ok("no outbound call escaped the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

@@ -14,6 +14,7 @@ export const maxDuration = 300;
 // STARTED with enough budget left; one in flight can overrun by up to about
 // two minutes, which the 300 s ceiling absorbs. Off unless the owner's
 // qcEnabled switch is on; shadow mode makes every result advisory.
+// (Oct 23 2026: the paid QC and its coaching drafts are off; see below.)
 // Then: coaching notes for galleries whose QC just finished (drafts only; the
 // owner approves each one).
 // Oct 14 2026, first: the FREE photo check (autohdrCheck.ts): AutoHDR's free
@@ -37,16 +38,10 @@ export async function GET(req: NextRequest) {
     return driveAutoFixPlanning({ budgetMs: 60_000 });
   }, { maxMs: 80_000 });
 
-  await step("qc", async () => {
-    const { driveQc } = await import("@/lib/photoDelivery/qc");
-    // Unique per tick: two overlapping ticks must never share a lease.
-    return driveQc({ budgetMs: 120_000, leaseBy: `qc-cron:${startedAt}:${Math.random().toString(36).slice(2, 8)}`, maxJobs: 2 });
-  }, { maxMs: 240_000 });
-
-  await step("coaching", async () => {
-    const { draftPendingCoaching } = await import("@/lib/photoDelivery/coaching");
-    return draftPendingCoaching(3);
-  }, { maxMs: 30_000 });
+  // Oct 23 2026 (Jordan: "Paid Photo QC should be off. Only using the free
+  // version. I don't need a paid QC, only paid fixes through AutoHDR."): the
+  // paid QC (driveQc) and the coaching drafts made from its runs are no longer
+  // steps of this lane; driveQc refuses on its own as well (settings.PAID_QC_OFF).
 
   await finish();
   return NextResponse.json({ ok: true, ...out });

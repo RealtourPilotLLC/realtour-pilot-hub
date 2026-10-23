@@ -260,7 +260,8 @@ async function main() {
     const allPage = await page({ f: "all" });
     c.ok("All: the delivered job too, dimmed", has(allPage, "60 Done Dr") && /opacity-70/.test(allPage));
     const testPage = await page({ test: "1" });
-    c.ok("test records: shown on ask, with the toggle back", has(testPage, "70 Test Ave") && text(testPage).includes("Hide test records") && text(testPage).includes("test records shown"));
+    // Oct 23 2026 (Jordan: "I don't need the show test records button anymore"): no toggle either way; a typed ?test=1 still reads them.
+    c.ok("test records: no toggle; hidden normally, a typed ?test=1 shows them and says so", has(testPage, "70 Test Ave") && !has(h, "70 Test Ave") && !/Show test records|Hide test records/.test(text(testPage) + text(h)) && text(testPage).includes("test records shown"));
     const listOnly = (hh: string) => hh.slice(hh.indexOf("data-shoots-list"));
     c.ok("no em dash and no undefined in the list", !DASH.test(listOnly(h)) && !/undefined|NaN/.test(text(h)));
 

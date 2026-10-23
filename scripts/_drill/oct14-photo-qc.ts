@@ -23,15 +23,13 @@
 //       output_config refused → forced tool for that model; 529 retried;
 //       invalid → one retry with the error; thinking/effort per model
 //    8. the source dispatch: Aryeo host allowlist, AutoHDR unsupported
-//    9. END TO END on PGlite: 3 photos, stubbed bytes, an in-memory private
-//       blob store, a stubbed Claude transport and clock. A tight budget
-//       pauses the run; the next tick finishes it with no repeated call; the
-//       run is DONE with cost recorded, boxes at full resolution, EDITED →
-//       QC_RUNNING → QC_REVIEW (shadow), one bell row for Kyle and NO
-//       Slack/SMS; a third tick makes no call; the image route serves from
-//       the store and renders on the fly; a human "ignored" survives a
-//       re-inspection and reaches the prompt; a non-shadow job is HELD; the
-//       monthly budget stops new work and tells the owner once.
+//    9. Oct 23 2026 (Jordan: "Paid Photo QC should be off. Only using the
+//       free version."): the paid engine is off for good (PAID_QC_OFF). With
+//       qcEnabled and paidQcAuto stored true, driveQc refuses with no Claude
+//       call, opens no run, resumes none and picks up no old request;
+//       requestQc and the paid re-run refuse; the photo-qc lane runs only the
+//       free check and the fix planning. (The end-to-end run of the paid
+//       engine that used to be here is gone with it.)
 //   10. the provider fence stayed closed.
 // ---------------------------------------------------------------------------
 import fs from "node:fs";
@@ -581,236 +579,47 @@ async function main() {
     c.ok("a non-Aryeo host is refused before any request, with a reason for the FILE_OPENS finding", eHost instanceof S.PhotoSourceError && eHost.kind === "refused" && /not an Aryeo, S3 or CloudFront host/.test(eHost.publicReason));
     c.ok("…and nothing left the building", fence.blocked.length === 0, fence.blocked.join(", "));
 
-    // ---- 9. end to end ---------------------------------------------------------------------
-    c.head("9 · end to end on PGlite: driveQc over 3 photos");
+    // ---- 9. the paid QC is off (Oct 23 2026) ------------------------------------------------
+    // Jordan: "Paid Photo QC should be off. Only using the free version. I don't
+    // need a paid QC, only paid fixes through AutoHDR." This section used to
+    // drive the paid engine end to end (driveQc over 3 photos, budgets, shadow
+    // audits). The engine now refuses on its own (settings.PAID_QC_OFF), so it
+    // proves that nothing starts, resumes or spends, whatever is stored.
+    c.head("9 · the paid QC is off: nothing starts, resumes or spends, whatever is stored");
     const { putSetting } = await import("@/lib/settings");
-    // paidQcAuto defaults off since Oct 15 2026 (money-spending defaults are off); this drill drives the automatic start.
-    const settings = (o: Record<string, unknown>) => putSetting("photo_delivery:settings", { qcEnabled: true, paidQcAuto: true, qcShadow: true, maxBuildPhase: 1, minLongEdgePx: 2000, displayConfidenceFloor: 0.5, monthlyQcBudgetUsd: 300, ...o }, "drill");
-    await settings({});
+    const { photoDeliverySettings, PAID_QC_OFF } = await import("@/lib/photoDelivery/settings");
+    await putSetting("photo_delivery:settings", { qcEnabled: true, paidQcAuto: true, qcShadow: true, maxBuildPhase: 1, minLongEdgePx: 2000, displayConfidenceFloor: 0.5, monthlyQcBudgetUsd: 300 }, "drill");
+    const read = await photoDeliverySettings();
+    c.ok("PAID_QC_OFF: a stored qcEnabled / paidQcAuto true reads off", PAID_QC_OFF === true && read.qcEnabled === false && read.paidQcAuto === false);
     const client = await prisma.client.create({ data: { name: "Drill Realty" } });
     const project = await prisma.project.create({ data: { title: "12 Drill Lane, Allentown, PA", addressLine: "12 Drill Lane", city: "Allentown", state: "PA", clientId: client.id } });
-    const kyle = await prisma.teamMember.create({ data: { name: "Kyle Drill", email: "kyle@drill.invalid", phone: "+16105550123", slackId: "UDRILLKYLE", active: true } });
-    const jordan = await prisma.teamMember.create({ data: { name: "Jordan Drill", email: "jordan@drill.invalid", phone: "+16105550199", slackId: "UDRILLJORDAN", active: true } });
-    await prisma.appUser.create({ data: { email: "jordan@drill.invalid", role: "OWNER", status: "ACTIVE", teamMemberId: jordan.id } });
-    await prisma.programOwnerAssignment.create({ data: { scope: "DEFAULT", scopeRef: "", duty: "DELIVERY", teamMemberId: kyle.id } });
-    await prisma.clientQcProfile.create({ data: { clientId: client.id, notes: "Seller asked to keep the <b>family photos</b> in the den." } });
-    const job = await prisma.photoJob.create({
-      data: {
-        projectId: project.id, stage: "EDITED", finalsCount: 3, finalsChangedAt: new Date(clockMs - 3_600_000),
-        expectedJson: JSON.stringify({ address: "12 Drill Lane", city: "Allentown", state: "PA", floorPlan: true, requestedFeatures: [], source: {} }),
-      },
-    });
-    const bytes: Record<string, Buffer> = {
-      "kitchen.jpg": await textured(3000, 2000, 31, false),
-      "bathroom.jpg": await textured(3000, 2000, 32, true),
-      "front.jpg": await exteriorWithDust(3000, 2000),
-    };
-    const loads: string[] = [];
-    S.__setPhotoBytesLoaderForTests(async (p) => {
-      loads.push(p.name);
-      const b = bytes[p.name];
-      if (!b) throw new S.PhotoSourceError("missing", "gone", "no such drill photo");
-      return b;
-    });
-    const store = new Map<string, Buffer>();
-    B.__setDerivativeStoreForTests({
-      async put(pathname, data) { store.set(pathname, Buffer.from(data)); return { pathname, url: `https://drill-store.private.blob.vercel-storage.invalid/${pathname}` }; },
-      async read(ref) { const b = store.get(ref.pathname); return b ? { stream: new Blob([new Uint8Array(b)]).stream(), size: b.length, contentType: "image/jpeg" } : null; },
-    });
-    const photos = await Promise.all(
-      ["kitchen.jpg", "bathroom.jpg", "front.jpg"].map((name, i) =>
-        prisma.photoAsset.create({ data: { jobId: job.id, name, sourceKind: "ARYEO", sourceUrl: `https://cdn.aryeo.com/listings/drill/${name}`, sourceRef: `img-${i}`, contentHash: `aryeo-${i}-v1`, sequence: i, status: "ACTIVE" } }),
-      ),
-    );
-    const byName = new Map(photos.map((p) => [p.name, p]));
-    RUN.__setQcClockForTests(() => clockMs);
-    C.__setQcSleepForTests(async () => {});
+    const job = await prisma.photoJob.create({ data: { projectId: project.id, stage: "EDITED", finalsCount: 1, finalsChangedAt: new Date(clockMs - 3_600_000) } });
+    await prisma.photoAsset.create({ data: { jobId: job.id, name: "kitchen.jpg", sourceKind: "ARYEO", sourceUrl: "https://cdn.aryeo.com/listings/drill/kitchen.jpg", sourceRef: "img-0", contentHash: "aryeo-0-v1", sequence: 0, status: "ACTIVE" } });
+    // A paid run left RUNNING from before, and an old request flag on a reviewed job: neither is picked up.
+    const project2 = await prisma.project.create({ data: { title: "14 Drill Lane, Allentown, PA", addressLine: "14 Drill Lane", clientId: client.id } });
+    const project3 = await prisma.project.create({ data: { title: "16 Drill Lane, Allentown, PA", addressLine: "16 Drill Lane", clientId: client.id } });
+    const job2 = await prisma.photoJob.create({ data: { projectId: project2.id, stage: "QC_RUNNING", finalsCount: 1 } });
+    await prisma.photoQcRun.create({ data: { jobId: job2.id, trigger: "INITIAL", status: "RUNNING", rulesVersion: "v", startedAt: new Date(clockMs - 600_000) } });
+    const job3 = await prisma.photoJob.create({ data: { projectId: project3.id, stage: "QC_REVIEW", finalsCount: 1, qcRequestedAt: new Date(clockMs - 60_000) } });
+    const before = calls.length;
     C.__setQcTransportForTests(async (body) => {
       const b = body as unknown as Body;
-      const pass = passOf(b);
-      const text = b.messages[0].content.filter((x) => x.type === "text").map((x) => x.text).join("\n");
-      calls.push({ pass, body: b, text });
-      clockMs += CALL_MS;
-      return answer(pass, b, text) as ApiResponse;
+      calls.push({ pass: passOf(b), body: b, text: "" });
+      return answer(passOf(b), b, "") as ApiResponse;
     });
-    const count = (pass: string) => calls.filter((x) => x.pass === pass).length;
-
-    // Tick 1: a tight budget. Prep, P0 and P1 fit; the arbiter (75 s minimum) does not.
-    const tick1 = await QC.driveQc({ budgetMs: 150_000, leaseBy: "drill-1" });
-    const run1 = await prisma.photoQcRun.findFirst({ where: { jobId: job.id } });
-    const job1 = await prisma.photoJob.findUnique({ where: { id: job.id } });
-    c.ok("tick 1 pauses on the budget: run RUNNING, job QC_RUNNING, lease released", tick1.jobs[0]?.outcome === "paused" && run1?.status === "RUNNING" && job1?.stage === "QC_RUNNING" && !job1?.leaseOwner, JSON.stringify(tick1.jobs));
-    c.ok("tick 1 did prep, P0 and P1 for every photo and nothing more", count("P0") === 3 && count("P1") === 3 && count("ARBITER") === 0, calls.map((x) => x.pass).join(","));
-    c.ok("P0 ran one warm-up call alone before the rest (cache warm-up)", calls[0].pass === "P0" && calls.findIndex((x) => x.pass === "P1") === 3);
-    const prepped = await prisma.photoAsset.findMany({ where: { jobId: job.id } });
-    c.ok("each photo records full-res size, format, bytes, derivJson and derivHash = its content hash", prepped.every((p) => p.width === 3000 && p.height === 2000 && p.format === "jpeg" && (p.bytes ?? 0) > 300_000 && p.derivHash === p.contentHash && p.cvHash === p.contentHash));
-    const kitchenRow = prepped.find((p) => p.name === "kitchen.jpg")!;
-    const deriv = D.parseDerivMap(kitchenRow.derivJson);
-    c.ok("derivJson: every UI size with its sent size and private pathname (photo-qc/<job>/<photo>/<hash>/<size>.jpg)", D.UI_SIZES.every((s) => !!deriv[s]?.pathname && deriv[s]!.w > 0) && deriv.qc2048?.w === 2048 && deriv.qc2048?.h === 1365 && deriv.thumb256?.w === 256 && /^photo-qc\/[^/]+\/[^/]+\/aryeo-0-v1\/qc2048\.jpg$/.test(deriv.qc2048!.pathname!));
-    c.ok("the private store holds them; the drill store was the only one used", store.size >= 12);
-    const p1Bodies = calls.filter((x) => x.pass === "P1");
-    c.ok("P1 is sent the 2048x1365 derivative and says so in the text", p1Bodies.every((x) => /sent at 2048x1365 px/.test(x.text)));
-    c.ok("client notes reach P1 sanitized (no tags), inside <client_profile>", p1Bodies.every((x) => x.text.includes("<client_profile>\nSeller asked to keep the bfamily photos/b in the den.\n</client_profile>")));
-    c.ok("the exterior's P1 sees the dust candidates flagged in <cv_metrics>", /possible dust spot/.test(p1Bodies.find((x) => x.text.includes("front.jpg"))?.text ?? ""));
-    c.ok("P1 rules are per room: the bathroom call's schema has BATH_ ids, the kitchen's does not", (() => {
-      const en = (x: { body: Body }) => ((x.body.output_config!.format!.schema as { $defs: { Finding: { properties: { ruleId: { enum: string[] } } } } }).$defs.Finding.properties.ruleId.enum);
-      const b = p1Bodies.find((x) => x.text.includes("bathroom.jpg"))!, k = p1Bodies.find((x) => x.text.includes("kitchen.jpg"))!;
-      return en(b).includes("BATH_TOILET_SEAT_OPEN") && !en(k).includes("BATH_TOILET_SEAT_OPEN") && en(k)[en(k).length - 1] === "OTHER_DEFECT";
-    })());
-    const before = calls.length;
-
-    // Tick 2: a full budget finishes the run without repeating any call.
-    clockMs += 300_000;
-    const tick2 = await QC.driveQc({ budgetMs: 600_000, leaseBy: "drill-2" });
-    const run = await prisma.photoQcRun.findFirst({ where: { jobId: job.id } });
-    const done = await prisma.photoJob.findUnique({ where: { id: job.id } });
-    c.ok("tick 2 finishes the run", tick2.jobs[0]?.outcome === "finished" && run?.status === "DONE" && !!run.finishedAt, JSON.stringify(tick2.jobs));
-    c.ok("no pass was paid for twice: P0 3, P1 3, arbiter 1, P1b 1, P2 1, P4 1, summary 1", count("P0") === 3 && count("P1") === 3 && count("ARBITER") === 1 && count("P1B") === 1 && count("P2") === 1 && count("P4") === 1 && count("SUMMARY") === 1, calls.slice(before).map((x) => x.pass).join(","));
-    c.ok("the photos were downloaded once each (tick 2 read the private store)", loads.length === 3, loads.join(","));
-    c.ok("cost, tokens and per-pass latency are on the run row", (run?.costUsd ?? 0) > 0 && (run?.tokensIn ?? 0) > 0 && (run?.cacheRead ?? 0) > 0 && JSON.parse(run!.summaryJson!).metrics.byPass.P1_PHOTO.calls === 3 && typeof JSON.parse(run!.summaryJson!).metrics.byPass.P1_PHOTO.ms === "number");
-    const models = JSON.parse(run!.modelsJson!);
-    c.ok("modelsJson: the model per slot (strings) with the detail beside it", models.P1 === "claude-sonnet-5-5" && models.ARBITER === "claude-opus-5-5" && models.P0 === "claude-haiku-5-5" && models._detail.P1.requested === "claude-sonnet-5-5");
-    c.ok("promptVersionsJson and the rules version are recorded", JSON.parse(run!.promptVersionsJson!).P1_PHOTO.version === 1 && run!.rulesVersion === R.RULES_REGISTRY_VERSION);
-    const events = await prisma.photoJobEvent.findMany({ where: { jobId: job.id }, orderBy: { at: "asc" }, select: { action: true } });
-    const moves = events.map((e) => e.action).filter((a) => /→/.test(a));
-    c.ok("stages: EDITED → QC_RUNNING → QC_REVIEW (shadow mode)", moves.length === 2 && moves[0].startsWith("EDITED → QC_RUNNING") && moves[1].startsWith("QC_RUNNING → QC_REVIEW") && done?.stage === "QC_REVIEW", moves.join(" | "));
-    c.ok("the verdict is recorded (NEEDS_DECISION) and the job says shadow", done?.qcVerdict === "NEEDS_DECISION" && run?.verdict === "NEEDS_DECISION" && done?.qcShadow === true && done?.lastQcRunId === run?.id);
-    const fs1 = await prisma.photoQcFinding.findMany({ where: { jobId: job.id } });
-    const kit = fs1.find((f) => f.ruleId === "KIT_DISH_SOAP_SPONGES");
-    c.ok("the kitchen finding is stored at FULL resolution ([100,200,400,500] at 2048x1365 → [146,293,586,733])", kit?.bboxJson === "[146,293,586,733]" && kit.contentHash === "aryeo-0-v1");
-    c.ok("…with its repair logged and its provenance", kit?.severity === "MAJOR" && /severity/.test(kit.coercedJson ?? "") && kit.promptId === "P1_PHOTO" && kit.promptVersion === 1 && kit.model === "claude-sonnet-5-5" && kit.rulesVersion === R.RULES_REGISTRY_VERSION && !!kit.rawJson);
-    c.ok("groupKey is the model's kebab key for the physical thing", kit?.groupKey === "dish-soap-kitchen-sink");
-    const mail = fs1.find((f) => f.ruleId === "PREP_PERSONAL_DOCUMENTS");
-    c.ok("the privacy CRITICAL went to the arbiter, was OVERTURNED to MINOR, and stays MAJOR for a person", mail?.arbitration === "OVERTURNED" && mail.severity === "MAJOR" && mail.fixStrategy === "HUMAN_REVIEW" && /arbiter/.test(mail.rawJson ?? ""));
-    const arbCall = calls.find((x) => x.pass === "ARBITER")!;
-    c.ok("the arbiter was shown P1's box in its own sent coordinates", /"bbox":\[30\d,60\d,52\d,76\d\]/.test(arbCall.text), /"bbox":\[[^\]]*\]/.exec(arbCall.text)?.[0]);
-    const seat = fs1.find((f) => f.ruleId === "BATH_TOILET_SEAT_OPEN");
-    c.ok("the reedit prompt got its suffix", seat?.reeditPrompt?.endsWith("Change nothing else in the photo.") === true);
-    const dust = fs1.filter((f) => f.source === "P1B" && f.ruleId === "REFL_SENSOR_DUST");
-    const dustCenters = dust.map((f) => JSON.parse(f.bboxJson!) as number[]).map((b) => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]);
-    c.ok("P1b confirmed the exterior's dust: a full-resolution box on each planted spot", DOTS.every((d) => dustCenters.some(([x, y]) => Math.hypot(x - d.x, y - d.y) <= 15)) && dust.every((f) => f.photoId === byName.get("front.jpg")!.id && f.fixStrategy === "AUTOREMOVE_MASK" && f.groupKey === "sensor-dust"), JSON.stringify(dustCenters));
-    const p1bCall = calls.find((x) => x.pass === "P1B")!;
-    c.ok("P1b got 512x512 crops cut at full resolution, each with its label line", (p1bCall.body.messages[0].content.filter((x) => x.type === "image").length >= 2) && /512x512 px at full resolution \| origin \(\d+, \d+\) in 3000x2000/.test(p1bCall.text));
-    const wb = fs1.find((f) => f.ruleId === "GAL_WB_CONSISTENT");
-    c.ok("P2's finding names the photo by id, with the verify phrase repaired in", wb?.photoId === byName.get("kitchen.jpg")!.id && wb.recommendedAction?.includes("flag for verification against originals") === true && wb.pass === "P2_GALLERY");
-    const fp = fs1.find((f) => f.ruleId === "ORD_FLOOR_PLAN");
-    c.ok("P4: an UNKNOWN purchased deliverable is a MAJOR finding (never CRITICAL: missing data is not a guess)", fp?.severity === "MAJOR" && fp.fixStrategy === "HUMAN_REVIEW" && fp.pass === "P4_ORDER");
-    const summary = JSON.parse(run!.summaryJson!) as import("@/lib/photoDelivery/qc/run").QcRunSummary;
-    c.ok("the summary keeps P4's checklist (MET items too) for the Coverage tab", Array.isArray(summary.coverage) && summary.coverage.some((i) => i.itemKey === "standard:kitchen" && i.status === "MET") && summary.coverage.some((i) => i.itemKey === "count:staging"));
-    c.ok("delivery order: front exterior hero, then kitchen, then bathroom; files named", summary.order?.map((o) => o.filename).join() === "01-Front-Exterior.jpg,02-Kitchen.jpg,03-Bathroom.jpg" && done?.heroPhotoId === byName.get("front.jpg")!.id);
-    c.ok("the Delivery Summary is written with the hub link in place of [QC_LINK]", summary.deliverySummary?.source === "model" && summary.deliverySummary.lines[0].startsWith("QC NEEDS DECISION") && /\/ops\/photo-delivery\//.test(summary.deliverySummary.text) && !summary.deliverySummary.text.includes("[QC_LINK]"));
-    const ledger = JSON.parse(run!.checksJson!) as import("@/lib/photoDelivery/qc/run").ChecksLedger;
-    c.ok("the checks ledger records what was performed and skipped, per photo and for the gallery", ledger.photos[byName.get("kitchen.jpg")!.id].skipped.some((s) => s.check === "P1:SKY_REPLACEMENT") && ledger.gallery.performed.includes("P4"));
-    const verdicts = await prisma.photoAsset.findMany({ where: { jobId: job.id }, select: { name: true, verdict: true } });
-    c.ok("per-photo verdicts are stored", verdicts.every((p) => p.verdict === "NEEDS_FIX"), JSON.stringify(verdicts));
-    const bells = await prisma.notification.findMany({ where: { kind: "photo_qc_shadow" } });
-    c.ok("ONE bell row, for Kyle only: \"<address>: AI QC finished (shadow): N issues to check\"", bells.length === 1 && bells[0].userKey === `tm:${kyle.id}` && /^12 Drill Lane: AI QC finished \(shadow\): \d+ issues to check$/.test(bells[0].title) && bells[0].href === `/ops/photo-delivery/${job.id}`, bells.map((b) => b.title).join(" | "));
-    const deliveries = await prisma.notificationDelivery.findMany({});
-    c.ok("no Slack DM and no text was attempted in shadow mode", deliveries.every((d) => d.channel === "bell") && alerts.length === 0 && fence.blocked.length === 0, JSON.stringify(deliveries.map((d) => d.channel)));
-    c.ok("no em or en dash in any finding text or the bell", ![...fs1.map((f) => `${f.specificIssue} ${f.explanation} ${f.recommendedAction ?? ""} ${f.locationText ?? ""}`), bells[0].title].some((s) => /[\u2013\u2014]/.test(s)));
-
-    // A third tick finds nothing to do and calls nobody.
-    const before3 = calls.length;
-    const tick3 = await QC.driveQc({ budgetMs: 600_000, leaseBy: "drill-3" });
-    c.ok("a third tick makes no Claude call (resumability by content hash)", calls.length === before3 && tick3.jobs.length === 0, JSON.stringify(tick3.jobs));
-
-    // The image route: from the private store, then rendered on the fly.
-    const { NextRequest } = await import("next/server");
-    const route = await import("@/app/api/photo-delivery/img/[photoId]/[size]/route");
-    const kid = byName.get("kitchen.jpg")!.id;
-    const get = (size: string) => route.GET(new NextRequest(`http://127.0.0.1/api/photo-delivery/img/${kid}/${size}?v=aryeo-0-v1`), { params: Promise.resolve({ photoId: kid, size }) });
-    const r1 = await get("thumb768");
-    const r1b = Buffer.from(await r1.arrayBuffer());
-    c.ok("the image route serves the private-store copy (private, max-age=3600)", r1.status === 200 && r1.headers.get("content-type") === "image/jpeg" && r1.headers.get("cache-control") === "private, max-age=3600" && (await sharp(r1b).metadata()).width === 768);
-    B.__setDerivativeStoreForTests(null);
-    D.derivCache.clear();
-    const loadsBefore = loads.length;
-    const r2 = await get("qc1024");
-    const r2b = Buffer.from(await r2.arrayBuffer());
-    const m2 = await sharp(r2b).metadata();
-    c.ok("with no private store it renders on the fly from the source (private, max-age=86400), same size as derivJson", r2.status === 200 && r2.headers.get("cache-control") === "private, max-age=86400" && m2.width === 1024 && m2.height === D.parseDerivMap(kitchenRow.derivJson).qc1024?.h && loads.length === loadsBefore + 1);
-    c.ok("an unknown size is a 404", (await get("full")).status === 404);
-    B.__setDerivativeStoreForTests({
-      async put(pathname, data) { store.set(pathname, Buffer.from(data)); return { pathname, url: `https://drill-store.private.blob.vercel-storage.invalid/${pathname}` }; },
-      async read(ref) { const b = store.get(ref.pathname); return b ? { stream: new Blob([new Uint8Array(b)]).stream(), size: b.length, contentType: "image/jpeg" } : null; },
-    });
-    // Oct 15 2026 (perf audit #1): an AutoHDR photo reads the copies the QC run
-    // stored (its content hash is the key, not a key of its own), and a photo
-    // rendered on the fly keeps every size in the store for the next request.
-    const kitchenWas = await prisma.photoAsset.findUniqueOrThrow({ where: { id: kid }, select: { sourceKind: true, autohdrVersionUuid: true, derivJson: true, derivHash: true } });
-    await prisma.photoAsset.update({ where: { id: kid }, data: { sourceKind: "AUTOHDR", autohdrVersionUuid: "ver-kitchen-1" } });
-    D.derivCache.clear();
-    const loadsA = loads.length;
-    const rA = await get("qc2048");
-    c.ok("an AutoHDR photo is served from the copies the QC run stored (same key), with no download", rA.status === 200 && rA.headers.get("cache-control") === "private, max-age=3600" && loads.length === loadsA, `${rA.status} ${rA.headers.get("cache-control")} loads ${loads.length - loadsA}`);
-    await prisma.photoAsset.update({ where: { id: kid }, data: { derivJson: null, derivHash: null } });
-    D.derivCache.clear();
-    const rB = await get("thumb256");
-    const keptRow = await prisma.photoAsset.findUniqueOrThrow({ where: { id: kid }, select: { contentHash: true, derivJson: true, derivHash: true } });
-    const keptMap = D.parseDerivMap(keptRow.derivJson);
-    c.ok("rendered on the fly: ONE download makes every size, each kept in the private store under the QC key", rB.status === 200 && loads.length === loadsA + 1 && keptRow.derivHash === keptRow.contentHash && D.UI_SIZES.every((s) => !!keptMap[s]?.pathname && store.has(keptMap[s]!.pathname!)) && keptMap.qc2048?.w === 2048 && keptMap.qc2048?.h === 1365, JSON.stringify(keptMap));
-    D.derivCache.clear();
-    const rC = await get("qc1024");
-    c.ok("...so the next size comes from the store (any instance), with no second download", rC.status === 200 && rC.headers.get("cache-control") === "private, max-age=3600" && loads.length === loadsA + 1);
-    await prisma.photoAsset.update({ where: { id: kid }, data: kitchenWas });
-
-    // A person ignores the kitchen finding, then asks for a full re-inspection.
-    await prisma.photoQcFinding.update({ where: { id: kit!.id }, data: { status: "IGNORED", statusReason: "client keeps the soap out", decidedBy: "Kyle" } });
+    const tick = await QC.driveQc({ budgetMs: 900_000, leaseBy: "drill-off" });
+    c.ok("driveQc refuses, says why, and makes no Claude call", tick.ok && /Paid photo QC is off/.test(tick.skipped ?? "") && tick.jobs.length === 0 && calls.length === before, JSON.stringify(tick));
+    c.ok("…no run opened on the landed gallery, the old run not resumed, the old request not picked up", (await prisma.photoQcRun.count({ where: { jobId: job.id } })) === 0 && (await prisma.photoQcRun.count({ where: { jobId: job3.id } })) === 0 && (await prisma.photoQcRun.findFirstOrThrow({ where: { jobId: job2.id } })).status === "RUNNING");
+    c.ok("…every stage is left as it was", (await prisma.photoJob.findUniqueOrThrow({ where: { id: job.id } })).stage === "EDITED" && (await prisma.photoJob.findUniqueOrThrow({ where: { id: job3.id } })).stage === "QC_REVIEW");
     const rq = await QC.requestQc(job.id, "MANUAL", "Kyle", { reinspect: true });
-    const callsBefore4 = calls.length;
-    clockMs += 60_000;
-    const tick4 = await QC.driveQc({ budgetMs: 900_000, leaseBy: "drill-4" });
-    const kitP1 = calls.slice(callsBefore4).find((x) => x.pass === "P1" && x.text.includes("kitchen.jpg"));
-    c.ok("requestQc marks the job; the next tick runs a MANUAL run to the end", rq.ok && tick4.jobs[0]?.outcome === "finished" && (await prisma.photoQcRun.count({ where: { jobId: job.id } })) === 2 && (await prisma.photoQcRun.findFirst({ where: { jobId: job.id }, orderBy: { startedAt: "desc" } }))?.trigger === "MANUAL");
-    c.ok("the staff decision reaches the re-inspection as <ignored_findings>", !!kitP1 && /<ignored_findings>\n- KIT_DISH_SOAP_SPONGES: Dish soap and sponge by the sink \(center\); staff decision IGNORED: client keeps the soap out\n<\/ignored_findings>/.test(kitP1.text));
-    const fs2 = await prisma.photoQcFinding.findMany({ where: { jobId: job.id } });
-    c.ok("the human decision survived (still IGNORED, not superseded)", fs2.find((f) => f.id === kit!.id)?.status === "IGNORED");
-    c.ok("the old run's OPEN findings were superseded, the new run's are open", fs2.filter((f) => f.qcRunId === run!.id && f.status === "OPEN").length === 0 && fs2.filter((f) => f.qcRunId !== run!.id && f.status === "OPEN").length > 0);
-
-    // A non-shadow job: a confirmed privacy CRITICAL holds it.
-    await settings({ qcShadow: false });
-    const project2 = await prisma.project.create({ data: { title: "9 Hold Court, Easton, PA", addressLine: "9 Hold Court", clientId: client.id } });
-    const job2 = await prisma.photoJob.create({ data: { projectId: project2.id, stage: "EDITED", finalsCount: 1, finalsChangedAt: new Date(clockMs - 3_600_000), expectedJson: JSON.stringify({ address: "9 Hold Court", requestedFeatures: [], source: {} }) } });
-    bytes["hall-bath.jpg"] = await textured(3000, 2000, 77, true);
-    await prisma.photoAsset.create({ data: { jobId: job2.id, name: "hall-bath.jpg", sourceKind: "ARYEO", sourceUrl: "https://cdn.aryeo.com/listings/drill/hall-bath.jpg", contentHash: "aryeo-h-v1", sequence: 0, status: "ACTIVE" } });
-    const tick5 = await QC.driveQc({ budgetMs: 900_000, leaseBy: "drill-5" });
-    const held = await prisma.photoJob.findUnique({ where: { id: job2.id } });
-    c.ok("live mode: a CONFIRMED privacy CRITICAL → HOLD → ON_HOLD (holdReason CRITICAL)", tick5.jobs.find((j) => j.jobId === job2.id)?.outcome === "finished" && held?.stage === "ON_HOLD" && held.holdReason === "CRITICAL" && held.qcVerdict === "HOLD" && held.qcShadow === false);
-    c.ok("…and QC_HOLD goes to Jordan and Kyle with the address and a hub link only", alerts.length === 1 && alerts[0].kind === "QC_HOLD" && /^9 Hold Court is on hold: .+ Review: https?:\/\/.+\/ops\/photo-delivery\//.test(alerts[0].text) && !/https?:\/\/[^ ]*\.(jpg|jpeg|png)/.test(alerts[0].text), JSON.stringify(alerts));
-
-    // The monthly budget: no new job starts, the owner hears once.
-    await settings({ qcShadow: true, monthlyQcBudgetUsd: 0.000001 });
-    await QC.requestQc(job.id, "MANUAL", "Kyle");
-    const callsBefore6 = calls.length;
-    const tick6 = await QC.driveQc({ budgetMs: 900_000, leaseBy: "drill-6" });
-    c.ok("at or above the monthly budget nothing starts and the owner is told", !!tick6.budgetPaused && tick6.jobs.length === 0 && calls.length === callsBefore6 && alerts.length === 2 && alerts[1].kind === "photo_qc_budget" && alerts[1].to === "owner" && /^photo-qc-budget-\d{4}-\d{2}$/.test(alerts[1].dedupeKey));
-    const spend = await RUN.monthQcSpendUsd(new Date(clockMs));
-    c.ok("this month's spend is summed from the runs", spend.usd > 0);
-
-    // Shadow audit after delivery (Oct 14 2026: a gallery went out 15 minutes
-    // after it reached Aryeo, before QC could look). Shadow mode inspects it
-    // anyway and never touches the stage; live mode and old deliveries do not.
-    await settings({ qcShadow: true, monthlyQcBudgetUsd: 300 });
-    const project3 = await prisma.project.create({ data: { title: "5 Gone Lane, Bethlehem, PA", addressLine: "5 Gone Lane", clientId: client.id } });
-    const job3 = await prisma.photoJob.create({ data: { projectId: project3.id, stage: "DELIVERED", stageChangedAt: new Date(clockMs - 3_600_000), deliveredAt: new Date(clockMs - 3_600_000), finalsCount: 1, finalsChangedAt: new Date(clockMs - 4_000_000), expectedJson: JSON.stringify({ address: "5 Gone Lane", requestedFeatures: [], source: {} }) } });
-    bytes["gone-living.jpg"] = await textured(3000, 2000, 91, false);
-    await prisma.photoAsset.create({ data: { jobId: job3.id, name: "gone-living.jpg", sourceKind: "ARYEO", sourceUrl: "https://cdn.aryeo.com/listings/drill/gone-living.jpg", contentHash: "aryeo-g-v1", sequence: 0, status: "ACTIVE" } });
-    const project4 = await prisma.project.create({ data: { title: "7 Old Road, Bethlehem, PA", addressLine: "7 Old Road", clientId: client.id } });
-    const job4 = await prisma.photoJob.create({ data: { projectId: project4.id, stage: "DELIVERED", stageChangedAt: new Date(clockMs - 5 * 86_400_000), finalsCount: 1 } });
-    await prisma.photoAsset.create({ data: { jobId: job4.id, name: "old.jpg", sourceKind: "ARYEO", sourceUrl: "https://cdn.aryeo.com/listings/drill/old.jpg", contentHash: "aryeo-o-v1", sequence: 0, status: "ACTIVE" } });
-    const tick7 = await QC.driveQc({ budgetMs: 900_000, leaseBy: "drill-7" });
-    const audited = await prisma.photoJob.findUnique({ where: { id: job3.id } });
-    const auditRun = await prisma.photoQcRun.findFirst({ where: { jobId: job3.id } });
-    c.ok("shadow: a gallery delivered before QC could run is audited after delivery", tick7.jobs.some((j) => j.jobId === job3.id) && auditRun?.status === "DONE", JSON.stringify(tick7.jobs));
-    c.ok("…and its stage stays DELIVERED (lastQcRunId and the verdict recorded)", audited?.stage === "DELIVERED" && audited.lastQcRunId === auditRun?.id && !!audited.qcVerdict);
-    c.ok("…the activity log says it was an after-delivery audit", (await prisma.photoJobEvent.count({ where: { jobId: job3.id, action: { contains: "after delivery" } } })) === 1);
-    c.ok("a delivery older than 3 days is not audited", (await prisma.photoQcRun.count({ where: { jobId: job4.id } })) === 0);
-    await settings({ qcShadow: false });
-    const project5 = await prisma.project.create({ data: { title: "8 Live Lane, Bethlehem, PA", addressLine: "8 Live Lane", clientId: client.id } });
-    const job5 = await prisma.photoJob.create({ data: { projectId: project5.id, stage: "DELIVERED", stageChangedAt: new Date(clockMs - 3_600_000), finalsCount: 1 } });
-    await prisma.photoAsset.create({ data: { jobId: job5.id, name: "live.jpg", sourceKind: "ARYEO", sourceUrl: "https://cdn.aryeo.com/listings/drill/live.jpg", contentHash: "aryeo-l-v1", sequence: 0, status: "ACTIVE" } });
-    await QC.driveQc({ budgetMs: 900_000, leaseBy: "drill-8" });
-    c.ok("live (non-shadow) mode never audits a delivered gallery", (await prisma.photoQcRun.count({ where: { jobId: job5.id } })) === 0);
+    c.ok("requestQc refuses (no request flag, no event)", !rq.ok && /Paid photo QC is off/.test(rq.message) && !(await prisma.photoJob.findUniqueOrThrow({ where: { id: job.id } })).qcRequestedAt && (await prisma.photoJobEvent.count({ where: { jobId: job.id } })) === 0, rq.message);
+    const { requestQcRerun } = await import("@/lib/photoDelivery/decisions");
+    const rr = await requestQcRerun(job.id, "Kyle");
+    c.ok("the paid re-run request refuses too", !rr.ok && /Paid photo QC is off/.test(rr.message));
+    const cron = fs.readFileSync(path.join(REPO, "src/app/api/cron/photo-qc/route.ts"), "utf8").replace(/^\s*\/\/.*$/gm, "");
+    c.ok("the photo-qc lane runs the free check and the fix planning, never driveQc or the coaching drafts", /driveAutohdrChecks/.test(cron) && /driveAutoFixPlanning/.test(cron) && !/driveQc|draftPendingCoaching/.test(cron));
+    const jobsSrc = fs.readFileSync(path.join(REPO, "src/lib/photoDelivery/jobs.ts"), "utf8");
+    c.ok("a changed gallery no longer raises the paid request flag", !/qcRequestedAt: now/.test(jobsSrc) && !/paidQcAuto/.test(jobsSrc));
 
     // ---- 10. the fence ----------------------------------------------------------------------
     c.head("10 · isolation");

@@ -207,7 +207,8 @@ async function main() {
   const office = asksB.find((a) => (a.dedupeKey ?? "").startsWith(`${M.PHOTO_OFFICE_KEY_PREFIX}${L.project.id}:38`));
   c.ok("it lands on the photo job: ONE open ask (the message is not filed twice)", asksB.length === 1 && !!office, asksB.map((a) => `${a.dedupeKey}: ${a.summary}`).join(" | "));
   // Oct 22 2026 (photo audit M11): staging IS on this order (only the count ordered is exceeded), so the line says so, never "Not on the order".
-  c.ok("…a question for the office: more staging than ordered, holding the photos, the client's full words", !!office && office.medium === "photo" && office.holdsDelivery && /More than the 3 staged photos ordered: confirm the scope or price with the client first\./.test(office.summary ?? "") && !/Not on the order/.test(office.summary ?? "") && office.text.includes(patio) && office.source === "text" && office.askedBy === "Joseph Sutow", office?.summary ?? undefined);
+  // Oct 23 2026 (Jordan): the count is the line's quantity (1 here), never "3 per line".
+  c.ok("…a question for the office: more staging than ordered, holding the photos, the client's full words", !!office && office.medium === "photo" && office.holdsDelivery && /More than the 1 staged photo ordered: confirm the scope or price with the client first\./.test(office.summary ?? "") && !/Not on the order/.test(office.summary ?? "") && office.text.includes(patio) && office.source === "text" && office.askedBy === "Joseph Sutow", office?.summary ?? undefined);
   const pB = await prisma.photoJob.findUniqueOrThrow({ where: { id: L.job.id } });
   const pTask = await prisma.smartTask.findUnique({ where: { dedupeKey: asked.photoRevisionTaskKey(L.project.id) } });
   c.ok("the photo job reopens ('Client asked for changes after delivery'), on the delivery owner's list", pB.stage === "REVISION_REQUESTED" && !!pTask && pTask.status === "OPEN" && pTask.ownerId === kyle.id, `${pB.stage} / ${pTask?.ownerId}`);

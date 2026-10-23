@@ -16,6 +16,13 @@
 //      (Not needed, "the same request as <office ask>").
 // Each change gets a history line. Nothing is sent.
 //
+// Oct 23 2026 (Jordan): "Virtual staging should have a qty amount unless its a
+// custom item saying virtual staging and how many." There is no "3 per line":
+// the count is the order's own (lib/stagingCount, the one count every screen
+// uses). The script prints the job's order lines, and rewrites the office
+// line's reason whichever words it carries now ("Not on the order:", or an
+// earlier run's "More than the 3 staged photos ordered:").
+//
 // Dry run (default; the database connection is read-only):
 //   NODE_OPTIONS=--conditions=react-server npx tsx --require ./scripts/_drill/_drill-preload.cjs --env-file=.env scripts/_live/oct22-photo-audit-m11-859-photo-38.ts
 // Write it:
@@ -35,22 +42,44 @@ const PHOTO = "38";
   const { prisma } = await import("@/lib/prisma");
   const { PHOTO_OFFICE_KEY_PREFIX } = await import("@/lib/itemMedium");
   const { photoNumbers } = await import("@/lib/photoDelivery/careRules");
-  const { officeWhy, STAGED_PHOTOS_PER_LINE } = await import("@/lib/briefPhotoAsks");
+  const { officeWhy } = await import("@/lib/briefPhotoAsks");
+  const { stagedPhotosOrdered, stagedCountWords } = await import("@/lib/stagingCount");
   console.log(APPLY ? "APPLYING" : "DRY RUN (read-only connection)");
-  const project = await prisma.project.findFirst({ where: { title: { startsWith: "859 N Lawrence St" }, client: { name: "Joseph Sutow" } }, select: { id: true, title: true, deliverables: { where: { removedFromOrderAt: null, type: "VIRTUAL_STAGING" }, select: { quantity: true } } } });
+  const project = await prisma.project.findFirst({
+    where: { title: { startsWith: "859 N Lawrence St" }, client: { name: "Joseph Sutow" } },
+    select: {
+      id: true, title: true,
+      orderItems: { orderBy: { createdAt: "asc" }, select: { title: true, quantity: true, isCanceled: true } },
+      deliverables: { select: { type: true, quantity: true, productTitle: true, label: true, removedFromOrderAt: true, waivedAt: true } },
+    },
+  });
   if (!project) throw new Error("859 N Lawrence St not found");
-  const staged = project.deliverables.reduce((s, d) => s + Math.max(1, d.quantity ?? 1), 0) * STAGED_PHOTOS_PER_LINE;
+  console.log(`${project.title}: the order's lines`);
+  for (const i of project.orderItems) console.log(`  ${i.title}  qty ${i.quantity}${i.isCanceled ? "  (canceled)" : ""}`);
+  console.log("  deliverables:");
+  for (const d of project.deliverables) console.log(`    ${d.type}  ${d.productTitle ?? "-"} / ${d.label ?? "-"}  qty ${d.quantity}${d.removedFromOrderAt ? "  (pulled from the order)" : ""}${d.waivedAt ? "  (waived)" : ""}`);
+  const staging = stagedPhotosOrdered(project.orderItems, project.deliverables);
+  for (const l of staging.lines) console.log(`  staging line "${l.title}" qty ${l.quantity}: ${l.count ?? "not stated"} (${l.how})`);
+  const staged = staging.ordered ? staging.count : 0;
   const asks = await prisma.clientAsk.findMany({ where: { projectId: project.id, state: "OPEN", medium: "photo" }, orderBy: { askedAt: "asc" }, select: { id: true, summary: true, text: true, dedupeKey: true, historyJson: true } });
   const names38 = (a: { summary: string | null }) => (photoNumbers(a.summary ?? "") ?? "").split(/,\s*/).some((n) => n === PHOTO || (n.includes("-") && Number(n.split("-")[0]) <= 38 && Number(n.split("-")[1]) >= 38));
   const office = asks.find((a) => (a.dedupeKey ?? "").startsWith(`${PHOTO_OFFICE_KEY_PREFIX}${project.id}:${PHOTO}`));
-  console.log(`${project.title}: ${asks.length} open photo asks; staging ordered: ${staged} photos\n`);
+  console.log(`\n${asks.length} open photo asks; staging ordered: ${staging.ordered ? stagedCountWords(staging) : "none"}\n`);
   for (const a of asks) console.log(`  ${a.id} [${a.dedupeKey}] names photo 38: ${names38(a)}\n    "${a.summary}"`);
   type Change = { id: string; summary?: string; notNeeded?: string; what: string };
   const changes: Change[] = [];
-  if (office && /Not on the order:/.test(office.summary ?? "")) {
-    const fixed = (office.summary ?? "").replace(/Not on the order: confirm the scope or price with the client first\./, officeWhy(["virtual staging"], staged));
+  // The reason as the app writes it now; the words it may carry from before.
+  const REASON = /(?:Not on the order|More than the \d+ staged photos? ordered): confirm the scope or price with the client first\.|Virtual staging is on the order, but not how many photos: confirm the count, scope or price with the client first\./;
+  const want = officeWhy(["virtual staging"], staged);
+  console.log(`\nThe office line's reason now reads: "${want}"`);
+  if (!office) {
+    const closed = await prisma.clientAsk.findFirst({ where: { projectId: project.id, dedupeKey: { startsWith: `${PHOTO_OFFICE_KEY_PREFIX}${project.id}:${PHOTO}` } }, select: { id: true, state: true, summary: true } });
+    if (closed) console.log(`The photo 38 office question ${closed.id} is ${closed.state} (no longer open): left as it is.\n    "${closed.summary}"`);
+  }
+  if (office && REASON.test(office.summary ?? "") && !(office.summary ?? "").includes(want)) {
+    const fixed = (office.summary ?? "").replace(REASON, want);
     // Not clipped: the new words are a few characters longer than the old, and the column has no limit.
-    changes.push({ id: office.id, summary: fixed, what: "office line reworded: staging is on the order, only the count was exceeded" });
+    changes.push({ id: office.id, summary: fixed, what: staged == null ? "office line reworded: staging is on the order, but not how many photos" : `office line reworded: staging is on the order (${stagedCountWords({ count: staged })}), only the count was exceeded` });
   }
   for (const a of asks) {
     if (!office || a.id === office.id || !names38(a)) continue;

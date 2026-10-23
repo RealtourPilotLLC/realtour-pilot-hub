@@ -244,9 +244,7 @@ export default async function ContentProgramPage({
           >
             {includeEnded ? "Hide ended clients" : "Show ended clients"}
           </Link>
-          <Link href={hrefFor({ test: includeTest ? null : "1" })} className={cn("rounded-lg px-2.5 py-1 text-xs font-medium", includeTest ? "bg-surface-2 text-foreground" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground")}>
-            {includeTest ? "Hide test records" : "Show test records"}
-          </Link>
+          {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden. */}
         </div>
 
         {/* FILTERS — every one is a real count, so a zero is an answer. */}

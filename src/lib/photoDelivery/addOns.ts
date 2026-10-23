@@ -7,6 +7,7 @@ import { logJobEvent } from "./jobState";
 import { ON_LISTING } from "./listingMatch";
 import { LOT_LINES_LABEL } from "./lotLines";
 import { HUB_EDIT, HUB_EDIT_LISTED } from "./photoEdit";
+import { stagedCountWords, stagedPhotosOrdered } from "@/lib/stagingCount";
 
 // ---------------------------------------------------------------------------
 // ADD-ON WORK THAT MUST BE CONFIRMED BEFORE THE PHOTOS GO OUT (Oct 22 2026).
@@ -129,10 +130,23 @@ type DeliverableLine = { type: string; label: string | null; productTitle: strin
  * status is NOT read: the hourly status sweep marks a staging line DONE as
  * soon as any photo is on the listing (projectStatus.expectedCategories puts
  * VIRTUAL_STAGING under PHOTOS), so it cannot tell staged from not staged.
+ * Oct 23 2026 (Jordan): virtual staging is counted the one way every screen
+ * counts it (stagingCount.ts): the line's quantity, or the number a custom
+ * line's title states. `quantity` null = staging is on the order but no line
+ * says how many: then staged images on the listing never clear it by
+ * themselves (a staging version on a photo, or Kyle's confirmation, does),
+ * and the line says the count is not on the order.
  */
-export function addOnsOrdered(orderItems: OrderLine[], deliverables: DeliverableLine[]): { work: AddOnWork; line: string; quantity: number }[] {
-  const out: { work: AddOnWork; line: string; quantity: number }[] = [];
+export function addOnsOrdered(orderItems: (OrderLine & { quantity?: number | null })[], deliverables: DeliverableLine[]): { work: AddOnWork; line: string; quantity: number | null }[] {
+  const out: { work: AddOnWork; line: string; quantity: number | null }[] = [];
   for (const work of ADD_ON_WORK) {
+    if (work.key === "virtual_staging") {
+      const s = stagedPhotosOrdered(orderItems, deliverables);
+      if (!s.ordered) continue;
+      const titles = [...new Set(s.lines.map((l) => l.title))].join(", ");
+      out.push({ work, line: `${titles} (${stagedCountWords(s)})`, quantity: s.count });
+      continue;
+    }
     const titled = (d: DeliverableLine) => [d.productTitle, d.label].filter((x): x is string => !!x?.trim());
     const isIt = (d: DeliverableLine) => titled(d).some((t) => work.product.test(t)) || (titled(d).length === 0 && work.types.includes(d.type));
     const mine = deliverables.filter(isIt);
@@ -309,7 +323,7 @@ export async function addOnStates(projectId: string, jobId: string): Promise<Add
     select: {
       removalNotes: true, shotOrderNotes: true, editorBrief: true,
       photographer: { select: { name: true } },
-      orderItems: { select: { title: true, isCanceled: true } },
+      orderItems: { select: { title: true, isCanceled: true, quantity: true } },
       deliverables: { select: { type: true, label: true, productTitle: true, removedFromOrderAt: true, waivedAt: true, quantity: true } },
       appointments: { orderBy: { startAt: "asc" }, select: { description: true } },
     },
@@ -348,7 +362,8 @@ export async function addOnStates(projectId: string, jobId: string): Promise<Add
     const c = mineConfirmed?.get(work.key);
     // Oct 22 2026 (M2): already on the Aryeo listing, as many images of it as were ordered.
     const l = mineListed?.get(work.key);
-    const onListing = l && l.n >= quantity ? l : null;
+    // Oct 23 2026: a staging order that does not say how many is never cleared by a count.
+    const onListing = l && quantity != null && l.n >= quantity ? l : null;
     // The newest of them decides what the line says; any clears it (on a tie, the first listed: a version, then a person's confirmation).
     const options: NonNullable<AddOnState["cleared"]>[] = [
       ...(v ? [{ how: "version" as const, by: v.by, atISO: v.at.toISOString(), note: null, photoName: v.photoName }] : []),
@@ -375,7 +390,7 @@ export async function openAddOnsByProject(projectIds: string[]): Promise<Map<str
       where: { id: { in: ids } },
       select: {
         id: true,
-        orderItems: { select: { title: true, isCanceled: true } },
+        orderItems: { select: { title: true, isCanceled: true, quantity: true } },
         deliverables: { select: { type: true, label: true, productTitle: true, removedFromOrderAt: true, waivedAt: true, quantity: true } },
       },
     }),
@@ -390,7 +405,7 @@ export async function openAddOnsByProject(projectIds: string[]): Promise<Map<str
     const job = jobOf.get(p.id);
     // Photos already out: nothing to hold any more.
     if (job?.stage === "DELIVERED") continue;
-    const onListing = (key: AddOnKey, n: number) => (listed.get(job?.id ?? "")?.get(key)?.n ?? 0) >= n;
+    const onListing = (key: AddOnKey, n: number | null) => n != null && (listed.get(job?.id ?? "")?.get(key)?.n ?? 0) >= n;
     const open = p.ordered.filter((o) => !job || (!confirmed.get(job.id)?.has(o.work.key) && !versions.get(job.id)?.has(o.work.key) && !onListing(o.work.key, o.quantity))).map((o) => o.work.need);
     if (open.length) out.set(p.id, open);
   }

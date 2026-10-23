@@ -399,11 +399,8 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
         {/* While a video is on its way (Oct 20 2026, audit B9): every 30 s,
             not 20; the cron moves an upload once a minute. */}
         {moving && <AutoRefresh seconds={30} />}
-        <div className="flex justify-end">
-          <Link href={includeTest ? "/review" : "/review?test=1"} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
-            {includeTest ? "Hide test records" : "Show test records"}
-          </Link>
-        </div>
+        {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden. */}
+        {includeTest && <p className="text-xs text-muted">Showing real and test records</p>}
 
         {boardDesk && !board && (
           <p role="alert" className="rounded-2xl border border-warning/30 bg-warning-soft/40 p-4 text-sm text-warning">Ready to send and the due dates could not be read just now. Refresh to try again.</p>

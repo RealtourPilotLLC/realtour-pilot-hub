@@ -16,7 +16,7 @@ import {
   type RuleOverride,
   type Severity,
 } from "../registry";
-import { photoDeliverySettings, type PhotoDeliverySettings, type QcModelSlot } from "../settings";
+import { PAID_QC_OFF, PAID_QC_OFF_MESSAGE, photoDeliverySettings, type PhotoDeliverySettings, type QcModelSlot } from "../settings";
 import { claimJob, logJobEvent, releaseJob, setStage, type JobStage } from "../jobState";
 import { alertOwnerAndKyle, opsRecipients } from "../notifyOps";
 import { derivativePathname, derivativeStore, readDerivativeBytes, type StoredRef } from "../blob";
@@ -260,6 +260,8 @@ type Expected = {
   twilightReal?: number;
   twilightVirtual?: number;
   virtualStagingCount?: number;
+  /** Oct 23 2026: staging ordered, but a line does not say how many (stagingCount.ts). */
+  virtualStagingUnknown?: boolean;
   floorPlan?: boolean;
   bedrooms?: number;
   bathrooms?: number;
@@ -776,7 +778,7 @@ async function classifyPhoto(ctx: Ctx, p: Asset, pos: number): Promise<void> {
           sentWidth: img.w,
           sentHeight: img.h,
           twilightOrdered: orderedFlag(ctx, (e?.twilightReal ?? 0) + (e?.twilightVirtual ?? 0)),
-          stagingOrdered: orderedFlag(ctx, e?.virtualStagingCount),
+          stagingOrdered: orderedFlag(ctx, e?.virtualStagingUnknown ? 1 : e?.virtualStagingCount),
           droneOrdered: orderedFlag(ctx, e?.droneCount),
         });
         return { images: [img], text, ctx: null };
@@ -1234,13 +1236,15 @@ async function runP4(ctx: Ctx, order: Asset[], labels: Map<string, string>, idOf
     addCount("count:twilight", `delivered ${twilight}, required ${tw}`, twilight >= tw ? "MET" : "NOT_MET", `Twilight photos (${tw} ordered)`, "CRITICAL", "EDITOR");
     const st = e.virtualStagingCount ?? 0;
     // The classifier cannot reliably recognise virtual staging (pack 1.2), so a
-    // shortfall is UNKNOWN, never NOT_MET.
-    addCount("count:staging", `delivered ${staged} recognised as staged, required ${st}`, staged >= st ? "MET" : "UNKNOWN", `Virtual staging (${st} ordered)`, "CRITICAL", "EDITOR");
+    // shortfall is UNKNOWN, never NOT_MET. Oct 23 2026: an order that does not
+    // say how many is UNKNOWN too (never a guessed count).
+    if (e.virtualStagingUnknown) addCount("count:staging", `delivered ${staged} recognised as staged, required: not stated on the order`, "UNKNOWN", "Virtual staging (how many is not on the order)", "CRITICAL", "EDITOR");
+    else addCount("count:staging", `delivered ${staged} recognised as staged, required ${st}`, staged >= st ? "MET" : "UNKNOWN", `Virtual staging (${st} ordered)`, "CRITICAL", "EDITOR");
   }
   const deliverables = await prisma.deliverable.findMany({ where: { projectId: ctx.job.projectId, removedFromOrderAt: null, waivedAt: null }, select: { type: true, productTitle: true, label: true, quantity: true } });
   const orderRows = deliverables.map((d) => `${sanitizeUntrusted(d.productTitle ?? d.type, 120)} | variant: ${sanitizeUntrusted(d.label, 80) || "unavailable"} | qty ${d.quantity} | is_twilight ${d.type === "TWILIGHT"}`);
   const expectations = e
-    ? `minPhotos ${e.minPhotos ?? "unavailable"} | droneCount ${e.droneCount ?? 0} | twilightCount ${(e.twilightReal ?? 0) + (e.twilightVirtual ?? 0)} | floorPlanRequired ${!!e.floorPlan} | stagingCount ${e.virtualStagingCount ?? 0} | coveragePolicy: unavailable`
+    ? `minPhotos ${e.minPhotos ?? "unavailable"} | droneCount ${e.droneCount ?? 0} | twilightCount ${(e.twilightReal ?? 0) + (e.twilightVirtual ?? 0)} | floorPlanRequired ${!!e.floorPlan} | stagingCount ${e.virtualStagingUnknown ? "not stated on the order" : e.virtualStagingCount ?? 0} | coveragePolicy: unavailable`
     : null;
   const photoRows = active.map((p) => {
     const feats = parseJson<string[]>(p.featuresJson, []).map((f) => sanitizeUntrusted(f, 48));
@@ -1871,6 +1875,8 @@ const REQUESTABLE: JobStage[] = ["EDITED", "QC_REVIEW", "READY", "ON_HOLD", "FIX
  * only the gallery passes and the verdict are redone.
  */
 export async function requestQc(jobId: string, trigger: "INITIAL" | "MANUAL" | "POST_FIX", by: string, opts: { reinspect?: boolean } = {}): Promise<{ ok: true; message: string } | { ok: false; message: string }> {
+  // Oct 23 2026 (Jordan): the paid QC is off; nothing asks for it (settings.PAID_QC_OFF).
+  if (PAID_QC_OFF) return { ok: false, message: PAID_QC_OFF_MESSAGE };
   const who = String(by ?? "").trim().slice(0, 120) || "staff";
   const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, holdReason: true } });
   if (!job) return { ok: false, message: "Photo job not found." };
@@ -1939,6 +1945,9 @@ async function jobsToDrive(settings: PhotoDeliverySettings, take: number): Promi
  * timeoutMs), so the caller's step cap should be budgetMs plus about 3 min.
  */
 export async function driveQc(opts: { budgetMs: number; leaseBy: string; maxJobs?: number }): Promise<DriveSummary> {
+  // Oct 23 2026 (Jordan): "Paid Photo QC should be off. Only using the free
+  // version." No paid run starts or resumes, whatever is stored (settings.PAID_QC_OFF).
+  if (PAID_QC_OFF) return { ok: true, skipped: "Paid photo QC is off (only the free photo check runs)", jobs: [], ms: 0 };
   const start = now();
   const deadline = start + Math.max(0, opts.budgetMs);
   const settings = await photoDeliverySettings();
