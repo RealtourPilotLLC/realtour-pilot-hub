@@ -129,7 +129,7 @@ async function TopazCard({ initial, isOwner }: { initial: TopazSettings; isOwner
       ])
     : [null, null];
   return (
-    <Section icon={Film} title="1080p video pass">
+    <Section icon={Film} title="Topaz pass">
       <TopazSettingsPanel
         initial={initial}
         defaults={DEFAULT_TOPAZ_PARAMS}
@@ -327,7 +327,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     // starts: approving a cut in there is what sets it off. The anchor is what
     // the Connections page links to.
     topaz: card("topaz",
-      <Suspense fallback={<ProviderCardSkeleton icon={Film} title="1080p video pass" note="asking Topaz where the month stands…" />}>
+      <Suspense fallback={<ProviderCardSkeleton icon={Film} title="Topaz pass" note="asking Topaz where the month stands…" />}>
         <TopazCard initial={topaz} isOwner={isOwner} />
       </Suspense>, "topaz"),
 
@@ -483,7 +483,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const snapshots: Record<SettingsGroupId, React.ReactNode> = {
     team: `${notifyRows ? `${notifyRows.length} active notification profiles` : "Notification roster could not be read"} · ${coaching ? `coaching includes ${coaching.teamMemberIds.length} people; sending ${coaching.sendEnabled ? "on" : "off"}` : "coaching settings could not be read"}.`,
     scheduling: `Photos: ${turns.photos} hours · standard video: ${turns.standardVideoHours} hours · monthly content: ${turns.monthlyBusinessDays} days.`,
-    production: `Primary review: ${primaryReviewer} · backup offered after ${reviewRoom.coverOfferHours} covered hours · 1080p pass switch ${topaz.enabled ? "on" : "off"}.`,
+    production: `Primary review: ${primaryReviewer} · backup offered after ${reviewRoom.coverOfferHours} covered hours · Topaz pass switch ${topaz.enabled ? "on" : "off"}.`,
     program: `${automations ? `${automations.filter((automation) => automation.enabled).length} of ${automations.length} automation switches on` : "Automation switches could not be read"} · ${reminders ? `reminder policy uses ${reminders.policySource === "stored" ? "saved values" : "defaults"}; its switch is ${reminders.switch.enabled ? "on" : reminders.switch.missing ? "not configured" : "off"}` : "reminder policy could not be read"}.`,
     comms: `Automated text master switch ${textRules.enabled ? "on" : "off"} · client email copies ${emailMonitor.enabled ? `to ${emailMonitor.address}` : "off"} · sending window ${String(textRules.sendFromHour).padStart(2, "0")}:00–${String(textRules.sendUntilHour).padStart(2, "0")}:${String(textRules.sendUntilMinute).padStart(2, "0")} Eastern time${textRules.weekdaysOnly ? ", weekdays" : ""}.`,
     integrations: <Suspense fallback={<>Reading connection status…</>}><IntegrationSummary report={readiness} /></Suspense>,

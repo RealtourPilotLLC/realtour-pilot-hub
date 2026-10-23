@@ -381,7 +381,7 @@ export async function submitCutForReview(
   // 1080p file, and the 1080p pass needs the hub's own copy, so a cut sent
   // from the Final folder could never reach the client. Nothing is written.
   if (project.contentMonthId) {
-    return { ok: false, message: "This is a monthly video — upload the file here instead — the 1080p pass needs the hub's own copy." };
+    return { ok: false, message: "This is a monthly video — upload the file here instead — the Topaz pass needs the hub's own copy." };
   }
   const street = streetOf(project.title);
 
@@ -1242,7 +1242,7 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
   try {
     const { queueTopazRender } = await import("@/lib/topazJobs");
     await queueTopazRender(submissionId);
-  } catch { /* the 1080p pass never blocks an approval */ }
+  } catch { /* the Topaz pass never blocks an approval */ }
 
   // WHAT HAPPENS NEXT, read once from the cut as it now stands (Oct 5): is the
   // 1080p pass still owed, and — a program job — is this version going to the
@@ -1344,12 +1344,12 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
     const own: { message: string; bell: string } =
       program && toPortal
         ? renderPending
-          ? { message: "the 1080p (Topaz) pass is running in the background; the client's portal gets that finished file when it's done. Nothing to send.", bell: "1080p pass running — the client's portal gets it when done. Nothing to send." }
+          ? { message: "the Topaz pass is running in the background; the client's portal gets that finished file when it's done. Nothing to send.", bell: "Topaz pass running — the client's portal gets it when done. Nothing to send." }
           : readNext
             ? { message: "publishing to the client's portal in the background. Nothing to send.", bell: "Publishing to the client's portal — nothing to send." }
             : { message: "portal publication runs in the background.", bell: "Portal publication runs in the background." }
         : renderPending
-          ? { message: "the 1080p (Topaz) pass and the Final-folder copy run in the background; Kyle gets the upload-and-send prompt when the finished file is ready.", bell: "1080p pass running — Kyle gets the upload prompt when the file is ready." }
+          ? { message: "the Topaz pass and the Final-folder copy run in the background; Kyle gets the upload-and-send prompt when the finished file is ready.", bell: "Topaz pass running — Kyle gets the upload prompt when the file is ready." }
           : submission.blobUrl
             ? { message: "the copy to the Final folder runs in the background; Kyle gets the upload-and-send prompt once it lands.", bell: "Final-folder copy running — Kyle gets the upload prompt once it lands." }
             : { message: "Kyle gets the prompt to upload and send it.", bell: "Kyle gets the upload prompt." };
@@ -1361,7 +1361,7 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
       return program && toPortal
         ? { message: `Approved — ${own.message} ${more} on ${street}.`, bell: `${own.bell} ${more}.` }
         : {
-            message: `Approved — ${more} on ${street}.${renderPending ? " This one's 1080p pass and Final-folder copy run in the background." : submission.blobUrl ? " This one's Final-folder copy runs in the background." : ""}`,
+            message: `Approved — ${more} on ${street}.${renderPending ? " This one's Topaz pass and Final-folder copy run in the background." : submission.blobUrl ? " This one's Final-folder copy runs in the background." : ""}`,
             bell: `${more} — not ready to deliver yet.`,
           };
     }
@@ -3537,7 +3537,7 @@ export async function markTopazDeliveredAction(jobId: string): Promise<{ ok: boo
   const me = await getCurrentUser().catch(() => null);
   if (me?.impersonating) return { ok: false, message: "Leave preview mode before recording delivery." };
   const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { submissionId: true, deliveredAt: true, submission: { select: { status: true } } } });
-  if (!job) return { ok: false, message: "That 1080p job no longer exists." };
+  if (!job) return { ok: false, message: "That Topaz job no longer exists." };
   if (!job.deliveredAt) {
     const { uploadedForDelivery } = await import("@/lib/deliveryUploads");
     const checked = await uploadedForDelivery(job.submissionId);
@@ -3600,7 +3600,7 @@ export async function queueTopazRenderAction(submissionId: string): Promise<{ ok
   const r = await queueTopazRender(submissionId);
   revalidatePath("/review");
   return r.queued
-    ? { ok: true, message: "Queued — the 1080p version will be in Dropbox shortly." }
+    ? { ok: true, message: "Queued — the Topaz version will be in Dropbox shortly." }
     : { ok: false, message: r.reason };
 }
 
@@ -3627,7 +3627,7 @@ export async function resolveHeldRenderAction(
     return { ok: false, message: (e as Error).message };
   }
   if (typeof jobId !== "string" || !jobId) return { ok: false, message: "Which render?" };
-  if (choice !== "use-original" && choice !== "accept-processed") return { ok: false, message: "Choose the original or the 1080p file." };
+  if (choice !== "use-original" && choice !== "accept-processed") return { ok: false, message: "Choose the original or the Topaz file." };
   const me = await getCurrentUser().catch(() => null);
   const { resolveHeldTopazJob } = await import("@/lib/topazJobs");
   const r = await resolveHeldTopazJob(jobId, choice, await displayNameFor(me), {

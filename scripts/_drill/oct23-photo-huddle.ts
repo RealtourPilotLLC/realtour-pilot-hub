@@ -464,7 +464,7 @@ async function main() {
     c.ok("once the upload went on to AutoHDR: Editing everywhere", du.header.stageLabel === "Editing" && !du.header.waitingForUpload && qu2?.stageLabel === "Editing" && !qu2.waitingForUpload && !(await up.waitingForUploadOf([{ projectId: U.project.id, stage: "EDITING", finalsCount: 0 }])).has(U.project.id), JSON.stringify({ h: du.header.stageLabel, q: qu2?.stageLabel }));
     c.ok("…an AutoHDR shoot linked by hand counts as in too", !(await up.waitingForUploadOf([{ projectId: "nope", stage: "EDITING", finalsCount: 0, autohdrPhotoshootId: 7 }])).has("nope"));
     const desk = src("src/lib/officeDesk.ts");
-    c.ok("Kyle's desk reads the same flag ('Waiting for upload', the photographer's)", /else if \(c\.waitingForUpload\) Object\.assign\(a, \{ tone: late \? "now" : "waiting", status: "Waiting for upload", who: "the photographer"/.test(desk));
+    c.ok("Kyle's desk reads the same flag ('Waiting for upload', the photographer's; late: 'Ask the photographer', never 'Late from AutoHDR')", /c\.waitingForUpload \? \{ tone: "waiting", status: "Waiting for upload", who: "the photographer" \}/.test(desk) && /notUp \? "Waiting for upload · Ask the photographer"/.test(desk));
 
     c.head("isolation");
     c.ok("nothing left the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

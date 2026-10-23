@@ -526,7 +526,7 @@ export async function saveTopazRules(
     // Say what the setting now MEANS, not "saved" — the switch being off is the
     // one thing somebody could change here and then wait forever on.
     const message = !saved.enabled
-      ? "Saved. The 1080p pass is switched off, so approving a cut queues nothing — everything else about approving and delivering carries on as normal."
+      ? "Saved. The Topaz pass is switched off, so approving a cut queues nothing — everything else about approving and delivering carries on as normal."
       : saved.deliverableTypes.length === 0
         ? "Saved, but no kind of video is ticked, so nothing will be sent. Tick videos, reels or both."
         : `Saved — the next cut you approve goes through at ${saved.outputShortSide}p, up to ${saved.maxCreditsPerVideo} credits a video and ${saved.maxCreditsPerMonth} a month.`;

@@ -54,7 +54,17 @@ const VIA = '"via":"queue"';
 
 export type QueueJob =
   /** "Draft script" on one topic, and a topic-path owed draft (call excerpts or the topic alone). */
-  | { job: "script_topic"; topicId: string; monthId: string; callRecordId?: string | null; selectedOnCall?: boolean }
+  | {
+      job: "script_topic"; topicId: string; monthId: string; callRecordId?: string | null; selectedOnCall?: boolean;
+      /**
+       * Oct 23 2026, "Write it again" on a script card: the script a fresh
+       * draft of this topic lands on, as its next version (the draft runs
+       * with onlyIfUnscripted off). Checked again before the writer runs
+       * (scriptRewrite.assertRewritable): a script sent to the client while
+       * the job waited is refused, nothing spent.
+       */
+      rewriteOf?: string;
+    }
   /** An owed draft from the client's written answers. */
   | {
       job: "script_interview"; topicId: string; monthId: string; interviewId: string;
@@ -93,6 +103,7 @@ function kindOf(j: QueueJob): AiRunKind {
 function busyLine(j: QueueJob): string {
   if (j.job === "script_revise") return "That script is already being revised — the new version appears on it when it's ready.";
   if (j.job === "strategy_draft") return "The strategy is already being drafted — it appears under Strategy versions when it's ready.";
+  if (j.job === "script_topic" && j.rewriteOf) return "That script is already being written — the new version appears on it when it's ready.";
   return "That topic is already being drafted — it'll appear on the Scripts tab when it's ready.";
 }
 
@@ -211,9 +222,16 @@ async function runClaimed(row: ClaimedRow, checkDeadline: number | null = null):
     switch (scope.job) {
       case "script_topic": {
         const { generateScriptForTopic } = await import("@/lib/contentGeneration");
+        // "Write it again" (Oct 23 2026): the script is checked again now,
+        // before the writer runs, and the draft is its next version.
+        if (scope.rewriteOf) {
+          const { assertRewritable, RewriteRefusedError } = await import("@/lib/scriptRewrite");
+          const target = await assertRewritable(scope.rewriteOf);
+          if (target.topicId !== scope.topicId || target.monthId !== scope.monthId) throw new RewriteRefusedError("The script moved to another topic or month while this waited. Press Write it again on it once more.");
+        }
         // onlyIfUnscripted: a script that appeared since the click (the
         // hourly sweep, an upload) is not given a second version by it.
-        await generateScriptForTopic({ topicId: scope.topicId, monthId: scope.monthId, requestedBy: by, unattended: false, callRecordId: scope.callRecordId ?? null, selectedOnCall: scope.selectedOnCall ?? true, onlyIfUnscripted: true, claimedRun: claimed, checkDeadline });
+        await generateScriptForTopic({ topicId: scope.topicId, monthId: scope.monthId, requestedBy: by, unattended: false, callRecordId: scope.callRecordId ?? null, selectedOnCall: scope.selectedOnCall ?? true, onlyIfUnscripted: !scope.rewriteOf, claimedRun: claimed, checkDeadline });
         break;
       }
       case "script_interview": {
@@ -333,7 +351,7 @@ export type QueueItemUi = {
   error: string | null;
   /** When the job was asked for (ISO). */
   at: string;
-  /** script_revise: "revise" | "tighten"; a re-draft from changed answers: "redraft". */
+  /** script_revise: "revise" | "tighten"; a re-draft from changed answers: "redraft"; "Write it again": "rewrite". */
   label?: string | null;
 };
 export type QueueStateUi = {
@@ -366,8 +384,12 @@ export async function queueStateFor(enrollmentId: string, opts: { monthId?: stri
     let s: StoredScope | null = null;
     try { s = r.scopeJson ? (JSON.parse(r.scopeJson) as StoredScope) : null; } catch { s = null; }
     if (!s) continue;
-    // A re-draft from changed answers shows on its script, like a revision (it is that script's next version).
-    const onScript = s.job === "script_revise" ? s.scriptId : s.job === "script_interview" && s.onlyIfUnscripted === false ? s.scriptId ?? null : null;
+    // A re-draft from changed answers shows on its script, like a revision (it is that script's next version);
+    // so does "Write it again" (Oct 23 2026).
+    const onScript = s.job === "script_revise" ? s.scriptId
+      : s.job === "script_interview" && s.onlyIfUnscripted === false ? s.scriptId ?? null
+      : s.job === "script_topic" && s.rewriteOf ? s.rewriteOf
+      : null;
     const topic = s.job === "script_topic" || s.job === "script_interview" ? { topicId: s.topicId, monthId: s.monthId } : null;
     const subject = onScript ? `script:${onScript}` : topic ? `topic:${topic.topicId}:${topic.monthId}` : "strategy";
     if (seen.has(subject)) continue;
@@ -379,7 +401,7 @@ export async function queueStateFor(enrollmentId: string, opts: { monthId?: stri
       : r.status === "SUCCEEDED" && !r.outputRef && r.error && !/^Already drafted/.test(r.error) ? "failed"
       : null;
     if (!state) continue;
-    const item: QueueItemUi = { state, runId: r.id, error: state === "failed" ? r.error ?? "It stopped without saying why." : null, at: r.createdAt.toISOString(), label: s.job === "script_revise" ? s.label : onScript ? "redraft" : null };
+    const item: QueueItemUi = { state, runId: r.id, error: state === "failed" ? r.error ?? "It stopped without saying why." : null, at: r.createdAt.toISOString(), label: s.job === "script_revise" ? s.label : s.job === "script_topic" && onScript ? "rewrite" : onScript ? "redraft" : null };
     if (onScript) out.scripts[onScript] = item;
     else if (topic) { if (!opts.monthId || topic.monthId === opts.monthId) out.topics[topic.topicId] = item; }
     else if (s.job === "strategy_draft") out.strategy = item;
@@ -435,7 +457,7 @@ export async function queuedJobOf(runId: string): Promise<{ job: QueueJob; enrol
 /** The request alone — a run's scope also carries what its generator added (basedOnVersionId, …). */
 function jobOf(s: StoredScope): QueueJob | null {
   switch (s.job) {
-    case "script_topic": return { job: s.job, topicId: s.topicId, monthId: s.monthId, callRecordId: s.callRecordId ?? null, selectedOnCall: s.selectedOnCall ?? true };
+    case "script_topic": return { job: s.job, topicId: s.topicId, monthId: s.monthId, callRecordId: s.callRecordId ?? null, selectedOnCall: s.selectedOnCall ?? true, ...(s.rewriteOf ? { rewriteOf: s.rewriteOf } : {}) };
     case "script_interview": return { job: s.job, topicId: s.topicId, monthId: s.monthId, interviewId: s.interviewId, ...(s.onlyIfUnscripted === false ? { onlyIfUnscripted: false, ...(s.scriptId ? { scriptId: s.scriptId } : {}) } : {}) };
     case "script_revise": return {
       job: s.job, scriptId: s.scriptId, instruction: s.instruction, label: s.label, ...(Array.isArray(s.lockSections) && s.lockSections.length ? { lockSections: s.lockSections } : {}),

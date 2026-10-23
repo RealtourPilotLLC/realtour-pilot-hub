@@ -1,5 +1,5 @@
-// Oct 23 2026: KYLE'S DESK, the office dashboard rebuilt to Jordan's spec of
-// that day (lib/officeDesk). Held here against the spec's acceptance checks
+// Oct 23 2026: KYLE'S DESK (lib/officeDesk), revision 2 (Jordan's mockup:
+// four sections all visible, the Daily checks above them). Held here against the spec's acceptance checks
 // that belong to the dashboard (#8, renewed acknowledgment of a changed brief,
 // is the briefing build's):
 //   1  a new photo set enters QC; a failed check becomes a tracked correction
@@ -27,6 +27,10 @@ installNextStubs();
 const slack: { channel: string; text: string }[] = [];
 const json = (b: unknown) => new Response(JSON.stringify(b), { headers: { "content-type": "application/json" } });
 const fence = fenceFetch(async (url, init) => {
+  if (url === "https://api.anthropic.com/v1/messages") {
+    aiBodies.push(String(init?.body ?? ""));
+    return json({ id: "msg_drill", type: "message", role: "assistant", model: "drill", content: [{ type: "text", text: "Thanks for the note, we are on it today." }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } });
+  }
   if (!url.startsWith("https://slack.com/api/")) return null;
   const method = url.slice("https://slack.com/api/".length).split("?")[0];
   if (method === "chat.postMessage") {
@@ -39,18 +43,34 @@ const fence = fenceFetch(async (url, init) => {
 });
 
 type Lanes = { late: VideoRow[]; today: VideoRow[]; review: VideoRow[]; upcoming: VideoRow[]; sending: VideoRow[]; held: VideoRow[]; finishing: VideoRow[]; delivered: VideoRow[] };
-let videoLanes: Lanes | null = null;
+let videoLanes: Lanes = { late: [], today: [], review: [], upcoming: [], sending: [], held: [], finishing: [], delivered: [] };
+let useLanes = false;
 interceptModule((r) => r === "@/lib/videoDelivery" || /src[\\/]lib[\\/]videoDelivery(?:\.ts)?$/.test(r), (loaded) => {
   const m = loaded as typeof import("../../src/lib/videoDelivery");
   return {
     ...m,
-    videoDeliveryBoard: (o?: Parameters<typeof m.videoDeliveryBoard>[0]) => (videoLanes ? Promise.resolve({ asOf: new Date().toISOString(), lanes: videoLanes, counts: {}, mode: "live", connected: true } as unknown as Awaited<ReturnType<typeof m.videoDeliveryBoard>>) : m.videoDeliveryBoard(o)),
+    videoDeliveryBoard: (o?: Parameters<typeof m.videoDeliveryBoard>[0]) => (useLanes ? Promise.resolve({ asOf: new Date().toISOString(), lanes: videoLanes, counts: {}, mode: "live", connected: true } as unknown as Awaited<ReturnType<typeof m.videoDeliveryBoard>>) : m.videoDeliveryBoard(o)),
   };
 });
 let queueFails = false;
 interceptModule((r) => r === "@/app/ops/photo-delivery/data" || /src[\\/]app[\\/]ops[\\/]photo-delivery[\\/]data(?:\.ts)?$/.test(r), (loaded) => {
   const m = loaded as typeof import("../../src/app/ops/photo-delivery/data");
   return { ...m, loadQueue: (o?: Parameters<typeof m.loadQueue>[0]) => (queueFails ? Promise.reject(new Error("drill: photo queue down")) : m.loadQueue(o)) };
+});
+
+// The AI provider is faked at the fence (below): every draft request recorded, a fixed draft back.
+const aiBodies: string[] = [];
+// Delegation is another build's: driven here through its contract.
+let assignedToKyle: import("../../src/lib/delegation").DelegatedTask[] = [];
+interceptModule((r) => r === "@/lib/delegation" || /src[\\/]lib[\\/]delegation(?:\.ts)?$/.test(r), (loaded) => {
+  const m = loaded as typeof import("../../src/lib/delegation");
+  return { ...m, tasksAssignedTo: async (key: string) => (key === "kyle" ? assignedToKyle : []) };
+});
+// The photographer brief's states, driven when a check needs one that went.
+let briefOverride: Map<string, { state: import("../../src/lib/photographerBrief").BriefState; sentAt: string | null; ackAt: string | null; why: string | null }> | null = null;
+interceptModule((r) => r === "@/lib/photographerBrief" || /src[\\/]lib[\\/]photographerBrief(?:\.ts)?$/.test(r), (loaded) => {
+  const m = loaded as typeof import("../../src/lib/photographerBrief");
+  return { ...m, briefStatusForAppointments: (ids: string[]) => (briefOverride ? Promise.resolve(new Map(ids.map((id) => [id, briefOverride!.get(id) ?? { state: "off" as const, sentAt: null, ackAt: null, why: null }]))) : m.briefStatusForAppointments(ids)) };
 });
 
 const H = 3_600_000;
@@ -159,6 +179,7 @@ async function main() {
     } as VideoRow);
     const push = { mode: "live", state: null, says: "Not started", tone: "info", handledByHub: false, waitingForKyle: false, canStart: true, progress: null, canRetry: false, canDeliverNow: false, canRelease: false, canHold: false, updatedAtISO: null };
     const send = (approvedBy: string) => ({ approvedBy, fileSource: "cut", fileName: "v1.mp4", fileSays: "the approved cut", downloadHref: "/x", watchHref: "/x", uploadFingerprint: null, uploaded: null, listingMissing: false, listingWarning: null, openAsks: [], asksUnknown: false, byHandWhy: null, pushUnknown: false });
+    useLanes = true;
     videoLanes = {
       late: [vrow("v-late", pEditLate.id, "21 Edit St", "late", { cutStatus: "CHANGES_REQUESTED", stage: "Changes asked, version 2", late: true, lateHours: 30, promiseISO: at(-30 * H).toISOString() })],
       today: [vrow("v-review", pInReview.id, "22 Review Rd", "today", { cutStatus: "PENDING", stage: "In review, version 1" })],
@@ -213,7 +234,8 @@ async function main() {
     await prisma.smartTask.create({ data: { taskType: "confirmation_text", source: "system", status: "COMPLETED", completedAt: at(-D), dueAt: at(3 * H - D), title: "Confirm 50 Today St", projectId: pToday.id, clientId: realC.id } });
     const pNext = await project("51 Next Day Rd, Town", "SCHEDULED", { shootDate: etAt(nextKey, 10), photographerId: harrison.id });
     const apNext = await prisma.appointment.create({ data: { aryeoId: "next-1", projectId: pNext.id, startAt: etAt(nextKey, 10), endAt: etAt(nextKey, 12), status: "SCHEDULED", description: aryeoBrief({ name: "Pat Doe" }), rawJson: raw(["Listing Photos"]), assignedToId: harrison.id } });
-    const confNext = await prisma.smartTask.create({ data: { taskType: "confirmation_text", source: "system", status: "OPEN", dueAt: new Date(etAt(nextKey, 10).getTime() - D), title: "Confirm 51 Next Day Rd", projectId: pNext.id, clientId: realC.id } });
+    // Its 48-hour confirmation is past due and still not sent (deterministic whatever the weekday).
+    const confNext = await prisma.smartTask.create({ data: { taskType: "confirmation_text", source: "system", status: "OPEN", dueAt: at(-H), title: "Confirm 51 Next Day Rd", projectId: pNext.id, clientId: realC.id } });
     const pDrone = await project("52 Drone Dr, Town", "SCHEDULED", { shootDate: at(4 * H), photographerId: harrison.id });
     const apDrone = await prisma.appointment.create({ data: { aryeoId: "drone-1", projectId: pDrone.id, startAt: at(4 * H), endAt: at(6 * H), status: "SCHEDULED", description: okBrief.replace("1111", "2222"), rawJson: raw(["Listing Photos", "Drone Photos"]), assignedToId: harrison.id } });
     await prisma.smartTask.create({ data: { taskType: "confirmation_text", source: "system", status: "COMPLETED", completedAt: at(-D), dueAt: at(4 * H - D), title: "Confirm 52 Drone Dr", projectId: pDrone.id, clientId: realC.id } });
@@ -236,89 +258,143 @@ async function main() {
     await prisma.cronRun.create({ data: { job: "aryeo", startedAt: at(-5 * 60_000), finishedAt: at(-4 * 60_000), ok: true, summary: JSON.stringify({ ms: { orders: 100 } }) } });
     await prisma.cronRun.create({ data: { job: "gmail", startedAt: at(-3 * H), finishedAt: at(-3 * H + 60_000), ok: true, summary: JSON.stringify({ ms: { gmail: 100 } }) } });
     await prisma.cronRun.create({ data: { job: "photo-delivery", startedAt: at(-4 * 60_000), finishedAt: at(-3 * 60_000), ok: false, error: "drill: boom", summary: JSON.stringify({ ms: { ready: 100 } }) } });
-    c.ok("the world is built", true);
+
+    // ---- revision 2's additions (Jordan's mockup and the lead's list) ----
+    // A photo set ready but held by a client request that holds delivery.
+    const pHeld = await project("19 Held Ct, Town", "SHOT", { shootDate: at(-D) });
+    await photoJob(pHeld.id, "READY", { slaDueAt: at(6 * H) });
+    const heldAsk = await prisma.clientAsk.create({ data: { clientId: realC.id, projectId: pHeld.id, kind: "SPECIAL_REQUEST", medium: "photo", source: "text", text: "Please take the trash cans out of the front shot", summary: "Trash cans out of the front shot", askedAt: at(-2 * D), state: "OPEN", holdsDelivery: true } });
+    // A 3D tour uploaded and ready to verify; a floor plan the photo check saw missing from the listing.
+    const pTour = await project("23 Tour Ter, Town", "DELIVERED", { shootDate: at(-2 * D), deliverables: { create: [{ type: "PHOTOS", label: "Photos", status: "DONE" }, { type: "ZILLOW_3D", label: "Zillow 3D Tour", status: "UPLOADED" }] } });
+    await photoJob(pTour.id, "DELIVERED", { slaDueAt: at(-2 * H), deliveredAt: at(-H) });
+    const pPlanDiff = await project("24 Plan Diff Dr, Town", "DELIVERED", { shootDate: at(-2 * D), deliverables: { create: [{ type: "PHOTOS", label: "Photos", status: "DONE" }, { type: "FLOORPLAN", label: "Floor Plan", status: "DONE" }] } });
+    await photoJob(pPlanDiff.id, "DELIVERED", { slaDueAt: at(-2 * H), deliveredAt: at(-H), deliveryDiffJson: JSON.stringify({ approved: 30, aryeoCount: 30, missing: [], excludedShown: [], floorPlanMissing: true, extra: 0, duplicates: [] }) });
+    // Upload to Aryeo only: on the listing, not sent; and a video in the 1080p pass.
+    const pOnly = await project("25 Only Ln, Town", "REVIEW", { shootDate: at(-3 * D) });
+    const pFin = await project("28 Finishing Way, Town", "REVIEW", { shootDate: at(-3 * D) });
+    videoLanes.sending.push(vrow("v-only", pOnly.id, "25 Only Ln", "sending", { cutStatus: "APPROVED", stage: "On Aryeo, not sent yet", send: send("James Livingston") as unknown as VideoRow["send"], push: { ...push, mode: "upload", uploadedOnly: true, state: "WAITING", tone: "waiting", says: "On Aryeo, not sent yet", waitingForKyle: true, canStart: false, canDeliverNow: true } as unknown as VideoRow["push"], dueToday: false, promiseISO: at(D).toISOString() }));
+    videoLanes.finishing.push(vrow("v-fin", pFin.id, "28 Finishing Way", "finishing", { cutStatus: "APPROVED", stage: "In the 1080p pass" }));
+    // A Content Program message that is Kyle's; a booking request; a task from Jordan; a special request on a job going out today.
+    const erica = await client("Erica Walker", "2155550111");
+    const program = await prisma.smartTask.create({ data: { taskType: "program_message", source: "content_program", status: "OPEN", title: "Reply to Erica Walker's message", description: "A message is waiting on the program conversation.\n\n• Erica Walker: Can we swap the November topic?\n\nReply on Content Program → Messages.", dedupeKey: "program-message:enr-erica", assignedKey: "kyle", clientId: erica.id, dueAt: at(5 * H) } });
+    const nehemiah = await client("Nehemiah Agent", "2155550112");
+    const booking = await prisma.clientAsk.create({ data: { clientId: nehemiah.id, kind: "SCHEDULING", source: "text", text: "Can you book a shoot ASAP for 70 Fast Ave?", summary: "Book a shoot ASAP", askedAt: at(-2 * H), state: "OPEN" } });
+    const fromJordanTask = await task({ taskType: "internal_instruction", source: "assistant", reasonCreated: "Asked for by Jordan on My Day", title: "Call the Malvern stager about Saturday", dueAt: at(2 * H) });
+    const pSoon = await project("26 Soon St, Town", "EDITING", { shootDate: at(-D), promisedDueAt: at(4 * H) });
+    const soonAsk = await prisma.clientAsk.create({ data: { clientId: realC.id, projectId: pSoon.id, kind: "SPECIAL_REQUEST", medium: "video", source: "text", text: "Use the upbeat song please", summary: "Upbeat song on the video", askedAt: at(-D), state: "OPEN" } });
+    // A shoot within two hours with no access instructions; one already under way.
+    const pUrgent = await project("27 Urgent Ave, Town", "SCHEDULED", { shootDate: at(H), photographerId: harrison.id });
+    const apUrgent = await prisma.appointment.create({ data: { aryeoId: "urgent-1", projectId: pUrgent.id, startAt: at(H), endAt: at(3 * H), status: "SCHEDULED", description: aryeoBrief({ name: "Ura Gent", phone: "(215) 555-0120" }), rawJson: raw(["Listing Photos"]), assignedToId: harrison.id } });
+    await prisma.smartTask.create({ data: { taskType: "confirmation_text", source: "system", status: "COMPLETED", completedAt: at(-D), dueAt: at(H - D), title: "Confirm 27 Urgent Ave", projectId: pUrgent.id, clientId: realC.id } });
+    const pStarted = await project("29 Started St, Town", "SCHEDULED", { shootDate: at(-H), photographerId: harrison.id });
+    const apStarted = await prisma.appointment.create({ data: { aryeoId: "started-1", projectId: pStarted.id, startAt: at(-H), endAt: at(H), status: "SCHEDULED", description: okBrief, rawJson: raw(["Listing Photos"]), assignedToId: harrison.id } });
 
     // =====================================================================
-    c.head("§2 · the desk, read");
+    c.head("§2 · the desk, read (four sections, all visible)");
     // =====================================================================
     const before = JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } }));
     let d = await build();
     c.ok("building the desk writes nothing", before === JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } })) && await prisma.appSetting.count({ where: { key: { startsWith: "office_" } } }) === 0);
-    const tab = (x: OfficeDesk, k: string) => x.tabs.find((t) => t.key === k)!;
-    const find = (x: OfficeDesk, id: string): DeskItem | undefined => x.tabs.flatMap((t) => [...t.now, ...t.waiting, ...t.ok]).find((i) => i.id === id);
-    const job = (x: OfficeDesk, projectId: string) => find(x, `job:${projectId}`);
+    const sec = (x: OfficeDesk, k: string) => x.sections.find((t) => t.key === k)!;
+    const everyItem = (x: OfficeDesk) => x.sections.flatMap((t) => [...t.now, ...t.waiting, ...t.ok]);
+    const find = (x: OfficeDesk, id: string): DeskItem | undefined => everyItem(x).find((i) => i.id === id);
+    const media = (x: OfficeDesk, projectId: string) => find(x, `media:${projectId}`);
+    const video = (x: OfficeDesk, projectId: string) => find(x, `video:${projectId}`);
     const asset = (i: DeskItem | undefined, prefix: string) => (i?.panel.kind === "job" ? i.panel.assets.find((a) => a.id.startsWith(prefix)) : undefined);
-    c.ok("five tabs in the spec's order", d.tabs.map((t) => t.label).join(" | ") === "QC & Delivery | Client Replies | Shoot Prep | Follow-Ups | Closeout");
+    c.ok("four sections in the mockup's order, no tabs, no Do next", d.sections.map((t) => t.title).join(" | ") === "Review & Deliver | Client Communications | Today's Shoots | Requests & Follow-Ups" && !("tabs" in d) && !("doNext" in d) && !("status" in d));
+    const sectionOf = new Map<string, string[]>();
+    for (const s of d.sections) for (const i of [...s.now, ...s.waiting, ...s.ok]) sectionOf.set(i.id, [...(sectionOf.get(i.id) ?? []), s.key]);
+    c.ok("each item appears once, in one section", [...sectionOf.values()].every((v) => v.length === 1), [...sectionOf.entries()].filter(([, v]) => v.length > 1).map(([k]) => k).join());
 
     // ---- #1 ----
-    let i = job(d, pCheck.id);
-    c.ok("#1 a new photo set enters QC: listed under In progress, the hub's check running, not yet Kyle's", i?.state === "waiting" && asset(i, "photo:")?.status === "Edited photos received, free check running" && asset(i, "photo:")?.who === "the hub", JSON.stringify(asset(i, "photo:")));
+    c.ok("#1 a new photo set in the free check is not Kyle's yet: folded under 'awaiting files', the hub's check running, with its promise", media(d, pCheck.id)?.state === "waiting" && sec(d, "deliver").waiting.some((x) => x.id === `media:${pCheck.id}`) && media(d, pCheck.id)?.line.includes("free check running") === true && media(d, pCheck.id)?.who === "the hub" && !sec(d, "deliver").now.some((x) => x.id === `media:${pCheck.id}`), JSON.stringify(media(d, pCheck.id)?.line));
     await prisma.photoJob.update({ where: { id: jCheck.id }, data: { stage: "QC_REVIEW" } });
     const run = await prisma.photoQcRun.create({ data: { jobId: jCheck.id, trigger: "INITIAL", status: "DONE", rulesVersion: "drill" } });
     await prisma.photoQcFinding.create({ data: { qcRunId: run.id, jobId: jCheck.id, ruleId: "R1", groupKey: "g1", pass: "P1_PHOTO", source: "AHDR", specificIssue: "Window blown out in the kitchen", explanation: "x", severity: "MAJOR", confidence: 0.9, responsibility: "EDITOR", fixStrategy: "REEDIT" } });
     d = await build();
-    i = job(d, pCheck.id);
-    c.ok("#1 …the free check fails: it needs Kyle's decision, with what the check found as context (no checklist)", i?.state === "now" && i.title === "Decide the photo check for 13 Check St" && i.panel.kind === "job" && i.panel.findings.some((f) => f.includes("Window blown out")) && i.primary?.action.kind === "link", i?.title);
+    let i = media(d, pCheck.id);
+    c.ok("#1 …the free check fails: a Review & Deliver row with what it found as context (no checklist), button Decide", i?.state === "now" && i.line === "Free check found issues to decide" && i.panel.kind === "job" && i.panel.findings.some((f) => f.includes("Window blown out")) && i.primary?.label === "Decide", i?.line);
     await prisma.photoJob.update({ where: { id: jCheck.id }, data: { stage: "FIXING" } });
     d = await build();
-    i = job(d, pCheck.id);
-    c.ok("#1 …the correction is tracked: waiting on AutoHDR with its promise, not gone", i?.state === "waiting" && asset(i, "photo:")?.status === "Corrections running in AutoHDR" && asset(i, "photo:")?.who === "AutoHDR" && i.dueISO === at(5 * H).toISOString());
+    c.ok("#1 …the correction is tracked: awaiting files from AutoHDR, with its promise, not gone", media(d, pCheck.id)?.state === "waiting" && media(d, pCheck.id)?.line.includes("corrections running in AutoHDR") === true && media(d, pCheck.id)?.who === "AutoHDR" && media(d, pCheck.id)?.dueISO === at(5 * H).toISOString() && !find(d, `photos-late:${jCheck.id}`));
     const dLate = await build(at(6 * H));
-    c.ok("#1 …and once its promise passes it comes back to Kyle as late", job(dLate, pCheck.id)?.state === "now" && job(dLate, pCheck.id)?.late === true && asset(job(dLate, pCheck.id), "photo:")?.status === "Corrections are late in AutoHDR");
+    c.ok("#1 …once its promise passes it comes back as a production follow-up", find(dLate, `photos-late:${jCheck.id}`)?.state === "now" && find(dLate, `photos-late:${jCheck.id}`)?.tag === "production" && find(dLate, `photos-late:${jCheck.id}`)?.line === "Late from AutoHDR · Follow up");
 
-    // ---- QC & Delivery basics ----
-    i = job(d, pReady.id);
-    c.ok("ready photos: 'Review and deliver photos for 11 Ready Rd', due today, with Kyle's own Approve and deliver", i?.state === "now" && i.title === "Review and deliver photos for 11 Ready Rd" && i.primary?.action.kind === "photo-approve" && i.dueWords?.startsWith("Due ") === true);
-    c.ok("late edits come back to Kyle to chase", job(d, pLate.id)?.state === "now" && job(d, pLate.id)?.late === true && job(d, pLate.id)?.title === "Chase the late photos for 12 Late Ln");
-    c.ok("approved is not delivered: photos waiting on Aryeo read 'Approved, not delivered yet'", job(d, pDelivering.id)?.state === "waiting" && asset(job(d, pDelivering.id), "photo:")?.status.startsWith("Approved, not delivered yet") === true);
-    c.ok("a delivered job with nothing else open is not listed; a test client's job never is", !job(d, pDone.id) && !job(d, pTestPhotos.id));
+    // ---- Review & Deliver ----
+    i = media(d, pReady.id);
+    c.ok("ready photos: '11 Ready Rd · Photos ready', the client, due today, Review (Kyle's own Approve and deliver in the panel)", i?.state === "now" && i.group === "media" && i.title === "11 Ready Rd" && i.line === "Photos ready" && i.client === "Real Agent" && i.primary?.label === "Review" && i.primary.action.kind === "photo-approve" && i.dueWords?.startsWith("Due ") === true);
+    c.ok("late edits are a production follow-up, never a delivery row", !media(d, pLate.id) && find(d, `photos-late:${(await prisma.photoJob.findFirstOrThrow({ where: { projectId: pLate.id } })).id}`)?.section === "followups");
+    c.ok("approved is not delivered: photos waiting on Aryeo are awaiting confirmation, not 'done'", media(d, pDelivering.id)?.state === "waiting" && media(d, pDelivering.id)?.line.includes("approved, not delivered yet") === true);
+    c.ok("a delivered job with nothing else open is not listed; a test client's job never is", !media(d, pDone.id) && !media(d, pTestPhotos.id));
+    i = media(d, pHeld.id);
+    c.ok("photos held by a client request say which request, with its check beside the approval", i?.line.startsWith('Ready, held by the client\'s request: "Trash cans out of the front shot"') === true && i.actions.some((a) => a.kind === "ask" && a.askId === heldAsk.id) && i.actions.some((a) => a.kind === "photo-approve"), i?.line);
+    i = media(d, pTour.id);
+    c.ok("a 3D tour is its own item: '3D tour ready to verify', Check tour (Zillow), the photos already out", i?.line === "3D tour ready to verify" && i.primary?.label === "Check tour" && asset(i, "photo:")?.tone === "done", JSON.stringify(i?.line));
+    i = media(d, pPlanDiff.id);
+    c.ok("a floor plan the photo check saw missing (floorPlanMissing) is its own item, never holding the delivered photos", asset(i, "floorplan:")?.tone === "now" && asset(i, "floorplan:")?.status.includes("not on the Aryeo listing yet (CubiCasa)") === true && asset(i, "photo:")?.tone === "done", JSON.stringify(i?.panel.kind === "job" ? i.panel.assets : null));
 
     // ---- #2 ----
-    i = job(d, pRedo.id);
-    c.ok("#2 photos the client asked to change after delivery go back to review (Kyle's decision), not done", i?.state === "now" && i.title === "Decide the photo changes for 41 Redo Rd" && asset(i, "photo:")?.tone === "now");
+    i = media(d, pRedo.id);
+    c.ok("#2 photos the client asked to change after delivery go back to review (Kyle's decision), not done", i?.state === "now" && i.line.startsWith("Client asked for changes") && asset(i, "photo:")?.tone === "now");
 
     // ---- #3 ----
-    i = job(d, pVideo.id);
-    const vAsset = asset(i, "video:");
-    c.ok("#3 an approved video is Kyle's to SEND: 'Approved by James Livingston, ready to send', primary Send video", i?.state === "now" && vAsset?.status === "Approved by James Livingston, ready to send" && i.primary?.action.kind === "video-send" && i.title === "Send the approved video for 20 Video Ave");
-    c.ok("#3 …and never his to approve: no approve or send-back control anywhere on his desk", d.tabs.flatMap((t) => [...t.now, ...t.waiting]).every((x) => x.actions.every((a) => !/approve-cut|send-back|request-changes/.test(a.kind))) && vAsset?.note?.includes("You send it") === true);
-    c.ok("#3 a cut still in review is the creative manager's, a late edit the editor's: both in Follow-Ups, neither in delivery", !job(d, pInReview.id) && !job(d, pEditLate.id) && find(d, "edit:v-review")?.state === "waiting" && find(d, "edit:v-review")?.who === "James" && find(d, "edit:v-late")?.state === "now");
+    i = video(d, pVideo.id);
+    c.ok("#3 an approved video is Kyle's to SEND: 'Approved by James, ready to send', Deliver, with Upload to Aryeo only beside it", i?.state === "now" && i.group === "video" && i.line === "Approved by James, ready to send" && i.primary?.label === "Deliver" && i.primary.action.kind === "video-send" && (i.primary.action as { uploadOnly: boolean }).uploadOnly === true);
+    c.ok("#3 …and never his to approve: no approve or send-back control anywhere on his desk", everyItem(d).every((x) => x.actions.every((a) => !/approve-cut|send-back|request-changes/.test(a.kind))) && asset(i, "video:")?.note?.includes("You send it") === true);
+    c.ok("an upload-only video reads 'On Aryeo, not sent yet' with Send now", video(d, pOnly.id)?.line.startsWith("On Aryeo, not sent yet") === true && video(d, pOnly.id)?.primary?.label === "Send now");
+    c.ok("a video still in the Topaz pass is not an action: a quiet line only", !video(d, pFin.id) && sec(d, "deliver").quiet.some((q) => q.text === "1 video finishing the Topaz pass"));
+    c.ok("#3 a cut still in review is the creative manager's, a late edit the editor's: both in Requests & Follow-Ups, neither a delivery", !video(d, pInReview.id) && !video(d, pEditLate.id) && find(d, "edit:v-review")?.state === "waiting" && find(d, "edit:v-review")?.who === "James" && find(d, "edit:v-late")?.state === "now");
 
     // ---- #4 ----
-    i = job(d, pNotice.id);
-    c.ok("#4 published but the client never told: open, 'client not notified yet', never 'Delivered'", i?.state === "now" && asset(i, "notice:")?.status.includes("client not notified yet") === true && !/Delivered/.test(asset(i, "notice:")?.status ?? "") && i.primary?.action.kind === "video-notice");
-    i = job(d, pText.id);
-    c.ok("#4 a failed delivery text is a failure at the top of the order, not a delivery", i?.state === "now" && asset(i, "text:")?.tone === "failed" && asset(i, "text:")?.status === "The client's delivery text failed" && i.rank === desk.RANK.blocker);
-    i = job(d, pMismatch.id);
-    c.ok("#4 photos Aryeo shows differently are 'Not confirmed', a failure", asset(i, "photo:")?.tone === "failed" && asset(i, "photo:")?.status.startsWith("Not confirmed") === true);
+    i = video(d, pNotice.id);
+    c.ok("#4 sent but the client never told: a row, 'the client was not told yet', never 'Delivered'", i?.state === "now" && asset(i, "notice:")?.status.includes("the client was not told yet") === true && !/Delivered/.test(asset(i, "notice:")?.status ?? "") && i.primary?.action.kind === "video-notice");
+    i = media(d, pText.id);
+    c.ok("#4 a failed delivery text is a failure at the top of the order, said as what it is", i?.state === "now" && asset(i, "text:")?.tone === "failed" && asset(i, "text:")?.status === "The client's delivery text failed" && i.primary?.label === "Resend the text" && i.rank === desk.RANK.blocker);
+    i = media(d, pMismatch.id);
+    c.ok("#4 a delivery Aryeo shows differently says the known problem (never a vague 'Check delivery')", asset(i, "photo:")?.tone === "failed" && asset(i, "photo:")?.status === "Delivery not confirmed: Aryeo shows 31 photos, we sent 33" && i?.primary?.label === "Fix delivery");
 
     // ---- #5 ----
-    i = job(d, pPartial.id);
-    c.ok("#5 partial delivery: photos delivered, the floor plan still open (past the photos' promise, so Kyle chases CubiCasa), the job stays listed", i?.state === "now" && i.title === "Chase the floor plan for 14 Partial Pl" && asset(i, "photo:")?.tone === "done" && asset(i, "floorplan:")?.status === "Not in yet" && asset(i, "floorplan:")?.late === true && asset(i, "floorplan:")?.who === "CubiCasa" && asset(i, "tour:")?.status === "Done", JSON.stringify(i?.panel));
+    i = media(d, pPartial.id);
+    c.ok("#5 partial delivery: photos delivered, the floor plan still open past the promise, its own item", i?.state === "now" && asset(i, "photo:")?.tone === "done" && asset(i, "floorplan:")?.late === true && asset(i, "floorplan:")?.who === "CubiCasa" && i.primary?.label === "Chase CubiCasa" && asset(i, "tour:")?.status === "Done", JSON.stringify(i?.panel));
     await prisma.project.update({ where: { id: pPartial.id }, data: { promisedDueAt: at(D) } });
-    i = job(await build(), pPartial.id);
-    c.ok("#5 …before its promise the open floor plan waits on CubiCasa, with that time", i?.state === "waiting" && asset(i, "floorplan:")?.dueISO === at(D).toISOString() && i.who === "CubiCasa");
+    const dPartial = await build();
+    c.ok("#5 …before its promise the open floor plan is awaiting files from CubiCasa, not forgotten", media(dPartial, pPartial.id)?.state === "waiting" && media(dPartial, pPartial.id)?.line.includes("Floor plan: on its way") === true && media(dPartial, pPartial.id)?.who === "CubiCasa");
     await prisma.deliverable.updateMany({ where: { projectId: pPartial.id, type: "FLOORPLAN" }, data: { status: "DONE" } });
-    c.ok("#5 …and leaves the list once the last asset is done", !job(await build(), pPartial.id));
+    c.ok("#5 …and leaves once the last asset is done", !media(await build(), pPartial.id));
     await prisma.deliverable.updateMany({ where: { projectId: pPartial.id, type: "FLOORPLAN" }, data: { status: "PENDING" } });
+    await prisma.project.update({ where: { id: pPartial.id }, data: { promisedDueAt: null } });
+
+    // ---- Client Communications ----
+    d = await build();
+    const greenReply = sec(d, "comms").now.find((x) => x.title === "Greenridge Client");
+    c.ok("a client waiting: initials, channel and business time, a one-line summary, Reply", greenReply?.initials === "GC" && greenReply.channel === "Text" && /min|business/.test(greenReply.elapsed ?? "") && greenReply.line.startsWith("The revised opening") && greenReply.primary?.label === "Reply", JSON.stringify(greenReply && [greenReply.initials, greenReply.channel, greenReply.elapsed, greenReply.line]));
+    c.ok("…with Create follow-up beside the reply", greenReply?.actions.some((a) => a.kind === "follow-up") === true);
+    c.ok("a Content Program message that is Kyle's is in Client Communications, opening the program's Messages", find(d, `program:${program.id}`)?.section === "comms" && find(d, `program:${program.id}`)?.line === "Erica Walker: Can we swap the November topic?" && (find(d, `program:${program.id}`)?.primary?.action as { href?: string })?.href === "/content/enr-erica?tab=messages");
+    const bookingRows = sec(d, "comms").now.filter((x) => x.title === "Nehemiah Agent");
+    c.ok("a booking request needing an answer is in Client Communications, once (the comms scan's own row for it, said as a booking)", bookingRows.length === 1 && bookingRows[0].tag === "booking" && bookingRows[0].line === "Booking request: Book a shoot ASAP" && !find(d, `booking:${booking.id}`), JSON.stringify(bookingRows.map((x) => [x.id, x.line])));
+    c.ok("a new lead waiting on a call back is in Client Communications", sec(d, "comms").now.some((x) => x.id === `lead:${lead.id}`));
 
     // ---- #6 ----
-    d = await build();
-    const greenReply = tab(d, "replies").now.find((x) => x.title === "Reply to Greenridge Client");
     c.ok("#6 the client's follow-up is a reply owed, and the panel says replying won't close the change", !!greenReply && greenReply.panel.kind === "thread" && greenReply.panel.revisionNote?.includes("Replying does not close it") === true);
-    c.ok("#6 …the change itself is in Follow-Ups, nobody holding it yet", find(d, `rev:${rev1.id}`)?.state === "now" && find(d, `rev:${rev1.id}`)?.title === "Route the client's change for 632 Greenridge Rd");
+    c.ok("#6 …the change itself is a client revision in Requests & Follow-Ups, nobody holding it yet", find(d, `rev:${rev1.id}`)?.state === "now" && find(d, `rev:${rev1.id}`)?.tag === "revision" && find(d, `rev:${rev1.id}`)?.title === "632 Greenridge Rd · Video revision");
     await prisma.commLog.create({ data: { clientId: green.id, clientName: green.name, contactName: "Kyle Smith", channel: "text", source: "openphone", direction: "out", body: "Got it, we are fixing the opening now.", occurredAt: at(-H), senderTeamMemberId: kyleTm.id } });
     d = await build();
-    c.ok("#6 after Kyle replies the reply leaves Client Replies…", !tab(d, "replies").now.some((x) => x.title === "Reply to Greenridge Client"));
-    c.ok("#6 …and the revision stays open, in Follow-Ups and in the database", find(d, `rev:${rev1.id}`)?.state === "now" && (await prisma.smartTask.findUniqueOrThrow({ where: { id: rev1.id } })).status === "OPEN");
+    c.ok("#6 after Kyle replies the conversation leaves Client Communications…", !sec(d, "comms").now.some((x) => x.title === "Greenridge Client"));
+    c.ok("#6 …and the revision stays open, in Requests & Follow-Ups and in the database", find(d, `rev:${rev1.id}`)?.state === "now" && (await prisma.smartTask.findUniqueOrThrow({ where: { id: rev1.id } })).status === "OPEN");
 
-    // ---- #2, the video side: the corrected version returns to review, not done ----
+    // ---- #2, the video side ----
     const dvG = await prisma.deliverable.create({ data: { projectId: pGreen.id, type: "VIDEO", label: "Listing video" } });
     await prisma.reviewSubmission.create({ data: { projectId: pGreen.id, deliverableId: dvG.id, slot: 1, source: "folder", kind: "video", status: "PENDING", submittedByKey: "kim", assetPath: "/isolated/g2.mp4", createdAt: at(-30 * 60_000) } });
     d = await build();
     i = find(d, `rev:${rev1.id}`);
-    c.ok("#2 a corrected video version goes back to review with James (waiting, with the job's promise), not done", i?.state === "waiting" && i.who === "James" && i.reason.includes("returns to review, not done") && i.dueISO === at(D).toISOString());
-    c.ok("assigned is not completed: a change with Kim reads 'Assigned to Kim, not done yet'", find(d, `rev:${rev2.id}`)?.state === "waiting" && find(d, `rev:${rev2.id}`)?.reason.startsWith("Assigned to") === true && find(d, `rev:${rev2.id}`)?.reason.includes("not done yet") === true);
+    c.ok("#2 a corrected video version goes back to review with James (waiting, with the job's promise), not done", i?.state === "waiting" && i.who === "James" && i.line.startsWith("Returned · In review with James") && i.reason.includes("returns to review, not done") && i.dueISO === at(D).toISOString(), i?.line);
+    c.ok("assigned is not completed: a change with Kim reads 'Waiting on Kim', not done", find(d, `rev:${rev2.id}`)?.state === "waiting" && find(d, `rev:${rev2.id}`)?.line.startsWith("Waiting on") === true && find(d, `rev:${rev2.id}`)?.reason.includes("not done yet") === true);
+
+    // ---- Requests & Follow-Ups ----
+    c.ok("a task Jordan created for Kyle reads 'From Jordan'", find(d, `task:${fromJordanTask.id}`)?.tag === "jordan" && find(d, `task:${fromJordanTask.id}`)?.line.startsWith("From Jordan") === true);
+    c.ok("a special request on a job going out today is in Requests & Follow-Ups, with Check request", find(d, `ask:${soonAsk.id}`)?.tag === "request" && find(d, `ask:${soonAsk.id}`)?.primary?.label === "Check request");
+    c.ok("Alex's change to a delivered photo is a client revision (a photo correction), linked to the job", find(d, `ask:${lamp.id}`)?.tag === "revision" && find(d, `ask:${lamp.id}`)?.title === "615 Cliff Ln · Photo correction" && find(d, `ask:${lamp.id}`)?.href === `/projects/${pCliff.id}`);
+    c.ok("client revisions look different from production follow-ups (their own tag)", sec(d, "followups").now.some((x) => x.tag === "revision") && sec(d, "followups").now.some((x) => x.tag === "production"));
 
     // ---- #7 ----
     await signIn(kyle);
@@ -328,64 +404,60 @@ async function main() {
     c.ok("#7 …a creative question goes to James (one bell), on the record", await prisma.notification.count({ where: { kind: "office_question", userKey: `tm:${jamesTm.id}` } }) === 1 && await prisma.auditLog.count({ where: { action: "office_waiting_on", target: k4.id } }) === 1);
     const dWait = await desk.buildOfficeDesk({ now: realNow, excludeClientIds: [fixture.id], person, roster });
     const w = find(dWait, `task:${k4.id}`);
-    c.ok("#7 while it waits: under Waiting on others, named, with when it comes back; not counted, not in Do next", w?.state === "waiting" && w.who === "James" && !!w.dueISO && w.reason.startsWith("Waiting on James (creative question)") && !dWait.doNext.some((x) => x.id === w.id) && !tab(dWait, "followups").now.some((x) => x.id === w.id), JSON.stringify(w));
+    c.ok("#7 while it waits: collapsed under 'waiting on others', named, with when it comes back; not counted", w?.state === "waiting" && w.who === "James" && w.line.startsWith("Waiting on James · Follow up ") && !sec(dWait, "followups").now.some((x) => x.id === w.id), JSON.stringify(w && [w.state, w.line]));
     const dBack = await desk.buildOfficeDesk({ now: new Date(realNow.getTime() + 3 * H), excludeClientIds: [fixture.id], person, roster });
     const back = find(dBack, `task:${k4.id}`);
-    const backRank = (x: DeskItem) => [x.rank, -Number(x.late)];
-    c.ok("#7 when the follow-up is due it comes back: counted, 'Follow up with James', ranked overdue", back?.state === "now" && back.title.startsWith("Follow up with James") && back.rank === desk.RANK.overdue && tab(dBack, "followups").now.some((x) => x.id === back.id), JSON.stringify(back && { s: back.state, t: back.title }));
-    c.ok("#7 …and into Do next whenever it ranks among the top five", dBack.doNext.some((x) => x.id === back?.id) || (dBack.doNext.length === desk.DO_NEXT_MAX && dBack.doNext.every((x) => JSON.stringify(backRank(x)) <= JSON.stringify(backRank(back!)))));
-    c.ok("waiting is not forgotten: every waiting item names a person and a time", d.tabs.every((t) => t.waiting.every((x) => !!x.who && !!x.dueISO)), d.tabs.flatMap((t) => t.waiting).filter((x) => !x.who || !x.dueISO).map((x) => x.id).join());
-    c.ok("a task with no date at all is Kyle's to give a time (counted, at the bottom of the order)", find(d, `task:${k3.id}`)?.state === "now" && find(d, `task:${k3.id}`)?.needsFollowUp === true && find(d, `task:${k3.id}`)?.rank === desk.RANK.housekeeping);
+    c.ok("#7 when the follow-up is due it comes back: counted, 'Waiting on James · Follow up now', Follow up", back?.state === "now" && back.line === "Waiting on James · Follow up now" && back.primary?.label === "Follow up" && sec(dBack, "followups").now.some((x) => x.id === back.id), JSON.stringify(back && [back.state, back.line]));
+    c.ok("waiting is not forgotten: every waiting item names a person and a time", d.sections.every((t) => t.waiting.every((x) => !!x.who && !!x.dueISO)), d.sections.flatMap((t) => t.waiting).filter((x) => !x.who || !x.dueISO).map((x) => x.id).join());
+    c.ok("a recent task with no date at all is Kyle's to give a time", find(d, `task:${k3.id}`)?.state === "now" && find(d, `task:${k3.id}`)?.needsFollowUp === true);
     c.ok("a task Kyle dated for later waits until then", find(d, `task:${k5.id}`)?.state === "waiting" && find(d, `task:${k5.id}`)?.dueISO === at(2 * D).toISOString());
+    const k1Row = await prisma.smartTask.findUniqueOrThrow({ where: { id: k1.id } });
+    c.ok("old tasks are not re-dated or closed to shrink a count: the 10-day-old task is off the overview behind one backlog link, untouched", !find(d, `task:${k1.id}`) && d.backlog.count >= 1 && d.backlog.href === "/ops/checklist#earlier" && k1Row.status === "OPEN" && k1Row.dueAt?.getTime() === at(-10 * D).getTime() && k1Row.followUpAt === null);
 
-    // ---- Shoot Prep, #9 by build ----
-    d = await build();
+    // ---- Today's Shoots, #9 by build, the brief rules ----
     const visit = (x: OfficeDesk, apptId: string) => find(x, `visit:${apptId}`);
     const vv = (x: DeskItem | undefined) => (x?.panel.kind === "visit" ? x.panel.visit : null);
-    c.ok("a shoot all set today is Ready (counted nowhere)", visit(d, apToday.id)?.state === "ok" && vv(visit(d, apToday.id))?.confirmation.state === "sent" && vv(visit(d, apToday.id))?.access.lockbox === "1111", visit(d, apToday.id)?.reason);
+    c.ok("a shoot all set today is Ready: 'Confirmed', chip Ready, no button", visit(d, apToday.id)?.state === "ok" && visit(d, apToday.id)?.day === "today" && visit(d, apToday.id)?.chip?.label === "Ready" && !visit(d, apToday.id)?.primary && vv(visit(d, apToday.id))?.access.lockbox === "1111", visit(d, apToday.id)?.reason);
     const nx = visit(d, apNext.id);
-    c.ok("the next business day's shoot is prepared today: unconfirmed and missing access, first in the list, with Confirm", nx?.state === "now" && nx.title.startsWith("Confirm 51 Next Day Rd") && vv(nx)?.gaps.some((g) => g.startsWith("No access answer")) === true && nx.primary?.action.kind === "confirm" && (nx.primary.action as { taskId: string }).taskId === confNext.id && tab(d, "prep").now[0]?.id !== apToday.id);
+    c.ok("the next business day's shoot: unconfirmed and missing access, Needs confirmation, Confirm (the template text)", nx?.state === "now" && nx.day === "next" && nx.chip?.label === "Needs confirmation" && vv(nx)?.gaps.some((g) => g.startsWith("No access")) === true && nx.primary?.label === "Confirm" && (nx.primary.action as { taskId: string }).taskId === confNext.id);
     c.ok("conflicting instructions are flagged (drone on the visit, the client said no drone)", visit(d, apDrone.id)?.state === "now" && vv(visit(d, apDrone.id))?.conflicts.some((x) => x.startsWith("Drone is on this visit")) === true);
-    c.ok("the photographer's brief state comes from the briefing build (switched off by default: said, not a problem)", vv(visit(d, apToday.id))?.brief.state === "off" && vv(visit(d, apToday.id))?.brief.words === "Photographer brief switched off" && visit(d, apToday.id)?.state === "ok");
-    // Switched on, a brief that could not go out (no phone number on file for
-    // Harrison) is a failed send: it surfaces on the visit, and the visit's
-    // button is the briefing build's own Send brief now.
+    c.ok("the photographer's brief state comes from the briefing build (switched off by default: said, not a problem)", vv(visit(d, apToday.id))?.brief.state === "off" && vv(visit(d, apToday.id))?.brief.words === "Brief switched off");
+    c.ok("a shoot already under way is collapsed with the past, with no brief offered", vv(visit(d, apStarted.id))?.over === true && visit(d, apStarted.id)?.state === "ok" && visit(d, apStarted.id)?.chip?.label === "On site" && !visit(d, apStarted.id)?.actions.some((a) => a.kind === "brief-send"));
+    c.ok("the brief rules: never after the appointment's time; Send when none went, Resend only when one did; unknown asks Kyle to verify",
+      desk.briefOffer({ state: "failed", sent: false, started: true, why: "Not sent: no phone" }).send === null
+      && desk.briefOffer({ state: "failed", sent: false, started: false, why: "Not sent: no phone number on file for Harrison" }).send === "send"
+      && desk.briefOffer({ state: "failed", sent: true, started: false, why: "Update not sent: refused" }).send === "resend"
+      && desk.briefOffer({ state: "sent", sent: true, started: false, why: "Not acknowledged yet. First shoot 2:00 PM." }).send === "resend"
+      && desk.briefOffer({ state: "sent", sent: true, started: false, why: null }).waiting === true
+      && desk.briefOffer({ state: "unknown", sent: false, started: false, why: null }).problem?.startsWith("Brief status unknown") === true
+      && desk.briefOffer({ state: "unknown", sent: false, started: false, why: null }).send === null);
     await prisma.appSetting.create({ data: { key: "photographer_brief", value: JSON.stringify({ enabled: true, sendMinute: 1080 }) } });
     const dBrief = await build();
     await prisma.appSetting.delete({ where: { key: "photographer_brief" } });
     const failedBrief = visit(dBrief, apToday.id);
-    c.ok("a failed brief surfaces on Shoot Prep with Send brief now (the briefing build's action) and the full brief's link", failedBrief?.state === "now" && vv(failedBrief)?.brief.state === "failed" && vv(failedBrief)?.brief.words.startsWith("Brief not sent") === true && failedBrief.primary?.action.kind === "brief-send" && (failedBrief.primary.action as { teamMemberId: string }).teamMemberId === harrison.id && vv(failedBrief)?.brief.href === `/shoot/brief/${todayKey}?as=${harrison.id}`, JSON.stringify(vv(failedBrief)?.brief));
+    c.ok("switched on, a brief that never went (no phone on file) is 'Brief failed' with Send brief (never Resend), and the full brief's link", failedBrief?.state === "now" && failedBrief.chip?.label === "Brief failed" && failedBrief.primary?.label === "Send brief" && (failedBrief.primary.action as { resend: boolean; teamMemberId: string }).resend === false && (failedBrief.primary.action as { teamMemberId: string }).teamMemberId === harrison.id && vv(failedBrief)?.brief.href === `/shoot/brief/${todayKey}?as=${harrison.id}`, JSON.stringify(vv(failedBrief)?.brief));
+    c.ok("…and the shoot under way still offers no brief", !visit(dBrief, apStarted.id)?.actions.some((a) => a.kind === "brief-send"));
     const fri = await build(etAt(fridayKey, 11));
     const thu = await build(etAt(thursdayKey, 11));
-    c.ok("#9 seen from Friday, Monday's visit is on Shoot Prep; seen from Thursday, it is not yet", !!visit(fri, apMonday.id) && !visit(thu, apMonday.id));
-
-    // ---- Cliff Ln and Alex's lamp ----
+    c.ok("#9 seen from Friday, Monday's visit is under Next business day; seen from Thursday, it is not yet", visit(fri, apMonday.id)?.day === "next" && !visit(thu, apMonday.id));
     const cliff = vv(visit(d, cliff3.id));
     c.ok("Cliff Ln: this visit only. Its services are its own (none listed: flagged), the earlier visits fold away", !!cliff && cliff.services.length === 0 && cliff.gaps.includes("No services listed for this visit (a split order)") && cliff.otherVisits.length === 2 && cliff.requests.length === 0 && cliff.instructions.length === 0, JSON.stringify(cliff && { r: cliff.requests, i: cliff.instructions, g: cliff.gaps }));
     c.ok("…'Exteriors only' is an older note (folded), and the split order is flagged so Kyle confirms what this visit covers", !!cliff && cliff.earlier.some((e) => e.text.includes("Exteriors only")) && cliff.conflicts.some((x) => x.includes("cover all 3 visits")));
-    c.ok("Alex's change to a delivered photo is a revision: not this visit's request, in Follow-Ups with a link to the job", !!cliff && cliff.revisionsAfterDelivery.length >= 1 && !cliff.requests.some((r) => /lamp/i.test(r.text)) && find(d, `ask:${lamp.id}`)?.tab === "followups" && find(d, `ask:${lamp.id}`)?.title === "Route the photo change for 615 Cliff Ln" && find(d, `ask:${lamp.id}`)?.href === `/projects/${pCliff.id}`);
+    c.ok("…and Alex's lamp change is not this visit's request", !!cliff && cliff.revisionsAfterDelivery.length >= 1 && !cliff.requests.some((r) => /lamp/i.test(r.text)));
 
-    // ---- Client Replies ----
-    c.ok("a new lead waiting on a call back is in Client Replies", tab(d, "replies").now.some((x) => x.id === `lead:${lead.id}`));
-    c.ok("Kyle never sees a figure: the $750 task reads without it", !JSON.stringify(d).includes("$750") && find(d, `task:${k1.id}`)?.title.startsWith("Apply [amount] credit") === true, (() => { const j = JSON.stringify(d); const k = j.indexOf("$750"); return k < 0 ? `title: ${find(d, `task:${k1.id}`)?.title}` : j.slice(Math.max(0, k - 160), k + 40); })());
+    // ---- only a verified, time-sensitive issue interrupts the day ----
+    c.ok("a shoot within two hours with no access instructions is the one interruption above the sections (pointing at its row)", d.urgent.some((u) => u.id === `visit:${apUrgent.id}` && u.text.startsWith("Shoot at") && u.text.includes("no access instructions")) && d.urgent.every((u) => !!find(d, u.id)), JSON.stringify(d.urgent));
 
-    // ---- #10: every count is the length of its list ----
+    c.ok("Kyle never sees a figure: the $750 task never reaches the desk's words", !JSON.stringify(d).includes("$750"));
+
+    // ---- #10: every count is the length of the rows it labels ----
     for (const x of [d, dWait, dBack, fri]) {
-      const counted = x.tabs.filter((t) => t.key !== "closeout");
-      const allNow = counted.flatMap((t) => t.now);
-      const ids = x.tabs.flatMap((t) => [...t.now, ...t.waiting, ...t.ok]).map((y) => y.id);
-      c.ok(`#10 (${x === d ? "now" : x === dWait ? "waiting" : x === dBack ? "back" : "Friday"}) each tab's count = its list; Closeout's = its open lines; one item per id; Do next is ≤5 of those same items, in order; the status line adds up`,
-        counted.every((t) => t.count === t.now.length)
-        && tab(x, "closeout").count === x.closeout.lines.filter((l) => !l.done).length
-        && new Set(ids).size === ids.length
-        && x.doNext.length <= desk.DO_NEXT_MAX && x.doNext.every((y) => allNow.includes(y)) && JSON.stringify(x.doNext.map((y) => y.id)) === JSON.stringify(desk.rankDoNext(allNow).map((y) => y.id))
-        && x.status.now === allNow.length && x.status.late === allNow.filter((y) => y.late && !y.stale).length && x.status.stale === allNow.filter((y) => y.stale).length && x.status.waiting === counted.reduce((n, t) => n + t.waiting.length, 0),
-        JSON.stringify(x.tabs.map((t) => [t.key, t.count, t.now.length])));
+      const ids = everyItem(x).map((y) => y.id);
+      c.ok(`#10 (${x === d ? "now" : x === dWait ? "waiting" : x === dBack ? "back" : "Friday"}) each section's count = its rows; one item per id; every interruption points at a row`,
+        x.sections.every((t) => t.count === t.now.length) && new Set(ids).size === ids.length && x.urgent.every((u) => ids.includes(u.id)),
+        JSON.stringify(x.sections.map((t) => [t.key, t.count, t.now.length])));
     }
-    c.ok("#10 every counted item has one primary action (no number without an action)", d.tabs.flatMap((t) => t.now).every((x) => !!x.primary && x.actions.length > 0), d.tabs.flatMap((t) => t.now).filter((x) => !x.primary).map((x) => x.id).join());
-    c.ok("#10 'N late' is said once, from the items themselves (no banner beside a card)", d.status.line.includes(`${d.status.late} late`) && d.status.late === d.tabs.flatMap((t) => t.now).filter((x) => x.late && !x.stale).length);
-    c.ok("Kyle's own task ten days past its date is an old task to close or re-date: counted, said apart, never ahead of client work", find(d, `task:${k1.id}`)?.stale === true && find(d, `task:${k1.id}`)?.rank === desk.RANK.housekeeping && d.status.line.includes("old task") && !d.doNext.slice(0, 1).some((x) => x.stale));
-    c.ok("Do next leads with shoot blockers and urgent client issues", d.doNext[0]?.rank === desk.RANK.blocker && d.doNext.every((x, n, a) => n === 0 || a[n - 1].rank <= x.rank));
+    c.ok("#10 every counted row has one primary action", d.sections.flatMap((t) => t.now).every((x) => !!x.primary && x.actions.length > 0), d.sections.flatMap((t) => t.now).filter((x) => !x.primary).map((x) => x.id).join());
 
     // ---- freshness: stale and failed said, never zero ----
     const fresh = (k: string) => d.freshness.find((f) => f.key === k);
@@ -393,37 +465,108 @@ async function main() {
     queueFails = true;
     const dDown = await build();
     queueFails = false;
-    c.ok("a source that can't be read is never zero: QC & Delivery says '?' and why, the status line names it", tab(dDown, "delivery").unavailable.includes("photo delivery") && dDown.freshness.some((f) => f.key === "read:photo delivery" && f.state === "failed") && dDown.status.line.includes("Couldn't read photo delivery"));
+    c.ok("a source that can't be read is never zero: Review & Deliver says why, freshness names it", sec(dDown, "deliver").unavailable.includes("photo delivery") && dDown.freshness.some((f) => f.key === "read:photo delivery" && f.state === "failed"));
 
-    // ---- #11 and Closeout: actions on the page, the preview read-only ----
+    // ---- #11 and the Daily checks: actions on the page, the preview read-only ----
     const today = d.dayKey;
-    const tick = await actions.closeoutTickAction(today, "blockers", true);
+    const tick = await actions.closeoutTickAction(today, "am_messages", true);
     d = await build();
-    const blockers = d.closeout.lines.find((l) => l.key === "blockers");
-    c.ok("#11 a closeout tick is a real save with who and when (AppSetting for the ET day), and the list recomputes", tick.ok && blockers?.tick?.by === "Kyle Smith" && blockers.done && !!(await prisma.appSetting.findUnique({ where: { key: desk.closeoutSettingKey(today) } })) && await prisma.auditLog.count({ where: { action: "office_closeout_tick" } }) === 1);
-    c.ok("closeout lines come from the system where they can (communications reviewed is not done while clients wait)", d.closeout.lines.find((l) => l.key === "comms")?.auto === false && d.closeout.lines.find((l) => l.key === "comms")?.done === false);
+    const amMessages = d.checks.groups.find((g) => g.key === "morning")!.lines.find((l) => l.key === "am_messages");
+    c.ok("#11 a manual review tick is a real save with who and when (AppSetting for the ET day), and the checks recompute", tick.ok && amMessages?.tick?.by === "Kyle Smith" && amMessages.done && await prisma.auditLog.count({ where: { action: "office_closeout_tick" } }) === 1);
+    c.ok("…the tick records the review; the conversations it covers are still on the desk", sec(d, "comms").now.length > 0);
+    const evidenceOnly = await actions.closeoutTickAction(today, "eod_owners", true);
+    c.ok("an evidence-only check can't be ticked by hand", !evidenceOnly.ok && evidenceOnly.message.includes("ticked by the system"));
+    c.ok("the Daily checks are the three reviews with their checks (the end of the day: the closeout's four)", d.checks.groups.map((g) => `${g.key}:${g.lines.length}`).join() === "morning:3,midday:2,eod:4" && d.checks.groups.find((g) => g.key === "eod")!.lines.map((l) => l.label).join(" | ") === "Client messages reviewed | Due deliveries completed or exceptions noted | Open requests have owners and follow-up times | Next business day prepared");
+    const morning = d.checks.groups.find((g) => g.key === "morning")!;
+    c.ok("each review says when it was completed, or 'Not yet completed' (a completed review carries its last tick's time)", (morning.done ? !!morning.completedAtISO || morning.lines.every((l) => l.auto === true) : morning.completedAtISO === null) && d.checks.groups.find((g) => g.key === "eod")!.completedAtISO === null);
+    c.ok("system evidence ticks what it can: 'next business day prepared' is open while a visit is not ready", d.checks.groups.find((g) => g.key === "eod")!.lines.find((l) => l.key === "eod_nextday")?.auto === false);
     const finishEarly = await actions.finishDayAction(today);
-    c.ok("the day can't be finished with lines open", !finishEarly.ok && finishEarly.message.startsWith("Still open"));
-    c.ok("the summary is Kyle's own: his video sent (not Jordan's), his reply, his closed task; no 'done by the office'", d.closeout.summary.completed.find((x) => x.what === "Videos sent")?.count === 1 && d.closeout.summary.completed.find((x) => x.what === "Client messages sent")?.count === 1 && d.closeout.summary.completed.some((x) => x.what === "Tasks closed") && !JSON.stringify(d.closeout).includes("by the office"), JSON.stringify(d.closeout.summary.completed));
-    c.ok("…with what is pending, the blockers and the next business day", d.closeout.summary.pending.length === 4 && d.closeout.summary.blockers.length > 0 && d.closeout.summary.tomorrow.lines[0].includes("visit"));
+    c.ok("the day can't be finished while the end-of-day review is open", !finishEarly.ok && finishEarly.message.startsWith("Still open"));
+    c.ok("the summary is Kyle's own: his video sent (not Jordan's), his reply, his closed task; no 'done by the office'", d.checks.summary.completed.find((x) => x.what === "Videos sent")?.count === 1 && d.checks.summary.completed.find((x) => x.what === "Client messages sent")?.count === 1 && d.checks.summary.completed.some((x) => x.what === "Tasks closed") && !JSON.stringify(d.checks).includes("by the office"), JSON.stringify(d.checks.summary.completed));
+    const follow = await actions.deskFollowUpAction({ clientId: green.id, projectId: pGreen.id, title: "Check the new opening landed with Greenridge", when: "tomorrow" });
+    const created = await prisma.smartTask.findFirst({ where: { taskType: "comms_followup", clientId: green.id } });
+    c.ok("Create follow-up makes a task linked to the client and job, back the next business day (the request stays open)", follow.ok && !!created && created.projectId === pGreen.id && created.assignedKey === "kyle" && !!created.followUpAt && (await prisma.smartTask.findUniqueOrThrow({ where: { id: rev1.id } })).status === "OPEN");
     // Finishing the day never hides new work.
-    await prisma.appSetting.update({ where: { key: desk.closeoutSettingKey(today) }, data: { value: JSON.stringify({ ticks: { blockers: { at: at(-2 * H).toISOString(), by: "Kyle Smith" } }, finished: { at: at(-H).toISOString(), by: "Kyle Smith" } }) } });
+    await prisma.appSetting.update({ where: { key: desk.closeoutSettingKey(today) }, data: { value: JSON.stringify({ ticks: { am_messages: { at: at(-2 * H).toISOString(), by: "Kyle Smith" } }, finished: { at: at(-H).toISOString(), by: "Kyle Smith" } }) } });
     await prisma.commLog.create({ data: { clientId: realC.id, clientName: realC.name, contactName: realC.name, channel: "text", source: "openphone", direction: "in", body: "Is the shoot still on for tomorrow?", occurredAt: at(-10 * 60_000), fromPhone: "2155550101" } });
     d = await build();
-    c.ok("finishing the day does not hide new urgent work: the new message is still listed and counted", !!d.closeout.finished && d.closeout.newSinceFinish >= 1 && tab(d, "replies").now.some((x) => x.title === "Reply to Real Agent"));
+    c.ok("finishing the day does not hide new urgent work: the new message is still listed and counted", !!d.checks.finished && d.checks.newSinceFinish >= 1 && sec(d, "comms").now.some((x) => x.title === "Real Agent"));
     // The owner's preview stays read-only.
     await signIn(owner, kyle.id);
-    const asOwner = await actions.closeoutTickAction(today, "comms", true);
+    const asOwner = await actions.closeoutTickAction(today, "am_shoots", true);
     const waitAsOwner = await actions.deskWaitAction({ taskId: k2.id, who: "owner", when: "tomorrow" });
-    c.ok("#11 the owner's 'view as Kyle' is read-only: the desk's writes refuse it", !asOwner.ok && !waitAsOwner.ok && /preview/i.test(asOwner.message), asOwner.message);
+    const followAsOwner = await actions.deskFollowUpAction({ clientId: realC.id, title: "Preview follow-up", when: "2h" });
+    c.ok("#11 the owner's 'view as Kyle' is read-only: the desk's writes refuse it", !asOwner.ok && !waitAsOwner.ok && !followAsOwner.ok && /preview/i.test(asOwner.message), asOwner.message);
     const viewAs = await desk.officeDeskFor({ name: "Kyle Smith", email: kyle.email, teamMemberId: kyleTm.id, impersonating: true }, {});
     c.ok("#11 …and the desk itself is marked read-only in the preview", viewAs.readOnly === true && viewAs.person === "Kyle");
 
     // ---- semantics and house rules ----
-    const words = JSON.stringify(d.tabs.flatMap((t) => [...t.now, ...t.waiting, ...t.ok]).map((x) => [x.title, x.reason, x.panel.kind === "job" ? x.panel.assets.map((a) => a.status) : []]));
-    c.ok("no em dashes in the desk's words", !EM_DASH.test(words) && !EM_DASH.test(d.status.line) && !EM_DASH.test(JSON.stringify(d.closeout)));
+    const words = JSON.stringify(everyItem(d).map((x) => [x.title, x.line, x.reason, x.panel.kind === "job" ? x.panel.assets.map((a) => a.status) : []]));
+    c.ok("no em dashes in the desk's own words", !EM_DASH.test(words) && !EM_DASH.test(JSON.stringify(d.checks)) && !EM_DASH.test(JSON.stringify(d.urgent)));
     c.ok("product setup is Jordan's: nothing on Kyle's desk is about mapping a product", !/map(ping)? (the |a |an )?(unknown )?product|order line nobody defined/i.test(words));
-    c.ok("nothing left the box but faked Slack posts; no client message queued by the desk", fence.blocked.length === 0 && fence.faked.every((u) => u.startsWith("https://slack.com/api/")) && await prisma.outboxMessage.count() === 1, fence.blocked.join(", "));
+    // =====================================================================
+    c.head("§3 · revision 3: the new cards, reply drafts, Fixes done, delegation");
+    // =====================================================================
+    await signIn(kyle);
+    // Fixes done (the huddle): a job whose corrections came back and passed.
+    const pFixed = await project("34 Fixed Ct, Town", "SHOT", { shootDate: at(-D) });
+    const jFixed = await photoJob(pFixed.id, "READY", { slaDueAt: at(5 * H) });
+    await prisma.photoFixBatch.create({ data: { jobId: jFixed.id, mode: "ALL", approvedBy: "Kyle Smith", status: "DONE" } });
+    // A program message in the conversation (the Content Platform), for its draft.
+    await prisma.programMessage.create({ data: { enrollmentId: "enr-erica", clientId: erica.id, authorKind: "CLIENT", authorLabel: "Erica Walker", body: "Can we swap the November topic for the open house one?", createdAt: at(-3 * H) } });
+    // A task Jordan assigned Kyle through delegation, not accepted yet.
+    assignedToKyle = [{ taskId: k2.id, title: "Order lockbox keys for the Malvern listings", outcome: "Two spare keys in the office", assigneeKey: "kyle", assigneeName: "Kyle Smith", assignedBy: "Jordan Spackman", assignedAt: at(-2 * H).toISOString(), dueAt: at(5 * H).toISOString(), state: "ASSIGNED", needsVerification: false, latestUpdate: null, blocker: null, nextStep: null, clientId: null, projectId: null, sourceHref: null }];
+    await prisma.cronRun.create({ data: { job: "gmail", startedAt: at(-2 * 60_000), finishedAt: at(-60_000), ok: true, summary: JSON.stringify({ ms: { gmail: 100 } }) } });
+    d = await build();
+    i = media(d, pFixed.id);
+    c.ok("'Fixes done' shows in Review & Deliver: the corrections came back and passed, ready to review", i?.state === "now" && i.line === "Fixes done · ready to review" && i.primary?.label === "Review", i?.line);
+    const delegated = find(d, `task:${k2.id}`);
+    c.ok("a task Jordan assigned Kyle shows once, in Requests & Follow-Ups, 'From Jordan', not accepted yet, with Accept", delegated?.tag === "jordan" && delegated.line.startsWith("Not accepted yet") && delegated.primary?.label === "Accept" && delegated.actions[0]?.kind === "delegation" && everyItem(d).filter((x) => x.id === `task:${k2.id}`).length === 1);
+    assignedToKyle = [{ ...assignedToKyle[0], state: "IN_PROGRESS", latestUpdate: "Keys ordered" }];
+    const dAccepted = await build();
+    c.ok("…once accepted its button is Update", find(dAccepted, `task:${k2.id}`)?.primary?.label === "Update" && find(dAccepted, `task:${k2.id}`)?.line.startsWith("In progress") === true);
+    assignedToKyle = [];
+    const { acceptTaskAction } = await import("@/app/delegation/actions");
+    const stubbed = await acceptTaskAction(k2.id);
+    c.ok("until the delegation build merges, its actions say plainly that nothing was saved (never a pretend success)", !stubbed.ok && stubbed.message.includes("Nothing was saved"));
+    // The next business day card.
+    const nd = d.nextDay;
+    const nextVisitIds = sec(d, "shoots").now.concat(sec(d, "shoots").ok, sec(d, "shoots").waiting).filter((x) => x.day === "next").map((x) => x.id);
+    c.ok("Next business day: its name, appointments confirmed / pending, access and contacts, photographer instructions, all from the visit rows", nd.dayKey === nextKey && nd.dayName === new Date(`${nextKey}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" }) && nd.visits === nextVisitIds.length && nd.appointments.confirmed + nd.appointments.pending === nd.visits && nd.access.recorded + nd.access.missing === nd.visits && nd.instructions.ready + nd.instructions.review === nd.visits && nd.appointments.pending >= 1 && nd.access.missing >= 1, JSON.stringify(nd));
+    c.ok("Prepare <Day> lists what is missing, each pointing at its visit row (never a second item), with that row's action (Confirm sends the confirmation text)", nd.missing.length >= 2 && nd.missing.every((m) => nextVisitIds.includes(m.visitId)) && nd.missing.some((m) => m.visitId === `visit:${apNext.id}` && m.problem === "Not confirmed yet" && m.action?.kind === "confirm") && nd.missing.some((m) => m.visitId === `visit:${apNext.id}` && m.problem.startsWith("No access")));
+    // Photographer briefs still waiting on a Got it (driven brief states).
+    briefOverride = new Map([[apToday.id, { state: "sent", sentAt: at(-18 * H).toISOString(), ackAt: null, why: null }]]);
+    const dBriefs = await build();
+    briefOverride = null;
+    c.ok("a brief that went and still waits on its Got it: counted in 'Photographer briefs · 1 acknowledgment pending', the visit waiting on the photographer", dBriefs.briefsPending.length === 1 && dBriefs.briefsPending[0].visitId === `visit:${apToday.id}` && dBriefs.briefsPending[0].day === "today" && dBriefs.briefsPending[0].teamMemberId === harrison.id && visit(dBriefs, apToday.id)?.state === "waiting" && visit(dBriefs, apToday.id)?.chip?.label === "Waiting for Got it", JSON.stringify(dBriefs.briefsPending));
+    c.ok("…and none for a shoot already under way", !dBriefs.briefsPending.some((b) => b.visitId === `visit:${apStarted.id}`));
+    // Client Communications: the program message is a conversation with its own reply; fresh data says the rest are up to date.
+    const prog = find(d, `program:${program.id}`);
+    c.ok("a Content Program message opens as a conversation with the program's own reply (and a follow-up)", prog?.panel.kind === "thread" && prog.panel.messages.some((m) => m.text.includes("swap the November topic")) && prog.primary?.action.kind === "program-reply" && (prog.primary.action as { enrollmentId: string }).enrollmentId === "enr-erica" && prog.actions.some((a) => a.kind === "follow-up"));
+    c.ok("'Other conversations are up to date' only when the messages were read and the mail sync is fresh", d.commsFresh === true && dLate.commsFresh === false);
+    // Every conversation opens with a draft: the reply engine's own drafter (AI faked here), nothing sent.
+    await saveSecret("ai", "drill-not-a-real-ai-key");
+    const realReply = sec(d, "comms").now.find((x) => x.title === "Real Agent");
+    const replyAction = realReply?.primary?.action as { kind: string; threadKey: string } | undefined;
+    const { generateReply } = await import("@/app/communications/replyActions");
+    const textDraft = replyAction ? await generateReply(replyAction.threadKey) : null;
+    c.ok("a text conversation's draft comes from the reply engine (generateReply), with the client's words in its context", textDraft?.ok === true && textDraft.draft === "Thanks for the note, we are on it today." && aiBodies.some((b) => b.includes("still on for tomorrow")), JSON.stringify(textDraft));
+    const programDraft = await actions.draftProgramReplyAction("enr-erica");
+    c.ok("a Content Program message's draft comes from the same drafter, given the program conversation", programDraft.ok && programDraft.draft === "Thanks for the note, we are on it today." && aiBodies.some((b) => b.includes("open house")), JSON.stringify(programDraft));
+    c.ok("drafting sends nothing (no outbox row, no message logged)", await prisma.outboxMessage.count() === 1 && await prisma.commLog.count({ where: { direction: "out", occurredAt: { gte: at(-30 * 60_000) } } }) === 0);
+    await signIn(owner, kyle.id);
+    const previewDraft = await actions.draftProgramReplyAction("enr-erica");
+    c.ok("…and the owner's preview can't draft (read-only)", !previewDraft.ok);
+    await signIn(kyle);
+    // Completed today: real events only, each with its own time.
+    const act = d.checks.summary.activity;
+    c.ok("Completed today: Kyle's own events with their times (his video sent, his reply), newest first; Jordan's send is not his", act.some((a) => a.what === "Video sent · 30 Notice Ln" && a.atISO === at(-H).toISOString()) && act.some((a) => a.what === "Replied to Greenridge Client") && !act.some((a) => a.what.includes("33 Jordan Sent St")) && act.every((a, n) => n === 0 || act[n - 1].atISO >= a.atISO), JSON.stringify(act.map((a) => [a.atISO.slice(11, 16), a.what])));
+    c.ok("…nothing fabricated: every entry is one of the real event kinds", act.every((a) => /^(Photos approved|Video sent|Client told|Replied to|Replied on Content Program|Client request checked|Shoot confirmed|Task done|Task closed as not needed)/.test(a.what)));
+    // One item, one section; the counts are the rows, with the new cards in.
+    const ids3 = everyItem(d).map((y) => y.id);
+    c.ok("#10 with the new cards: one item per id, each section's count its rows, the awaiting-files rows uncounted", new Set(ids3).size === ids3.length && d.sections.every((t) => t.count === t.now.length) && sec(d, "deliver").waiting.every((x) => x.state === "waiting" && !sec(d, "deliver").now.includes(x)));
+
+    c.ok("nothing left the box but faked Slack posts and the faked AI drafter; no client message queued by the desk", fence.blocked.length === 0 && fence.faked.every((u) => u.startsWith("https://slack.com/api/") || u === "https://api.anthropic.com/v1/messages") && await prisma.outboxMessage.count() === 1, fence.blocked.join(", "));
     void cutN; void createRequire;
     c.summary();
   } finally { fence.restore(); await db.stop(); }

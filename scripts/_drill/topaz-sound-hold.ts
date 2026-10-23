@@ -256,8 +256,8 @@ async function main() {
     c.ok("the record: verdict sound, read from the Dropbox copy, the reason in words", rec.verdict === "sound" && rec.where === "dropbox" && rec.reason === "the sound starts 0.5 s after the picture, in the editor's export too", r.outputCheckJson ?? "");
     const view = await tj.topazJobForSubmission(H.subId);
     c.ok("the lane says WHY: \"Finished, but its sound is wrong: the sound starts 0.5 s after the picture, in the editor's export too — held …\"", /^Finished, but its sound is wrong: the sound starts 0\.5 s after the picture, in the editor's export too — held until someone listens/.test(view?.says ?? ""), view?.says ?? "");
-    const act = await prisma.activity.findMany({ where: { projectId: H.projectId, body: { startsWith: "1080p file HELD" } }, select: { body: true } });
-    c.ok("the timeline: \"1080p file HELD — its sound is wrong: …\"", act.length === 1 && act[0].body.startsWith("1080p file HELD — its sound is wrong: the sound starts 0.5 s after the picture"), act.map((a) => a.body).join(" | "));
+    const act = await prisma.activity.findMany({ where: { projectId: H.projectId, body: { startsWith: "Topaz file HELD" } }, select: { body: true } });
+    c.ok("the timeline: \"Topaz file HELD — its sound is wrong: …\"", act.length === 1 && act[0].body.startsWith("Topaz file HELD — its sound is wrong: the sound starts 0.5 s after the picture"), act.map((a) => a.body).join(" | "));
     const bells = await prisma.notification.findMany({ where: { kind: "topaz_problem", dedupeKey: { startsWith: `topaz-held-${H.jobId}` } }, select: { body: true, dedupeKey: true } });
     c.ok("Jordan's and James's bell: the reason and the way out, inside 140 characters", bells.some((b) => b.body === "The sound starts 0.5 s after the picture, in the editor's export too. Listen, then use it or ask for a new export."), bells.map((b) => b.body).join(" | "));
     const kyle = await prisma.notification.findMany({ where: { kind: "topaz_problem", dedupeKey: { startsWith: `topaz-held-kyle-${H.jobId}` } }, select: { body: true } });
@@ -311,7 +311,7 @@ async function main() {
   {
     // The render a person chose (§6): theirs, not re-judged.
     const chosen = await fr.finalFileSoundCheck(H.subId, { probe: async () => { throw new Error("drill: must not read"); } });
-    c.ok("a 1080p file a person listened to and chose: ok, without reading it again", chosen.verdict === "ok" && /listened to this 1080p file and chose it/.test(chosen.message), chosen.message);
+    c.ok("a 1080p file a person listened to and chose: ok, without reading it again", chosen.verdict === "ok" && /listened to this Topaz file and chose it/.test(chosen.message), chosen.message);
 
     // A verified render: its Dropbox copy is what is read.
     const V = await mkRender({ street: "45 Verified Way", out: meta({ timing: av() }), source: meta({ timing: av() }) });

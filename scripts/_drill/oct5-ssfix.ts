@@ -577,7 +577,7 @@ async function main() {
       const before = await prisma.reviewSubmission.count({ where: { projectId: p.id } });
       const r = await actions.submitCutForReview(p.id, "From the Final folder");
       c.ok("\"Send from the Final folder\" on a monthly job is refused with the plain sentence, and nothing is written",
-        !r.ok && r.message.includes("upload the file here instead — the 1080p pass needs the hub's own copy") && (await prisma.reviewSubmission.count({ where: { projectId: p.id } })) === before, r.message);
+        !r.ok && r.message.includes("upload the file here instead — the Topaz pass needs the hub's own copy") && (await prisma.reviewSubmission.count({ where: { projectId: p.id } })) === before, r.message);
     });
 
     // =========================================================================
@@ -673,7 +673,7 @@ async function main() {
       const s = await prisma.reviewSubmission.create({ data: { projectId: p.id, deliverableId: d.id, slot: 1, round: 1, status: "APPROVED", source: "upload", fileName: "held.mp4", decidedAt: new Date(), decidedBy: "James" }, select: { id: true } });
       await prisma.topazJob.create({ data: { submissionId: s.id, projectId: p.id, state: "held", heldPath: "/x/Final Video/unverified/held.mp4", heldAt: new Date() } });
       const html = plain(renderHtml(await resolveTree(createElement(ProjectVideoStatus, { projectId: p.id, selectedKey: `${d.id}:1` }))));
-      c.ok("Project status: \"1080p on hold — Kyle has the next step\", never \"1080p pass running\"", html.includes("1080p on hold — Kyle has the next step") && !html.includes("1080p pass running"), html);
+      c.ok("Project status: \"Topaz file on hold — Kyle has the next step\", never \"Topaz pass running\"", html.includes("Topaz file on hold — Kyle has the next step") && !html.includes("Topaz pass running"), html);
       const { editingWorkload } = await import("@/lib/editorWorkload");
       const past = new Date(Date.now() - 3 * 864e5).toISOString();
       const w = await editingWorkload([

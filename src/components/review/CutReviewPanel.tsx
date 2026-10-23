@@ -314,7 +314,7 @@ export function CutReviewPanel({
       cut: cutWords,
       state: "pending",
       message: kind === "approve"
-        ? "Topaz 1080p and delivery are running in the background."
+        ? "The Topaz pass and delivery are running in the background."
         : `The notes go to ${editorLabel} as the next round on their edit card.`,
       next: nextCut ? `Next: ${nextCut.label}` : "All caught up — nothing else is waiting on you.",
     });

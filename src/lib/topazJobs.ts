@@ -10,6 +10,7 @@ import { etDayKey, etAt } from "@/lib/datetime";
 import { topazSettings, type TopazSettings, type TopazProteusParams } from "@/lib/settings";
 import { HELD_ATTESTATION, type HeldChoice } from "@/lib/topazHold";
 import { ALREADY_FINISHED_SAYS, alreadyFinishedRule } from "@/lib/topazOriginal";
+import { rerunRefusal, type RerunFacts } from "@/lib/topazRerun";
 import type { Prisma } from "@prisma/client";
 import { kyleDesk, kyleTeamMemberId, noticeForKyle } from "@/lib/kyleNotice";
 import { portalReason } from "@/lib/deliveryReadyMessage";
@@ -180,15 +181,15 @@ export async function queueTopazRender(submissionId: string): Promise<QueueResul
       },
     });
     if (!sub) return { queued: false, reason: "That cut no longer exists." };
-    if (sub.status !== "APPROVED") return { queued: false, reason: "Only an approved cut gets a 1080p pass." };
+    if (sub.status !== "APPROVED") return { queued: false, reason: "Only an approved cut gets a Topaz pass." };
     // A folder-discovered row is a file the editor put in Dropbox themselves;
     // the hub never held those bytes, so there is nothing to send.
     if (!sub.blobUrl) return { queued: false, reason: "This cut was found in Dropbox rather than uploaded, so the hub doesn't hold the file to send." };
 
     const s = await topazSettings();
-    if (!s.enabled) return { queued: false, reason: "The 1080p pass is switched off in Settings." };
+    if (!s.enabled) return { queued: false, reason: "The Topaz pass is switched off in Settings." };
     const type = sub.deliverable?.type ?? "VIDEO";
-    if (!s.deliverableTypes.includes(type)) return { queued: false, reason: `${type} isn't set to go through the 1080p pass.` };
+    if (!s.deliverableTypes.includes(type)) return { queued: false, reason: `${type} isn't set to go through the Topaz pass.` };
 
     const job = await prisma.topazJob.create({
       data: {
@@ -208,10 +209,10 @@ export async function queueTopazRender(submissionId: string): Promise<QueueResul
       // Reopened before its pass started, and now approved again (audit B1).
       const back = await requeueReopenedJob(submissionId).catch(() => null);
       if (back) return { queued: true, jobId: back };
-      return { queued: false, reason: "This cut has already been through the 1080p pass.", already: true };
+      return { queued: false, reason: "This cut has already been through the Topaz pass.", already: true };
     }
     console.warn("queueTopazRender failed", (e as Error).message);
-    return { queued: false, reason: "Couldn't queue the 1080p pass." };
+    return { queued: false, reason: "Couldn't queue the Topaz pass." };
   }
 }
 
@@ -355,6 +356,18 @@ function etWindows(now = new Date()): { dayStart: Date; monthStart: Date; nextDa
 /** AppSetting key prefix of one "Try these settings" test run. */
 export const TOPAZ_TEST_KEY = "topaz-test:";
 
+/**
+ * AppSetting key prefix of one EARLIER render of a job that was run again
+ * ("Run Topaz again", Oct 23 2026). The job row is reused (one render per
+ * cut), and the clean sheet takes the earlier render's acceptedAt and credits
+ * off it, so without this record a re-run would quietly drop the render it
+ * replaced out of the day's and the month's counts. Each record is written in
+ * the same transaction that resets the row, so the totals never dip, and it
+ * keeps where the earlier file went (superseded/): the job's history. One row
+ * per re-run: `${TOPAZ_RERUN_KEY}${jobId}:${epoch ms}`.
+ */
+export const TOPAZ_RERUN_KEY = "topaz-rerun:";
+
 export type TestLedger = { day: number; month: number; credits: number; inFlight: number };
 
 /** What the tests have committed: renders today / this month (ET), estimated
@@ -366,7 +379,11 @@ export type TestLedger = { day: number; month: number; credits: number; inFlight
 export async function topazTestLedger(db: Pick<Prisma.TransactionClient, "appSetting"> = prisma, now = new Date()): Promise<TestLedger> {
   const { dayStart, monthStart } = etWindows(now);
   const rows = await db.appSetting.findMany({
-    where: { key: { startsWith: TOPAZ_TEST_KEY }, updatedAt: { gte: new Date(monthStart.getTime() - 86_400_000) } },
+    // An earlier render a re-run replaced (TOPAZ_RERUN_KEY) is a render too:
+    // it counts on the day and in the month it was accepted, exactly as it did
+    // while it was the job's own render. Its state is "done", so it never
+    // holds a slot.
+    where: { OR: [{ key: { startsWith: TOPAZ_TEST_KEY } }, { key: { startsWith: TOPAZ_RERUN_KEY } }], updatedAt: { gte: new Date(monthStart.getTime() - 86_400_000) } },
     select: { value: true },
   });
   const out: TestLedger = { day: 0, month: 0, credits: 0, inFlight: 0 };
@@ -475,7 +492,7 @@ export async function spendGate(s: TopazSettings, opts: { estimateCredits?: numb
       ok: false,
       hold: true,
       alert: "low-balance",
-      reason: `Topaz is down to ${Math.round(balance)} credits. Videos stop going through the 1080p pass until it's topped up.`,
+      reason: `Topaz is down to ${Math.round(balance)} credits. Videos stop going through the Topaz pass until it's topped up.`,
       retryAt: new Date(Date.now() + 60 * 60_000),
     };
   }
@@ -908,7 +925,7 @@ async function fail(job: NonNullable<JobRow>, reason: string) {
   const won = await finishAs(job, "failed", { error: reason.slice(0, 400), errorAt: new Date() });
   if (!won) return; // another tick moved this row on; its outcome is the true one
   await markEditorFileFinal(job);
-  await tellSomebody(job, `The 1080p pass couldn't finish — ${streetOf(job.project.title)}`, reason, `topaz-failed-${job.id}`);
+  await tellSomebody(job, `The Topaz pass couldn't finish — ${streetOf(job.project.title)}`, reason, `topaz-failed-${job.id}`);
 }
 
 /** Refuse the job before anything was spent. Also announced: an owner who was
@@ -917,7 +934,7 @@ async function skip(job: NonNullable<JobRow>, reason: string) {
   const won = await finishAs(job, "skipped", { skipReason: reason.slice(0, 400) });
   if (!won) return;
   await markEditorFileFinal(job);
-  await tellSomebody(job, `Skipped the 1080p pass — ${streetOf(job.project.title)}`, reason, `topaz-skipped-${job.id}`);
+  await tellSomebody(job, `Skipped the Topaz pass — ${streetOf(job.project.title)}`, reason, `topaz-skipped-${job.id}`);
 }
 
 /**
@@ -1005,7 +1022,7 @@ async function finishAlreadyFinished(job: NonNullable<JobRow>, header: VideoMeta
       data: {
         projectId: job.projectId,
         type: "SYSTEM",
-        body: `1080p pass not needed: the editor's file is already ${rule}, so it goes out as is. Nothing was sent to Topaz and nothing was spent.`.slice(0, 500),
+        body: `Topaz pass not needed: the editor's file is already ${rule}, so it goes out as is. Nothing was sent to Topaz and nothing was spent.`.slice(0, 500),
       },
     })
     .catch(() => {});
@@ -1032,7 +1049,7 @@ async function tellSomebody(job: NonNullable<JobRow>, title: string, body: strin
       dedupeKey: `${dedupeKey}-kyle-${etDayKey(new Date())}-${shortHash(body)}`,
       slack: [
         `${title}`,
-        `${job.project.client?.name ?? "Client"} · portal video. The client's portal only gets the checked 1080p file, so this one is waiting.`,
+        `${job.project.client?.name ?? "Client"} · portal video. The client's portal only gets the checked Topaz file, so this one is waiting.`,
         `Why: ${portalReason(body)}`,
         `Open the delivery queue for the next step: ${appBase()}/#video-review`,
       ].join("\n"),
@@ -1093,7 +1110,7 @@ export async function advanceTopazJob(jobId: string, budget: { remainingMs: () =
   // is already processing runs to the end — the credits are spent either way,
   // and abandoning it would throw away the file he already paid for.
   if (!s.enabled && (job.state === "queued" || job.state === "estimated")) {
-    await skip(job, "The 1080p pass was switched off in Settings before this video went through.");
+    await skip(job, "The Topaz pass was switched off in Settings before this video went through.");
     return "skipped";
   }
   if (!(await topazConnected())) {
@@ -1111,7 +1128,7 @@ export async function advanceTopazJob(jobId: string, budget: { remainingMs: () =
     if (!job.acceptedAt && waitingDays > WAITING_CEILING_DAYS) {
       await skip(
         job,
-        `This waited ${Math.round(waitingDays)} days for Topaz to be connected, so it has been left out. The video itself was delivered as normal — only the 1080p pass was missed. Paste the API key on the Connections page, then press "Try again" if you still want this one done.`,
+        `This waited ${Math.round(waitingDays)} days for Topaz to be connected, so it has been left out. The video itself was delivered as normal — only the Topaz pass was missed. Paste the API key on the Connections page, then press "Try again" if you still want this one done.`,
       );
       return "skipped";
     }
@@ -1271,13 +1288,13 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
       }
       await skip(
         job,
-        "We couldn't read this video's header to check its audio after three tries, and the 1080p pass silently drops audio it cannot carry. The editor's own upload is the one to deliver; press Try again once the file is reachable.",
+        "We couldn't read this video's header to check its audio after three tries, and the Topaz pass silently drops audio it cannot carry. The editor's own upload is the one to deliver; press Try again once the file is reachable.",
       );
       return "skipped";
     }
     await skip(
       job,
-      `This video's audio is ${audioFormatName(sourceAudio.codec)}, and the 1080p pass loses it — the finished file comes back silent. The editor's own upload is the one to deliver. To put a video through the pass, export it with AAC audio.`,
+      `This video's audio is ${audioFormatName(sourceAudio.codec)}, and the Topaz pass loses it — the finished file comes back silent. The editor's own upload is the one to deliver. To put a video through the pass, export it with AAC audio.`,
     );
     return "skipped";
   }
@@ -1411,7 +1428,7 @@ async function applyGate(job: NonNullable<JobRow>, gate: Exclude<SpendGate, { ok
       href: "/#video-review",
       dedupeKey: `topaz-low-balance-kyle-${etDayKey(new Date())}`,
       slack: [
-        "Topaz credits are running low, so videos are waiting for their 1080p pass.",
+        "Topaz credits are running low, so videos are waiting for their Topaz pass.",
         gate.reason,
         "Portal videos can't be published until the pass runs. Ask Jordan to top up Topaz.",
         `Delivery queue: ${appBase()}/#video-review`,
@@ -1985,7 +2002,7 @@ async function verifyProcessedOutput(job: NonNullable<JobRow>, url: string | nul
       data: {
         projectId: job.projectId,
         type: "SYSTEM",
-        body: `1080p pass audio check: ${verdict} [${where === "topaz" ? "Topaz copy" : "Dropbox copy"}] (source ${src === null ? "unreadable" : src.present ? `${src.codec ?? "unknown codec"}` : "no audio"}, output ${out === null ? "unreadable" : out.audio.present ? `${out.audio.codec ?? "unknown codec"}` : "no audio"})${reason && verdict !== "ok" ? ` — ${reason}` : ""}`.slice(0, 500),
+        body: `Topaz pass audio check: ${verdict} [${where === "topaz" ? "Topaz copy" : "Dropbox copy"}] (source ${src === null ? "unreadable" : src.present ? `${src.codec ?? "unknown codec"}` : "no audio"}, output ${out === null ? "unreadable" : out.audio.present ? `${out.audio.codec ?? "unknown codec"}` : "no audio"})${reason && verdict !== "ok" ? ` — ${reason}` : ""}`.slice(0, 500),
       },
     })
     .catch(() => {});
@@ -2012,8 +2029,8 @@ async function stepProcessing(job: NonNullable<JobRow>, s: TopazSettings): Promi
       await fail(
         job,
         check.verdict === "lost"
-          ? "The 1080p pass came back with no sound — the original's audio track didn't survive it. Nothing was filed and the editor's file is untouched, so the original is still good to send. Worth a look before this one goes out."
-          : `The 1080p pass came back ${check.reason}, so it isn't the video that was approved. Nothing was filed and the editor's file is untouched, so the original is still good to send.`,
+          ? "The Topaz pass came back with no sound — the original's audio track didn't survive it. Nothing was filed and the editor's file is untouched, so the original is still good to send. Worth a look before this one goes out."
+          : `The Topaz pass came back ${check.reason}, so it isn't the video that was approved. Nothing was filed and the editor's file is untouched, so the original is still good to send.`,
       );
       return "failed";
     }
@@ -2355,7 +2372,7 @@ async function finishSaving(job: NonNullable<JobRow>, s: TopazSettings, landed: 
     if (!(e instanceof DropboxError && /not_found/i.test(e.message))) {
       const since = job.savingStartedAt ?? job.acceptedAt ?? job.createdAt;
       if (Date.now() - since.getTime() > STALL_MS) {
-        await fail(job, `The 1080p file is in Dropbox but the hub hasn't been able to check on it for over ${Math.round(STALL_MS / 3600_000)} hours. The editor's original is still in the Final folder — deliver that one, and press "Try again" once Dropbox is responding.`);
+        await fail(job, `The Topaz file is in Dropbox but the hub hasn't been able to check on it for over ${Math.round(STALL_MS / 3600_000)} hours. The editor's original is still in the Final folder — deliver that one, and press "Try again" once Dropbox is responding.`);
         return "failed";
       }
       await release(job, { nextAttemptAt: new Date(Date.now() + 60_000) });
@@ -2376,8 +2393,8 @@ async function finishSaving(job: NonNullable<JobRow>, s: TopazSettings, landed: 
     await fail(
       job,
       saved
-        ? `The 1080p file reached Dropbox but arrived empty, so it hasn't been left in the Final folder. The editor's original is still there, untouched — deliver that one. Press "Try again" to have another go at the 1080p pass.`
-        : `The 1080p file didn't arrive in Dropbox after all. The editor's original is still in the Final folder, untouched — deliver that one. Press "Try again" to have another go at the 1080p pass.`,
+        ? `The Topaz file reached Dropbox but arrived empty, so it hasn't been left in the Final folder. The editor's original is still there, untouched — deliver that one. Press "Try again" to have another go at the Topaz pass.`
+        : `The Topaz file didn't arrive in Dropbox after all. The editor's original is still in the Final folder, untouched — deliver that one. Press "Try again" to have another go at the Topaz pass.`,
     );
     return "failed";
   }
@@ -2411,7 +2428,7 @@ async function finishSaving(job: NonNullable<JobRow>, s: TopazSettings, landed: 
       data: {
         projectId: job.projectId,
         type: "SYSTEM",
-        body: `1080p pass finished — ${path.split("/").pop()} is in the Final folder${originalMoved ? "; the editor's export is in superseded/" : ""}.`,
+        body: `Topaz pass finished — ${path.split("/").pop()} is in the Final folder${originalMoved ? "; the editor's export is in superseded/" : ""}.`,
       },
     })
     .catch(() => {});
@@ -2472,7 +2489,7 @@ async function fileAsFinal(job: NonNullable<JobRow>, path: string): Promise<{ ta
   const live = await prisma.reviewSubmission.findUnique({ where: { id: sub.id }, select: { status: true } }).catch(() => null);
   if (live && live.status !== "APPROVED") {
     await prisma.activity
-      .create({ data: { projectId: job.projectId, type: "SYSTEM", body: `The 1080p pass of version ${sub.round} finished after that version was reopened for revisions, so no upload card was made. The next approved version gets its own.` } })
+      .create({ data: { projectId: job.projectId, type: "SYSTEM", body: `The Topaz pass of version ${sub.round} finished after that version was reopened for revisions, so no upload card was made. The next approved version gets its own.` } })
       .catch(() => {});
     return { taskId: null, originalMoved, reopened: true };
   }
@@ -2525,8 +2542,8 @@ async function settleUncheckedCopy(job: NonNullable<JobRow>, s: TopazSettings, h
     await fail(
       job,
       check.verdict === "lost"
-        ? "The 1080p pass came back with no sound — the original's audio track didn't survive it. It wasn't filed; the editor's file is untouched and is the one to send."
-        : `The 1080p pass came back ${check.reason}, so it isn't the video that was approved. It wasn't filed; the editor's file is untouched and is the one to send.`,
+        ? "The Topaz pass came back with no sound — the original's audio track didn't survive it. It wasn't filed; the editor's file is untouched and is the one to send."
+        : `The Topaz pass came back ${check.reason}, so it isn't the video that was approved. It wasn't filed; the editor's file is untouched and is the one to send.`,
     );
     return { state: "failed" };
   }
@@ -2639,7 +2656,7 @@ async function holdForReview(job: NonNullable<JobRow>, heldPath: string, check: 
     const kyle = await kyleTeamMemberId().catch(() => null);
     await notifyInApp({
       kind: "topaz_problem",
-      title: `1080p file held, not sent — ${street}`,
+      title: `Topaz file held, not sent — ${street}`,
       body: why
         ? why.bell
         : job.project.contentMonthId ? "Its sound couldn't be verified. Listen to it, then use it." : "Its sound couldn't be verified. Listen to it, then use it or keep the approved original.",
@@ -2653,12 +2670,12 @@ async function holdForReview(job: NonNullable<JobRow>, heldPath: string, check: 
   const monthly = !!job.project.contentMonthId;
   await noticeForKyle({
     kind: "topaz_problem",
-    title: `1080p file held — ${street}`,
+    title: `Topaz file held — ${street}`,
     body: why ? `${why.sentence} Listen to it on the delivery queue.` : "Its sound couldn't be checked automatically. Listen to it on the delivery queue.",
     href: "/#video-review",
     dedupeKey: `topaz-held-kyle-${job.id}-${etDayKey(now)}`,
     slack: [
-      `1080p file held, not sent — ${street} · ${job.project.client?.name ?? "Client"}`,
+      `Topaz file held, not sent — ${street} · ${job.project.client?.name ?? "Client"}`,
       why
         ? `${why.sentence} Listen to it on the delivery queue, then use it or ask the editor for a new export.`
         : monthly
@@ -2673,8 +2690,8 @@ async function holdForReview(job: NonNullable<JobRow>, heldPath: string, check: 
         projectId: job.projectId,
         type: "SYSTEM",
         body: (why
-          ? `1080p file HELD — ${why.clause}, so it has not been filed or handed to Kyle. It is in Final Video/${UNVERIFIED_DIR}/; the editor's approved original is untouched. A reviewer decides after listening: use it, or ask the editor for a new export.`
-          : `1080p file HELD — its sound couldn't be checked, so it has not been filed or handed to Kyle. It is in Final Video/${UNVERIFIED_DIR}/; the editor's approved original is untouched. A reviewer decides: use it after listening, or keep the original.`).slice(0, 500),
+          ? `Topaz file HELD — ${why.clause}, so it has not been filed or handed to Kyle. It is in Final Video/${UNVERIFIED_DIR}/; the editor's approved original is untouched. A reviewer decides after listening: use it, or ask the editor for a new export.`
+          : `Topaz file HELD — its sound couldn't be checked, so it has not been filed or handed to Kyle. It is in Final Video/${UNVERIFIED_DIR}/; the editor's approved original is untouched. A reviewer decides: use it after listening, or keep the original.`).slice(0, 500),
       },
     })
     .catch(() => {});
@@ -2717,7 +2734,7 @@ async function finishHeldAsProcessed(
     : job.finalPath;
   if (!to) {
     await unclaimHeld(job.id);
-    return { ok: false, message: "Dropbox wouldn't move the 1080p file into place just now — nothing changed. Try again in a minute." };
+    return { ok: false, message: "Dropbox wouldn't move the Topaz file into place just now — nothing changed. Try again in a minute." };
   }
   const now = new Date();
   await prisma.topazJob.update({
@@ -2740,7 +2757,7 @@ async function finishHeldAsProcessed(
       data: {
         projectId: job.projectId,
         type: "SYSTEM",
-        body: `1080p file released from hold — ${outcome.outputCheck === "verified" ? `it read correctly from Dropbox on a re-check${job.resolvedBy ? ` asked for by ${job.resolvedBy}` : ""}` : `${job.resolvedBy ?? "a reviewer"} listened to it and chose it`}. ${to.split("/").pop()} is in the Final folder${originalMoved ? "; the editor's export is in superseded/" : ""}.`.slice(0, 500),
+        body: `Topaz file released from hold — ${outcome.outputCheck === "verified" ? `it read correctly from Dropbox on a re-check${job.resolvedBy ? ` asked for by ${job.resolvedBy}` : ""}` : `${job.resolvedBy ?? "a reviewer"} listened to it and chose it`}. ${to.split("/").pop()} is in the Final folder${originalMoved ? "; the editor's export is in superseded/" : ""}.`.slice(0, 500),
       },
     })
     .catch(() => {});
@@ -2754,7 +2771,7 @@ async function finishHeldAsProcessed(
   return {
     ok: true,
     message: job.project.contentMonthId
-      ? "Released. The checked 1080p file goes to the client's portal, or stays on the Ready-to-send card if their portal isn't live yet."
+      ? "Released. The checked Topaz file goes to the client's portal, or stays on the Ready-to-send card if their portal isn't live yet."
       : "Released — it's the file to send now, and Kyle has the upload card.",
   };
 }
@@ -2780,7 +2797,7 @@ export async function resolveHeldTopazJob(
   opts: { attest?: string | null; why?: string | null } = {},
 ): Promise<{ ok: boolean; message: string }> {
   const job = await loadJob(jobId);
-  if (!job) return { ok: false, message: "That 1080p job no longer exists." };
+  if (!job) return { ok: false, message: "That Topaz job no longer exists." };
   // Where the unchecked file is: unverified/, or already promoted by a decision
   // that died half-way (see finishHeldAsProcessed).
   const unchecked = job.heldPath ?? job.finalPath;
@@ -2789,7 +2806,7 @@ export async function resolveHeldTopazJob(
 
   if (choice === "accept-processed") {
     if ((opts.attest ?? "").trim() !== HELD_ATTESTATION) {
-      return { ok: false, message: "Play the 1080p file first, then tick that you listened to it — it can't be used on the hub's word, because the hub couldn't check it." };
+      return { ok: false, message: "Play the Topaz file first, then tick that you listened to it — it can't be used on the hub's word, because the hub couldn't check it." };
     }
     // A MEASUREMENT BEATS AN ATTESTATION. If a later look read the file and
     // found it silent or the wrong video, ticking a box does not change that.
@@ -2808,7 +2825,7 @@ export async function resolveHeldTopazJob(
   // portal only takes the checked 1080p file, so keeping the editor's export
   // was a dead end that told the reviewer the opposite.
   if (job.project.contentMonthId) {
-    return { ok: false, message: "This is a portal video, so the client only gets the checked 1080p file. Listen to it and use it, or ask the editor for a new export if it's wrong." };
+    return { ok: false, message: "This is a portal video, so the client only gets the checked Topaz file. Listen to it and use it, or ask the editor for a new export if it's wrong." };
   }
   if (!(await claimHeld(jobId, by, "use-original", why))) {
     return { ok: false, message: "Someone else is deciding this one right now — refresh in a moment." };
@@ -2826,7 +2843,7 @@ export async function resolveHeldTopazJob(
       heldPath: aside.path ?? unchecked,
       finalPath: null, // only ever set here by a half-finished promotion; the original is the file now
       savedAt: null,
-      error: `${by ?? "A reviewer"} kept the approved original — the 1080p file's sound couldn't be verified.`.slice(0, 400),
+      error: `${by ?? "A reviewer"} kept the approved original — the Topaz file's sound couldn't be verified.`.slice(0, 400),
       errorAt: null, // a decision, not a fault: stays out of the dashboard's failure count
       finishedAt: new Date(),
     },
@@ -2838,7 +2855,7 @@ export async function resolveHeldTopazJob(
       data: {
         projectId: job.projectId,
         type: "SYSTEM",
-        body: `1080p file set aside by ${by ?? "a reviewer"}: the approved original is the file to send${why ? ` (${why})` : ""}. The unchecked render is in superseded/.`.slice(0, 500),
+        body: `Topaz file set aside by ${by ?? "a reviewer"}: the approved original is the file to send${why ? ` (${why})` : ""}. The unchecked render is in superseded/.`.slice(0, 500),
       },
     })
     .catch(() => {});
@@ -2853,7 +2870,7 @@ export async function resolveHeldTopazJob(
  */
 export async function recheckHeldTopazJob(jobId: string, by: string | null): Promise<{ ok: boolean; message: string }> {
   const job = await loadJob(jobId);
-  if (!job) return { ok: false, message: "That 1080p job no longer exists." };
+  if (!job) return { ok: false, message: "That Topaz job no longer exists." };
   const unchecked = job.heldPath ?? job.finalPath;
   if (job.state !== "held" || !unchecked) return { ok: false, message: "That one isn't waiting on a decision any more." };
   if (!(await claimHeld(jobId, by, "rechecked", null))) {
@@ -3007,7 +3024,7 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
         data: {
           projectId: job.projectId,
           type: "SYSTEM",
-          body: `1080p file ready — ${fileName}. Follow this cut’s selected destination in the Hub delivery queue.`.slice(0, 500),
+          body: `Topaz file ready — ${fileName}. Follow this cut’s selected destination in the Hub delivery queue.`.slice(0, 500),
         },
       })
       .catch(() => {});
@@ -3049,7 +3066,7 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
   const BUTTON_NOTE = "Aryeo's API cannot upload a video or deliver a listing, so the hub does it the way a browser does, signed in as its own Aryeo login, and only when someone presses Upload to Aryeo and send.";
 
   const lines = [
-    `The 1080p version of ${street} is ready to upload.`,
+    `The Topaz version of ${street} is ready to upload.`,
     ``,
     `Press Upload to Aryeo and send in the Video Review Room: ${room}`,
     ``,
@@ -3073,10 +3090,10 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
 
   const data = {
     taskType: "internal_instruction", // the type Open Loops + /tasks triage read
-    title: `Upload the 1080p video to Aryeo — ${street}`.slice(0, 120),
+    title: `Upload the Topaz video to Aryeo — ${street}`.slice(0, 120),
     summary: `${fileName} is ready to upload to Aryeo. Press Upload to Aryeo and send in the Video Review Room (${room}), or download it: ${downloadUrl} (it is also in this job's Final Video folder on Dropbox).`.slice(0, 500),
     description: lines.join("\n"),
-    reasonCreated: "The approved cut finished its 1080p pass",
+    reasonCreated: "The approved cut finished its Topaz pass",
     source: "system",
     sourceDetail: aryeo ?? path,
     priority: "HIGH" as const,
@@ -3214,7 +3231,7 @@ export async function driveTopazJobs(opts: { max?: number; budgetMs?: number; le
  *  at Topaz too, because the point is to stop paying for it. */
 export async function cancelTopazJob(jobId: string, by?: string | null): Promise<{ ok: boolean; message: string }> {
   const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { id: true, state: true, requestId: true } });
-  if (!job) return { ok: false, message: "That 1080p job no longer exists." };
+  if (!job) return { ok: false, message: "That Topaz job no longer exists." };
   if (!LIVE_STATES.includes(job.state as TopazState)) return { ok: false, message: "That one has already finished." };
   if (job.requestId) await cancelVideoRequest(job.requestId);
   await prisma.topazJob.update({
@@ -3231,7 +3248,7 @@ export async function cancelTopazJob(jobId: string, by?: string | null): Promise
 /** What a pass stood down for a reopen is written as. skipReason carries the
  *  marker queueTopazRender looks for: re-approving the SAME version brings the
  *  job back, because nothing was spent on it. */
-const REOPENED_SKIP = "The cut was reopened for revisions before its 1080p pass started, so the pass was stopped. Nothing was charged.";
+const REOPENED_SKIP = "The cut was reopened for revisions before its Topaz pass started, so the pass was stopped. Nothing was charged.";
 const REOPENED_STAND_DOWN = {
   state: "cancelled",
   skipReason: REOPENED_SKIP,
@@ -3300,7 +3317,7 @@ async function requeueReopenedJob(submissionId: string): Promise<string | null> 
  */
 export async function retryTopazJobRefusal(jobId: string): Promise<string | null> {
   const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { id: true, state: true, outputCheck: true, project: { select: { contentMonthId: true } } } });
-  if (!job) return "That 1080p job no longer exists.";
+  if (!job) return "That Topaz job no longer exists.";
   if (LIVE_STATES.includes(job.state as TopazState)) return "That one is already on its way.";
   if (job.state === "done") return "That video already went through.";
   // A HELD FILE IS FINISHED AND PAID FOR (O02). Sending it back through the
@@ -3308,15 +3325,15 @@ export async function retryTopazJobRefusal(jobId: string): Promise<string | null
   // dropped its copy, fail a render that exists. The decision is a person's.
   if (job.state === "held") {
     return job.project?.contentMonthId
-      ? "That 1080p file is finished and waiting for someone to listen to it — listen, then use it. Nothing needs to run again."
-      : "That 1080p file is finished and waiting for someone to listen to it — use it, or keep the approved original. Nothing needs to run again.";
+      ? "That Topaz file is finished and waiting for someone to listen to it — listen, then use it. Nothing needs to run again."
+      : "That Topaz file is finished and waiting for someone to listen to it — use it, or keep the approved original. Nothing needs to run again.";
   }
   // A reviewer already chose the original over this render. The button must
   // not quietly undo a recorded decision — on a listing job, where the
   // original is a deliverable. A portal video's portal only takes the checked
   // 1080p file, so "keep the original" there was a dead end: it may run again.
   if (job.outputCheck === "resolved-original" && !job.project?.contentMonthId) {
-    return "A reviewer chose the approved original for this cut, so the 1080p pass won't run on it again.";
+    return "A reviewer chose the approved original for this cut, so the Topaz pass won't run on it again.";
   }
   return null;
 }
@@ -3348,7 +3365,7 @@ export async function retryTopazJob(jobId: string): Promise<{ ok: boolean; messa
   const refusal = await retryTopazJobRefusal(jobId);
   if (refusal) return { ok: false, message: refusal };
   const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { id: true, state: true, requestId: true, completeUploadAt: true, acceptedAt: true, outputCheck: true, heldPath: true, resolution: true } });
-  if (!job) return { ok: false, message: "That 1080p job no longer exists." };
+  if (!job) return { ok: false, message: "That Topaz job no longer exists." };
   // A portal video whose finished render was set aside by "keep the original"
   // (reachable only for a portal video — see the refusal): the render is
   // already paid for and in superseded/, so it comes back for a listen rather
@@ -3414,7 +3431,7 @@ export async function retryTopazJob(jobId: string): Promise<{ ok: boolean; messa
 /** Move a set-aside render back to unverified/ and hold it for a listen. Free:
  *  Dropbox only, nothing re-rendered or re-charged. */
 async function reopenSetAsideRender(jobId: string, asidePath: string | null): Promise<{ ok: boolean; message: string }> {
-  const gone = { ok: false, message: "The set-aside 1080p file is no longer in Dropbox, so there is nothing to bring back. Ask the editor for a new export and approve it." };
+  const gone = { ok: false, message: "The set-aside Topaz file is no longer in Dropbox, so there is nothing to bring back. Ask the editor for a new export and approve it." };
   if (!asidePath) return gone;
   const marker = "/superseded/";
   const at = asidePath.lastIndexOf(marker);
@@ -3426,14 +3443,290 @@ async function reopenSetAsideRender(jobId: string, asidePath: string | null): Pr
     back = r?.metadata?.path_display ?? `${folder}/${UNVERIFIED_DIR}/${asidePath.split("/").pop()}`;
   } catch (e) {
     if (e instanceof DropboxError && /not_found/i.test(e.message)) return gone;
-    return { ok: false, message: "Dropbox wouldn't move the 1080p file back just now — nothing changed. Try again in a minute." };
+    return { ok: false, message: "Dropbox wouldn't move the Topaz file back just now — nothing changed. Try again in a minute." };
   }
   const moved = await prisma.topazJob.updateMany({
     where: { id: jobId, state: "failed", outputCheck: "resolved-original" },
     data: { state: "held", heldPath: back, heldAt: new Date(), outputCheck: "unverified", error: null, errorAt: null, finishedAt: null, resolvedAt: null, resolvedBy: null, resolution: null, resolutionNote: null },
   });
   if (moved.count !== 1) return { ok: false, message: "That one changed while we were moving it — refresh and look again." };
-  return { ok: true, message: "The 1080p file is back for a listen. Play it, then use it — the client's portal only gets this checked file." };
+  return { ok: true, message: "The Topaz file is back for a listen. Play it, then use it — the client's portal only gets this checked file." };
+}
+
+// ---------------------------------------------------------------------------
+// RUN TOPAZ AGAIN (Jordan, Oct 23 2026: "I want to be able to re run the
+// videos through topaz if the topaz pass doesn't look good.") The rule and its
+// words are lib/topazRerun's, shared with the screens that draw the button.
+//
+// WHAT IT DOES, in order, so no moment exists where the wrong file is the
+// file to send:
+//   1. the previous render (the FINAL (Topaz) file, or a held file in
+//      unverified/) moves to superseded/ — moved, never deleted. It has to be
+//      out of the way BEFORE the new one is saved: the new render is saved
+//      under the same name, and a save that finds a file already there takes
+//      it for its own copy (stepSaving's conflict branch);
+//   2. ONE transaction: the same TopazJob row back to `queued` with a clean
+//      sheet (no request, no price, no file, no check), resolution
+//      "force-pass" so the already-finished rule does not skip the very video
+//      a person sent back, AND a TOPAZ_RERUN_KEY record of the render it
+//      replaced (when it was accepted, what it cost, where the file went), so
+//      the day's and the month's caps keep counting it;
+//   3. Kyle's open upload card for the old file is closed with the reason and
+//      its key retired, so the new file gets a fresh card when it is checked.
+// From there the lane runs exactly as for any job: the FREE price check, the
+// per-video ceiling, every cap and the balance, then the render, the check,
+// and the file. A checked file is filed as FINAL (Topaz) and becomes the file
+// to send; an unchecked one is held for a listen; a refusal or a failure says
+// why, and Try again is there as for any pass.
+// ---------------------------------------------------------------------------
+
+/** Kyle's card for the old file, closed. */
+const RERUN_CARD_CLOSED = "Closed by the hub: this video is going through the Topaz pass again. The new Topaz file gets its own card once it is finished and checked.";
+
+/** What a re-run expects to cost with today's Settings, before anything is
+ *  asked of Topaz: the published rate card for the planned output size, or
+ *  the last render's own price when that was higher (the lane plans against
+ *  the higher of Topaz's estimate and the rate card). null = not measured. */
+export function expectedRerunCredits(
+  j: { sourceWidth: number | null; sourceHeight: number | null; sourceDurationSec: number | null; estimateCredits: number | null; creditsCharged: number | null },
+  s: Pick<TopazSettings, "outputShortSide" | "neverUpscale">,
+): number | null {
+  const prior = j.estimateCredits ?? j.creditsCharged ?? null;
+  if (!(j.sourceWidth && j.sourceHeight && j.sourceDurationSec)) return prior != null ? Math.ceil(prior) : null;
+  const source = { width: j.sourceWidth, height: j.sourceHeight };
+  const local = localCreditEstimate(plannedOutput(source, { shortSide: s.outputShortSide, neverUpscale: s.neverUpscale }), j.sourceDurationSec, source);
+  return Math.ceil(Math.max(local, prior ?? 0));
+}
+
+/** The facts the rule reads, from the database. Throws when the Aryeo side
+ *  can't be read: the refusal then says so rather than guessing. */
+async function rerunFactsFor(jobId: string): Promise<RerunFacts | null> {
+  const job = await prisma.topazJob.findUnique({
+    where: { id: jobId },
+    select: {
+      state: true, finalPath: true, savedAt: true, heldPath: true, deliveredAt: true, submissionId: true,
+      submission: { select: { status: true, sentToClientAt: true } },
+      project: { select: { contentMonthId: true } },
+    },
+  });
+  if (!job) return null;
+  const [{ videoPushRun }, { uploadsFor }, { loadCut, sourceFingerprint }] = await Promise.all([
+    import("@/lib/videoAryeoPush"),
+    import("@/lib/deliveryUploads"),
+    import("@/lib/finalRendition"),
+  ]);
+  const [run, receipts, cut] = await Promise.all([videoPushRun(job.submissionId), uploadsFor([job.submissionId]), loadCut(job.submissionId)]);
+  // The same test the Ready to send row applies: a receipt for THIS file on
+  // THIS listing (an older file's receipt is about a file nobody sends now).
+  const receipt = receipts.get(job.submissionId);
+  const onListing = !!receipt && !!cut && receipt.listingId === cut.project.aryeoListingId && receipt.sourceFingerprint === sourceFingerprint(cut);
+  return {
+    state: job.state,
+    finalPath: job.finalPath,
+    savedAt: job.savedAt,
+    heldPath: job.heldPath,
+    deliveredAt: job.deliveredAt,
+    cutStatus: job.submission?.status ?? null,
+    sentToClientAt: job.submission?.sentToClientAt ?? null,
+    monthly: !!job.project?.contentMonthId,
+    onListing,
+    push: run ? { state: run.state, addSentAt: run.addSentAt, mediaId: run.mediaId, hold: run.hold ? { resume: run.hold.resume } : null } : null,
+  };
+}
+
+/** Whether rerunTopazJob would accept this job, read without touching anything. */
+export async function rerunTopazJobRefusal(jobId: string): Promise<string | null> {
+  let facts: RerunFacts | null;
+  try {
+    facts = await rerunFactsFor(jobId);
+  } catch {
+    return "Couldn't check whether this video is already on Aryeo just now, so nothing changed. Try again in a minute.";
+  }
+  if (!facts) return "That Topaz job no longer exists.";
+  return rerunRefusal(facts);
+}
+
+/** One earlier render of a job, as its re-run recorded it. */
+export type TopazRerunRecord = {
+  kind: "rerun";
+  jobId: string;
+  submissionId: string;
+  projectId: string;
+  /** always "done": a record never holds a slot (topazTestLedger) */
+  state: "done";
+  /** what the earlier render was when it was replaced: done or held */
+  was: string;
+  /** when the earlier render was committed: the day and month it counts in */
+  acceptedAt: string;
+  /** what the caps counted for it */
+  estimateCredits: number;
+  creditsCharged: number | null;
+  outputCheck: string | null;
+  /** the request that made it (filters and output block) */
+  presetJson: string | null;
+  /** where it was, and where it is now (superseded/); null = it was not there to move */
+  from: string | null;
+  keptAt: string | null;
+  by: string | null;
+  at: string;
+};
+
+/** A job's earlier renders, oldest first (the history a re-run keeps). */
+export async function topazRerunHistory(jobId: string): Promise<TopazRerunRecord[]> {
+  const rows = await prisma.appSetting.findMany({ where: { key: { startsWith: `${TOPAZ_RERUN_KEY}${jobId}:` } }, select: { value: true } });
+  const out: TopazRerunRecord[] = [];
+  for (const r of rows) {
+    try {
+      out.push(JSON.parse(r.value) as TopazRerunRecord);
+    } catch { /* an unreadable record says nothing */ }
+  }
+  return out.sort((a, b) => a.at.localeCompare(b.at));
+}
+
+/**
+ * "Run Topaz again": the same cut back through the pass with the CURRENT
+ * Settings, on the same row, from the free price check. Refused for a video
+ * already sent, published, on the listing or on its way there (lib/topazRerun).
+ * Who may press it is the action's question (owner and office only).
+ */
+export async function rerunTopazJob(jobId: string, by: string | null): Promise<{ ok: boolean; message: string }> {
+  const refusal = await rerunTopazJobRefusal(jobId);
+  if (refusal) return { ok: false, message: refusal };
+  const job = await loadJob(jobId);
+  if (!job) return { ok: false, message: "That Topaz job no longer exists." };
+  const s = await topazSettings();
+  const was = job.state;
+  // A held decision half-made (a promotion that died) left the file on
+  // finalPath; resolveHeldTopazJob reads it the same way.
+  const previous = was === "held" ? job.heldPath ?? job.finalPath : job.finalPath;
+
+  // 1. The previous render out of the way — moved, never deleted.
+  const aside = previous ? await setAside(previous) : { path: null, missing: true };
+  if (!aside.path && !aside.missing) {
+    return { ok: false, message: "Dropbox wouldn't move the current Topaz file aside just now, so nothing changed. Try again in a minute." };
+  }
+
+  // 2. The row back to the start, and the earlier render on the record, together.
+  const now = new Date();
+  const record: TopazRerunRecord = {
+    kind: "rerun",
+    jobId: job.id,
+    submissionId: job.submissionId,
+    projectId: job.projectId,
+    state: "done",
+    was,
+    acceptedAt: (job.acceptedAt ?? job.finishedAt ?? now).toISOString(),
+    estimateCredits: job.estimateCredits ?? job.creditsCharged ?? 0,
+    creditsCharged: job.creditsCharged,
+    outputCheck: job.outputCheck,
+    presetJson: job.presetJson,
+    from: previous,
+    keptAt: aside.path,
+    by,
+    at: now.toISOString(),
+  };
+  try {
+    await prisma.$transaction(async (tx) => {
+      const moved = await tx.topazJob.updateMany({
+        where: {
+          id: job.id,
+          state: was,
+          deliveredAt: null,
+          OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }],
+          // A held file somebody is deciding on right now (claimHeld) is theirs.
+          ...(was === "held" ? { AND: [{ OR: [{ resolvedAt: null }, { resolvedAt: { lt: new Date(now.getTime() - HELD_CLAIM_STALE_MS) } }] }] } : {}),
+        },
+        data: {
+          state: "queued",
+          // Back to a clean sheet: a new request, a new price, a new decision.
+          requestId: null,
+          estimateCredits: null,
+          estimateSeconds: null,
+          balanceBefore: null,
+          creditsCharged: null,
+          acceptedAt: null, // the record below carries the earlier render's place in the caps
+          completeUploadAt: null,
+          completeUploadTries: 0,
+          uploadUrlsJson: null,
+          uploadPartsJson: null,
+          uploadedBytes: null,
+          downloadUrl: null,
+          presetJson: null,
+          // No file until the new one is finished and checked.
+          finalPath: null,
+          savedAt: null,
+          dropboxJobId: null,
+          savingStartedAt: null,
+          taskId: null,
+          outputCheck: null,
+          outputCheckJson: null,
+          outputCheckedAt: null,
+          heldPath: null,
+          heldAt: null,
+          resolvedAt: null,
+          resolvedBy: null,
+          resolutionNote: null,
+          // A person sent this video back through on purpose: the
+          // already-finished rule must not skip it (stepQueued).
+          resolution: "force-pass",
+          attempt: 0,
+          error: null,
+          errorAt: null,
+          skipReason: null,
+          nextAttemptAt: null,
+          // The pass's clock starts again HERE: the exceptions board and the
+          // stall checks read startedAt before createdAt, and createdAt is when
+          // the cut was first approved, days ago perhaps.
+          startedAt: now,
+          finishedAt: null,
+          leaseUntil: null,
+          leaseBy: null,
+        },
+      });
+      if (moved.count !== 1) throw new Error("changed");
+      await tx.appSetting.create({ data: { key: `${TOPAZ_RERUN_KEY}${job.id}:${now.getTime()}`, value: JSON.stringify(record), updatedBy: by ?? "topaz-rerun" } });
+    });
+  } catch {
+    // Put the file back where it was, but ONLY while the job still points at
+    // it. Two presses at once: the other one may have reset the row already,
+    // and a file moved back to the top of Final would then be taken for the
+    // new render's own copy when it is saved. Left in superseded/, it is safe.
+    const still = await prisma.topazJob.findUnique({ where: { id: job.id }, select: { state: true, finalPath: true, heldPath: true } }).catch(() => null);
+    const pointsAtIt = !!still && still.state === was && (was === "held" ? (still.heldPath ?? still.finalPath) : still.finalPath) === previous;
+    if (aside.path && previous && pointsAtIt) await dbx("files/move_v2", { from_path: aside.path, to_path: previous, autorename: false }).catch(() => {});
+    return { ok: false, message: "That video changed while it was being started again. Refresh and look again." };
+  }
+
+  // 3. Kyle's card for the old file: closed with the reason, its key retired
+  //    (pingKyle never reopens a card it finds closed under its own key). The
+  //    retired key no longer starts "topaz-deliver-", so nothing that reads a
+  //    job id off that prefix (task Complete, the program-card sweep) can
+  //    mistake the old card for the job's live one.
+  await prisma.smartTask
+    .updateMany({
+      where: { dedupeKey: `topaz-deliver-${job.id}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "CANCELLED", completedAt: now, summary: RERUN_CARD_CLOSED },
+    })
+    .catch(() => {});
+  await prisma.smartTask
+    .updateMany({ where: { dedupeKey: `topaz-deliver-${job.id}` }, data: { dedupeKey: `topaz-rerun-card:${job.id}:${now.getTime()}` } })
+    .catch(() => {});
+
+  const credits = expectedRerunCredits(job, s);
+  const kept = aside.path ? ` The previous Topaz file is kept in Dropbox: ${aside.path.split("/").slice(-2).join("/")}.` : "";
+  await prisma.activity
+    .create({
+      data: {
+        projectId: job.projectId,
+        type: "SYSTEM",
+        body: `Topaz pass run again${by ? ` by ${by}` : ""} with today's Settings${credits != null ? ` (about ${credits} credits expected)` : ""}.${kept} Nothing goes to the client until the new Topaz file is finished and checked.`.slice(0, 500),
+      },
+    })
+    .catch(() => {});
+  return {
+    ok: true,
+    message: `Running it through Topaz again with today's Settings${credits != null ? `, about ${credits} credits` : ""}. It starts with the free price check, so every limit still applies. The previous Topaz file is kept in superseded/, and the new one becomes the file to send once it is finished and checked.`,
+  };
 }
 
 /** Kyle's one tap after he has uploaded it to Aryeo: closes the card and closes
@@ -3457,7 +3750,7 @@ async function reopenSetAsideRender(jobId: string, asidePath: string | null): Pr
  */
 export async function markTopazDelivered(jobId: string, by?: string | null, opts?: { at: Date; destination: "client-portal" | "aryeo-listing" | "dropbox-link" }): Promise<{ ok: boolean; message: string; repaired?: boolean; incomplete?: string }> {
   const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { id: true, taskId: true, projectId: true, deliveredAt: true, finalPath: true } });
-  if (!job) return { ok: false, message: "That 1080p job no longer exists." };
+  if (!job) return { ok: false, message: "That Topaz job no longer exists." };
   const first = !job.deliveredAt;
 
   // The historical fact, written once. `deliveredAt: null` in the filter is
@@ -3484,7 +3777,7 @@ export async function markTopazDelivered(jobId: string, by?: string | null, opts
 
   if (first) {
     await prisma.activity
-      .create({ data: { projectId: job.projectId, type: "SYSTEM", body: `1080p video ${opts?.destination === "client-portal" ? "published in the client portal" : opts?.destination === "dropbox-link" ? "sent to the client as a Final Dropbox link" : "uploaded to Aryeo and delivered"}${by ? ` by ${by}` : ""} — ${job.finalPath?.split("/").pop() ?? "video"}.` } })
+      .create({ data: { projectId: job.projectId, type: "SYSTEM", body: `Topaz video ${opts?.destination === "client-portal" ? "published in the client portal" : opts?.destination === "dropbox-link" ? "sent to the client as a Final Dropbox link" : "uploaded to Aryeo and delivered"}${by ? ` by ${by}` : ""} — ${job.finalPath?.split("/").pop() ?? "video"}.` } })
       .catch(() => {});
   }
 

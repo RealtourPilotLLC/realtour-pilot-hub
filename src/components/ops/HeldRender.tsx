@@ -95,7 +95,7 @@ export function HeldRender({
           type="button"
           disabled={busy}
           onClick={() => run(() => recheckHeldRenderAction(jobId))}
-          aria-label={`Check the 1080p file for ${street} again`}
+          aria-label={`Check the Topaz file for ${street} again`}
           className={btn}
         >
           {busy ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />} Check again
@@ -130,7 +130,7 @@ export function HeldRender({
               onClick={() => run(() => resolveHeldRenderAction(jobId, "accept-processed", HELD_ATTESTATION))}
               className={btn}
             >
-              {busy ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3" />} Use the 1080p file
+              {busy ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3" />} Use the Topaz file
             </button>
             <button type="button" disabled={busy} onClick={() => { setAccepting(false); setListened(false); }} className={btn}>
               Not yet

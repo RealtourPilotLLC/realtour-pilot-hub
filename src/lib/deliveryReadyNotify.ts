@@ -78,7 +78,7 @@ export async function deliveryAlertsDue(now: Date = new Date()): Promise<{ due: 
       prisma.appSetting.count({ where: { key: { startsWith: VIDEO_PUSH_PREFIX }, updatedAt: { gte: since } } }),
     ]);
     if (approved) return { due: true, why: "a cut was approved" };
-    if (rendered) return { due: true, why: "a 1080p pass moved" };
+    if (rendered) return { due: true, why: "a Topaz pass moved" };
     if (pushes) return { due: true, why: "an Aryeo upload moved" };
     return { due: false, why: "nothing moved" };
   } catch {

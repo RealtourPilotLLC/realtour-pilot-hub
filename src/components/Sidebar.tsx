@@ -42,7 +42,7 @@ import { cn } from "@/lib/utils";
 import { canAccess, isCreativeLead, isOffice, parsePermissions, ROLE_LABEL, type PageKey } from "@/lib/auth/access";
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { groupSidebarDestinations, officeMenuDestinations, usesRoleMenu } from "@/lib/sidebarNavigation";
+import { groupSidebarDestinations, officeMenuDestinations, PHOTO_DELIVERY_LABEL, usesRoleMenu, VIDEO_DELIVERY_LABEL } from "@/lib/sidebarNavigation";
 
 export type ShellUser = {
   name: string | null;
@@ -63,7 +63,7 @@ type NavItem = {
   soon?: boolean;
   external?: boolean; // opens in a new tab (e.g. the Script Studio app)
   /** Oct 22 2026: a role door that opens a section of its page (Kyle's
-   *  "Ready to send" → /review#ready-to-send). `href` stays the destination
+   *  Video Delivery → /review#ready-to-send). `href` stays the destination
    *  that access and the active state are read from. */
   link?: string;
 };
@@ -81,8 +81,8 @@ const SECTIONS: NavSection[] = [
       // really be a dashboard to oversee everything going on, and then the
       // other pages are for more in-depth adjustments and changes"). "/" is
       // one dashboard for the owner and the office; the first of the six
-      // doors (sidebarNavigation OFFICE_MENU, which also sets the six labels:
-      // Dashboard, Shoots, Photos, Videos, Messages, Schedule). Retired into
+      // doors (sidebarNavigation's role menus set the door labels; Oct 23
+      // 2026: Photo Delivery and Video Delivery). Retired into
       // it over time, routes untouched and reachable by URL:
       //   · Ops Day (/ops)          — Sep 2 into Home; on Oct 19 "Shoots and
       //                               exceptions", that night a redirect to the
@@ -108,21 +108,22 @@ const SECTIONS: NavSection[] = [
       // "Video Review Room" (Jordan, Oct 19 2026): the label only; the /review
       // route and the `review` PageKey keep their names. "Videos" in the
       // six-door menu (owner and office); photographers keep this label.
-      // Oct 22 2026: "Videos" everywhere (the page went by three names); the
-      // role doors relabel it where a reader's day calls it something else
-      // (Kyle's "Ready to send", a photographer's "My Videos").
-      { label: "Videos", href: "/review", icon: MonitorPlay, key: "review" },
-      // PHOTOS (Oct 14 2026, docs/photo-delivery): the queue, AI QC, the
-      // AutoHDR Fix Cart and the delivery check. Its own `photos` PageKey
+      // Oct 22 2026: "Videos" everywhere (the page went by three names).
+      // Oct 23 2026 (Jordan): "Video Delivery", on every menu, Kyle's door
+      // included (it read "Ready to send"); only a photographer's own door
+      // keeps "My Videos" (sidebarNavigation FIELD_MENU).
+      { label: VIDEO_DELIVERY_LABEL, href: "/review", icon: MonitorPlay, key: "review" },
+      // PHOTO DELIVERY (Oct 14 2026, docs/photo-delivery): the queue, AI QC,
+      // the AutoHDR Fix Cart and the delivery check. Its own `photos` PageKey
       // since Oct 22 2026 (it rode `ops` before): owner and office, and the
-      // creative manager, who reads the desk VIEW ONLY. Labelled "Photos" in
-      // the role menus.
-      // Video delivery, Special requests, Scheduling and Old items stopped
-      // being menu entries on Oct 19 2026 (Kyle's checklist holds them), and
-      // so did Messages (/ops/messages, merged into Communications, which is
-      // "Messages" in the six-door menu) and Shoots & exceptions (/ops, now
-      // the dashboard) that night.
-      { label: "Photo delivery", href: "/ops/photo-delivery", icon: Images, key: "photos" },
+      // creative manager, who reads the desk VIEW ONLY. "Photo Delivery" on
+      // every menu (Oct 23 2026, Jordan; it read "Photos" on the role menus).
+      // The old /ops/video-delivery screen, Special requests, Scheduling and
+      // Old items stopped being menu entries on Oct 19 2026 (Kyle's checklist
+      // holds them), and so did Messages (/ops/messages, merged into
+      // Communications, which is "Messages" in the six-door menu) and Shoots &
+      // exceptions (/ops, now the dashboard) that night.
+      { label: PHOTO_DELIVERY_LABEL, href: "/ops/photo-delivery", icon: Images, key: "photos" },
       // YOUR LIST (Jordan, Oct 21 2026; audit A9): the daily checklist
       // (/ops/checklist) gets a door of its own under More → Lists. Same key
       // the page checks (`ops`), and only for owner and office logins, who
@@ -278,7 +279,7 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
     // The creative manager (Oct 21 2026) keeps Client & Team Feedback (their
     // photographer and editor tabs) but not Communication coaching: that page
     // is about how the office answers clients on the company line.
-    // Oct 22 2026: Photos is one of their doors now (the desk, view only:
+    // Oct 22 2026: Photo Delivery is one of their doors now (the desk, view only:
     // its `photos` key); Your list stays off their menu (the filter below).
     if (user && user.role === "CREATIVE_MANAGER") items = items.filter((i) => i.href !== "/coaching");
     // The photo desk's pages admit the owner, the office and the creative

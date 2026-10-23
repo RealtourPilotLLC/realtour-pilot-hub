@@ -404,7 +404,7 @@ async function main() {
     c.ok("Deliveries: the late and due-today photo jobs, not the one due later", del.includes(`photo:${photoJobs[0].id}`) && del.includes(`photo:${photoJobs[1].id}`) && !del.includes(`photo:${photoJobs[2].id}`) && !del.includes(`photo:${photoJobs[3].id}`), del.join(","));
     c.ok("Deliveries: every listing video due today or late (any lane), and every one ready to send; a held one not due waits; late first", ["video:v-late", "video:v-today", "video:v-fin", "video:v-held", "video:v-send"].every((k) => del.includes(k)) && !del.includes("video:v-held-later") && group("deliveries").lines.slice(0, 3).every((l) => l.late), del.join(","));
     const line = (g: string, k: string) => group(g).lines.find((l) => l.key === k)!;
-    c.ok("each delivery says what is needed", line("deliveries", "video:v-send").need === "Ready to send" && line("deliveries", "video:v-send").detail?.includes("1 client request to check first") === true && line("deliveries", "video:v-late").need === "Waiting on editor" && line("deliveries", "video:v-today").need === "Waiting on review" && line("deliveries", "video:v-fin").need === "In the 1080p pass" && line("deliveries", "video:v-held").need === "Held" && line("deliveries", `photo:${photoJobs[1].id}`).need === "Ready to review and send" && line("deliveries", `photo:${photoJobs[0].id}`).need === "Needs your decision");
+    c.ok("each delivery says what is needed", line("deliveries", "video:v-send").need === "Ready to send" && line("deliveries", "video:v-send").detail?.includes("1 client request to check first") === true && line("deliveries", "video:v-late").need === "Waiting on editor" && line("deliveries", "video:v-today").need === "Waiting on review" && line("deliveries", "video:v-fin").need === "In the Topaz pass" && line("deliveries", "video:v-held").need === "Held" && line("deliveries", `photo:${photoJobs[1].id}`).need === "Ready to review and send" && line("deliveries", `photo:${photoJobs[0].id}`).need === "Needs your decision");
     c.ok("a delivery opens its own screen (the photo job, the exact cut)", line("deliveries", `photo:${photoJobs[0].id}`).href === `/ops/photo-delivery/${photoJobs[0].id}` && line("deliveries", "video:v-late").href === `/review/${pEdit.id}?cut=v-late` && line("deliveries", "video:v-send").action.kind === "open");
     const msgs = group("messages").lines;
     const { waitingRowReplyHref } = await import("@/components/comms/WaitingOnUs");
@@ -587,15 +587,15 @@ async function main() {
     const kDash = await settle(await home({}));
     const kHtml = renderToStaticMarkup(expand(kDash) as Parameters<typeof renderToStaticMarkup>[0]);
     const kDesk = elements(kDash, "OfficeDesk")[0]?.desk as OfficeDesk;
-    const kTab = (k: string) => kDesk.tabs.find((t) => t.key === k)!;
+    const kSec = (k: string) => kDesk.sections.find((t) => t.key === k)!;
     c.ok("Kyle's '/' is his desk: none of the old cards (tiles, Needs attention, Kyle's day, the shoots card)", !!kDesk && ["HealthStrip", "NeedsAttention", "KylesDayCard", "TodaysShoots", "ShootsInProgress", "BehindLine"].every((n) => elements(kDash, n).length === 0), namesOf(kDash).filter((n) => ["HealthStrip", "NeedsAttention", "KylesDayCard", "TodaysShoots"].includes(n)).join());
-    c.ok("every count on it is the length of the list it opens", kDesk.tabs.every((t) => (t.key === "closeout" ? t.count === kDesk.closeout.lines.filter((l) => !l.done).length : t.count === t.now.length)), JSON.stringify(kDesk.tabs.map((t) => [t.key, t.count, t.now.length])));
-    c.ok("the clients waiting are his Client Replies (Messages' own waiting list)", kTab("replies").now.filter((i) => i.id.startsWith("reply:")).length === waitingNow.length && waitingNow.length >= 1);
-    const kJob = kTab("delivery").now.find((i) => i.id === `job:${pEdit.id}`);
+    c.ok("every count on it is the length of the rows it labels (four sections, revision 2)", kDesk.sections.map((t) => t.key).join() === "deliver,comms,shoots,followups" && kDesk.sections.every((t) => t.count === t.now.length), JSON.stringify(kDesk.sections.map((t) => [t.key, t.count, t.now.length])));
+    c.ok("the clients waiting are his Client Communications (Messages' own waiting list)", kSec("comms").now.filter((i) => i.id.startsWith("reply:")).length === waitingNow.length && waitingNow.length >= 1);
+    const kJob = kSec("deliver").now.find((i) => i.id === `video:${pEdit.id}`);
     const kSend = kJob?.panel.kind === "job" ? kJob.panel.assets.find((a) => a.id === "video:v-send") : undefined;
     c.ok("the approved video with a client request to check is his to send, the request named", kSend?.tone === "now" && kSend.status.includes("ready to send") && kSend.status.includes("1 client request"), kSend?.status);
-    c.ok("his own old items are Follow-Ups, each with an action (no count without one)", kTab("followups").now.some((i) => i.id === `task:${k1.id}`) && kDesk.tabs.flatMap((t) => t.now).every((i) => !!i.primary));
-    c.ok("no 'done today by the office': the day's summary is his own work", !kHtml.includes("done today by the office") && Array.isArray(kDesk.closeout.summary.completed));
+    c.ok("his task ten days past its date is backlog (one link, never re-dated or closed); every row on the desk has an action", !kSec("followups").now.some((i) => i.id === `task:${k1.id}`) && kDesk.backlog.count >= 1 && kDesk.sections.flatMap((t) => t.now).every((i) => !!i.primary));
+    c.ok("no 'done today by the office': the day's summary is his own work", !kHtml.includes("done today by the office") && Array.isArray(kDesk.checks.summary.completed));
     c.ok("no money for Kyle: no week, no money, no shoot issues, no figure anywhere on the page", ["OwnerWeekCard", "MoneyStat", "ShootIssuesCard", "OwnerBusiness", "PulseStrip"].every((n) => elements(kDash, n).length === 0) && !/\$\d/.test(kHtml), (kHtml.match(/.{40}\$\d.{40}/) ?? [""])[0]);
     // Jordan, Oct 19 2026: "we don't need this at the top of the screen. Only flagged issues should show up on the shoot itself."
     c.ok("no flagged banner on the dashboard (flags show on the shoot itself)", elements(kDash, "FlaggedBanner").length === 0);
@@ -650,10 +650,11 @@ async function main() {
     const labels = (html: string) => [...html.matchAll(/<a\b[^>]*>[\s\S]*?<span class="flex-1">([^<]+)<\/span>/g)].map((m) => m[1]);
     const section = (html: string, id: string) => html.match(new RegExp(`<section[^>]*data-sidebar-group="${id}"[^>]*>([\\s\\S]*?)</section>`))?.[1] ?? "";
     const ROLE_DOORS = [
-      ["Jordan (owner)", { name: "Jordan", email: owner.email, role: "OWNER" }, "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Videos,Editing Room,Monthly Content,Photos,Messages,Shoots", ["/tasks", "/clients", "/upload", "/settings", "/schedule", "/sales"]],
-      ["Kyle (office)", { name: "Kyle Smith", email: kyle.email, role: "ADMIN" }, "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs", "Dashboard,Your list,Messages,Photos,Ready to send,Editing Room,Shoots", ["/tasks", "/clients", "/content", "/upload", "/settings", "/schedule"]],
-      // Oct 22 2026: Photos, the view-only photo desk, joins James's doors.
-      ["James (creative manager)", { name: "James", email: james.email, role: "CREATIVE_MANAGER" }, "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay", "Dashboard,Videos,Editing Room,Monthly Content,Photos,Uploads,Shoots,My Performance", ["/tasks", "/clients", "/shoot", "/schedule"]],
+      // Oct 23 2026 (Jordan): Photo Delivery and Video Delivery; Kyle's "Ready to send" door is Video Delivery too.
+      ["Jordan (owner)", { name: "Jordan", email: owner.email, role: "OWNER" }, "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Messages,Shoots", ["/tasks", "/clients", "/upload", "/settings", "/schedule", "/sales"]],
+      ["Kyle (office)", { name: "Kyle Smith", email: kyle.email, role: "ADMIN" }, "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs", "Dashboard,Your list,Messages,Photo Delivery,Video Delivery,Editing Room,Shoots", ["/tasks", "/clients", "/content", "/upload", "/settings", "/schedule"]],
+      // Oct 22 2026: Photo Delivery, the view-only photo desk, joins James's doors.
+      ["James (creative manager)", { name: "James", email: james.email, role: "CREATIVE_MANAGER" }, "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Uploads,Shoots,My Performance", ["/tasks", "/clients", "/shoot", "/schedule"]],
     ] as const;
     for (const [who, u, doors, doorLabels, more] of ROLE_DOORS) {
       const html = menu(u);
@@ -761,7 +762,7 @@ async function main() {
       // Oct 22 2026: the office's QC tile reads "Photos &amp; videos to send", and
       // its dashboard has no Shoots in progress card.
       // Oct 23 2026: Kyle's home is his desk (the five tabs and Do next).
-      const words = who === "Kyle" ? ["Do next", "QC &amp; Delivery", "Client Replies", "Shoot Prep", "Follow-Ups", "Closeout"] : who === "Jordan" ? ["Shoots on time", "Clients waiting", "Special requests", "QC &amp; review", "Shoots in progress", "Needs attention now"] : ["Shoots on time", "Clients waiting", "Special requests", "Photos &amp; videos to send", "Needs attention now"];
+      const words = who === "Kyle" ? ["Daily checks", "Review &amp; Deliver", "Client Communications", "Today&#x27;s Shoots", "Requests &amp; Follow-Ups"] : who === "Jordan" ? ["Shoots on time", "Clients waiting", "Special requests", "QC &amp; review", "Shoots in progress", "Needs attention now"] : ["Shoots on time", "Clients waiting", "Special requests", "Photos &amp; videos to send", "Needs attention now"];
       c.ok(`${who}'s dashboard renders (tiles, needs attention, the list card; shoots in progress for the owner), no nested links, thumb-sized taps`, !html.startsWith("RENDER FAILED") && words.every((w) => html.includes(w)) && !nestedLink(html) && (html.match(/min-h-11/g) ?? []).length > (who === "Jordan" ? 8 : 5), `missing: ${words.filter((w) => !html.includes(w)).join(", ") || "none"} · nested ${nestedLink(html)} · taps ${(html.match(/min-h-11/g) ?? []).length}`);
       c.ok(`${who}'s dashboard: money only for the owner`, who === "Jordan" ? html.includes("Profit this month") && html.includes("This week") : !html.includes("Profit this month") && !html.includes("This week") && !/\$\d/.test(html));
     }

@@ -52,7 +52,7 @@ const refresh = () => {
   }
 };
 
-/** Run 1080p (no pass ever ran) or Retry 1080p (it did not finish). */
+/** Run Topaz (no pass ever ran) or Retry Topaz (it did not finish). */
 export async function run1080pAction(submissionId: string): Promise<Result> {
   const who = await staff();
   if (!who.ok) return who;
@@ -64,21 +64,44 @@ export async function run1080pAction(submissionId: string): Promise<Result> {
     const q = await topaz.queueTopazRender(submissionId);
     if (!q.queued) return { ok: false, message: q.reason };
     refresh();
-    return { ok: true, message: "The 1080p pass is queued. It starts within five minutes, and this row updates when the file is checked." };
+    return { ok: true, message: "The Topaz pass is queued. It starts within five minutes, and this row updates when the file is checked." };
   }
   const refusal = await topaz.retryTopazJobRefusal(job.id);
   if (refusal) return { ok: false, message: refusal };
   await background(async () => {
     const r = await topaz.retryTopazJob(job.id);
-    if (!r.ok) console.warn("[delivery] 1080p retry refused in the background", job.id, r.message);
+    if (!r.ok) console.warn("[delivery] Topaz retry refused in the background", job.id, r.message);
   });
   refresh();
   return {
     ok: true,
     message: job.outputCheck === "resolved-original"
-      ? "Bringing the 1080p file back for a listen. It shows on this card in a moment."
-      : "Running the 1080p pass again. It starts within five minutes, and this row updates when the file is checked.",
+      ? "Bringing the Topaz file back for a listen. It shows on this card in a moment."
+      : "Running the Topaz pass again. It starts within five minutes, and this row updates when the file is checked.",
   };
+}
+
+/**
+ * RUN TOPAZ AGAIN (Jordan, Oct 23 2026): a finished Topaz file that doesn't
+ * look right, on a video not sent yet, goes back through the pass with
+ * today's Settings (topazJobs.rerunTopazJob; the rule is lib/topazRerun).
+ * The owner and the office only (staff(): requireAdmin, never a preview), so
+ * the creative manager and the editors are refused here whatever a screen
+ * draws. It runs while the person waits: one Dropbox move and one database
+ * write, and the answer (a refusal, or Dropbox saying no) is the one they
+ * need to read. Nothing is spent here: the lane's free price check is next.
+ */
+export async function rerunTopazAction(jobId: string): Promise<Result> {
+  const who = await staff();
+  if (!who.ok) return who;
+  if (typeof jobId !== "string" || !ID_RE.test(jobId)) return { ok: false, message: "Which video?" };
+  const me = await getCurrentUser().catch(() => null);
+  const { displayNameFor } = await import("@/lib/actorName");
+  const by = (await displayNameFor(me).catch(() => null)) ?? who.name;
+  const { rerunTopazJob } = await import("@/lib/topazJobs");
+  const r = await rerunTopazJob(jobId, by);
+  if (r.ok) refresh();
+  return r;
 }
 
 /** Retry publication: put the checked file on the client's portal now. */
