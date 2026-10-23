@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { normalizeTitle, titleSimilarity, asPillarEmphasis, type PillarEmphasis } from "@/lib/contentPolicy";
+import { normalizeTitle, pillarKey, titleSimilarity, asPillarEmphasis, type PillarEmphasis } from "@/lib/contentPolicy";
 
 // ---------------------------------------------------------------------------
 // Pillars as STABLE identities (spec §5/§18, manifest C-A6/C-C4). A client's
@@ -33,7 +33,12 @@ export async function resolvePillarByLabel(enrollmentId: string, label: string |
   const key = normalizeTitle(label);
   if (!key) return null;
   const pillars = await listPillars(enrollmentId, { includeRetired: true });
-  const hits = pillars.filter((p) => normalizeTitle(p.name) === key || p.aliases.some((a) => normalizeTitle(a) === key));
+  const exact = pillars.filter((p) => normalizeTitle(p.name) === key || p.aliases.some((a) => normalizeTitle(a) === key));
+  // Oct 23 2026: "Pillar 3: Personal Brand & Trust Builder" is the pillar
+  // "Personal Brand & Trust Builder" (pillarKey drops the number), when the
+  // exact label matches nothing.
+  const pk = pillarKey(label);
+  const hits = exact.length ? exact : pillars.filter((p) => pillarKey(p.name) === pk || p.aliases.some((a) => pillarKey(a) === pk));
   // THE PILLAR IN USE WINS (Oct 20 2026). A retired duplicate keeps its old
   // name as an alias, and sorted first, it took all 20 of Kristin Ciarmella's
   // new Malvern topics out of her bank. An active match is returned; a retired

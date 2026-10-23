@@ -356,6 +356,14 @@ export function normalizeTitle(title: string): string {
     .trim();
 }
 
+/** A pillar label for matching: normalizeTitle without a leading "Pillar 3:"
+ *  (Oct 23 2026: strategy documents number their pillars, the model copies
+ *  "Pillar 3: Personal Brand & Trust Builder", and Bernadette Rabel's skit
+ *  ideas were refused as unknown pillars). */
+export function pillarKey(label: string): string {
+  return normalizeTitle(label.replace(/^\s*pillar\s*\d+\s*[:.\-–—]\s*/i, ""));
+}
+
 export function titleTokens(title: string): Set<string> {
   const toks = normalizeTitle(title)
     .split(" ")
@@ -458,7 +466,7 @@ export function validateTopicBank(bank: TopicBank, opts: ValidateTopicBankOption
         gaps.push(makeGap("insufficient-context", `Only ${p.topics.length} of ${want} topics could be supported for “${p.name}” at the quality bar.`, { field: `pillars[${pi}].topics`, question: `What else could ${bank.clientName ?? "the client"} speak to under “${p.name}” from real experience?` }));
       }
     }
-    if (opts.strategyPillarNames && !opts.strategyPillarNames.some((n) => normalizeTitle(n) === normalizeTitle(p.name))) {
+    if (opts.strategyPillarNames && !opts.strategyPillarNames.some((n) => pillarKey(n) === pillarKey(p.name))) {
       findings.push({ code: "pillar.unknown", severity: mode === "generated" ? "block" : "warn", message: `Pillar “${p.name}” is not one of the approved strategy's pillars (${opts.strategyPillarNames.join("; ")}). Map it by alias on import; never rename the client's pillars.`, path: `pillars[${pi}]` });
     }
     p.topics.forEach((t, ti) => {

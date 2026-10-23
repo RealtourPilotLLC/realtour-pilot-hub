@@ -44,6 +44,8 @@ import { pinReadOnlyDatabaseUrl, proveReadOnly } from "./_lib/dbGuard";
 export const MODELS = [
   // The people and the accounts they sign in with.
   "Client", "ClientUser", "ClientMembership", "ClientEmailAlias", "AgentProfile",
+  // Oct 23 2026: the portal's emailed sign-in links (one row per link, hashed).
+  "ClientLoginToken",
   // Enrollment and the shape of a program.
   "ProgramSignup", "ContentEnrollment", "ProgramOwnerAssignment", "ProgramEnrollmentChange",
   "ProgramOnboarding", "ContentMonth",

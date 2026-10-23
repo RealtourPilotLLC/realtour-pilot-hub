@@ -189,6 +189,12 @@ async function main() {
         const o = { name: "Harrison Wells", client: "John Collins", startAt: new Date("2026-10-23T17:30:00Z"), street: "80 W Lancaster Ave", link: `${APP}/shoot/p1` };
         same("session_scripts", "John's session", `⚙️ Realtour Hub: Hi Harrison, John's content session is today at 1:30 PM at 80 W Lancaster Ave. The scripts are on your shoot page: ${APP}/shoot/p1`, sst.composeSessionScriptsText(o));
       }
+      {
+        // Oct 23 2026: the Editing Room's Remind photographer button, new with its template (no older code to compare).
+        const rmd = await import("@/lib/remindPhotographer");
+        const o = { firstName: "Harrison", street: "610 Onward Ave", missing: ["the flow and vision for video 1 (Premium Social Reel)", "the instructions for video 2 (Standard Reel)"], link: `${APP}/upload/p1` };
+        same("instructions_reminder_photographer", "two videos", `⚙️ Realtour Hub: Hi Harrison, quick reminder: the instructions for 610 Onward Ave are missing and the editor is waiting on them. Still needed: the flow and vision for video 1 (Premium Social Reel) and the instructions for video 2 (Standard Reel). You can add them here: ${APP}/upload/p1`, rmd.composeReminderText(o));
+      }
       const counts = { groundPhotos: 0, dronePhotos: 45, droneClips: 4, footage: 0, newestAt: null };
       for (const [sure, alsoEmpty] of [[["ground_photos"], []], [["ground_photos", "drone"], ["footage"]], [["footage"], ["ground_photos", "drone"]]] as const) {
         const o = { firstName: "Harrison", street: "123 Main St", shotWhen: "yesterday", counts, sure: [...sure], alsoEmpty: [...alsoEmpty], link: `${APP}/upload/p1` };
