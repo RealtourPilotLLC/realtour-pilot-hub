@@ -23,6 +23,7 @@ import type { BehindState } from "../../src/lib/behindAlert";
 import type { ShootIssue } from "../../src/lib/shootIssues";
 import type { JobRow, JobsBoard } from "../../src/lib/jobsBoard";
 import type { KyleChecklist, Dashboard, KyleDay, AttentionItem } from "../../src/lib/opsHome";
+import type { OfficeDesk } from "../../src/lib/officeDesk";
 
 installNextStubs();
 type Props = Record<string, unknown>;
@@ -99,7 +100,7 @@ function propValues(tree: unknown, key: string): unknown[] {
   if (!isValidElement<Props>(tree)) return [];
   return [...(key in tree.props ? [tree.props[key]] : []), ...Object.values(tree.props).flatMap((part) => propValues(part, key))];
 }
-const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "ContentActionsSection"]);
+const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "ContentActionsSection", "OfficeDeskSection"]);
 async function settle(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settle));
   if (!isValidElement<Props>(tree)) return tree;
@@ -266,7 +267,9 @@ async function main() {
     const leadToday = await task({ taskType: "lead", source: "website", title: "New lead: Sam Roe", dueAt: laterToday, createdAt: ago(H) });
     const fu = await task({ taskType: "comms_followup", source: "system", title: "Chase Real Agent about the floor plan", assignedKey: "kyle", followUpAt: ago(4 * D) });
     const j1 = await task({ title: "Sign the vendor agreement", assignedKey: "jordan", dueAt: ago(8 * D) });
-    const jm1 = await task({ title: "Reshoot plan for 3 Bay St", assignedKey: "james", dueAt: ago(3.5 * D) });
+    // 3.5 days old at the 8:30 AM digest (§9) as well as now: "ago(3.5 days)"
+    // alone was under three days old at 8:30 AM once the drill ran after 8:30 PM.
+    const jm1 = await task({ title: "Reshoot plan for 3 Bay St", assignedKey: "james", dueAt: new Date(Math.min(ago(3.5 * D).getTime(), etAt(etDayKey(now), 8, 30).getTime() - 3.5 * D)) });
     await prisma.auditLog.createMany({ data: [1, 2, 3].map(() => ({ actor: "james@oct19.invalid", action: aging.PUSH_ACTION, target: jm1.id, detail: "{}" })) });
     // Due today: Kyle's instruction, a to-do moved to today, Jordan's (not Kyle's), a drafted text (the Outbox's).
     const kToday = await task({ taskType: "internal_instruction", source: "slack", title: "Send Real Agent the $200 invoice note", assignedKey: "kyle", dueAt: laterToday });
@@ -466,10 +469,17 @@ async function main() {
     // The red line, driven through the behind contract.
     behindOverride = { level: "very_behind", videosLate: 5, photosLate: 1, oldestLateHours: 72, headline: "5 videos late, the oldest 3 days." };
     const redList = await settle(await listPage({}));
+    // Oct 23 2026: Kyle's home is his desk, with no red line beside a card
+    // (the "4 late" banner against the "3 late" card): its status line says
+    // "N late" once, from its own lists. The owner's dashboard keeps the line.
+    const redKyle = await settle(await home({}));
+    await signIn(owner);
     const redDash = await settle(await home({}));
     behindOverride = { level: "ok", videosLate: 0, photosLate: 0, oldestLateHours: null, headline: null };
     const calmDash = await settle(await home({}));
     behindOverride = null;
+    await signIn(kyle);
+    c.ok("Kyle's desk carries no red line beside a card: its late count is said once, from its own lists", namesOf(redKyle).indexOf("BehindLine") === -1 && namesOf(redKyle).indexOf("HealthStrip") === -1 && elements(redKyle, "OfficeDesk").length === 1);
     c.ok("the red line shows the behind headline when we are behind, and nothing when we are not", textOf(expand(redList)).includes("5 videos late, the oldest 3 days.") && textOf(expand(redDash)).includes("5 videos late, the oldest 3 days.") && !textOf(expand(calmDash)).includes("videos late, the oldest"));
     c.ok("…on the dashboard it sits above the health strip and opens the late shoots", namesOf(redDash).indexOf("BehindLine") >= 0 && namesOf(redDash).indexOf("BehindLine") < namesOf(redDash).indexOf("HealthStrip") && elements(redDash, "BehindLine")[0]?.href === "/jobs?f=late");
 
@@ -571,24 +581,21 @@ async function main() {
     c.ok("the dashboard render writes nothing", dashBefore === JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } })) && await prisma.outboxMessage.count() === 0);
 
     // =====================================================================
-    c.head("§5 · the same dashboard, as Kyle (office): 'Your list', no money");
+    c.head("§5 · Kyle's home is his desk (Oct 23 2026, Jordan's spec): his work, no money");
     // =====================================================================
     await signIn(kyle);
     const kDash = await settle(await home({}));
     const kHtml = renderToStaticMarkup(expand(kDash) as Parameters<typeof renderToStaticMarkup>[0]);
-    const kHealth = elements(kDash, "HealthStrip")[0]?.health as Dashboard["health"];
-    c.ok("Kyle's tiles are the same numbers as Jordan's (team-wide sources)", JSON.stringify(kHealth) === JSON.stringify(health), JSON.stringify(kHealth));
-    // Oct 22 2026: Kyle's dashboard leads with clients waiting, then photos and
-    // videos to send; Today's shoots and the Shoots door cover the shoots, so
-    // the Shoots in progress card is not on his.
-    const kNames = namesOf(kDash);
-    c.ok("Kyle's order (Oct 22 2026): Clients waiting is his first tile, then photos and videos to send; no Shoots in progress card", !kNames.includes("ShootsInProgress") && /data-health="clients"[\s\S]*data-health="qc"[\s\S]*data-health="requests"[\s\S]*data-health="on-time"/.test(kHtml), kNames.filter((n) => ["HealthStrip", "TodaysShoots", "NeedsAttention", "KylesDayCard", "ShootsInProgress"].includes(n)).join(","));
-    const kAtt = elements(kDash, "NeedsAttention")[0]?.attention as Dashboard["attention"];
-    const kItem = (key: string) => kAtt.items.find((i) => i.key.startsWith(key));
-    c.ok("Needs attention speaks to Kyle: what he owns reads 'You'", kAtt.items.length <= opsHome.ATTENTION_MAX && kItem("clients")?.owner.startsWith("You · oldest") === true && kItem("send:")?.owner === "You · 1 client request" && kItem("needs-owner")?.owner.startsWith("You") === true, kAtt.items.map((i) => `${i.key}=${i.owner}`).join(" | "));
-    c.ok("…his own week-old items open his list's earlier days", kItem("old-mine")?.lead === `${kylesWeekOld} of your items` && kItem("old-mine")?.action.href === "/ops/checklist#earlier" && !kItem("old-ops"));
-    const kDay = elements(kDash, "KylesDayCard")[0]?.day as KyleDay | null;
-    c.ok("Kyle's day reads 'Your list' for Kyle, the same numbers, and opens his list", kDay?.you === true && kDay.done === day?.done && kDay.open === day?.open && kDay.href === "/ops/checklist" && kHtml.includes("Your list") && kHtml.includes('href="/ops/checklist"') && !kHtml.includes("Kyle’s day"));
+    const kDesk = elements(kDash, "OfficeDesk")[0]?.desk as OfficeDesk;
+    const kTab = (k: string) => kDesk.tabs.find((t) => t.key === k)!;
+    c.ok("Kyle's '/' is his desk: none of the old cards (tiles, Needs attention, Kyle's day, the shoots card)", !!kDesk && ["HealthStrip", "NeedsAttention", "KylesDayCard", "TodaysShoots", "ShootsInProgress", "BehindLine"].every((n) => elements(kDash, n).length === 0), namesOf(kDash).filter((n) => ["HealthStrip", "NeedsAttention", "KylesDayCard", "TodaysShoots"].includes(n)).join());
+    c.ok("every count on it is the length of the list it opens", kDesk.tabs.every((t) => (t.key === "closeout" ? t.count === kDesk.closeout.lines.filter((l) => !l.done).length : t.count === t.now.length)), JSON.stringify(kDesk.tabs.map((t) => [t.key, t.count, t.now.length])));
+    c.ok("the clients waiting are his Client Replies (Messages' own waiting list)", kTab("replies").now.filter((i) => i.id.startsWith("reply:")).length === waitingNow.length && waitingNow.length >= 1);
+    const kJob = kTab("delivery").now.find((i) => i.id === `job:${pEdit.id}`);
+    const kSend = kJob?.panel.kind === "job" ? kJob.panel.assets.find((a) => a.id === "video:v-send") : undefined;
+    c.ok("the approved video with a client request to check is his to send, the request named", kSend?.tone === "now" && kSend.status.includes("ready to send") && kSend.status.includes("1 client request"), kSend?.status);
+    c.ok("his own old items are Follow-Ups, each with an action (no count without one)", kTab("followups").now.some((i) => i.id === `task:${k1.id}`) && kDesk.tabs.flatMap((t) => t.now).every((i) => !!i.primary));
+    c.ok("no 'done today by the office': the day's summary is his own work", !kHtml.includes("done today by the office") && Array.isArray(kDesk.closeout.summary.completed));
     c.ok("no money for Kyle: no week, no money, no shoot issues, no figure anywhere on the page", ["OwnerWeekCard", "MoneyStat", "ShootIssuesCard", "OwnerBusiness", "PulseStrip"].every((n) => elements(kDash, n).length === 0) && !/\$\d/.test(kHtml), (kHtml.match(/.{40}\$\d.{40}/) ?? [""])[0]);
     // Jordan, Oct 19 2026: "we don't need this at the top of the screen. Only flagged issues should show up on the shoot itself."
     c.ok("no flagged banner on the dashboard (flags show on the shoot itself)", elements(kDash, "FlaggedBanner").length === 0);
@@ -753,7 +760,8 @@ async function main() {
       c.ok(`${who}'s dashboard: Monthly content ${who === "Kyle" ? "is not on it" : "is on it"} (Oct 20 2026: Jordan's and the creative manager's)`, who === "Kyle" ? !html.includes("data-content-actions") : html.includes("data-content-actions"));
       // Oct 22 2026: the office's QC tile reads "Photos &amp; videos to send", and
       // its dashboard has no Shoots in progress card.
-      const words = who === "Jordan" ? ["Shoots on time", "Clients waiting", "Special requests", "QC &amp; review", "Shoots in progress", "Needs attention now"] : ["Shoots on time", "Clients waiting", "Special requests", "Photos &amp; videos to send", "Needs attention now"];
+      // Oct 23 2026: Kyle's home is his desk (the five tabs and Do next).
+      const words = who === "Kyle" ? ["Do next", "QC &amp; Delivery", "Client Replies", "Shoot Prep", "Follow-Ups", "Closeout"] : who === "Jordan" ? ["Shoots on time", "Clients waiting", "Special requests", "QC &amp; review", "Shoots in progress", "Needs attention now"] : ["Shoots on time", "Clients waiting", "Special requests", "Photos &amp; videos to send", "Needs attention now"];
       c.ok(`${who}'s dashboard renders (tiles, needs attention, the list card; shoots in progress for the owner), no nested links, thumb-sized taps`, !html.startsWith("RENDER FAILED") && words.every((w) => html.includes(w)) && !nestedLink(html) && (html.match(/min-h-11/g) ?? []).length > (who === "Jordan" ? 8 : 5), `missing: ${words.filter((w) => !html.includes(w)).join(", ") || "none"} · nested ${nestedLink(html)} · taps ${(html.match(/min-h-11/g) ?? []).length}`);
       c.ok(`${who}'s dashboard: money only for the owner`, who === "Jordan" ? html.includes("Profit this month") && html.includes("This week") : !html.includes("Profit this month") && !html.includes("This week") && !/\$\d/.test(html));
     }

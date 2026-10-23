@@ -33,6 +33,8 @@ import { HealthStrip, KylesDayCard, NeedsAttention, ShootsInProgress, type Doors
 import { TodaysShoots } from "@/components/home/TodaysShoots";
 import { ContentActionsCard } from "@/components/home/ContentActionsCard";
 import { monthlyContentActions, type ContentActions } from "@/lib/contentActions";
+import { officeDeskFor, type OfficeDesk as OfficeDeskData } from "@/lib/officeDesk";
+import { OfficeDesk } from "@/components/desk/OfficeDesk";
 
 export const dynamic = "force-dynamic";
 
@@ -222,6 +224,21 @@ async function CaughtProblems({ boardP, includeTest, canReview, canEdit }: { boa
 }
 
 // ---------------------------------------------------------------------------
+// KYLE'S DESK (Oct 23 2026, Jordan's spec): the office login's whole home.
+// The old cards (the health strip, Today's shoots, Needs attention, "Kyle's
+// day", the problems board) leave HIS view only; the owner and the creative
+// manager keep theirs. lib/officeDesk builds it; every count is the length
+// of the list it opens.
+// ---------------------------------------------------------------------------
+async function OfficeDeskSection({ deskP, includeTest }: { deskP: Promise<OfficeDeskData | null>; includeTest: boolean }) {
+  const desk = await deskP;
+  if (!desk) {
+    return <p role="status" className="rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-muted">Your dashboard couldn&rsquo;t load. Refresh to try again.</p>;
+  }
+  return <OfficeDesk desk={desk} includeTest={includeTest} />;
+}
+
+// ---------------------------------------------------------------------------
 
 export default async function HomePage(props: { searchParams?: Promise<{ test?: string | string[] }> }) {
   const { searchParams } = props ?? {};
@@ -246,6 +263,44 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   // money.
   const creativeHome = me?.role === "CREATIVE_MANAGER";
   const includeTest = sp?.test === "1";
+  const now0 = new Date();
+  // The creative manager keeps his dashboard whatever his login's role (the
+  // TeamMember flag, as the monthly content card reads it).
+  const creativeManager = !isOwner && !!me?.teamMemberId
+    ? !!(await prisma.teamMember.findUnique({ where: { id: me.teamMemberId }, select: { creativeManager: true } }).catch(() => null))?.creativeManager
+    : false;
+  // So does the creative approver's seat (the Review Room's primary reviewer):
+  // creative review is never the desk's work.
+  const reviewSeat = !isOwner && !creativeManager && !!me?.teamMemberId
+    ? (await import("@/lib/settings").then((m) => m.reviewRoomRules()).catch(() => null))?.creativeApproverTeamMemberId === me.teamMemberId
+    : false;
+  // Kyle and any other office login (Oct 23 2026): the desk, and nothing else.
+  if (!isOwner && !creativeHome && !creativeManager && !reviewSeat) {
+    const nowMin0 = etMinutes(now0);
+    const first = me?.name?.split(" ")[0] ?? "there";
+    const deskP = officeDeskFor(me, { now: now0, includeTest }).catch((e: unknown) => { console.warn("officeDesk failed", (e as Error).message); return null; });
+    return (
+      <div>
+        <AutoRefresh seconds={90} />
+        <HomeAnchorForward />
+        <PageHeader
+          eyebrow="Dashboard"
+          title={`${nowMin0 < 12 * 60 ? "Good morning" : nowMin0 < 18 * 60 ? "Good afternoon" : "Good evening"}, ${first}`}
+          subtitle={`${etFullDate(now0)} · updated ${etTime(now0)} ET`}
+        />
+        <div className="mx-auto max-w-7xl space-y-4 p-4 pb-16 sm:p-6">
+          {includeTest && (
+            <div role="status" className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm">
+              <p className="font-semibold">Showing real and test records on the dashboard</p>
+            </div>
+          )}
+          <Suspense fallback={<SectionLoading label="Reading your day…" />}>
+            <OfficeDeskSection deskP={deskP} includeTest={includeTest} />
+          </Suspense>
+        </div>
+      </div>
+    );
+  }
   // One read of the test clients for the whole render (its sections share it).
   const excludedClientIds = includeTest ? [] : await syntheticClientIds();
   const scope = { excludeClientIds: excludedClientIds };
@@ -262,10 +317,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
     .catch((e: unknown) => { console.warn("kyleDay failed", (e as Error).message); return null; });
   const weekP = isOwner ? ownerWeek(now, scope).catch((e: unknown) => { console.warn("ownerWeek failed", (e as Error).message); return null; }) : null;
   const issuesP = isOwner ? ownerShootIssues(now).catch(() => null) : null;
-  // Jordan and the creative manager (Jordan, Oct 20 2026) see what monthly content needs from them.
-  const creativeManager = !isOwner && !!me?.teamMemberId
-    ? !!(await prisma.teamMember.findUnique({ where: { id: me.teamMemberId }, select: { creativeManager: true } }).catch(() => null))?.creativeManager
-    : false;
+  // Jordan and the creative manager (Jordan, Oct 20 2026) see what monthly content needs from them (creativeManager, read above).
   const contentP: Promise<ContentActions | null> | null = isOwner || creativeManager || creativeHome
     ? monthlyContentActions({ now, excludeClientIds: excludedClientIds }).catch((e: unknown) => { console.warn("monthlyContentActions failed", (e as Error).message); return null; })
     : null;

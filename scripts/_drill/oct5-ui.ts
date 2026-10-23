@@ -127,7 +127,7 @@ function words(n: any, out: string[] = []): string[] {
 const textOfTree = (n: any) => words(n).join(" ").replace(/\s+/g, " ");
 const decode = (s: string) => s.replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 const text = (html: string) => decode(html.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
-const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots"]);
+const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "OfficeDeskSection"]);
 async function settle(tree: any): Promise<any> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settle));
   if (!isValidElement(tree)) return tree;
@@ -413,11 +413,13 @@ async function main() {
     await signIn(kyle);
     const ops = await render();
     const list = find(await settle(await listPage({ searchParams: Promise.resolve({}) })), "DailyChecklist")[0]?.props.list as import("../../src/lib/opsHome").KyleChecklist | undefined;
-    c.ok("Kyle: the same dashboard; his checklist is one page away in five groups, in Jordan's order", find(ops.tree, "HealthStrip").length === 1 && find(ops.tree, "DailyChecklist").length === 0 && list?.groups.map((g) => g.key).join() === "deliveries,messages,requests,scheduling,followups", list?.groups.map((g) => g.key).join());
+    // Oct 23 2026: Kyle's home is his desk (lib/officeDesk, Jordan's spec of that day); his checklist page is unchanged.
+    const kDesk = find(ops.tree, "OfficeDesk")[0]?.props.desk as import("../../src/lib/officeDesk").OfficeDesk | undefined;
+    c.ok("Kyle: his desk (Oct 23 2026); his checklist is still one page away in five groups, in Jordan's order", !!kDesk && find(ops.tree, "HealthStrip").length === 0 && find(ops.tree, "DailyChecklist").length === 0 && list?.groups.map((g) => g.key).join() === "deliveries,messages,requests,scheduling,followups", list?.groups.map((g) => g.key).join());
     const { messagesBoard } = await import("@/lib/opsHome");
     const msgs = await messagesBoard({ viewer: { key: "kyle", role: "ADMIN", teamMemberId: kyleTm.id } });
-    const kHealth = find(ops.tree, "HealthStrip")[0]?.props.health as import("../../src/lib/opsHome").Dashboard["health"];
-    c.ok("…the Clients waiting number is the Messages screen's own waiting list, and his list's Messages group holds the same", kHealth.clients?.waiting === msgs.waiting.length && list?.groups[1].lines.length === msgs.waiting.length, `${kHealth.clients?.waiting} vs ${msgs.waiting.length}`);
+    const kReplies = kDesk?.tabs.find((t) => t.key === "replies")?.now.filter((i) => i.id.startsWith("reply:")) ?? [];
+    c.ok("…his Client Replies are the Messages screen's own waiting list, and his list's Messages group holds the same", kReplies.length === msgs.waiting.length && list?.groups[1].lines.length === msgs.waiting.length, `${kReplies.length} vs ${msgs.waiting.length}`);
     c.ok("Kyle: no money anywhere, no owner list, no business section", find(ops.tree, "MoneyStat").length === 0 && find(ops.tree, "QuickAdd").length === 0 && !findBy(ops.raw, (e) => e.type === Suspense && nameOf(e.props.children?.type) === "OwnerBusiness").length);
 
     await signIn(james);

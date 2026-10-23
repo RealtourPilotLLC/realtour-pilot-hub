@@ -46,7 +46,7 @@ function hrefs(tree: unknown): string[] {
 // Oct 5: Home streams its secondary sections (Suspense around async server
 // components that await reads started with the page's own). Resolve those
 // named components so the checks read the page as it finishes composing.
-const STREAMED_HOME = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots"]);
+const STREAMED_HOME = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "OfficeDeskSection"]);
 async function settleHome(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settleHome));
   if (!isValidElement<Props>(tree)) return tree;
