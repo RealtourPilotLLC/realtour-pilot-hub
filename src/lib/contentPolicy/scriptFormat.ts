@@ -39,6 +39,9 @@ import {
 // matches a generated pillar name against the approved strategy's with it, and
 // contentPillars.resolvePillarByLabel keys its lookup on the same function.
 import { normalizeTitle } from "./topicBank";
+// Oct 23 2026: the one rule a label becomes a confirmed pillar by (name,
+// alias, spelling, first matching part, else the closest current pillar).
+import { closestPillar, exactPillarMatch } from "./pillarMatch";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1061,9 +1064,10 @@ function isSelfIntro(text: string): boolean {
 
 /**
  * Resolve a script's pillar reference against the client's pillars: by id when
- * the version already carries one, otherwise by the same normalised name/alias
- * match resolvePillarByLabel() uses, so the validator and the writer agree on
- * what "Personal Branding / Trust" means.
+ * the version already carries one, otherwise by the same rule the writer files
+ * it by (contentPillars.matchConfirmedPillar → pillarMatch: name, alias,
+ * spelling, the first matching part, else the closest CURRENT pillar), so the
+ * validator and the writer agree on what "Personal Branding / Trust" means.
  */
 function matchApprovedPillar(ref: PillarRef, known: readonly ApprovedPillar[]): ApprovedPillar | null {
   if (ref.pillarId) {
@@ -1073,9 +1077,13 @@ function matchApprovedPillar(ref: PillarRef, known: readonly ApprovedPillar[]): 
     if (byId) return byId;
     return null;
   }
-  const key = normalizeTitle(ref.pillarName ?? ref.categoryAsDelivered ?? "");
-  if (!key) return null;
-  return known.find((p) => normalizeTitle(p.name) === key || (p.aliases ?? []).some((a) => normalizeTitle(a) === key)) ?? null;
+  const label = (ref.pillarName ?? ref.categoryAsDelivered ?? "").trim();
+  if (!normalizeTitle(label)) return null;
+  const candidates = known.map((p) => ({ id: p.id, name: p.name, aliases: [...(p.aliases ?? [])] }));
+  const exact = exactPillarMatch(label, candidates);
+  // A retired pillar's own name is that pillar (the caller says "retired"); only a current pillar is ever the closest.
+  const hit = exact ?? closestPillar(label, candidates.filter((c) => known.find((p) => p.id === c.id)?.status !== "RETIRED")).match;
+  return hit ? known.find((p) => p.id === hit.pillarId) ?? null : null;
 }
 
 /**
@@ -1303,7 +1311,7 @@ export function validateNewScript(script: CanonicalScript, opts: ValidateScriptO
     const label = ref?.categoryAsDelivered || ref?.pillarName || "";
     if (!ref || (!ref.pillarName && !ref.pillarId)) push("pillar.missing", "block", "The script is not linked to an approved content pillar.", "pillarRef");
     else if (!opts.approvedPillars) {
-      if (!ref.pillarId) push("pillar.unmapped", "info", `Category “${ref.categoryAsDelivered}” has no pillar id yet — map it on import.`, "pillarRef.pillarId");
+      if (!ref.pillarId) push("pillar.unmapped", "info", `Category “${ref.categoryAsDelivered}” has no pillar id yet; it is linked to a confirmed pillar when the version is written, if one is close.`, "pillarRef.pillarId");
     } else {
       const known = opts.approvedPillars;
       const match = matchApprovedPillar(ref, known);
@@ -1313,9 +1321,9 @@ export function validateNewScript(script: CanonicalScript, opts: ValidateScriptO
         // produced pillars — all twelve unmapped live drafts measured on
         // Sep 17 2026 sat on the two enrollments with zero pillar rows. The
         // fix is on the Strategy tab, so this points there and does not block.
-        push("pillar.no-approved-pillars", "warn", `This client has no content pillars yet, so “${label}” cannot be checked against the approved strategy. Approve a strategy with a Content Pillars section, then map the label.`, "pillarRef", { label });
+        push("pillar.no-approved-pillars", "warn", `This client has no content pillars yet, so “${label}” cannot be checked against the approved strategy. Approve a strategy with a Content Pillars section, or add a pillar on the Strategy tab.`, "pillarRef", { label });
       } else if (!match) {
-        push("pillar.unknown", "block", `“${label}” is not one of this client's approved pillars (${names}). Map it by alias; never rename the client's pillars.`, "pillarRef", { label, approved: names });
+        push("pillar.unknown", "block", `“${label}” is not one of this client's confirmed pillars (${names}) and is close to none of them. File the script under one of them; never rename or add a pillar for it.`, "pillarRef", { label, approved: names });
       } else if (match.status !== "ACTIVE") {
         push("pillar.retired", "block", `Pillar “${match.name}” was retired from this client's strategy — pick a current pillar, or say why this script still belongs to a retired one.`, "pillarRef", { label, pillarId: match.id });
       } else if (!ref.pillarId) {

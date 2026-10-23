@@ -2,7 +2,7 @@ import "server-only";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { sha256, activePolicyVersion } from "@/lib/aiRuns";
-import { listPillars, resolvePillarByLabel } from "@/lib/contentPillars";
+import { listPillars, confirmedPillarIdFor } from "@/lib/contentPillars";
 import { topicSourceIsCall, topicSourceNeedsApproval } from "@/lib/contentPolicy/topicBank";
 import { approvedStrategy } from "@/lib/contentStrategy";
 import { isAutomationEnabled, recordAutomationRun } from "@/lib/programAutomation";
@@ -66,7 +66,12 @@ export async function createTopic(input: CreateTopicInput): Promise<{ id: string
   const dup = await prisma.contentTopic.findFirst({ where: { enrollmentId: input.enrollmentId, OR: [{ dedupeHash }, { title: { equals: title, mode: "insensitive" } }] }, select: { id: true } });
   if (dup) return { id: dup.id, existed: true };
   const [policy, strategy] = await Promise.all([activePolicyVersion(), approvedStrategy(input.enrollmentId)]);
-  const pillarId = input.pillarId ?? (input.pillarLabel ? await resolvePillarByLabel(input.enrollmentId, input.pillarLabel) : null);
+  // Oct 23 2026: a label becomes one of the client's CONFIRMED pillars by the
+  // one rule (contentPillars.matchConfirmedPillar: name, alias, spelling, the
+  // first matching part, else the closest), or none; never a new pillar and
+  // never a mapping queue. A new topic is linked to a current pillar only; an
+  // imported one may name the retired pillar it was filed under then.
+  const pillarId = input.pillarId ?? (input.pillarLabel ? await confirmedPillarIdFor(input.enrollmentId, input.pillarLabel, { activeOnly: input.source !== "import" }) : null);
   const row = await prisma.contentTopic.create({
     data: {
       enrollmentId: input.enrollmentId, clientId: e.clientId, monthId: input.monthId ?? null, title,

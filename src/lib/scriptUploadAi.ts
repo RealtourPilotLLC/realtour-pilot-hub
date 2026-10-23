@@ -21,7 +21,7 @@
 //     on that script's card and has to be looked at before it can be added.
 // ---------------------------------------------------------------------------
 
-import { normalizeTitle, titleSimilarity } from "@/lib/contentPolicy/topicBank";
+import { matchPillarLabel } from "@/lib/contentPolicy/pillarMatch";
 import {
   canonicalUploadText, cleanHeading, cleanSpeakerLabel, cleanUploadText, inlineSpeaker, isCue, metaValue, readUploadedScript, sectionOf, speakerAlone, titleCaseIfShouting, unwrapLines, wordKey,
   type UploadSource,
@@ -259,17 +259,10 @@ export function itemsFromAsWritten(out: AsWrittenOut, pillars: PillarChoice[], d
 }
 
 /** The model's pillar name → the choice it names (exact, then a close spelling). */
+/** The model's pick → one of the listed (confirmed) pillars by the one rule (pillarMatch, Oct 23 2026), or none. */
 export function pillarIdFor(name: string | null | undefined, pillars: PillarChoice[]): string | null {
   if (!name?.trim() || !pillars.length) return null;
-  const key = normalizeTitle(name);
-  const exact = pillars.find((p) => normalizeTitle(p.name) === key);
-  if (exact) return exact.id;
-  let best: { id: string; sim: number } | null = null;
-  for (const p of pillars) {
-    const sim = titleSimilarity(name, p.name);
-    if (sim >= 0.6 && (!best || sim > best.sim)) best = { id: p.id, sim };
-  }
-  return best?.id ?? null;
+  return matchPillarLabel(name, pillars)?.pillarId ?? null;
 }
 
 /** For a check: what the reader makes of an item (the same call the preview and apply make). */

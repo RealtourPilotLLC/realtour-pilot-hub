@@ -374,7 +374,7 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
             {idx != null && <span className="text-[12px] text-muted-2">{idx}.</span>}
             <span className="text-[15px] font-medium">{t.title}</span>
             <FormatChip t={t} busy={busy} run={run} />
-            {showPillar && (pillars.find((p) => p.id === t.pillarId)?.name ?? t.pillarLabel) && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{pillars.find((p) => p.id === t.pillarId)?.name ?? t.pillarLabel}</span>}
+            {showPillar && pillars.find((p) => p.id === t.pillarId) && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{pillars.find((p) => p.id === t.pillarId)?.name}</span>}
             {!["SAVED", "RECOMMENDED", "IDEA"].includes(t.status) && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{TOPIC_STATUS_WORDS[t.status] ?? t.status.toLowerCase()}</span>}
             {t.approvalState === "APPROVED" && <span className="text-[11px] text-success">approved</span>}
             {t.proposedState && <span className="text-[11px] text-warning">{topicSourceIsCall(t.source) ? `declined on the call — ${t.proposedState === "REJECTED" ? "reject it to confirm" : "unconfirmed"}` : `import mark says ${t.proposedState.toLowerCase()} — unconfirmed`}</span>}
@@ -382,7 +382,8 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
             {t.carriedFrom && <span className="rounded-full bg-warning-soft px-2 py-0.5 text-[11px] text-warning">carried from {t.carriedFrom}, unfilmed</span>}
             {parkedScript && <span className="text-[11px] text-muted-2">scripted, not filmed</span>}
             {t.alignment && <span className="text-[11px] text-warning" title="Internal only — the client can still use it">check: {t.alignment}</span>}
-            {!t.pillarId && t.pillarLabel && <span className="text-[11px] text-muted-2">label “{t.pillarLabel}” not mapped</span>}
+            {/* Oct 23 2026: an old free-text label with no confirmed pillar close to it is just history; nothing asks to map it. */}
+            {!t.pillarId && t.pillarLabel && <span className="text-[11px] text-muted-2">no pillar (was labelled “{t.pillarLabel}”)</span>}
           </div>
           {t.concept && <p className="mt-0.5 text-[13px] leading-relaxed text-muted">{t.concept}</p>}
           {(t.audienceNeed || t.businessGoal || t.intendedMessage) && (

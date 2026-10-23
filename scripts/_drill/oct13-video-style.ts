@@ -260,11 +260,14 @@ async function main() {
     const directJson = { title: "Pricing for the first weekend", category: BRAND, hook: DIRECT.hook, points: DIRECT.points.map((text, i) => ({ role: ["re-hook", "build-up", "payoff"][i], text })), close: DIRECT.close, gaps: [] };
     const newD = policy.validateNewScript(policy.scriptFromGeneratorOutput(directJson, null, null));
     const oldD = oldFormat.validateNewScript(oldFormat.scriptFromGeneratorOutput(directJson as Parameters<typeof oldFormat.scriptFromGeneratorOutput>[0], null, null));
-    c.ok("a direct script still validates as before (same findings, same estimate)", newD.ok && JSON.stringify(newD.findings) === JSON.stringify(oldD.findings) && JSON.stringify(newD.estimate) === JSON.stringify(oldD.estimate), `${newD.estimate.words} vs ${oldD.estimate.words}`);
+    // Oct 23 2026: the pillar findings' wording changed on purpose (no "map it on import": a label is matched to a
+    // confirmed pillar or none, contentPolicy/pillarMatch); their codes, severities and paths are compared, the rest whole.
+    const same = (a: { code: string; message: string }[], b: { code: string; message: string }[]) => JSON.stringify(a.map((f) => (f.code.startsWith("pillar.") ? { ...f, message: "" } : f))) === JSON.stringify(b.map((f) => (f.code.startsWith("pillar.") ? { ...f, message: "" } : f)));
+    c.ok("a direct script still validates as before (same findings, same estimate)", newD.ok && same(newD.findings, oldD.findings) && JSON.stringify(newD.estimate) === JSON.stringify(oldD.estimate), `${newD.estimate.words} vs ${oldD.estimate.words}`);
     const longDirect = { ...directJson, hook: "Hey guys, the first weekend decides your price." };
     const nl = policy.validateNewScript(policy.scriptFromGeneratorOutput(longDirect, null, null));
     const ol = oldFormat.validateNewScript(oldFormat.scriptFromGeneratorOutput(longDirect as Parameters<typeof oldFormat.scriptFromGeneratorOutput>[0], null, null));
-    c.ok("…and a direct greeting is blocked exactly as before", !nl.ok && JSON.stringify(nl.findings) === JSON.stringify(ol.findings));
+    c.ok("…and a direct greeting is blocked exactly as before", !nl.ok && same(nl.findings, ol.findings));
 
     // ======================================================================
     c.head("5 · end to end: drafts, revisions, hand edits");

@@ -136,7 +136,7 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
     return (
       <div className="space-y-5">
         {sub}
-        <StrategyPanel enrollmentId={id} versions={d.versions} proposals={d.proposals} pillars={d.pillars} mapping={d.mapping} owners={d.owners} staff={d.staff} isOwner={ownerEyes} month={d.month} targets={targets.targets} sections={targets.sections} workingVersionNo={targets.workingVersionNo} discovery={d.discovery} queueActive={d.queueActive} creativeIdentity={d.creativeIdentity} hasApprovedStrategy={d.hasApprovedStrategy} />
+        <StrategyPanel enrollmentId={id} versions={d.versions} proposals={d.proposals} pillars={d.pillars} owners={d.owners} staff={d.staff} isOwner={ownerEyes} month={d.month} targets={targets.targets} sections={targets.sections} workingVersionNo={targets.workingVersionNo} discovery={d.discovery} queueActive={d.queueActive} creativeIdentity={d.creativeIdentity} hasApprovedStrategy={d.hasApprovedStrategy} />
       </div>
     );
   }

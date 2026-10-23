@@ -4,7 +4,7 @@ import type { Prisma } from "@prisma/client";
 import { runAiJson, activePolicyVersion, setRunOutputRef, releaseRunKey, claimRunWrite, sha256, type AiRunKind, type ClaimedRun } from "@/lib/aiRuns";
 import { timeoutBefore } from "@/lib/integrations/ai";
 import { approvedStrategy, createStrategyVersion, setMonthPriorities, monthPriorities, structuredFromText, parseStoredSections, deriveStrategyVersion } from "@/lib/contentStrategy";
-import { listPillars, resolvePillarByLabel } from "@/lib/contentPillars";
+import { listPillars, confirmedPillarIdFor, matchConfirmedPillar } from "@/lib/contentPillars";
 import { createTopic, selectTopicForMonth, recordTopicEvent, blockedTopicHashes, pendingSuggestionHashes, finishRefreshRun, topicDedupeHash, recordSuggestionFormats, type Actor } from "@/lib/contentTopics";
 import { assembleInterviewInputs } from "@/lib/contentInterview";
 import { createScriptVersion, ensureScriptVersioned, pointsFromJson, pillarNameOf, type VersionParts } from "@/lib/contentScripts";
@@ -13,9 +13,9 @@ import { CONTENT_RULES } from "@/lib/contentPipeline";
 import { pendingJudge, readJudge } from "@/lib/scriptJudgeRecord";
 import {
   buildScriptPrompt, buildTopicBankPrompt, buildStrategyPrompt, buildStrategyRevisionPrompt, scriptFromGeneratorOutput, validateNewScript, validateTopicBank, renderStrategy, policyFrameworkSection, isFrameworkSection, canonicalFrameworkSectionText,
-  GENERATION_POLICY, GENERATION_POLICY_VERSION, SPEAKER_ATTRIBUTION_RULE, NO_INVENTION_RULE, makeTopic, normalizeTitle, policyStamp, videoStyleFromOverrides, titleSimilarity, NEAR_DUPLICATE_THRESHOLD,
-  creativeIdentityFromOverrides, buildScriptRevisePrompt, formulaicTitleShape, asLockSections, ANGLE_FIELDS, LOCKABLE_SECTION_LABEL,
-  type ClientContext, type SourceExcerpt, type GeneratedScriptJson, type Topic, type TopicBank, type Gap, type StrategyDocument, type ScriptPromptSource, type LockableSection, type ScriptAngle,
+  GENERATION_POLICY, GENERATION_POLICY_VERSION, SPEAKER_ATTRIBUTION_RULE, NO_INVENTION_RULE, makeTopic, policyStamp, videoStyleFromOverrides, titleSimilarity, NEAR_DUPLICATE_THRESHOLD,
+  creativeIdentityFromOverrides, buildScriptRevisePrompt, formulaicTitleShape, asLockSections, ANGLE_FIELDS, LOCKABLE_SECTION_LABEL, pillarLooseKey,
+  type ClientContext, type SourceExcerpt, type GeneratedScriptJson, type Topic, type TopicBank, type Gap, type StrategyDocument, type StrategyPillar, type ScriptPromptSource, type LockableSection, type ScriptAngle,
 } from "@/lib/contentPolicy";
 import { creativeGuardFromOverrides, discontinuedHit } from "@/lib/creativeGuardCore";
 import { scriptFormatOf } from "@/lib/contentPolicy/prompts";
@@ -494,7 +494,7 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
   });
   let out: { scriptId: string; versionId: string; versionNo: number; ok: boolean; findings: number; gaps: number };
   try {
-    const { parts, validation, gaps, angle } = partsFromGenerated(run.output, row.pillarId ?? (await resolvePillarByLabel(row.enrollmentId, run.output.category)), row.clientId, { skit: format === "SKIT" });
+    const { parts, validation, gaps, angle } = partsFromGenerated(run.output, row.pillarId ?? (await confirmedPillarIdFor(row.enrollmentId, run.output.category, { activeOnly: true })), row.clientId, { skit: format === "SKIT" });
     if (!parts.title) parts.title = row.title;
     // monthId null = the bank-level script (IS NULL), never "any month's script".
     const existing = await prisma.contentScript.findFirst({ where: { topicId: o.topicId, monthId: o.monthId, historical: false }, select: { id: true } });
@@ -545,7 +545,7 @@ async function generateWithWriter(o: {
   try {
     const chosen = p.chosen >= 0 ? p.hooks[p.chosen] : null;
     const json = w.generatedFromDraft(run.output, chosen?.text ?? null, p.g.ctx.topic.pillar);
-    const { parts, validation, gaps } = partsFromGenerated(json, o.pillarId ?? (await resolvePillarByLabel(o.enrollmentId, json.category)), o.clientId);
+    const { parts, validation, gaps } = partsFromGenerated(json, o.pillarId ?? (await confirmedPillarIdFor(o.enrollmentId, json.category, { activeOnly: true })), o.clientId);
     if (!parts.title) parts.title = o.title;
     parts.alternateHooks = p.hooks.filter((h, i) => i !== p.chosen && h.text).map((h) => h.text);
     const existing = o.interviewId
@@ -835,12 +835,24 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   if (!run) throw new Error("Run not found.");
   const built = await buildClientContext(run.enrollmentId);
   const pillars = await listPillars(run.enrollmentId);
-  const strategyPillars = built.ctx.strategy?.document?.contentPillars.pillars ?? [];
+  const docPillars = built.ctx.strategy?.document?.contentPillars.pillars ?? [];
   const missing: string[] = [];
   if (!built.ctx.strategy?.document) missing.push("An APPROVED strategy for this client — the bank is built from its pillars, goals and audience. Import or draft one on the Strategy tab and approve it.");
-  if (!pillars.length) missing.push("Content pillars on this client (they are created when a strategy is approved).");
-  if (!strategyPillars.length && built.ctx.strategy?.document) missing.push("The approved strategy defines no pillars — add a 'Content Pillars' section with Pillar 1: … lines.");
+  if (!pillars.length) missing.push("Content pillars on this client (they are created when a strategy is approved, or added on the Strategy tab).");
   if (missing.length) { await finishRefreshRun(runId, { status: "NEEDS_INPUT", missingContext: { missing } }); return; }
+  // THE CONFIRMED PILLARS, AND ONLY THEM (Oct 23 2026, Jordan: "We should
+  // just stick to their confirmed pillars that are in their content strategy,
+  // unless we discuss adding a new one on a strategy call or I add a new one
+  // in the hub"). The bank is asked for the client's stored ACTIVE pillars by
+  // their names (a pillar added in the hub included, a strategy pillar that
+  // was never made or was retired left out), each with the strategy's purpose
+  // and focus areas where the document has them, else its own. The schema
+  // holds every topic group's pillarName to these names.
+  const docPillarFor = (p: (typeof pillars)[number]) => docPillars.find((d) => [p.name, ...p.aliases].some((n) => pillarLooseKey(n) === pillarLooseKey(d.name)));
+  const strategyPillars: StrategyPillar[] = pillars.map((p, i) => {
+    const d = docPillarFor(p);
+    return { number: i + 1, name: p.name, heading: `Pillar ${i + 1}: ${p.name}`, purpose: d?.purpose ?? p.purpose, focusAreas: d?.focusAreas ?? p.focusAreas, contentApproach: d?.contentApproach ?? p.contentApproach, otherFields: d?.otherFields ?? [] };
+  });
   // The prompt's count lives in the policy's band (the bank prompt refuses
   // anything outside 10–15); a single-suggestion regeneration asks for the
   // policy count and KEEPS one (opts.keep) — never a forked prompt rule.
@@ -856,8 +868,10 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
     concept: t.pillarId && pillars.some((p) => p.id === t.pillarId) ? t.concept : null }));
   const prevArchivedSugg = await prisma.contentTopicSuggestion.findMany({ where: { enrollmentId: run.enrollmentId, disposition: "ARCHIVED" }, select: { title: true, pillarId: true } });
   for (const s of prevArchivedSugg) existing.push({ title: s.title, pillarName: nameOf(s.pillarId, null), state: "ARCHIVED", note: "archived suggestion", concept: null });
-  const ctx: ClientContext = opts.pillarId
-    ? { ...built.ctx, strategy: built.ctx.strategy && built.ctx.strategy.document ? { ...built.ctx.strategy, document: { ...built.ctx.strategy.document, contentPillars: { ...built.ctx.strategy.document.contentPillars, pillars: built.ctx.strategy.document.contentPillars.pillars.filter((p) => normalizeTitle(p.name) === normalizeTitle(nameOf(opts.pillarId!, null))) } } } : built.ctx.strategy }
+  // The prompt's pillars are the confirmed ones (one, for a single pillar's refresh).
+  const askPillars = opts.pillarId ? strategyPillars.filter((p) => p.name === nameOf(opts.pillarId!, null)) : strategyPillars;
+  const ctx: ClientContext = built.ctx.strategy && built.ctx.strategy.document
+    ? { ...built.ctx, strategy: { ...built.ctx.strategy, document: { ...built.ctx.strategy.document, contentPillars: { ...built.ctx.strategy.document.contentPillars, pillars: askPillars } } } }
     : built.ctx;
   // Suggestions still waiting on Jordan from earlier runs count as "existing" for
   // the prompt AND the dedupe below — a second click must not offer the same title twice.
@@ -870,7 +884,7 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   for (const p of pillars) for (const name of [p.name, ...p.aliases]) pillarEmphasis[name] = p.emphasis;
   // Oct 22 2026 (audit M3): a skit-only refresh asks for the shortfall in skit concepts, nothing else.
   const skitsOnly = opts.skitsOnly === true ? Math.max(1, Math.min(opts.keep ?? 4, 12)) : null;
-  const bundle = buildTopicBankPrompt(ctx, { topicsPerPillar: Math.min(Math.max(perPillar, GENERATION_POLICY.topicsPerPillar.min), GENERATION_POLICY.topicsPerPillar.max), existingTopics: existing, refresh: run.kind === "REFRESH", pillarEmphasis, skitsOnly });
+  const bundle = buildTopicBankPrompt(ctx, { topicsPerPillar: Math.min(Math.max(perPillar, GENERATION_POLICY.topicsPerPillar.min), GENERATION_POLICY.topicsPerPillar.max), existingTopics: existing, refresh: run.kind === "REFRESH", pillarEmphasis, skitsOnly, pillarNames: askPillars.map((p) => p.name) });
   const runRes = await runAiJson<BankOut>({
     kind: run.kind === "BANK" ? "topic_bank" : "topic_refresh", enrollmentId: run.enrollmentId, clientId: run.clientId, scope: { refreshRunId: runId, pillarId: opts.pillarId ?? null }, inputRefs: { ...built.inputRefs, existingTopics: existing.length },
     promptKey: "topic-bank", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: run.requestedBy ?? "system", unattended: opts.unattended, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 16_000, timeoutMs: timeoutBefore(opts.deadline, 16_000),
@@ -900,18 +914,33 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   // A skit-only refresh's ideas are skits (one the model marked DIRECT is dropped below).
   for (const p of Array.isArray(out.pillars) ? out.pillars : []) for (const t of p.topics ?? []) { const f = skitsOnly ? (asVideoFormat(t.format) ?? "SKIT") : newIdeaFormat(style, t.format); if (f && t.title) formatSaid.set(topicDedupeHash(t.title), f); }
   const formats: Record<string, VideoFormat> = {};
+  // Each group's pillarName → the confirmed pillar it names (the schema allows
+  // only those names; a model that strays anyway is matched by the one rule,
+  // contentPillars.matchConfirmedPillar, to an ACTIVE pillar it is close to).
+  // A group close to none is DROPPED from the run: its ideas are not stored,
+  // no pillar is made, nothing is queued for anyone. Groups that land on the
+  // same pillar are one group, under the pillar's own name.
+  const droppedGroups: { label: string; topics: number }[] = [];
+  const asked = new Set(askPillars.map((p) => p.name));
   for (const p of Array.isArray(out.pillars) ? out.pillars : []) {
-    const pillarId = await resolvePillarByLabel(run.enrollmentId, p.pillarName);
-    bank.pillars.push({ pillarId, name: p.pillarName, purpose: null, topics: (p.topics ?? []).map((t) => makeTopic({ title: t.title, pillarName: p.pillarName, description: t.description, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, source: "GENERATED", sourceRef: t.sourceRef, clientId: run.clientId, pillarRef: { pillarId, pillarName: p.pillarName } })) });
+    const m = await matchConfirmedPillar(run.enrollmentId, p.pillarName, { pillars, activeOnly: true });
+    const topics = p.topics ?? [];
+    // A single pillar's refresh keeps that pillar's ideas only.
+    if (!m || !asked.has(m.pillarName)) { droppedGroups.push({ label: String(p.pillarName ?? "(no name)"), topics: topics.length }); continue; }
+    if (m.how !== "name") console.warn(`[topic bank] run ${runId}: pillar “${p.pillarName}” read as “${m.pillarName}” (${m.why})`);
+    let group = bank.pillars.find((g) => g.pillarId === m.pillarId);
+    if (!group) { group = { pillarId: m.pillarId, name: m.pillarName, purpose: null, topics: [] }; bank.pillars.push(group); }
+    group.topics.push(...topics.map((t) => makeTopic({ title: t.title, pillarName: m.pillarName, description: t.description, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, source: "GENERATED", sourceRef: t.sourceRef, clientId: run.clientId, pillarRef: { pillarId: m.pillarId, pillarName: m.pillarName } })));
   }
-  const validation = validateTopicBank(bank, { topicsPerPillar: perPillar, mode: "generated", strategyPillarNames: strategyPillars.map((p) => p.name), pillarEmphasis });
+  if (droppedGroups.length) console.warn(`[topic bank] run ${runId}: dropped ${droppedGroups.reduce((n, g) => n + g.topics, 0)} idea(s) under a pillar that is not one of the client's confirmed pillars: ${droppedGroups.map((g) => `“${g.label}” (${g.topics})`).join(", ").slice(0, 600)}`);
+  const validation = validateTopicBank(bank, { topicsPerPillar: perPillar, mode: "generated", strategyPillarNames: askPillars.map((p) => p.name), pillarEmphasis });
   let created = 0, resurfaced = 0, duplicates = 0, notKept = 0;
   const formulaic: string[] = [];
   // Oct 15 2026: an idea that names a series this client stopped never reaches the bank.
   const stopped: string[] = [];
   const rows: Prisma.ContentTopicSuggestionCreateManyInput[] = [];
   for (const p of bank.pillars) {
-    if (!p.pillarId) continue; // an unknown pillar name is a finding, never a new pillar
+    if (!p.pillarId) continue; // every group here is a confirmed pillar (unmatched ones were dropped above); never a new pillar
     let rank = 0;
     for (const t of p.topics) {
       const hash = topicDedupeHash(t.title);
@@ -951,14 +980,14 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   if (formulaic.length) console.warn(`[topic bank] run ${runId}: dropped ${formulaic.length} formulaic title(s): ${formulaic.join(" | ").slice(0, 600)}`);
   if (stopped.length) console.warn(`[topic bank] run ${runId}: dropped ${stopped.length} idea(s) naming a discontinued series: ${stopped.join(" | ").slice(0, 600)}`);
   await setRunOutputRef(runRes.runId, `ContentTopicRefreshRun:${runId}`);
-  const unknownPillars = validation.findings.filter((f) => f.code === "pillar.unknown").map((f) => f.message);
+  const droppedPillars = droppedGroups.map((g) => `${g.topics} idea${g.topics === 1 ? "" : "s"} under “${g.label}” dropped: not one of the client's confirmed pillars`);
   // A skit-only refresh asks for a total, not a per-pillar count: the per-pillar count gaps do not apply to it.
   const gaps = [...(Array.isArray(out.gaps) ? out.gaps : []), ...(skitsOnly ? [] : validation.gaps)];
   const status = created === 0 ? "NEEDS_INPUT" : "SUCCEEDED";
   await finishRefreshRun(runId, {
     status, generatedCount: created, pillarCount: bank.pillars.length, aiRunId: runRes.runId,
-    missingContext: gaps.length || unknownPillars.length || !out.complete ? { gaps: gaps.map((g) => g.text), unknownPillars, complete: out.complete === true } : undefined,
-    changeSummary: `${created} new suggestion${created === 1 ? "" : "s"}${opts.keep ? ` (kept ${created} of ${created + notKept} fresh ideas as the replacement)` : ""} · ${duplicates} already in the bank · ${resurfaced} archived concept${resurfaced === 1 ? "" : "s"} withheld · ${validation.duplicates.length} near-duplicate warning${validation.duplicates.length === 1 ? "" : "s"}${formulaic.length ? ` · ${formulaic.length} formulaic title${formulaic.length === 1 ? "" : "s"} dropped` : ""}${stopped.length ? ` · ${stopped.length} idea${stopped.length === 1 ? "" : "s"} from a discontinued series dropped` : ""}${out.complete === false ? " · the model reported it could not reach the count at the quality bar" : ""}`,
+    missingContext: gaps.length || droppedPillars.length || !out.complete ? { gaps: gaps.map((g) => g.text), droppedPillars, complete: out.complete === true } : undefined,
+    changeSummary: `${created} new suggestion${created === 1 ? "" : "s"}${opts.keep ? ` (kept ${created} of ${created + notKept} fresh ideas as the replacement)` : ""} · ${duplicates} already in the bank · ${resurfaced} archived concept${resurfaced === 1 ? "" : "s"} withheld · ${validation.duplicates.length} near-duplicate warning${validation.duplicates.length === 1 ? "" : "s"}${formulaic.length ? ` · ${formulaic.length} formulaic title${formulaic.length === 1 ? "" : "s"} dropped` : ""}${stopped.length ? ` · ${stopped.length} idea${stopped.length === 1 ? "" : "s"} from a discontinued series dropped` : ""}${droppedGroups.length ? ` · ${droppedGroups.reduce((n, g) => n + g.topics, 0)} idea(s) outside the confirmed pillars dropped` : ""}${out.complete === false ? " · the model reported it could not reach the count at the quality bar" : ""}`,
   });
 }
 
@@ -1026,6 +1055,29 @@ const ANALYSIS_SCHEMA = {
   },
 };
 
+/**
+ * Oct 23 2026: a call's topics name one of the client's CONFIRMED pillars or
+ * none (Jordan: "stick to their confirmed pillars"). The schema holds each
+ * topic's pillar to those names (an enum, or null); with no pillars yet (a
+ * discovery call before the strategy) it stays free text, kept on the topic
+ * as a label with no pillar.
+ */
+export function analysisSchemaFor(pillarNames: readonly string[]): typeof ANALYSIS_SCHEMA {
+  const names = [...new Set(pillarNames.map((n) => n.trim()).filter(Boolean))];
+  if (!names.length) return ANALYSIS_SCHEMA;
+  const pillar = { type: ["string", "null"], enum: [...names, null], description: "Exactly one of the client's confirmed pillar names, verbatim, or null when none fits. Never another name." };
+  const topic = { ...TOPIC_SCHEMA, properties: { ...TOPIC_SCHEMA.properties, pillar } };
+  const selected = { ...SELECTED_TOPIC_SCHEMA, properties: { ...SELECTED_TOPIC_SCHEMA.properties, pillar } };
+  return {
+    ...ANALYSIS_SCHEMA,
+    properties: {
+      ...ANALYSIS_SCHEMA.properties,
+      selectedTopics: { ...ANALYSIS_SCHEMA.properties.selectedTopics, items: selected },
+      discussedTopics: { ...ANALYSIS_SCHEMA.properties.discussedTopics, items: topic },
+    },
+  } as typeof ANALYSIS_SCHEMA;
+}
+
 const ANALYSIS_SYSTEM = (videosOwed: number, history: string) =>
   "You are processing a call transcript for a real-estate agent's monthly video program. FIRST judge what kind of call this is (planning / discovery / review / other). " +
   "If it is a planning session, set plannedMonthKey to the month the topics are FOR (a call in the last third of a month usually plans the NEXT month). Use the call date in the prompt.\n" +
@@ -1067,7 +1119,7 @@ export async function analyzeTranscriptText(o: { enrollmentId: string; clientId:
     dedupeKey: o.callRecordId ? `analyze:${o.callRecordId}` : `analyze:month:${o.monthId}`,
     system: ANALYSIS_SYSTEM(o.videosOwed, history),
     prompt: `CLIENT: ${built.ctx.clientName} (id ${o.clientId})\nCALL DATE: ${o.callDate ? o.callDate.toLocaleDateString("en-US", { timeZone: "America/New_York", year: "numeric", month: "long", day: "numeric" }) : `sometime in ${o.monthKey}`}\n\n${context}\n\n${headings.length ? `APPROVED STRATEGY SECTION HEADINGS (use one exactly in strategyProposals[].section):\n${headings.map((h) => `- ${h}`).join("\n")}\n\n` : ""}${facts.length ? `ACCEPTED FACTS ON FILE:\n${facts.map((f) => `- ${f}`).join("\n")}\n\n` : ""}${chosenBlock}TRANSCRIPT:\n${o.transcript.slice(0, 150_000)}`,
-    schema: ANALYSIS_SCHEMA, maxTokens: 10_000,
+    schema: analysisSchemaFor((await listPillars(o.enrollmentId)).map((p) => p.name)), maxTokens: 10_000,
   });
   const out = run.output;
   // Which month the selections are FOR. A call RECORD is already filed on its
@@ -1216,7 +1268,7 @@ export async function analyzeDiscoveryKnowledge(o: { enrollmentId: string; clien
     dedupeKey: `analyze:${o.callRecordId}`,
     system: ANALYSIS_SYSTEM(enrollment?.videosPerMonth ?? 4, history),
     prompt: `CALL TYPE: BRAND DISCOVERY — the client's one-time onboarding call. It plans NO month: set plannedMonthKey to null. Topics the client liked are ideas for their topic bank, not selections for a month. Leave priorities and todos empty.\nCLIENT: ${built.ctx.clientName} (id ${o.clientId})\nCALL DATE: ${when}\n\n${context}\n\n${headings.length ? `APPROVED STRATEGY SECTION HEADINGS (use one exactly in strategyProposals[].section):\n${headings.map((h) => `- ${h}`).join("\n")}\n\n` : ""}${facts.length ? `ACCEPTED FACTS ON FILE:\n${facts.map((f) => `- ${f}`).join("\n")}\n\n` : ""}TRANSCRIPT:\n${o.transcript.slice(0, 150_000)}`,
-    schema: ANALYSIS_SCHEMA, maxTokens: 10_000,
+    schema: analysisSchemaFor((await listPillars(o.enrollmentId)).map((p) => p.name)), maxTokens: 10_000,
   });
   const out = run.output;
   const actor: Actor = { kind: "AI" };

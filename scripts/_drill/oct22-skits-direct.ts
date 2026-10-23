@@ -325,7 +325,9 @@ async function main() {
     const pD = policy.buildTopicBankPrompt(withStrategy(builtD.ctx));
     const pS = policy.buildTopicBankPrompt(withStrategy(builtS.ctx));
     const pM = policy.buildTopicBankPrompt(withStrategy(builtM.ctx));
-    c.ok("DIRECT bank: no skit concepts, the plain schema", !/VIDEO STYLE: (SKITS|MIX)/.test(pD.system) && pD.outputSchema === policy.TOPIC_BANK_OUTPUT_SCHEMA);
+    // Oct 23 2026: the plain schema, with pillarName held to the client's confirmed pillars (withPillarNameEnum); no format field.
+    const plainD = policy.withPillarNameEnum(policy.TOPIC_BANK_OUTPUT_SCHEMA, strategyDoc(builtD.ctx.clientName).contentPillars.pillars.map((p: { name: string }) => p.name));
+    c.ok("DIRECT bank: no skit concepts, the plain schema", !/VIDEO STYLE: (SKITS|MIX)/.test(pD.system) && JSON.stringify(pD.outputSchema) === JSON.stringify(plainD) && !/"format"/.test(JSON.stringify(pD.outputSchema)));
     c.ok("SKITS bank: every topic a skit concept (the Oct 13 rule), with the cast block", pS.system.includes(policy.SKIT_TOPIC_RULE) && /SKIT CAST/.test(pS.system));
     c.ok("MIX bank: skit concepts beside direct topics, reusing the skit concept rules", pM.system.includes(policy.mixTopicRule(2)) && pM.system.includes(policy.SKIT_CONCEPT_RULES) && policy.SKIT_TOPIC_RULE.includes(policy.SKIT_CONCEPT_RULES) && /never fewer than 4 across the bank/.test(pM.system));
     const fmtSchema = JSON.stringify(pM.outputSchema);

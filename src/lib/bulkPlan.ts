@@ -446,7 +446,7 @@ export async function importBulkScripts(planId: string, items: BulkScriptInput[]
 
   const { createTopic, selectTopicForMonth } = await import("@/lib/contentTopics");
   const { createScriptVersion } = await import("@/lib/contentScripts");
-  const { resolvePillarByLabel } = await import("@/lib/contentPillars");
+  const { confirmedPillarIdFor } = await import("@/lib/contentPillars");
   const staff = { kind: "STAFF" as const, staffUserId: actor.appUserId ?? actor.email };
   const fileLabel = (opts.sourceFile ?? "").trim().slice(0, 200) || "Pasted scripts";
 
@@ -467,7 +467,7 @@ export async function importBulkScripts(planId: string, items: BulkScriptInput[]
     for (const [i, it] of clean.entries()) {
       const rank = startRank + i + 1;
       const sessionNo = Math.ceil(rank / plan.perSession);
-      const pillarId = await resolvePillarByLabel(plan.enrollmentId, it.category ?? null).catch(() => null);
+      const pillarId = await confirmedPillarIdFor(plan.enrollmentId, it.category ?? null, { activeOnly: true }).catch(() => null);
       const created = await createTopic({
         enrollmentId: plan.enrollmentId, title: it.title, pillarId, pillarLabel: pillarId ? null : it.category ?? null, concept: it.hook,
         source: "staff", status: "SELECTED", monthId: plan.monthId, approvalState: "APPROVED", approvedBy: actor.email, actor: staff,

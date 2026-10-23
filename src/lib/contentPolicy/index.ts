@@ -43,6 +43,7 @@ export * from "./policy";
 export * from "./strategyTemplate";
 export * from "./scriptFormat";
 export * from "./topicBank";
+export * from "./pillarMatch";
 export * from "./interview";
 export * from "./prompts";
 export * from "./creativeIdentity";

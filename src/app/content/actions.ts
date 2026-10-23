@@ -1282,27 +1282,10 @@ export async function setPillarEmphasisAction(enrollmentId: string, pillarId: st
   } catch (e) { return fail(e); }
 }
 
-export async function confirmPillarMappingAction(enrollmentId: string, label: string, pillarId: string): Promise<Result> {
-  try { await requireCreativeLead(); } catch (e) { return fail(e); }
-  try {
-    const me = await actor();
-    const { confirmPillarMapping } = await import("@/lib/contentPillars");
-    const r = await confirmPillarMapping(enrollmentId, label, pillarId, me.email);
-    path(enrollmentId);
-    return { ok: true, message: `Mapped “${label}” · ${r.updated} topic${r.updated === 1 ? "" : "s"} linked.` };
-  } catch (e) { return fail(e); }
-}
-
-export async function dismissPillarLabelAction(enrollmentId: string, label: string): Promise<Result> {
-  try { await requireCreativeLead(); } catch (e) { return fail(e); }
-  try {
-    const me = await actor();
-    const { dismissPillarLabel } = await import("@/lib/contentPillars");
-    await dismissPillarLabel(enrollmentId, label, me.email);
-    path(enrollmentId);
-    return { ok: true, message: "Left unmapped — it will not be proposed again." };
-  } catch (e) { return fail(e); }
-}
+// (Oct 23 2026: "Pillar labels to map" and its Confirm / Not a pillar actions
+// are gone. Jordan: a client's pillars are exactly the confirmed ones, and a
+// label is matched to one automatically or left with no pillar —
+// contentPillars.matchConfirmedPillar.)
 
 // ---- video topics ----------------------------------------------------------------------
 export async function editTopic(topicId: string, patch: { title?: string; concept?: string | null; pillarId?: string | null; audienceNeed?: string | null; businessGoal?: string | null; intendedMessage?: string | null }): Promise<Result> {
@@ -2110,12 +2093,13 @@ export async function previewImportUpload(enrollmentId: string, kind: ImportKind
   } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "Could not read the document." }; }
 }
 
-export async function applyImportAction(preview: ImportPreview, decisions: { monthKey: string | null; modes: Record<number, ItemMode>; pillarMap?: Record<string, string | null> }): Promise<Result> {
+export async function applyImportAction(preview: ImportPreview, decisions: { monthKey: string | null; modes: Record<number, ItemMode> }): Promise<Result> {
   try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { applyImport } = await import("@/lib/contentImport");
-    const r = await applyImport(preview, decisions, me.email);
+    // Oct 23 2026: no pillar choices ride along; every label is matched on the server.
+    const r = await applyImport(preview, { monthKey: decisions?.monthKey ?? null, modes: decisions?.modes ?? {} }, me.email);
     path(preview.enrollmentId);
     return { ok: true, message: `${r.created} created · ${r.linked} linked · ${r.updated} update proposal${r.updated === 1 ? "" : "s"} · ${r.skipped} skipped${r.conflicts ? ` · ${r.conflicts} conflict${r.conflicts === 1 ? "" : "s"} (see review items)` : ""}. Imported records are history — nothing was approved, filmed or released.` };
   } catch (e) { return fail(e); }

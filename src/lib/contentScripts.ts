@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { sha256, setRunDisposition } from "@/lib/aiRuns";
 import { isAutomationEnabled } from "@/lib/programAutomation";
-import { listPillars, resolvePillarByLabel } from "@/lib/contentPillars";
+import { listPillars, confirmedPillarIdFor } from "@/lib/contentPillars";
 import {
   parseDeliveredScript, renderScript, estimateSpokenSeconds, makeBlock, emptyInternal, validateNewScript, TALKING_POINT_ROLES, roleFromLabel, stripScriptDashes,
   type ApprovedPillar, type CanonicalScript, type Finding, type Gap, type TalkingPointRole,
@@ -123,7 +123,10 @@ export async function createScriptVersion(opts: NewVersionOpts): Promise<{ scrip
   const canonical = canonicalFromParts(parts);
   const body = bodyFor(parts);
   const estimate = estimateSpokenSeconds(canonical);
-  const pillarId = parts.pillarId ?? (parts.categoryLabel ? await resolvePillarByLabel(opts.enrollmentId, parts.categoryLabel.split(/\s+(?:\/|•|\||·)\s+/)[0]) : null);
+  // Oct 23 2026: the Category label → one of the client's confirmed pillars
+  // (contentPillars.matchConfirmedPillar), or none; an import may name the
+  // retired pillar it was filmed under.
+  const pillarId = parts.pillarId ?? (parts.categoryLabel ? await confirmedPillarIdFor(opts.enrollmentId, parts.categoryLabel, { activeOnly: !keepWords }) : null);
   const contentHash = sha256(JSON.stringify({ hook: parts.hook, points: parts.points.map((p) => p.text), close: parts.close, caption: parts.captionCta ?? null }));
 
   let scriptId = opts.scriptId ?? null;
@@ -281,7 +284,8 @@ export async function editScriptVersion(scriptId: string, parts: VersionParts, b
   // the row that is written.
   const [pillars, resolvedPillarId] = await Promise.all([
     approvedPillarsFor(s.enrollmentId),
-    parts.pillarId ? Promise.resolve(parts.pillarId) : parts.categoryLabel ? resolvePillarByLabel(s.enrollmentId, parts.categoryLabel.split(/\s+(?:\/|•|\||·)\s+/)[0]) : Promise.resolve(null),
+    // A retired pillar's name stays that pillar here, so the validator can say "retired" instead of filing it elsewhere.
+    parts.pillarId ? Promise.resolve(parts.pillarId) : parts.categoryLabel ? confirmedPillarIdFor(s.enrollmentId, parts.categoryLabel) : Promise.resolve(null),
   ]);
   const linked: VersionParts = resolvedPillarId && !parts.pillarId ? { ...parts, pillarId: resolvedPillarId } : parts;
   const validation = validateNewScript(canonicalFromParts(linked, s.clientId), { approvedPillars: pillars, clientFormat: await clientScriptFormat(s.enrollmentId) });

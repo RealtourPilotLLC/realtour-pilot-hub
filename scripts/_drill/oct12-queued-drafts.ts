@@ -484,7 +484,7 @@ async function main() {
       const sq = await A.queueStrategyDraftAction(S.enrollmentId);
       c.ok("with the call: \"Sent for drafting …\" at once, one QUEUED strategy_draft on the call's key", sq.ok && /^Sent for drafting/.test(sq.message) && (await prisma.programAiRun.findFirst({ where: { dedupeKey: `strategy:${call.id}`, status: "QUEUED" } })) !== null && modelCalls.filter((m) => m.kind === "strategy").length === 0, sq.message);
       const stTab = await loadStrategyTab(S.enrollmentId, null);
-      const stHtml = text(renderToStaticMarkup(createElement(StrategyPanel, ser({ enrollmentId: S.enrollmentId, versions: stTab.versions, proposals: stTab.proposals, pillars: stTab.pillars, mapping: stTab.mapping, owners: stTab.owners, staff: stTab.staff, isOwner: true, month: null, discovery: stTab.discovery, queueActive: stTab.queueActive }))));
+      const stHtml = text(renderToStaticMarkup(createElement(StrategyPanel, ser({ enrollmentId: S.enrollmentId, versions: stTab.versions, proposals: stTab.proposals, pillars: stTab.pillars, owners: stTab.owners, staff: stTab.staff, isOwner: true, month: null, discovery: stTab.discovery, queueActive: stTab.queueActive }))));
       c.ok("the Strategy tab reads \"Drafting the strategy…\"", /Drafting the strategy…/.test(stHtml), stHtml.slice(stHtml.indexOf("Discovery"), stHtml.indexOf("Discovery") + 200));
       await flushAfter();
       const sv = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: S.enrollmentId } });
