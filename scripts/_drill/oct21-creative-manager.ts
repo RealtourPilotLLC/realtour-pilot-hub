@@ -17,8 +17,9 @@
 //   §4 tasks: their own, never Kyle's list
 //   §5 notifications: a creative bell reaches them, a billing one does not,
 //      the money clamp, no second text through the office bridge
-//   §6 the dashboard: the creative cut (no Kyle's day, no Clients waiting, no
-//      problems board, no money), Needs attention narrowed
+//   §6 the dashboard: his own (Oct 23 2026, lib/creativeDesk): no Kyle's day,
+//      no Clients waiting, no problems board, no money; his review work (his
+//      cut ready, the room's delayed cut apart) and the creative preparation
 //   §7 a stale login claim: the proxy may pass an old ADMIN claim, every
 //      page and action reads the live login
 //   §8 the live switch script's plan and write, on fixtures
@@ -33,7 +34,7 @@ import { createElement, isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createRequire } from "node:module";
 import { bootDrillDb, fenceFetch, installNextStubs, makeChecker } from "./_harness";
-import type { Dashboard } from "../../src/lib/opsHome";
+import type { CreativeDesk } from "../../src/lib/creativeDesk";
 
 installNextStubs();
 // Slack, faked: a DM a bell row bridges to is answered here and recorded.
@@ -55,7 +56,7 @@ function elements(tree: unknown, name: string): Props[] {
   const found = (typeof type === "string" ? type : type.name) === name ? [tree.props] : [];
   return [...found, ...Object.values(tree.props).flatMap((part) => elements(part, name))];
 }
-const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "ContentActionsSection", "CaughtProblems", "OfficeDeskSection"]);
+const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "ContentActionsSection", "CaughtProblems", "OfficeDeskSection", "CreativeDeskSection"]);
 async function settle(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settle));
   if (!isValidElement<Props>(tree)) return tree;
@@ -284,7 +285,7 @@ async function main() {
     c.ok("the PHOTO behind alert stays Jordan's and Kyle's only", /roles: \["OWNER"\] \}, \.\.\.people[\s\S]{0,200}roles: \["ADMIN" as const\]/.test(behind) && !/photo[\s\S]{0,80}CREATIVE_MANAGER/i.test(behind.slice(behind.indexOf("async function ringBells"), behind.indexOf("async function ringBells") + 3000).split('kind === "video"')[1]?.split("} else")[1] ?? ""));
 
     // =====================================================================
-    c.head("§6 · the dashboard: the creative cut");
+    c.head("§6 · the dashboard: his own (the creative manager's dashboard, Oct 23 2026)");
     // =====================================================================
     const { default: home } = await import("@/app/page");
     // Two cuts waiting on a verdict: one assigned to James, one to Kyle.
@@ -292,20 +293,18 @@ async function main() {
     const cutDeliverable = await prisma.deliverable.findFirstOrThrow({ where: { projectId: cutJob.id } });
     const cut = (slot: number, reviewer: string, hoursAgo: number) => prisma.reviewSubmission.create({ data: { projectId: cutJob.id, deliverableId: cutDeliverable.id, slot, source: "folder", kind: "video", status: "PENDING", reviewerTeamMemberId: reviewer, submittedByKey: "kim", assetPath: `/isolated/${cutJob.id}-${slot}.mp4`, createdAt: new Date(Date.now() - hoursAgo * 3_600_000) } });
     const mineCut = await cut(1, jamesTm.id, 3);
-    const kylesCut = await cut(2, kyleTm.id, 30);
+    // Kyle's cut has waited well past the room's cover window (delayed work).
+    const kylesCut = await cut(2, kyleTm.id, 150);
     await signIn(james);
     const jDash = await settle(await home({}));
     const jHtml = renderToStaticMarkup(expand(jDash) as Parameters<typeof renderToStaticMarkup>[0]);
-    c.ok("they land on the dashboard (no redirect)", elements(jDash, "HealthStrip").length === 1);
-    c.ok("no Kyle's day, no problems board, no week, no money", ["KylesDayCard", "KylesDaySection", "CaughtProblems", "OwnerWeekCard", "MoneyStat", "OwnerBusiness", "ShootIssuesCard"].every((n) => elements(jDash, n).length === 0) && !jHtml.includes("Kyle’s day") && !/\$\d/.test(jHtml));
-    // Oct 22 2026: his review tile reads "Videos to review" and leads the strip.
-    c.ok("no Clients waiting tile; Videos to review first, then Shoots on time and Special requests", !jHtml.includes("Clients waiting") && jHtml.includes("Shoots on time") && jHtml.includes("Special requests") && jHtml.includes("Videos to review") && jHtml.indexOf("Videos to review") < jHtml.indexOf("Shoots on time"));
-    c.ok("the monthly content card is theirs (Jordan's and the creative manager's)", jHtml.includes("data-content-actions") || elements(jDash, "ContentActionsCard").length === 1);
-    const att = elements(jDash, "NeedsAttention")[0]?.attention as Dashboard["attention"] | undefined;
-    c.ok("Needs attention keeps the creative lines only (no clients waiting, no sending, no owners to give)", !!att && att.items.every((i) => !/^(clients|send:|needs-owner|requests-no-job|old-ops|todos)/.test(i.key)) && !att.unavailable.includes("client messages"), JSON.stringify(att?.items.map((i) => i.key)));
-    const item = (key: string) => att?.items.find((i) => i.key === key);
-    c.ok("…their own cut to review, opening that version", item("review-mine")?.lead === "1 cut" && item("review-mine")?.action.href === `/review/${cutJob.id}?cut=${mineCut.id}`, JSON.stringify(item("review-mine")));
-    c.ok("…and the rest of the room's cuts waiting, oldest first (Kyle's, 30h, red)", item("review-waiting")?.lead === "1 cut" && item("review-waiting")?.text === "more waiting on review" && item("review-waiting")?.tone === "bad" && item("review-waiting")?.action.href === `/review/${cutJob.id}?cut=${kylesCut.id}`, JSON.stringify(item("review-waiting")));
+    const desk = elements(jDash, "CreativeDesk")[0]?.desk as CreativeDesk | undefined;
+    c.ok("they land on their own dashboard (no redirect)", !!desk && jHtml.includes("data-creative-desk") && elements(jDash, "HealthStrip").length === 0);
+    c.ok("no Kyle's day, no problems board, no week, no money, not Kyle's desk", ["KylesDayCard", "KylesDaySection", "CaughtProblems", "OwnerWeekCard", "MoneyStat", "OwnerBusiness", "ShootIssuesCard", "OfficeDesk"].every((n) => elements(jDash, n).length === 0) && !jHtml.includes("Kyle’s day") && !/\$\d/.test(jHtml));
+    c.ok("no Clients waiting; his own sections: My Production, Creative Review, Team Development, Assigned to Me", !jHtml.includes("Clients waiting") && ["My Production", "Creative Review", "Team Development &amp; Quality", "Assigned to Me &amp; Handoffs"].every((t) => jHtml.includes(t)));
+    c.ok("the monthly content stays one tap away (Creative Preparation, View monthly content)", jHtml.includes('data-section="prep"') && jHtml.includes('href="/content"'));
+    c.ok("…their own cut to review, opening that version", !!desk && desk.review.ready.length === 1 && desk.review.ready[0].id === mineCut.id && desk.review.ready[0].href === `/review/${cutJob.id}?cut=${mineCut.id}`, JSON.stringify(desk?.review.ready.map((r) => r.id)));
+    c.ok("…and the room's cut held by Kyle past the cover window shows apart as delayed (with who holds it), never as theirs to approve", !!desk && desk.review.delayed.some((r) => r.id === kylesCut.id && r.reviewer === "Kyle Smith") && !desk.review.ready.some((r) => r.id === kylesCut.id) && desk.glance.reviews === 1);
     const opsHome = await import("@/lib/opsHome");
     const creativeDash = await opsHome.buildDashboard({ now: new Date(), excludeClientIds: [], viewer: { role: "CREATIVE_MANAGER", key: "james", teamMemberId: jamesTm.id }, ops: { key: "kyle", teamMemberId: kyleTm.id, name: "Kyle" }, scrub: true, focus: "creative" });
     c.ok("buildDashboard(focus: creative) reads no client inbox", creativeDash.health.clients === null && !creativeDash.attention.unavailable.includes("client messages"));
