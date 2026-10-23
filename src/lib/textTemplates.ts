@@ -296,6 +296,21 @@ export const TEXT_TEMPLATES = {
     required: ["requestList", "link"],
     sender: "src/lib/shootDayText.ts (composeShootDayText)",
   },
+  session_scripts: {
+    label: "Content session day: scripts link",
+    audience: "team",
+    when: "From 7 AM on a monthly content session's day, once, to the creative on the appointment.",
+    body: "Hi {firstName}, {client}'s content session is today at {time} at {street}. The scripts are on your shoot page: {link}",
+    placeholders: [
+      P("firstName", "The creative's first name", "Harrison"),
+      P("client", "The client's first name", "John"),
+      P("time", "The start time, Eastern", "1:30 PM"),
+      P("street", "The session's street", "80 W Lancaster Ave"),
+      P("link", "The session's shoot page (topics and scripts)", "https://hub.realtourpilot.com/shoot/abc123"),
+    ],
+    required: ["link"],
+    sender: "src/lib/sessionScriptsText.ts (composeSessionScriptsText)",
+  },
   shoot_note: {
     label: "Client note before a shoot",
     audience: "team",

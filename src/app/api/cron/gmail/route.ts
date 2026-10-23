@@ -240,6 +240,14 @@ export async function GET(req: NextRequest) {
     return sweepShootDayTexts();
   }, { maxMs: 20_000 });
 
+  // THE SCRIPTS LINK ON SESSION DAY (Oct 23 2026, lib/sessionScriptsText):
+  // from 7 AM ET, each monthly content session's creative gets one text with
+  // the session's shoot page. Idle before 7 and once every session is texted.
+  await step("sessionScriptsText", async () => {
+    const { sweepSessionScriptsTexts } = await import("@/lib/sessionScriptsText");
+    return sweepSessionScriptsTexts();
+  }, { maxMs: 20_000 });
+
   // MISSING FROM THE UPLOAD (Oct 19 2026, lib/uploadGaps): a job shot in the
   // last three days whose Dropbox upload is missing part of the order (only
   // drone photos, no ground photos) texts its creative once per gap, bells the

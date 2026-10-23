@@ -29,7 +29,7 @@ const rules = (coverage: Partial<InternalAlertRules["coverage"]>, photos: Partia
   leadPing: { enabled: true },
   eveningPush: { enabled: true },
   photographerBrief: { enabled: true },
-  shootDayText: { enabled: true }, uploadGap: { enabled: true }, missingInstructions: { enabled: true },
+  shootDayText: { enabled: true }, sessionScriptsText: { enabled: true }, uploadGap: { enabled: true }, missingInstructions: { enabled: true },
   promiseWatch: { enabled: true },
   coverage: { weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: null, ...coverage },
 });
