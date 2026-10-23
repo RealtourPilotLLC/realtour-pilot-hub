@@ -136,6 +136,21 @@ export async function loadTurnarounds(): Promise<TurnaroundRules> {
 // un-assign whoever Jordan put on the rota. A stale browser tab is enough to do
 // that. So the stored row is the base and `input` is the OVERLAY, the same
 // carry-through lesson saveAutoTextRules learned the hard way.
+// THE PHOTOGRAPHER BRIEF (Oct 23 2026, lib/photographerBrief): the switch and
+// the send time, its own AppSetting row (`photographer_brief`), owner or admin.
+export async function savePhotographerBrief(input: { enabled: boolean; sendMinute: number }): Promise<{ ok: boolean; message: string }> {
+  try {
+    const me = await requireSettingsActor();
+    const { savePhotographerBriefSettings } = await import("@/lib/photographerBrief");
+    const r = await savePhotographerBriefSettings({ enabled: input?.enabled === true, sendMinute: Number(input?.sendMinute) }, me?.email ?? null);
+    revalidatePath("/settings");
+    revalidatePath("/");
+    return r;
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Failed." };
+  }
+}
+
 export async function saveInternalAlerts(input: InternalAlertRules): Promise<{ ok: boolean; message: string }> {
   try {
     const me = await requireSettingsActor();

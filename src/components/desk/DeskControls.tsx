@@ -7,6 +7,7 @@ import { Check, Loader2, Send } from "lucide-react";
 import { approveAryeoAction } from "@/app/ops/photo-delivery/actions";
 import { sendThreadText } from "@/app/communications/threadActions";
 import { dismissTask } from "@/app/actions";
+import { sendPhotographerBriefNow } from "@/app/shoot/brief/actions";
 import { closeoutTickAction, deskWaitAction, finishDayAction, type DeskResult, type WaitInput } from "@/app/deskActions";
 import type { CloseoutKey } from "@/lib/officeDesk";
 import { cn } from "@/lib/utils";
@@ -160,6 +161,20 @@ export function CloseoutTick({ dayKey, itemKey, checked, disabled, label }: { da
       />
       {msg && !msg.ok && <span role="alert" className="text-xs text-danger">{msg.message}</span>}
     </span>
+  );
+}
+
+/** The photographer brief's own "Send brief now" (the briefing build's action). */
+export function BriefSend({ teamMemberId, day, name }: { teamMemberId: string; day: string; name: string }) {
+  const { busy, msg, run } = useRun();
+  if (msg?.ok) return <Said msg={msg} />;
+  return (
+    <div className="flex flex-wrap items-center gap-2" data-control="brief-send">
+      <button type="button" disabled={busy} onClick={() => run(() => sendPhotographerBriefNow(teamMemberId, day))} className={QUIET}>
+        {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Send aria-hidden className="size-4" />} Send {name} the brief now
+      </button>
+      <Said msg={msg} />
+    </div>
   );
 }
 

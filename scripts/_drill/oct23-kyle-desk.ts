@@ -346,7 +346,15 @@ async function main() {
     const nx = visit(d, apNext.id);
     c.ok("the next business day's shoot is prepared today: unconfirmed and missing access, first in the list, with Confirm", nx?.state === "now" && nx.title.startsWith("Confirm 51 Next Day Rd") && vv(nx)?.gaps.some((g) => g.startsWith("No access answer")) === true && nx.primary?.action.kind === "confirm" && (nx.primary.action as { taskId: string }).taskId === confNext.id && tab(d, "prep").now[0]?.id !== apToday.id);
     c.ok("conflicting instructions are flagged (drone on the visit, the client said no drone)", visit(d, apDrone.id)?.state === "now" && vv(visit(d, apDrone.id))?.conflicts.some((x) => x.startsWith("Drone is on this visit")) === true);
-    c.ok("the photographer's brief state comes from the briefing build (the stub: off for now)", vv(visit(d, apToday.id))?.brief.state === "off" && vv(visit(d, apToday.id))?.brief.words === "Brief not set up yet");
+    c.ok("the photographer's brief state comes from the briefing build (switched off by default: said, not a problem)", vv(visit(d, apToday.id))?.brief.state === "off" && vv(visit(d, apToday.id))?.brief.words === "Photographer brief switched off" && visit(d, apToday.id)?.state === "ok");
+    // Switched on, a brief that could not go out (no phone number on file for
+    // Harrison) is a failed send: it surfaces on the visit, and the visit's
+    // button is the briefing build's own Send brief now.
+    await prisma.appSetting.create({ data: { key: "photographer_brief", value: JSON.stringify({ enabled: true, sendMinute: 1080 }) } });
+    const dBrief = await build();
+    await prisma.appSetting.delete({ where: { key: "photographer_brief" } });
+    const failedBrief = visit(dBrief, apToday.id);
+    c.ok("a failed brief surfaces on Shoot Prep with Send brief now (the briefing build's action) and the full brief's link", failedBrief?.state === "now" && vv(failedBrief)?.brief.state === "failed" && vv(failedBrief)?.brief.words.startsWith("Brief not sent") === true && failedBrief.primary?.action.kind === "brief-send" && (failedBrief.primary.action as { teamMemberId: string }).teamMemberId === harrison.id && vv(failedBrief)?.brief.href === `/shoot/brief/${todayKey}?as=${harrison.id}`, JSON.stringify(vv(failedBrief)?.brief));
     const fri = await build(etAt(fridayKey, 11));
     const thu = await build(etAt(thursdayKey, 11));
     c.ok("#9 seen from Friday, Monday's visit is on Shoot Prep; seen from Thursday, it is not yet", !!visit(fri, apMonday.id) && !visit(thu, apMonday.id));

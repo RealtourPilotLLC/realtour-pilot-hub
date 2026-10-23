@@ -112,6 +112,8 @@ export type DeskAction =
   | { kind: "ask"; askId: string; askKind: "SPECIAL_REQUEST" | "SCHEDULING" }
   | { kind: "remind"; projectId: string; street: string; view: RemindView }
   | { kind: "confirm"; taskId: string; outboxHref: string }
+  /** the photographer brief's own "Send brief now" (one photographer, one ET day) */
+  | { kind: "brief-send"; teamMemberId: string; day: string; name: string }
   | { kind: "link"; label: string; href: string };
 
 export type AssetLine = {
@@ -140,6 +142,7 @@ export type PrepVisit = {
   endISO: string | null;
   over: boolean;
   photographer: string | null;
+  photographerId: string | null;
   confirmation: { state: "sent" | "other" | "open" | "none" | "na"; words: string; taskId: string | null };
   access: { lockbox: string | null; access: string | null; presence: string | null; contactName: string | null; contactPhone: string | null };
   /** the services THIS visit covers (the appointment's own order items) */
@@ -155,7 +158,7 @@ export type PrepVisit = {
   revisionsAfterDelivery: string[];
   conflicts: string[];
   gaps: string[];
-  brief: { state: BriefState; words: string };
+  brief: { state: BriefState; words: string; why: string | null; href: string | null };
   otherVisits: { whenISO: string | null; services: string[] }[];
 };
 
@@ -373,8 +376,10 @@ type PrepRow = {
   description: string | null;
   rawJson: string | null;
   assignedTo: string | null;
+  assignedToId: string | null;
   project: {
     id: string; title: string; addressLine: string | null; status: string; deliveredAt: Date | null; shootDate: Date | null; clientId: string | null;
+    photographerId: string | null;
     client: { name: string } | null;
     photographer: { name: string } | null;
     deliverables: { type: string; label: string | null }[];
@@ -385,7 +390,7 @@ type PrepRow = {
 };
 
 const PREP_PROJECT_SELECT = {
-  id: true, title: true, addressLine: true, status: true, deliveredAt: true, shootDate: true, clientId: true,
+  id: true, title: true, addressLine: true, status: true, deliveredAt: true, shootDate: true, clientId: true, photographerId: true,
   client: { select: { name: true } },
   photographer: { select: { name: true } },
   deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true } },
@@ -413,7 +418,7 @@ async function prepRows(dayKeys: string[], excludeClientIds: string[]): Promise<
   const [appts, bare] = await Promise.all([
     prisma.appointment.findMany({
       where: { startAt: { gte: start, lt: end }, NOT: { status: "CANCELED" }, project: projectWhere },
-      select: { id: true, startAt: true, endAt: true, description: true, rawJson: true, assignedTo: { select: { name: true } }, project: { select: PREP_PROJECT_SELECT } },
+      select: { id: true, startAt: true, endAt: true, description: true, rawJson: true, assignedToId: true, assignedTo: { select: { name: true } }, project: { select: PREP_PROJECT_SELECT } },
       orderBy: { startAt: "asc" },
       take: 80,
     }),
@@ -426,8 +431,8 @@ async function prepRows(dayKeys: string[], excludeClientIds: string[]): Promise<
     }),
   ]);
   return [
-    ...appts.map((a) => ({ apptId: a.id, startAt: a.startAt, endAt: a.endAt, description: a.description, rawJson: a.rawJson, assignedTo: a.assignedTo?.name ?? null, project: a.project as PrepRow["project"] })),
-    ...bare.map((p) => ({ apptId: null, startAt: p.shootDate, endAt: null, description: p.appointments.map((a) => a.description).find((d) => !!d?.trim()) ?? null, rawJson: null, assignedTo: null, project: p as PrepRow["project"] })),
+    ...appts.map((a) => ({ apptId: a.id, startAt: a.startAt, endAt: a.endAt, description: a.description, rawJson: a.rawJson, assignedTo: a.assignedTo?.name ?? null, assignedToId: a.assignedToId, project: a.project as PrepRow["project"] })),
+    ...bare.map((p) => ({ apptId: null, startAt: p.shootDate, endAt: null, description: p.appointments.map((a) => a.description).find((d) => !!d?.trim()) ?? null, rawJson: null, assignedTo: null, assignedToId: null, project: p as PrepRow["project"] })),
   ];
 }
 
@@ -857,12 +862,12 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       : { state: "open", words: "Not confirmed yet", taskId: conf.id };
     const b = (v.apptId ? briefs.get(v.apptId) : null) ?? { state: "off" as BriefState, sentAt: null, ackAt: null, why: null };
     const briefWords: Record<BriefState, string> = {
-      off: "Brief not set up yet",
-      pending: "Brief waiting to send",
-      sent: `Brief sent${b.sentAt ? ` ${etTime(b.sentAt)}` : ""}, not acknowledged yet`,
-      failed: `Brief failed to send${b.why ? `: ${b.why}` : ""}`,
-      acknowledged: `Photographer acknowledged${b.ackAt ? ` ${etTime(b.ackAt)}` : ""}`,
-      changed: "Instructions changed after the photographer acknowledged: needs a new acknowledgment",
+      off: "Photographer brief switched off",
+      pending: `Brief not sent yet${b.why ? `: ${b.why}` : ""}`,
+      sent: `Brief sent${b.sentAt ? ` ${etTime(b.sentAt)}` : ""}, no Got it yet`,
+      failed: `Brief not sent${b.why ? `: ${b.why.replace(/^(Update )?not sent:\s*/i, "")}` : ""}`,
+      acknowledged: `Photographer tapped Got it${b.ackAt ? ` ${etTime(b.ackAt)}` : ""}`,
+      changed: "Instructions changed: waiting for a new Got it",
     };
     const gaps: string[] = [];
     if (!p.addressLine?.trim() || /^\[No address/i.test(p.addressLine)) gaps.push("No street address on the listing");
@@ -873,13 +878,18 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     if (servicesFrom === "none") gaps.push(multi ? "No services listed for this visit (a split order)" : "No services on the order");
     const conflicts = visitConflicts({ services, requests: forThis.map((n) => n.text), orderNotes, lockbox: acc.lockbox, liveVisits: live.length });
     const unconfirmed = confirmation.state === "open" || confirmation.state === "none";
-    const briefProblem = b.state === "failed" || b.state === "changed";
+    // Failed sends surface at once; a brief still without its Got it surfaces
+    // once the briefing build says it needs a person (the first shoot is near),
+    // until then it waits on the photographer.
+    const photographerId = v.assignedToId ?? p.photographerId ?? null;
+    const briefProblem = b.state === "failed" || ((b.state === "sent" || b.state === "changed") && !!b.why && /First shoot|needs|not acknowledged/i.test(b.why)) || (b.state === "pending" && /before the day's first shoot/i.test(b.why ?? ""));
+    const briefWaiting = !briefProblem && (b.state === "sent" || b.state === "changed");
     const problems = over ? [] : [...(unconfirmed ? [confirmation.words] : []), ...gaps, ...conflicts, ...(briefProblem ? [briefWords[b.state as BriefState]] : [])];
     const street = clean(streetOf(p.title));
     const when = start ? `${visitDay === dayKey ? "today" : etDate(start)} ${etTime(start)}` : visitDay === dayKey ? "today" : etDate(etAt(visitDay, 12));
     const visit: PrepVisit = {
       apptId: v.apptId, projectId: p.id, street, client: p.client ? clean(p.client.name) : null, dayKey: visitDay,
-      timeISO: start?.toISOString() ?? null, endISO: v.endAt?.toISOString() ?? null, over, photographer: photographer ? clean(photographer) : null,
+      timeISO: start?.toISOString() ?? null, endISO: v.endAt?.toISOString() ?? null, over, photographer: photographer ? clean(photographer) : null, photographerId,
       confirmation,
       access: { lockbox: acc.lockbox ? clean(acc.lockbox) : null, access: acc.access ? clean(acc.access) : null, presence: acc.presence ? clean(acc.presence) : null, contactName: acc.name, contactPhone: acc.phone },
       services, servicesFrom,
@@ -891,7 +901,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       ],
       revisionsAfterDelivery: revisionsAfter,
       conflicts, gaps,
-      brief: { state: b.state, words: briefWords[b.state as BriefState] },
+      brief: { state: b.state, words: briefWords[b.state as BriefState], why: b.why, href: photographerId ? `/shoot/brief/${visitDay}?as=${photographerId}` : null },
       otherVisits: live.filter((a) => a.id !== v.apptId).map((a) => ({ whenISO: a.startAt?.toISOString() ?? null, services: apptItems(a.rawJson) })),
     };
     const soon = !!start && start.getTime() - nowMs < DAY;
@@ -904,17 +914,24 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       : `Re-send the brief for ${street} (${when})`;
     const confirmAction: DeskAction | null = confirmation.state === "open" && confirmation.taskId ? { kind: "confirm", taskId: confirmation.taskId, outboxHref: "/communications?view=outbox" } : null;
     const openJob: DeskAction = { kind: "link", label: "Open the job", href: `/projects/${p.id}` };
-    const primary = problems.length ? (confirmAction && firstProblem === confirmation.words ? confirmAction : openJob) : null;
+    const briefSend: DeskAction | null = photographerId && b.state !== "off" && !over ? { kind: "brief-send", teamMemberId: photographerId, day: visitDay, name: photographer ? clean(photographer).split(" ")[0] : "the photographer" } : null;
+    const briefFirst = !!firstProblem && briefProblem && firstProblem === briefWords[b.state as BriefState];
+    const primary = problems.length ? (confirmAction && firstProblem === confirmation.words ? confirmAction : briefFirst && briefSend ? briefSend : openJob) : null;
+    // Waiting on the photographer's Got it: their move, back to Kyle two hours before the shoot.
+    const ackBy = start ? new Date(start.getTime() - 2 * HOUR) : null;
+    const waitingAck = !problems.length && !over && briefWaiting;
     push({
       id: v.apptId ? `visit:${v.apptId}` : `visit:p:${p.id}`, tab: "prep",
-      state: problems.length ? "now" : "ok",
-      title, reason: problems.length ? problems.slice(0, 3).join(" · ") : [photographer ? clean(photographer) : null, confirmation.words, services.slice(0, 3).join(", ")].filter(Boolean).join(" · "),
-      who: problems.length ? "You" : null,
-      dueISO: start?.toISOString() ?? null, dueWords: start ? `${visitDay === dayKey ? "Today" : etDate(start)} ${etTime(start)}` : null,
+      state: problems.length ? "now" : waitingAck ? "waiting" : "ok",
+      title: waitingAck ? `${street}: waiting for ${photographer ? clean(photographer).split(" ")[0] : "the photographer"}'s Got it` : title,
+      reason: problems.length ? problems.slice(0, 3).join(" · ") : waitingAck ? `${briefWords[b.state as BriefState]} · shoot ${when}` : [photographer ? clean(photographer) : null, confirmation.words, services.slice(0, 3).join(", ")].filter(Boolean).join(" · "),
+      who: problems.length ? "You" : waitingAck ? (photographer ? clean(photographer) : "the photographer") : null,
+      dueISO: waitingAck && ackBy ? ackBy.toISOString() : start?.toISOString() ?? null,
+      dueWords: waitingAck && ackBy ? `Back ${etTime(ackBy)}` : start ? `${visitDay === dayKey ? "Today" : etDate(start)} ${etTime(start)}` : null,
       late: false,
       rank: problems.length ? (soon || visitDay === dayKey ? RANK.blocker : RANK.routine) : RANK.housekeeping,
       primary: primary ? { label: primary.kind === "confirm" ? "Confirm" : actionLabel(primary), action: primary } : null,
-      actions: [...(confirmAction ? [confirmAction] : []), openJob],
+      actions: [...(confirmAction ? [confirmAction] : []), ...(briefSend ? [briefSend] : []), openJob],
       href: `/projects/${p.id}`,
       panel: { kind: "visit", visit },
       sinceISO: null,
@@ -1278,6 +1295,7 @@ export function actionLabel(a: DeskAction): string {
     case "ask": return "Check request";
     case "remind": return "Remind";
     case "confirm": return "Confirm";
+    case "brief-send": return "Send brief now";
     case "link": return a.label;
   }
 }

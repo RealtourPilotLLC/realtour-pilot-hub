@@ -138,7 +138,7 @@ async function main() {
     const replyHtml = panel(kDesk!, reply.id);
     c.ok("a client conversation: the messages, a text box (Messages' own send), Open in Messages, and the dismiss", !!reply && replyHtml.includes("Text back") && replyHtml.includes("Open in Messages") && replyHtml.includes("[amount] invoice") && !replyHtml.includes("$1,200"), reply?.id);
     const visitHtml = panel(kDesk!, `visit:${cliff2.id}`);
-    c.ok("a visit: this visit only; the split order flagged; older notes and the other visit folded", visitHtml.includes("data-conflicts") && visitHtml.includes("cover all 2 visits") && visitHtml.includes("Other visits and older notes") && visitHtml.includes("No services listed for this visit") && visitHtml.includes("Brief not set up yet"));
+    c.ok("a visit: this visit only; the split order flagged; older notes and the other visit folded", visitHtml.includes("data-conflicts") && visitHtml.includes("cover all 2 visits") && visitHtml.includes("Other visits and older notes") && visitHtml.includes("No services listed for this visit") && visitHtml.includes("Photographer brief switched off"));
     const taskItem = kDesk!.tabs.find((t) => t.key === "followups")!.now.find((i) => i.title.startsWith("Apply"))!;
     const taskHtml = panel(kDesk!, taskItem.id);
     c.ok("a task: Done / Not needed / New date, and 'Waiting on someone' (James for creative, Jordan for business)", taskHtml.includes("Not needed") && taskHtml.includes("New date") && taskHtml.includes("Waiting on someone") && taskHtml.includes("James: a creative question") && taskHtml.includes("Jordan: a business or policy question"));

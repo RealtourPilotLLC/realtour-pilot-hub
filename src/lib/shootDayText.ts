@@ -215,6 +215,14 @@ export async function shootDayCandidates(now: Date = new Date()): Promise<ShootD
     asksOf.set(pid, [...byId.values()].sort((x, y) => x.askedAt.getTime() - y.askedAt.getTime()));
   }
 
+  // FOLDED INTO THE PHOTOGRAPHER BRIEF (Oct 23 2026, lib/photographerBrief):
+  // while that brief is on, a creative whose brief for the day went already has
+  // these requests (and a change since re-sends the brief), so this text is not
+  // sent as well. A brief that never went (off, failed, no phone) leaves this
+  // text exactly as it was.
+  const { briefsSentFor } = await import("@/lib/photographerBrief");
+  const briefed = await briefsSentFor(rows.filter((r) => !takenKeys.has(r.dedupeKey)).map((r) => ({ teamMemberId: r.teamMemberId, day: r.shootDay }))).catch(() => new Set<string>());
+
   return rows.map(({ a, teamMemberId, shootDay, dedupeKey }) => {
     const m = memberOf.get(teamMemberId);
     const num = staffTextNumber(m?.phone);
@@ -224,6 +232,7 @@ export async function shootDayCandidates(now: Date = new Date()): Promise<ShootD
       teamMemberId, name: m?.name ?? "(not on the roster)", toKey: num?.key ?? null, dedupeKey,
     };
     if (takenKeys.has(dedupeKey)) return { ...base, requests: [], text: null, skip: "already sent" };
+    if (briefed.has(`${teamMemberId}|${shootDay}`)) return { ...base, requests: [], text: null, skip: "in the photographer brief" };
     const brief = a.description?.trim() || a.project.appointments.map((x) => x.description?.trim()).find(Boolean) || null;
     const requests = shootDayRequests({
       brief,

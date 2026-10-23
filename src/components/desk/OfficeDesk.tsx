@@ -14,7 +14,7 @@ import { CommsDismissButton } from "@/components/tasks/ChecklistButtons";
 import { OldItemActions } from "@/components/home/OldItemActions";
 import { AskQuickActions } from "@/components/home/AskQuickActions";
 import { RemindPhotographerButton } from "@/components/editing/RemindPhotographer";
-import { CloseoutTick, ConfirmControls, FinishDay, PhotoApprove, PRIMARY, QUIET, ReplyBox, WaitOn } from "@/components/desk/DeskControls";
+import { BriefSend, CloseoutTick, ConfirmControls, FinishDay, PhotoApprove, PRIMARY, QUIET, ReplyBox, WaitOn } from "@/components/desk/DeskControls";
 
 // ---------------------------------------------------------------------------
 // KYLE'S DESK, the screen (Oct 23 2026). Jordan: "I just want to come in and
@@ -382,12 +382,18 @@ function VisitBody({ v }: { v: PrepVisit }) {
         {field("Photographer", v.photographer ?? "Not assigned")}
         {field("Confirmation", v.confirmation.words)}
         {field("Brief", v.brief.words)}
+        {v.brief.state !== "off" && v.brief.why && !v.brief.words.includes(v.brief.why) ? field("Why", v.brief.why) : null}
         {field("This visit", v.services.length ? v.services.join(", ") : "No services listed for this visit")}
         {field("Lockbox / code", v.access.lockbox)}
         {field("Access", v.access.access)}
         {field("Who is there", v.access.presence)}
         {field("Contact", [v.access.contactName, v.access.contactPhone].filter(Boolean).join(" · ") || null)}
       </dl>
+      {v.brief.href && (
+        <Link href={v.brief.href} className="inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline" data-brief-link>
+          Open the full brief <ExternalLink aria-hidden className="size-3.5" />
+        </Link>
+      )}
       {(v.requests.length > 0 || v.instructions.length > 0) && (
         <div data-visit-requests>
           <p className="text-[12px] font-semibold uppercase tracking-wide text-muted">For this visit</p>
@@ -465,6 +471,8 @@ function ActionControl({ a, item, creative, owner }: { a: DeskAction; item: Desk
       return <RemindPhotographerButton projectId={a.projectId} street={a.street} view={a.view} showMissing />;
     case "confirm":
       return <ConfirmControls taskId={a.taskId} outboxHref={a.outboxHref} />;
+    case "brief-send":
+      return <BriefSend teamMemberId={a.teamMemberId} day={a.day} name={a.name} />;
     case "link":
       return item.href === a.href ? null : <Link href={a.href} className={QUIET}>{a.label}</Link>;
   }
