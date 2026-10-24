@@ -1044,7 +1044,9 @@ export async function listPhotographerTasks(memberId: string): Promise<Photograp
   const key = tm?.name ? slugForName(tm.name) : "";
   if (!key) return [];
   const fetched = await prisma.smartTask.findMany({
-    where: { assignedKey: key, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    // A delegated task they submitted for verification waits on whoever
+    // assigned it (lib/delegation): it leaves their list until it comes back.
+    where: { assignedKey: key, status: { notIn: ["COMPLETED", "CANCELLED", "WAITING_VERIFICATION"] } },
     orderBy: [{ dueAt: { sort: "asc", nulls: "last" } }, { createdAt: "desc" }],
     take: 30,
     select: {

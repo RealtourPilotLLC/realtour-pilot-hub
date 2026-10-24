@@ -636,6 +636,24 @@ export async function setSmartTaskStatus(taskId: string, status: string): Promis
   if (t.dedupeKey?.startsWith("brand-ack:") && (status === "COMPLETED" || status === "CANCELLED")) {
     return { ok: false, message: "This brand confirmation closes when every required editor records Got it, or the office records an override with a reason on the edit brief." };
   }
+  // A DELEGATED TASK THAT NEEDS VERIFICATION (audit, Oct 23 2026). Done on any
+  // of the hub's task lists (My Shoots, Tasks, a client's to-dos) is, for its
+  // assignee, "Submit for verification"; only the person who assigned it, or
+  // the owner, completes it, and that is the verification (lib/delegation).
+  // Without this a practice James assigned Harrison closed from his My Shoots
+  // card with nobody verifying it.
+  if (status === "COMPLETED") {
+    const d = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { delegatedAt: true, delegatedBy: true, delegation: true } });
+    const lib = d?.delegatedAt ? await import("@/lib/delegation") : null;
+    if (lib && d && lib.parseDelegation(d.delegation)?.needsVerification) {
+      const me = await import("@/lib/auth/user").then((m) => m.getCurrentUser()).catch(() => null);
+      const actor = me ? await lib.actorFor(me) : lib.LOCAL_OWNER_ACTOR;
+      const oversee = actor.role === "OWNER" || (!!d.delegatedBy && d.delegatedBy === actor.email);
+      const r = oversee ? await lib.completeTask(actor, taskId) : await lib.submitForVerification(actor, taskId);
+      for (const p of ["/", "/tasks", "/shoot"]) revalidatePath(p);
+      return { ok: r.ok, message: r.message };
+    }
+  }
   if (t.dedupeKey?.startsWith("topaz-deliver-") && status === "COMPLETED") {
     const jobId = t.dedupeKey.slice("topaz-deliver-".length);
     const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { submissionId: true, taskId: true, deliveredAt: true, submission: { select: { status: true } } } });

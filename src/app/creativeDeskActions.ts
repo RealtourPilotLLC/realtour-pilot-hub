@@ -270,9 +270,13 @@ export async function assignPracticeAction(itemId: string, input: { practice: st
     // Jordan, so Harrison's practice went to Jordan while this said
     // "assigned". Training field creatives is his own work: the delegation
     // rule takes this one trainee, read from the item above (traineeKey).
+    // No verification step on the task itself: James's desk has nowhere to
+    // verify a task he handed out, so a submitted practice would sit there.
+    // Harrison marks it done (James is told), and James's verification is
+    // this coaching item's own "Verify improvement", with its evidence.
     const { actorFor, assignTask, LOCAL_OWNER_ACTOR } = await import("@/lib/delegation");
     const actor = s.me ? await actorFor(s.me) : LOCAL_OWNER_ACTOR;
-    const r = await assignTask(actor, { title: `Practice: ${practice}`.slice(0, 140), outcome: "Practice done, ready for feedback", assigneeKey: key, dueAt: due?.toISOString(), needsVerification: true, note: item.standard ? `The standard: ${item.standard}` : undefined }, { traineeKey: key }).catch((e: unknown) => {
+    const r = await assignTask(actor, { title: `Practice: ${practice}`.slice(0, 140), outcome: "Practice done, ready for feedback", assigneeKey: key, dueAt: due?.toISOString(), needsVerification: false, note: item.standard ? `The standard: ${item.standard}` : undefined }, { traineeKey: key }).catch((e: unknown) => {
       console.warn("practice assign failed", (e as Error)?.message);
       return { ok: false, message: "That didn't go through. Try again." };
     });

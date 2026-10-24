@@ -213,9 +213,27 @@ async function main() {
     // Practice for a field creative (the coaching action passes the trainee; the assign action never does).
     const { getCurrentUser } = await import("@/lib/auth/user");
     const jamesActor = await lib.actorFor((await getCurrentUser())!);
-    const practice = await lib.assignTask(jamesActor, { title: "Practice: level the drone before every orbit", assigneeKey: "harrison", needsVerification: true }, { traineeKey: "harrison" });
+    const practice = await lib.assignTask(jamesActor, { title: "Practice: level the drone before every orbit", assigneeKey: "harrison" }, { traineeKey: "harrison" });
     const practiceRow = await prisma.smartTask.findFirst({ where: { title: "Practice: level the drone before every orbit" } });
-    c.ok("#14 …practice for the field creative he coaches goes to that creative directly (the coaching action names him)", practice.ok && practiceRow?.assignedKey === "harrison" && practiceRow.delegatedBy === james.email && (await lib.tasksAssignedTo("harrison")).some((d) => d.taskId === practiceRow.id && d.needsVerification), practice.message);
+    c.ok("#14 …practice for the field creative he coaches goes to that creative directly (the coaching action names him)", practice.ok && practiceRow?.assignedKey === "harrison" && practiceRow.delegatedBy === james.email && (await lib.tasksAssignedTo("harrison")).some((d) => d.taskId === practiceRow.id), practice.message);
+    // A delegated task that NEEDS verification, closed from a generic list
+    // (My Shoots' Done is a photographer's only control: setSmartTaskStatus).
+    // For its assignee that is a submission, never Completed; the owner's
+    // Done is the verification.
+    await signIn(owner);
+    await A.assignTaskAction({ title: "Re-shoot the twilight drone orbit", assigneeKey: "harrison", needsVerification: true });
+    const verifyRow = await prisma.smartTask.findFirst({ where: { title: "Re-shoot the twilight drone orbit" } });
+    const { setSmartTaskStatus } = await import("@/app/actions");
+    const { listPhotographerTasks } = await import("@/lib/shoot");
+    await signIn(harrison);
+    const hDone = await setSmartTaskStatus(verifyRow!.id, "COMPLETED");
+    const afterH = await prisma.smartTask.findUnique({ where: { id: verifyRow!.id } });
+    c.ok("verification holds on every list: Harrison's Done on My Shoots submits it (Ready for verification), and it leaves his list", !!hDone?.ok && /Submitted/.test(hDone.message) && afterH?.status === "WAITING_VERIFICATION" && !afterH.completedAt && !(await listPhotographerTasks(harrisonTm.id)).some((t) => t.id === verifyRow!.id), `${hDone?.message} ${afterH?.status}`);
+    await signIn(owner);
+    const oDone = await setSmartTaskStatus(verifyRow!.id, "COMPLETED");
+    const afterO = (await lib.delegationFor([verifyRow!.id])).get(verifyRow!.id)!;
+    c.ok("…the owner's Done on the same task is the verification: Completed, on its history", !!oDone?.ok && afterO.state === "COMPLETED" && afterO.events.some((e) => e.kind === "completed" && /Verified/.test(e.text ?? "")), `${oDone?.message} ${afterO.state}`);
+    await signIn(james);
     await signIn(harrison);
     const ph = await A.assignTaskAction({ title: "Have Kyle call the client", assigneeKey: "kyle" });
     c.ok("#14 a photographer can't assign work", !ph.ok && /can't assign/.test(ph.message), ph.message);

@@ -251,7 +251,8 @@ async function main() {
     const prac = await actions.assignPracticeAction(item.id, { practice: "Submit the upload page before leaving the driveway", dueDay: day(5) });
     const practiceRow = await prisma.smartTask.findFirst({ where: { title: { startsWith: "Practice:" } } });
     const practiceRec = JSON.parse(practiceRow?.delegation ?? "{}") as { needsVerification?: boolean; recommended?: unknown; events?: { kind: string }[] };
-    c.ok("practice for a field creative is ASSIGNED to him through the delegation workflow (his key, James as the assigner, verification on, no recommendation)", prac.ok && assignCalls.length === callsBefore && practiceRow?.assignedKey === "harrison" && practiceRow.ownerId === harrisonTm.id && practiceRow.delegatedBy === james.email.toLowerCase() && practiceRec.needsVerification === true && !practiceRec.recommended && practiceRec.events?.[0]?.kind === "assigned", `${prac.message} ${practiceRow?.assignedKey}`);
+    // No verification step on the task: James verifies on the coaching item (Verify improvement below).
+    c.ok("practice for a field creative is ASSIGNED to him through the delegation workflow (his key, James as the assigner, no recommendation; he marks it done, James verifies the item)", prac.ok && assignCalls.length === callsBefore && practiceRow?.assignedKey === "harrison" && practiceRow.ownerId === harrisonTm.id && practiceRow.delegatedBy === james.email.toLowerCase() && practiceRec.needsVerification === false && !practiceRec.recommended && practiceRec.events?.[0]?.kind === "assigned", `${prac.message} ${practiceRow?.assignedKey}`);
     const verify = await actions.verifyImprovementAction(item.id, { note: "Three on-time uploads in a row", exampleLabel: "71 Later Ave and the next two", exampleHref: "/upload" });
     const item2 = await prisma.developmentItem.findUniqueOrThrow({ where: { id: item.id } });
     const ev2 = JSON.parse(item2.evidenceJson) as { label: string; source: string }[];
