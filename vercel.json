@@ -59,9 +59,17 @@
     {
       "path": "/api/cron/evening",
       "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/video-analysis",
+      "schedule": "*/5 * * * *"
     }
   ],
   "functions": {
+    "src/app/api/cron/video-analysis/route.ts": {
+      "memory": 3009,
+      "maxDuration": 300
+    },
     "src/app/api/cron/topaz/route.ts": {
       "memory": 3009,
       "maxDuration": 300

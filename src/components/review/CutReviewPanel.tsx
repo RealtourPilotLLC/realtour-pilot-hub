@@ -104,6 +104,7 @@ export function CutReviewPanel({
   street,
   sendOffer = null,
   wrongFile = null,
+  spellingNote = null,
 }: {
   projectId: string;
   submission: CutSubmission;
@@ -152,6 +153,13 @@ export function CutReviewPanel({
    * Approve and Approve and send stay exactly as they are: a person decides.
    */
   wrongFile?: { line: string; strong: boolean } | null;
+  /**
+   * ON-SCREEN SPELLING (Oct 24 2026, lib/videoAnalysis): the page's box of
+   * Gemini's flags for this version, drawn above the verdict. The page decides
+   * who gets it (the owner during the trial; reviewers once the Settings
+   * switch is on). Approve is never held by it.
+   */
+  spellingNote?: React.ReactNode;
 }) {
   const router = useRouter();
   // Words this reviewer left on this cut when a verdict they pressed did not go
@@ -473,6 +481,7 @@ export function CutReviewPanel({
           {takeBack && <CutTakeBack info={takeBack} cutLabel={cutLabel ?? "this cut"} className="font-medium text-foreground underline underline-offset-2 hover:text-brand" />}
         </div>
       )}
+      {canDecide && spellingNote}
       {/* Note + verdict bar */}
       <div className="flex flex-wrap items-center gap-2">
         <button

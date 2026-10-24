@@ -9,6 +9,7 @@ import { LIBRARY_FILTERS, VIDEO_WORDS } from "@/lib/portalWords";
 import { Card, CardTitle, Empty, LoadFailed, StatusChip, fmtShort } from "@/components/portal/ui";
 import { CutReview } from "@/components/portal/CutReview";
 import { PostingKitPanel } from "@/components/portal/PostingKitPanel";
+import { CoverPicker } from "@/components/portal/CoverPicker";
 import { PortalPlayer } from "@/components/portal/PortalPlayer";
 import { ExpectedLine } from "@/components/portal/ExpectedLine";
 import { ScriptView } from "@/components/script/ScriptView";
@@ -301,7 +302,8 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
               canEdit={d.perms.suggest && !d.readOnly} transcriptGap={d.kit.transcript.gap}
             />
             {d.kit.final?.approvedByLabel && <p className="mt-2 text-[11px] text-muted-2">{versionWords(d.kit.final.label)} was approved by {d.kit.final.approvedByLabel}{d.kit.final.approvedAtISO ? ` on ${fmtShort(d.kit.final.approvedAtISO)}` : ""}.</p>}
-            {d.kit.cover && (
+            {/* Oct 24 2026: three Instagram covers of the file they are handed (lib/videoAnalysis), when made. */}
+            {d.kit.covers ? <CoverPicker videoId={d.video.id} covers={d.kit.covers} /> : d.kit.cover && (
               <div className="mt-3">
                 <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Cover</div>
                 {/* eslint-disable-next-line @next/next/no-img-element */}

@@ -14,6 +14,8 @@ import { getCutWorkspace, nextCutToReview } from "@/lib/reviewRoom";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { editorMeta } from "@/lib/editors";
 import { CutReviewPanel } from "@/components/review/CutReviewPanel";
+import { SpellingFlagsNote } from "@/components/review/SpellingFlags";
+import { spellingViewFor } from "@/lib/videoAnalysisCore";
 import { VerdictReceipts } from "@/components/review/VerdictReceipts";
 import { cutTakeBackFlags } from "@/app/review/actions";
 import { BackLink } from "@/components/ui/BackLink";
@@ -297,6 +299,27 @@ export default async function CutReviewPage({
           .catch(() => null)
       : null;
 
+  // ON-SCREEN SPELLING (Oct 24 2026, lib/videoAnalysis): Gemini's flags for the
+  // version on screen. On trial: the owner only, with Right / Wrong. A reviewer
+  // at the desk sees the same lines once Settings' "Show spelling flags to
+  // reviewers" is on. A failed read says nothing; Approve is never held.
+  const spelling =
+    active && !shotThis && me
+      ? await import("@/lib/videoAnalysis")
+          .then(async (m) => {
+            const view = spellingViewFor(me.role, { reviewersOn: await m.spellingReviewersOn(), atReviewDesk: ownerDesk });
+            if (!view) return null;
+            const s = await m.spellingFor(active.id);
+            if (!s?.flags.length) return null;
+            return {
+              owner: view === "owner",
+              flags: s.flags.map((f) => ({ id: f.id, line: f.line, verdict: f.verdict })),
+              trialWords: view === "owner" ? (await m.spellingTrial()).summary.words : null,
+            };
+          })
+          .catch(() => null)
+      : null;
+
   // The box's parts: this round's ask (until the cut is approved) and the job's own checks.
   const roundAsk = !shotThis && !!clientAsk && !!active && active.status !== "APPROVED";
   const boxHasChecks = !!jobBox && (jobBox.data.flags.length > 0 || jobBox.data.requests.length > 0 || jobBox.data.notes.length > 0);
@@ -443,6 +466,7 @@ export default async function CutReviewPage({
                 street={w.street}
                 sendOffer={sendOffer}
                 wrongFile={wrongFile ? { line: wrongFile.reviewerLine, strong: wrongFile.strong } : null}
+                spellingNote={spelling ? <SpellingFlagsNote submissionId={active.id} flags={spelling.flags} owner={spelling.owner} trialWords={spelling.trialWords} /> : null}
               />
 
             </>

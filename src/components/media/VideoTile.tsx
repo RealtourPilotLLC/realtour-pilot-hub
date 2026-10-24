@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Download, Expand, House, MoreHorizontal, Play, UserRound } from "lucide-react";
+import { Download, Expand, House, ImageDown, MoreHorizontal, Play, UserRound } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ActionMenu } from "@/components/ui/ActionMenu";
 import { ModalDialog } from "@/components/ui/ModalDialog";
@@ -139,12 +139,14 @@ export function VideoTile({ video, frame, hideListing }: { video: MediaVideoView
           <ActionMenu
             label={`More for ${video.title}`}
             title="More"
-            className={cn(btn, "ml-auto px-0 @2xs:hidden")}
+            className={cn(btn, "ml-auto px-0", !video.coverHref && "@2xs:hidden")}
             items={[
               { id: "view", label: "View larger", text: "View larger", onSelect: () => { setPlaying(false); setOpen(true); } },
               ...(listingHref ? [{ id: "listing", label: "Open listing", text: "Open listing", onSelect: () => router.push(listingHref) }] : []),
               ...(clientHref ? [{ id: "client", label: "Open client", text: "Open client", onSelect: () => router.push(clientHref) }] : []),
               { id: "download", label: "Download", text: "Download", onSelect: () => startDownload(video.downloadHref) },
+              // Oct 24 2026: the chosen Instagram cover (lib/videoAnalysis).
+              ...(video.coverHref ? [{ id: "cover", label: "Download the Instagram cover", text: "Download cover", onSelect: () => startDownload(video.coverHref as string) }] : []),
             ]}
           >
             <MoreHorizontal aria-hidden className="size-4" />
@@ -173,6 +175,7 @@ export function VideoModal({ video, narrow, onClose, hideListing }: { video: Med
       </div>
       <div className="mt-4 flex flex-wrap gap-2">
         <a href={video.downloadHref} download className={btn}><Download aria-hidden className="size-4" />Download</a>
+        {video.coverHref && <a href={video.coverHref} download className={btn} data-cover-download><ImageDown aria-hidden className="size-4" />Cover</a>}
         {listingHref && <Link href={listingHref} className={btn}><House aria-hidden className="size-4" />Open listing</Link>}
         {clientHref && <Link href={clientHref} className={btn}><UserRound aria-hidden className="size-4" />Open client</Link>}
         <button type="button" data-modal-initial-focus onClick={onClose} className={cn(btn, "ml-auto")}>Close</button>

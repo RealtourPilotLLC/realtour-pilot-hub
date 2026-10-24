@@ -1387,6 +1387,19 @@ export async function portalDraftCaption(auth: PortalAuth, videoId: string): Pro
 }
 
 /**
+ * Oct 24 2026 (lib/videoAnalysis): the client picks one of the video's three
+ * Instagram covers (our best is pre-selected). Same permission as editing a
+ * caption; the lib proves the video is theirs and the covers are of the file
+ * they are handed.
+ */
+export async function portalPickCover(auth: PortalAuth, videoId: string, n: number): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const { pickCoverForViewer } = await import("@/lib/videoAnalysis");
+  return pickCoverForViewer(v, videoId, Number(n));
+}
+
+/**
  * CP-12: the page read every byte of a download — "Saved", distinct from the
  * door's "Download started". Resolve only, deliberately NOT can(): downloads
  * stay open to paused/ended programs and to view-only seats, so recording one

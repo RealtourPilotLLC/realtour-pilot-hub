@@ -575,6 +575,20 @@ function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: (sent?: boole
       <div className="flex flex-wrap items-center gap-2">
         {/* No checked 1080p file yet: nothing for a portal video to hand over. */}
         {!v.portalStep?.blocked && <DownloadFile href={v.file.downloadHref} taken={Boolean(v.downloadedAtISO)} />}
+        {/* The chosen Instagram cover goes with the video (Oct 24 2026, lib/videoAnalysis). */}
+        {v.cover && (
+          <a
+            href={v.cover.downloadHref}
+            download
+            data-cover-download
+            title="Download the Instagram cover (1080×1920)"
+            className="inline-flex min-h-11 min-w-11 max-w-full items-center gap-1.5 rounded-lg border border-border px-2 py-1 text-sm font-medium text-foreground hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={v.cover.src} alt="" loading="lazy" className="h-9 w-[1.27rem] rounded object-cover" />
+            Cover
+          </a>
+        )}
         {!usesPortal(v) && v.aryeoUrl && (
           <a
             href={v.aryeoUrl}
