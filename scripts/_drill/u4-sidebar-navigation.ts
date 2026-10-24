@@ -60,7 +60,8 @@ async function main() {
       // dashboard). /ops (now a redirect to the dashboard) and /ops/messages
       // (merged into /communications) are no destinations any more. Oct 21
       // 2026: Your list (/ops/checklist, owner + office) under More → Lists.
-      const ADDED = new Set(["/content/activity", "/ops/photo-delivery", "/jobs", "/day", "/ops/checklist"]);
+      // Oct 23 2026: Media (/media, owner, office, creative manager) under More → Work.
+      const ADDED = new Set(["/content/activity", "/ops/photo-delivery", "/jobs", "/day", "/ops/checklist", "/media"]);
       // Oct 22 2026 (Jordan's approved role menus): menu entries taken OFF a
       // role (still reachable by URL, no permission changed): the Style Guide
       // and Communication coaching for the office, the Editing Room for
@@ -106,6 +107,8 @@ async function main() {
     check("photographers: no Editing Room door (their briefs open from the shoot)", !hrefs(photographer).includes("/editing"));
     check("More is open for every role menu, no fold (Jordan, Oct 23 2026)", [owner, admin, creative, photographer].every((html) => !group(html, "more").includes("<details")));
     check("Monthly Content and Clients are under More for the office; Monthly Content is a door for the owner and the creative manager", ["/content", "/clients"].every((h) => hrefs(group(admin, "more")).includes(h)) && [owner, creative].every((html) => hrefs(group(html, "work")).includes("/content")));
+    // Oct 23 2026 (Jordan: "don't change the menu"): the media library adds exactly one door, under More.
+    check("Media: one door under More (never a role door) for the owner, the office and the creative manager; none for editors or photographers, even with a media key", [owner, admin, creative].every((html) => hrefs(group(html, "more")).filter((h) => h === "/media").length === 1 && !hrefs(group(html, "work")).includes("/media")) && [editor, photographer, render(Sidebar, user("EDITOR", { media: true })), render(Sidebar, user("PHOTOGRAPHER", { media: true }))].every((html) => !hrefs(html).includes("/media")));
     check("Client activity under More for the owner, the office and the creative manager, and nobody else", [owner, admin, creative].every((html) => hrefs(group(html, "more")).includes("/content/activity")) && [editor, photographer].every((html) => !hrefs(html).includes("/content/activity")) && !hrefs(render(Sidebar, user("EDITOR", { content: true }))).includes("/content/activity"));
     check("disclosure summaries participate in the existing drawer focus selector", [...owner.matchAll(/<summary\b([^>]*)>/g)].every((match) => match[1].includes('tabindex="0"')));
     const both = renderToStaticMarkup(React.createElement(React.Fragment, null, React.createElement(Sidebar, { user: user("OWNER") }), React.createElement(Sidebar, { user: user("OWNER") })));

@@ -681,10 +681,11 @@ async function main() {
     const section = (html: string, id: string) => html.match(new RegExp(`<section[^>]*data-sidebar-group="${id}"[^>]*>([\\s\\S]*?)</section>`))?.[1] ?? "";
     const ROLE_DOORS = [
       // Oct 23 2026 (Jordan): Photo Delivery and Video Delivery; Kyle's "Ready to send" door is Video Delivery too.
-      ["Jordan (owner)", { name: "Jordan", email: owner.email, role: "OWNER" }, "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Messages,Shoots", ["/tasks", "/clients", "/upload", "/settings", "/schedule", "/sales"]],
-      ["Kyle (office)", { name: "Kyle Smith", email: kyle.email, role: "ADMIN" }, "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs", "Dashboard,Your list,Messages,Photo Delivery,Video Delivery,Editing Room,Shoots", ["/tasks", "/clients", "/content", "/upload", "/settings", "/schedule"]],
+      // Oct 23 2026: the media library's one door, Media, is under More for all three (never a role door).
+      ["Jordan (owner)", { name: "Jordan", email: owner.email, role: "OWNER" }, "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Messages,Shoots", ["/tasks", "/clients", "/upload", "/settings", "/schedule", "/sales", "/media"]],
+      ["Kyle (office)", { name: "Kyle Smith", email: kyle.email, role: "ADMIN" }, "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs", "Dashboard,Your list,Messages,Photo Delivery,Video Delivery,Editing Room,Shoots", ["/tasks", "/clients", "/content", "/upload", "/settings", "/schedule", "/media"]],
       // Oct 22 2026: Photo Delivery, the view-only photo desk, joins James's doors.
-      ["James (creative manager)", { name: "James", email: james.email, role: "CREATIVE_MANAGER" }, "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Uploads,Shoots,My Performance", ["/tasks", "/clients", "/shoot", "/schedule"]],
+      ["James (creative manager)", { name: "James", email: james.email, role: "CREATIVE_MANAGER" }, "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Uploads,Shoots,My Performance", ["/tasks", "/clients", "/shoot", "/schedule", "/media"]],
     ] as const;
     for (const [who, u, doors, doorLabels, more] of ROLE_DOORS) {
       const html = menu(u);
@@ -703,7 +704,7 @@ async function main() {
     const editorMenu = menu({ name: "Kim", email: "kim@oct19.invalid", role: "EDITOR" });
     const photographerMenu = menu({ name: "Harrison", email: "harrison@oct19.invalid", role: "PHOTOGRAPHER" });
     c.ok("editors keep their groups (no dashboard, no doors)", !editorMenu.includes('data-sidebar-group="work"') && !editorMenu.includes('data-sidebar-group="more"') && !hrefs(editorMenu).includes("/") && !hrefs(editorMenu).includes("/jobs") && hrefs(editorMenu).includes("/editing") && !hrefs(editorMenu).includes("/ops/checklist"));
-    c.ok("photographers get the field doors (My Shoots, Upload, My Videos, My Performance, Help) and no Editing Room, no office screens", hrefs(section(photographerMenu, "work")).join() === "/shoot,/upload,/review,/my-pay,/resources" && labels(section(photographerMenu, "work")).join() === "My Shoots,Upload,My Videos,My Performance,Help" && !hrefs(photographerMenu).includes("/editing") && !hrefs(photographerMenu).includes("/") && !hrefs(photographerMenu).includes("/jobs") && !hrefs(photographerMenu).includes("/ops/checklist"), `${hrefs(section(photographerMenu, "work")).join()} / ${labels(section(photographerMenu, "work")).join()}`);
+    c.ok("photographers get the field doors (My Shoots, Upload, My Videos, My Performance, Help) and no Editing Room, no office screens", hrefs(section(photographerMenu, "work")).join() === "/shoot,/upload,/review,/my-pay,/resources" && labels(section(photographerMenu, "work")).join() === "My Shoots,Upload,My Videos,My Performance,Help" && !hrefs(photographerMenu).includes("/editing") && !hrefs(photographerMenu).includes("/") && !hrefs(photographerMenu).includes("/jobs") && !hrefs(photographerMenu).includes("/ops/checklist") && !hrefs(photographerMenu).includes("/media") && !hrefs(editorMenu).includes("/media"), `${hrefs(section(photographerMenu, "work")).join()} / ${labels(section(photographerMenu, "work")).join()}`);
     pathname = "/ops/checklist";
     // Oct 21 2026 (Jordan, audit A9): Your list has its own door under More → Lists.
     const onList = menu({ name: "Kyle Smith", email: kyle.email, role: "ADMIN" });

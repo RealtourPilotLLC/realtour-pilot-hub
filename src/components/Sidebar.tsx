@@ -36,6 +36,7 @@ import {
   PenLine,
   ExternalLink,
   ChevronDown,
+  Film,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -124,6 +125,10 @@ const SECTIONS: NavSection[] = [
       // Communications, which is "Messages" in the six-door menu) and Shoots &
       // exceptions (/ops, now the dashboard) that night.
       { label: PHOTO_DELIVERY_LABEL, href: "/ops/photo-delivery", icon: Images, key: "photos" },
+      // MEDIA (Oct 23 2026): every finished video and listing, by type and
+      // date, to watch and download. One door under More (Jordan: "don't
+      // change the menu"): owner, office and creative manager.
+      { label: "Media", href: "/media", icon: Film, key: "media" },
       // YOUR LIST (Jordan, Oct 21 2026; audit A9): the daily checklist
       // (/ops/checklist) gets a door of its own under More → Lists. Same key
       // the page checks (`ops`), and only for owner and office logins, who
@@ -288,6 +293,8 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
     // …unless Jordan granted Photo Delivery by name (Oct 23 2026 audit: he gave
     // Harrison the page and the door never showed); the desk admits them view only.
     if (user && !isCreativeLead(user.role) && !canAccess(user, "photos")) items = items.filter((i) => i.href !== "/ops/photo-delivery");
+    // The media library is staff-only (lib/mediaAccess).
+    if (user && !isCreativeLead(user.role)) items = items.filter((i) => i.href !== "/media");
     // Client activity is the owner's, the admin's and the creative manager's
     // view of the content program (the page redirects anyone else).
     if (user && !isCreativeLead(user.role)) items = items.filter((i) => i.href !== "/content/activity");

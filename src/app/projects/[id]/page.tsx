@@ -75,6 +75,7 @@ import { JobNoteEditor } from "@/components/editing/JobNoteEditor";
 import { PhotoBatchPanel } from "@/components/project/PhotoBatchPanel";
 import { ReworkCostPanel } from "@/components/project/ReworkCostPanel";
 import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
+import { mayOpenMedia } from "@/lib/mediaAccess";
 import { JobDeliverablesSection } from "@/components/jobs/JobDeliverables";
 import { ShootFlags } from "@/components/jobs/ShootFlags";
 import { VideoSetupNotice } from "@/components/jobs/VideoSetupNotice";
@@ -312,6 +313,12 @@ export default async function ProjectPage({
         </div>
         <div className="flex flex-wrap items-start justify-end gap-2">
           {(project.aryeoOrderId || project.aryeoListingId) && <RefreshFromAryeo projectId={project.id} />}
+          {/* The listing as the client received it, with downloads (Oct 23 2026, /listings). */}
+          {(!viewer || mayOpenMedia(viewer)) && (
+            <Link href={`/listings/${project.id}`} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium hover:bg-surface-2">
+              Listing page
+            </Link>
+          )}
           {/* The LISTING editor (…/admin/listings/<id>/edit) — the same link the
               QC cards use and the one that opens for Kyle; the order page does
               not (Jordan, Sep 15). The order is the fallback for a job with no
