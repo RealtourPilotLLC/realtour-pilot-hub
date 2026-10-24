@@ -105,6 +105,7 @@ export function MusicCard({
   pick: initialPick,
   pickUrl,
   musicType,
+  previewsPaused = false,
 }: {
   projectId: string;
   connected: boolean;
@@ -117,6 +118,8 @@ export function MusicCard({
   pickUrl?: string | null;
   /** the spec's "Music type" line, as a hint under the search box */
   musicType?: string | null;
+  /** Epidemic Sound refused a preview recently: the plan's allowance is used up */
+  previewsPaused?: boolean;
 }) {
   const [pick, setPick] = useState<MusicPick | null>(initialPick);
   const [term, setTerm] = useState("");
@@ -207,6 +210,10 @@ export function MusicCard({
   const urlCache = useRef<Map<string, string>>(new Map());
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
+  // Oct 24 2026: the plan's previews ran out and Play failed with a grey line
+  // far below the list. Now the card says so at the top and each row's Play
+  // becomes a link to the track on Epidemic Sound's own site.
+  const [paused, setPaused] = useState(previewsPaused);
 
   const stop = useCallback(() => {
     const a = audioRef.current;
@@ -229,6 +236,7 @@ export function MusicCard({
       let url = urlCache.current.get(t.id);
       if (!url) {
         const r = await musicPreviewUrl(projectId, t.id);
+        if (!r.ok && r.kind === "quota") return setPaused(true);
         if (!r.ok) return fromResult(r);
         url = r.data.url;
         urlCache.current.set(t.id, url);
@@ -267,7 +275,7 @@ export function MusicCard({
   // ---- Notes from the server, in the card's own words -------------------
   function fromResult<T>(r: MusicResult<T>): void {
     if (r.ok) return;
-    setNote({ text: r.message, tone: r.kind === "forbidden" || r.kind === "rate_limited" || r.kind === "not_connected" ? "warn" : "muted" });
+    setNote({ text: r.message, tone: r.kind === "forbidden" || r.kind === "rate_limited" || r.kind === "not_connected" || r.kind === "quota" ? "warn" : "muted" });
     // Search isn't on the agreement → offer the collections instead.
     if (r.kind === "forbidden" && !showCollections) void openCollections();
   }
@@ -434,7 +442,7 @@ export function MusicCard({
     );
   }
 
-  const rowProps = { pick, busyId, playingId, loadingId, canAct, onPlay: play, onSimilar: openSimilar, onUse: use, onDownload: download };
+  const rowProps = { pick, busyId, playingId, loadingId, canAct, paused, onPlay: play, onSimilar: openSimilar, onUse: use, onDownload: download };
 
   if (!open) {
     return (
@@ -456,6 +464,22 @@ export function MusicCard({
       {/* The one preview player — a music preview, so no caption track. */}
       <audio ref={audioRef} preload="none" onEnded={() => setPlayingId(null)} className="hidden" />
       <div className="space-y-4">
+        {paused && (
+          <div data-music-previews-off className="rounded-lg border border-warning/30 bg-warning-soft/40 px-3 py-2 text-xs text-warning">
+            <p className="font-medium">Song previews are off for now.</p>
+            <p className="mt-0.5">
+              The hub&apos;s Epidemic Sound plan has used up its previews, so Play can&apos;t stream here. Press{" "}
+              <ExternalLink className="inline size-3 align-[-1px]" aria-label="the open-link button" /> on a track to listen to it on Epidemic Sound,
+              then come back and press Use this track or Download.
+            </p>
+            {isOffice && (
+              <p className="mt-1 text-muted">
+                To turn previews back on, the Epidemic Sound API plan needs an upgrade (developers.epidemicsound.com). The hub
+                tries previews again on its own every few hours.
+              </p>
+            )}
+          </div>
+        )}
         {/* RECOMMENDED FOR THIS EDIT — read off the instructions, loaded on
             mount. Hidden entirely when not connected (the branch above). */}
         <div data-music-reco className="rounded-xl border border-brand/25 bg-brand-soft/20 p-3">
@@ -694,6 +718,11 @@ export function MusicCard({
   );
 }
 
+// The track on Epidemic Sound's own site: a search for its title and artist
+// (the API's track id isn't the site's), which lands on it as the best match.
+const esListenUrl = (t: Pick<MusicTrack, "title" | "artist">) =>
+  `https://www.epidemicsound.com/music/search/?term=${encodeURIComponent(`${t.title} ${t.artist}`.trim())}`;
+
 // One track, the same row everywhere it appears (the recommendation, a
 // search, a collection, a Similar list): Play · facts · Similar · Use ·
 // Download. The BPM stays on every row — the slider narrows, the row tells.
@@ -704,6 +733,7 @@ function TrackRow({
   playingId,
   loadingId,
   canAct,
+  paused,
   onPlay,
   onSimilar,
   onUse,
@@ -715,6 +745,8 @@ function TrackRow({
   playingId: string | null;
   loadingId: string | null;
   canAct: boolean;
+  /** previews are out: Play becomes a link to the track on Epidemic Sound */
+  paused: boolean;
   onPlay: (t: MusicTrack) => void;
   onSimilar: (t: MusicTrack) => void;
   onUse: (t: MusicTrack) => void;
@@ -725,14 +757,27 @@ function TrackRow({
   const busy = busyId === t.id;
   return (
     <li className={cn("flex flex-wrap items-center gap-2 px-3 py-2", isPick && "bg-brand-soft/30")}>
-      <button
-        type="button"
-        onClick={() => onPlay(t)}
-        aria-label={playingId === t.id ? "Pause preview" : "Play preview"}
-        className="flex size-8 shrink-0 items-center justify-center rounded-full border border-border bg-surface text-foreground hover:border-brand hover:text-brand"
-      >
-        {loadingId === t.id ? <Loader2 className="size-4 animate-spin" /> : playingId === t.id ? <Pause className="size-4" /> : <Play className="size-4" />}
-      </button>
+      {paused ? (
+        <a
+          href={esListenUrl(t)}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={`Listen to ${t.title} on Epidemic Sound`}
+          title="Listen on Epidemic Sound (opens a new tab)"
+          className="flex size-8 shrink-0 items-center justify-center rounded-full border border-border bg-surface text-foreground hover:border-brand hover:text-brand"
+        >
+          <ExternalLink className="size-4" />
+        </a>
+      ) : (
+        <button
+          type="button"
+          onClick={() => onPlay(t)}
+          aria-label={playingId === t.id ? "Pause preview" : "Play preview"}
+          className="flex size-8 shrink-0 items-center justify-center rounded-full border border-border bg-surface text-foreground hover:border-brand hover:text-brand"
+        >
+          {loadingId === t.id ? <Loader2 className="size-4 animate-spin" /> : playingId === t.id ? <Pause className="size-4" /> : <Play className="size-4" />}
+        </button>
+      )}
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-baseline gap-x-2">
           <span className="truncate text-sm font-medium">{t.title}</span>

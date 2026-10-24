@@ -1,5 +1,6 @@
 import "server-only";
 import { createHash } from "crypto";
+import { prisma } from "@/lib/prisma";
 import { getConnection, getSecret } from "./connections";
 import {
   EpidemicSoundError,
@@ -74,6 +75,45 @@ export const trackMetadata = async (ids: string[], o: EsCallOpts = {}) => esClie
 export const reportUsage = async (ev: { trackId: string; quality?: "normal" | "high"; userId?: string }, o: EsCallOpts = {}) =>
   esClient(await cfg(o.userId ?? ev.userId)).reportUsage(ev);
 
+// ---- Preview allowance (Oct 24 2026) --------------------------------------------
+// Jhon: "why is it I can't play the songs here?" The free API tier's preview
+// allowance was used up, so Epidemic Sound answered every Play with 402
+// "Stream quota exceeded". The first refusal is remembered here so the Music
+// card opens with a plain note and a "Listen on Epidemic Sound" link per track
+// instead of a Play button that fails, and the Connections card says why.
+// It is tried again after PREVIEW_RETRY_MS (a plan upgrade needs no hub
+// change), and a successful preview or a newly pasted key clears it.
+const PREVIEW_QUOTA_KEY = "epidemic-sound:preview-quota";
+const PREVIEW_RETRY_MS = 6 * 60 * 60_000;
+
+export async function esPreviewQuotaHitAt(): Promise<Date | null> {
+  const row = await prisma.appSetting.findUnique({ where: { key: PREVIEW_QUOTA_KEY }, select: { value: true } }).catch(() => null);
+  if (!row) return null;
+  try {
+    const at = new Date(JSON.parse(row.value)?.at);
+    return Number.isNaN(at.getTime()) ? null : at;
+  } catch {
+    return null;
+  }
+}
+
+/** previews are known to be out right now (the last refusal is recent) */
+export async function esPreviewsPaused(): Promise<boolean> {
+  const at = await esPreviewQuotaHitAt();
+  return !!at && Date.now() - at.getTime() < PREVIEW_RETRY_MS;
+}
+
+export async function markEsPreviewQuota(): Promise<void> {
+  const value = JSON.stringify({ at: new Date().toISOString() });
+  await prisma.appSetting
+    .upsert({ where: { key: PREVIEW_QUOTA_KEY }, create: { key: PREVIEW_QUOTA_KEY, value }, update: { value } })
+    .catch(() => {});
+}
+
+export async function clearEsPreviewQuota(): Promise<void> {
+  await prisma.appSetting.deleteMany({ where: { key: PREVIEW_QUOTA_KEY } }).catch(() => {});
+}
+
 // ---- Test connection (Connections page) ---------------------------------------
 // What the partner agreement actually opens up, in one line: the key works
 // (GET /v0/moods?limit=1), and whether full-catalogue SEARCH is on it or only
@@ -132,6 +172,7 @@ export async function testEpidemicSoundKey(key: string): Promise<{ ok: true; lab
   }
   try {
     const r = await epidemicSoundReach(k);
+    await clearEsPreviewQuota(); // a new key (or plan) gets a fresh try at previews
     return { ok: true, label: r.label };
   } catch (e) {
     if (e instanceof EpidemicSoundError) {

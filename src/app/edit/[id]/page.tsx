@@ -34,7 +34,7 @@ import { AgentProfileCard } from "@/components/clients/ClientProfileCard";
 import { SlaCountdown } from "@/components/editing/SlaCountdown";
 import { EditInstructionsCard } from "@/components/editing/EditInstructionsCard";
 import { MusicCard } from "@/components/editing/MusicCard";
-import { epidemicSoundConnected } from "@/lib/integrations/epidemicSound";
+import { epidemicSoundConnected, esPreviewsPaused } from "@/lib/integrations/epidemicSound";
 import { parseEditSpec, musicPickLine, musicPickOf } from "@/lib/musicPick";
 import { AocPlaybookCard } from "@/components/project/AocPlaybookCard";
 import { EditorCutPanel } from "@/components/editing/EditorCutPanel";
@@ -315,6 +315,7 @@ export default async function EditBriefPage({
   // Is the music catalogue wired? Owner/admin see the card either way (with a
   // "connect it" note until the key is in); editors only once it works.
   const musicRead = epidemicSoundConnected().catch(() => false);
+  const musicPreviewsRead = musicRead.then((on) => (on ? esPreviewsPaused().catch(() => false) : false));
   // The video lane's open revision asks (read here so it rides the same batch;
   // the reasoning is where it is used, below).
   const videoRevisionTasksRead = prisma.smartTask.findMany({
@@ -324,8 +325,8 @@ export default async function EditBriefPage({
   });
   // ONE BATCH (Oct 20 2026, audit B8/H11): these reads need nothing from each
   // other, so they run together instead of one after another.
-  const [feedback, briefs, quality, assets, musicConnected, videoRevisionTasks] = await Promise.all([
-    feedbackRead, briefsRead, qualityRead, assetsRead, musicRead, videoRevisionTasksRead,
+  const [feedback, briefs, quality, assets, musicConnected, videoRevisionTasks, musicPreviewsPaused] = await Promise.all([
+    feedbackRead, briefsRead, qualityRead, assetsRead, musicRead, videoRevisionTasksRead, musicPreviewsRead,
   ]);
   const folders = actualFolderPaths(project); // the job's OWN folder, not the convention path (audit, Sep 8)
   // The live folder at click time (a renamed "…_02-RAW-Video" no longer breaks it).
@@ -1986,6 +1987,7 @@ export default async function EditBriefPage({
                         pick={musicPick}
                         pickUrl={musicPickUrl}
                         musicType={musicType}
+                        previewsPaused={musicPreviewsPaused}
                       />
                     </div>
                   )}

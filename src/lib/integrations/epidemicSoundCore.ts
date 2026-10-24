@@ -27,6 +27,7 @@ export type EsErrorKind =
   | "not_connected"
   | "unauthorized" // 401 — the key is wrong or revoked
   | "forbidden" // 403 — the agreement doesn't cover this (search, or a download)
+  | "quota" // 402 — the API plan's allowance is used up (previews or downloads)
   | "rate_limited" // 429
   | "not_found" // 404
   | "unavailable" // 503 (carries Retry-After)
@@ -158,6 +159,21 @@ function mapHttpError(res: Response, json: unknown, path: string): EpidemicSound
           : "Our Epidemic Sound agreement doesn't cover this — the catalogue is limited to curated collections.",
         "forbidden",
         403,
+      );
+    // Oct 24 2026: the free API tier's preview allowance ran out ("Stream
+    // quota exceeded") and every Play press failed with a faint grey line.
+    // Its own kind, so the card can say it plainly and offer the website.
+    case 402:
+      return new EpidemicSoundError(
+        /\/stream$/.test(path)
+          ? "Song previews are used up on the hub's Epidemic Sound plan."
+          : /download/.test(path)
+            ? "Downloads are used up on the hub's Epidemic Sound plan."
+            : detail
+              ? `Epidemic Sound: ${detail}`
+              : "The hub's Epidemic Sound plan allowance is used up.",
+        "quota",
+        402,
       );
     case 404:
       return new EpidemicSoundError("Epidemic Sound doesn't know that track.", "not_found", 404);

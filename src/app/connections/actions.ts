@@ -12,7 +12,7 @@ import { exchangeDropboxCode, testDropboxRefreshToken } from "@/lib/integrations
 import { testSlackKey, testSlackUserKey } from "@/lib/integrations/slack";
 import { testAiKey } from "@/lib/integrations/ai";
 import { testCalendlyKey } from "@/lib/integrations/calendly";
-import { epidemicSoundReach, testEpidemicSoundKey } from "@/lib/integrations/epidemicSound";
+import { epidemicSoundReach, esPreviewQuotaHitAt, testEpidemicSoundKey } from "@/lib/integrations/epidemicSound";
 import { testTopazKey, topazBalance } from "@/lib/integrations/topaz";
 import { syncGmail } from "@/lib/integrations/google";
 import { generateTasksForActiveProjects } from "@/lib/tasks";
@@ -110,7 +110,14 @@ export async function testEpidemicSoundNow(): Promise<ActionResult> {
   try {
     const r = await epidemicSoundReach();
     revalidatePath("/connections");
-    return { ok: true, message: r.note };
+    // Oct 24 2026: previews can run out while everything else works, and the
+    // probe above never streams (a stream would spend one). Say so from the
+    // last refusal the Music card met.
+    const quotaAt = await esPreviewQuotaHitAt();
+    const previews = quotaAt
+      ? ` Song previews: used up on this API plan (last refused ${quotaAt.toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} ET), so editors get a "Listen on Epidemic Sound" link instead of Play. Upgrading the plan at developers.epidemicsound.com turns them back on.`
+      : "";
+    return { ok: true, message: `${r.note}${previews}` };
   } catch (e) {
     const { esFriendlyMessage } = await import("@/lib/integrations/epidemicSoundCore");
     const f = esFriendlyMessage(e);

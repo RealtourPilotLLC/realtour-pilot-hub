@@ -22,6 +22,9 @@ import {
   trackDownloadUrl,
   trackMetadata,
   trackStreamUrl,
+  clearEsPreviewQuota,
+  esPreviewQuotaHitAt,
+  markEsPreviewQuota,
 } from "@/lib/integrations/epidemicSound";
 import {
   EpidemicSoundError,
@@ -389,8 +392,10 @@ export async function musicPreviewUrl(projectId: string, trackId: string): Promi
   try {
     const me = await jobAccess(projectId, { write: false });
     const r = await trackStreamUrl(trackId, { userId: esPartnerUserId(me?.id) });
+    if (await esPreviewQuotaHitAt()) await clearEsPreviewQuota(); // previews are back
     return { ok: true, data: { url: r.url, expires: r.expires } };
   } catch (e) {
+    if (e instanceof EpidemicSoundError && e.kind === "quota") await markEsPreviewQuota();
     return fail(e);
   }
 }
