@@ -307,7 +307,8 @@ function ScriptItem({ s, busy, run, open, rev, onAsk }: { s: ScriptUi; busy: boo
       else setSaid(r);
     });
   };
-  const canAsk = !!onAsk && !s.historical && !s.bulkBank && !!s.monthKey && !!cur && !cur.id.startsWith("legacy:") && !s.sharedVersionId && s.releaseState !== "released" && !s.clientVerdict && !s.filmed;
+  // Audit, Oct 23 2026: every share stamp the server reads, so a script once on the portal never offers it.
+  const canAsk = !!onAsk && !s.historical && !s.bulkBank && !!s.monthKey && !!cur && !cur.id.startsWith("legacy:") && !s.sharedVersionId && !s.sharedAt && !s.versions.some((v) => !!v.sharedAt || v.status === "SHARED") && s.releaseState !== "released" && !s.clientVerdict && !s.filmed;
   const ask = () => {
     if (!onAsk) return;
     setAsking("sending");

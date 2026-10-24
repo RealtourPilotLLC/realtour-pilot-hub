@@ -10,6 +10,7 @@ import { TEXT_KYLE } from "@/lib/portalWords";
 import { PROGRAM_SLOT_HORIZON_DAYS } from "@/lib/portalScheduling";
 import { catchUpInto, catchUpMonthName } from "@/lib/catchUp";
 import { orderByPillarEmphasis } from "@/lib/contentPolicy/topicBank";
+import { stripScriptDashes } from "@/lib/contentPolicy/scriptFormat";
 import { videoStyleFromOverrides, skitsPerMonthFromOverrides, resolvedTopicFormat, type VideoFormat, type VideoStyle } from "@/lib/contentPolicy/videoFormat";
 
 // ---------------------------------------------------------------------------
@@ -1528,7 +1529,8 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
     const carriedSel = sel?.status === "CARRIED" ? sel : null;
     const tp = sel && openMonth.get(sel.monthId) ? planned?.get(sel.monthId)?.planning.topics.find((x) => x.topicId === t.id) ?? null : null;
     return {
-      id: t.id, title: t.title, concept: t.concept, pillarId: t.pillarId, pillarName, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, source: t.source,
+      // Audit, Oct 23 2026: no em or en dash in anything a client reads (183 stored topic titles carried one; a title's takes a colon).
+      id: t.id, title: stripScriptDashes(t.title, { title: true }), concept: t.concept, pillarId: t.pillarId, pillarName, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, source: t.source,
       mine: t.source === "client" || !!mineOfTopic.get(t.id), state,
       // A call's PROPOSED row is its suggestion and always removable (CP-07).
       selection: sel ? { monthId: sel.monthId, monthKey: monthKeyOf.get(sel.monthId) ?? "", status: sel.status,
@@ -1826,7 +1828,7 @@ export async function portalInterview(enrollment: { id: string; clientId: string
   };
   return {
     clientId: enrollment.clientId, enrollmentId: enrollment.id, monthId: row.monthId,
-    interviewId, topicId: row.topicId, topicTitle: topic?.title ?? "Topic", monthKey: month?.monthKey ?? "", status: st.status,
+    interviewId, topicId: row.topicId, topicTitle: stripScriptDashes(topic?.title ?? "Topic", { title: true }), monthKey: month?.monthKey ?? "", status: st.status,
     next: { kind: st.next.kind, prompt: st.next.kind === "done" ? null : st.next.prompt, isFollowUp: st.next.kind === "follow-up" }, nextKey: st.nextKey,
     progress: { answered: st.answeredCount, substantiveAnswered: st.sufficiency.substantiveAnswered, substantiveTotal: st.sufficiency.substantiveTotal },
     answers: st.answers.filter((a) => !a.questionKey.includes(":fu:") || a.answerText).map((a) => ({ questionKey: a.questionKey, questionText: a.questionText, answerText: a.answerText, answerKind: a.answerKind, version: a.version })),

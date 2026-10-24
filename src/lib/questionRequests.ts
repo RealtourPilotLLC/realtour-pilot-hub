@@ -113,7 +113,7 @@ export const clientWords = (t: string) => t.replace(/\s*[—–]\s*/g, ", ").rep
 export async function questionRequestRefusal(scriptId: string): Promise<string | null> {
   const s = await prisma.contentScript.findUnique({
     where: { id: scriptId },
-    select: { id: true, title: true, enrollmentId: true, clientId: true, monthId: true, topicId: true, historical: true, status: true, currentVersionId: true, sharedVersionId: true, releaseState: true, clientApprovedVersionId: true, clientApprovedAt: true, clientChangesAt: true, videoId: true },
+    select: { id: true, title: true, enrollmentId: true, clientId: true, monthId: true, topicId: true, historical: true, status: true, currentVersionId: true, sharedVersionId: true, sharedAt: true, clientVisible: true, releaseState: true, clientApprovedVersionId: true, clientApprovedAt: true, clientChangesAt: true, videoId: true },
   });
   if (!s) return "That script no longer exists.";
   if (s.historical) return "Imported history: there is nothing to ask about.";
@@ -122,9 +122,14 @@ export async function questionRequestRefusal(scriptId: string): Promise<string |
   const client = await prisma.client.findUnique({ where: { id: s.clientId }, select: { name: true } });
   const who = client?.name?.split(/\s+/)[0] || "the client";
   // NEVER A SCRIPT THE CLIENT ALREADY HAS (Jordan's rule, Oct 21 2026).
-  const shares = await prisma.contentScriptRelease.count({ where: { scriptId: s.id, action: { in: SHARED_ACTIONS } } });
+  // Audit, Oct 23 2026: every sign "Write it again" reads too (scriptRewrite.rewriteFactsFor): the
+  // share stamps, a legacy client-visible row, and any version ever shared, not only the pointers.
+  const [shares, sharedVersion] = await Promise.all([
+    prisma.contentScriptRelease.count({ where: { scriptId: s.id, OR: [{ action: { in: SHARED_ACTIONS } }, { releasedAt: { not: null } }] } }),
+    prisma.contentScriptVersion.findFirst({ where: { scriptId: s.id, OR: [{ sharedAt: { not: null } }, { status: "SHARED" }] }, select: { id: true } }),
+  ]);
   if (s.clientApprovedVersionId || s.clientApprovedAt) return `${who} already approved this script, so it stays exactly as it is.`;
-  if (s.sharedVersionId || s.releaseState === "released" || s.clientChangesAt || shares > 0) return `This script was already sent to ${who}, so it stays as it is. Questions are only for a draft the client has not seen.`;
+  if (s.sharedVersionId || s.sharedAt || s.clientVisible || ["CLIENT_VISIBLE", "READY_TO_FILM"].includes(s.status) || s.releaseState === "released" || s.clientChangesAt || shares > 0 || sharedVersion) return `This script was already sent to ${who}, so it stays as it is. Questions are only for a draft the client has not seen.`;
   const { readScriptsFilmed } = await import("@/lib/scriptFilmed");
   const filmed = s.videoId ? true : (await readScriptsFilmed([{ id: s.id, topicId: s.topicId, videoId: s.videoId }])).has(s.id);
   if (filmed) return "Its video is already filmed, so there is nothing left to ask.";
@@ -329,7 +334,7 @@ export async function sendQuestionRequest(scriptId: string, actor: Actor, opts: 
   };
   const { requestId, interviewId } = await prisma.$transaction(async (tx) => {
     const moved = await tx.contentScript.updateMany({
-      where: { id: scriptId, historical: false, status: s.status, currentVersionId: s.currentVersionId, sharedVersionId: null, clientApprovedVersionId: null, videoId: null },
+      where: { id: scriptId, historical: false, status: s.status, currentVersionId: s.currentVersionId, sharedVersionId: null, sharedAt: null, clientApprovedVersionId: null, clientApprovedAt: null, videoId: null },
       data: { monthId: null, topicId: null, interviewId: null, status: WITHDRAWN, releaseState: "withheld", approvedVersionId: null, approvedAt: null, approvedBy: null },
     });
     if (moved.count !== 1) throw new Error("The script changed while the questions were being written. Look at it again, then press Send Question Request if you still want to.");
@@ -433,6 +438,21 @@ export async function settleQuestionRequest(requestId: string, state: "ANSWERED"
     where: { dedupeKey: { startsWith: questionRequestKeyPrefix(rel.enrollmentId, ledger.monthKey, rel.id) }, state: { in: ["PENDING", "FAILED"] } },
     data: { state: "CANCELLED", suppressionReason: state === "ANSWERED" ? "answered" : "request_cancelled", nextAttemptAt: null, leaseUntil: null, leaseBy: null },
   });
+}
+
+/**
+ * The topics of a month whose question request is still OPEN (audit, Oct 23
+ * 2026): the month's own answers ask (programReminders, COMPLETE_ANSWERS)
+ * leaves them to the request's lane, so the client is chased once per topic.
+ */
+export async function openQuestionRequestTopicIds(monthId: string): Promise<Set<string>> {
+  const rows = await prisma.contentScriptRelease.findMany({ where: { monthId, action: QUESTION_REQUEST_ACTION }, select: { note: true } });
+  const out = new Set<string>();
+  for (const r of rows) {
+    const l = readQuestionRequestLedger(r.note);
+    if (l && l.state === "OPEN" && l.monthId === monthId) out.add(l.topicId);
+  }
+  return out;
 }
 
 /** One request's rows on the reminder ledger share this dedupeKey prefix (attempt number last). */
