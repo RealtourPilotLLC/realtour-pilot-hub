@@ -1035,7 +1035,8 @@ export default async function EditBriefPage({
   // photographers' shared instructions, combined, with any disagreement
   // flagged (lib/sharedShoot sharedBriefFor). Both read nothing on an
   // ordinary one-photographer job.
-  if (isVideoJob) await import("@/lib/addedOnSite").then((m) => m.attachAddedVideoInstructions(project.id, "the editor's brief")).catch(() => []);
+  // Never from a "view as" preview: a preview never writes (audit, Oct 23 2026).
+  if (isVideoJob && !viewer?.impersonating) await import("@/lib/addedOnSite").then((m) => m.attachAddedVideoInstructions(project.id, "the editor's brief")).catch(() => []);
   const sharedBrief = await import("@/lib/sharedShoot").then((m) => m.sharedBriefFor(project.id, { scrub: !canSeeRaw })).catch(() => null);
   const perVideo = isVideoJob && !project.contentMonthId
     ? await import("@/lib/deliverableOutputs").then((m) => m.videoInstructionsFor(project.id)).catch(() => [])

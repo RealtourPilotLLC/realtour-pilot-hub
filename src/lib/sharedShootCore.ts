@@ -185,6 +185,72 @@ export function contributionState(c: Contribution | null | undefined, floor: Dat
   return c.captured.length || c.uploaded.length || subs.length ? "in_progress" : "not_started";
 }
 
+/**
+ * A person with NO part on file, on a job whose whole wrap-up is in: did that
+ * wrap-up cover them? (Audit, Oct 23 2026.) Yes when it was made at or after
+ * their own visit began (a shared shoot handed off on the page before the
+ * revamp, or by the office), or when they have no visit of their own (a
+ * second shooter the office added). No when it came before their visit: an
+ * earlier photographer's submit is not theirs. Pure.
+ */
+export function coveredByJobHandoff(wholeISO: string | null | undefined, visitISO: string | null | undefined): boolean {
+  if (!wholeISO) return false;
+  if (!visitISO) return true;
+  const w = Date.parse(wholeISO);
+  const v = Date.parse(visitISO);
+  return !Number.isFinite(v) || (Number.isFinite(w) && w >= v);
+}
+
+/** Each roster member's own visit for coveredByJobHandoff: their latest live visit that has started, else their next one, else null. Pure. */
+export function memberVisits(appointments: RosterAppt[], memberIds: string[], now: Date): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  for (const id of memberIds) {
+    const mine = appointments
+      .filter((a) => a.assignedToId === id && a.startAt && !/cancel/i.test(a.status ?? ""))
+      .map((a) => new Date(a.startAt!).getTime())
+      .filter(Number.isFinite)
+      .sort((a, b) => a - b);
+    const started = mine.filter((t) => t <= now.getTime());
+    const at = started.length ? started[started.length - 1] : mine[0];
+    out[id] = at != null ? new Date(at).toISOString() : null;
+  }
+  return out;
+}
+
+/**
+ * A SHARED SHOOT OVER TWO DAYS (audit, Oct 23 2026). lib/visitSubmission reads
+ * a job's half stamps for its latest visit only, which is right when the same
+ * photographer comes back (615 Cliff Ln) but wrong when the earlier visit was
+ * ANOTHER photographer's part: James's photos on day 1 and Harrison's video
+ * on day 2 (2367 Pheasant Hill Ln, 811 Little Shiloh Rd) would never make
+ * the wrap-up whole, and the job's pay line waits on that. The halves a
+ * photographer handed off at their own earlier visit, who is on no visit
+ * since the floor, still count. Read from their own part (so only submits
+ * made on the revamped page). Pure.
+ */
+export function halvesKeptFromEarlierVisits(
+  contributions: Contribution[],
+  appointments: RosterAppt[],
+  floor: Date | null,
+): Set<Half> {
+  const out = new Set<Half>();
+  if (!floor) return out;
+  const onLatest = new Set(
+    appointments
+      .filter((a) => a.assignedToId && a.startAt && !/cancel/i.test(a.status ?? "") && new Date(a.startAt).getTime() >= floor.getTime())
+      .map((a) => a.assignedToId!),
+  );
+  for (const c of contributions) {
+    if (onLatest.has(c.memberId)) continue;
+    for (const s of c.submits) {
+      if (!(Date.parse(s.atISO) < floor.getTime())) continue;
+      if (s.scope === "photos" || s.scope === "video") out.add(s.scope);
+      else for (const k of s.services) { const h = halfOfService(k); if (h) out.add(h); }
+    }
+  }
+  return out;
+}
+
 /** The newest submit that counts (see contributionState). */
 export function lastSubmit(c: Contribution | null | undefined, floor: Date | null = null): ContributionSubmit | null {
   const subs = (c?.submits ?? []).filter((s) => !floor || Date.parse(s.atISO) >= floor.getTime());

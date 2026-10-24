@@ -423,6 +423,86 @@ async function main() {
     const payAfter2 = await (async () => { await shared.markMyUploads(addJob, { services: ["video"], uploaded: false }); return JSON.stringify(await computePayroll(new RealDate("2026-10-01T00:00:00-04:00"), new RealDate("2026-10-31T23:59:59-04:00"))); })();
     c.ok("payroll moves only with the submits (the same rule as ever), never with the revamp's own records", payBefore.length > 0 && payAfter === payAfter2);
 
+    // =====================================================================
+    c.head("10 · Audit fixes (Oct 23 2026)");
+    // =====================================================================
+    c.ok("a wrap-up made after a person's visit covers someone with no part on file; one made before it does not; a second shooter with no visit is covered",
+      core.coveredByJobHandoff("2026-10-10T17:15:00Z", "2026-10-07T18:30:00Z") && !core.coveredByJobHandoff("2026-10-22T20:00:00Z", "2026-10-23T14:00:00Z") && core.coveredByJobHandoff("2026-10-22T20:00:00Z", null) && !core.coveredByJobHandoff(null, null));
+    const mv = core.memberVisits([
+      { assignedToId: "m-h", status: "SCHEDULED", startAt: "2026-10-21T14:00:00Z" }, { assignedToId: "m-h", status: "SCHEDULED", startAt: "2026-10-23T14:00:00Z" },
+      { assignedToId: "m-h", status: "SCHEDULED", startAt: "2026-10-30T14:00:00Z" }, { assignedToId: "m-j", status: "SCHEDULED", startAt: "2026-10-30T14:00:00Z" },
+      { assignedToId: "m-j", status: "CANCELED", startAt: "2026-10-20T14:00:00Z" },
+    ], ["m-h", "m-j", "m-x"], new Date());
+    c.ok("each person's own visit: the latest that has started, else the next one, else none (a cancelled one never)", mv["m-h"] === "2026-10-23T14:00:00.000Z" && mv["m-j"] === "2026-10-30T14:00:00.000Z" && mv["m-x"] === null, JSON.stringify(mv));
+    const FLOOR = new RealDate("2026-10-23T04:00:00.000Z");
+    const jDay1 = { memberId: "m-j", name: "James", captured: ["photos" as const], videoDrone: false, uploaded: [], submits: [{ scope: "photos" as const, atISO: "2026-10-22T20:00:00Z", services: ["photos" as const] }], version: 2, updatedAtISO: "2026-10-22T20:00:00Z" };
+    const apptsTwoDay = [{ assignedToId: "m-j", status: "SCHEDULED", startAt: "2026-10-22T14:00:00Z" }, { assignedToId: "m-h", status: "SCHEDULED", startAt: "2026-10-23T14:00:00Z" }];
+    c.ok("another photographer's half from their own earlier visit is kept; the same person coming back starts fresh (615 Cliff Ln)",
+      core.halvesKeptFromEarlierVisits([jDay1], apptsTwoDay, FLOOR).has("photos") &&
+      core.halvesKeptFromEarlierVisits([jDay1], [...apptsTwoDay, { assignedToId: "m-j", status: "SCHEDULED", startAt: "2026-10-23T16:00:00Z" }], FLOOR).size === 0 &&
+      core.halvesKeptFromEarlierVisits([jDay1], apptsTwoDay, null).size === 0);
+
+    // A shared shoot over two days: James's photos on day 1, Harrison's video on day 2.
+    const DAY1 = new RealDate("2026-10-22T14:00:00.000Z");
+    const day1Submit = new RealDate("2026-10-22T20:00:00.000Z");
+    const twoDay = await job("2367 Two Day Ln", [{ type: "PHOTOS", label: "Photos" }, { type: "SOCIAL_REEL", label: "Standard Reel", videoStyle: "standard_reel" }], [{ who: jamesTm.id, at: DAY1 }, { who: harrisonTm.id }]);
+    const sameBack = await job("335 Same Person Ln", [{ type: "PHOTOS", label: "Photos" }, { type: "SOCIAL_REEL", label: "Standard Reel", videoStyle: "standard_reel" }], [{ who: harrisonTm.id, at: DAY1 }, { who: harrisonTm.id }]);
+    // Day 1's submit, as the page wrote it then (the drill's clock stands at day 2).
+    for (const [id, who, name] of [[twoDay, jamesTm.id, "James Drill"], [sameBack, harrisonTm.id, "Harrison Drill"]] as const) {
+      await prisma.project.update({ where: { id }, data: { photosHandoffAt: day1Submit, photosHandoffBy: name, cullingConfirmedAt: day1Submit } });
+      await prisma.auditLog.create({ data: { id: core.contributionRowId(id, who, 1), actor: "drill", action: core.CONTRIBUTION_ACTION, target: id, detail: JSON.stringify({ memberId: who, name, captured: ["photos"], videoDrone: false, uploaded: ["photos"], submits: [{ scope: "photos", atISO: day1Submit.toISOString(), services: ["photos"] }], version: 1, updatedAtISO: day1Submit.toISOString() }) } });
+    }
+    await establishSession(harrison.id);
+    const day2Video = { editorBrief: "", force: true, scope: "video", videoInstructions: "COLOR PROFILE: iPhone\nSONG REQUEST: No request\n\nEDITING NOTES\nOpen on the front walk.", captured: ["video"] } as never;
+    const td = await finalizeUpload(twoDay, day2Video);
+    const tdRow = await prisma.project.findUniqueOrThrow({ where: { id: twoDay }, select: { debriefSubmittedAt: true, videoHandoffBy: true } });
+    c.ok("Harrison's day-2 video completes the wrap-up: James's day-1 photos still count (the pay line no longer waits forever)", !td.blocked && tdRow.videoHandoffBy === "Harrison Drill" && !!tdRow.debriefSubmittedAt, JSON.stringify(td).slice(0, 200));
+    const sb = await finalizeUpload(sameBack, day2Video);
+    const sbRow = await prisma.project.findUniqueOrThrow({ where: { id: sameBack }, select: { debriefSubmittedAt: true } });
+    c.ok("…the same photographer coming back still owes this visit's photos (the visit rule stands)", !sb.blocked && !sbRow.debriefSubmittedAt);
+
+    // Writes on page load: never twice, never from a preview.
+    const { attachAddedVideoInstructions: attachAgain, addedVideoRecords } = await import("@/lib/addedOnSite");
+    const { setSession } = await import("@/lib/auth/session");
+    const addedSetup = async (street: string) => {
+      const id = await job(street, [{ type: "PHOTOS", label: "Photos" }, { type: "SOCIAL_REEL", label: "Standard Reel", videoStyle: "standard_reel" }], [{ who: harrisonTm.id }]);
+      await establishSession(harrison.id);
+      const a = await addShootAddOn(id, "Extra video", "A second reel.");
+      await shared.saveAddedVideo(id, { taskId: a.row!.id, text: "COLOR PROFILE: iPhone\n\nEDITING NOTES\nThe deck at dusk." });
+      await prisma.deliverable.create({ data: { projectId: id, type: "SOCIAL_REEL", label: "Standard Reel", quantity: 1, videoStyle: "standard_reel" } });
+      await dout.ensureOutputsForProject(id);
+      return { id, taskId: a.row!.id };
+    };
+    const race = await addedSetup("14 Race Rd");
+    const [ra, rb] = await Promise.all([attachAgain(race.id, "load A"), attachAgain(race.id, "load B")]);
+    const raceRows = await dout.videoInstructionsFor(race.id);
+    const nowLines = await prisma.activity.count({ where: { projectId: race.id, body: { contains: "are now video 2's" } } });
+    const saveLines = await prisma.activity.count({ where: { projectId: race.id, body: { startsWith: "Video instructions for video 2" } } });
+    c.ok("two page loads at once attach the words once: one write, one line on the timeline", ra.length + rb.length === 1 && raceRows[1]?.own === "COLOR PROFILE: iPhone\n\nEDITING NOTES\nThe deck at dusk." && nowLines === 1 && saveLines === 1, `${ra.length}+${rb.length} · ${nowLines}/${saveLines}`);
+    const pv = await addedSetup("15 Preview Rd");
+    await setSession({ uid: owner.id, email: "jordan-rv@drill.invalid", role: "OWNER", actingAs: harrison.id });
+    await portalOf(pv.id);
+    const pvRec = (await addedVideoRecords(pv.id)).get(pv.taskId);
+    const pvRows = await dout.videoInstructionsFor(pv.id);
+    c.ok("a 'view as' preview of the upload page writes nothing (the words wait for a real load)", !!pvRec && !pvRec.attachedKey && !pvRows[1]?.own, JSON.stringify(pvRec));
+    await establishSession(harrison.id);
+    await portalOf(pv.id);
+    c.ok("…Harrison's own load attaches them", !!(await addedVideoRecords(pv.id)).get(pv.taskId)?.attachedKey);
+
+    // Amounts in the agent's words: the owner only (Kyle's request board's rule).
+    const moneyJob = await job("16 Money Ln", [{ type: "PHOTOS", label: "Photos" }], [{ who: harrisonTm.id }]);
+    await createAsk({ clientId: client.id, projectId: moneyJob, kind: "SPECIAL_REQUEST", medium: "photo", text: "Add twilight photos, I'll pay the $150 for them.", source: "text", askedBy: "Georgiana Drill", by: "hub" });
+    const kyleUser = await prisma.appUser.create({ data: { email: "kyle-rv-app@drill.invalid", name: "Kyle Drill", role: "ADMIN", status: "ACTIVE" }, select: { id: true } });
+    const reqWords = (p: { props: { agentRequests?: { original: string }[] } } | undefined) => JSON.stringify((p?.props.agentRequests ?? []).map((r) => r.original));
+    await establishSession(kyleUser.id);
+    const kyleView = reqWords(await portalOf(moneyJob));
+    await establishSession(owner.id);
+    const ownerView = reqWords(await portalOf(moneyJob));
+    await establishSession(harrison.id);
+    const harrisonView = reqWords(await portalOf(moneyJob));
+    c.ok("amounts in the agent's words: the owner reads them; Kyle and the photographer read them scrubbed", /\$150/.test(ownerView) && !/\$150/.test(kyleView) && /twilight/.test(kyleView) && !/\$150/.test(harrisonView), `${ownerView} | ${kyleView}`);
+    await establishSession(harrison.id);
+
     c.ok("nothing left the machine", fence.blocked.filter((u) => !/studio|dropbox/i.test(u)).length === 0, fence.blocked.join(", "));
   } finally {
     console.warn = warn;

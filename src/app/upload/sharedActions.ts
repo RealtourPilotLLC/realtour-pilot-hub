@@ -19,7 +19,7 @@ import { revalidatePath } from "next/cache";
 import type { Contribution, ServiceKey, SharedNote } from "@/lib/sharedShootCore";
 import type { AgentRequestItem } from "@/lib/agentRequestsCore";
 
-type Who = { memberId: string | null; key: string; name: string; actor: string; office: boolean };
+type Who = { memberId: string | null; key: string; name: string; actor: string; office: boolean; money: boolean };
 
 async function who(projectId: string): Promise<{ ok: true; who: Who } | { ok: false; message: string }> {
   try {
@@ -36,7 +36,9 @@ async function who(projectId: string): Promise<{ ok: true; who: Who } | { ok: fa
   const { displayNameFor } = await import("@/lib/actorName");
   const name = ((await displayNameFor(me).catch(() => null)) || me?.name || "the office").trim().slice(0, 80);
   const office = !me || me.role === "OWNER" || me.role === "ADMIN" || me.role === "CREATIVE_MANAGER";
-  return { ok: true, who: { memberId, key: memberId ?? me?.email?.toLowerCase() ?? "office", name, actor: me?.email?.trim().toLowerCase() ?? "local-development", office } };
+  // Amounts in the agent's words: the owner only (lib/agentRequests).
+  const money = !me || me.role === "OWNER";
+  return { ok: true, who: { memberId, key: memberId ?? me?.email?.toLowerCase() ?? "office", name, actor: me?.email?.trim().toLowerCase() ?? "local-development", office, money } };
 }
 
 function refresh(projectId: string) {
@@ -188,7 +190,7 @@ export async function addAgentRequest(
   const medium = input.medium === "photo" || input.medium === "video" ? input.medium : "both";
   const { addOnSiteRequest } = await import("@/lib/agentRequests");
   try {
-    const r = await addOnSiteRequest({ projectId, text: String(input.text ?? ""), medium, by: { name: w.who.name }, office: w.who.office });
+    const r = await addOnSiteRequest({ projectId, text: String(input.text ?? ""), medium, by: { name: w.who.name }, office: w.who.office, money: w.who.money });
     if (r.ok) refresh(projectId);
     return r;
   } catch (e) {

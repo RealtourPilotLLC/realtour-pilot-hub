@@ -173,6 +173,13 @@ export async function saveAddedVideoInstructions(
  * appeared since (the office added them to the order). Idempotent and safe to
  * call from any reader: it does nothing when nothing is waiting. Returns the
  * video keys written.
+ *
+ * TWO READERS AT ONCE (audit, Oct 23 2026): the upload page and the editor's
+ * page both call this on load, so two loads can race. Each video's words are
+ * written with a compare-and-set (only while that video still has no words of
+ * its own), so the loser of a race writes nothing, says nothing on the
+ * timeline, and never puts the words over somebody's own. The callers skip it
+ * entirely for a "view as" preview, which never writes.
  */
 export async function attachAddedVideoInstructions(projectId: string, actor = "the hub"): Promise<string[]> {
   const records = [...(await addedVideoRecords(projectId)).values()].filter((r) => !r.attachedKey && r.text.trim());
@@ -181,27 +188,37 @@ export async function attachAddedVideoInstructions(projectId: string, actor = "t
   const live = new Map(tasks.map((t) => [t.id, t.status]));
   const waiting = records.filter((r) => live.has(r.taskId) && live.get(r.taskId) !== "CANCELLED").sort((a, b) => Date.parse(a.atISO) - Date.parse(b.atISO));
   if (!waiting.length) return [];
-  const { videoInstructionsFor, saveLaterVideoInstructions, ensureOutputsSafely } = await import("@/lib/deliverableOutputs");
+  const { videoInstructionsFor, ensureOutputsSafely } = await import("@/lib/deliverableOutputs");
   let rows = await videoInstructionsFor(projectId).catch(() => []);
   const all = await addedVideoRecords(projectId);
   const claimed = new Set([...all.values()].map((r) => r.attachedKey).filter((k): k is string => !!k));
   const written: string[] = [];
   for (const rec of waiting) {
     const known = new Set(rec.knownVideoKeys);
-    let row = rows.find((r) => !known.has(r.key) && !claimed.has(r.key) && !r.own?.trim());
+    const text = rec.text.replace(/\r\n/g, "\n").trim().slice(0, 6000);
+    // A video whose words already ARE these (a reader that wrote them and
+    // stopped before its record) is claimed now rather than written twice.
+    let row = rows.find((r) => !known.has(r.key) && !claimed.has(r.key) && (!r.own?.trim() || r.own.trim() === text));
     if (!row) continue;
     if (row.number > 1 && !row.outputId) {
       await ensureOutputsSafely(projectId, "added-video-instructions");
       rows = await videoInstructionsFor(projectId).catch(() => rows);
       row = rows.find((r) => r.key === row!.key) ?? row;
     }
-    if (row.number === 1) {
-      const p = await prisma.project.findUnique({ where: { id: projectId }, select: { videoInstructions: true } });
-      if (p?.videoInstructions?.trim()) { claimed.add(row.key); continue; }
-      await prisma.project.update({ where: { id: projectId }, data: { videoInstructions: rec.text } });
-    } else {
-      const saved = await saveLaterVideoInstructions(projectId, { [row.key]: rec.text }, rec.byName);
-      if (!saved.includes(row.key)) continue;
+    const already = row.own?.trim() === text;
+    if (!already) {
+      // Compare-and-set: only while the video still has no words of its own.
+      const n = row.number === 1
+        ? (await prisma.project.updateMany({ where: { id: projectId, OR: [{ videoInstructions: null }, { videoInstructions: "" }] }, data: { videoInstructions: text } })).count
+        : row.outputId
+          ? (await prisma.deliverableOutput.updateMany({ where: { id: row.outputId, OR: [{ filmingNote: null }, { filmingNote: "" }] }, data: { filmingNote: text } })).count
+          : 0;
+      if (n !== 1) { claimed.add(row.key); continue; }
+      if (row.number > 1) {
+        await prisma.activity
+          .create({ data: { projectId, type: "SYSTEM", body: `Video instructions for video ${row.number} (${row.label}) saved by ${(rec.byName || "the photographer").slice(0, 120)}.` } })
+          .catch(() => {});
+      }
     }
     claimed.add(row.key);
     const next: AddedVideoRecord = { ...rec, version: rec.version + 1, attachedKey: row.key, attachedAtISO: new Date().toISOString() };

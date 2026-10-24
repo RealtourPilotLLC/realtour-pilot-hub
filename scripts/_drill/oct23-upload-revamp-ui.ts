@@ -253,6 +253,51 @@ async function main() {
     c.ok("the same words as an order note come back as \"already on the list\", with where", contains(ar.render(), "Already on the list (Order notes (Aryeo))"));
     ar.stop();
 
+    // =====================================================================
+    c.head("7 · Audit fixes (Oct 23 2026)");
+    // =====================================================================
+    const twoMembers = [{ memberId: "m-j", name: "James Livingston", via: "appointment" }, { memberId: "m-h", name: "Harrison Wells", via: "appointment" }];
+    // A shared shoot handed off on the page before the revamp: nobody has a part on file.
+    const legacyProps: ComponentProps<typeof UploadPortal> = {
+      ...base,
+      project: { ...project, debriefSubmittedAt: "2026-10-10T17:15:00Z", photosHandoffAt: "2026-10-03T13:28:00Z", videoHandoffAt: "2026-10-10T17:15:00Z" },
+      sharedShoot: { shared: true, me: { memberId: "m-h", name: "Harrison Wells" }, members: twoMembers, contributions: [], notes: [], floorISO: null, answers: { photos: null, video: null }, visits: { "m-j": "2026-10-02T15:00:00Z", "m-h": "2026-10-07T18:30:00Z" } },
+    };
+    const lt = text(renderToStaticMarkup(createElement(Portal, legacyProps)));
+    c.ok("a shared shoot submitted before the revamp reads as submitted, not an open form with nothing ticked", /Submitted — you're good to go/.test(lt) && !/Submit my /.test(lt) && /Handed off on the job's page/.test(lt) && !/Not started/.test(lt), lt.slice(0, 240));
+    c.ok("…and the agent's requests stay on the submitted page", /Agent requests/.test(lt) && /From: Order notes \(Aryeo\)/.test(lt));
+    // The job's wrap-up came BEFORE Harrison's own visit: it was someone else's.
+    const laterVisit = text(renderToStaticMarkup(createElement(Portal, { ...legacyProps, sharedShoot: { ...legacyProps.sharedShoot!, visits: { "m-j": "2026-10-02T15:00:00Z", "m-h": "2026-10-23T14:00:00Z" } } })));
+    c.ok("a wrap-up made before my own visit leaves my page open", /Submit my /.test(laterVisit) && !/Submitted — you're good to go/.test(laterVisit));
+    // A job that owes no photo or video half: the normal whole-page submit, never a part nobody can finish.
+    const fpProps: ComponentProps<typeof UploadPortal> = {
+      ...base,
+      deliverables: [{ id: "d-fp", type: "FLOORPLAN", quantity: 1, status: "PENDING", uploadedAt: null, notCompletedReason: null }, { id: "d-3d", type: "MATTERPORT_3D", quantity: 1, status: "PENDING", uploadedAt: null, notCompletedReason: null }],
+      policy: { ...base.policy, photosOrdered: false, videoOrdered: false },
+      sharedShoot: { shared: true, me: { memberId: "m-h", name: "Harrison Wells" }, members: twoMembers, contributions: [{ memberId: "m-h", name: "Harrison Wells", captured: ["floorplan"], videoDrone: false, uploaded: [], submits: [], version: 1, updatedAtISO: "2026-10-23T19:00:00Z" }], notes: [], floorISO: null, answers: { photos: null, video: null } },
+    };
+    const fpt = text(renderToStaticMarkup(createElement(Portal, fpProps)));
+    c.ok("a floor-plan-and-tour job hands off with the normal submit (a part alone could never finish it)", /Submit my handoff/.test(fpt) && !/Submit my floor plan/.test(fpt), (fpt.match(/Submit my [a-z ]+/) ?? [""])[0]);
+    // James's page: his photos are in, the video is Harrison's.
+    const jamesProps: ComponentProps<typeof UploadPortal> = {
+      ...sharedProps,
+      sharedShoot: { ...sharedProps.sharedShoot!, me: { memberId: "m-j", name: "James Livingston" } },
+      project: { ...sharedProps.project, photosHandoffAt: "2026-10-23T12:15:00Z" },
+    };
+    const jt = text(renderToStaticMarkup(createElement(Portal, jamesProps)));
+    c.ok("the photos photographer is not told the video is late (it is Harrison's)", !/Video still owed|Video overdue/.test(jt));
+    const ht = text(renderToStaticMarkup(createElement(Portal, { ...sharedProps, project: { ...sharedProps.project, photosHandoffAt: "2026-10-23T12:15:00Z" } })));
+    c.ok("…the video photographer still is", /Video still owed|Video overdue/.test(ht));
+    // The office on a shared page still corrects the job's own note.
+    const ot = text(renderToStaticMarkup(createElement(Portal, { ...sharedProps, viewerIsOffice: true, sharedShoot: { ...sharedProps.sharedShoot!, me: null } })));
+    c.ok("the office edits the job's note for the editor on a shared page", /The job's note for the editor \(office\)/.test(ot));
+    // A video added on site: nothing marked required while it waits for the order.
+    // (Harrison's own part says he captured video, so its section is open.)
+    const addedProps: ComponentProps<typeof UploadPortal> = { ...sharedProps, addOnRows: [{ id: "t-add", item: "Extra video", note: null, addedBy: "Harrison Wells", addedAtISO: "2026-10-23T19:00:00Z", handled: false }] };
+    const addHtml = renderToStaticMarkup(createElement(Portal, addedProps));
+    const addSection = addHtml.slice(addHtml.indexOf("data-later-video=\"added:t-add\""));
+    c.ok("a video added on site gets its own area, nothing in it marked required", addHtml.includes("data-later-video=\"added:t-add\"") && !/text-danger">\*/.test(addSection.slice(0, 4000)) && !/Intro script/.test(text(addSection.slice(0, 4000))), text(addSection.slice(0, 400)));
+
     c.ok("the UI drill made no network call and no database call", fence.blocked.length === 0 && fence.faked.length === 0);
   } finally {
     c.summary();
