@@ -329,6 +329,14 @@ export type ReadyVideo = {
   } | null;
 };
 
+/** The listing already shows a video that could be this one (or the client
+ *  says it is wrong): play it first. The ONE definition (Oct 23 2026): the
+ *  Ready to send row's "Upload anyway" step (videoDelivery) and "send when
+ *  ready" (lib/sendWhenReady, which waits for a person on it) both read it. */
+export function listingWarningOf(r: Pick<ReadyVideo, "listing" | "uploaded">): string | null {
+  return r.listing && (r.listing.contested || r.listing.couldBeThisCut) && !r.uploaded ? r.listing.says : null;
+}
+
 /** An approved cut whose 1080p pass has not finished — shown, never offered. */
 /** One video in the Topaz pass, as the With Topaz row shows it. */
 export type TopazProgress = {

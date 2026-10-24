@@ -3,11 +3,12 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Camera, Check, CornerDownRight, Loader2, MessageSquarePlus, Pencil, RotateCcw, Send, ThumbsUp, Undo2,
+  Camera, Check, CornerDownRight, Loader2, MessageSquarePlus, Pencil, RotateCcw, Send, ThumbsUp, Undo2, UploadCloud,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MentionTextarea } from "@/components/mentions/MentionTextarea";
 import { addCutNote, approveCut, askCutChange, replyCutNote, requestCutChanges, setCutNoteStatus } from "@/app/review/actions";
+import { approveAndSendAction } from "@/app/review/sendWhenReadyActions";
 import type { CutNote, CutSubmission } from "@/lib/reviewRoom";
 import { byLine, statusLine, verdictLine, whenET } from "@/lib/reviewAttribution";
 import { CutTakeBack, CutTakeBackFlags } from "./CutTakeBack";
@@ -101,6 +102,7 @@ export function CutReviewPanel({
   readStamp,
   nextCut = null,
   street,
+  sendOffer = null,
 }: {
   projectId: string;
   submission: CutSubmission;
@@ -130,6 +132,17 @@ export function CutReviewPanel({
   nextCut?: { href: string; label: string } | null;
   /** The job's street, for the receipt that follows the reviewer. */
   street?: string;
+  /**
+   * "Approve and send" beside Approve (Jordan, Oct 23 2026: "an approve and
+   * send button"): the owner and the office, on an Aryeo listing video the
+   * hub can send itself (lib/sendWhenReady.approveAndSendOffer). Once the
+   * Topaz file is back and checked, the hub uploads it to Aryeo and sends it.
+   * The job's open client requests come with it: the press shows them first
+   * and asks "Checked, approve and send", exactly as Upload to Aryeo and send
+   * does. Null: only Approve (the creative manager, a review seat, a portal
+   * video, a video the hub can't send).
+   */
+  sendOffer?: { openAsks: { summary: string; askedBy: string | null }[]; asksUnknown: boolean } | null;
 }) {
   const router = useRouter();
   // Words this reviewer left on this cut when a verdict they pressed did not go
@@ -158,6 +171,12 @@ export function CutReviewPanel({
   const [uncertainRead, setUncertainRead] = useState<UnknownReviewRead | null>(null);
   const needsReload = reviewRetryBlocked(uncertainRead, readStamp);
   const [approvalWarning, setApprovalWarning] = useState<string | null>(null);
+  // Which approval the missing-ticks question is for (Oct 23 2026): Approve,
+  // or Approve and send (with the client's requests checked or not).
+  const [warnFor, setWarnFor] = useState<{ send: boolean; checkedRequests: boolean }>({ send: false, checkedRequests: false });
+  // Approve and send's own first step: the job's open client requests, shown
+  // before anything is decided (SendVideo's "Checked, upload and send").
+  const [sendAsks, setSendAsks] = useState(false);
   // The verdict this reviewer just gave, shown the instant they press it — the
   // cut is closed from here on, while the move to the next one happens.
   const [closing, setClosing] = useState<null | "approve" | "send-back">(null);
@@ -245,10 +264,12 @@ export function CutReviewPanel({
     return { ...r, canApproveAnyway: anyway };
   }
 
-  function settle(receiptId: string, kind: "approve" | "send-back", r: Verdict & { needsReload: boolean }) {
+  type VerdictKind = "approve" | "approve-send" | "send-back";
+  function settle(receiptId: string, kind: VerdictKind, r: Verdict & { needsReload: boolean }, anyway?: () => Promise<Verdict>) {
+    const approving = kind !== "send-back";
     if (r.ok) {
       dropDraft(submission.id);
-      updateReceipt(receiptId, { state: "done", message: r.message ?? (kind === "approve" ? "Approved." : "Sent back."), approveAnyway: undefined });
+      updateReceipt(receiptId, { state: "done", message: r.message ?? (approving ? "Approved." : "Sent back."), approveAnyway: undefined });
       return;
     }
     // Refused or unknown: the reviewer's words stay kept for this cut, and the
@@ -264,18 +285,19 @@ export function CutReviewPanel({
     updateReceipt(receiptId, {
       state: "refused",
       message: reason,
-      approveAnyway: kind === "approve" && r.canApproveAnyway ? () => approveAnywayFromReceipt(receiptId) : undefined,
+      approveAnyway: approving && r.canApproveAnyway ? () => approveAnywayFromReceipt(receiptId, kind, anyway) : undefined,
     });
     setErr(reason);
-    if (kind === "approve" && r.canApproveAnyway) setApprovalWarning(reason);
+    if (approving && r.canApproveAnyway) setApprovalWarning(reason);
   }
 
   /** The receipt's own "Approve anyway" — the reviewer may be on another cut by
-   *  now, so it acts on this one by id and reports back on the same card. */
-  function approveAnywayFromReceipt(receiptId: string) {
+   *  now, so it acts on this one by id and reports back on the same card.
+   *  Approve and send's carries its own call (the requests as they were checked). */
+  function approveAnywayFromReceipt(receiptId: string, kind: VerdictKind = "approve", anyway?: () => Promise<Verdict>) {
     const verify = verifiedFixIds(fixesToCheck, notFixed);
     updateReceipt(receiptId, { state: "pending", message: "Approving with the missing ticks left unverified…", approveAnyway: undefined });
-    void confirmVerdict(() => approveCut(submission.id, { verifyIssueIds: verify, approveUncheckedFixes: true })).then((r) => settle(receiptId, "approve", r));
+    void confirmVerdict(anyway ?? (() => approveCut(submission.id, { verifyIssueIds: verify, approveUncheckedFixes: true }))).then((r) => settle(receiptId, kind, r));
   }
 
   // A NOTE TYPED BUT NOT YET ADDED GOES WITH THE VERDICT (review, Oct 5
@@ -301,7 +323,7 @@ export function CutReviewPanel({
     };
   }
 
-  function decide(kind: "approve" | "send-back", verdictCall: () => Promise<Verdict>) {
+  function decide(kind: VerdictKind, verdictCall: () => Promise<Verdict>, anyway?: () => Promise<Verdict>) {
     if (needsReload || closing || pending) return;
     setErr(null);
     setMsg(null);
@@ -310,26 +332,59 @@ export function CutReviewPanel({
     const receiptId = addReceipt({
       submissionId: submission.id,
       cutHref,
-      title: kind === "approve" ? "Approved" : `Sent back to ${editorLabel}`,
+      title: kind === "approve" ? "Approved" : kind === "approve-send" ? "Approved, then send" : `Sent back to ${editorLabel}`,
       cut: cutWords,
       state: "pending",
       message: kind === "approve"
         ? "The Topaz pass and delivery are running in the background."
-        : `The notes go to ${editorLabel} as the next round on their edit card.`,
+        : kind === "approve-send"
+          ? "Once the Topaz file is back and checked, the hub uploads it to Aryeo and sends it."
+          : `The notes go to ${editorLabel} as the next round on their edit card.`,
       next: nextCut ? `Next: ${nextCut.label}` : "All caught up — nothing else is waiting on you.",
     });
-    setClosing(kind);
+    setClosing(kind === "send-back" ? "send-back" : "approve");
     const answer = confirmVerdict(call);
     router.push(nextCut?.href ?? "/review");
-    void answer.then((r) => settle(receiptId, kind, r));
+    void answer.then((r) => settle(receiptId, kind, r, anyway));
   }
+
+  const missingTicks = () => `${notFixed.size} fix${notFixed.size === 1 ? " isn't" : "es aren't"} ticked as verified. Approve anyway? The missing ticks will remain unverified.`;
 
   function requestApproval() {
     if (notFixed.size) {
-      setApprovalWarning(`${notFixed.size} fix${notFixed.size === 1 ? " isn't" : "es aren't"} ticked as verified. Approve anyway? The missing ticks will remain unverified.`);
+      setWarnFor({ send: false, checkedRequests: false });
+      setApprovalWarning(missingTicks());
       return;
     }
     decide("approve", () => approveCut(submission.id, submission.selfChecked || fixesToCheck.length ? { verifyIssueIds: verifiedFixIds(fixesToCheck, notFixed) } : undefined));
+  }
+
+  /** Approve and send, with the requests checked or not; `anyway` = past the missing ticks. */
+  const approveAndSend = (checkedRequests: boolean, anyway: boolean) => () =>
+    approveAndSendAction(submission.id, anyway
+      ? { verifyIssueIds: verifiedFixIds(fixesToCheck, notFixed), approveUncheckedFixes: true, checkedRequests }
+      : { ...(submission.selfChecked || fixesToCheck.length ? { verifyIssueIds: verifiedFixIds(fixesToCheck, notFixed) } : {}), checkedRequests });
+
+  // APPROVE AND SEND (Oct 23 2026): the client's open requests first (the
+  // same confirm Upload to Aryeo and send shows), then the missing ticks,
+  // then the approval and the send-when-ready together (the server action).
+  function requestApproveAndSend(checkedRequests: boolean) {
+    if (!sendOffer || needsReload || closing || pending) return;
+    if (sendOffer.asksUnknown) {
+      setErr("The client's requests could not be read just now, so nothing was approved or sent. Reload the page and try again.");
+      return;
+    }
+    if (sendOffer.openAsks.length && !checkedRequests) {
+      setSendAsks(true);
+      return;
+    }
+    setSendAsks(false);
+    if (notFixed.size) {
+      setWarnFor({ send: true, checkedRequests });
+      setApprovalWarning(missingTicks());
+      return;
+    }
+    decide("approve-send", approveAndSend(checkedRequests, false), approveAndSend(checkedRequests, true));
   }
 
   return (
@@ -341,8 +396,9 @@ export function CutReviewPanel({
           <button type="button" data-modal-initial-focus className="min-h-11 rounded-lg border border-border px-4 text-sm font-medium" onClick={() => setApprovalWarning(null)}>Cancel</button>
           <button type="button" disabled={pending || needsReload || !!closing} className="min-h-11 rounded-lg bg-success-action px-4 text-sm font-semibold text-white disabled:opacity-50" onClick={() => {
             setApprovalWarning(null);
-            decide("approve", () => approveCut(submission.id, { verifyIssueIds: verifiedFixIds(fixesToCheck, notFixed), approveUncheckedFixes: true }));
-          }}>Approve anyway</button>
+            if (warnFor.send) decide("approve-send", approveAndSend(warnFor.checkedRequests, true), approveAndSend(warnFor.checkedRequests, true));
+            else decide("approve", () => approveCut(submission.id, { verifyIssueIds: verifiedFixIds(fixesToCheck, notFixed), approveUncheckedFixes: true }));
+          }}>{warnFor.send ? "Approve and send anyway" : "Approve anyway"}</button>
         </div>
       </ModalDialog>}
       {needsReload && <div role="alert" className="rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm"><p>{err}</p><button type="button" className="mt-2 inline-flex min-h-11 items-center rounded-lg border border-border px-3 font-medium" onClick={() => {
@@ -470,9 +526,40 @@ export function CutReviewPanel({
             >
               <ThumbsUp className="size-4" /> Approve cut
             </button>
+            {/* Approve and send (Oct 23 2026): the owner and the office, on a
+                listing video the hub can send itself. Approve stays the loud one. */}
+            {sendOffer && (
+              <button
+                onClick={() => requestApproveAndSend(false)}
+                disabled={pending || needsReload}
+                title="Approves it now. Once the Topaz file is back and checked, the hub uploads it to Aryeo and sends it. If anything would stop that (a client request to check, a listing warning), it waits for you instead."
+                data-approve-and-send
+                className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-success/50 bg-success/10 px-4 py-2 text-sm font-semibold text-success hover:bg-success/20 disabled:opacity-50 sm:flex-none"
+              >
+                <UploadCloud className="size-4" /> Approve and send
+              </button>
+            )}
           </div>
         )}
       </div>
+      {/* Approve and send's first step when the job has open client requests:
+          the same confirm Upload to Aryeo and send shows (Oct 23 2026). */}
+      {sendAsks && sendOffer && !decided && !closing && (
+        <div role="group" aria-label="Client requests to check before approving and sending" className="rounded-lg border border-warning/40 bg-warning-soft/30 p-3 text-sm" data-approve-send-asks>
+          <p className="font-semibold">Check {sendOffer.openAsks.length === 1 ? "this request" : `these ${sendOffer.openAsks.length} requests`} in the video first:</p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-5">
+            {sendOffer.openAsks.map((a, i) => (
+              <li key={i}>{a.summary}{a.askedBy ? <span className="text-muted"> ({a.askedBy})</span> : null}</li>
+            ))}
+          </ul>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button type="button" disabled={pending || needsReload} onClick={() => requestApproveAndSend(true)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-success-action px-4 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50">
+              <UploadCloud className="size-4" /> Checked, approve and send
+            </button>
+            <button type="button" onClick={() => setSendAsks(false)} className="inline-flex min-h-11 items-center rounded-lg border border-border px-4 text-sm font-medium">Cancel</button>
+          </div>
+        </div>
+      )}
       {/* Somebody other than the chain took this version (gap 15) — say who
           and when, not just "covering". */}
       {canDecide && submission.reviewerMove && (

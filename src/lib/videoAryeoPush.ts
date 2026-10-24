@@ -448,6 +448,18 @@ async function gates(submissionId: string, opts: { asks: boolean; sound: boolean
   };
 }
 
+/**
+ * What the gates say right now, READ ONLY: nothing is written and nothing is
+ * started (Oct 23 2026, lib/sendWhenReady). "Send when ready" asks it for one
+ * answer only, a "not yet" (the finished file not in place yet), to wait for
+ * the next look rather than record a refusal; everything else goes to
+ * requestVideoPush, which runs these same gates again and decides.
+ */
+export async function videoPushReadiness(submissionId: string): Promise<{ ready: true } | { ready: false; kind: string; why: string }> {
+  const g = await gates(submissionId, { asks: false, sound: false });
+  return g.ok ? { ready: true } : { ready: false, kind: g.kind, why: g.why };
+}
+
 /** What Aryeo's public API shows on the listing (null = it could not be read just now). */
 type ListedVideo = { id: string; at: Date | null; durationSec: number | null; playable: boolean; title: string | null };
 async function listedVideos(listingId: string): Promise<ListedVideo[] | null> {

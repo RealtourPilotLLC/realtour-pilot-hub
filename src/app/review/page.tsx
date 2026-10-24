@@ -26,6 +26,7 @@ import { RerunTopaz } from "@/components/ops/RerunTopaz";
 import { DeliveryFollowUps, PortalFinishing } from "@/components/ops/ReadyToSendCard";
 import { PushControls } from "@/components/videoDelivery/PushControls";
 import { SendAll, SendVideo } from "@/components/videoDelivery/SendVideo";
+import { SendWhenReadyLine } from "@/components/videoDelivery/SendWhenReadyLine";
 import { AutoRefresh } from "@/components/ops/AutoRefresh";
 
 export const dynamic = "force-dynamic";
@@ -106,6 +107,23 @@ function Steps({ progress, stopped }: { progress: "uploading" | "on-listing" | "
   );
 }
 
+/** Could this Ready to send row go with ONE press today: nothing to check
+ *  first, no listing warning, nothing on its way? Send all's rows, and the
+ *  rows where Run Topaz again offers "then upload and send" (Oct 23 2026). */
+const oneShot = (r: VideoRow): boolean =>
+  !!r.send && !r.send.byHandWhy && !r.send.openAsks.length && !r.send.asksUnknown && !r.send.listingWarning && !!r.push?.canStart && !r.push.state;
+
+/** "Then: upload to Aryeo and send" (waiting), or why it wasn't sent (Oct 23
+ *  2026, lib/sendWhenReady). A not-sent line steps aside once somebody's own
+ *  press has the video moving (or sent). */
+function SendWhenReady({ r, sendDesk }: { r: VideoRow; sendDesk: boolean }) {
+  const w = r.sendWhenReady;
+  if (!w || !r.submissionId) return null;
+  const p = r.push;
+  if (w.state === "not-sent" && (!sendDesk || (p?.state && p.tone !== "failed" && p.tone !== "held"))) return null;
+  return <SendWhenReadyLine submissionId={r.submissionId} street={r.street} state={w.state} by={w.by} when={etDateTime(w.atISO)} note={w.note} canCancel={sendDesk} />;
+}
+
 // `sendDesk` (Oct 21 2026): the office's buttons (Upload to Aryeo and send,
 // Deliver now / Release, Done it by hand). The creative manager reads the same
 // row as status, keeps Watch it and "Not ready? Send back", and leaves the
@@ -131,10 +149,13 @@ function ReadyRow({ r, checks, sendDesk = true }: { r: VideoRow; checks: React.R
       {sendDesk && !s.byHandWhy && s.pushUnknown && <p className="mt-1 text-sm font-medium text-warning">Couldn&rsquo;t read where this upload stands just now. Reload the page to send it.</p>}
       {sendDesk && !s.byHandWhy && s.asksUnknown && <p className="mt-1 text-sm font-medium text-warning">The client&rsquo;s requests could not be read just now. Reload before sending.</p>}
       {!sendDesk && !run && !s.uploaded && <p className="mt-1 text-sm text-muted">Waiting on the office to send it.</p>}
+      <SendWhenReady r={r} sendDesk={sendDesk} />
       <WatchFile href={s.watchHref} fileName={s.fileName} isRender={s.fileSource === "topaz-1080p"} />
       {/* Run Topaz again beside Watch it (Jordan, Oct 23 2026): the office's
-          press, on a finished Topaz file not sent yet. */}
-      {sendDesk && r.rerun && <RerunTopaz jobId={r.rerun.jobId} street={r.street} credits={r.rerun.credits} limit={r.rerun.limit} />}
+          press, on a finished Topaz file not sent yet. Its confirm also offers
+          "Run it again, then upload and send" when this row could go with one
+          press (the same test as Send all). */}
+      {sendDesk && r.rerun && <RerunTopaz jobId={r.rerun.jobId} street={r.street} credits={r.rerun.credits} limit={r.rerun.limit} canSendAfter={oneShot(r)} />}
       {/* Upload to Aryeo only beside it (Jordan, Oct 23 2026): on the listing, not sent, until Send now. */}
       {canPress && <SendVideo submissionId={r.submissionId!} street={r.street} label={label} openAsks={s.openAsks} asksUnknown={s.asksUnknown} listingWarning={s.listingWarning} uploadOnly={label === "Upload to Aryeo and send"} />}
       {sendDesk && p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} canDeliverNow={p.canDeliverNow} canRelease={p.canRelease} uploadedOnly={p.uploadedOnly} />}
@@ -168,6 +189,7 @@ function HeldRow({ r, sendDesk = true }: { r: VideoRow; sendDesk?: boolean }) {
       <RowHead r={r} />
       <p className="mt-0.5 text-sm text-muted"><span className="font-medium text-foreground">{r.stage}</span> · <span className={cn(r.late && "font-semibold text-danger")}>{r.promiseWords}</span></p>
       {r.heldWhy && <p className="mt-1 text-sm font-medium text-warning">{r.heldWhy}</p>}
+      <SendWhenReady r={r} sendDesk={sendDesk} />
       {r.heldRender && <HeldRender jobId={r.heldRender.jobId} street={r.street} fileName={r.heldRender.fileName} dropboxUrl={r.heldRender.dropboxUrl} lastCheck={r.heldRender.lastCheck} />}
       {/* A held Topaz file that doesn't sound or look right: run it again (Oct 23 2026, the office's press). */}
       {sendDesk && r.rerun && <RerunTopaz jobId={r.rerun.jobId} street={r.street} credits={r.rerun.credits} limit={r.rerun.limit} />}
@@ -252,7 +274,7 @@ function topazOverall(state: string, percent: number | null): number {
   return Math.max(3, Math.min(97, Math.round(((i + within) / TOPAZ_STEPS.length) * 100)));
 }
 
-function WithTopazRow({ r }: { r: VideoRow }) {
+function WithTopazRow({ r, sendDesk = true }: { r: VideoRow; sendDesk?: boolean }) {
   const t = r.topaz ?? null;
   const state = t?.state ?? "queued";
   const at = topazStepIndex(state);
@@ -280,6 +302,8 @@ function WithTopazRow({ r }: { r: VideoRow }) {
         </ol>
       </div>
       <p className="text-xs text-muted">It moves back to Ready to send by itself once the new file is in and checked.</p>
+      {/* Approve and send / Run it again, then upload and send (Oct 23 2026). */}
+      <SendWhenReady r={r} sendDesk={sendDesk} />
     </li>
   );
 }
@@ -383,7 +407,7 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
       }
     })),
   );
-  const sendAllIds = ready.filter((r) => r.send && !r.send.byHandWhy && !r.send.openAsks.length && !r.send.asksUnknown && !r.send.listingWarning && r.push?.canStart && !r.push.state).map((r) => r.submissionId!);
+  const sendAllIds = ready.filter(oneShot).map((r) => r.submissionId!);
   const moving = [...ready, ...heldRows].some((r) => !!r.push?.state && r.push.handledByHub && !r.push.waitingForKyle && r.push.tone === "progress");
   const fu = board?.followUps ?? null;
   const followUpCount = fu ? (fu.needsFinishing?.length ?? 0) + fu.notTold.length + fu.noticeIncidents.length + fu.portal.length : 0;
@@ -540,7 +564,7 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
                 <h3 className="flex items-center gap-1.5 border-t border-border px-5 pt-3 text-sm font-semibold">
                   <Loader2 aria-hidden className="size-4 animate-spin text-brand motion-reduce:animate-none" /> With Topaz ({finishing.length})
                 </h3>
-                <ul className="divide-y divide-border">{finishing.map((r) => <WithTopazRow key={r.key} r={r} />)}</ul>
+                <ul className="divide-y divide-border">{finishing.map((r) => <WithTopazRow key={r.key} r={r} sendDesk={deliveryDesk} />)}</ul>
               </>
             )}
             {/* Branding videos still in the 1080p pass, which can still go to

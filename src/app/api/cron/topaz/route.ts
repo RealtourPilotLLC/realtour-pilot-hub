@@ -66,8 +66,15 @@ export async function GET(req: NextRequest) {
   // whatever the stored switch says. Resumable: a big file goes up across
   // several ticks.
   await step("aryeo-video", async () => {
+    // "SEND WHEN READY" first (Oct 23 2026, lib/sendWhenReady): a video whose
+    // Topaz pass just ended, and somebody pressed Approve and send (or Run it
+    // again, then upload and send), is started here if the pass's own finish
+    // missed it, so the run below moves it in this same tick. Never twice:
+    // each one is claimed with a compare-and-set before it is started.
+    const { sweepSendWhenReady } = await import("@/lib/sendWhenReady");
+    const sendWhenReady = await sweepSendWhenReady().catch((e) => ({ error: (e as Error).message }));
     const { driveVideoPushes } = await import("@/lib/videoAryeoPush");
-    return driveVideoPushes({ budgetMs: Math.max(20_000, Math.min(65_000, remaining() - 15_000)) });
+    return { sendWhenReady, ...(await driveVideoPushes({ budgetMs: Math.max(20_000, Math.min(65_000, remaining() - 15_000)) })) };
   }, { maxMs: 80_000 });
 
   await finish();

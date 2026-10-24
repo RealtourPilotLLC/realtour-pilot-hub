@@ -9,7 +9,7 @@ import { Section } from "@/components/ui/Section";
 import { Avatar } from "@/components/ui/Avatar";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { homeFor } from "@/lib/auth/access";
+import { homeFor, isOffice } from "@/lib/auth/access";
 import { getCutWorkspace, nextCutToReview } from "@/lib/reviewRoom";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { editorMeta } from "@/lib/editors";
@@ -273,6 +273,17 @@ export default async function CutReviewPage({
     }
   }
 
+  // APPROVE AND SEND (Jordan, Oct 23 2026: "an approve and send button"): the
+  // owner and the office (the Room's delivery desk; a preview of their login
+  // sees it and the action refuses it), on a version there is a verdict to
+  // give, when it is an Aryeo listing video the hub can send itself. The
+  // creative manager and the review seats keep plain Approve.
+  const officeDesk = !me || isOffice(me.role);
+  const sendOffer =
+    active && !shotThis && officeDesk && active.status === "PENDING" && !active.heldForCheck
+      ? await import("@/lib/sendWhenReady").then((m) => m.approveAndSendOffer(active.id)).catch(() => null)
+      : null;
+
   // The box's parts: this round's ask (until the cut is approved) and the job's own checks.
   const roundAsk = !shotThis && !!clientAsk && !!active && active.status !== "APPROVED";
   const boxHasChecks = !!jobBox && (jobBox.data.flags.length > 0 || jobBox.data.requests.length > 0 || jobBox.data.notes.length > 0);
@@ -417,6 +428,7 @@ export default async function CutReviewPage({
                 readStamp={new Date().toISOString()}
                 nextCut={nextCut ? { href: nextCut.href, label: nextCut.label } : null}
                 street={w.street}
+                sendOffer={sendOffer}
               />
 
             </>

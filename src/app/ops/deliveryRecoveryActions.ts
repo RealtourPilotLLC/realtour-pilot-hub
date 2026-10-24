@@ -90,16 +90,32 @@ export async function run1080pAction(submissionId: string): Promise<Result> {
  * draws. It runs while the person waits: one Dropbox move and one database
  * write, and the answer (a refusal, or Dropbox saying no) is the one they
  * need to read. Nothing is spent here: the lane's free price check is next.
+ *
+ * `thenSend` (Oct 23 2026, "Run it again, then upload and send"): the same
+ * re-run, and once the new file is back and checked the hub uploads it to
+ * Aryeo and sends it in this person's name (lib/sendWhenReady, written in the
+ * re-run's own transaction). An Aryeo listing video only: a portal video
+ * publishes to the client's portal by itself.
  */
-export async function rerunTopazAction(jobId: string): Promise<Result> {
+export async function rerunTopazAction(jobId: string, opts?: { thenSend?: boolean }): Promise<Result> {
   const who = await staff();
   if (!who.ok) return who;
   if (typeof jobId !== "string" || !ID_RE.test(jobId)) return { ok: false, message: "Which video?" };
+  const thenSend = opts?.thenSend;
+  if (thenSend !== undefined && typeof thenSend !== "boolean") return { ok: false, message: "That choice is not valid." };
+  if (thenSend) {
+    const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { submissionId: true } });
+    if (!job) return { ok: false, message: "That Topaz job no longer exists." };
+    const { loadCut } = await import("@/lib/finalRendition");
+    const { usesAryeoDelivery } = await import("@/lib/videoDeliveryDestination");
+    const cut = await loadCut(job.submissionId);
+    if (!cut || !(await usesAryeoDelivery(cut))) return { ok: false, message: "This video goes to the client's portal by itself, so it can't be sent to Aryeo. Use Run Topaz again." };
+  }
   const me = await getCurrentUser().catch(() => null);
   const { displayNameFor } = await import("@/lib/actorName");
   const by = (await displayNameFor(me).catch(() => null)) ?? who.name;
   const { rerunTopazJob } = await import("@/lib/topazJobs");
-  const r = await rerunTopazJob(jobId, by);
+  const r = await rerunTopazJob(jobId, by, { thenSend: !!thenSend });
   if (r.ok) refresh();
   return r;
 }

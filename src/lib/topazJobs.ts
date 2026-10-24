@@ -919,6 +919,24 @@ async function markEditorFileFinal(job: NonNullable<JobRow>): Promise<void> {
   }
 }
 
+/**
+ * "APPROVE AND SEND" / "RUN IT AGAIN, THEN UPLOAD AND SEND" (Oct 23 2026): the
+ * pass reached an end (or a person decided a held file), so a send somebody
+ * asked for goes now, or says why not (lib/sendWhenReady reads where the cut
+ * and this pass stand and acts on that alone; it sends at most once).
+ * Best-effort and after the row is written: the every-minute cron's sweep
+ * picks up anything this misses.
+ */
+async function settleSendIntent(submissionId: string | null | undefined): Promise<void> {
+  if (!submissionId) return;
+  try {
+    const { settleSendWhenReady } = await import("@/lib/sendWhenReady");
+    await settleSendWhenReady(submissionId);
+  } catch (e) {
+    console.warn("[topaz] send-when-ready", submissionId, (e as Error)?.message);
+  }
+}
+
 /** Stop for good, and TELL SOMEBODY. A silently failed render is worse than no
  *  render: Kyle waits for a file that is never coming. */
 async function fail(job: NonNullable<JobRow>, reason: string) {
@@ -926,6 +944,7 @@ async function fail(job: NonNullable<JobRow>, reason: string) {
   if (!won) return; // another tick moved this row on; its outcome is the true one
   await markEditorFileFinal(job);
   await tellSomebody(job, `The Topaz pass couldn't finish — ${streetOf(job.project.title)}`, reason, `topaz-failed-${job.id}`);
+  await settleSendIntent(job.submissionId);
 }
 
 /** Refuse the job before anything was spent. Also announced: an owner who was
@@ -935,6 +954,7 @@ async function skip(job: NonNullable<JobRow>, reason: string) {
   if (!won) return;
   await markEditorFileFinal(job);
   await tellSomebody(job, `Skipped the Topaz pass — ${streetOf(job.project.title)}`, reason, `topaz-skipped-${job.id}`);
+  await settleSendIntent(job.submissionId);
 }
 
 /**
@@ -1032,6 +1052,8 @@ async function finishAlreadyFinished(job: NonNullable<JobRow>, header: VideoMeta
   if (job.project.contentMonthId && job.submissionId && job.submission?.completedAt) {
     await import("@/lib/contentVideos").then((m) => m.publishApprovedCutToLibrary(job.submissionId)).catch(() => null);
   }
+  // The editor's original is the file to send: a send somebody asked for goes.
+  await settleSendIntent(job.submissionId);
   return "skipped";
 }
 
@@ -2437,6 +2459,8 @@ async function finishSaving(job: NonNullable<JobRow>, s: TopazSettings, landed: 
   if (job.project.contentMonthId && job.submissionId && !reopened) {
     await import("@/lib/contentVideos").then((m) => m.publishApprovedCutToLibrary(job.submissionId)).catch(() => null);
   }
+  // Finished and checked: a send somebody asked for goes now (Oct 23 2026).
+  await settleSendIntent(job.submissionId);
   return "done";
 }
 
@@ -2767,6 +2791,8 @@ async function finishHeldAsProcessed(
   if (job.project.contentMonthId && job.submissionId && !reopened) {
     await import("@/lib/contentVideos").then((m) => m.publishApprovedCutToLibrary(job.submissionId)).catch(() => null);
   }
+  // The held file is the file to send now: a send somebody asked for goes (Oct 23 2026).
+  await settleSendIntent(job.submissionId);
   // the client's portal gives them this file, or the Ready-to-send card lists
   // it while they cannot sign in. Telling the reviewer "Kyle has the upload
   // card" was untrue for every one of them (review, Sep 25).
@@ -2861,6 +2887,8 @@ export async function resolveHeldTopazJob(
       },
     })
     .catch(() => {});
+  // Kept as the original: a send somebody asked for does NOT go, and says so (Oct 23 2026).
+  await settleSendIntent(job.submissionId);
   return { ok: true, message: "Kept the approved original — it's on the ready card as the file to send." };
 }
 
@@ -3232,7 +3260,7 @@ export async function driveTopazJobs(opts: { max?: number; budgetMs?: number; le
 /** Stop a job that is stuck or that Jordan has changed his mind about. Cancels
  *  at Topaz too, because the point is to stop paying for it. */
 export async function cancelTopazJob(jobId: string, by?: string | null): Promise<{ ok: boolean; message: string }> {
-  const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { id: true, state: true, requestId: true } });
+  const job = await prisma.topazJob.findUnique({ where: { id: jobId }, select: { id: true, state: true, requestId: true, submissionId: true } });
   if (!job) return { ok: false, message: "That Topaz job no longer exists." };
   if (!LIVE_STATES.includes(job.state as TopazState)) return { ok: false, message: "That one has already finished." };
   if (job.requestId) await cancelVideoRequest(job.requestId);
@@ -3240,6 +3268,8 @@ export async function cancelTopazJob(jobId: string, by?: string | null): Promise
     where: { id: jobId },
     data: { state: "cancelled", finishedAt: new Date(), leaseUntil: null, leaseBy: null, nextAttemptAt: null, error: by ? `Stopped by ${by}.` : "Stopped by hand." },
   });
+  // Stopped: a send somebody asked for does not go, and says so (Oct 23 2026).
+  await settleSendIntent(job.submissionId);
   return { ok: true, message: "Stopped. Nothing more will be charged for that video." };
 }
 
@@ -3593,13 +3623,21 @@ export async function topazRerunHistory(jobId: string): Promise<TopazRerunRecord
  * Settings, on the same row, from the free price check. Refused for a video
  * already sent, published, on the listing or on its way there (lib/topazRerun).
  * Who may press it is the action's question (owner and office only).
+ *
+ * `thenSend` (Oct 23 2026, "Run it again, then upload and send"): the
+ * "send when ready" intent is written in the SAME transaction as the reset,
+ * so the two land together or not at all; once the new file is back and
+ * checked, lib/sendWhenReady uploads it to Aryeo and sends it. Without it, a
+ * send still waiting from an earlier press is turned off (the person chose
+ * to run it again without sending).
  */
-export async function rerunTopazJob(jobId: string, by: string | null): Promise<{ ok: boolean; message: string }> {
+export async function rerunTopazJob(jobId: string, by: string | null, opts: { thenSend?: boolean } = {}): Promise<{ ok: boolean; message: string }> {
   const refusal = await rerunTopazJobRefusal(jobId);
   if (refusal) return { ok: false, message: refusal };
   const job = await loadJob(jobId);
   if (!job) return { ok: false, message: "That Topaz job no longer exists." };
   const s = await topazSettings();
+  const { putSendIntent, endWaitingIntent, SEND_WHEN_READY_SAYS } = await import("@/lib/sendWhenReady");
   const was = job.state;
   // A held decision half-made (a promotion that died) left the file on
   // finalPath; resolveHeldTopazJob reads it the same way.
@@ -3691,6 +3729,11 @@ export async function rerunTopazJob(jobId: string, by: string | null): Promise<{
       });
       if (moved.count !== 1) throw new Error("changed");
       await tx.appSetting.create({ data: { key: `${TOPAZ_RERUN_KEY}${job.id}:${now.getTime()}`, value: JSON.stringify(record), updatedBy: by ?? "topaz-rerun" } });
+      if (opts.thenSend) {
+        await putSendIntent(tx, { submissionId: job.submissionId, projectId: job.projectId, by: by ?? "staff", at: now.toISOString(), source: "rerun", topazJobId: job.id });
+      } else {
+        await endWaitingIntent(tx, job.submissionId, { state: "cancelled", note: SEND_WHEN_READY_SAYS.plainRerun });
+      }
     });
   } catch {
     // Put the file back where it was, but ONLY while the job still points at
@@ -3725,13 +3768,13 @@ export async function rerunTopazJob(jobId: string, by: string | null): Promise<{
       data: {
         projectId: job.projectId,
         type: "SYSTEM",
-        body: `Topaz pass run again${by ? ` by ${by}` : ""} with today's Settings${credits != null ? ` (about ${credits} credits expected)` : ""}.${kept} Nothing goes to the client until the new Topaz file is finished and checked.`.slice(0, 500),
+        body: `Topaz pass run again${by ? ` by ${by}` : ""} with today's Settings${credits != null ? ` (about ${credits} credits expected)` : ""}.${kept} Nothing goes to the client until the new Topaz file is finished and checked.${opts.thenSend ? " Then the hub uploads it to Aryeo and sends it." : ""}`.slice(0, 500),
       },
     })
     .catch(() => {});
   return {
     ok: true,
-    message: `Sent back through Topaz from the editor's original file${credits != null ? `, about ${credits} credits` : ""}. It starts with the free price check, so every limit still applies. It shows under With Topaz until the new file is back and checked; the previous Topaz file is kept in superseded/.`,
+    message: `Sent back through Topaz from the editor's original file${credits != null ? `, about ${credits} credits` : ""}. It starts with the free price check, so every limit still applies. It shows under With Topaz until the new file is back and checked; the previous Topaz file is kept in superseded/.${opts.thenSend ? ` Once the new file is back and checked, the hub uploads it to Aryeo and sends it. ${SEND_WHEN_READY_SAYS.waitsForYou}` : ""}`,
   };
 }
 

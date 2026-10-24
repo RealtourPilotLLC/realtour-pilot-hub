@@ -2,10 +2,10 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { RotateCcw } from "lucide-react";
+import { RotateCcw, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/Action";
 import { rerunTopazAction } from "@/app/ops/deliveryRecoveryActions";
-import { RERUN_CONFIRM, RERUN_LABEL, rerunCostLine } from "@/lib/topazRerun";
+import { RERUN_CONFIRM, RERUN_LABEL, RERUN_SEND, rerunCostLine } from "@/lib/topazRerun";
 
 /**
  * "Run Topaz again" (Jordan, Oct 23 2026: "I want to be able to re run the
@@ -22,21 +22,30 @@ import { RERUN_CONFIRM, RERUN_LABEL, rerunCostLine } from "@/lib/topazRerun";
  * by itself after ten seconds, and on Jordan's phone two presses never
  * reached the server), and the press says what happened in words that stay.
  *
+ * `canSendAfter` (Oct 23 2026, Jordan: "re-run and send"): the confirm offers
+ * a second choice, "Run it again, then upload and send": once the new file is
+ * back and checked, the hub uploads it to Aryeo and sends it
+ * (lib/sendWhenReady). The Video Review Room passes it only on a Ready to
+ * send row that could go with one press today (no client request to check,
+ * no listing warning, nothing on its way); Kyle's desk and the job page don't.
+ *
  * A client component: it takes ids and numbers and calls a server action. It
  * must not import @/lib/topazJobs (server-only); the words come from the pure
  * @/lib/topazRerun, the same module the server's refusals use.
  */
-export function RerunTopaz({ jobId, street, credits, limit, video }: { jobId: string; street: string; credits: number | null; limit: number | null; /** which video, when a row carries more than one */ video?: string }) {
+export function RerunTopaz({ jobId, street, credits, limit, video, canSendAfter = false }: { jobId: string; street: string; credits: number | null; limit: number | null; /** which video, when a row carries more than one */ video?: string; canSendAfter?: boolean }) {
   const router = useRouter();
   const [asking, setAsking] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, start] = useTransition();
+  const [which, setWhich] = useState<"plain" | "send">("plain");
   const what = `${video ? `${video}, ` : ""}${street}`;
 
-  const run = () => {
+  const run = (thenSend: boolean) => {
     setMsg(null);
+    setWhich(thenSend ? "send" : "plain");
     start(async () => {
-      const r = await rerunTopazAction(jobId).catch(() => ({ ok: false, message: "Couldn't reach the hub. Nothing changed; refresh the page and try again." }));
+      const r = await rerunTopazAction(jobId, thenSend ? { thenSend: true } : undefined).catch(() => ({ ok: false, message: "Couldn't reach the hub. Nothing changed; refresh the page and try again." }));
       setMsg({ ok: r.ok, text: r.message });
       if (r.ok) {
         setAsking(false);
@@ -53,11 +62,16 @@ export function RerunTopaz({ jobId, street, credits, limit, video }: { jobId: st
         </Button>
       ) : (
         <div role="group" aria-label={`${RERUN_LABEL} for ${what}`} className="space-y-2 rounded-lg border border-border bg-surface-2/40 p-3">
-          <p className="text-sm text-muted" data-rerun-cost>{rerunCostLine({ credits, limit })}</p>
+          <p className="text-sm text-muted" data-rerun-cost>{rerunCostLine({ credits, limit }, { canSendAfter })}</p>
           <div className="flex flex-wrap gap-2">
-            <Button busy={busy} busyLabel="Starting..." onClick={run} aria-label={`${RERUN_CONFIRM}: run the Topaz pass again for ${what}`}>
+            <Button busy={busy && which === "plain"} busyLabel="Starting..." disabled={busy} onClick={() => run(false)} aria-label={`${RERUN_CONFIRM}: run the Topaz pass again for ${what}`}>
               <RotateCcw aria-hidden className="size-4" /> {RERUN_CONFIRM}
             </Button>
+            {canSendAfter && (
+              <Button busy={busy && which === "send"} busyLabel="Starting..." disabled={busy} onClick={() => run(true)} aria-label={`${RERUN_SEND}: ${what}`} data-rerun-send>
+                <UploadCloud aria-hidden className="size-4" /> {RERUN_SEND}
+              </Button>
+            )}
             <Button variant="secondary" disabled={busy} onClick={() => { setAsking(false); setMsg(null); }}>Cancel</Button>
           </div>
         </div>

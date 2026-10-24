@@ -129,7 +129,14 @@ export type VideoRow = {
   rerun?: import("@/lib/topazRerun").RerunOffer | null;
   /** The finishing lane: where the Topaz pass is and when it was last run again (Oct 23 2026). */
   topaz?: import("@/lib/readyToSend").TopazProgress | null;
+  /** "Approve and send" / "Run it again, then upload and send" (Oct 23 2026,
+   *  lib/sendWhenReady): a send still to come (waiting), or one that did not
+   *  go and why (not-sent, the last 14 days). Absent: nothing asked, or it started. */
+  sendWhenReady?: SendWhenReadyLine | null;
 };
+
+/** What a row says about a "send when ready" (lib/sendWhenReady's intent, for the screen). */
+export type SendWhenReadyLine = { state: "waiting" | "not-sent"; by: string; atISO: string; source: "approve" | "rerun"; note: string | null };
 
 export type VideoDeliveryBoard = {
   asOf: string;
@@ -235,6 +242,7 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
     import("@/lib/integrations/aryeoWeb").then((m) => m.aryeoWebCredentials()).then((c) => !!c).catch(() => false),
   ]);
 
+  const { listingWarningOf } = await import("@/lib/readyToSend");
   const [board, ready, deliveredRecently] = await Promise.all([
     deliveryBoard({ excludeClientIds }),
     // The room's read (followUps) also records the follow-up lanes' health and reads the delivery-text outcomes, as Kyle's Home did.
@@ -397,7 +405,7 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
               uploadFingerprint: r.uploadFingerprint ?? null,
               uploaded: r.uploaded ? { by: r.uploaded.by, at: r.uploaded.at } : null,
               listingMissing: !!r.listingMissing,
-              listingWarning: r.listing && (r.listing.contested || r.listing.couldBeThisCut) && !r.uploaded ? r.listing.says : null,
+              listingWarning: listingWarningOf(r),
               openAsks: a?.list ?? [], asksUnknown: a?.unknown ?? false,
               byHandWhy: byHandWhy(r),
               pushUnknown: !!r.pushUnknown,
@@ -463,6 +471,24 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
   for (const k of VIDEO_LANES) lanes[k].sort(byPromise);
   lanes.delivered.sort((a, b) => (b.deliveredAtISO ?? "").localeCompare(a.deliveredAtISO ?? ""));
   lanes.sending.sort((a, b) => Number(b.late) - Number(a.late) || (a.approvedAtISO ?? "").localeCompare(b.approvedAtISO ?? ""));
+
+  // "SEND WHEN READY" (Oct 23 2026): what was asked of the approved rows, one read.
+  const approvedRows = [...lanes.sending, ...lanes.held, ...lanes.finishing].filter((r) => !!r.submissionId);
+  if (approvedRows.length) {
+    try {
+      const { sendIntentsFor } = await import("@/lib/sendWhenReady");
+      const intents = await sendIntentsFor(approvedRows.map((r) => r.submissionId!));
+      for (const r of approvedRows) {
+        const i = intents.get(r.submissionId!);
+        if (!i) continue;
+        const waiting = i.state === "waiting" || i.state === "starting";
+        const recent = i.state === "not-sent" && !!i.doneAt && nowMs - Date.parse(i.doneAt) < 14 * DAY;
+        if (waiting || recent) r.sendWhenReady = { state: waiting ? "waiting" : "not-sent", by: i.by, atISO: i.at, source: i.source, note: i.note };
+      }
+    } catch (e) {
+      console.warn("[video-board] send-when-ready read failed", e);
+    }
+  }
 
   // ---- the counts (Kyle's Home reads these): each video once per number ----
   const owedRows = VIDEO_LANES.filter((l) => l !== "delivered").flatMap((l) => lanes[l]);
