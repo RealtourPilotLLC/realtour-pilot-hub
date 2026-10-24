@@ -54,7 +54,10 @@ export async function JobDeliverablesSection({ projectId }: { projectId: string 
   // manager reads where it stands and gets the link to the room instead.
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
-  if (me && !isOffice(me.role)) {
+  // A preview ("view as") is read-only, here as on Kyle's desk (Oct 23 2026
+  // audit): every press below refuses a preview, so none is drawn for one,
+  // even when the previewed login is the office's.
+  if (me && (!isOffice(me.role) || me.impersonating)) {
     // "Run Topaz again" is the office's press too (Oct 23 2026).
     d.data.video.items = d.data.video.items.map((v) => ({ ...(v.send ? { ...v, send: { ...v.send, canPress: false, sendNow: false } } : v), rerun: null }));
   }
@@ -217,7 +220,10 @@ function VideoRowView({ v, street }: { v: VideoItem; street: string }) {
       ) : v.phase === "ready" ? (
         <div className="space-y-0.5 text-xs">
           {send?.byHandWhy && <p className="font-medium text-warning">{send.byHandWhy}</p>}
-          <Link href={v.href ?? "/review"} data-send-in-room className="inline-flex min-h-9 items-center gap-1 font-medium text-brand hover:underline">
+          {/* The room's Ready to send, where the send, the held file and the
+              "Done it by hand?" steps are (Oct 23 2026 audit): the cut's own
+              page (v.href, Watch) has none of them. */}
+          <Link href="/review#ready-to-send" data-send-in-room className="inline-flex min-h-9 items-center gap-1 font-medium text-brand hover:underline">
             Send it in the Video Review Room <ArrowRight aria-hidden className="size-3.5" />
           </Link>
         </div>

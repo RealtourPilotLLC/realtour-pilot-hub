@@ -48,6 +48,13 @@ export function forwardedHref(pathname: string, search: string, hash: string): s
   try { id = decodeURIComponent(hash.replace(/^#/, "")); } catch { return null; }
   if (!id || pathname !== "/") return null;
   if (isMessagesAnchor(id)) return `/communications${search}`;
+  // The video queue (Oct 23 2026 audit): the Topaz bells and Slack lines
+  // ("Topaz file held", "credits running low", "Listen to it on the delivery
+  // queue") and a portal video's "Run Topaz on the delivery queue" still link
+  // "/#video-review", which landed on the checklist's Deliveries group: no
+  // held file to listen to, no Run Topaz, no hand path. Those live in Video
+  // Delivery's Ready to send (its Held rows and its follow-up fold).
+  if (id === "video-review") return `/review${search}#ready-to-send`;
   if (isChecklistAnchor(id)) return `${CHECKLIST_PATH}${search}${hash}`;
   if (id === "my-list") return "/day";
   return null;

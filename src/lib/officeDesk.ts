@@ -19,6 +19,7 @@ import { tasksAssignedTo, type DelegatedTask, type DelegationState } from "@/lib
 import { expectedCrons, staleAfterMs, type CronJobHealth } from "@/lib/cronHealth";
 import { scrubMoney } from "@/lib/text";
 import { RERUN_LABEL } from "@/lib/topazRerun";
+import { VIDEO_DELIVERY_LABEL } from "@/lib/sidebarNavigation";
 import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import { listAssignees, viewerAssigneeKey, type Assignee } from "@/lib/assignees";
 import { syntheticClientIds } from "@/lib/syntheticClients";
@@ -433,6 +434,14 @@ export function initialsOf(name: string): string {
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+/** An approved video the desk cannot press for (held, by hand, stopped): the
+ *  room's Ready to send, where the held file's listen-and-decide, Try again
+ *  and "Done it by hand?" are (Oct 23 2026 audit). It read "Open in Videos"
+ *  and opened the cut's own page, which has none of them. */
+const ROOM_LINK: DeskAction = { kind: "link", label: `Open in ${VIDEO_DELIVERY_LABEL}`, href: "/review#ready-to-send" };
+/** A video still with the editor or in review: the cut's page when there is a cut. */
+const videoLink = (reviewHref: string | null | undefined): DeskAction =>
+  reviewHref ? { kind: "link", label: "Open the video", href: reviewHref } : { kind: "link", label: `Open in ${VIDEO_DELIVERY_LABEL}`, href: "/review" };
 const streetOf = (title: string | null | undefined) => (title ?? "").split(",")[0].trim() || "a job";
 const short = (s: string, n = 110) => {
   const t = s.replace(/\s+/g, " ").trim();
@@ -853,7 +862,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
           ? { kind: "video-send", submissionId: r.submissionId, street: clean(r.street), label: "Try again", openAsks: asks, asksUnknown: !!s?.asksUnknown, listingWarning: null, uploadOnly: false }
           : p && r.submissionId && (p.canDeliverNow || p.canRelease)
             ? { kind: "video-push", submissionId: r.submissionId, canDeliverNow: p.canDeliverNow, canRelease: p.canRelease, uploadedOnly: !!p.uploadedOnly }
-            : { kind: "link", label: "Open in Videos", href: r.reviewHref ?? "/review" },
+            : ROOM_LINK,
       });
     } else if (p?.uploadedOnly && p.canDeliverNow && r.submissionId) {
       Object.assign(a, { status: `On Aryeo, not sent yet (${approved.toLowerCase()})`, action: { kind: "video-push", submissionId: r.submissionId, canDeliverNow: true, canRelease: p.canRelease, uploadedOnly: true } });
@@ -862,7 +871,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     } else if (p?.tone === "failed") {
       Object.assign(a, {
         tone: "failed", status: `Upload to Aryeo stopped: ${clean(p.says)}`,
-        action: p.canStart && s && r.submissionId ? { kind: "video-send", submissionId: r.submissionId, street: clean(r.street), label: "Try again", openAsks: asks, asksUnknown: s.asksUnknown, listingWarning: null, uploadOnly: false } : { kind: "link", label: "Open in Videos", href: r.reviewHref ?? "/review" },
+        action: p.canStart && s && r.submissionId ? { kind: "video-send", submissionId: r.submissionId, street: clean(r.street), label: "Try again", openAsks: asks, asksUnknown: s.asksUnknown, listingWarning: null, uploadOnly: false } : ROOM_LINK,
       });
     } else {
       const canPress = !!s && !s.byHandWhy && (p ? p.canStart : false);
@@ -870,7 +879,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
         status: s?.byHandWhy ? `${approved}: ${clean(s.byHandWhy)}` : `${approved}, ready to send${asks.length ? ` · check ${plural(asks.length, "client request")} first` : ""}`,
         action: canPress && s && r.submissionId
           ? { kind: "video-send", submissionId: r.submissionId, street: clean(r.street), label: p?.canRetry ? "Try again" : s.uploaded ? "Send" : "Upload to Aryeo and send", openAsks: asks, asksUnknown: s.asksUnknown, listingWarning: s.listingWarning, uploadOnly: !p?.canRetry && !s.uploaded }
-          : { kind: "link", label: "Open in Videos", href: r.reviewHref ?? "/review" },
+          : ROOM_LINK,
       });
     }
     // Run Topaz again (Jordan, Oct 23 2026) beside the video's send, wherever
@@ -1434,8 +1443,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       reason: `${inReview ? `Waiting on ${creativeName}'s review` : `Waiting on ${editor}`}: ${clean(r.stage)}`,
       who, dueISO: r.promiseISO, dueWords: late && r.lateHours != null ? `Late by ${lateWords(r.lateHours)}` : dueWordsFor(r.promiseISO, now), late,
       rank: late ? RANK.overdue : RANK.today,
-      primary: late ? { label: "Follow up", action: { kind: "link", label: "Open in Videos", href: r.reviewHref ?? "/review" } } : null,
-      actions: [{ kind: "link", label: "Open in Videos", href: r.reviewHref ?? "/review" }],
+      primary: late ? { label: "Follow up", action: videoLink(r.reviewHref) } : null,
+      actions: [videoLink(r.reviewHref)],
       href: r.reviewHref ?? "/review",
       panel: { kind: "task", lines: [{ label: "Video", value: `${street} · ${clean(r.label)}` }, { label: "Where it stands", value: clean(r.stage) }, { label: "Waiting on", value: who }, ...(r.promiseISO ? [{ label: "Promised", value: etDateTime(r.promiseISO) }] : [])] },
       sinceISO: null,
