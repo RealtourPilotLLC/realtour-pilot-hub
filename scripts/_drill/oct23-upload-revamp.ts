@@ -488,6 +488,19 @@ async function main() {
     await establishSession(harrison.id);
     await portalOf(pv.id);
     c.ok("…Harrison's own load attaches them", !!(await addedVideoRecords(pv.id)).get(pv.taskId)?.attachedKey);
+
+    // Amounts in the agent's words: the owner only (Kyle's request board's rule).
+    const moneyJob = await job("16 Money Ln", [{ type: "PHOTOS", label: "Photos" }], [{ who: harrisonTm.id }]);
+    await createAsk({ clientId: client.id, projectId: moneyJob, kind: "SPECIAL_REQUEST", medium: "photo", text: "Add twilight photos, I'll pay the $150 for them.", source: "text", askedBy: "Georgiana Drill", by: "hub" });
+    const kyleUser = await prisma.appUser.create({ data: { email: "kyle-rv-app@drill.invalid", name: "Kyle Drill", role: "ADMIN", status: "ACTIVE" }, select: { id: true } });
+    const reqWords = (p: { props: { agentRequests?: { original: string }[] } } | undefined) => JSON.stringify((p?.props.agentRequests ?? []).map((r) => r.original));
+    await establishSession(kyleUser.id);
+    const kyleView = reqWords(await portalOf(moneyJob));
+    await establishSession(owner.id);
+    const ownerView = reqWords(await portalOf(moneyJob));
+    await establishSession(harrison.id);
+    const harrisonView = reqWords(await portalOf(moneyJob));
+    c.ok("amounts in the agent's words: the owner reads them; Kyle and the photographer read them scrubbed", /\$150/.test(ownerView) && !/\$150/.test(kyleView) && /twilight/.test(kyleView) && !/\$150/.test(harrisonView), `${ownerView} | ${kyleView}`);
     await establishSession(harrison.id);
 
     c.ok("nothing left the machine", fence.blocked.filter((u) => !/studio|dropbox/i.test(u)).length === 0, fence.blocked.join(", "));

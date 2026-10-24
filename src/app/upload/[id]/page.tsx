@@ -503,7 +503,9 @@ export default async function UploadProjectPage({
     // A read that fails is `undefined`, never an empty list: the page then
     // shows the special requests and the customer note the old way, instead
     // of an empty card that hides them (audit, Oct 23 2026).
-    import("@/lib/agentRequests").then((m) => m.agentRequestsFor(project.id, { office: viewerIsOffice })).catch((): AgentRequestItem[] | undefined => undefined),
+    // Amounts in the agent's words: the owner only (Kyle's request board's
+    // rule; the old page showed the office the creative customer note).
+    import("@/lib/agentRequests").then((m) => m.agentRequestsFor(project.id, { office: viewerIsOffice, money: viewer ? viewer.role === "OWNER" : !authEnforced() })).catch((): AgentRequestItem[] | undefined => undefined),
     import("@/lib/addedOnSite").then((m) => m.addedVideoRecords(project.id)).catch(() => new Map<string, AddedVideoRecord>()),
     import("@/lib/actorName").then((m) => m.displayNameFor(viewer)).catch(() => null),
   ]);

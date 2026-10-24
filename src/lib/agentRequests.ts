@@ -19,7 +19,8 @@ import { mergeAgentRequests, sameRequestWords, type AgentRequestItem } from "@/l
 //     yet is "not confirmed";
 //   · the client's standing customer note.
 //
-// A creative's copy is money-scrubbed; the office reads the raw words.
+// Only the owner reads the amounts; everyone else's copy is money-scrubbed
+// (audit, Oct 23 2026: Kyle's request board's rule, clientAsks.viewerSeesMoney).
 //
 // AND ONE WRITE: a request the agent made ON SITE, logged by the photographer
 // (addOnSiteRequest). It goes through the client-ask path every other request
@@ -32,7 +33,17 @@ import { mergeAgentRequests, sameRequestWords, type AgentRequestItem } from "@/l
 const ON_SITE_REF = "on-site:";
 const SOURCE_NAME: Record<string, string> = { text: "Text", email: "Email", call: "Call", staff: "Added by the office", portal: "Portal" };
 
-export async function agentRequestsFor(projectId: string, opts: { office: boolean; now?: Date }): Promise<AgentRequestItem[]> {
+export async function agentRequestsFor(
+  projectId: string,
+  /**
+   * office: links to the job and the client. money: the words with their
+   * amounts (audit, Oct 23 2026: the owner only, as clientAsks.viewerSeesMoney
+   * and Kyle's request board have it; the old upload page showed the office
+   * the creative customer note). Absent = office, for the callers that
+   * already scrub by their own rule (the editor's brief).
+   */
+  opts: { office: boolean; money?: boolean; now?: Date },
+): Promise<AgentRequestItem[]> {
   const now = opts.now ?? new Date();
   const p = await prisma.project.findUnique({
     where: { id: projectId },
@@ -44,7 +55,8 @@ export async function agentRequestsFor(projectId: string, opts: { office: boolea
     },
   });
   if (!p) return [];
-  const say = (t: string) => (opts.office ? t : scrubMoney(t));
+  const money = opts.money ?? opts.office;
+  const say = (t: string) => (money ? t : scrubMoney(t));
   const items: AgentRequestItem[] = [];
   const clientName = p.client?.name ?? "the agent";
 
@@ -199,7 +211,7 @@ export async function agentRequestsFor(projectId: string, opts: { office: boolea
   // ---- the standing customer note ----
   try {
     const { customerNote, creativeCustomerNote } = await import("@/lib/clientNotes");
-    const note = opts.office ? customerNote(p.client) : creativeCustomerNote(p.client);
+    const note = money ? customerNote(p.client) : creativeCustomerNote(p.client);
     if (note?.trim()) {
       items.push({
         id: "customer-note",
@@ -231,6 +243,8 @@ export async function addOnSiteRequest(input: {
   medium: "photo" | "video" | "both";
   by: { name: string };
   office: boolean;
+  /** the words with their amounts (the owner only; agentRequestsFor) */
+  money?: boolean;
 }): Promise<AddRequestResult> {
   const text = (input.text ?? "").replace(/\r\n/g, "\n").trim();
   if (text.length < 3) return { ok: false, message: "Write what the agent asked for." };
@@ -239,7 +253,7 @@ export async function addOnSiteRequest(input: {
   if (!p) return { ok: false, message: "Couldn't find that shoot." };
   const before = await agentRequestsFor(input.projectId, { office: true });
   const twin = before.find((r) => r.group !== "history" && sameRequestWords(r.original, text));
-  if (twin) return { ok: true, duplicate: true, message: `Already on the list (${twin.sourceWords}): ${twin.text}`, items: await agentRequestsFor(input.projectId, { office: input.office }) };
+  if (twin) return { ok: true, duplicate: true, message: `Already on the list (${twin.sourceWords}): ${input.money ? twin.text : scrubMoney(twin.text)}`, items: await agentRequestsFor(input.projectId, { office: input.office, money: input.money ?? false }) };
   const name = (input.by.name || "the photographer").trim().slice(0, 80);
   const { createAsk } = await import("@/lib/clientAsks");
   const r = await createAsk({
@@ -274,7 +288,7 @@ export async function addOnSiteRequest(input: {
       } catch { /* the ask is filed either way */ }
     }
   }
-  const items = await agentRequestsFor(input.projectId, { office: input.office });
+  const items = await agentRequestsFor(input.projectId, { office: input.office, money: input.money ?? false });
   return {
     ok: true,
     duplicate: !r.created,
