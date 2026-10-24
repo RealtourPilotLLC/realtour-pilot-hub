@@ -4,7 +4,7 @@ import { AlertTriangle, Camera, ExternalLink, PauseCircle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { BackLink } from "@/components/ui/BackLink";
 import { requirePageAccess } from "@/lib/auth/guards";
-import { homeFor, isCreativeLead } from "@/lib/auth/access";
+import { homeFor } from "@/lib/auth/access";
 import { etDateTime } from "@/lib/datetime";
 import { GlobalStrip } from "@/components/photoDelivery/GlobalStrip";
 import { SlaChip } from "@/components/photoDelivery/SlaChip";
@@ -43,7 +43,7 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
   const { jobId } = await params;
   if (!viewer) redirect(`/login?next=${encodeURIComponent(`/ops/photo-delivery/${jobId}`)}`);
   // The office works the job; the creative manager reads it (viewer.readOnly, Oct 22 2026).
-  if (!isCreativeLead(viewer.role)) redirect(homeFor(viewer.role));
+  if (!viewer.admitted) redirect(homeFor(viewer.role));
   if (!ID_RE.test(jobId)) notFound();
   const readOnly = !!viewer.readOnly;
 

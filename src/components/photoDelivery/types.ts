@@ -15,6 +15,10 @@ export type Severity = "CRITICAL" | "MAJOR" | "MINOR";
 
 export type Viewer = {
   role: string;
+  /** May open the desk at all: the owner, the office and the creative manager,
+   *  and any login Jordan granted Photo Delivery by name (Oct 23 2026 audit:
+   *  he gave Harrison the page and it sent him home). View only below the office. */
+  admitted?: boolean;
   name: string;
   isOwner: boolean;
   /** Only the OWNER sees dollars (canSeeMoney). Credits are fine for OWNER and ADMIN. */

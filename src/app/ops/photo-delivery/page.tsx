@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { Images } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { requirePageAccess } from "@/lib/auth/guards";
-import { homeFor, isCreativeLead } from "@/lib/auth/access";
+import { homeFor } from "@/lib/auth/access";
 import { GlobalStrip } from "@/components/photoDelivery/GlobalStrip";
 import { QueueFilters } from "@/components/photoDelivery/QueueFilters";
 import { QueueBoard, QueueTable } from "@/components/photoDelivery/QueueBoard";
@@ -37,7 +37,7 @@ export default async function PhotoDeliveryQueuePage({ searchParams }: { searchP
   if (!viewer) redirect("/login?next=/ops/photo-delivery");
   // The owner and the office work the desk; the creative manager reads it,
   // view only (Oct 22 2026: viewer.readOnly). Nobody else.
-  if (!isCreativeLead(viewer.role)) redirect(homeFor(viewer.role));
+  if (!viewer.admitted) redirect(homeFor(viewer.role));
 
   const sp = await searchParams;
   const client = one(sp.client);

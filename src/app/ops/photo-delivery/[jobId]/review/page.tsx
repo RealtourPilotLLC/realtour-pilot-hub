@@ -1,6 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import { requirePageAccess } from "@/lib/auth/guards";
-import { homeFor, isCreativeLead } from "@/lib/auth/access";
+import { homeFor } from "@/lib/auth/access";
 import { ReviewMode } from "@/components/photoDelivery/ReviewMode";
 import { loadJobDetail, loadViewer } from "../../data";
 
@@ -21,7 +21,7 @@ export default async function PhotoReviewPage({ params, searchParams }: { params
   const { jobId } = await params;
   if (!viewer) redirect(`/login?next=${encodeURIComponent(`/ops/photo-delivery/${jobId}/review`)}`);
   // The office works it; the creative manager looks through it (viewer.readOnly, Oct 22 2026).
-  if (!isCreativeLead(viewer.role)) redirect(homeFor(viewer.role));
+  if (!viewer.admitted) redirect(homeFor(viewer.role));
   if (!ID_RE.test(jobId)) notFound();
   const sp = await searchParams;
   const photoRaw = Array.isArray(sp.photo) ? sp.photo[0] : sp.photo;

@@ -285,7 +285,9 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
     // The photo desk's pages admit the owner, the office and the creative
     // manager only (Oct 22 2026), so a `photos` override on anyone else
     // would be a door that bounces.
-    if (user && !isCreativeLead(user.role)) items = items.filter((i) => i.href !== "/ops/photo-delivery");
+    // …unless Jordan granted Photo Delivery by name (Oct 23 2026 audit: he gave
+    // Harrison the page and the door never showed); the desk admits them view only.
+    if (user && !isCreativeLead(user.role) && !canAccess(user, "photos")) items = items.filter((i) => i.href !== "/ops/photo-delivery");
     // Client activity is the owner's, the admin's and the creative manager's
     // view of the content program (the page redirects anyone else).
     if (user && !isCreativeLead(user.role)) items = items.filter((i) => i.href !== "/content/activity");

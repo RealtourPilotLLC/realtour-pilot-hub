@@ -4,7 +4,7 @@ import { cache } from "react";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { canSeeMoney, isOffice } from "@/lib/auth/access";
+import { canAccess, canSeeMoney, isCreativeLead, isOffice } from "@/lib/auth/access";
 import { STAGE_LABEL, type JobStage } from "@/lib/photoDelivery/jobState";
 import { photoDeliverySettings } from "@/lib/photoDelivery/settings";
 import { creditAlertState, creditView, type CreditView } from "@/lib/photoDelivery/credits";
@@ -137,9 +137,9 @@ export async function loadViewer(): Promise<Viewer | null> {
   const me = await getCurrentUser().catch(() => null);
   if (!me) {
     if (authEnforced()) return null;
-    return { role: "OWNER", name: "local dev", isOwner: true, canSeeMoney: true, readOnly: false };
+    return { role: "OWNER", name: "local dev", admitted: true, isOwner: true, canSeeMoney: true, readOnly: false };
   }
-  return { role: me.role, name: me.name || me.email, isOwner: me.role === "OWNER", canSeeMoney: canSeeMoney(me.role), readOnly: !isOffice(me.role) };
+  return { role: me.role, name: me.name || me.email, admitted: isCreativeLead(me.role) || canAccess(me, "photos"), isOwner: me.role === "OWNER", canSeeMoney: canSeeMoney(me.role), readOnly: !isOffice(me.role) };
 }
 
 /**
