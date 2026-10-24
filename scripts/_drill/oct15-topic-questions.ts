@@ -69,6 +69,11 @@ async function main() {
     c.ok("every chosen topic carries its questions", [tSen, tMal, tReno].every((id) => (topicOf(id)?.questions?.items.length ?? 0) === 6), JSON.stringify([tSen, tMal, tReno].map((id) => topicOf(id)?.questions?.items.length)));
     c.ok("…on a month planned on a call they are read out on the call (CALL)", [tSen, tMal, tReno].every((id) => topicOf(id)?.questions?.route === "CALL" && topicOf(id)?.questions?.callMonth === true));
     c.ok("…filled in for the topic: no placeholders, no em dashes", !!qSen && qSen.items[0].text.includes(SENIORS) && qSen.items.every((q) => !q.text.includes("{{") && !q.text.includes("—")), qSen?.items[0].text);
+    // Audit, Oct 23 2026: a stored topic title with a dash (183 live ones did) reaches the client without it.
+    await prisma.contentTopic.update({ where: { id: tReno }, data: { title: "Renovation Costs — What I Check Before the Offer" } });
+    const dashed = (await portalTopics({ id: f.enrollmentId, clientId: f.clientId })).groups.flatMap((g) => g.topics).find((t) => t.id === tReno)?.title;
+    c.ok("audit: a topic title with an em dash reads with a colon on the portal, the stored title untouched", dashed === "Renovation Costs: What I Check Before the Offer" && (await prisma.contentTopic.findUnique({ where: { id: tReno } }))?.title.includes("—") === true, dashed);
+    await prisma.contentTopic.update({ where: { id: tReno }, data: { title: RENO } });
 
     // ==================================================================
     c.head("2 · one topic in writing, the rest from the call");

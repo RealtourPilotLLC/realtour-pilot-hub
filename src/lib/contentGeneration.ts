@@ -14,7 +14,7 @@ import { pendingJudge } from "@/lib/scriptJudgeRecord";
 import {
   buildScriptPrompt, buildTopicBankPrompt, buildStrategyPrompt, buildStrategyRevisionPrompt, scriptFromGeneratorOutput, validateNewScript, validateTopicBank, renderStrategy, policyFrameworkSection, isFrameworkSection, canonicalFrameworkSectionText,
   GENERATION_POLICY, GENERATION_POLICY_VERSION, SPEAKER_ATTRIBUTION_RULE, NO_INVENTION_RULE, makeTopic, policyStamp, videoStyleFromOverrides, titleSimilarity, NEAR_DUPLICATE_THRESHOLD,
-  creativeIdentityFromOverrides, buildScriptRevisePrompt, formulaicTitleShape, asLockSections, ANGLE_FIELDS, LOCKABLE_SECTION_LABEL, pillarLooseKey,
+  creativeIdentityFromOverrides, buildScriptRevisePrompt, formulaicTitleShape, asLockSections, ANGLE_FIELDS, LOCKABLE_SECTION_LABEL, pillarLooseKey, stripScriptDashes,
   type ClientContext, type SourceExcerpt, type GeneratedScriptJson, type Topic, type TopicBank, type Gap, type StrategyDocument, type StrategyPillar, type ScriptPromptSource, type LockableSection, type ScriptAngle,
 } from "@/lib/contentPolicy";
 import { creativeGuardFromOverrides, discontinuedHit } from "@/lib/creativeGuardCore";
@@ -943,7 +943,8 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
         if (formatSaid.get(hash) !== "SKIT" || created >= skitsOnly) { notKept++; continue; }
       } else if (opts.keep && rank >= opts.keep) { notKept++; continue; } // "regenerate ONE": the replacement is the first fresh idea, the rest are not stored
       existingHashes.add(hash);
-      rows.push({ refreshRunId: runId, enrollmentId: run.enrollmentId, clientId: run.clientId, pillarId: p.pillarId, kind: "BANK", rank: ++rank, title: t.title.slice(0, 200), description: t.description, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, rationale: t.sourceRef ? `Grounded in: ${t.sourceRef}` : "Inferred from the pillar's focus areas", dedupeHash: hash });
+      // Audit, Oct 23 2026: the client reads these titles in their portal: no em or en dash (a title's takes a colon).
+      rows.push({ refreshRunId: runId, enrollmentId: run.enrollmentId, clientId: run.clientId, pillarId: p.pillarId, kind: "BANK", rank: ++rank, title: stripScriptDashes(t.title, { title: true }).slice(0, 200), description: t.description, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, rationale: t.sourceRef ? `Grounded in: ${t.sourceRef}` : "Inferred from the pillar's focus areas", dedupeHash: hash });
       { const f = formatSaid.get(hash); if (f) formats[hash] = f; }
       created++;
     }
