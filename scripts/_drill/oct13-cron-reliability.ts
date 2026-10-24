@@ -34,7 +34,7 @@
 //      sends: switched off → held, still pending, nothing sent.
 //   7  THE BOOKING-LINK TASKS are cancelled once (never completed), then the
 //      step writes nothing.
-//   8  RETIRED SWITCHES (cut_transcripts, publishing) are not listed.
+//   8  RETIRED SWITCHES (publishing) are not listed; cut_transcripts is again (Oct 23 2026).
 //
 // ISOLATION: PGlite on 127.0.0.1:6981; production is never opened; every
 // non-loopback request is fenced (Aryeo/Stripe GETs answer an empty page);
@@ -182,8 +182,9 @@ async function main() {
     const body = (await res.json()) as Record<string, unknown> & { ms?: Record<string, number>; skipped?: string[]; order?: string[] };
     const steps = Object.keys(body.ms ?? {});
     c.ok("200", res.status === 200);
-    c.ok("the AI queue ran first, the unread-brief net second (Oct 16), then the three sweeps", steps[0] === "aiQueue" && steps[1] === "revisionBriefs" && steps.length === 5 && ["transcriptJobs", "scriptDrafting", "topicBanks"].every((s) => steps.includes(s)), steps.join());
-    c.ok("in this tick's rotation (a permutation of the three)", JSON.stringify(body.order) === JSON.stringify(steps.slice(2)) && new Set(body.order).size === 3, JSON.stringify(body.order));
+    // Oct 23 2026: each approved monthly video's transcript, then its caption, run after those two and before the rotation.
+    c.ok("the AI queue ran first, the unread-brief net second (Oct 16), transcripts and captions (Oct 23), then the three sweeps", steps[0] === "aiQueue" && steps[1] === "revisionBriefs" && steps[2] === "cutTranscripts" && steps[3] === "captions" && steps.length === 7 && ["transcriptJobs", "scriptDrafting", "topicBanks"].every((s) => steps.includes(s)), steps.join());
+    c.ok("in this tick's rotation (a permutation of the three)", JSON.stringify(body.order) === JSON.stringify(steps.slice(4)) && new Set(body.order).size === 3, JSON.stringify(body.order));
     c.ok("with every switch off (no rows) the sweeps report skipped", /transcript_jobs is off/.test(JSON.stringify(body.transcriptJobs)) && /script_drafting is off/.test(JSON.stringify(body.scriptDrafting)) && /topic_refresh is off/.test(JSON.stringify(body.topicBanks)));
     c.ok("nothing skipped for budget", (body.skipped ?? []).length === 0);
     const run = await prisma.cronRun.findFirst({ where: { job: "topics" }, orderBy: { startedAt: "desc" } });
@@ -345,8 +346,9 @@ async function main() {
     const pa = await import("@/lib/programAutomation");
     await setSwitch("cut_transcripts", true);
     const listed = (await pa.allAutomations()).map((a) => a.key);
-    c.ok("cut_transcripts (ON in the database) and publishing are not in the listing", !listed.includes("cut_transcripts") && !listed.includes("publishing") && listed.length === pa.AUTOMATION_KEYS.length - 2, `${listed.length} of ${pa.AUTOMATION_KEYS.length}`);
-    c.ok("the keys themselves remain (stored rows and the library still name them)", pa.isAutomationKey("cut_transcripts") && pa.isAutomationKey("publishing") && pa.isRetiredAutomation("publishing"));
+    // Oct 23 2026: cut_transcripts is wired up (Deepgram) and listed again; publishing stays retired.
+    c.ok("publishing is not in the listing; cut_transcripts (wired up Oct 23 2026) is", listed.includes("cut_transcripts") && !listed.includes("publishing") && listed.length === pa.AUTOMATION_KEYS.length - 1, `${listed.length} of ${pa.AUTOMATION_KEYS.length}`);
+    c.ok("the keys themselves remain (stored rows and the library still name them)", pa.isAutomationKey("cut_transcripts") && pa.isAutomationKey("publishing") && pa.isRetiredAutomation("publishing") && !pa.isRetiredAutomation("cut_transcripts"));
   }
 
   c.head("9 · nothing left the machine");

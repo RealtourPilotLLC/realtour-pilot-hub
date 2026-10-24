@@ -5,6 +5,10 @@ import { getConnection, getSecret } from "./connections";
 // ---------------------------------------------------------------------------
 // Speech-to-text providers for the cut transcripts of spec §9 (Sep 16 2026).
 //
+// Oct 23 2026: Jordan connected Deepgram (Connection "transcription_deepgram")
+// and each approved monthly video is now transcribed automatically
+// (lib/cutTranscripts, from the AI work job). What follows is the Sep 16 note.
+//
 // The hub's AI is Anthropic only: there is NO speech-to-text provider in env,
 // in a Connection row, or anywhere else tonight (verified Sep 16). So this file
 // is the real adapter for two documented APIs — OpenAI Whisper and Deepgram —
@@ -59,7 +63,14 @@ export type TranscribeInput = {
   url: string;
   /** The cut (ReviewSubmission id) — for the provider's own bookkeeping tag only. */
   submissionId: string;
+  /** The whole call's time limit (Oct 23 2026): a cron passes what is left of its
+   *  run so one slow provider cannot carry the step past the function's deadline.
+   *  Default 300 s, as before. */
+  timeoutMs?: number;
 };
+
+/** A provider call's time limit: the caller's, between 5 s and 300 s. */
+const callLimitMs = (input: TranscribeInput) => Math.max(5_000, Math.min(input.timeoutMs ?? 300_000, 300_000));
 
 export type TranscribeResult = {
   text: string;
@@ -184,7 +195,7 @@ async function whisperTranscribe(key: string, input: TranscribeInput): Promise<T
       headers: { Authorization: `Bearer ${key}` },
       body: form,
       cache: "no-store",
-      signal: AbortSignal.timeout(300_000),
+      signal: AbortSignal.timeout(callLimitMs(input)),
     });
   } catch (e) {
     throw new TranscriptionError(scrubTranscriptionText(`Couldn't reach OpenAI (${(e as Error).message}).`, key), "network", true);
@@ -207,8 +218,33 @@ async function whisperTranscribe(key: string, input: TranscribeInput): Promise<T
 }
 
 // ---- Deepgram ---------------------------------------------------------------
-// POST /v1/listen?model=nova-2&smart_format=true&utterances=true&detect_language=true
-// with JSON body {url}: Deepgram fetches the file itself. Auth: "Token <key>".
+// Verified against Deepgram's live docs on Oct 23 2026
+// (developers.deepgram.com/reference/speech-to-text/listen-pre-recorded.md,
+// docs/pre-recorded-audio.md, docs/models-languages-overview.md,
+// docs/smart-format.md):
+//   POST https://api.deepgram.com/v1/listen, JSON body {"url": …}: Deepgram
+//     fetches the file itself (a URL carrying its own permission, never our
+//     store token: lib/reviewCuts.fetchableCutUrl);
+//   Authorization: Token <key>;
+//   model=nova-3, "our highest-performing general-purpose ASR", recommended
+//     for batch; without it the API defaults to model=base;
+//   language=en: nova-3 MONOLINGUAL English (language=multi is the
+//     multilingual mode). Jordan, Oct 23 2026: nova-3 monolingual English.
+//     detect_language is dropped with it (the nova-2 adapter sent it);
+//   smart_format=true, which "enables Deepgram's Punctuation feature. If
+//     you've set smart_format=true, no need to also set punctuate=true";
+//   utterances=true for the segments; tag for Deepgram's usage report.
+
+export const DEEPGRAM_LISTEN_PARAMS = { model: "nova-3", language: "en", smart_format: "true", utterances: "true" } as const;
+
+/** The request one cut's transcription sends (no key in it). Pure: the drill reads it. */
+export function deepgramListenRequest(input: Pick<TranscribeInput, "url" | "submissionId">): { url: string; body: string } {
+  const qs = new URLSearchParams({
+    ...DEEPGRAM_LISTEN_PARAMS,
+    tag: `rtp-cut-${input.submissionId}`, // shows up in Deepgram's usage log, never anything client-identifying
+  });
+  return { url: `${DEEPGRAM_API}/listen?${qs}`, body: JSON.stringify({ url: input.url }) };
+}
 
 type DeepgramResponse = {
   metadata?: { duration?: number };
@@ -222,21 +258,15 @@ type DeepgramResponse = {
 };
 
 async function deepgramTranscribe(key: string, input: TranscribeInput): Promise<TranscribeResult> {
-  const qs = new URLSearchParams({
-    model: "nova-2",
-    smart_format: "true",
-    utterances: "true",
-    detect_language: "true",
-    tag: `rtp-cut-${input.submissionId}`, // shows up in Deepgram's usage log, never anything client-identifying
-  });
+  const req = deepgramListenRequest(input);
   let res: Response;
   try {
-    res = await fetch(`${DEEPGRAM_API}/listen?${qs}`, {
+    res = await fetch(req.url, {
       method: "POST",
       headers: { Authorization: `Token ${key}`, "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ url: input.url }),
+      body: req.body,
       cache: "no-store",
-      signal: AbortSignal.timeout(300_000),
+      signal: AbortSignal.timeout(callLimitMs(input)),
     });
   } catch (e) {
     throw new TranscriptionError(scrubTranscriptionText(`Couldn't reach Deepgram (${(e as Error).message}).`, key), "network", true);
@@ -258,7 +288,8 @@ async function deepgramTranscribe(key: string, input: TranscribeInput): Promise<
   const channel = parsed.results?.channels?.[0];
   return {
     text: (channel?.alternatives?.[0]?.transcript ?? "").trim(),
-    language: channel?.detected_language,
+    // Monolingual English: the language asked for (detected_language only comes with detect_language).
+    language: channel?.detected_language ?? DEEPGRAM_LISTEN_PARAMS.language,
     durationSec: typeof parsed.metadata?.duration === "number" ? parsed.metadata.duration : undefined,
     segments: Array.isArray(parsed.results?.utterances)
       ? parsed.results.utterances.map((u) => ({ start: u.start, end: u.end, text: (u.transcript ?? "").trim() }))

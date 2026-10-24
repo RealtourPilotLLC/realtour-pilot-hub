@@ -57,8 +57,8 @@ export const AUTOMATION_KEYS = [
   // itself books the invitee through Calendly's Scheduling API (config.mode
   // "API" + a passed read-only probe) for clients in its fixture/pilot scope.
   "call_booking", // §6.6 in-portal strategy-call booking: API mode (POST /invitees) for scoped clients — lib/callBooking.ts
-  "cut_transcripts", // §9 (no speech-to-text provider exists today)
-  "caption_assistant", // §10
+  "cut_transcripts", // §9 each approved monthly video's final cut is transcribed (Deepgram, Oct 23 2026)
+  "caption_assistant", // §10 its Instagram caption is drafted from that transcript (automatic since Oct 23 2026) and on a client's click
   "fact_extraction", // §23 auto-accept rules for extracted facts
   // CP-02 (Sep 24 2026). Windows and revision rounds are RECORDED with both
   // off; these only decide what the client is shown and what expiry may do.
@@ -96,17 +96,19 @@ export type AutomationKey = (typeof AUTOMATION_KEYS)[number];
 
 /**
  * SWITCHES FOR FEATURES THAT DO NOT EXIST (Oct 13 2026, Jordan approved C12).
- *   cut_transcripts — nothing in the hub calls requestCutTranscript or the
- *     cut-transcript driver, and no speech-to-text provider is connected; the
- *     switch read ON on Settings and in Readiness while doing nothing at all.
  *   publishing — Instagram: no Meta app, no credentials; the driver is called
  *     only by the drills.
- * Both are left OUT of every listing (Settings, Readiness, the /content
- * banner, monitoring) and count as off wherever the hub reports on its
- * automations. The keys stay in AUTOMATION_KEYS (stored rows, the library
- * code and its drills still name them), and the library code is kept.
+ * Left OUT of every listing (Settings, Readiness, the /content banner,
+ * monitoring) and counted as off wherever the hub reports on its
+ * automations. The key stays in AUTOMATION_KEYS (stored rows, the library
+ * code and its drills still name it), and the library code is kept.
+ *
+ * cut_transcripts was retired here too until Oct 23 2026, when Jordan
+ * connected Deepgram and the feature was wired up: approveCut and the AI work
+ * job request each approved monthly video's transcript and the job runs the
+ * driver (lib/cutTranscripts). It is listed again, with its stored row.
  */
-export const RETIRED_AUTOMATION_KEYS: readonly AutomationKey[] = ["cut_transcripts", "publishing"];
+export const RETIRED_AUTOMATION_KEYS: readonly AutomationKey[] = ["publishing"];
 export function isRetiredAutomation(k: string): boolean {
   return (RETIRED_AUTOMATION_KEYS as readonly string[]).includes(k);
 }

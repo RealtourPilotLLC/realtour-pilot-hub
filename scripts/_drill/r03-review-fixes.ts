@@ -111,7 +111,7 @@ interceptModule(
   (r) => r === "@/lib/integrations/ai" || r.endsWith("/integrations/ai"),
   (loaded) => new Proxy(loaded as Record<string | symbol, unknown>, {
     get(t, k) {
-      if (k !== "aiJsonWithUsage") return t[k];
+      if (k !== "aiJsonWithUsage" && k !== "aiStructuredWithUsage") return t[k]; // Oct 23 2026: captions run on the writer path (Sonnet 5.5)
       return async () => {
         modelCalls++;
         return { result: { captionBody: "Your first weekend decides your price.", shorterAlternative: "First weekend, first price.", captionCta: null, ctaOptions: [], coverTitle: null, gaps: [] }, usage: { inputTokens: 500, outputTokens: 80 }, model: "drill-stub" };

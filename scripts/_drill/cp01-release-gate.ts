@@ -55,7 +55,7 @@ interceptModule(
   (r) => r === "@/lib/integrations/ai" || r.endsWith("/integrations/ai"),
   (loaded) => new Proxy(loaded as Record<string | symbol, unknown>, {
     get(t, k) {
-      if (k !== "aiJsonWithUsage") return t[k];
+      if (k !== "aiJsonWithUsage" && k !== "aiStructuredWithUsage") return t[k]; // Oct 23 2026: captions run on the writer path (Sonnet 5.5)
       return async () => {
         aiCalls++;
         return {

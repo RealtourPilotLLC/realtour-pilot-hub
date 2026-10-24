@@ -248,6 +248,10 @@ export async function loadContentTab(enrollmentId: string, clientId: string, mon
   const { clientStatesFor } = await import("@/lib/contentVideos");
   const { VIDEO_WORDS } = await import("@/lib/portalWords");
   const clientStates = await clientStatesFor(enrollmentId, videos.filter((v) => v.status !== "ARCHIVED")).catch(() => null);
+  // Oct 23 2026: each video's Instagram caption (drafted automatically from
+  // the final cut's transcript), for Jordan and James, with Copy.
+  const { staffCaptionsFor } = await import("@/lib/postingKit");
+  const captions = await staffCaptionsFor(ids).catch(() => new Map<string, never>());
   const rows: LibraryVideoUi[] = videos.map((v) => {
     const mine = cuts.filter((c) => (c.videoId ? c.videoId === v.id : c.projectId === v.projectId));
     const cutIds = new Set(mine.map((c) => c.id));
@@ -291,6 +295,7 @@ export async function loadContentTab(enrollmentId: string, clientId: string, mon
       })),
       reviewWindows, revisionRounds, moneyEyes,
       clientSees: (() => { const s = clientStates?.get(v.id); return s ? { label: VIDEO_WORDS[s.state].label, updated: s.updated } : null; })(),
+      caption: (() => { const k = captions.get(v.id); return k ? { body: k.body, note: k.note, fixes: k.fixes, gaps: k.gaps } : null; })(),
     };
   });
   // CP-12: identity flags and the correction tool's data.

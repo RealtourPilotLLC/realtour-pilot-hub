@@ -125,6 +125,28 @@ export async function GET(req: NextRequest) {
       return { ...banks, identities };
     },
   };
+  // EACH APPROVED MONTHLY VIDEO'S TRANSCRIPT, THEN ITS CAPTION (Oct 23 2026).
+  // Before the rotation: both are short (Deepgram answers a sub-minute video
+  // in seconds; a caption is one small Sonnet call), and a client is waiting
+  // on them. Transcripts: behind `cut_transcripts` and a connected provider;
+  // a catch-up asks for any approved monthly version with none (never a
+  // listing video, never one approved before this began), then the driver
+  // transcribes, each call started only with time to finish. Captions: once
+  // per approved version, behind `caption_assistant` + the rollout and
+  // `ai_runs`, stopped while the AI account is refusing; the same tick's
+  // transcripts are already done, so they draft from the spoken words.
+  await step("cutTranscripts", async () => {
+    const { requestMissingMonthlyTranscripts, runCutTranscriptDriver, CUT_TRANSCRIPT_MIN_START_MS } = await import("@/lib/cutTranscripts");
+    const { isAutomationEnabled } = await import("@/lib/programAutomation");
+    const requests = (await isAutomationEnabled("cut_transcripts")) ? await requestMissingMonthlyTranscripts({ max: 10 }) : { skipped: "cut_transcripts is off" };
+    const driver = await runCutTranscriptDriver({ limit: 4, leaseBy: "ai-cron", budgetMs: Math.min(budget(), 120_000), minStartMs: CUT_TRANSCRIPT_MIN_START_MS });
+    return { requests, driver };
+  });
+  await step("captions", async () => {
+    const { sweepAutoCaptions, CAPTION_DRAFT_MIN_START_MS } = await import("@/lib/postingKit");
+    return sweepAutoCaptions({ max: 3, budgetMs: Math.min(budget(), 150_000), minStartMs: CAPTION_DRAFT_MIN_START_MS });
+  });
+
   const order = aiWorkOrder(startedAt);
   out.order = order;
   for (const name of order) await step(name, run[name]);

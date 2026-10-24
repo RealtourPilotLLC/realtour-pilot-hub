@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { isAutomationEnabled } from "@/lib/programAutomation";
 import { transcriptForCut } from "@/lib/cutTranscripts";
 import { canonicalFromParts, partsFromBody, pointsFromJson } from "@/lib/contentScripts";
-import { renderScript, stripRenderPlaceholders, buildCaptionPrompt, type CanonicalScript } from "@/lib/contentPolicy";
+import { renderScript, stripRenderPlaceholders, assertClientScoped, buildCaptionDraftPrompt, finishCaption, strategyExcerpt, type CanonicalScript, type CaptionModelOut } from "@/lib/contentPolicy";
 import { deliveredMediaFor, videoForEnrollment } from "@/lib/contentVideos";
 import { actorLabel, can } from "@/lib/portalAccess";
 import { WHY, captionTarget, videoEntitlement, type Entitlement, type EntitlementBasis, type EntitlementBlock, type EntitlementVideo, type FinalFile } from "@/lib/cutEntitlement";
@@ -21,12 +21,17 @@ import { TEXT_KYLE, TEXT_KYLE_START } from "@/lib/portalWords";
 // "Download started" / "Saved" and "Marked as posted by me", that are never a
 // verified publication (that is §12's job and it is disabled).
 //
-// Caption drafting: never unattended from the portal. A client's "Draft a
-// caption" runs only when `caption_assistant` is ON (a missing row is OFF,
-// programAutomation.ts) and it is a person's click (unattended:false), so the
-// ai_runs master switch does not gate it but the feature switch does. When
-// transcriptForCut reports a gap the draft is made from the script and the
-// kit says so in plain words — it never pretends a transcript existed.
+// Caption drafting: a client's "Draft a caption" runs only when
+// `caption_assistant` is ON (a missing row is OFF, programAutomation.ts) and
+// it is a person's click (unattended:false), so the ai_runs master switch does
+// not gate it but the feature switch does. When transcriptForCut reports a gap
+// the draft is made from the script and the kit says so in plain words — it
+// never pretends a transcript existed.
+//
+// Oct 23 2026 (Jordan): the caption is ALSO drafted automatically, once per
+// approved monthly version, from its transcript, following Instagram's caption
+// rules (autoDraftCaptionForCut below; the AI work job runs it). That door is
+// unattended, so ai_runs gates it too.
 //
 // AND ONLY FOR CLIENTS THE PROGRAM ROLLOUT REACHES (review fix, Sep 28 2026).
 // The switch alone used to decide, and the copy called it "internal": turning
@@ -292,7 +297,12 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
   // drafted from. Stale-marking compares against the decisive round too, so
   // drafts of a replaced cut go STALE as soon as the replacement is released.
   const kitSubmissionId = final?.submissionId ?? null;
-  const staleAgainst = kitSubmissionId ?? e.current?.submissionId ?? null;
+  // The decisive round, which may be a NEWER version than the file the client
+  // still has (KEEP_PRIOR_APPROVED_VERSION). Oct 23 2026: its captions are not
+  // stale (they were drafted for it and become the client's when they approve
+  // it), but they are not this file's either, so the kit holds them back.
+  const openSubmissionId = e.current?.submissionId ?? null;
+  const newerOpen = kitSubmissionId && openSubmissionId && openSubmissionId !== kitSubmissionId ? openSubmissionId : null;
   // "Approve this version above" is only true for a seat that can approve —
   // and on a paused or ended program NO seat can (every viewer is READ_ONLY,
   // staff included), so "once the account owner approves" would promise
@@ -317,7 +327,7 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
   ]);
   // Any AI draft tied to a cut that is no longer the final is STALE (spec §10):
   // stamp it rather than serving it as if it described the current file.
-  const stale = captions.filter((c) => c.status !== "STALE" && staleAgainst && c.submissionId !== staleAgainst && !c.submissionId.startsWith("portal-video:"));
+  const stale = captions.filter((c) => c.status !== "STALE" && (kitSubmissionId || openSubmissionId) && c.submissionId !== kitSubmissionId && c.submissionId !== openSubmissionId && !c.submissionId.startsWith("portal-video:"));
   if (stale.length) {
     await prisma.contentCaptionDraft.updateMany({ where: { id: { in: stale.map((c) => c.id) } }, data: { status: "STALE", staleReason: "cut changed" } }).catch(() => {});
     for (const c of stale) { c.status = "STALE"; c.staleReason = "cut changed"; }
@@ -326,7 +336,7 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
     videoId: video.id,
     title: video.title ?? "Video",
     final, finalNote: why, cover,
-    captions: captions.map(captionView),
+    captions: captions.filter((c) => !newerOpen || c.submissionId !== newerOpen).map(captionView),
     // NEITHER IS MONEY-CLAMPED, on purpose. stripMoneySentences DELETES whole
     // sentences, and text.ts:108 scopes it to the case it was written for —
     // "used when client text lands on an EDITOR-visible task: creatives never
@@ -449,23 +459,135 @@ export async function saveCaptionEdit(viewer: PortalViewer, videoId: string, inp
 // "portal-video:<PortalVideo.id>" (documented deviation). cutEntitlement's
 // captionRef is that value for an Aryeo file.
 
-type CaptionOut = { caption: string; shorterCaption?: string | null; ctaOptions?: string[] | null; coverTitles?: string[] | null; captionCta?: string | null; gaps?: { text?: string }[] };
+// ---------------------------------------------------------------------------
+// THE CAPTION ENGINE (Oct 23 2026). One drafter for both doors: the client's
+// "Draft a caption" click (draftCaptionForVideo) and the automatic draft after
+// each approved monthly version (autoDraftCaptionForCut). Jordan, Oct 23:
+// captions follow Instagram's and Meta's own guidance
+// (docs/instagram-caption-rules.md), on a Sonnet-class model (the model map's
+// Sonnet entry), from a LEAN prompt — the transcript, the script, a short
+// strategy excerpt and the rules — in ONE call per version: no review, no
+// rewrite loop. The checkable rules are enforced in code on whatever came
+// back (contentPolicy/captionRules.finishCaption).
+//
+// It fixes a quiet loss on the way: the old prompt's schema REQUIRED
+// `captionBody` while the rows read `out.caption`, so a model that followed
+// the schema saved no main caption at all (only the drill stubs, which sent
+// `caption`, ever produced one). finishCaption reads both shapes.
+// ---------------------------------------------------------------------------
 
-/**
- * Words that mean "an offer the video promised" (caption grounding, Sep 25
- * 2026). Carried over from the retired captionAssistant.ts, which had this
- * guard while the live path below did not: when the approved strategy names
- * no Caption CTA Examples, a CTA offering a free guide, a checklist or a
- * discount is an offer the client never made, and it is dropped before it is
- * saved — whatever the model wrote.
- */
-const INVENTED_OFFER = /\b(free|download|guide|checklist|e-?book|template|webinar|workbook|cheat ?sheet|giveaway|discount|coupon)\b/i;
+/** The model map's Sonnet entry (scriptWriter/pipeline STEP_MODEL: Sonnet 5.5). Never Opus. */
+export const CAPTION_MODEL = "claude-sonnet-5-5";
+/** A short caption needs little thinking; thinking counts toward the output tokens. */
+const CAPTION_EFFORT = "low" as const;
+/** Room for the thinking and the answer (about 400 tokens of answer). */
+const CAPTION_MAX_TOKENS = 3000;
+/** A caption draft starts only with this long left in the caller's budget. */
+export const CAPTION_DRAFT_MIN_START_MS = 60_000;
+
+type ContentVideoRow = NonNullable<Awaited<ReturnType<typeof videoForEnrollment>>>;
+
+type EngineInput = {
+  video: ContentVideoRow;
+  /** The cut whose transcript is the primary source (null = none). */
+  transcriptSubmissionId: string | null;
+  /** What the rows are tied to (the cut id, or "portal-video:<id>"). */
+  draftRef: string;
+  requestedBy: string;
+  unattended: boolean;
+  dedupeKey: string;
+  scope?: Record<string, unknown>;
+  timeoutMs?: number;
+  auto?: boolean;
+};
+type EngineResult = R & { drafted?: number; runId?: string | null; costCents?: number; sourceNote?: string };
+
+async function draftCaptionRows(input: EngineInput): Promise<EngineResult> {
+  const v = input.video;
+  const [script, transcript] = await Promise.all([
+    scriptForVideo(v).catch(() => null),
+    input.transcriptSubmissionId ? transcriptForCut(input.transcriptSubmissionId).catch(() => null) : Promise.resolve(null),
+  ]);
+  const transcriptText = transcript?.text ?? null;
+  if (!script && !transcriptText) return { ok: false, message: "There's nothing factual to draft from yet: no transcript of the final video and no script linked to it." };
+  const { buildClientContext } = await import("@/lib/contentGeneration");
+  const { runAiJson } = await import("@/lib/aiRuns");
+  // Lean (Jordan, Oct 23 2026): no earlier scripts as voice references; the strategy excerpt carries her voice.
+  const built = await buildClientContext(v.enrollmentId, { monthId: v.monthId, projectId: v.projectId, priorScripts: 0 });
+  // The pieces must all be this client's (contentPolicy/prompts.assertClientScoped).
+  // CanonicalScript.clientId is a column a client dedupe merge leaves pointing at
+  // the merged-away client, so this refuses as an answer, never a 500.
+  try {
+    assertClientScoped(built.ctx, script?.canonical ?? null);
+  } catch {
+    return { ok: false, message: `We can't draft this one automatically, because the records behind this video don't line up. ${TEXT_KYLE_START} and we'll write the caption with you.` };
+  }
+  const strategyDoc = built.ctx.strategy?.document ?? null;
+  // The video's pillar: the script's own, else the library row's (its topic's pillar).
+  const pillarName = script?.canonical.pillarRef?.pillarName
+    ?? (v.pillarId ? (await prisma.contentPillar.findFirst({ where: { id: v.pillarId, enrollmentId: v.enrollmentId }, select: { name: true } }).catch(() => null))?.name ?? null : null);
+  const prompt = buildCaptionDraftPrompt({
+    clientName: built.ctx.clientName, videoTitle: v.title ?? script?.title ?? "Video",
+    transcript: transcriptText, transcriptGap: transcript?.gap ?? null,
+    script: script?.body ?? null, strategy: strategyDoc, pillarName,
+  });
+  const { ctaExamples } = strategyExcerpt(strategyDoc, null);
+  const scriptWord = script?.historical ? "an earlier script we have on file" : "the script";
+  const sourceNote = transcriptText
+    ? `Drafted from the transcript of the final cut, with ${scriptWord} as supporting context.`
+    : `Drafted from ${scriptWord}, with no transcript yet${transcript?.gap ? ` (${transcript.gap})` : ""}.`;
+  let out: CaptionModelOut;
+  let runId: string | null = null;
+  let costCents = 0;
+  try {
+    const r = await runAiJson<CaptionModelOut>({
+      kind: "caption", engine: "writer", model: CAPTION_MODEL, effort: CAPTION_EFFORT,
+      enrollmentId: v.enrollmentId, clientId: v.clientId, scope: { videoId: v.id, submissionId: input.draftRef, ...(input.scope ?? {}) },
+      inputRefs: { ...built.inputRefs, transcriptId: transcript?.transcriptId ?? null, scriptVersionId: v.scriptVersionId ?? null, captionRules: "ig-2026-10-23" },
+      promptKey: "caption", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: input.requestedBy, unattended: input.unattended,
+      dedupeKey: input.dedupeKey, system: prompt.system, prompt: prompt.prompt, schema: prompt.schema, maxTokens: CAPTION_MAX_TOKENS, timeoutMs: input.timeoutMs,
+    });
+    out = r.output; runId = r.runId; costCents = r.costCents;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "";
+    return {
+      ok: false,
+      message: /quota|limit \(\d+\/day\)/i.test(msg)
+        ? "The caption assistant has hit today's limit. Try again tomorrow, or write one below."
+        : /already running/i.test(msg)
+          ? "A caption is being drafted for this video right now. Give it a moment."
+          : "The caption assistant couldn't draft just now. Try again in a moment, or write one below.",
+    };
+  }
+  const fin = finishCaption(out ?? {}, { sourcesText: prompt.sourcesText, ctaExamples });
+  const rows: { kind: string; body: string | null; options: string[] }[] = [
+    { kind: "CAPTION", body: fin.caption, options: [] },
+    { kind: "SHORT_CAPTION", body: fin.shortCaption, options: [] },
+    { kind: "CTA", body: fin.cta, options: [] },
+    { kind: "COVER_TITLE", body: fin.coverTitle, options: [] },
+  ];
+  let drafted = 0;
+  for (const r of rows) {
+    if (!r.body || !r.body.trim()) continue;
+    const last = await prisma.contentCaptionDraft.findFirst({ where: { videoId: v.id, kind: r.kind }, orderBy: { versionNo: "desc" }, select: { versionNo: true } });
+    await prisma.contentCaptionDraft.create({
+      data: {
+        videoId: v.id, submissionId: input.draftRef, enrollmentId: v.enrollmentId, clientId: v.clientId, transcriptId: transcript?.transcriptId ?? null,
+        scriptVersionId: v.scriptVersionId ?? null, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: runId,
+        kind: r.kind, body: clip(r.body.trim(), 2200),
+        alternativesJson: JSON.stringify({ options: r.options, sourceNote, gaps: fin.gaps, ...(r.kind === "CAPTION" ? { fixes: fin.fixes, findings: fin.findings, hashtags: fin.hashtags } : {}), ...(input.auto ? { auto: true } : {}) }),
+        versionNo: (last?.versionNo ?? 0) + 1, authorKind: "AI", status: "DRAFT",
+      },
+    }).then(() => drafted++).catch(() => {});
+  }
+  return { ok: true, message: `${drafted} draft${drafted === 1 ? "" : "s"} ready. ${sourceNote} Edit anything before you use it.`, drafted, runId, costCents, sourceNote };
+}
 
 /**
  * "Draft a caption" from the portal: a person's click, gated by the
- * caption_assistant switch and the program rollout (assistantFor). The final cut's transcript is the primary factual
- * source; when there is none the draft is made from the linked script and
- * every row records that in words.
+ * caption_assistant switch and the program rollout (assistantFor). The final
+ * cut's transcript is the primary factual source; when there is none the draft
+ * is made from the linked script and every row records that in words.
  */
 export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string): Promise<R & { drafted?: number }> {
   const v = await videoForEnrollment(viewer.enrollment, videoId);
@@ -481,84 +603,174 @@ export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string
   if (!(await assistantFor(viewer.enrollment.clientId))) {
     return { ok: false, message: `Write your caption below and it's saved with this video, or ${TEXT_KYLE} and we'll draft one.` };
   }
-  const submissionId = target.submissionId;
-  const [script, transcript] = await Promise.all([
-    scriptForVideo(v).catch(() => null),
-    submissionId ? transcriptForCut(submissionId).catch(() => null) : Promise.resolve(null),
-  ]);
-  const transcriptText = transcript?.text ?? null;
-  if (!script && !transcriptText) return { ok: false, message: "There's nothing factual to draft from yet: no transcript of the final video and no script linked to it." };
-  const { buildClientContext } = await import("@/lib/contentGeneration");
-  const { runAiJson } = await import("@/lib/aiRuns");
-  const built = await buildClientContext(v.enrollmentId, { monthId: v.monthId, projectId: v.projectId });
-  // With no script on file the transcript stands in as the "script" the prompt renders from — clearly labelled below.
-  const canonical: CanonicalScript = script?.canonical ?? canonicalFromParts(partsFromBody(v.title ?? "Video", transcriptText ?? ""), viewer.enrollment.clientId);
-  // buildCaptionPrompt refuses a prompt whose pieces belong to different
-  // clients (contentPolicy/prompts.assertClientScoped), and that refusal is a
-  // THROW. It reads CanonicalScript.clientId — a column a client dedupe merge
-  // leaves pointing at the merged-away client — so the same stale row that the
-  // version fence above now survives would land here as an unhandled 500 on
-  // the client's own page. Still refuse, but as an answer.
-  let bundle: ReturnType<typeof buildCaptionPrompt>;
-  try {
-    bundle = buildCaptionPrompt(built.ctx, canonical);
-  } catch {
-    return { ok: false, message: `We can't draft this one automatically, because the records behind this video don't line up. ${TEXT_KYLE_START} and we'll write the caption with you.` };
-  }
-  const scriptWord = script?.historical ? "an earlier script we have on file" : "the script";
-  const sourceNote = transcriptText
-    ? `Drafted from the transcript of the final cut, with ${scriptWord} as supporting context.`
-    : `Drafted from ${scriptWord}, with no transcript yet${transcript?.gap ? ` (${transcript.gap})` : ""}.`;
-  // The CTA may only offer what the approved strategy offers (grounding).
-  const hasExamples = (built.ctx.strategy?.document?.captionCtaExamples?.items ?? []).length > 0;
-  const ctaRule = hasExamples
-    ? "CTA OPTIONS: each modelled on the approved strategy's Caption CTA Examples or a plain engagement ask. Never invent an offer, a lead magnet or a resource the strategy does not name."
-    : "CTA OPTIONS: plain engagement asks only (save this, share it, a question in the comments, reach out to talk it through). The strategy names NO offers, so no free guides, checklists, downloads or discounts.";
-  const user = [
-    bundle.user,
-    "",
-    transcriptText ? `TRANSCRIPT OF THE FINAL CUT (primary factual source — the caption must not claim anything the video no longer says):\n${clip(transcriptText, 6000)}` : "NO TRANSCRIPT OF THE FINAL CUT EXISTS. Draft from the script only, and keep every claim to what the script says.",
-    "",
-    ctaRule,
-    "",
-    "Also return: shorterCaption (one or two lines), ctaOptions (0-3 short options that fit the video's goal — none if the video is purely educational), coverTitles (0-3 short on-screen title suggestions).",
-  ].join("\n");
-  const schema = { ...(bundle.outputSchema as Record<string, unknown>) };
-  const props = { ...((schema.properties as Record<string, unknown>) ?? {}), shorterCaption: { type: ["string", "null"] }, ctaOptions: { type: "array", items: { type: "string" } }, coverTitles: { type: "array", items: { type: "string" } } };
   const requestedBy = viewer.actor.kind === "CLIENT" ? viewer.actor.clientUserId : viewer.actor.kind === "STAFF" ? viewer.actor.staffUserId : `portal:${viewer.enrollment.id}`;
-  let out: CaptionOut;
-  let runId: string | null = null;
-  try {
-    const r = await runAiJson<CaptionOut>({
-      kind: "caption", enrollmentId: v.enrollmentId, clientId: v.clientId, scope: { videoId: v.id, submissionId }, inputRefs: { ...built.inputRefs, transcriptId: transcript?.transcriptId ?? null, scriptVersionId: v.scriptVersionId ?? null },
-      promptKey: "caption", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: false,
-      dedupeKey: `caption:${v.id}:${submissionId ?? "none"}`, system: bundle.system, prompt: user, schema: { ...schema, properties: props }, maxTokens: 1200,
+  const r = await draftCaptionRows({
+    video: v, transcriptSubmissionId: target.submissionId, draftRef: target.ref, requestedBy, unattended: false,
+    dedupeKey: `caption:${v.id}:${target.submissionId ?? "none"}`,
+  });
+  return { ok: r.ok, message: r.message, ...(r.drafted != null ? { drafted: r.drafted } : {}) };
+}
+
+// ---------------------------------------------------------------------------
+// THE AUTOMATIC DRAFT (Oct 23 2026). Jordan: each approved monthly video is
+// transcribed, its caption drafted from the real spoken words, automatically,
+// so it is waiting in the client's posting kit and on the video for Jordan and
+// James. Run by the AI work job (sweepAutoCaptions) after the transcript
+// driver, so a version transcribed this tick is captioned this tick.
+//
+//   once        one automatic draft per approved version: a version with any
+//               caption row (anyone's) or an automatic run that succeeded or
+//               is running is done; two failed runs and it stops trying.
+//   transcript  the primary source. While one is on its way (queued or
+//               running, or about to be requested), the draft waits, up to
+//               AUTO_CAPTION_WAIT_MS after the approval. When none can come
+//               (no hosted file, the provider failed, no provider, the switch
+//               off) or the wait is over, it drafts from the script and says so.
+//   never over  a person's caption is never touched, and the draft never
+//               becomes CHOSEN on its own. The older version's AUTOMATIC
+//               draft steps aside (STALE) — unless the client still has that
+//               older version's file (they keep it until they approve this one).
+//   gated       caption_assistant AND the rollout (assistantFor), ai_runs
+//               (unattended), the daily AI limits (runAiJson), and no run at
+//               all while the AI account is refusing (aiOutage).
+//   no backfill only versions approved since automatic transcripts began
+//               (cutTranscripts.autoTranscriptsSince), and never a listing video.
+// ---------------------------------------------------------------------------
+
+/** How long an automatic caption waits for a transcript that is on its way. */
+export const AUTO_CAPTION_WAIT_MS = 3 * 3600_000;
+const AUTO_CAPTION_MAX_FAILED = 2;
+/** The days the sweep looks back (within the start date). */
+const AUTO_CAPTION_DAYS = 14;
+const AUTO_REQUESTER = "cron:caption-auto";
+
+export type AutoCaptionResult = { submissionId: string; drafted: boolean; why: string; costCents?: number; runId?: string | null };
+
+export async function autoDraftCaptionForCut(submissionId: string, opts: { now?: Date; timeoutMs?: number } = {}): Promise<AutoCaptionResult> {
+  const now = opts.now ?? new Date();
+  const no = (why: string): AutoCaptionResult => ({ submissionId, drafted: false, why });
+  const cut = await prisma.reviewSubmission.findUnique({
+    where: { id: submissionId },
+    select: { id: true, status: true, decidedAt: true, projectId: true, deliverableId: true, slot: true, round: true, videoId: true, project: { select: { contentMonthId: true } } },
+  });
+  if (!cut) return no("That cut no longer exists.");
+  if (!cut.project?.contentMonthId) return no("Not a monthly program video.");
+  if (cut.status !== "APPROVED") return no("Not approved.");
+  const { autoTranscriptsSince, transcriptOnItsWay } = await import("@/lib/cutTranscripts");
+  const since = await autoTranscriptsSince(null);
+  if (!since || !cut.decidedAt || cut.decidedAt < since) return no("Approved before automatic captions began.");
+  if (cut.deliverableId) {
+    const newer = await prisma.reviewSubmission.findFirst({ where: { projectId: cut.projectId, deliverableId: cut.deliverableId, slot: cut.slot, round: { gt: cut.round }, status: "APPROVED" }, select: { id: true } });
+    if (newer) return no("A newer version of this video was approved.");
+  }
+  const video = cut.videoId
+    ? await prisma.contentVideo.findUnique({ where: { id: cut.videoId } })
+    : await prisma.contentVideo.findFirst({ where: { OR: [{ currentSubmissionId: cut.id }, { approvedSubmissionId: cut.id }, { finalSubmissionId: cut.id }] } });
+  if (!video) return no("Not on the client's video library yet.");
+  if (!(await assistantFor(video.clientId))) return no("The caption assistant doesn't reach this client.");
+  if (await prisma.contentCaptionDraft.count({ where: { submissionId } })) return no("This version already has a caption.");
+  const runs = await prisma.programAiRun.findMany({ where: { kind: "caption", scopeJson: { contains: `"autoFor":"${submissionId}"` } }, select: { status: true } });
+  if (runs.some((r) => r.status !== "FAILED")) return no("Already drafted, or drafting now.");
+  if (runs.filter((r) => r.status === "FAILED").length >= AUTO_CAPTION_MAX_FAILED) return no("Stopped after failed attempts.");
+  const t = await transcriptForCut(submissionId).catch(() => null);
+  if (!t?.text && now.getTime() - cut.decidedAt.getTime() < AUTO_CAPTION_WAIT_MS && (await transcriptOnItsWay(submissionId).catch(() => false))) {
+    return no("Waiting for the transcript.");
+  }
+  const r = await draftCaptionRows({
+    video, transcriptSubmissionId: submissionId, draftRef: submissionId, requestedBy: AUTO_REQUESTER, unattended: true,
+    dedupeKey: `caption-auto:${submissionId}`, scope: { auto: true, autoFor: submissionId }, timeoutMs: opts.timeoutMs, auto: true,
+  });
+  if (!r.ok || !r.drafted) return { ...no(r.message), runId: r.runId ?? null, costCents: r.costCents };
+  // The older version's automatic draft steps aside — never a person's caption,
+  // and never the file the client still has (cutEntitlement keeps an approved v1
+  // theirs until they approve this one).
+  const e = await videoEntitlement(video).catch(() => null);
+  const keep = [submissionId, e?.captionRef ?? null, e?.file?.submissionId ?? null].filter((x): x is string => !!x);
+  await prisma.contentCaptionDraft.updateMany({
+    where: { videoId: video.id, authorKind: "AI", status: "DRAFT", submissionId: { notIn: keep }, NOT: { submissionId: { startsWith: "portal-video:" } } },
+    data: { status: "STALE", staleReason: "a newer version was approved" },
+  }).catch(() => {});
+  return { submissionId, drafted: true, why: r.message, costCents: r.costCents, runId: r.runId ?? null };
+}
+
+export type AutoCaptionSweep = { skipped: string | null; checked: number; drafted: number; waiting: number; deferred: number; costCents: number; results: { submissionId: string; why: string }[] };
+
+/** The AI work job's step: draft the automatic captions owed, oldest approval first, each started only with time to finish. */
+export async function sweepAutoCaptions(opts: { max?: number; budgetMs?: number; minStartMs?: number; now?: Date } = {}): Promise<AutoCaptionSweep> {
+  const startedAt = Date.now();
+  const left = () => (opts.budgetMs == null ? Infinity : opts.budgetMs - (Date.now() - startedAt));
+  const out: AutoCaptionSweep = { skipped: null, checked: 0, drafted: 0, waiting: 0, deferred: 0, costCents: 0, results: [] };
+  if (!(await isAutomationEnabled("caption_assistant"))) return { ...out, skipped: "caption_assistant is off" };
+  if (!(await isAutomationEnabled("ai_runs"))) return { ...out, skipped: "AI runs are off" };
+  const { aiOutageNow } = await import("@/lib/aiOutage");
+  if (await aiOutageNow().catch(() => null)) return { ...out, skipped: "the AI account is refusing requests (usage limit or credit)" };
+  const { autoTranscriptsSince } = await import("@/lib/cutTranscripts");
+  const now = opts.now ?? new Date();
+  // Written now if nothing wrote it yet: only versions approved from here on are captioned on their own.
+  const since = await autoTranscriptsSince(now);
+  if (!since) return { ...out, skipped: "automatic captions have not started" };
+  const floor = new Date(Math.max(since.getTime(), now.getTime() - AUTO_CAPTION_DAYS * 86_400_000));
+  const cuts = await prisma.reviewSubmission.findMany({
+    where: { status: "APPROVED", decidedAt: { gte: floor }, project: { contentMonthId: { not: null } } },
+    orderBy: { decidedAt: "asc" }, take: 60, select: { id: true },
+  });
+  if (!cuts.length) return out;
+  const captioned = new Set((await prisma.contentCaptionDraft.findMany({ where: { submissionId: { in: cuts.map((c) => c.id) } }, select: { submissionId: true } })).map((d) => d.submissionId));
+  for (const c of cuts) {
+    if (captioned.has(c.id)) continue;
+    if (out.drafted >= (opts.max ?? 3)) break;
+    if (left() < (opts.minStartMs ?? CAPTION_DRAFT_MIN_START_MS)) { out.deferred++; continue; }
+    out.checked++;
+    const r = await autoDraftCaptionForCut(c.id, { now, timeoutMs: Math.max(20_000, Math.min(120_000, left() - 10_000)) });
+    out.costCents += r.costCents ?? 0;
+    if (r.drafted) out.drafted++;
+    else if (/Waiting for the transcript/.test(r.why)) out.waiting++;
+    out.results.push({ submissionId: c.id, why: r.drafted ? "drafted" : r.why });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// THE OFFICE'S VIEW (Oct 23 2026): the caption beside each video in Monthly
+// Content, for Jordan and James, with Copy. The one the client would see first:
+// their chosen one, else the newest that is not stale, else the newest.
+// ---------------------------------------------------------------------------
+
+export type StaffCaptionUi = {
+  body: string;
+  authorKind: string;
+  status: string;
+  versionNo: number;
+  createdAtISO: string;
+  /** Where it came from, in plain words ("drafted automatically from the transcript…"). */
+  note: string;
+  /** What the code changed on the model's draft (staff only). */
+  fixes: string[];
+  gaps: string[];
+};
+
+export async function staffCaptionsFor(videoIds: string[]): Promise<Map<string, StaffCaptionUi>> {
+  const out = new Map<string, StaffCaptionUi>();
+  if (!videoIds.length) return out;
+  const rows = await prisma.contentCaptionDraft.findMany({
+    where: { videoId: { in: videoIds }, kind: "CAPTION", status: { not: "ARCHIVED" } },
+    orderBy: [{ versionNo: "desc" }],
+    select: { videoId: true, body: true, authorKind: true, status: true, versionNo: true, createdAt: true, alternativesJson: true },
+  });
+  for (const id of videoIds) {
+    const mine = rows.filter((r) => r.videoId === id);
+    const pick = mine.find((r) => r.status === "CHOSEN") ?? mine.find((r) => r.status !== "STALE") ?? mine[0];
+    if (!pick) continue;
+    let alt: { sourceNote?: string; fixes?: string[]; gaps?: string[]; auto?: boolean } = {};
+    try { alt = pick.alternativesJson ? (JSON.parse(pick.alternativesJson) as typeof alt) : {}; } catch { alt = {}; }
+    const who = pick.authorKind === "CLIENT" ? "Written by the client" : pick.authorKind === "STAFF" ? "Written by the office" : alt.auto ? "Drafted automatically" : "Drafted on the client's request";
+    const from = pick.authorKind === "AI" && alt.sourceNote ? `. ${alt.sourceNote.replace(/^Drafted /, "").replace(/^./, (ch) => ch.toUpperCase())}` : "";
+    out.set(id, {
+      body: pick.body, authorKind: pick.authorKind, status: pick.status, versionNo: pick.versionNo, createdAtISO: pick.createdAt.toISOString(),
+      note: `${who}${from}${pick.status === "STALE" ? " (from an older version)" : ""}`,
+      fixes: Array.isArray(alt.fixes) ? alt.fixes.filter((x): x is string => typeof x === "string") : [],
+      gaps: Array.isArray(alt.gaps) ? alt.gaps.filter((x): x is string => typeof x === "string") : [],
     });
-    out = r.output; runId = r.runId;
-  } catch (e) {
-    return { ok: false, message: e instanceof Error && /quota/i.test(e.message) ? "The caption assistant has hit today's limit. Try again tomorrow, or write one below." : "The caption assistant couldn't draft just now. Try again in a moment, or write one below." };
   }
-  const draftSubmissionId = target.ref;
-  // No invented offers, whatever the model wrote (see INVENTED_OFFER).
-  const offerOk = (x: string | null | undefined) => !!x && x.trim() !== "" && (hasExamples || !INVENTED_OFFER.test(x));
-  out = { ...out, captionCta: offerOk(out.captionCta) ? out.captionCta : null, ctaOptions: (out.ctaOptions ?? []).filter((x) => offerOk(x)).slice(0, 3) };
-  const rows: { kind: string; body: string; options: string[] }[] = [
-    { kind: "CAPTION", body: out.caption, options: [] },
-    ...(out.shorterCaption ? [{ kind: "SHORT_CAPTION", body: out.shorterCaption, options: [] }] : []),
-    ...((out.ctaOptions ?? []).length || out.captionCta ? [{ kind: "CTA", body: out.captionCta ?? out.ctaOptions![0], options: (out.ctaOptions ?? []).filter((x) => x !== out.captionCta) }] : []),
-    ...((out.coverTitles ?? []).length ? [{ kind: "COVER_TITLE", body: out.coverTitles![0], options: out.coverTitles!.slice(1) }] : []),
-  ].filter((r) => typeof r.body === "string" && r.body.trim());
-  let drafted = 0;
-  for (const r of rows) {
-    const last = await prisma.contentCaptionDraft.findFirst({ where: { videoId: v.id, kind: r.kind }, orderBy: { versionNo: "desc" }, select: { versionNo: true } });
-    await prisma.contentCaptionDraft.create({
-      data: {
-        videoId: v.id, submissionId: draftSubmissionId, enrollmentId: v.enrollmentId, clientId: v.clientId, transcriptId: transcript?.transcriptId ?? null,
-        scriptVersionId: v.scriptVersionId ?? null, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: runId,
-        kind: r.kind, body: clip(r.body.trim(), 2200), alternativesJson: JSON.stringify({ options: r.options, sourceNote, gaps: (out.gaps ?? []).map((g) => g.text).filter(Boolean) }),
-        versionNo: (last?.versionNo ?? 0) + 1, authorKind: "AI", status: "DRAFT",
-      },
-    }).then(() => drafted++).catch(() => {});
-  }
-  return { ok: true, message: `${drafted} draft${drafted === 1 ? "" : "s"} ready. ${sourceNote} Edit anything before you use it.`, drafted };
+  return out;
 }

@@ -47,3 +47,4 @@ export * from "./pillarMatch";
 export * from "./interview";
 export * from "./prompts";
 export * from "./creativeIdentity";
+export * from "./captionRules";
