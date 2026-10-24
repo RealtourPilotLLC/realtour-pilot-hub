@@ -256,6 +256,13 @@ async function main() {
       c.ok("an office-planned month → ours, nothing asked of the client", ask({ route: "WRITTEN", chosen: 0, videosOwed: 2, answersOwed: 0, chosenBy: "office:info@x" }).suppression === "topics_ours");
       c.ok("the call route → ours (the call picks the topics)", ask({ route: "CALL", chosen: 0, videosOwed: 2, answersOwed: 0, chosenBy: null }).action === null);
       c.ok("all picked and answered → nothing to answer", ask({ route: "WRITTEN", chosen: 2, videosOwed: 2, answersOwed: 0, chosenBy: null }).suppression === "nothing_to_answer");
+      // Audit, Oct 23 2026: a topic an open question request chases is not asked a second time by the month's email.
+      const qrOnly = ask({ route: "WRITTEN", chosen: 2, videosOwed: 2, answersOwed: 1, chosenBy: "staff:x", askedByRequest: 1 });
+      c.ok("audit: the only owed topic is a question request's → no month email (the request follows up on its own)", qrOnly.action === null && qrOnly.suppression === "question_request_open", JSON.stringify(qrOnly));
+      const qrAndOne = ask({ route: "WRITTEN", chosen: 3, videosOwed: 3, answersOwed: 2, chosenBy: "staff:x", askedByRequest: 1 });
+      c.ok("audit: another topic still owes answers → COMPLETE_ANSWERS for that one only", qrAndOne.action === "COMPLETE_ANSWERS" && /^1 picked topic/.test(qrAndOne.why), JSON.stringify(qrAndOne));
+      c.ok("audit: a request's topic and topics still to pick (written route) → PICK_TOPICS as before", ask({ route: "WRITTEN", chosen: 1, videosOwed: 3, answersOwed: 1, chosenBy: "staff:x", askedByRequest: 1 }).action === "PICK_TOPICS");
+      c.ok("audit: a count above what is owed never goes negative", ask({ route: "WRITTEN", chosen: 2, videosOwed: 2, answersOwed: 1, chosenBy: null, askedByRequest: 5 }).action === null);
       const { reminderTemplate, renderReminder, DEFAULT_TEMPLATE_IDS } = await import("@/lib/reminderTemplates");
       const body = renderReminder(reminderTemplate(DEFAULT_TEMPLATE_IDS.PICK_TOPICS), { firstName: "Arielle", month: "October", portalLink: "https://hub.example.test/portal", bookCallLink: null, noCallEligible: true, answersStarted: false, sessionNote: null, earliestSession: null, itemCount: 2, titles: [], updatedTitles: [], deadline: null });
       c.ok("the PICK_TOPICS email asks for topics, not answers, with no em dash", /choosing your video topics/.test(body) && /pick 2 that suit you/.test(body) && !/questions are part-way/.test(body) && noDash(body), body);

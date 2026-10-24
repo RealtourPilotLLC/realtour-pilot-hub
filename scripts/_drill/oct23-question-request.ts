@@ -297,6 +297,8 @@ async function main() {
     const w = await prisma.contentScript.findUnique({ where: { id: s1.scriptId } });
     const wv = await prisma.contentScriptVersion.findMany({ where: { scriptId: s1.scriptId }, orderBy: { versionNo: "asc" } });
     c.ok("the draft is withdrawn: off the month and the topic, WITHDRAWN, nothing deleted", w?.status === "WITHDRAWN" && w.monthId === null && w.topicId === null && w.currentVersionId === s1v2.versionId && wv.length === versionsBefore.length && wv.every((v) => v.status === "WITHDRAWN") && wv.map((v) => v.body).join() === versionsBefore.map((v) => v.body).join());
+    // Audit, Oct 23 2026: the month's own answers ask leaves an open request's topic to the request (one chase per topic).
+    c.ok("audit: the open request's topic is the one the month's answers ask leaves to the request", [...(await (await import("@/lib/questionRequests")).openQuestionRequestTopicIds(M.monthId))].join() === tMal);
     const sel = await prisma.contentTopicSelection.findUnique({ where: { topicId_monthId: { topicId: tMal, monthId: M.monthId } } });
     const topicRow = await prisma.contentTopic.findUnique({ where: { id: tMal } });
     c.ok("the topic stays the month's pick, asked in WRITING, back to SELECTED", sel?.status === "SELECTED" && sel.answerRoute === "WRITTEN" && topicRow?.status === "SELECTED" && topicRow.monthId === M.monthId);
@@ -403,6 +405,7 @@ async function main() {
     const afterUndo = await R.evaluateReminders({ dryRun: false, now: at(fri, 1, 0), enrollmentIds: [M.enrollmentId] });
     const afterUndo2 = await R.evaluateReminders({ dryRun: false, now: at(fri, 3, 1), enrollmentIds: [M.enrollmentId] });
     c.ok("no further email after Undo (anything held is cancelled; the passes send nothing for it)", pendingAfterUndo.length === 0 && (await qrMails()).filter((m) => m.state === "accepted").length === mailsAfterMax && !afterUndo.questionRequestLane.some((l) => l.requestId === req1) && !afterUndo2.questionRequestLane.some((l) => l.requestId === req1), JSON.stringify((await qrRows()).map((r) => [r.attempt, r.state, r.suppressionReason])));
+    c.ok("audit: after Undo no open request covers it (the month's own asks apply again)", (await (await import("@/lib/questionRequests")).openQuestionRequestTopicIds(M.monthId)).size === 0);
     const undoAgain = await A.undoQuestionRequestAction(req1);
     c.ok("Undo twice: refused", !undoAgain.ok && /Already undone/.test(undoAgain.message));
 

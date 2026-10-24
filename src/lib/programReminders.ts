@@ -511,12 +511,22 @@ const STRATEGY_PENDING_WHY = "no content strategy is in the client's portal yet 
  *   · WRITTEN, planned by the office (an upload's `office:` stamp), or the
  *     CALL route (the call chooses them) → ours; nothing is asked of the client;
  *   · every topic picked and nothing owed → the scripts are ours.
+ * ONE CHASE PER TOPIC (audit, Oct 23 2026). A topic the office sent back with
+ * Send Question Request (lib/questionRequests) owes answers too, and its own
+ * lane (QUESTION_REQUEST) emails and follows up until they come. Counting it
+ * here as well sent the client a second, different "finish your answers"
+ * email for the same questions on the days between. `askedByRequest` is how
+ * many of the owed topics an OPEN question request covers: only the others
+ * make this ask.
  * Pure: the caller reads the planning facts.
  */
 export type PlanningAsk = { action: "COMPLETE_ANSWERS" | "PICK_TOPICS" | null; toPick: number; suppression: string | null; why: string };
-export function answersOrPickAsk(pl: { route: string; chosen: number; videosOwed: number; answersOwed: number; chosenBy: string | null; clientPlanned?: boolean }): PlanningAsk {
+export function answersOrPickAsk(pl: { route: string; chosen: number; videosOwed: number; answersOwed: number; chosenBy: string | null; clientPlanned?: boolean; askedByRequest?: number }): PlanningAsk {
   const toPick = Math.max(0, pl.videosOwed - pl.chosen);
-  if (pl.answersOwed > 0) return { action: "COMPLETE_ANSWERS", toPick, suppression: null, why: `${pl.answersOwed} picked topic(s) still owe answers` };
+  const byRequest = Math.min(Math.max(0, Math.floor(pl.askedByRequest ?? 0)), Math.max(0, pl.answersOwed));
+  const owed = pl.answersOwed - byRequest;
+  if (owed > 0) return { action: "COMPLETE_ANSWERS", toPick, suppression: null, why: `${owed} picked topic(s) still owe answers${byRequest ? ` (and ${byRequest} more asked in a question request, which follows up on its own)` : ""}` };
+  if (byRequest > 0 && (toPick === 0 || pl.clientPlanned || pl.route !== "WRITTEN" || (pl.chosenBy ?? "").startsWith("office:"))) return { action: null, toPick, suppression: "question_request_open", why: `the answers still owed (${byRequest} topic${byRequest === 1 ? "" : "s"}) were asked in a question request, which emails and follows up on its own` };
   if (toPick === 0) return { action: null, toPick, suppression: "nothing_to_answer", why: "every topic is picked and no answers are owed: the scripts are ours" };
   if (pl.clientPlanned) return { action: null, toPick, suppression: "topics_ours", why: "the client plans their own videos: no topics are asked of them" };
   const officePlanned = (pl.chosenBy ?? "").startsWith("office:");
@@ -1318,8 +1328,11 @@ async function evaluateMonth(
   let planningAsk: PlanningAsk | null = null;
   if (action === "COMPLETE_ANSWERS") {
     const pf = await import("@/lib/planningFacts").then((m) => m.planningForMonth(month.id, { now })).catch(() => null);
+    // Audit, Oct 23 2026: the topics an open question request already chases are not asked again here.
+    const requested = pf ? await import("@/lib/questionRequests").then((m) => m.openQuestionRequestTopicIds(month.id)).catch(() => new Set<string>()) : new Set<string>();
+    const askedByRequest = pf ? pf.planning.topics.filter((t) => (t.step === "NEEDS_ANSWERS" || t.step === "NEEDS_MORE") && requested.has(t.topicId)).length : 0;
     planningAsk = pf
-      ? answersOrPickAsk({ route: pf.route, chosen: pf.planning.chosen, videosOwed: pf.planning.videosOwed, answersOwed: pf.planning.answersOwed, chosenBy: pf.chosenBy, clientPlanned: pf.clientPlanned })
+      ? answersOrPickAsk({ route: pf.route, chosen: pf.planning.chosen, videosOwed: pf.planning.videosOwed, answersOwed: pf.planning.answersOwed, chosenBy: pf.chosenBy, clientPlanned: pf.clientPlanned, askedByRequest })
       : { action: null, toPick: 0, suppression: "planning_unreadable", why: "the month's topics could not be read: nothing is asked until they can be" };
     action = planningAsk.action;
     if (action !== "COMPLETE_ANSWERS") answersStarted = false;
