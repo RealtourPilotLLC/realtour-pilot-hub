@@ -79,11 +79,17 @@ export default async function QualityPage({
   // photographer is shooting and how each editor's versions fare. What clients
   // said, with its replies and handled marks, stays the office's tab.
   const creativeLead = !!me && me.role === "CREATIVE_MANAGER";
+  // A PREVIEW OPENS THE PAGE ITS LOGIN OPENS (audit, Oct 23 2026): this asked
+  // canRuleOnCuts, which refuses every preview, so "view as James" bounced
+  // from Team feedback (a door on his menu) back to his dashboard, the same
+  // fault 3f9f53e fixed on the Review Room. isReviewDesk asks as the
+  // previewed login; every control on the page still refuses a preview on
+  // the server (requireCutReviewer, requireAdmin).
   let reviewSeat = officeView;
-  if (!reviewSeat && me && !me.impersonating) {
+  if (!reviewSeat && me) {
     try {
-      const { canRuleOnCuts } = await import("@/lib/reviewerAssignment");
-      reviewSeat = (await canRuleOnCuts(me)).ok;
+      const { isReviewDesk } = await import("@/lib/reviewerAssignment");
+      reviewSeat = await isReviewDesk(me, { authEnforced: authEnforced() });
     } catch { /* not a review seat */ }
   }
   const editorSelf = !!me && me.role === "EDITOR" && !reviewSeat;
