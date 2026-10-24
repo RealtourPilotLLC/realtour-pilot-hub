@@ -1500,7 +1500,11 @@ export default async function EditBriefPage({
                 topic, its state and whose it is ("you" for the viewer's own). */}
             {outputBriefs.length > 1 && (
               <section className="mt-2" aria-label="Video selector">
-                <nav className="flex max-w-full gap-2 overflow-x-auto pb-1">
+                {/* Tiles that wrap (Oct 23 2026, Jordan: the chips were cut off on
+                    his phone): full width on a phone, two across on wider
+                    screens, every word shown; the padding keeps the selected
+                    ring from being clipped. */}
+                <nav className="grid gap-2 p-0.5 sm:grid-cols-2">
                   {outputBriefs.map((brief) => {
                     const latest = cutRows.find((row) => `${row.deliverableId}:${row.slot}` === brief.key)?.latest;
                     const selected = brief.key === selectedKey;
@@ -1509,8 +1513,8 @@ export default async function EditBriefPage({
                     const ownerKey = receiptStates?.get(brief.outputId)?.editorKey ?? null;
                     const owner = ownerKey ? (ownerKey === myEditorKey ? "you" : (editorMeta(ownerKey)?.name ?? ownerKey).split(/\s+/)[0]) : null;
                     return (
-                      <Link key={brief.outputId} aria-current={selected ? "page" : undefined} href={`/edit/${project.id}?output=${brief.outputId}${carry}`} className={`inline-flex min-h-11 max-w-72 shrink-0 items-center rounded-lg border px-3 py-1.5 text-xs font-medium ${tone} ${selected ? "ring-2 ring-brand ring-offset-1 ring-offset-background" : ""}`}>
-                        <span className="truncate">{navigation.get(brief.key)?.number ?? brief.index} · {brief.topicTitle || brief.format} · {state}{owner ? <span data-video-editor> · {owner}</span> : null}</span>
+                      <Link key={brief.outputId} aria-current={selected ? "page" : undefined} href={`/edit/${project.id}?output=${brief.outputId}${carry}`} className={`flex min-h-11 min-w-0 items-center rounded-lg border px-3 py-2 text-sm font-medium ${tone} ${selected ? "ring-2 ring-brand ring-offset-1 ring-offset-background" : ""}`}>
+                        <span className="min-w-0 break-words leading-snug">{navigation.get(brief.key)?.number ?? brief.index} · {brief.topicTitle || brief.format} · {state}{owner ? <span data-video-editor> · {owner}</span> : null}</span>
                       </Link>
                     );
                   })}
