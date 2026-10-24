@@ -265,7 +265,17 @@ export async function assignPracticeAction(itemId: string, input: { practice: st
   if (field) {
     const key = roster.find((r) => r.teamMemberId === item.personId)?.key ?? null;
     if (!key) return { ok: false, message: `Practice recorded on the plan, but ${firstName(item.personName)} has no task login to send it to.` };
-    const r = await assignTaskAction({ title: `Practice: ${practice}`.slice(0, 140), outcome: "Practice done, ready for feedback", assigneeKey: key, dueAt: due?.toISOString(), needsVerification: true, note: item.standard ? `The standard: ${item.standard}` : undefined });
+    // Straight to them (audit, Oct 23 2026): through the assign action a
+    // creative manager naming anyone but himself is a recommendation to
+    // Jordan, so Harrison's practice went to Jordan while this said
+    // "assigned". Training field creatives is his own work: the delegation
+    // rule takes this one trainee, read from the item above (traineeKey).
+    const { actorFor, assignTask, LOCAL_OWNER_ACTOR } = await import("@/lib/delegation");
+    const actor = s.me ? await actorFor(s.me) : LOCAL_OWNER_ACTOR;
+    const r = await assignTask(actor, { title: `Practice: ${practice}`.slice(0, 140), outcome: "Practice done, ready for feedback", assigneeKey: key, dueAt: due?.toISOString(), needsVerification: true, note: item.standard ? `The standard: ${item.standard}` : undefined }, { traineeKey: key }).catch((e: unknown) => {
+      console.warn("practice assign failed", (e as Error)?.message);
+      return { ok: false, message: "That didn't go through. Try again." };
+    });
     return r.ok ? done(`Practice assigned to ${firstName(item.personName)}.`) : { ok: false, message: `Practice recorded on the plan. It could not be sent to ${firstName(item.personName)}: ${r.message}` };
   }
   const owner = roster.find((r) => r.kind === "owner")?.key ?? null;

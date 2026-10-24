@@ -191,6 +191,31 @@ async function main() {
     const esc = await A.escalateTaskAction(lateTask!.id, "The stager wants a deposit decision");
     const escView = (await lib.delegationFor([lateTask!.id])).get(lateTask!.id)!;
     c.ok("an escalation goes to Jordan and stays with its assignee until he decides", esc.ok && escView.assigneeKey === "james" && lib.resurfaceOf(escView, T)?.kind === "escalated" && (await bells(jordanTm.id)).some((b) => /Escalated by James/.test(b.title)), esc.message);
+    // AUDIT, Oct 23 2026. A decision James sends UP to Jordan (readiness,
+    // practice for an editor, a process approval, a cut decision) is Jordan's
+    // to decide, never "a recommendation for Jordan" (his dashboard read
+    // "Recommended for Jordan Spackman" and "Assign to Jordan" did nothing).
+    const up = await A.assignTaskAction({ title: "Decide on a second shooter for Saturday", assigneeKey: "jordan", note: "Two premium jobs overlap" });
+    const upTask = await prisma.smartTask.findFirst({ where: { title: "Decide on a second shooter for Saturday" } });
+    const upView = (await lib.delegationFor([upTask!.id])).get(upTask!.id)!;
+    c.ok("#14 the creative manager naming Jordan sends him the decision: on his plate, an escalation with James's reason, no recommendation of Jordan", up.ok && /to decide/.test(up.message) && upTask!.assignedKey === "jordan" && upView.recommendedTo === null && upView.escalatedWhy === "Two premium jobs overlap" && lib.resurfaceOf(upView, T)?.kind === "escalated" && (await bells(jordanTm.id)).some((b) => b.title === "James needs your decision: Decide on a second shooter for Saturday"), `${up.message} rec=${upView.recommendedTo} esc=${upView.escalatedWhy}`);
+    // He acts on his own tasks only (requireTaskAccess): someone else's work is not his to take.
+    await signIn(owner);
+    await A.assignTaskAction({ title: "Confirm the Saturday lockbox", assigneeKey: "kyle" });
+    const kyleTask = await prisma.smartTask.findFirst({ where: { title: "Confirm the Saturday lockbox" } });
+    const kylePlain = await prisma.smartTask.create({ data: { taskType: "client_reply", title: "Reply to the stager", source: "gmail", assignedKey: "kyle", status: "OPEN" } });
+    await signIn(james);
+    const take = await A.reassignTaskAction(kyleTask!.id, "james");
+    const takeView = (await lib.delegationFor([kyleTask!.id])).get(kyleTask!.id)!;
+    c.ok("#14 …moving a task Jordan gave Kyle onto himself is a recommendation Jordan decides: it stays Kyle's", take.ok && /Recommendation/.test(take.message) && takeView.assigneeKey === "kyle" && takeView.recommendedTo === "James", `${take.message} ${takeView.assigneeKey}`);
+    const grab = await A.assignTaskAction({ title: "Reply to the stager", assigneeKey: "james", sourceTaskId: kylePlain.id });
+    c.ok("#14 …and putting a delegation on a task Kyle holds is refused: nothing moves", !grab.ok && /Kyle/.test(grab.message) && (await prisma.smartTask.findUnique({ where: { id: kylePlain.id } }))?.assignedKey === "kyle" && !(await prisma.smartTask.findUnique({ where: { id: kylePlain.id } }))?.delegatedAt, grab.message);
+    // Practice for a field creative (the coaching action passes the trainee; the assign action never does).
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const jamesActor = await lib.actorFor((await getCurrentUser())!);
+    const practice = await lib.assignTask(jamesActor, { title: "Practice: level the drone before every orbit", assigneeKey: "harrison", needsVerification: true }, { traineeKey: "harrison" });
+    const practiceRow = await prisma.smartTask.findFirst({ where: { title: "Practice: level the drone before every orbit" } });
+    c.ok("#14 …practice for the field creative he coaches goes to that creative directly (the coaching action names him)", practice.ok && practiceRow?.assignedKey === "harrison" && practiceRow.delegatedBy === james.email && (await lib.tasksAssignedTo("harrison")).some((d) => d.taskId === practiceRow.id && d.needsVerification), practice.message);
     await signIn(harrison);
     const ph = await A.assignTaskAction({ title: "Have Kyle call the client", assigneeKey: "kyle" });
     c.ok("#14 a photographer can't assign work", !ph.ok && /can't assign/.test(ph.message), ph.message);

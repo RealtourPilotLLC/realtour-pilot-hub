@@ -2,9 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth/user";
-import { addressableKeys, authEnforced } from "@/lib/auth/guards";
+import { authEnforced } from "@/lib/auth/guards";
 import {
-  acceptTask, assignTask, cancelTask, completeTask, escalateTask, flagBlocker, reassignTask, requestUpdate, returnForChanges,
+  acceptTask, actorFor, assignTask, cancelTask, completeTask, escalateTask, flagBlocker, LOCAL_OWNER_ACTOR, reassignTask, requestUpdate, returnForChanges,
   submitForVerification, updateTask, type Actor, type AssignInput,
 } from "@/lib/delegation";
 
@@ -27,12 +27,10 @@ async function actorNow(): Promise<Actor | Out> {
   if (!me) {
     if (authEnforced()) return { ok: false, message: "Please sign in to do that." };
     // Local development with sign-in off acts as the owner (the hub's own rule).
-    return { email: "owner@localhost", name: "Jordan", role: "OWNER", keys: new Set(["jordan"]), teamMemberId: null };
+    return LOCAL_OWNER_ACTOR;
   }
   if (me.impersonating) return { ok: false, message: "You're previewing another user. Exit the preview to make changes." };
-  const keys = await addressableKeys(me).catch(() => new Set<string>());
-  const name = (me.name ?? me.email).trim().split(/\s+/)[0] || me.email;
-  return { email: me.email.toLowerCase(), name, role: me.realRole, keys, teamMemberId: me.teamMemberId };
+  return actorFor(me);
 }
 
 function refresh() {
