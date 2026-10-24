@@ -471,6 +471,26 @@ async function main() {
       const b2b = await prisma.photoIntakeBatch.findFirst({ where: { projectId: pS.id, batchNo: 2 }, select: { state: true, lastError: true, seenAt: true } });
       c.ok("sent once it settles: the 5 bathroom raws", fake.posts("/v1/photoshoots/from-urls").length === sentBefore + 1 && pS2?.files.length === 5 && pS2.files.every((f) => /^BATH/.test(f.filename)), `${JSON.stringify(pS2?.files.map((f) => f.filename))} ${JSON.stringify(b2b)} posts ${fake.posts("/v1/photoshoots/from-urls").length - sentBefore}`);
       c.ok("…said once only (no second history line on later passes)", (await prisma.photoJobEvent.count({ where: { jobId: jobS.id, action: { startsWith: "raws found in 'Bathroom Photos'" } } })) === 1);
+
+      // Oct 23 2026 (335 Ridley Creek Ln): a delivered job's week-old folder of the photographer's own is never sent.
+      c.ok("strayFilesToRead: a job not delivered reads every file; a delivered one only files from the last 48 hours",
+        intake.strayFilesToRead([{ tag: "file", serverModified: "2026-10-16T23:29:00Z" }, { tag: "file", serverModified: null }], { delivered: false, now: at("2026-10-23T23:43:00Z") }).length === 2 &&
+        intake.strayFilesToRead([{ tag: "file", serverModified: "2026-10-16T23:29:00Z" }, { tag: "file", serverModified: "2026-10-23T22:00:00Z" }, { tag: "file", serverModified: null }, { tag: "folder", serverModified: null }], { delivered: true, now: at("2026-10-23T23:43:00Z") }).map((e) => e.serverModified ?? e.tag).join(",") === "2026-10-23T22:00:00Z,folder");
+      const R = "8 Basement Way";
+      const rBase = `/AutoHDR/2026/Q4/October/${R} (Nehemiah Drill)`;
+      const rRaw = `${rBase}/01-RAW-Photos`;
+      const basement = `${rBase}/BASEMENT`;
+      dbx.set(rRaw.toLowerCase(), Array.from({ length: 4 }, (_, i) => ({ ...file(rRaw, `V1_${i}.JPG`, 400 + i), at: "2026-10-13T20:00:00Z" })));
+      dbx.set(basement.toLowerCase(), Array.from({ length: 3 }, (_, i) => ({ ...file(basement, `BSMT${i}.JPG`, 500 + i), at: "2026-10-16T23:29:00Z" })));
+      dirs.set(rBase.toLowerCase(), ["01-RAW-Photos", "BASEMENT"]);
+      const pR = await mkProject(R, { shootDate: at("2026-10-16T19:00:00Z"), dropboxFolder: rBase, debriefSubmittedAt: at("2026-10-23T22:07:00Z"), uploadedAt: at("2026-10-23T22:06:00Z") });
+      for (const a of [at("2026-10-13T14:00:00Z"), at("2026-10-16T19:00:00Z")]) await prisma.appointment.create({ data: { projectId: pR.id, aryeoId: `appt-basement-${a.getTime()}`, startAt: a, status: "SCHEDULED" } });
+      await prisma.photoJob.create({ data: { projectId: pR.id, stage: "DELIVERED", deliveredAt: at("2026-10-14T03:21:00Z") } });
+      const postsBefore = fake.posts("/v1/photoshoots/from-urls").length;
+      await intake.driveIntake({ budgetMs: 120_000, now: at("2026-10-23T23:43:00Z") });
+      await intake.driveIntake({ budgetMs: 120_000, now: at("2026-10-24T00:28:00Z") });
+      c.ok("a delivered job's 'BASEMENT' folder from a week ago is never sent to AutoHDR (no batch, no post)", (await prisma.photoIntakeBatch.count({ where: { projectId: pR.id } })) === 0 && fake.posts("/v1/photoshoots/from-urls").length === postsBefore, `batches ${await prisma.photoIntakeBatch.count({ where: { projectId: pR.id } })}`);
+      c.ok("…and nobody is told about raws outside 01-RAW-Photos for it", (await prisma.notification.count({ where: { dedupeKey: { startsWith: `pd-intake-stray-${pR.id}` } } })) === 0);
     }
 
     c.head("isolation");
