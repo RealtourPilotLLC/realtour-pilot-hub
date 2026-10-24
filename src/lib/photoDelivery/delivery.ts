@@ -688,8 +688,8 @@ async function verifyDeliveryOnce(jobId: string, by: string): Promise<VerifyResu
   // Dr and 850 Springbank Ln: "these are saying this but they're sent"). The
   // CubiCasa plan reaches the listing on its own schedule, so it never holds
   // the photos' delivery or reads as a mismatch. It stays on the diff
-  // (floorPlanMissing), where the job page and Kyle's desk show it as still
-  // to come.
+  // (floorPlanMissing), where Kyle's desk shows it as still to come (until
+  // the hourly status read sees it on the listing: this read is taken once).
   if (duplicates.length) problems.push(`${duplicates.length === 1 ? "a photo is" : `${duplicates.length} photos are`} on the listing twice (${duplicateWords(duplicates)}): take the extra copy off in Aryeo, the hub never deletes there`);
   if (problems.length) {
     const line = problems.join("; ");

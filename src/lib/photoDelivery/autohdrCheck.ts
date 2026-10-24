@@ -183,6 +183,16 @@ export const issueFamily = (ruleId: string): string => ISSUE_FAMILY[ruleId] ?? r
 export const NEIGHBOR_RE = /\bneighbou?r|\bnext[\s-]door\b|\bacross the street\b|\badjacent (?:house|home|property|yard|lot|driveway)\b|\b(?:another|other|different) (?:house|home|property|driveway|yard)\b|\bneighboring\b/i;
 /** A cord that belongs to the house: from a TV, lamp or appliance to the wall, or barely there. */
 export const HOUSE_CORD_RE = /\b(?:tv|television|lamps?|plugged|outlets?|sockets?|walls?|appliances?|fridge|refrigerator|microwave|router|modem|barely|faint|thin|behind|under|utility|power lines?|cable lines?|ceiling|mounted)\b/i;
+/**
+ * The place itself says the thing is part of the house (an "It is part of the
+ * house" lesson on a check other than cords). Oct 23 2026: the cord words above
+ * ("wall", "under", "outlet") are places, not proof: on the live lesson for
+ * items left in an empty room they dropped "on the floor near the outlet", "on
+ * the floor near the corner under the window" and "blue tape on the back
+ * wall", real leftovers. Whether a thing belongs to the house is the model's
+ * call (the lesson is in its question); the code drops only what says so.
+ */
+export const ATTACHED_RE = /\b(?:built[\s-]?ins?|plugged in|wall[\s-]mounted|mounted|attached|fixtures?|hard[\s-]?wired|permanent(?:ly)?|installed|bolted|part of the (?:house|home|wall|room|cabinet|counter))\b/i;
 /** A space that is not finished living space: clutter there is not the photographer's miss. */
 export const UNFINISHED_RE = /\bgarage\b|\bunfinished\b|\bstorage\b|\butility room\b|\bmechanical\b|\bfurnace\b|\bboiler\b|\battic\b|\bshed\b|\bcrawl ?space\b|\bworkshop\b|\bunder construction\b/i;
 /** Checks the neighbor screen never touches (a reflection, an edit mistake, the lines are about this photo, not a property). */
@@ -330,7 +340,7 @@ export function screenIssues(a: Pick<CheckAnswer, "room" | "issues">, opts: { le
       : iss.ruleId === "PREP_LOOSE_CORDS_CABLES" && HOUSE_CORD_RE.test(iss.where) ? "a cord that belongs to the house"
       : unfinished && !always.has(iss.ruleId) && (isClutter(iss.ruleId) || has(iss.ruleId, "unfinished")) ? "in an unfinished space"
       : has(iss.ruleId, "faint") && iss.confidence < 0.75 ? "learned: barely visible"
-      : has(iss.ruleId, "attached") && HOUSE_CORD_RE.test(iss.where) ? "learned: part of the house"
+      : has(iss.ruleId, "attached") && (iss.ruleId === "PREP_LOOSE_CORDS_CABLES" ? HOUSE_CORD_RE : ATTACHED_RE).test(iss.where) ? "learned: part of the house"
       : null;
     if (why) dropped.push({ ruleId: iss.ruleId, why });
     else kept.push(iss);

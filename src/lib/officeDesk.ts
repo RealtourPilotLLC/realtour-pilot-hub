@@ -825,7 +825,9 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
         const plan = d.type === "FLOORPLAN";
         const maker = plan ? "CubiCasa" : d.type === "ZILLOW_3D" ? "Zillow" : "Matterport";
         // The photo check's own read of the listing outranks a stale order line (floorPlanMissing).
-        const missingNow = plan && g.photoJobId ? floorMissing.get(g.photoJobId) === true : false;
+        // Oct 23 2026: but that read is taken once, at delivery (30 Caedman Dr's plan comes from
+        // CubiCasa later), so a plan the hourly status read now sees on the listing is on it.
+        const missingNow = plan && g.photoJobId ? floorMissing.get(g.photoJobId) === true && !((ev?.floorPlans ?? 0) > 0) : false;
         const onListing = !missingNow && (plan ? (ev?.floorPlans ?? 0) > 0 : (ev?.interactive ?? 0) > 0);
         const promise = (p.promisedDueAt ?? p.deliveryDue)?.toISOString() ?? g.assets.find((x) => x.kind === "photos")?.dueISO ?? null;
         const lateNow = !!promise && Date.parse(promise) < nowMs;

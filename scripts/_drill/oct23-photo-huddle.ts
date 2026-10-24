@@ -283,6 +283,14 @@ async function main() {
     // A "faint" lesson screens low-confidence findings.
     const faint = check.screenIssues({ room: "front exterior", issues: [{ ruleId: "EXT_GARDEN_HOSES", where: "far lawn", confidence: 0.6 }, { ruleId: "EXT_GARDEN_HOSES", where: "walkway", confidence: 0.9 }] }, { lessons: [{ ruleId: "EXT_GARDEN_HOSES", scope: "faint", active: true }], alwaysFlag: policy.ALWAYS_FLAG });
     c.ok("a 'barely visible' lesson on a hose drops one the check was under 75% sure of, keeps a clear one", faint.kept.length === 1 && faint.kept[0].where === "walkway" && faint.dropped[0]?.why === "learned: barely visible");
+    // Oct 23 2026 (the live lesson on items left in an empty room): "wall", "under" and "outlet" are places, not proof.
+    // Different photos' answers, one at a time (one finding per issue per photo would merge them on one photo).
+    const attachedLesson = { lessons: [{ ruleId: "PREP_LEFTOVER_ITEM_VACANT", scope: "attached", active: true }], alwaysFlag: policy.ALWAYS_FLAG };
+    const leftAt = (where: string) => check.screenIssues({ room: "bedroom", issues: [{ ruleId: "PREP_LEFTOVER_ITEM_VACANT", where, confidence: 0.9 }] }, attachedLesson);
+    const keptPlaces = ["on the floor near the outlet on the right", "on the floor near the corner under the window", "blue tape on the back wall"].filter((w) => leftAt(w).kept.length === 1);
+    c.ok("an 'It is part of the house' lesson keeps real leftovers whose place names a wall, an outlet or a window", keptPlaces.length === 3, keptPlaces.join(" | "));
+    c.ok("…and drops one whose place says it belongs to the house", leftAt("built-in shelf on the left").dropped[0]?.why === "learned: part of the house" && leftAt("wall-mounted thermostat").kept.length === 0);
+    c.ok("…a cord lesson still reads the cord words", check.screenIssues({ room: "living room", issues: [{ ruleId: "PREP_LOOSE_CORDS_CABLES", where: "under the console", confidence: 0.9 }] }, { lessons: [{ ruleId: "PREP_LOOSE_CORDS_CABLES", scope: "attached", active: true }], alwaysFlag: policy.ALWAYS_FLAG }).kept.length === 0);
     // Jordan's list, and Undo.
     const { LearnedChecks } = await import("@/components/photoDelivery/LearnedChecks");
     const lh = html(createElement(LearnedChecks, { lessons: lessons.filter((l) => l.count >= 3).map((l) => ({ key: l.key, label: l.ruleId, reason: l.reason, count: l.count, jobs: l.jobs, changes: house.lessonWords(l), active: l.active, alwaysFlagged: l.alwaysFlagged, undone: null, examples: [] })) }));

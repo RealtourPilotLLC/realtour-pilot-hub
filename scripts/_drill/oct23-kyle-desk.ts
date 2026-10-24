@@ -332,6 +332,12 @@ async function main() {
     c.ok("a 3D tour is its own item: '3D tour ready to verify', Check tour (Zillow), the photos already out", i?.line === "3D tour ready to verify" && i.primary?.label === "Check tour" && asset(i, "photo:")?.tone === "done", JSON.stringify(i?.line));
     i = media(d, pPlanDiff.id);
     c.ok("a floor plan the photo check saw missing (floorPlanMissing) is its own item, never holding the delivered photos", asset(i, "floorplan:")?.tone === "now" && asset(i, "floorplan:")?.status.includes("not on the Aryeo listing yet (CubiCasa)") === true && asset(i, "photo:")?.tone === "done", JSON.stringify(i?.panel.kind === "job" ? i.panel.assets : null));
+    // Oct 23 2026 (30 Caedman Dr): the photo check reads the listing once, at delivery; CubiCasa's plan lands later.
+    // The hourly status read seeing it on the listing wins: never "missing" (or "Chase CubiCasa") after it arrived.
+    await prisma.project.update({ where: { id: pPlanDiff.id }, data: { statusEvidence: JSON.stringify({ expected: ["Photos", "Floor plan"], present: ["Photos", "Floor plan"], missing: [], aryeo: { photos: 30, videos: 0, floorPlans: 1, interactive: 0, delivery: "DELIVERED", at: at(-5 * 60_000).toISOString() } }) } });
+    const dPlanLanded = await build();
+    c.ok("…once the plan is on the listing (the hourly read), the stale delivery-time read no longer calls it missing", !media(dPlanLanded, pPlanDiff.id), JSON.stringify(media(dPlanLanded, pPlanDiff.id)?.panel));
+    await prisma.project.update({ where: { id: pPlanDiff.id }, data: { statusEvidence: null } });
 
     // ---- #2 ----
     i = media(d, pRedo.id);

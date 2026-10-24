@@ -496,7 +496,7 @@ export async function refreshWatchDrafts(): Promise<{ refreshed: number }> {
     const firstName = (p.client.name ?? "").trim().split(/\s+/)[0] || null;
     const draft = atRiskTemplate({ firstName, street, owed: phrase, verb: owedVerb(owed), promisedAt });
     const done = (ev?.present ?? []).filter((c) => !owed.categories.some((o) => sameCategory(o, c)));
-    const summary = `Still owed: ${phrase}, promised by ${promiseWords(promisedAt)}.${done.length ? ` Already delivered: ${done.map((c) => `the ${c.trim().toLowerCase()}`).join(" and ")}.` : ""} The update below is drafted and NOT sent. If the job will not make it, send it from the client's conversation; if it will, close this task.`.slice(0, 500);
+    const summary = `Still owed: ${phrase}, promised by ${promiseWords(promisedAt)}.${done.length ? ` Already delivered: ${owedPhrase({ categories: done, shortfall: [] })}.` : ""} The update below is drafted and NOT sent. If the job will not make it, send it from the client's conversation; if it will, close this task.`.slice(0, 500);
     // The template's own shape: a text a person rewrote is theirs to keep.
     const untouched = (t.description ?? "").startsWith(`${firstName ? `Hi ${firstName}, ` : "Hi, "}a quick update on ${street}: `) && / running behind the time we promised \(.+\)\. We'll confirm the exact delivery time with you\. Sorry for the wait\.$/.test(t.description ?? "");
     const description = untouched ? draft : t.description;

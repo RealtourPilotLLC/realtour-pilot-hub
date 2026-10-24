@@ -129,6 +129,27 @@ export function strayFolderPaths(listing: { name: string; tag: string; path: str
   return listing.filter((e) => e.tag === "folder" && e.path && e.path.toLowerCase() !== raw && !HUB_FOLDER_RE.test(e.name)).map((e) => e.path);
 }
 
+/**
+ * ON A JOB WHOSE PHOTOS ARE DELIVERED, ONLY WHAT IS HANDED IN NOW (Oct 23
+ * 2026, 335 Ridley Creek Ln). The first pass after the stray-folder read
+ * shipped found a 'BASEMENT' folder of the Oct 16 visit on a job delivered
+ * Oct 14 and sent its 18 raws to AutoHDR a week later; the delivered job is
+ * past the sync's 7-day window, so the edits went nowhere. A folder of the
+ * photographer's own on a delivered job counts only for files uploaded in the
+ * last STRAY_FRESH_MS (a later visit being handed in, 615 Cliff Ln); older
+ * ones were that visit's, handled some other way, and are left out. A job not
+ * delivered yet reads all of them (the floor still applies). Pure.
+ */
+export const STRAY_FRESH_MS = 48 * 60 * MIN;
+export function strayFilesToRead<T extends { tag: string; serverModified?: string | null }>(entries: T[], opts: { delivered: boolean; now: Date }): T[] {
+  if (!opts.delivered) return entries;
+  return entries.filter((e) => {
+    if (e.tag !== "file") return true;
+    const at = e.serverModified ? Date.parse(e.serverModified) : NaN;
+    return Number.isFinite(at) && opts.now.getTime() - at <= STRAY_FRESH_MS;
+  });
+}
+
 /** The top-level folder a file sits in, relative to the job folder ("Bathroom Photos"), or null when it is inside 01-RAW-Photos. Pure. */
 export function strayFolderOf(filePath: string, base: string, rawPath: string): string | null {
   const lower = filePath.toLowerCase();
@@ -356,9 +377,14 @@ async function watchProject(p: Project, now: Date, ctx: { canSend: boolean; list
   // (strayFolderPaths). Best-effort: an unreadable job folder reads 01-RAW-Photos alone.
   const strayEntries: typeof rawEntries = [];
   const top = await dropboxListFolder(folders.listing).catch(() => null);
-  for (const path of top ? strayFolderPaths(top, rawPath) : []) {
+  const strayPaths = top ? strayFolderPaths(top, rawPath) : [];
+  // On a delivered job, only files handed in lately (strayFilesToRead, 335 Ridley Creek Ln).
+  const photosOut = strayPaths.length
+    ? !!p.deliveredAt || ["DELIVERED", "DELIVERING", "DELIVERY_MISMATCH"].includes((await prisma.photoJob.findUnique({ where: { projectId: p.id }, select: { stage: true } }))?.stage ?? "")
+    : false;
+  for (const path of strayPaths) {
     const inside = await dropboxListFolder(path, { recursive: true }).catch(() => null);
-    if (inside) strayEntries.push(...inside);
+    if (inside) strayEntries.push(...strayFilesToRead(inside, { delivered: photosOut, now }));
   }
   const entries = [...rawEntries, ...strayEntries];
   const { kept: all, older, olderFiles } = filesSince(eligibleFiles(entries), floor);

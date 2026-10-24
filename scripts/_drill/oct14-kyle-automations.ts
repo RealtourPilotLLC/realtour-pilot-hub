@@ -426,6 +426,13 @@ async function main() {
   await prisma.project.update({ where: { id: part.id }, data: { statusEvidence: partEv(["Photos"], ["Floor plan"]) } });
   await pw.sweepPromiseWatch(setNow(FRI(13, 10)));
   c.ok("…a text Kyle rewrote keeps his words", (await prisma.smartTask.findFirst({ where: { id: partDraft?.id } }))?.description === "Hi Nina, the floor plan is coming tonight, I'll text you when it's on.");
+  // The stage line (the watch DM, a "when will it be ready?" reply task): photos out, the floor plan still owed.
+  await prisma.photoJob.create({ data: { projectId: part.id, stage: "DELIVERED", finalsCount: 63 } });
+  await prisma.project.update({ where: { id: part.id }, data: { statusEvidence: partEv(["Photos"], ["Floor plan"]).replace('"delivery":"UNDELIVERED"', '"delivery":"DELIVERED"').replace('"photos":0', '"photos":63') } });
+  const partWords = (await pw.describeJobStages([part.id])).get(part.id);
+  const { owedPhrase } = await import("@/lib/statusEvidence");
+  c.ok("the delivered list reads like the owed one, '3D' kept (1316 Blair Cir's summary read 'the photos and the floor plan and the 3d tour')", owedPhrase({ categories: ["Photos", "Floor plan", "3D tour"], shortfall: [] }) === "the photos, the floor plan and the 3D tour");
+  c.ok("the stage line of a part-delivered job: 'photos delivered … still owed: the floor plan', never 'delivered' or 'not delivered'", !!partWords && /photos delivered, 63 finals/.test(partWords.words) && /still owed: the floor plan$/.test(partWords.words) && !/(?:^|, )(?:not )?delivered$/.test(partWords.words), partWords?.words);
 
   // =========================================================================
   c.head("6 · Slack asks close on evidence, and not when ambiguous");

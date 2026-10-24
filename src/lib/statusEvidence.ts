@@ -253,7 +253,8 @@ export function owedPhrase(owed: Pick<OwedNow, "categories" | "shortfall">): str
     // "3 of 4 videos" is news, "1 of 1 video" is just "the video".
     return u && u.owed > 1 && u.outstanding > 0
       ? `${u.outstanding} of ${u.owed} ${pluralOf(c)}`
-      : `the ${c.trim().toLowerCase()}`;
+      // "the 3D tour", never "the 3d tour" (Oct 23 2026: the watch drafts are client words).
+      : `the ${c.trim().toLowerCase().replace(/\b3d\b/g, "3D")}`;
   });
   if (parts.length === 0) return "";
   return parts.length > 1
