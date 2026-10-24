@@ -279,6 +279,10 @@ export type ReadyVideo = {
    *  file name. The newest is the one offered above; these are named rather
    *  than dropped in silence. */
   alsoOnFile: string[];
+  /** WRONG FILE? (Oct 23 2026): the Review Room's line when this version looks
+   *  like another job's file (lib/wrongCutFile), before it goes to a client.
+   *  Absent: nothing to say, or the check could not run. */
+  wrongFile?: string | null;
   aryeoUrl: string | null;
   aryeoTitle: string;
   /** the Review Room page for this cut, for a last look before it goes */
@@ -1121,6 +1125,17 @@ export async function readyToSend(opts?: ReadyToSendOpts): Promise<ReadyBoard> {
     });
   }
 
+  // WRONG FILE? (Oct 23 2026): the Review Room's own check, once for the whole
+  // board, so a version that looks like another job's file says so before it
+  // goes to a client. Only that kind: "the same file as version 1" was the
+  // reviewer's to weigh, and they approved it. Started now so it runs beside
+  // the reads below; a failed or slow read says nothing.
+  const wrongRead = ready.length
+    ? import("@/lib/wrongCutFile")
+        .then((m) => m.withinMs(m.wrongFileForSubmissions(ready.map((v) => v.submissionId)), 2_500))
+        .catch(() => null)
+    : Promise.resolve(null);
+
   // Where the hub's own Aryeo upload and delivery stands (Oct 19 2026): only
   // ever a run somebody started with Upload to Aryeo and send. A row whose
   // upload a person recorded says so (never "the hub sends it"). A failed
@@ -1150,6 +1165,13 @@ export async function readyToSend(opts?: ReadyToSendOpts): Promise<ReadyBoard> {
   // nothing; the server decides on every press anyway.
   await attachRerunOffers(ready, rendering, winners, s).catch((e) => console.warn("[delivery] run-again offers unavailable", e));
   await attachRerunStamps(rendering).catch((e) => console.warn("[delivery] run-again stamps unavailable", e));
+
+  // The wrong-file read started above, beside the other reads.
+  const wrong = await wrongRead;
+  for (const v of ready) {
+    const w = wrong?.get(v.submissionId);
+    if (w?.strong) v.wrongFile = w.reviewerLine;
+  }
 
   // Late first, then oldest first — the order a person would work them in.
   ready.sort((a, b) => Number(b.overdue) - Number(a.overdue) || a.approvedAtISO.localeCompare(b.approvedAtISO));
