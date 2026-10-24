@@ -873,14 +873,28 @@ export { videoAnchorFor };
 // caller could not tell "the listing has no video" from "Aryeo would not
 // answer". The signal is still null either way — only the STAMPS learn the
 // difference, never the status decision.
-async function aryeoMedia(listingId: string, onError?: (e: unknown) => void): Promise<AryeoMediaSignal | null> {
+async function aryeoMedia(listingId: string, onError?: (e: unknown) => void, projectId?: string): Promise<AryeoMediaSignal | null> {
   try {
     const l = await Aryeo.listing(listingId);
+    // Oct 24 2026: the same read keeps the media library's index of this
+    // listing current (lib/listingMediaIndex). Never part of the decision:
+    // a failure there is swallowed and the signal below is unchanged.
+    if (projectId) await indexListingMedia(projectId, listingId, l);
     return mediaSignalOf(l);
   } catch (e) {
     onError?.(e);
     return null;
   }
+}
+
+/** The media library's listing index (lib/listingMediaIndex), fed by a read
+ *  this engine already made. Quiet by contract: it can never throw into the
+ *  status decision, and it calls nothing outside the database. */
+async function indexListingMedia(projectId: string, listingId: string, l: AryeoListing): Promise<void> {
+  try {
+    const { indexListingReadQuietly } = await import("@/lib/listingMediaIndex");
+    await indexListingReadQuietly(projectId, listingId, l);
+  } catch { /* the index is a convenience; the status pass is not */ }
 }
 
 /** One listing read → the signal, so the hourly pass and the targeted refresh
@@ -974,6 +988,8 @@ export async function refreshListingEvidence(
     }
   }
   const aryeo = mediaSignalOf(l);
+  // Oct 24 2026: the media library's index of this listing, from this read.
+  await indexListingMedia(projectId, p.aryeoListingId, l);
 
   // Merge, never replace: `expected`, `missing`, the Dropbox half and the
   // status engine's own reason all belong to the engine and are none of this
@@ -1086,7 +1102,7 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean, outputs: Out
   const aryeo = p.aryeoListingId
     ? await aryeoMedia(p.aryeoListingId, (e) => {
         aryeoError = (e instanceof Error ? e.message : String(e)).slice(0, 80);
-      })
+      }, p.id)
     : null;
   const aryeoOutcome: SourceOutcome = !p.aryeoListingId ? "unavailable" : aryeo ? "ok" : "failed";
 

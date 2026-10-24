@@ -203,28 +203,43 @@ export function VideoFileRow({ video }: { video: MediaVideoView }) {
   );
 }
 
-/** A group's tiles, a screenful at a time (Show more). */
-export function VideoGroup({ id, label, frame, items, initial, hideListing, headingLevel = 2 }: { id: string; label: string; frame: "vertical" | "horizontal"; items: MediaVideoView[]; initial?: number; hideListing?: boolean; headingLevel?: 2 | 3 }) {
+/**
+ * A group's tiles, a screenful at a time (Show more). `page` (Oct 24 2026,
+ * /media): the server sent only the first page of the group (24, then +24 a
+ * press, PAGE_SIZE), so every tile it sent shows and "Show more" asks the
+ * server for the next page; the count is the group's whole.
+ */
+export function VideoGroup({ id, label, frame, items, initial, hideListing, headingLevel = 2, page }: { id: string; label: string; frame: "vertical" | "horizontal"; items: MediaVideoView[]; initial?: number; hideListing?: boolean; headingLevel?: 2 | 3; page?: { total: number; moreHref: string | null; step: number } }) {
   const Heading = headingLevel === 3 ? "h3" : "h2";
   const step = initial ?? (frame === "vertical" ? 12 : 6);
-  const [shown, setShown] = useState(step);
+  const [revealed, setShown] = useState(step);
+  // Paged by the server: every tile it sent shows (state would outlive a "Show more" navigation).
+  const shown = page ? items.length : revealed;
+  const total = page?.total ?? items.length;
   const more = items.length - shown;
+  const serverMore = page && page.moreHref && more <= 0 ? total - items.length : 0;
   return (
     <section aria-labelledby={`media-group-${id}`} data-media-group={id} className="space-y-3">
       <div className="flex items-baseline justify-between gap-3">
         <Heading id={`media-group-${id}`} className="text-base font-semibold">{label}</Heading>
-        <span className="text-xs tabular-nums text-muted">{items.length} {items.length === 1 ? "video" : "videos"}</span>
+        <span className="text-xs tabular-nums text-muted">{total} {total === 1 ? "video" : "videos"}</span>
       </div>
       <div className={cn("grid gap-3", frame === "vertical" ? "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6" : "grid-cols-1 sm:grid-cols-2 xl:grid-cols-3")}>
         {items.slice(0, shown).map((v) => <VideoTile key={v.key} video={v} frame={frame} hideListing={hideListing} />)}
       </div>
-      {more > 0 && (
+      {more > 0 ? (
         <div className="flex justify-center">
           <button type="button" onClick={() => setShown((n) => n + step)} className={btn}>
             Show {Math.min(step, more)} more <span className="text-muted">({more} left)</span>
           </button>
         </div>
-      )}
+      ) : serverMore > 0 && page?.moreHref ? (
+        <div className="flex justify-center">
+          <Link scroll={false} href={page.moreHref} className={btn} data-media-more={id}>
+            Show {Math.min(page.step, serverMore)} more <span className="text-muted">({serverMore} left)</span>
+          </Link>
+        </div>
+      ) : null}
     </section>
   );
 }

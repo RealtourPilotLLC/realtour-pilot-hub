@@ -82,6 +82,17 @@ export async function GET(req: NextRequest) {
     const { reconcileScripting } = await import("@/lib/scriptSync");
     return reconcileScripting({ max: 30, budgetMs: 40_000 });
   }, { maxMs: 45_000 });
+  // Oct 24 2026 (Jordan: "we should have a lot more premium videos and monthly
+  // social content in the gallery"): the media library's ONE-TIME backfill of
+  // every delivered listing's videos and cover (lib/listingMediaIndex). Idle
+  // (no Aryeo call) until it is started, and again once it has read them all.
+  // At most 36 listing reads a tick, one at a time, 0.4 s apart, inside 60 s;
+  // a 429 waits a minute, doubling to thirty. ~1,550 listings ≈ 11 hours.
+  // Last, so it only ever uses time the steps above left over.
+  await step("listingMediaBackfill", async () => {
+    const { listingMediaBackfillTick } = await import("@/lib/listingMediaIndex");
+    return listingMediaBackfillTick({ max: 36, budgetMs: 60_000, gapMs: 400 });
+  }, { maxMs: 70_000 });
 
   await finish();
   return NextResponse.json({ ok: true, ...out });

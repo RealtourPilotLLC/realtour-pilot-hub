@@ -160,8 +160,10 @@ export const Aryeo = {
 
   // Listings + their media (images/videos/floor plans/interactive/files are nested)
   listings: (q?: Query) => fetchAll<AryeoListing>("/listings", q),
-  listing: (id: string) =>
-    aryeoRequest<{ data: AryeoListing }>(`/listings/${id}`, { query: { include: LISTING_INCLUDES } }).then((r) => r.data),
+  // `timing` (Oct 24 2026): the media index backfill reads with its own
+  // timeout/retry so one slow listing cannot eat a whole tick.
+  listing: (id: string, timing?: { timeoutMs?: number; attempts?: number; backoffMs?: number }) =>
+    aryeoRequest<{ data: AryeoListing }>(`/listings/${id}`, { query: { include: LISTING_INCLUDES }, ...timing }).then((r) => r.data),
 
   // Appointments + scheduling
   appointments: (q?: Query) => fetchAll<AryeoAppointment>("/appointments", { include: "order", ...q }),

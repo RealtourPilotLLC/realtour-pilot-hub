@@ -2520,6 +2520,44 @@ model PortalVideo {
   @@index([videoId])
 }
 
+// THE ARYEO LISTING MEDIA INDEX (Oct 24 2026; Jordan: "we should have a lot
+// more premium videos and monthly social content in the gallery"). What is on
+// each job's Aryeo listing, read once and kept, so the media library
+// (/media, /listings) can show every delivered video and every listing's
+// cover without asking Aryeo per tile. Written ONLY by lib/listingMediaIndex:
+// the one-time backfill (a cursor in AppSetting `listing_media_backfill`) and
+// every listing read the hub already makes (the hourly status pass, Ready to
+// send's re-reads, Aryeo's delivery webhook). One row per (job, Aryeo media
+// id): a listing shared by two jobs is indexed under each, and the library
+// shows the video once. A video taken off the listing keeps its row with
+// `removedAt` set; it comes back (removedAt cleared) if Aryeo shows it again.
+// Aryeo's video files (videos.aryeo.com) and posters (image.mux.com) are
+// unsigned and do not expire (read live Oct 24 2026), so the urls are kept as
+// Aryeo gave them; nothing here is ever composed or guessed.
+model ListingMediaItem {
+  id             String    @id @default(cuid())
+  projectId      String // -> Project (plain ref)
+  aryeoListingId String
+  aryeoMediaId   String // Aryeo's own id for the video / the cover image
+  kind           String // VIDEO | PHOTO_COVER (FLOOR_PLAN | TOUR reserved, not indexed yet)
+  title          String? // as titled on the listing, verbatim
+  durationSec    Int? // Aryeo's `duration` (whole seconds)
+  orientation    String? // vertical | horizontal, only when the Aryeo title says so
+  thumbnailUrl   String? // video: Aryeo's poster; cover: the listing's thumbnail
+  downloadUrl    String? // video: Aryeo's own file; cover: the full-size image
+  playbackUrl    String? // video: Aryeo's stream (Mux HLS)
+  photoCount     Int? // PHOTO_COVER only: gallery photos on the listing
+  position       Int       @default(0) // order on the listing
+  deliveredAt    DateTime? // when it went up (Aryeo's UUIDv7 id), when the id carries a time
+  syncedAt       DateTime  @default(now()) // the last listing read that showed it
+  removedAt      DateTime? // no longer on the listing (as of that read)
+  createdAt      DateTime  @default(now())
+
+  @@unique([projectId, aryeoMediaId])
+  @@index([kind, removedAt])
+  @@index([aryeoListingId])
+}
+
 // A client's suggested change to one of their scripts, straight from the
 // portal (interactive layer, Aug 28). NEVER overwrites the script — it sits
 // OPEN until a human applies it (AI rewrite, original body snapshotted here)
