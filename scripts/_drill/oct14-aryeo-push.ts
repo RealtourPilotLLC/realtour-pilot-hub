@@ -470,22 +470,17 @@ async function main() {
     // A fix lands on photo 2 (a new version, same name in the folder).
     const second = M.order[1];
     await prisma.photoAsset.update({ where: { id: second.photoId }, data: { contentHash: "100 Changed Ct-1-fixed", inspectedHash: "100 Changed Ct-1-fixed" } });
-    const stale = await P.approvePushDelivery(M.job.id, "Kyle");
-    c.ok("Deliver in Aryeo refuses the old set and says what to do", !stale.ok && /changed after they went on the listing/.test(stale.message) && /Approve again/.test(stale.message) && listings.get("L-M")!.delivery === "UNDELIVERED", stale.message);
-    const dmCron = await P.drivePushes({ budgetMs: 30_000 });
-    c.ok("Kyle's approval covered the photos as they were: the cron does not send the change by itself", !dmCron.started.includes(M.job.id));
     const uploads0 = calls.filter((x) => x.kind === "upload").length;
     const oldImg = listings.get("L-M")!.images.find((i) => i.filename === second.deliveryName)!.id;
-    const dm2 = await P.approveJob(M.job.id, "Kyle", { deliver: false });
-    for (let i = 0; i < 10; i++) await P.advancePush(M.job.id, { budgetMs: 30_000 });
+    // Oct 23 2026 (615 Cliff Ln): Deliver on a changed set IS the approval to
+    // send the changes, then it delivers by itself.
+    const stale = await P.approvePushDelivery(M.job.id, "Kyle");
+    c.ok("Deliver in Aryeo on a changed set sends the change first and says so", stale.ok && /changed since they went up/.test(stale.message) && listings.get("L-M")!.delivery === "UNDELIVERED", stale.message);
+    for (let i = 0; i < 14; i++) await P.advancePush(M.job.id, { budgetMs: 30_000 });
     const lm = listings.get("L-M")!;
     const del0 = calls.filter((x) => x.kind === "delete").pop()?.body as { images: string[] } | undefined;
-    c.ok("Kyle approves again", dm2.started, JSON.stringify(dm2));
     c.ok("only the changed photo is replaced: the old one taken off, the new one sent, nothing doubled", JSON.stringify(del0?.images) === JSON.stringify([oldImg]) && calls.filter((x) => x.kind === "upload").length - uploads0 === 1 && lm.images.length === 3 && !lm.images.some((i) => i.id === oldImg), `${JSON.stringify(del0)} uploads=${calls.filter((x) => x.kind === "upload").length - uploads0} ${lm.images.length}`);
-    c.ok("…back in delivery order, up to date", [...lm.images].sort((a, b) => a.index - b.index).map((i) => i.filename).join() === M.order.map((o) => o.deliveryName).join() && (await P.pushProgress(M.job.id))?.state === "DONE" && !(await P.pushProgress(M.job.id))?.changed);
-    const fresh = await P.approveJob(M.job.id, "Kyle", { deliver: true });
-    for (let i = 0; i < 4; i++) await P.advancePush(M.job.id, { budgetMs: 30_000 });
-    c.ok("then Deliver in Aryeo goes", fresh.ok && lm.delivery === "DELIVERED", fresh.message);
+    c.ok("…back in delivery order, then delivered with the one press", [...lm.images].sort((a, b) => a.index - b.index).map((i) => i.filename).join() === M.order.map((o) => o.deliveryName).join() && lm.delivery === "DELIVERED", `${lm.delivery} ${JSON.stringify(await P.pushProgress(M.job.id))}`);
 
     // ======================================================================
     c.head("10 · the cron does not retry a refusal every five minutes");

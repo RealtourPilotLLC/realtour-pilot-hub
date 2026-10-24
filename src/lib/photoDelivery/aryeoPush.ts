@@ -627,7 +627,16 @@ export async function approvePushDelivery(jobId: string, by: string): Promise<{ 
   if (!run) return { ok: false, message: "Nothing has been sent to Aryeo for this job yet." };
   if (run.state === "CONFIRMING" || run.deliveredAt) return { ok: true, message: "Already delivered in Aryeo." };
   if (run.state !== "WAITING" && !(run.state === "DONE" && run.then === "stop")) return { ok: false, message: "The photos are not all on the listing yet. Wait for the upload to finish." };
-  if (await changedSince(jobId, run)) return { ok: false, message: CHANGED };
+  // Oct 23 2026 (615 Cliff Ln, Jordan pressed Deliver after a later visit's 4
+  // photos were added: "This happens when I try to deliver"). Deliver on
+  // photos that changed since they went up IS the approval to send the
+  // changes: the push uploads only what the listing lacks (the duplicate
+  // guard), then delivers by itself, re-delivering for new photos.
+  if (await changedSince(jobId, run)) {
+    if (!job0 || !APPROVE_FROM.has(job0.stage)) return { ok: false, message: CHANGED };
+    const r = await approveJob(jobId, by, { deliver: true, anyway: !!run.anyway });
+    return { ok: r.ok, message: r.ok ? `The photos changed since they went up, so the new ones are going on the listing first, then it delivers. ${r.message}`.trim() : r.message };
+  }
   // Oct 22 2026: a job the sync already reads as delivered (a split job's new
   // photos uploaded onto the delivered listing) still owes the agent the
   // email for them: a re-delivery, once nothing holds the photos.
