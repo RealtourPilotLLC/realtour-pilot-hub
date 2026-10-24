@@ -128,6 +128,9 @@ export const OPERATIONAL_CORE = [
   "DevelopmentItem", "ReadinessAssessment",
   // Oct 21 2026: a shoot's second shooter (upload-page access only).
   "ProjectCrew",
+  // Oct 24 2026: the media library's index of each delivered job's Aryeo
+  // listing (videos and cover; lib/listingMediaIndex). Rebuildable from Aryeo.
+  "ListingMediaItem",
 ] as const;
 
 /** Schema models in neither list, and listed names the schema does not have. */

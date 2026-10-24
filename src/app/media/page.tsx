@@ -47,9 +47,12 @@ export default async function MediaPage({ searchParams }: { searchParams: Promis
   const range = parseRange(one(sp.range));
   const n = pageCount(one(sp.n));
 
-  const [videos, listings] = await Promise.all([
+  const [videos, listings, indexing] = await Promise.all([
     loadFinishedVideos().catch((e) => { console.error("[media] videos read failed", e); return null; }),
     loadDeliveredListings().catch((e) => { console.error("[media] listings read failed", e); return null; }),
+    // Oct 24 2026: while the one-time index of the older Aryeo listings is
+    // under way, say how far it has got (one row read; nothing when it is done).
+    import("@/lib/listingMediaIndex").then((m) => m.listingMediaBackfillLine()).catch(() => null),
   ]);
 
   const keepVideo = (v: MediaVideo) => inRange(v.dateISO, range) && matchesQuery(q, [v.title, v.place, v.clientName, v.eyebrow, v.placement.groupLabel]);
@@ -108,6 +111,8 @@ export default async function MediaPage({ searchParams }: { searchParams: Promis
           })}
         </nav>
 
+        {indexing && <p data-media-indexing className="rounded-xl border bg-surface-2/50 px-3 py-2 text-xs text-muted">{indexing}</p>}
+
         <MediaToolbar key={`${q}|${range.key}|${sort}`} basePath="/media" tab={tab === "standard" ? null : tab} q={q} range={range.key} sort={sort} years={years} />
 
         {tab === "photos" ? (
@@ -138,7 +143,11 @@ export default async function MediaPage({ searchParams }: { searchParams: Promis
           return (
             <div className="space-y-8">
               {groups.map((g) => (
-                <VideoGroup key={g.key} id={g.key} label={g.label} frame={g.frame} items={g.items.map(toVideoView)} />
+                // A page of each group at a time (24, then +24): the server sends no more tiles than show.
+                <VideoGroup
+                  key={g.key} id={g.key} label={g.label} frame={g.frame} items={g.items.slice(0, n).map(toVideoView)}
+                  page={{ total: g.items.length, moreHref: g.items.length > n ? hrefFor({ n: n + PAGE_SIZE }) : null, step: PAGE_SIZE }}
+                />
               ))}
             </div>
           );

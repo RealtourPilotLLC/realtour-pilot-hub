@@ -234,6 +234,45 @@ async function main() {
     c.ok("Media is one door under More for the owner, the office and the creative manager, never a role door", ["OWNER", "ADMIN", "CREATIVE_MANAGER"].every((r) => { const h = menu(r); return count(h, /href="\/media"/g) === 1 && section(h, "more").includes('href="/media"') && !section(h, "work").includes('href="/media"') && h.includes(">Media<"); }));
     c.ok("…and no door for a photographer or an editor, even with a media key", ["PHOTOGRAPHER", "EDITOR"].every((r) => !menu(r, JSON.stringify({ media: true })).includes('href="/media"')));
 
+    // =====================================================================
+    c.head("§9 · Oct 24: the older listings, from the index (no Aryeo call)");
+    // =====================================================================
+    const ix = await import("@/lib/listingMediaIndex");
+    const olive = await prisma.client.create({ data: { name: "Older Olive", phone: "2155550177" } });
+    const older: string[] = [];
+    for (let i = 0; i < 30; i++) {
+      const p = await prisma.project.create({ data: { clientId: olive.id, title: `${500 + i} Older Reel Rd, Oldtown, PA 19100`, status: "DELIVERED", deliveredAt: new Date(T.getTime() - (200 + i) * 86_400_000), aryeoListingId: `L-old-${i}` } });
+      await prisma.deliverable.create({ data: { projectId: p.id, type: "SOCIAL_REEL", productTitle: "Premium Social Media Reel", videoStyle: "premium_social_reel" } });
+      const vid = `0000${i.toString(16).padStart(4, "0")}-2a30-477f-a702-e33712124c22`;
+      await ix.indexListingRead(p.id, `L-old-${i}`, {
+        id: `L-old-${i}`, thumbnail_url: `https://cdn.aryeo.com/listings/old-${i}/resized/thumbnail/thumbnail-1.jpeg`,
+        images: [{ id: `img-old-${i}`, thumbnail_url: `https://cdn.aryeo.com/listings/old-${i}/resized/thumbnail/thumbnail-1.jpeg`, large_url: `https://cdn.aryeo.com/listings/old-${i}/resized/large/large-1.jpeg`, original_url: `https://cdn.aryeo.com/listings/old-${i}/1.jpeg`, display_in_gallery: true }],
+        videos: [{ object: "VIDEO", id: vid, title: `Premium Social Media Reel ${i + 1}`, duration: 60 + i, thumbnail_url: `https://image.mux.com/old-${i}/thumbnail.png?width=800&height=450&smart_crop=true&time=1`, download_url: `https://videos.aryeo.com/listings/old/${vid}.mp4`, playback_url: `https://stream.mux.com/old-${i}` }],
+      });
+      older.push(p.id);
+    }
+    await ix.startListingMediaBackfill("drill");
+    const beforeIx = aryeoCalls.length;
+    const pIx = await media({ tab: "premium" });
+    save("media-premium-indexed", pIx);
+    const pIxTiles = tiles(pIx);
+    c.ok("Premium counts every older reel too (2 hub + 30 from the index)", tabCount(pIx, "premium") === "32", tabCount(pIx, "premium"));
+    c.ok("…a page of 24 tiles in the group, then 'Show 8 more' (the next 24 from the server)", pIxTiles.length === 24 && text(pIx).includes("Show 8 more (8 left)") && /data-media-more="premium_social_reel"[^>]*href="\/media\?tab=premium&amp;n=48"|href="\/media\?tab=premium&amp;n=48"[^>]*data-media-more="premium_social_reel"/.test(pIx) && text(pIx).includes("32 videos"), `${pIxTiles.length} ${text(pIx).match(/Show \d+ more \(\d+ left\)/)?.[0]}`);
+    const pIx2 = await media({ tab: "premium", n: "48" });
+    c.ok("…n=48: all 32, no more", tiles(pIx2).length === 32 && !pIx2.includes("data-media-more="));
+    c.ok("an older tile: Aryeo's title and poster (lazy), Download through the staff route, no Aryeo file address in the page", text(pIx).includes("Premium Social Media Reel 1") && pIx.includes('src="https://image.mux.com/old-0/thumbnail.png?width=800&amp;height=450&amp;smart_crop=true&amp;time=1"') && /href="\/api\/media\/aryeo\/[a-z0-9]+\?dl=1"/.test(pIx) && !pIx.includes("videos.aryeo.com"));
+    c.ok("while the backfill runs, the page says how far it has got", pIx.includes("data-media-indexing") && /Reading the older Aryeo listings: 0 of 67 so far\./.test(text(pIx)), text(pIx).match(/Reading the older[^.]*\./)?.[0] ?? "");
+    const phIx = await media({ tab: "photos", q: "older reel" });
+    c.ok("Photos: an older job with no stored cover shows its indexed listing cover", count(phIx, /data-listing-tile=/g) === 24 && phIx.includes('src="https://cdn.aryeo.com/listings/old-0/resized/thumbnail/thumbnail-1.jpeg"') && !text(phIx).includes("No cover stored"));
+    const idxIx = ssr(await ListingsPage({ searchParams: Promise.resolve({ q: "older reel" }) }));
+    c.ok("/listings: the same covers", idxIx.includes('src="https://cdn.aryeo.com/listings/old-1/resized/thumbnail/thumbnail-1.jpeg"'));
+    c.ok("no Aryeo call to draw any of it", aryeoCalls.length === beforeIx);
+    const lpOld = ssr(await ListingPage({ params: Promise.resolve({ projectId: older[0] }) }));
+    save("listing-page-older", lpOld);
+    c.ok("an older listing page with Aryeo not answering: the hero is the indexed cover, and the index's video is not passed off as a hub master file", text(lpOld).includes("Aryeo didn't answer just now") && lpOld.includes('src="https://cdn.aryeo.com/listings/old-0/resized/thumbnail/thumbnail-1.jpeg"') && !lpOld.includes("data-media-file=") && !lpOld.includes("/api/media/aryeo/"));
+    await prisma.appSetting.update({ where: { key: "listing_media_backfill" }, data: { value: JSON.stringify({ ...(await ix.listingMediaBackfillState()), state: "done" }) } });
+    c.ok("once the backfill is done, the line is gone", !(await media({ tab: "premium" })).includes("data-media-indexing"));
+
     c.ok("nothing left the box but the faked Aryeo listing reads", fence.blocked.length === 0, fence.blocked.join());
     console.log(`\n  rendered pages: ${OUT}`);
     c.summary();

@@ -35,18 +35,19 @@ export default async function ListingPage({ params }: { params: Promise<{ projec
   await requireMediaPage(`/listings/${projectId}`);
   const head = await loadListingHeader(projectId);
   if (!head) notFound();
-  const { project: p, otherShoots } = head;
+  const { project: p, otherShoots, indexCover } = head;
 
   const [aryeo, hub] = await Promise.all([
     p.aryeoListingId ? readAryeoListing(p.aryeoListingId) : Promise.resolve(null),
-    loadFinishedVideos({ projectIds: [p.id] }).catch((e) => { console.error("[listing page] hub videos failed", e); return [] as Awaited<ReturnType<typeof loadFinishedVideos>>; }),
+    // The hub's own files only: the listing's videos are read live just above (the index is /media's).
+    loadFinishedVideos({ projectIds: [p.id] }).then((all) => all.filter((v) => !v.key.startsWith("aryeo:"))).catch((e) => { console.error("[listing page] hub videos failed", e); return [] as Awaited<ReturnType<typeof loadFinishedVideos>>; }),
   ]);
 
   const street = streetOf(p.title) || p.title;
   const town = p.title.split(",").slice(1).join(",").trim() || null;
   const stem = fileStem(p.title, "listing");
   const delivered = p.deliveredAt ? etDateYear(p.deliveredAt) : null;
-  const cover = p.coverImageUrl ?? aryeo?.cover ?? null;
+  const cover = p.coverImageUrl ?? aryeo?.cover ?? indexCover ?? null;
 
   const photos: GalleryPhoto[] = (aryeo?.photos ?? []).map((ph, i) => ({
     thumb: ph.thumb, large: ph.large, caption: ph.caption,

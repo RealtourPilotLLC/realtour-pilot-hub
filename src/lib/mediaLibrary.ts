@@ -6,6 +6,7 @@ import {
   addressKey, cleanVideoTitle, cutDone, fileStem, finishedFileOf, latestPerSlot, orientationOf, placeVideo, programPackageOf, streetOf,
   type MediaPlacement, type Orientation,
 } from "@/lib/mediaLibraryCore";
+import { aryeoMediaUrl, classifyListingVideo, normTitle, sameDuration } from "@/lib/listingMediaCore";
 
 // ---------------------------------------------------------------------------
 // THE MEDIA LIBRARY'S READS (Oct 23 2026; /media, /listings). Database only:
@@ -23,6 +24,18 @@ import {
 // Aryeo listing plays Aryeo's own file and poster. One logical video
 // (ContentVideo) shows once.
 // Test clients are left out (syntheticClientIds), money never appears.
+//
+// AN OLDER LISTING VIDEO (Oct 24 2026; Jordan: "we should have a lot more
+// premium videos and monthly social content in the gallery") is a video on a
+// delivered job's Aryeo listing, read from the hub's index of the listings
+// (ListingMediaItem, lib/listingMediaIndex), never from Aryeo per tile. It is
+// placed by the job's own video rows (its Style Guide type, the same tab
+// rules), titled as Aryeo titles it, posted with Aryeo's poster, and played
+// and downloaded through /api/media/aryeo/<row>. It shows only when it is not
+// a video the hub or the portal already shows: by Aryeo's id (the hub's
+// upload receipts, the portal's keys), else by job + title + length, else
+// when the hub already holds a finished file for every video of that type
+// the job owed (the listing's copies, revisions included, are those videos).
 // ---------------------------------------------------------------------------
 
 export type MediaVideo = {
@@ -137,7 +150,7 @@ export async function loadFinishedVideos(opts: { projectIds?: string[] } = {}): 
     }),
     prisma.portalVideo.findMany({
       where: { ...(scope ? { projectId: { in: scope } } : {}) },
-      select: { id: true, enrollmentId: true, monthId: true, projectId: true, title: true, thumb: true, playback: true, download: true, source: true, deliveredAt: true, videoId: true, submissionId: true, label: true },
+      select: { id: true, enrollmentId: true, monthId: true, projectId: true, title: true, thumb: true, playback: true, download: true, source: true, deliveredAt: true, videoId: true, submissionId: true, label: true, externalKey: true },
     }),
   ]);
 
@@ -196,6 +209,10 @@ export async function loadFinishedVideos(opts: { projectIds?: string[] } = {}): 
     d ? d.videoStyle ?? resolveVideoStyle(d.type, { title: d.productTitle ?? d.label }) : null;
 
   const items: MediaVideo[] = [];
+  // What the index dedupe needs from the hub's tiles and the portal's.
+  const hubTiles: HubTile[] = [];
+  const pvByKey = new Map<string, MediaVideo>();
+  const pvByDownload = new Map<string, MediaVideo>();
 
   // ---- the hub's own finished cuts ----
   const done = cuts
@@ -222,7 +239,8 @@ export async function loadFinishedVideos(opts: { projectIds?: string[] } = {}): 
     const title = named ?? (program ? cleanVideoTitle(c.fileName) : null) ?? (qty > 1 ? `${street ?? "Video"} · video ${c.slot} of ${qty}` : street) ?? "Video";
     const monthLine = monthWords(p.contentMonthId ? monthKeyById.get(p.contentMonthId) : null);
     const productLine = c.deliverable?.productTitle ?? c.deliverable?.label ?? null;
-    items.push({
+    const durationSec = c.topazJob?.sourceDurationSec ?? null;
+    const item: MediaVideo = {
       key: `cut:${c.id}`,
       placement,
       title,
@@ -237,9 +255,14 @@ export async function loadFinishedVideos(opts: { projectIds?: string[] } = {}): 
       poster: null,
       playSrc: `/api/media/video/${c.id}`,
       downloadHref: `/api/media/video/${c.id}?dl=1`,
-      durationSec: c.topazJob?.sourceDurationSec ?? null,
+      durationSec,
       origin: "hub",
       contentVideoId: c.videoId,
+    };
+    items.push(item);
+    hubTiles.push({
+      item, cutId: c.id, projectId: p.id, slotKey: c.deliverableId ? `${c.deliverableId}:${c.slot}` : `sub:${c.id}`, style, durationSec,
+      names: new Set([output?.title, titleOfCv(c.videoId), c.fileName, c.deliverable?.productTitle, c.deliverable?.label].map(normTitle).filter(Boolean)),
     });
   }
 
@@ -256,7 +279,7 @@ export async function loadFinishedVideos(opts: { projectIds?: string[] } = {}): 
     const placement = placeVideo({ style, monthly: true, pkg: programPackageOf(branding?.productTitle ?? null, enrollment?.package, enrollment?.programKind) });
     const title = titleOfCv(r.videoId) ?? cleanVideoTitle(r.title) ?? "Video";
     const name = `${fileStem(title, "video")}.${(/\.([a-z0-9]{2,4})(?:\?|$)/i.exec(r.download)?.[1] ?? "mp4").toLowerCase()}`;
-    items.push({
+    const pv: MediaVideo = {
       key: `pv:${r.id}`,
       placement,
       title,
@@ -274,8 +297,19 @@ export async function loadFinishedVideos(opts: { projectIds?: string[] } = {}): 
       durationSec: null,
       origin: "aryeo",
       contentVideoId: r.videoId,
-    });
+    };
+    items.push(pv);
+    const key = /^aryeo:([^:]+):(.+)$/.exec(r.externalKey);
+    if (key) pvByKey.set(`${key[1]}:${key[2]}`, pv);
+    pvByDownload.set(r.download, pv);
   }
+
+  // ---- older videos, from the index of the Aryeo listings ----
+  items.push(...(await indexedListingVideos({
+    scope, excl, hubTiles, pvByKey, pvByDownload,
+    cuts: cuts.map((c) => ({ id: c.id, projectId: c.projectId, slotKey: c.deliverableId ? `${c.deliverableId}:${c.slot}` : `sub:${c.id}` })),
+    styleOf,
+  })));
 
   // ---- one logical video once: the newest; a tie goes to the hub's file ----
   const byVideo = new Map<string, MediaVideo>();
@@ -307,6 +341,162 @@ export async function loadFinishedVideos(opts: { projectIds?: string[] } = {}): 
     }
   }
   return list;
+}
+
+// ---------------------------------------------------------------------------
+// THE INDEXED ARYEO VIDEOS (Oct 24 2026), deduped against the tiles above.
+// ---------------------------------------------------------------------------
+
+type HubTile = { item: MediaVideo; cutId: string; projectId: string; slotKey: string; style: string | null; durationSec: number | null; names: Set<string> };
+type StyleRow = { type: string; videoStyle: string | null; productTitle: string | null; label: string | null };
+
+/** Delivered: the one rule the Photos tab and /listings use too. */
+const DELIVERED_JOB = { OR: [{ status: "DELIVERED" as const }, { status: "REVISION" as const, deliveredAt: { not: null } }] } satisfies Prisma.ProjectWhereInput;
+
+const missingIndex = (e: unknown) => import("@/lib/listingMediaIndex").then((m) => m.indexTableMissing(e));
+
+async function indexedListingVideos(ctx: {
+  scope?: string[]; excl: string[]; hubTiles: HubTile[];
+  pvByKey: Map<string, MediaVideo>; pvByDownload: Map<string, MediaVideo>;
+  cuts: { id: string; projectId: string; slotKey: string }[];
+  styleOf: (d: StyleRow | null | undefined) => string | null;
+}): Promise<MediaVideo[]> {
+  const rows = await prisma.listingMediaItem
+    .findMany({
+      where: { kind: "VIDEO", removedAt: null, ...(ctx.scope ? { projectId: { in: ctx.scope } } : {}) },
+      select: { id: true, projectId: true, aryeoListingId: true, aryeoMediaId: true, title: true, durationSec: true, orientation: true, thumbnailUrl: true, downloadUrl: true, position: true, deliveredAt: true },
+      orderBy: [{ projectId: "asc" }, { position: "asc" }],
+    })
+    .catch(async (e) => { if (await missingIndex(e)) return []; throw e; });
+  if (!rows.length) return [];
+
+  const projectIds = [...new Set(rows.map((r) => r.projectId))];
+  const projects = await prisma.project.findMany({
+    where: { id: { in: projectIds }, ...DELIVERED_JOB, ...(ctx.excl.length ? { clientId: { notIn: ctx.excl } } : {}) },
+    select: {
+      id: true, title: true, deliveredAt: true, contentMonthId: true, clientId: true,
+      client: { select: { id: true, name: true, socialClient: true, socialPlan: true } },
+      deliverables: { where: { type: { in: [...VIDEOISH] }, removedFromOrderAt: null }, select: { type: true, videoStyle: true, productTitle: true, label: true, quantity: true } },
+    },
+  });
+  if (!projects.length) return [];
+  const projectById = new Map(projects.map((p) => [p.id, p]));
+  const clientIds = [...new Set(projects.map((p) => p.clientId))];
+  const cutIds = ctx.cuts.filter((c) => projectById.has(c.projectId)).map((c) => c.id);
+  const monthIds = [...new Set(projects.map((p) => p.contentMonthId).filter((x): x is string => !!x))];
+  const [enrollments, months, receipts] = await Promise.all([
+    prisma.contentEnrollment.findMany({ where: { clientId: { in: clientIds } }, select: { clientId: true, package: true, programKind: true } }),
+    monthIds.length ? prisma.contentMonth.findMany({ where: { id: { in: monthIds } }, select: { id: true, monthKey: true } }) : Promise.resolve([]),
+    cutIds.length
+      ? prisma.auditLog.findMany({ where: { target: { in: cutIds }, action: { in: ["video_uploaded", "video_upload_corrected"] } }, select: { id: true, target: true, action: true, detail: true } })
+      : Promise.resolve([]),
+  ]);
+  const enrollmentByClient = new Map(enrollments.map((e) => [e.clientId, e]));
+  const monthKeyById = new Map(months.map((m) => [m.id, m.monthKey]));
+
+  // ARYEO'S ID → THE HUB'S CUT: an upload receipt names the listing videos it
+  // went up as (the hub's own push, or the listing check). A receipt a person
+  // corrected names nothing.
+  const corrected = new Set<string>();
+  const uploads: { id: string; target: string; mediaIds: string[] }[] = [];
+  for (const r of receipts) {
+    try {
+      const d = JSON.parse(r.detail) as { receiptId?: unknown; mediaIds?: unknown };
+      if (r.action === "video_upload_corrected") { if (typeof d.receiptId === "string") corrected.add(d.receiptId); continue; }
+      if (Array.isArray(d.mediaIds)) uploads.push({ id: r.id, target: r.target, mediaIds: d.mediaIds.filter((m): m is string => typeof m === "string") });
+    } catch { /* an unreadable receipt proves nothing */ }
+  }
+  const cutOfMedia = new Map<string, string>();
+  for (const u of uploads) if (!corrected.has(u.id)) for (const m of u.mediaIds) cutOfMedia.set(m, u.target);
+  const slotOfCut = new Map(ctx.cuts.map((c) => [c.id, c.slotKey]));
+  const hubBySlot = new Map(ctx.hubTiles.map((h) => [h.slotKey, h]));
+  const hubsByProject = new Map<string, HubTile[]>();
+  for (const h of ctx.hubTiles) hubsByProject.set(h.projectId, [...(hubsByProject.get(h.projectId) ?? []), h]);
+
+  // A LISTING SHARED BY TWO JOBS (12 live): its video shows once, under the
+  // job it was delivered for (the first delivered after it went up), else the newest.
+  const ownerOf = new Map<string, string>();
+  const byMedia = new Map<string, typeof rows>();
+  for (const r of rows) if (projectById.has(r.projectId)) byMedia.set(r.aryeoMediaId, [...(byMedia.get(r.aryeoMediaId) ?? []), r]);
+  for (const [mediaId, list] of byMedia) {
+    const jobs = list.map((r) => projectById.get(r.projectId)!).sort((a, b) => (a.deliveredAt?.getTime() ?? 0) - (b.deliveredAt?.getTime() ?? 0));
+    const up = list[0].deliveredAt?.getTime() ?? null;
+    const after = up != null ? jobs.find((j) => (j.deliveredAt?.getTime() ?? 0) >= up - 86_400_000) : undefined;
+    ownerOf.set(mediaId, (after ?? jobs[jobs.length - 1]).id);
+  }
+
+  const fill = (to: MediaVideo, r: (typeof rows)[number], poster: boolean) => {
+    if (to.durationSec == null && r.durationSec != null) to.durationSec = r.durationSec;
+    if (poster && !to.poster && r.thumbnailUrl) to.poster = r.thumbnailUrl;
+  };
+
+  const out: MediaVideo[] = [];
+  for (const r of rows) {
+    const p = projectById.get(r.projectId);
+    if (!p || ownerOf.get(r.aryeoMediaId) !== p.id) continue;
+    // 1 · the portal already shows it (its key is Aryeo's id; an older row matches by the file's address).
+    const pv = ctx.pvByKey.get(`${r.aryeoListingId}:${r.aryeoMediaId}`) ?? (r.downloadUrl ? ctx.pvByDownload.get(r.downloadUrl) : undefined);
+    if (pv) { fill(pv, r, false); continue; }
+    // 2 · the hub put it there (an upload receipt names this Aryeo id): the hub's file wins.
+    const cutId = cutOfMedia.get(r.aryeoMediaId);
+    const viaReceipt = cutId ? hubBySlot.get(slotOfCut.get(cutId) ?? "") : undefined;
+    if (viaReceipt) { fill(viaReceipt.item, r, viaReceipt.cutId === cutId); continue; }
+    // 3 · the same job, the same title, the same length (when both are known).
+    const hubs = hubsByProject.get(p.id) ?? [];
+    const t = normTitle(r.title);
+    const named = t ? hubs.filter((h) => h.names.has(t) && sameDuration(h.durationSec, r.durationSec) !== false) : [];
+    if (named.length) { if (named.length === 1) fill(named[0].item, r, sameDuration(named[0].durationSec, r.durationSec) === true); continue; }
+    // 4 · the hub already holds a finished file for every video of this type the job owed.
+    const styles = p.deliverables.map((d) => ({ style: ctx.styleOf(d), d }));
+    const style = classifyListingVideo(r.title, styles.map((x) => x.style));
+    const owed = styles.filter((x) => x.style === style).reduce((n, x) => n + Math.max(1, x.d.quantity ?? 1), 0);
+    if (style && owed > 0 && hubs.filter((h) => h.style === style).length >= owed) continue;
+
+    const enrollment = enrollmentByClient.get(p.clientId);
+    const onPlan = !!enrollment || !!p.client?.socialClient || !!p.client?.socialPlan;
+    const monthly = !!p.contentMonthId || onPlan;
+    const own = styles.find((x) => x.style === style)?.d;
+    const branding = styles.find((x) => x.style === "personal_branding")?.d;
+    const placement = placeVideo({ style, monthly, pkg: monthly ? programPackageOf(branding?.productTitle ?? own?.productTitle ?? null, enrollment?.package ?? p.client?.socialPlan ?? null, enrollment?.programKind) : null });
+    const program = placement.tab === "monthly" && !!p.contentMonthId;
+    const up = r.deliveredAt;
+    const at = up && p.deliveredAt ? (up > p.deliveredAt ? up : p.deliveredAt) : up ?? p.deliveredAt;
+    out.push({
+      key: `aryeo:${r.id}`,
+      placement,
+      title: cleanVideoTitle(r.title) ?? (streetOf(p.title) || "Video"),
+      eyebrow: program ? monthWords(monthKeyById.get(p.contentMonthId!)) : own?.productTitle ?? own?.label ?? null,
+      place: p.title,
+      clientId: p.client?.id ?? p.clientId,
+      clientName: p.client?.name ?? null,
+      projectId: p.id,
+      dateISO: at?.toISOString() ?? null,
+      dateText: at ? `Delivered ${etDateYear(at)}` : null,
+      orientation: r.orientation === "vertical" || r.orientation === "horizontal" ? r.orientation : null,
+      poster: r.thumbnailUrl,
+      playSrc: `/api/media/aryeo/${r.id}`,
+      downloadHref: `/api/media/aryeo/${r.id}?dl=1`,
+      durationSec: r.durationSec,
+      origin: "aryeo",
+      contentVideoId: null,
+    });
+  }
+  return out;
+}
+
+/** The file behind an indexed Aryeo video, for /api/media/aryeo/<row>: still on its listing, on a delivered job, on Aryeo's own host. */
+export async function indexedVideoFile(id: string): Promise<{ ok: true; url: string; title: string; ext: string } | { ok: false; status: 404; error: string }> {
+  const row = await prisma.listingMediaItem
+    .findUnique({ where: { id }, select: { kind: true, removedAt: true, downloadUrl: true, title: true, projectId: true } })
+    .catch(async (e) => { if (await missingIndex(e)) return null; throw e; });
+  if (!row || row.kind !== "VIDEO") return { ok: false, status: 404, error: "Not found" };
+  if (row.removedAt) return { ok: false, status: 404, error: "That video is no longer on its Aryeo listing, so it isn't in the media library." };
+  const p = await prisma.project.findFirst({ where: { id: row.projectId, ...DELIVERED_JOB }, select: { title: true } });
+  if (!p) return { ok: false, status: 404, error: "That video's job isn't a delivered listing, so it isn't in the media library." };
+  const u = aryeoMediaUrl(row.downloadUrl);
+  if (!u) return { ok: false, status: 404, error: "No file of Aryeo's is on record for that video." };
+  const ext = (/\.([a-z0-9]{2,4})$/i.exec(u.pathname)?.[1] ?? "mp4").toLowerCase();
+  return { ok: true, url: u.toString(), title: cleanVideoTitle(row.title) ?? (streetOf(p.title) || "video"), ext };
 }
 
 // ---------------------------------------------------------------------------
@@ -364,7 +554,8 @@ const KIND_ORDER = ["Photos", "Video", "Floor plan", "3D tour"];
 /** Every delivered listing, newest first (the evidence read is one small query, regex-extracted so a stray row can't break it). */
 export async function loadDeliveredListings(): Promise<ListingCard[]> {
   const excl = await excludedClients();
-  const [rows, evidence] = await Promise.all([
+  const { indexedCovers } = await import("@/lib/listingMediaIndex");
+  const [rows, evidence, indexCovers] = await Promise.all([
     prisma.project.findMany({
       where: {
         aryeoListingId: { not: null },
@@ -383,13 +574,18 @@ export async function loadDeliveredListings(): Promise<ListingCard[]> {
         substring("statusEvidence" from '"cover":"(https://[^"]+)"') as cover
       from "Project"
       where "statusEvidence" is not null and status in ('DELIVERED', 'REVISION')`,
+    // Oct 24 2026: the listing's own cover from the index of the Aryeo
+    // listings, for the ~1,000 older jobs that never stored one.
+    indexedCovers(),
   ]);
   const ev = new Map(evidence.map((e) => [e.id, e]));
   const out: ListingCard[] = [];
   for (const p of rows) {
     const e = ev.get(p.id);
-    const count = e?.photos != null && /^\d+$/.test(e.photos) ? Number(e.photos) : null;
-    const cover = p.coverImageUrl ?? e?.cover ?? null;
+    const ix = indexCovers.get(p.id);
+    const evCount = e?.photos != null && /^\d+$/.test(e.photos) ? Number(e.photos) : null;
+    const count = ix?.photoCount != null && ix.photoCount > 0 && !evCount ? ix.photoCount : evCount;
+    const cover = p.coverImageUrl ?? e?.cover ?? ix?.url ?? null;
     const orderedPhotos = p.deliverables.some((d) => KIND_WORD[d.type] === "Photos");
     const hasPhotos = !!cover || (count != null ? count > 0 : orderedPhotos);
     const words = [...new Set(p.deliverables.map((d) => KIND_WORD[d.type]).filter((w): w is string => !!w))];
@@ -454,8 +650,11 @@ export async function loadListingHeader(projectId: string) {
       })
     : [];
   const key = addressKey(p.title);
+  // Oct 24 2026: the indexed cover, for a job that never stored one (the page prefers Aryeo's live cover).
+  const indexCover = p.coverImageUrl ? null : await import("@/lib/listingMediaIndex").then((m) => m.indexedCovers([p.id])).then((m) => m.get(p.id)?.url ?? null).catch(() => null);
   return {
     project: p,
+    indexCover,
     otherShoots: siblings.filter((s) => addressKey(s.title) === key).map((s) => ({ projectId: s.id, dateText: s.deliveredAt ? etDateYear(s.deliveredAt) : null })),
   };
 }
