@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { AT_RISK_HOURS, owedNow, owedPhrase, owedVerb, parseEvidence } from "@/lib/statusEvidence";
+import { AT_RISK_HOURS, owedNow, owedPhrase, owedVerb, parseEvidence, sameCategory } from "@/lib/statusEvidence";
 import { pinnedPromise } from "@/lib/turnaround";
 import { etDateTime } from "@/lib/datetime";
 
@@ -456,6 +456,58 @@ export async function autoDraftAtRiskUpdate(input: {
     const again = await prisma.smartTask.findUnique({ where: { dedupeKey }, select: { id: true } });
     return again ? { ok: true, taskId: again.id, created: false, draft } : { ok: false, message: "The draft task could not be saved." };
   }
+}
+
+/**
+ * A WATCH DRAFT SAYS WHAT IS STILL OWED (Oct 23 2026, Jordan, about 30 Caedman
+ * Dr: "Hub is saying photos aren't delivered … but they are. It's just the
+ * floorplan that's missing"). The draft is written once, three covered hours
+ * before the promise, from that moment's evidence ("the photos and the floor
+ * plan"); a job that then delivers part of its order stays undelivered as a
+ * whole, so the close sweep below leaves it open, still naming what went out.
+ * Each sweep re-reads the job's evidence and rewrites the draft, the title's
+ * summary and the client text, to the parts still owed. A text a person has
+ * edited (it no longer reads as the template) keeps its words; only the
+ * summary is brought up to date. Nothing is ever sent from here.
+ */
+export async function refreshWatchDrafts(): Promise<{ refreshed: number }> {
+  const open = await prisma.smartTask.findMany({
+    where: { taskType: "at_risk_update", reasonCreated: WATCH_DRAFT_REASON, status: { notIn: ["COMPLETED", "CANCELLED"] }, projectId: { not: null } },
+    select: { id: true, projectId: true, dedupeKey: true, description: true, summary: true },
+    take: 100,
+  });
+  if (open.length === 0) return { refreshed: 0 };
+  const projects = await prisma.project.findMany({
+    where: { id: { in: open.map((t) => t.projectId as string) }, status: { notIn: ["DELIVERED", "CANCELLED"] }, deliveredAt: null },
+    select: { id: true, title: true, statusEvidence: true, client: { select: { name: true } } },
+  });
+  const byId = new Map(projects.map((p) => [p.id, p]));
+  let refreshed = 0;
+  for (const t of open) {
+    const p = byId.get(t.projectId as string);
+    const iso = t.dedupeKey?.match(/^at-risk:[^:]+:(.+)$/)?.[1];
+    const promisedAt = iso ? new Date(iso) : null;
+    if (!p || !promisedAt || Number.isNaN(promisedAt.getTime())) continue;
+    const ev = parseEvidence(p.statusEvidence);
+    const owed = owedNow(ev);
+    const phrase = owedPhrase(owed);
+    if (!phrase) continue; // nothing named as owed: the close sweep decides
+    const street = streetOf(p.title);
+    const firstName = (p.client.name ?? "").trim().split(/\s+/)[0] || null;
+    const draft = atRiskTemplate({ firstName, street, owed: phrase, verb: owedVerb(owed), promisedAt });
+    const done = (ev?.present ?? []).filter((c) => !owed.categories.some((o) => sameCategory(o, c)));
+    const summary = `Still owed: ${phrase}, promised by ${promiseWords(promisedAt)}.${done.length ? ` Already delivered: ${done.map((c) => `the ${c.trim().toLowerCase()}`).join(" and ")}.` : ""} The update below is drafted and NOT sent. If the job will not make it, send it from the client's conversation; if it will, close this task.`.slice(0, 500);
+    // The template's own shape: a text a person rewrote is theirs to keep.
+    const untouched = (t.description ?? "").startsWith(`${firstName ? `Hi ${firstName}, ` : "Hi, "}a quick update on ${street}: `) && / running behind the time we promised \(.+\)\. We'll confirm the exact delivery time with you\. Sorry for the wait\.$/.test(t.description ?? "");
+    const description = untouched ? draft : t.description;
+    if (description === t.description && summary === t.summary) continue;
+    const r = await prisma.smartTask.updateMany({
+      where: { id: t.id, status: { notIn: ["COMPLETED", "CANCELLED"] }, description: t.description, summary: t.summary },
+      data: { description, summary },
+    });
+    refreshed += r.count;
+  }
+  return { refreshed };
 }
 
 /** A watch draft whose job went out after all is noise on Kyle's list: closed, with the reason. */

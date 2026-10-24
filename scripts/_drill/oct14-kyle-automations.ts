@@ -409,6 +409,23 @@ async function main() {
   c.ok("switched off: no DM", dmsTo(S.kyle, /6 Off St/).length === 0);
   await putSetting("internal_alerts", { coverage: { weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: null } });
   void morning;
+  // Oct 23 2026 (Jordan, 30 Caedman Dr: "Hub is saying photos aren't
+  // delivered … It's just the floorplan that's missing"): a job that delivers
+  // part of its order stays open as a whole; its watch draft names only what
+  // is still owed, and a text a person rewrote keeps its words.
+  const partEv = (present: string[], missing: string[]) => ev({ expected: ["Photos", "Floor plan"], present, missing });
+  const part = await prisma.project.create({ data: { title: "30 Part St, Royersford, PA", clientId: nina.id, status: "EDITING", shootDate: THU(9), promisedDueAt: FRI(16, 0), statusEvidence: partEv([], ["Photos", "Floor plan"]), deliverables: { create: [{ type: "PHOTOS", label: "Photos", quantity: 1 }, { type: "FLOORPLAN", label: "Floor plan", quantity: 1 }] } } });
+  await pw.sweepPromiseWatch(setNow(FRI(13, 0)));
+  const partDraft = await prisma.smartTask.findFirst({ where: { taskType: "at_risk_update", projectId: part.id } });
+  c.ok("partial order: the draft first names everything owed (the photos and the floor plan)", /the photos and the floor plan are running behind/.test(partDraft?.description ?? ""), partDraft?.description ?? "none");
+  await prisma.project.update({ where: { id: part.id }, data: { statusEvidence: partEv(["Photos"], ["Floor plan"]) } });
+  await pw.sweepPromiseWatch(setNow(FRI(13, 5)));
+  const partNow = await prisma.smartTask.findFirst({ where: { id: partDraft?.id } });
+  c.ok("the photos went out: the draft now names only the floor plan, and the summary says the photos are delivered", partNow?.status === "OPEN" && /the floor plan is running behind/.test(partNow.description ?? "") && !/photos/.test(partNow.description ?? "") && /^Still owed: the floor plan, promised by .+ Already delivered: the photos\./.test(partNow.summary ?? ""), `${partNow?.description} | ${partNow?.summary}`);
+  await prisma.smartTask.update({ where: { id: partDraft!.id }, data: { description: "Hi Nina, the floor plan is coming tonight, I'll text you when it's on." } });
+  await prisma.project.update({ where: { id: part.id }, data: { statusEvidence: partEv(["Photos"], ["Floor plan"]) } });
+  await pw.sweepPromiseWatch(setNow(FRI(13, 10)));
+  c.ok("…a text Kyle rewrote keeps his words", (await prisma.smartTask.findFirst({ where: { id: partDraft?.id } }))?.description === "Hi Nina, the floor plan is coming tonight, I'll text you when it's on.");
 
   // =========================================================================
   c.head("6 · Slack asks close on evidence, and not when ambiguous");

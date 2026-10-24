@@ -125,9 +125,11 @@ export async function sweepPromiseWatch(now: Date = new Date()): Promise<Promise
 }
 
 async function sweepJobPromises(now: Date): Promise<PromiseWatchResult> {
-  const { closeDeliveredWatchDrafts } = await import("@/lib/atRiskUpdates");
-  // Desk truth outside the switch: a watch draft whose job went out closes.
+  const { closeDeliveredWatchDrafts, refreshWatchDrafts } = await import("@/lib/atRiskUpdates");
+  // Desk truth outside the switch: a watch draft whose job went out closes,
+  // and one whose job went out in part names only what is still owed.
   const closedDrafts = (await closeDeliveredWatchDrafts().catch(() => ({ closed: 0 }))).closed;
+  await refreshWatchDrafts().catch(() => ({ refreshed: 0 }));
   const { internalAlertRules } = await import("@/lib/settings");
   const rules = await internalAlertRules();
   if (!rules.promiseWatch.enabled) return { checked: 0, alerted: 0, drafted: 0, closedDrafts, skipped: "switched off (Settings, Internal alerts, Delivery watch)", jobs: [] };
