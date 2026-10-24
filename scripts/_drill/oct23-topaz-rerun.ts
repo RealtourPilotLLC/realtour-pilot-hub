@@ -547,6 +547,7 @@ async function main() {
     c.ok("the Video Review Room: a With Topaz list in Ready to send (step, percent, run-again stamp), refreshing while one is in the pass", /With Topaz \(\{finishing\.length\}\)/.test(room) && /<WithTopazRow key=\{r\.key\} r=\{r\} \/>/.test(room) && /Run through Topaz again \{etDateTime/.test(room) && /\(moving \|\| finishing\.length > 0\) && <AutoRefresh/.test(room) && /with Topaz` : null/.test(room));
     const button = src("src/components/ops/RerunTopaz.tsx");
     c.ok("the button asks first and shows the cost before it spends; it calls the guarded action", /setAsking\(true\)/.test(button) && /rerunCostLine/.test(button) && /rerunTopazAction/.test(button) && !/from "@\/lib\/topazJobs"/.test(button));
+    c.ok("…and the confirm stays open until Yes or Cancel (no timer reverting it, Oct 23 2026: two phone presses never reached the server)", !/setTimeout/.test(button) && />Cancel</.test(button) && /busyLabel="Starting\.\.\."/.test(button));
 
     // The data each screen reads, built by the shipped readers.
     const { videoDeliveryBoard } = await import("@/lib/videoDelivery");
