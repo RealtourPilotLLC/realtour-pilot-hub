@@ -190,7 +190,10 @@ async function main() {
     c.ok("James's doors: Photo Delivery after Monthly Content, where the owner's menu has it", hrefs(section(jamesMenu, "work")).join() === "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay" && labels(section(jamesMenu, "work")).join() === "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Uploads,Shoots,My Performance", `${hrefs(section(jamesMenu, "work")).join()} / ${labels(section(jamesMenu, "work")).join()}`);
     c.ok("…and still no Your list, no Messages", !hrefs(jamesMenu).includes("/ops/checklist") && !hrefs(jamesMenu).includes("/communications"));
     c.ok("a photos override takes the door away", !hrefs(menu({ name: "J", email: "j@x", role: "CREATIVE_MANAGER", permissions: JSON.stringify({ photos: false }) })).includes("/ops/photo-delivery"));
-    c.ok("a photographer with a photos override gets no door (the pages would bounce them)", !hrefs(menu({ name: "H", email: "h@x", role: "PHOTOGRAPHER", permissions: JSON.stringify({ photos: true }) })).includes("/ops/photo-delivery"));
+    // Oct 23 2026 audit: Jordan granted Harrison Photo Delivery by name and the
+    // door never showed; a grant now opens the desk, view only (loadViewer.admitted).
+    c.ok("a photographer Jordan granted Photo Delivery gets the door (the desk admits them, view only)", hrefs(menu({ name: "H", email: "h@x", role: "PHOTOGRAPHER", permissions: JSON.stringify({ photos: true }) })).includes("/ops/photo-delivery"));
+    c.ok("…and one without the grant still gets none", !hrefs(menu({ name: "H", email: "h@x", role: "PHOTOGRAPHER", permissions: null })).includes("/ops/photo-delivery"));
     c.ok("Kyle's doors did not move", hrefs(section(menu({ name: "Kyle", email: kyle.email, role: "ADMIN" }), "work")).join() === "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs");
 
     // =====================================================================
