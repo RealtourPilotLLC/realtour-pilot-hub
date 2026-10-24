@@ -853,7 +853,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
           ? { kind: "video-send", submissionId: r.submissionId, street: clean(r.street), label: "Try again", openAsks: asks, asksUnknown: !!s?.asksUnknown, listingWarning: null, uploadOnly: false }
           : p && r.submissionId && (p.canDeliverNow || p.canRelease)
             ? { kind: "video-push", submissionId: r.submissionId, canDeliverNow: p.canDeliverNow, canRelease: p.canRelease, uploadedOnly: !!p.uploadedOnly }
-            : { kind: "link", label: "Open in Videos", href: r.reviewHref ?? "/review" },
+            : { kind: "link", label: "Open in Video Delivery", href: r.reviewHref ?? "/review" },
       });
     } else if (p?.uploadedOnly && p.canDeliverNow && r.submissionId) {
       Object.assign(a, { status: `On Aryeo, not sent yet (${approved.toLowerCase()})`, action: { kind: "video-push", submissionId: r.submissionId, canDeliverNow: true, canRelease: p.canRelease, uploadedOnly: true } });
@@ -862,7 +862,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     } else if (p?.tone === "failed") {
       Object.assign(a, {
         tone: "failed", status: `Upload to Aryeo stopped: ${clean(p.says)}`,
-        action: p.canStart && s && r.submissionId ? { kind: "video-send", submissionId: r.submissionId, street: clean(r.street), label: "Try again", openAsks: asks, asksUnknown: s.asksUnknown, listingWarning: null, uploadOnly: false } : { kind: "link", label: "Open in Videos", href: r.reviewHref ?? "/review" },
+        action: p.canStart && s && r.submissionId ? { kind: "video-send", submissionId: r.submissionId, street: clean(r.street), label: "Try again", openAsks: asks, asksUnknown: s.asksUnknown, listingWarning: null, uploadOnly: false } : { kind: "link", label: "Open in Video Delivery", href: r.reviewHref ?? "/review" },
       });
     } else {
       const canPress = !!s && !s.byHandWhy && (p ? p.canStart : false);
@@ -870,7 +870,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
         status: s?.byHandWhy ? `${approved}: ${clean(s.byHandWhy)}` : `${approved}, ready to send${asks.length ? ` · check ${plural(asks.length, "client request")} first` : ""}`,
         action: canPress && s && r.submissionId
           ? { kind: "video-send", submissionId: r.submissionId, street: clean(r.street), label: p?.canRetry ? "Try again" : s.uploaded ? "Send" : "Upload to Aryeo and send", openAsks: asks, asksUnknown: s.asksUnknown, listingWarning: s.listingWarning, uploadOnly: !p?.canRetry && !s.uploaded }
-          : { kind: "link", label: "Open in Videos", href: r.reviewHref ?? "/review" },
+          : { kind: "link", label: "Open in Video Delivery", href: r.reviewHref ?? "/review" },
       });
     }
     // Run Topaz again (Jordan, Oct 23 2026) beside the video's send, wherever
@@ -1434,8 +1434,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       reason: `${inReview ? `Waiting on ${creativeName}'s review` : `Waiting on ${editor}`}: ${clean(r.stage)}`,
       who, dueISO: r.promiseISO, dueWords: late && r.lateHours != null ? `Late by ${lateWords(r.lateHours)}` : dueWordsFor(r.promiseISO, now), late,
       rank: late ? RANK.overdue : RANK.today,
-      primary: late ? { label: "Follow up", action: { kind: "link", label: "Open in Videos", href: r.reviewHref ?? "/review" } } : null,
-      actions: [{ kind: "link", label: "Open in Videos", href: r.reviewHref ?? "/review" }],
+      primary: late ? { label: "Follow up", action: { kind: "link", label: "Open in Video Delivery", href: r.reviewHref ?? "/review" } } : null,
+      actions: [{ kind: "link", label: "Open in Video Delivery", href: r.reviewHref ?? "/review" }],
       href: r.reviewHref ?? "/review",
       panel: { kind: "task", lines: [{ label: "Video", value: `${street} · ${clean(r.label)}` }, { label: "Where it stands", value: clean(r.stage) }, { label: "Waiting on", value: who }, ...(r.promiseISO ? [{ label: "Promised", value: etDateTime(r.promiseISO) }] : [])] },
       sinceISO: null,

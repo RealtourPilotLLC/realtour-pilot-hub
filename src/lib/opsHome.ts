@@ -1015,10 +1015,11 @@ export async function buildDashboard(opts: DashboardOpts): Promise<Dashboard> {
       ].filter(Boolean).join(" · "),
       owner: inReview ? "Review · the Video Review Room" : `${editor ?? "The editor"} · video editing`,
       // "Open in Videos", not "Remind John" (audit A6): the button only ever
-      // opened the room; nothing was sent to anyone.
+      // opened the room; nothing was sent to anyone. Named after its menu door
+      // since Oct 23 2026 ("Video Delivery").
       action: inReview
         ? { label: "Review it", href: r.reviewHref ?? `/review/${r.projectId}` }
-        : { label: "Open in Videos", href: "/review" },
+        : { label: "Open in Video Delivery", href: "/review" },
     });
   }
 
