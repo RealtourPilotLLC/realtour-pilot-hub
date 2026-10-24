@@ -5,6 +5,7 @@ import { Section } from "@/components/ui/Section";
 import { cn } from "@/lib/utils";
 import { ReviewMutationControls } from "@/components/content/ReviewMutationControls";
 import { LibraryIdentityEditor } from "@/components/content/LibraryIdentityEditor";
+import { GenerateCaptionButton } from "@/components/content/GenerateCaptionButton";
 
 // ---------------------------------------------------------------------------
 // CONTENT — the shared video library, seen with STAFF permissions (spec §17).
@@ -106,13 +107,15 @@ const STATUS_TONE: Record<string, string> = {
 };
 
 export function ContentLibraryPanel({
-  rows, pipelineOnly, monthLabelText, identity,
+  rows, pipelineOnly, monthLabelText, identity, captionTool = false,
 }: {
   rows: LibraryVideoUi[];
   pipelineOnly: { id: string; title: string; status: string; monthKey: string | null; shootDateISO: string | null }[];
   monthLabelText: string | null;
   /** CP-12: present = the identity tool is offered (the actions re-check the role). */
   identity?: LibraryIdentityOptions | null;
+  /** Oct 24 2026: "Generate an Instagram caption" on a video with an approved version and none yet (the office, the owner, the creative manager). */
+  captionTool?: boolean;
 }) {
   const released = rows.filter((v) => v.cuts.some((c) => c.releasedToClientAtISO)).length;
   const internalOnly = rows.filter((v) => v.cuts.length > 0 && !v.cuts.some((c) => c.releasedToClientAtISO)).length;
@@ -222,6 +225,7 @@ export function ContentLibraryPanel({
                     </div>
                   )}
                   {v.caption && <CaptionBlock title={v.title} caption={v.caption} />}
+                  {!v.caption && captionTool && v.status !== "ARCHIVED" && v.cuts.some((c) => c.status === "APPROVED") && <GenerateCaptionButton videoId={v.id} title={v.title} />}
                   <ClientReview v={v} />
                   {identity && v.identity && <LibraryIdentityEditor options={identity} video={{ id: v.id, title: v.title, topicId: v.topicId, scriptId: v.scriptId, kind: v.kind, monthKey: v.monthKey, status: v.status }} identity={v.identity} />}
                 </div>

@@ -749,6 +749,40 @@ export type StaffCaptionUi = {
   gaps: string[];
 };
 
+/**
+ * "GENERATE AN INSTAGRAM CAPTION" (Jordan, Oct 24 2026: "any that don't have
+ * captions, have a button that says generate an Instagram caption"). A
+ * person's press from Monthly Content, for a video with an approved version
+ * and no caption yet (older videos, approved before automatic captions began).
+ * The transcript first: when the approved version has none, it is requested
+ * and the transcript driver runs now (Deepgram reads a sub-minute video in
+ * seconds); then one draft from the real spoken words, by the same engine and
+ * rules as the automatic one. No transcript to be had → the script, and the
+ * caption says so. The office's guard (requireCreativeLead) is the action's.
+ */
+export async function generateCaptionForStaff(videoId: string, by: { userId: string; name: string | null }): Promise<R & { drafted?: number }> {
+  const video = await prisma.contentVideo.findUnique({ where: { id: videoId } });
+  if (!video) return { ok: false, message: "That video no longer exists." };
+  if (!(await assistantFor(video.clientId))) return { ok: false, message: "The caption assistant is switched off for this client." };
+  const ids = [video.finalSubmissionId, video.approvedSubmissionId, video.currentSubmissionId].filter((x): x is string => !!x);
+  const approved = ids.length
+    ? await prisma.reviewSubmission.findFirst({ where: { id: { in: ids }, status: "APPROVED" }, orderBy: { round: "desc" }, select: { id: true } })
+    : null;
+  if (!approved) return { ok: false, message: "Approve a version of this video first: the caption is written from the approved video." };
+  const { transcriptForCut, requestCutTranscript, runCutTranscriptDriver } = await import("@/lib/cutTranscripts");
+  const had = await transcriptForCut(approved.id).catch(() => null);
+  if (!had?.text) {
+    await requestCutTranscript(approved.id, by.name ?? by.userId).catch(() => null);
+    // A sub-minute video is read in seconds: start it with 15 s of room, not the cron's 45.
+    await runCutTranscriptDriver({ limit: 3, budgetMs: 40_000, minStartMs: 15_000 }).catch(() => null);
+  }
+  const r = await draftCaptionRows({
+    video, transcriptSubmissionId: approved.id, draftRef: approved.id, requestedBy: by.userId, unattended: false,
+    dedupeKey: `caption-staff:${approved.id}:${Date.now()}`, scope: { staff: true },
+  });
+  return { ok: r.ok, message: r.message, ...(r.drafted != null ? { drafted: r.drafted } : {}) };
+}
+
 export async function staffCaptionsFor(videoIds: string[]): Promise<Map<string, StaffCaptionUi>> {
   const out = new Map<string, StaffCaptionUi>();
   if (!videoIds.length) return out;

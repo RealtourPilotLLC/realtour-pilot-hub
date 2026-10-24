@@ -119,6 +119,18 @@ export function cutIdentityHash(cut: Pick<CutRow, "id" | "contentHash" | "blobUr
   return `ident:${h}`;
 }
 
+/** A Dropbox temporary link to the cut's delivered file: the checked Topaz file
+ *  when the pass finished, else the editor's approved copy. Null = neither. */
+async function dropboxLinkForCut(submissionId: string): Promise<string | null> {
+  const sub = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { finalPath: true, topazJob: { select: { state: true, finalPath: true } } } });
+  const topaz = sub?.topazJob?.state === "done" && sub.topazJob.finalPath && !sub.topazJob.finalPath.includes("/superseded/") ? sub.topazJob.finalPath : null;
+  const path = topaz ?? sub?.finalPath ?? null;
+  if (!path) return null;
+  const { dbx } = await import("@/lib/integrations/dropbox");
+  const r = await dbx<{ link?: string }>("files/get_temporary_link", { path });
+  return typeof r?.link === "string" && r.link.startsWith("https://") ? r.link : null;
+}
+
 async function loadCut(submissionId: string): Promise<CutRow | null> {
   return prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: CUT_SELECT });
 }
@@ -634,7 +646,13 @@ async function transcribeOne(id: string, provider: TranscriptionProvider, timeou
   // (Oct 23 2026: reached now. Deepgram is connected and the AI work job runs
   // this driver; the approved cut's own file is what Deepgram is handed.)
   const source = await fetchableCutUrl(cut, { ttlMs: 2 * 3600_000, purpose: "transcription" });
-  if (!source.ok) {
+  // NO HUB COPY TO HAND OVER (Oct 24 2026): an upload the hub released after
+  // its 90 days, or one in a store this deployment holds no token for, is
+  // still in Dropbox: the checked Topaz file, else the editor's approved copy.
+  // A Dropbox temporary link (four hours, minted now) carries its own
+  // permission, the same as the presigned one above.
+  const dropboxUrl = source.ok ? null : await dropboxLinkForCut(cut.id).catch(() => null);
+  if (!source.ok && !dropboxUrl) {
     await prisma.contentCutTranscript.update({
       where: { id },
       data: { ...release, status: CUT_TRANSCRIPT_STATUS.NEEDS_REVIEW, lastError: `The hub could not give the transcription provider a link to this cut's file — ${source.message}`, lastErrorAt: new Date(), finishedAt: new Date() },
@@ -642,7 +660,7 @@ async function transcribeOne(id: string, provider: TranscriptionProvider, timeou
     return "no readable file";
   }
   try {
-    const r = await provider.transcribe({ url: source.url, submissionId: cut.id, timeoutMs });
+    const r = await provider.transcribe({ url: source.ok ? source.url : dropboxUrl!, submissionId: cut.id, timeoutMs });
     const text = r.text.trim();
     await prisma.contentCutTranscript.update({
       where: { id },

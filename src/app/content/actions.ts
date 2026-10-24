@@ -2395,3 +2395,18 @@ export async function setClientScriptFormatAction(enrollmentId: string, label: s
     return { ok: true, message: label ? "Saved: their scripts keep their own format." : "Back to the house format." };
   } catch (e) { return fail(e); }
 }
+
+/** "Generate an Instagram caption" on a video in Monthly Content (Jordan, Oct 24 2026). */
+export async function generateInstagramCaptionAction(videoId: string): Promise<Result> {
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
+  if (typeof videoId !== "string" || !/^[A-Za-z0-9_-]{6,64}$/.test(videoId)) return { ok: false, message: "Which video?" };
+  const me = await actor();
+  try {
+    const { generateCaptionForStaff } = await import("@/lib/postingKit");
+    const r = await generateCaptionForStaff(videoId, { userId: me.id ?? me.email, name: me.name });
+    revalidatePath("/content");
+    return { ok: r.ok, message: r.ok ? "Caption written. It's on the video, and in the client's posting kit." : r.message };
+  } catch (e) {
+    return fail(e);
+  }
+}

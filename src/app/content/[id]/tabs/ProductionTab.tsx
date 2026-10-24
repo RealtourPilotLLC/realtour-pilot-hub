@@ -55,6 +55,7 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
           rows={d.rows} pipelineOnly={d.pipelineOnly} monthLabelText={null}
           // CP-12: the identity tool, for the roles its actions accept (OWNER/ADMIN).
           identity={ctx.staffEyes ? d.identity : null}
+          captionTool={ctx.staffEyes}
         />
       </div>
     );
