@@ -282,11 +282,15 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
     cadence: "on-action",
     launchGate: "hubWriteScope",
   },
+  // Oct 23 2026: wired up (Deepgram). Approving a monthly video in the Review
+  // Room asks for its transcript; the AI work job transcribes it every 15
+  // minutes and catches up any approved monthly video another path approved.
+  // Listing videos are never transcribed.
   cut_transcripts: {
-    title: "Transcribing delivered cuts",
-    onEffect: "Delivered videos would be transcribed for captions and search.",
+    title: "Transcribing approved monthly videos",
+    onEffect: "Each monthly program video is transcribed by Deepgram once its version is approved, so its caption is drafted from what she actually says. Listing videos are never transcribed, and a video approved before this started is not transcribed on its own.",
     reaches: "internal",
-    blocked: "No speech-to-text provider is configured (this needs an OpenAI Whisper or Deepgram key). Turning it on today does nothing.",
+    blocked: "No speech-to-text provider is connected (a Deepgram or OpenAI Whisper key on Connections). Until one is, requests wait and captions are drafted from the script.",
     requires: { providers: ["stt"] },
     // Said plainly (review, Sep 28 2026): the transcript is shown in the
     // client's posting kit beside the caption. Nobody is messaged and it is
@@ -305,12 +309,17 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
   // A client's click is attended, so AI runs does NOT stop it (aiRuns.ts): it
   // is not listed as a requirement, or readiness would call it blocked while
   // it worked.
+  // Oct 23 2026 (Jordan): the caption is also drafted AUTOMATICALLY, once per
+  // approved monthly version, from its transcript (or the script when no
+  // transcript comes), following Instagram's caption rules
+  // (docs/instagram-caption-rules.md). That path is unattended work, so it
+  // needs AI runs as well: a partial dependency (the click still works).
   caption_assistant: {
     title: "Caption assistant",
-    onEffect: "CLIENTS THE ROLLOUT REACHES get a \"Draft a caption\" button on each approved video in their portal. A click drafts a caption from the final cut's transcript (or from the script when there is none) and shows it to them there, with gaps shown rather than invented. It is the client's own click, so it runs even while AI runs is off, and each draft spends AI credit. Your TEST clients, the pilot clients you named with automatic portal changes ticked, or every client once the rollout is set to everyone; everyone else keeps today's kit with no button.",
+    onEffect: "For CLIENTS THE ROLLOUT REACHES, each approved monthly video gets an Instagram caption drafted once, automatically, from what she says in the final cut (or from the script when there is no transcript), following Instagram's caption rules. It waits in her portal's posting kit once she approves the video, and the office sees it on the video in Monthly Content. She also gets a \"Draft a caption\" button. A caption she or the office edited is never changed. Each draft spends a little AI credit. Your TEST clients, the pilot clients you named with automatic portal changes ticked, or every client once the rollout is set to everyone; everyone else keeps today's kit.",
     reaches: "clients",
-    requires: { providers: ["ai"] },
-    recipients: "Clients the rollout reaches, on their portal (the Draft a caption button and the drafts it writes). Nobody is messaged",
+    requires: { providers: ["ai"], partial: [{ switch: "ai_runs", why: "the automatic draft after each approved video is unattended work" }] },
+    recipients: "Clients the rollout reaches, on their portal (the drafted captions and the Draft a caption button). Nobody is messaged",
     cadence: "on-action",
     launchGate: "programScope",
   },

@@ -1226,6 +1226,11 @@ export function buildQuestionRequestPrompt(ctx: ClientContext, opts: {
 
 // ---------------------------------------------------------------------------
 // 5. Caption (spec §10) — the unspoken caption body + CTA for an approved script
+//
+// SUPERSEDED Oct 23 2026: nothing calls buildCaptionPrompt any more. Captions
+// are drafted from captionRules.buildCaptionDraftPrompt (Instagram's caption
+// rules, a lean strategy excerpt, the transcript first) and checked by
+// captionRules.finishCaption. Kept for reference only.
 // ---------------------------------------------------------------------------
 
 export const CAPTION_OUTPUT_SCHEMA: JsonSchema = {

@@ -41,6 +41,21 @@ import {
 //   BLOCKED_NO_PROVIDER    no speech-to-text key exists — the request waits
 //   BLOCKED_AUTOMATION_OFF a key exists but the cut_transcripts switch is off
 //   QUEUED → RUNNING → SUCCEEDED | FAILED | NEEDS_REVIEW | CANCELLED
+//
+// OCT 23 2026 — WIRED UP. Jordan connected Deepgram and said yes to: every
+// approved monthly video is transcribed automatically and its Instagram
+// caption is drafted from the real spoken words (postingKit.autoDraftCaption).
+//   · approveCut (Review Room) asks for the approved version's transcript
+//     (requestMonthlyCutTranscript, fresh), and the AI work job's catch-up
+//     (requestMissingMonthlyTranscripts) asks for any approved monthly
+//     version another path approved — never a listing video, never a version
+//     approved before automatic transcripts began (autoTranscriptsSince: no
+//     backfill), and one automatic request per version, whatever became of it.
+//   · The driver runs from that job every 15 minutes with a short lease, each
+//     call started only with time to finish it; a run that died mid-call
+//     (lease out, still RUNNING) is put back in the queue or failed.
+// The switch semantics are unchanged: a missing or off cut_transcripts row
+// means nothing is requested as QUEUED and the driver does nothing.
 // ---------------------------------------------------------------------------
 
 export const CUT_TRANSCRIPT_STATUS = {
@@ -59,7 +74,14 @@ const BLOCKED = [CUT_TRANSCRIPT_STATUS.BLOCKED_NO_PROVIDER, CUT_TRANSCRIPT_STATU
 const LIVE = [...BLOCKED, CUT_TRANSCRIPT_STATUS.QUEUED, CUT_TRANSCRIPT_STATUS.RUNNING];
 
 const MAX_ATTEMPTS = 5;
-const LEASE_MS = 10 * 60 * 1000;
+/** A short lease (Oct 23 2026): a provider call is held to CALL_MAX_MS, so a row
+ *  still RUNNING past this died with its run and is recovered on the next tick. */
+const LEASE_MS = 4 * 60 * 1000;
+/** The longest one provider call may take; a monthly video is under a minute
+ *  and Deepgram answers in seconds, so this is a ceiling, not an estimate. */
+const CALL_MAX_MS = 150_000;
+/** A transcription starts only with this long left in the caller's budget. */
+export const CUT_TRANSCRIPT_MIN_START_MS = 45_000;
 
 type CutRow = {
   id: string;
@@ -195,6 +217,108 @@ export async function requestCutTranscript(
     select: { id: true, version: true, status: true, provider: true },
   });
   return { id: row.id, submissionId, version: row.version, status: row.status, provider: row.provider, reused: false, says: saysFor(row.status, row.provider) };
+}
+
+// ---------------------------------------------------------------------------
+// AUTOMATIC REQUESTS FOR MONTHLY PROGRAM VIDEOS (Oct 23 2026)
+// ---------------------------------------------------------------------------
+
+/**
+ * When automatic transcripts (and the captions drafted from them) began: an
+ * AppSetting row written ONCE, by the first automatic request after the
+ * deploy. A version approved before it is never transcribed or captioned on
+ * its own; that backfill is Jordan's call (Oct 23 2026), made by moving this
+ * date or running a one-off, never by the sweeps.
+ */
+export const AUTO_TRANSCRIPTS_SINCE_KEY = "cut_transcripts_auto_since";
+
+/** The start date, creating it at `createAt` when it does not exist yet (never moved once written). Null when it does not exist and createAt is not given. */
+export async function autoTranscriptsSince(createAt?: Date | null): Promise<Date | null> {
+  const read = async () => {
+    const row = await prisma.appSetting.findUnique({ where: { key: AUTO_TRANSCRIPTS_SINCE_KEY }, select: { value: true } });
+    if (!row) return null;
+    try {
+      const v = JSON.parse(row.value) as { at?: string };
+      const d = v.at ? new Date(v.at) : null;
+      return d && !Number.isNaN(d.getTime()) ? d : null;
+    } catch {
+      return null;
+    }
+  };
+  const have = await read();
+  if (have || !createAt) return have;
+  await prisma.appSetting
+    .create({ data: { key: AUTO_TRANSCRIPTS_SINCE_KEY, value: JSON.stringify({ at: createAt.toISOString() }), updatedBy: "cut-transcripts" } })
+    .catch(() => {}); // a racing first request wrote it: theirs stands
+  return read();
+}
+
+/** How far back the catch-up looks (within the start date): older approvals are history, not work. */
+const CATCH_UP_DAYS = 14;
+
+export type MonthlyTranscriptRequest = { requested: boolean; why: string; id?: string; status?: string };
+
+/**
+ * Ask for the transcript of ONE approved monthly program version, the way the
+ * automatic paths do. Refuses (with a reason, never a throw) a listing video,
+ * a version that is not approved, one approved before automatic transcripts
+ * began, and a version that already has a request for these bytes — whatever
+ * became of it, so a failure is not retried by every path that passes by
+ * (a person's Regenerate is still requestCutTranscript's own business).
+ * `fresh` = called from the approval itself: the start date, if it does not
+ * exist yet, is this approval's own moment.
+ */
+export async function requestMonthlyCutTranscript(submissionId: string, by: string | null, opts: { fresh?: boolean } = {}): Promise<MonthlyTranscriptRequest> {
+  const cut = await prisma.reviewSubmission.findUnique({
+    where: { id: submissionId },
+    select: { ...CUT_SELECT, decidedAt: true, project: { select: { contentMonthId: true } } },
+  });
+  if (!cut) return { requested: false, why: "That cut no longer exists." };
+  if (!cut.project?.contentMonthId) return { requested: false, why: "Not a monthly program video (listing videos are never transcribed automatically)." };
+  if (cut.status !== "APPROVED") return { requested: false, why: "Not approved." };
+  const since = await autoTranscriptsSince(opts.fresh ? (cut.decidedAt ?? new Date()) : new Date());
+  if (!cut.decidedAt || !since || cut.decidedAt < since) return { requested: false, why: "Approved before automatic transcripts began." };
+  const hash = cutIdentityHash(cut);
+  const existing = await prisma.contentCutTranscript.findFirst({
+    where: { submissionId, contentHash: hash, invalidatedAt: null },
+    orderBy: { version: "desc" },
+    select: { id: true, status: true },
+  });
+  if (existing) return { requested: false, why: "Already requested for this version.", id: existing.id, status: existing.status };
+  const r = await requestCutTranscript(submissionId, by);
+  return { requested: !r.reused, why: r.says, id: r.id, status: r.status };
+}
+
+/**
+ * The catch-up (AI work job, before the driver): every approved monthly
+ * version since the start date, within CATCH_UP_DAYS, with no transcript row
+ * for its current bytes gets one. Covers every path that approves a version
+ * without passing through the Review Room's approveCut (a portal publication
+ * repair, a delivered stamp) and an approval whose follow-up died.
+ */
+export async function requestMissingMonthlyTranscripts(opts: { max?: number; now?: Date } = {}): Promise<{ checked: number; requested: number; since: string | null }> {
+  const now = opts.now ?? new Date();
+  const since = await autoTranscriptsSince(now);
+  if (!since) return { checked: 0, requested: 0, since: null };
+  const floor = new Date(Math.max(since.getTime(), now.getTime() - CATCH_UP_DAYS * 86_400_000));
+  const cuts = await prisma.reviewSubmission.findMany({
+    where: { status: "APPROVED", decidedAt: { gte: floor }, project: { contentMonthId: { not: null } } },
+    orderBy: { decidedAt: "asc" },
+    take: 100,
+    select: CUT_SELECT,
+  });
+  if (!cuts.length) return { checked: 0, requested: 0, since: since.toISOString() };
+  // A version that already has a row for its current bytes is done here; only the rest are asked for.
+  const rows = await prisma.contentCutTranscript.findMany({ where: { submissionId: { in: cuts.map((c) => c.id) }, invalidatedAt: null }, select: { submissionId: true, contentHash: true } });
+  const covered = new Set(rows.map((r) => `${r.submissionId}|${r.contentHash}`));
+  let requested = 0;
+  for (const c of cuts) {
+    if (requested >= (opts.max ?? 10)) break;
+    if (covered.has(`${c.id}|${cutIdentityHash(c)}`)) continue;
+    const r = await requestMonthlyCutTranscript(c.id, "cron");
+    if (r.requested) requested++;
+  }
+  return { checked: cuts.length, requested, since: since.toISOString() };
 }
 
 function saysFor(status: string, provider: string | null): string {
@@ -349,8 +473,26 @@ export async function transcriptForCut(submissionId: string): Promise<Transcript
   return none("No transcript of this cut has been requested.");
 }
 
+/**
+ * Will a transcript of this cut's current bytes arrive on its own? True while
+ * one is queued or running, or when none has been asked for yet but one will
+ * be (a hosted file, the switch on, a provider connected). False when it is
+ * done, failed, blocked or cancelled — the automatic caption then drafts from
+ * the script instead of waiting (postingKit.autoDraftCaptionForCut).
+ */
+export async function transcriptOnItsWay(submissionId: string): Promise<boolean> {
+  const cut = await loadCut(submissionId);
+  if (!cut) return false;
+  const rows = await prisma.contentCutTranscript.findMany({ where: { submissionId, contentHash: cutIdentityHash(cut), invalidatedAt: null }, select: { status: true } });
+  if (rows.some((r) => r.status === CUT_TRANSCRIPT_STATUS.QUEUED || r.status === CUT_TRANSCRIPT_STATUS.RUNNING)) return true;
+  if (rows.length) return false;
+  if (!cut.blobUrl) return false;
+  return (await isAutomationEnabled("cut_transcripts")) && !!(await activeTranscriptionProvider());
+}
+
 // ---------------------------------------------------------------------------
-// THE DRIVER. A cron may call this later. It does NOTHING unless the
+// THE DRIVER. The AI work job (/api/cron/topics) runs it every 15 minutes
+// (Oct 23 2026). It does NOTHING unless the
 // cut_transcripts switch is on (missing row = off) AND a provider is
 // configured — and it says which one stopped it, so a monitoring screen can
 // show "skipped: automation off" rather than a run that silently did zero.
@@ -360,21 +502,38 @@ export type CutTranscriptDriverResult = {
   skipped: "automation_off" | "no_provider" | null;
   provider: string | null;
   promoted: number;
+  /** RUNNING rows whose lease ran out (their run died mid-call): back in the queue, or failed after MAX_ATTEMPTS. */
+  recovered: number;
   claimed: number;
   succeeded: number;
   failed: number;
   retried: number;
   invalidated: number;
+  /** Rows left queued because the caller's budget could not fit another call. */
+  deferred: number;
 };
 
-export async function runCutTranscriptDriver(opts: { limit?: number; leaseBy?: string } = {}): Promise<CutTranscriptDriverResult> {
-  const result: CutTranscriptDriverResult = { skipped: null, provider: null, promoted: 0, claimed: 0, succeeded: 0, failed: 0, retried: 0, invalidated: 0 };
+export async function runCutTranscriptDriver(opts: { limit?: number; leaseBy?: string; budgetMs?: number; minStartMs?: number } = {}): Promise<CutTranscriptDriverResult> {
+  const startedAt = Date.now();
+  const left = () => (opts.budgetMs == null ? Infinity : opts.budgetMs - (Date.now() - startedAt));
+  const result: CutTranscriptDriverResult = { skipped: null, provider: null, promoted: 0, recovered: 0, claimed: 0, succeeded: 0, failed: 0, retried: 0, invalidated: 0, deferred: 0 };
   if (!(await isAutomationEnabled("cut_transcripts"))) return { ...result, skipped: "automation_off" };
   const provider = await activeTranscriptionProvider();
   if (!provider) return { ...result, skipped: "no_provider" };
   result.provider = provider.id;
 
   const now = new Date();
+  // A run that died mid-call (function timeout, a deploy) left its row RUNNING
+  // under a lease nobody will release. Oct 23 2026: nothing picked those up,
+  // so the transcript (and the caption waiting on it) never came.
+  const dead = await prisma.contentCutTranscript.findMany({ where: { status: CUT_TRANSCRIPT_STATUS.RUNNING, leaseUntil: { lt: now }, invalidatedAt: null }, select: { id: true, attempts: true } });
+  for (const d of dead) {
+    const out = d.attempts >= MAX_ATTEMPTS
+      ? { status: CUT_TRANSCRIPT_STATUS.FAILED, nextAttemptAt: null, finishedAt: now, lastError: "The transcription run stopped part-way too many times.", lastErrorAt: now }
+      : { status: CUT_TRANSCRIPT_STATUS.QUEUED, nextAttemptAt: now, lastError: "The last run stopped part-way; queued again.", lastErrorAt: now };
+    const moved = await prisma.contentCutTranscript.updateMany({ where: { id: d.id, status: CUT_TRANSCRIPT_STATUS.RUNNING, leaseUntil: { lt: now } }, data: { ...out, leaseUntil: null, leaseBy: null } });
+    result.recovered += moved.count;
+  }
   // Requests made while nothing could run are real requests. With the switch on
   // and a key in hand they become queued work — attempts untouched.
   const promoted = await prisma.contentCutTranscript.updateMany({
@@ -397,6 +556,8 @@ export async function runCutTranscriptDriver(opts: { limit?: number; leaseBy?: s
   let lastError: string | null = null;
 
   for (const c of candidates) {
+    // Started only with the time to finish it (the AI work job's rule).
+    if (left() < (opts.minStartMs ?? CUT_TRANSCRIPT_MIN_START_MS)) { result.deferred++; continue; }
     // Atomic claim: only the row that is STILL queued and unleased moves to
     // RUNNING, so two overlapping runs cannot transcribe the same cut twice.
     const claim = await prisma.contentCutTranscript.updateMany({
@@ -417,7 +578,7 @@ export async function runCutTranscriptDriver(opts: { limit?: number; leaseBy?: s
     });
     if (claim.count !== 1) continue;
     result.claimed++;
-    const outcome = await transcribeOne(c.id, provider);
+    const outcome = await transcribeOne(c.id, provider, Math.max(5_000, Math.min(CALL_MAX_MS, left() - 10_000)));
     if (outcome === "succeeded") result.succeeded++;
     else if (outcome === "retried") result.retried++;
     else if (outcome === "invalidated") result.invalidated++;
@@ -430,7 +591,7 @@ export async function runCutTranscriptDriver(opts: { limit?: number; leaseBy?: s
   return result;
 }
 
-async function transcribeOne(id: string, provider: TranscriptionProvider): Promise<"succeeded" | "retried" | "invalidated" | string> {
+async function transcribeOne(id: string, provider: TranscriptionProvider, timeoutMs: number): Promise<"succeeded" | "retried" | "invalidated" | string> {
   const row = await prisma.contentCutTranscript.findUnique({
     where: { id },
     select: { id: true, submissionId: true, contentHash: true, attempts: true },
@@ -470,10 +631,8 @@ async function transcribeOne(id: string, provider: TranscriptionProvider): Promi
   // morning. NOT a proxy route: that would have to be reachable without our
   // session to be any use to them.
   //
-  // Nothing here turns transcription on. There is still no speech-to-text key
-  // and the `cut_transcripts` switch has no row, so this code is not reached
-  // today; it is written now so the day it IS configured is not the day this is
-  // discovered.
+  // (Oct 23 2026: reached now. Deepgram is connected and the AI work job runs
+  // this driver; the approved cut's own file is what Deepgram is handed.)
   const source = await fetchableCutUrl(cut, { ttlMs: 2 * 3600_000, purpose: "transcription" });
   if (!source.ok) {
     await prisma.contentCutTranscript.update({
@@ -483,7 +642,7 @@ async function transcribeOne(id: string, provider: TranscriptionProvider): Promi
     return "no readable file";
   }
   try {
-    const r = await provider.transcribe({ url: source.url, submissionId: cut.id });
+    const r = await provider.transcribe({ url: source.url, submissionId: cut.id, timeoutMs });
     const text = r.text.trim();
     await prisma.contentCutTranscript.update({
       where: { id },

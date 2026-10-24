@@ -1418,6 +1418,21 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
           });
         },
       },
+      ...(program
+        ? [{
+            // Oct 23 2026 (Jordan): every approved MONTHLY video is transcribed
+            // (Deepgram) so its Instagram caption is drafted from what she
+            // actually says. This asks for THIS version's transcript, database
+            // only; the AI work job transcribes it and drafts the caption.
+            // Never a listing video (program jobs only, and checked again inside).
+            step: "transcript request",
+            repairedBy: "AI work job (cron topics) cutTranscripts → requestMissingMonthlyTranscripts",
+            run: async () => {
+              const { requestMonthlyCutTranscript } = await import("@/lib/cutTranscripts");
+              await requestMonthlyCutTranscript(submissionId, authorName ?? "review", { fresh: true });
+            },
+          }]
+        : []),
       {
         // QC passed → the cut joins the client's portal library (content-program
         // jobs only; a listing job returns at once).

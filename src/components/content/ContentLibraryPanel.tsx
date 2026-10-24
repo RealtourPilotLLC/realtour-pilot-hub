@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { CalendarClock, Clapperboard, Eye, EyeOff, Film, Layers, TriangleAlert } from "lucide-react";
+import { CalendarClock, Captions, Clapperboard, Eye, EyeOff, Film, Layers, TriangleAlert } from "lucide-react";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { Section } from "@/components/ui/Section";
 import { cn } from "@/lib/utils";
 import { ReviewMutationControls } from "@/components/content/ReviewMutationControls";
@@ -92,6 +93,8 @@ export type LibraryVideoUi = {
    *  (contentVideos.clientStatesFor), and whether a newer version is open
    *  while they keep the earlier one. Null for an archived row. */
   clientSees?: { label: string; updated: boolean } | null;
+  /** Oct 23 2026: the video's Instagram caption (the one the client would see first), with where it came from. */
+  caption?: { body: string; note: string; fixes: string[]; gaps: string[] } | null;
 };
 
 const day = (isoStr: string | null) => (isoStr ? new Date(isoStr).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : null);
@@ -218,6 +221,7 @@ export function ContentLibraryPanel({
                     </table>
                     </div>
                   )}
+                  {v.caption && <CaptionBlock title={v.title} caption={v.caption} />}
                   <ClientReview v={v} />
                   {identity && v.identity && <LibraryIdentityEditor options={identity} video={{ id: v.id, title: v.title, topicId: v.topicId, scriptId: v.scriptId, kind: v.kind, monthKey: v.monthKey, status: v.status }} identity={v.identity} />}
                 </div>
@@ -226,6 +230,22 @@ export function ContentLibraryPanel({
           })}
         </div>
       </Section>
+    </div>
+  );
+}
+
+/** The video's Instagram caption, ready to copy (Oct 23 2026). The client sees it in their posting kit once they approve the video. */
+function CaptionBlock({ title, caption }: { title: string; caption: NonNullable<LibraryVideoUi["caption"]> }) {
+  return (
+    <div className="space-y-1.5 rounded-lg border border-border/70 bg-surface px-3 py-2 text-ui-secondary leading-relaxed">
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="flex flex-1 items-center gap-1.5 text-ui-status font-semibold text-muted"><Captions className="size-3" /> Instagram caption</p>
+        <CopyButton value={caption.body} title={`Copy the caption for ${title}`} label="Copy" className="min-h-11 rounded-md border border-border px-3 text-ui-status" />
+      </div>
+      <p className="whitespace-pre-wrap break-words text-foreground/90">{caption.body}</p>
+      <p className="text-ui-status text-muted-2">{caption.note}</p>
+      {caption.fixes.length > 0 && <p className="text-ui-status text-muted-2">Checked before saving: {caption.fixes.join("; ")}.</p>}
+      {caption.gaps.length > 0 && <p className="text-ui-status text-warning">To check: {caption.gaps.join(" ")}</p>}
     </div>
   );
 }

@@ -21,7 +21,8 @@
 //       the strategy's brand message, goals and CTA examples
 //   C4  a transcript of THIS cut: it is the primary source and the rows say so
 //   C5  a strategy that names no offer: invented offers never reach a draft
-//   C6  nothing drafts unattended — no scheduled path calls the drafter
+//   C6  the click drafter is the portal's; since Oct 23 2026 the only unattended
+//       door is the automatic draft in the AI work job (oct23-auto-captions)
 //
 // This drill proves the grounding MECHANICS against a stub. Whether a real
 // model writes a good caption is the separate, supervised real-model check the
@@ -69,7 +70,7 @@ interceptModule(
   (r) => r === "@/lib/integrations/ai" || r.endsWith("/integrations/ai") || r.endsWith("/integrations/ai.ts"),
   (loaded) => new Proxy(loaded as Record<string | symbol, unknown>, {
     get(t, k) {
-      if (k !== "aiJsonWithUsage") return t[k];
+      if (k !== "aiJsonWithUsage" && k !== "aiStructuredWithUsage") return t[k]; // Oct 23 2026: captions run on the writer path (Sonnet 5.5)
       return async (o: Seen) => {
         seen.push({ system: o.system, prompt: o.prompt });
         return { result: next, usage: { inputTokens: 900, outputTokens: 120 }, model: "drill-stub" };
@@ -232,7 +233,8 @@ async function main() {
     c.ok("the prompt states there is NO transcript and to keep to the script", /NO TRANSCRIPT OF THE FINAL CUT EXISTS/.test(s.prompt));
     c.ok("the prompt carries the approved script's own lines", s.prompt.includes("Your first weekend decides your price"), s.prompt.slice(s.prompt.indexOf("APPROVED SCRIPT"), s.prompt.indexOf("APPROVED SCRIPT") + 300));
     c.ok("…the strategy's brand message and goals", s.prompt.includes("Plan the sale before the sign goes up.") && s.prompt.includes("Build trust with sellers before they list"));
-    c.ok("…and its Caption CTA Examples", s.system.includes("DM me PRICE.") && /CAPTION CTA EXAMPLES FROM THE APPROVED STRATEGY/.test(s.system));
+    // Oct 23 2026: the lean caption prompt carries the examples in the user message (the system prompt is the stable rules).
+    c.ok("…and its Caption CTA Examples", s.prompt.includes("DM me PRICE.") && /CAPTION CTA EXAMPLES FROM THE APPROVED STRATEGY/.test(s.prompt));
     const rows = await draftsOf(ada.video.id);
     c.ok("drafts saved (caption, short, CTA, cover title)", rows.length === 4, rows.map((d) => d.kind).join(","));
     c.ok("EVERY row says it was drafted from the script, with no transcript", rows.every((d) => /^Drafted from the script, with no transcript yet/.test(noteOf(d))), noteOf(rows[0]));
@@ -276,15 +278,21 @@ async function main() {
   }
 
   // =========================================================================
-  c.head("C6 · nothing drafts unattended");
+  c.head("C6 · the click drafter is the portal's; the only unattended door is the automatic draft");
   // =========================================================================
+  // Oct 23 2026 (Jordan): "nothing drafts unattended" was the rule until he
+  // said yes to an automatic caption per approved monthly version. That door
+  // is ONE function (postingKit.autoDraftCaptionForCut via sweepAutoCaptions),
+  // run by the AI work job only, with its own drill (oct23-auto-captions).
   {
     const callers = gitGrep(["draftCaptionForVideo", "--", "src"]).sort();
-    c.ok("the drafter is called only from the portal's click action", JSON.stringify(callers) === JSON.stringify(["src/app/portal/actions.ts", "src/lib/postingKit.ts"]), callers.join(", "));
+    c.ok("the click drafter is called only from the portal's click action", JSON.stringify(callers) === JSON.stringify(["src/app/portal/actions.ts", "src/lib/postingKit.ts"]), callers.join(", "));
     const cron = gitGrep(["-i", "caption", "--", "src/app/api/cron"]);
-    c.ok("no cron route mentions captions at all", cron.length === 0, cron.join(", "));
+    c.ok("the only cron route that mentions captions is the AI work job", JSON.stringify(cron) === JSON.stringify(["src/app/api/cron/topics/route.ts"]), cron.join(", "));
+    const auto = gitGrep(["sweepAutoCaptions", "--", "src"]).sort();
+    c.ok("…and the automatic sweep is called from there alone", JSON.stringify(auto) === JSON.stringify(["src/app/api/cron/topics/route.ts", "src/lib/postingKit.ts"]), auto.join(", "));
     const runs = await prisma.programAiRun.findMany({ where: { kind: "caption" }, select: { requestedBy: true } });
-    c.ok("every caption run on record was requested by a person, never 'cron'", runs.length > 0 && runs.every((x) => x.requestedBy !== "cron"), JSON.stringify(runs.map((x) => x.requestedBy)));
+    c.ok("every caption run in this drill was a person's click, never the cron", runs.length > 0 && runs.every((x) => !(x.requestedBy ?? "").startsWith("cron")), JSON.stringify(runs.map((x) => x.requestedBy)));
   }
 
   c.head("Z · isolation");

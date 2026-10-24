@@ -170,7 +170,8 @@ async function main() {
     const rep = await report();
     const program = rep.rows.filter((r) => r.kind === "program");
     c.ok(`one program row per listed switch (${AUTOMATION_KEYS.length})`, program.length === AUTOMATION_KEYS.length && program.every((r, i) => r.key === AUTOMATION_KEYS[i]));
-    c.ok(`no row for a retired switch (${RETIRED.join(", ")})`, RETIRED.join() === "publishing,cut_transcripts" && !program.some((r) => RETIRED.includes(r.key as (typeof RETIRED)[number])), RETIRED.join());
+    // Oct 23 2026: cut_transcripts is wired up (Deepgram) and listed again; publishing stays retired.
+    c.ok(`no row for a retired switch (${RETIRED.join(", ")})`, RETIRED.join() === "publishing" && !program.some((r) => RETIRED.includes(r.key as (typeof RETIRED)[number])) && program.some((r) => r.key === "cut_transcripts"), RETIRED.join());
     c.ok("every program switch: enabled=false", program.every((r) => r.enabled.ok === false));
     c.ok("every program switch: configured=false (no row = never configured)", program.every((r) => r.configured.ok === false && /never configured/.test(r.configured.detail)));
     c.ok("every program switch: effective=false", program.every((r) => r.effective.ok === false));
