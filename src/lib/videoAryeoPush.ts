@@ -1464,6 +1464,28 @@ export async function retryVideoPush(submissionId: string, by: string, opts: { b
 export const startVideoSend = retryVideoPush;
 
 /**
+ * "RUN TOPAZ AGAIN" RETIRES A PARKED PRESS (Oct 23 2026 audit). A press that
+ * stopped before anything went up (FAILED, or HELD at a gate that resumes at
+ * PREPARING) was for the OLD render: left alone, a HELD one carries on by
+ * itself once its gate clears and a login FAILED one is retried by the cron,
+ * so the new render would go to the listing and the client unwatched. It
+ * becomes a plain FAILED run (no retry time) that says so; what an earlier
+ * try did (an unconfirmed add, earlier media) stays on the record for the
+ * next press, which reads the listing first. A run with anything on the
+ * listing is never touched (the re-run refuses those).
+ */
+export async function retireParkedVideoPush(submissionId: string, why: string): Promise<boolean> {
+  const { run, raw } = await load(submissionId);
+  if (!run || !raw || run.addSentAt || run.mediaId) return false;
+  const parked = run.state === "FAILED" || (run.state === "HELD" && run.hold?.gate !== "manual" && (run.hold?.resume ?? "PREPARING") === "PREPARING");
+  if (!parked) return false;
+  const next: VideoPushRun = { ...fail(run, `${why}. The new Topaz file goes up only when someone presses ${run.mode === "upload" ? "Upload to Aryeo only" : "Upload to Aryeo and send"} again.`), retryAfter: null };
+  const saved = await save(submissionId, next, raw);
+  if (saved) await log(run.projectId, `${why}: the earlier press was for the previous Topaz file, so it was stopped.`);
+  return !!saved;
+}
+
+/**
  * Deliver now: a video on the listing waiting for a person (an earlier version
  * up by hand, a delivery nobody saw finish) or for another video or the
  * cooldown. Never past a hold. Also SEND NOW on a video uploaded only (Oct 23

@@ -3761,6 +3761,17 @@ export async function rerunTopazJob(jobId: string, by: string | null, opts: { th
     .updateMany({ where: { dedupeKey: `topaz-deliver-${job.id}` }, data: { dedupeKey: `topaz-rerun-card:${job.id}:${now.getTime()}` } })
     .catch(() => {});
 
+  // 4. A press parked before the upload was for the old render: stopped, so
+  //    the new one goes up only on a new press (lib/videoAryeoPush), or by
+  //    "Run it again, then upload and send" (lib/sendWhenReady), which starts
+  //    its own run once the new file is checked.
+  try {
+    const { retireParkedVideoPush } = await import("@/lib/videoAryeoPush");
+    await retireParkedVideoPush(job.submissionId, `Topaz pass run again${by ? ` by ${by}` : ""}`);
+  } catch (e) {
+    console.warn("[topaz] re-run: parked upload press not retired", job.submissionId, (e as Error).message);
+  }
+
   const credits = expectedRerunCredits(job, s);
   const kept = aside.path ? ` The previous Topaz file is kept in Dropbox: ${aside.path.split("/").slice(-2).join("/")}.` : "";
   await prisma.activity

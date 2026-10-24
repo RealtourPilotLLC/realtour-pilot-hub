@@ -207,6 +207,9 @@ export type ReadyVideo = {
   monthlyPortalAccess?: boolean;
   /** null for cases (b)/(c) — there is no 1080p job to stamp */
   topazJobId: string | null;
+  /** The pass failed, was skipped or stopped on this cut, and may be tried
+   *  again (topazJobs.retryTopazJobRefusal's own rules, read off the row). */
+  topazRetryable?: boolean;
   /** The editor's original IS the trusted file (Oct 22 2026: the Settings
    *  rule "already finished" skipped the pass): sendable to the portal and by
    *  the Aryeo button, exactly as a checked render. */
@@ -1086,6 +1089,7 @@ export async function readyToSend(opts?: ReadyToSendOpts): Promise<ReadyBoard> {
       monthlyPortalReleased: Boolean(sub.project.contentMonthId && cutReleasedAt({ ...sub, status: "APPROVED", portalPublicationRequiredAt: publicationRequiredAt({ ...sub, status: "APPROVED" }, true) })),
       monthlyPortalAccess: monthlyAccessOk,
       topazJobId: sub.topazJob?.id ?? null,
+      topazRetryable: !!sub.topazJob && ["failed", "skipped", "cancelled"].includes(sub.topazJob.state) && !(sub.topazJob.outputCheck === "resolved-original" && !sub.project.contentMonthId),
       // Oct 22 2026: the Settings rule said the editor's file is already the
       // finished file, so it is the one to send (the row says why).
       originalIsFinal: editorOriginalIsFinal(sub.topazJob),

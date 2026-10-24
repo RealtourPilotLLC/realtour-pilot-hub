@@ -292,6 +292,15 @@ async function main() {
   c.ok("nothing left the process", fence.blocked.filter((u) => !u.startsWith("https://dbx.invalid/")).length === 0, fence.blocked.slice(0, 3).join(", "));
 
   quiet.restore();
+  c.head("Applied after the audit (Oct 23 2026): Try again on a failed or skipped pass; previews read-only");
+  {
+    const room = src("src/app/review/page.tsx");
+    const vd = src("src/lib/videoDelivery.ts");
+    const rts = src("src/lib/readyToSend.ts");
+    c.ok("a failed, skipped or stopped Topaz pass offers Try again on its Ready to send row (the office's press)", /topazRetryable: !!sub\.topazJob && \["failed", "skipped", "cancelled"\]/.test(rts) && /retryJobId: r\.topazRetryable \? r\.topazJobId : null/.test(vd) && /\{sendDesk && s\.retryJobId && <RetryRender /.test(room));
+    c.ok("a preview of the office draws no send, Send back or Remind buttons, and says it is read-only", /const deliveryDesk = \(!me \|\| isOffice\(me\.role\)\) && !preview;/.test(room) && /readOnly=\{preview\}/.test(room) && /showButton=\{!preview/.test(room) && /Preview: read-only/.test(room));
+  }
+
   c.summary();
   await stop();
   process.exit(process.exitCode ?? 0);

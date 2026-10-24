@@ -23,6 +23,7 @@ import { MarkSent } from "@/components/ops/MarkSent";
 import { MarkDelivered } from "@/components/ops/MarkDelivered";
 import { HeldRender } from "@/components/ops/HeldRender";
 import { RerunTopaz } from "@/components/ops/RerunTopaz";
+import { RetryRender } from "@/components/ops/RetryRender";
 import { DeliveryFollowUps, PortalFinishing } from "@/components/ops/ReadyToSendCard";
 import { PushControls } from "@/components/videoDelivery/PushControls";
 import { SendAll, SendVideo } from "@/components/videoDelivery/SendVideo";
@@ -128,7 +129,7 @@ function SendWhenReady({ r, sendDesk }: { r: VideoRow; sendDesk: boolean }) {
 // Deliver now / Release, Done it by hand). The creative manager reads the same
 // row as status, keeps Watch it and "Not ready? Send back", and leaves the
 // sending to Kyle (videos reach Aryeo only on a person's press, the office's).
-function ReadyRow({ r, checks, sendDesk = true }: { r: VideoRow; checks: React.ReactNode; sendDesk?: boolean }) {
+function ReadyRow({ r, checks, sendDesk = true, readOnly = false }: { r: VideoRow; checks: React.ReactNode; sendDesk?: boolean; readOnly?: boolean }) {
   const s = r.send!;
   const p = r.push;
   const run = !!p?.state;
@@ -156,12 +157,14 @@ function ReadyRow({ r, checks, sendDesk = true }: { r: VideoRow; checks: React.R
           "Run it again, then upload and send" when this row could go with one
           press (the same test as Send all). */}
       {sendDesk && r.rerun && <RerunTopaz jobId={r.rerun.jobId} street={r.street} credits={r.rerun.credits} limit={r.rerun.limit} canSendAfter={oneShot(r)} />}
+      {/* A Topaz pass that failed or was skipped can be tried again here (Oct 23 2026 audit). */}
+      {sendDesk && s.retryJobId && <RetryRender jobId={s.retryJobId} street={r.street} />}
       {/* Upload to Aryeo only beside it (Jordan, Oct 23 2026): on the listing, not sent, until Send now. */}
       {canPress && <SendVideo submissionId={r.submissionId!} street={r.street} label={label} openAsks={s.openAsks} asksUnknown={s.asksUnknown} listingWarning={s.listingWarning} uploadOnly={label === "Upload to Aryeo and send"} />}
       {sendDesk && p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} canDeliverNow={p.canDeliverNow} canRelease={p.canRelease} uploadedOnly={p.uploadedOnly} />}
       {/* Not ready after all? Offered unless an upload is moving (Oct 20 2026,
           audit B18: a failed or held run no longer hides it). */}
-      {(!run || stopped) && r.submissionId && <SendBack submissionId={r.submissionId} projectId={r.projectId} street={r.street} />}
+      {!readOnly && (!run || stopped) && r.submissionId && <SendBack submissionId={r.submissionId} projectId={r.projectId} street={r.street} />}
       {sendDesk && <details className="mt-2 rounded-lg border border-border bg-surface-2/40" open={!!s.byHandWhy || (!!p?.canRetry && !p.canStart)}>
         <summary className="min-h-11 cursor-pointer rounded-lg px-3 py-2.5 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Done it by hand?</summary>
         <div className="space-y-2 px-3 pb-3 text-sm">
@@ -182,7 +185,7 @@ function ReadyRow({ r, checks, sendDesk = true }: { r: VideoRow; checks: React.R
   );
 }
 
-function HeldRow({ r, sendDesk = true }: { r: VideoRow; sendDesk?: boolean }) {
+function HeldRow({ r, sendDesk = true, readOnly = false }: { r: VideoRow; sendDesk?: boolean; readOnly?: boolean }) {
   const p = r.push;
   return (
     <li className="min-w-0 px-5 py-3">
@@ -196,7 +199,7 @@ function HeldRow({ r, sendDesk = true }: { r: VideoRow; sendDesk?: boolean }) {
       {sendDesk && p && p.canStart && r.send && !r.send.byHandWhy && <SendVideo submissionId={r.submissionId!} street={r.street} label="Try again" openAsks={r.send.openAsks} asksUnknown={r.send.asksUnknown} listingWarning={null} />}
       {sendDesk && p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} canDeliverNow={p.canDeliverNow} canRelease={p.canRelease} uploadedOnly={p.uploadedOnly} />}
       {/* A held video can go back to the editor too (audit B18). */}
-      {r.submissionId && (!p?.state || p.tone === "failed" || p.tone === "held") && <SendBack submissionId={r.submissionId} projectId={r.projectId} street={r.street} />}
+      {!readOnly && r.submissionId && (!p?.state || p.tone === "failed" || p.tone === "held") && <SendBack submissionId={r.submissionId} projectId={r.projectId} street={r.street} />}
     </li>
   );
 }
@@ -340,11 +343,14 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
   // THE DELIVERY PARTS are the office's (owner/admin); a seated reviewer on
   // another login gets To review and the sent-back versions. View-as shows
   // what that login would see; its buttons are refused by the actions.
-  const deliveryDesk = !me || isOffice(me.role);
+  // A PREVIEW IS READ-ONLY (Oct 23 2026 audit): it shows what that login sees
+  // without the buttons (every press would be refused anyway).
+  const preview = !!me?.impersonating;
+  const deliveryDesk = (!me || isOffice(me.role)) && !preview;
   // The creative manager (Oct 21 2026) oversees the whole room: the due
   // dates, what is ready to send and with whom, the editors' list and its
   // Remind buttons. The sending itself stays the office's (ReadyRow sendDesk).
-  const boardDesk = deliveryDesk || me?.role === "CREATIVE_MANAGER";
+  const boardDesk = deliveryDesk || me?.role === "CREATIVE_MANAGER" || (preview && !!me && isOffice(me.role));
   const now = new Date();
   const [q, board] = await Promise.all([
     getReviewQueue({ includeTest }),
@@ -470,7 +476,7 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
   ].filter(Boolean).join(" · ");
   const editorRow = (e: EditorItem) => (
     <EditorRow key={e.key} e={e}>
-      {boardDesk && <Holder st={reminds.get(e.key)} rowKey={e.key} projectId={e.projectId} submissionId={e.submissionId} viewerName={viewerName} showButton={remindButtonFor(e)} now={now} />}
+      {boardDesk && <Holder st={reminds.get(e.key)} rowKey={e.key} projectId={e.projectId} submissionId={e.submissionId} viewerName={viewerName} showButton={!preview && remindButtonFor(e)} now={now} />}
     </EditorRow>
   );
 
@@ -495,6 +501,7 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
         {(moving || finishing.length > 0) && <AutoRefresh seconds={30} />}
         {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden. */}
         {includeTest && <p className="text-xs text-muted">Showing real and test records</p>}
+        {preview && <p role="status" className="rounded-xl border border-border bg-surface-2/50 px-4 py-2.5 text-sm text-muted">Preview: read-only. This is what {me?.name?.split(" ")[0] ?? "this login"} sees; the buttons are theirs.</p>}
 
         {boardDesk && !board && (
           <p role="alert" className="rounded-2xl border border-warning/30 bg-warning-soft/40 p-4 text-sm text-warning">Ready to send and the due dates could not be read just now. Refresh to try again.</p>
@@ -515,7 +522,7 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
                   <CutRow key={s.id} s={s} viewerTeamMemberId={viewerTeamMemberId} video={rowByKey.get(s.id)?.label ?? null} due={dueOf(s.id)}>
                     {st?.target.kind === "reviewer" && (
                       <div className="px-1">
-                        <Holder st={st} rowKey={s.id} projectId={s.projectId} submissionId={s.id} viewerName={viewerName} showButton now={now} />
+                        <Holder st={st} rowKey={s.id} projectId={s.projectId} submissionId={s.id} viewerName={viewerName} showButton={!preview} now={now} />
                       </div>
                     )}
                   </CutRow>
@@ -549,14 +556,14 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
           <div id="ready-to-send" className="scroll-mt-24">
           <Section icon={Send} title="Ready to send" count={ready.length} flush action={deliveryDesk && sendAllIds.length >= 2 ? <SendAll submissionIds={sendAllIds} /> : undefined}>
             {ready.length ? (
-              <ul className="divide-y divide-border">{ready.map((r) => <ReadyRow key={r.key} r={r} checks={checksFor.get(r.projectId) ?? null} sendDesk={deliveryDesk} />)}</ul>
+              <ul className="divide-y divide-border">{ready.map((r) => <ReadyRow key={r.key} r={r} checks={checksFor.get(r.projectId) ?? null} sendDesk={deliveryDesk} readOnly={preview} />)}</ul>
             ) : (
               <p className="px-5 py-4 text-sm text-muted">No approved listing video is waiting to go out.</p>
             )}
             {heldRows.length > 0 && (
               <>
                 <h3 className="border-t border-border px-5 pt-3 text-sm font-semibold text-warning">Held ({heldRows.length})</h3>
-                <ul className="divide-y divide-border">{heldRows.map((r) => <HeldRow key={r.key} r={r} sendDesk={deliveryDesk} />)}</ul>
+                <ul className="divide-y divide-border">{heldRows.map((r) => <HeldRow key={r.key} r={r} sendDesk={deliveryDesk} readOnly={preview} />)}</ul>
               </>
             )}
             {finishing.length > 0 && (

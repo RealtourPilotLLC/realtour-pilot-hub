@@ -88,6 +88,8 @@ export type VideoSend = {
   asksUnknown: boolean;
   /** Why the button is not offered (the hub cannot send this file itself); null when it is. */
   byHandWhy: string | null;
+  /** A Topaz pass that failed or was skipped on this video, offered "Try again" on the row (Oct 23 2026 audit). */
+  retryJobId?: string | null;
   /** The upload status could not be read just now: the row says reload, never "by hand" (audit B12). */
   pushUnknown: boolean;
 };
@@ -408,6 +410,7 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
               listingWarning: listingWarningOf(r),
               openAsks: a?.list ?? [], asksUnknown: a?.unknown ?? false,
               byHandWhy: byHandWhy(r),
+              retryJobId: r.topazRetryable ? r.topazJobId : null,
               pushUnknown: !!r.pushUnknown,
             } : null,
           });
