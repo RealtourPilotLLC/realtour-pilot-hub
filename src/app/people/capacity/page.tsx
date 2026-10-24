@@ -40,8 +40,12 @@ const STATE_WORD: Record<CapacityRegisterRow["state"], string> = {
 export default async function CapacityPage() {
   const me = await getCurrentUser().catch(() => null);
   if (!me && authEnforced()) redirect("/login?next=/people/capacity");
-  const office = !me || me.realRole === "OWNER" || me.realRole === "ADMIN";
-  const editor = !!me && me.realRole === "EDITOR";
+  // WHAT THE LOGIN SEES (audit, Oct 23 2026): the shown login's role, as every
+  // page reads it. This read realRole, so the owner's "view as Kim" opened
+  // from her desk's "Offline or stuck?" showed the office's whole register,
+  // not Kim's own page. The actions still refuse a preview (actions.ts).
+  const office = !me || me.role === "OWNER" || me.role === "ADMIN";
+  const editor = !!me && me.role === "EDITOR";
   if (!office && !editor) redirect(homeFor(me?.role ?? "PHOTOGRAPHER"));
   // An editor with no roster link cannot be scoped — fail closed with a nudge.
   const selfId = editor ? me?.teamMemberId ?? null : null;

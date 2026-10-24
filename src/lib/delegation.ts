@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { listAssignees, firstName, type Assignee } from "@/lib/assignees";
 import { endOfBusinessDaysET, etDateTime, etDayKey, etEndOfDay } from "@/lib/datetime";
 import { scrubMoney } from "@/lib/text";
+import type { CurrentUser } from "@/lib/auth/user";
 
 // ---------------------------------------------------------------------------
 // DELEGATION (Oct 23 2026, Jordan's dashboards spec §5). One canonical task,
@@ -339,12 +340,29 @@ const isLead = (a: Actor) => a.role === "OWNER" || a.role === "ADMIN";
 
 /** May this actor put work on `assigneeKey`'s plate directly? "recommend" =
  *  only as a recommendation the owner decides (the creative manager naming
- *  someone other than themselves: no personnel authority from a title). */
-export function assignRight(actor: Actor, assigneeKey: string): "yes" | "recommend" | "no" {
+ *  someone other than themselves: no personnel authority from a title).
+ *  `traineeKey` (audit, Oct 23 2026): the field creative a coaching item's
+ *  practice is for. Training field creatives is the creative manager's own
+ *  work (spec §3), so that one practice task goes to them directly. Only the
+ *  server passes it (app/creativeDeskActions assignPracticeAction, after it
+ *  read the item); the assign server action never does. */
+export function assignRight(actor: Actor, assigneeKey: string, ctx: { traineeKey?: string | null } = {}): "yes" | "recommend" | "no" {
   if (isLead(actor)) return "yes";
-  if (actor.role === "CREATIVE_MANAGER") return actor.keys.has(assigneeKey) ? "yes" : "recommend";
+  if (actor.role === "CREATIVE_MANAGER") return actor.keys.has(assigneeKey) || (!!ctx.traineeKey && ctx.traineeKey === assigneeKey) ? "yes" : "recommend";
   return "no";
 }
+
+/** The acting person, from the signed-in login (callers refuse a preview first).
+ *  One definition for the delegation actions and the creative desk's own. */
+export async function actorFor(me: CurrentUser): Promise<Actor> {
+  const { addressableKeys } = await import("@/lib/auth/guards");
+  const keys = await addressableKeys(me).catch(() => new Set<string>());
+  const name = (me.name ?? me.email).trim().split(/\s+/)[0] || me.email;
+  return { email: me.email.toLowerCase(), name, role: me.realRole, keys, teamMemberId: me.teamMemberId };
+}
+
+/** Local development with sign-in off acts as the owner (the hub's own rule). */
+export const LOCAL_OWNER_ACTOR: Actor = { email: "owner@localhost", name: "Jordan", role: "OWNER", keys: new Set(["jordan"]), teamMemberId: null };
 
 type Person = { key: string; name: string; teamMemberId: string | null; userKey: string | null; role: string; email: string | null };
 
@@ -468,17 +486,28 @@ export function safeHref(v: string | null | undefined): string | null {
  * sourceHref) so there is ONE canonical task; a different assignee on an
  * open delegated task is a reassignment (history kept). A creative manager
  * naming someone else records a RECOMMENDATION the owner decides: the task
- * goes to the owner, never to the person named.
+ * goes to the owner, never to the person named. A creative manager naming
+ * the owner sends him a decision (an escalation), never "a recommendation for
+ * Jordan". `traineeKey`: see assignRight (server callers only).
  */
-export async function assignTask(actor: Actor, input: AssignInput, opts: { now?: Date; source?: string; taskType?: string } = {}): Promise<Result> {
+export async function assignTask(actor: Actor, input: AssignInput, opts: { now?: Date; source?: string; taskType?: string; traineeKey?: string | null } = {}): Promise<Result> {
   const now = opts.now ?? new Date();
   const title = clip(input.title, 140);
   if (!title) return say(false, "Give the task a name.");
   const roster = await listAssignees();
   const target = await personFor(input.assigneeKey, roster);
   if (!target) return say(false, "Pick a person on the team to assign it to.");
-  const right = assignRight(actor, target.key);
+  let right = assignRight(actor, target.key, { traineeKey: opts.traineeKey });
   if (right === "no") return say(false, "You can't assign work. Escalate it instead.");
+  // A DECISION SENT UP (audit, Oct 23 2026). The creative manager's readiness
+  // and practice recommendations, process approvals and cut escalations all
+  // name Jordan. Those used to be recorded as "a recommendation for Jordan":
+  // his dashboard read "Recommended for Jordan Spackman: your decision", its
+  // "Assign to Jordan" changed nothing and the flag never cleared. Naming the
+  // owner is an escalation he decides, on his plate.
+  const owner = right === "recommend" ? await ownerPerson(roster) : null;
+  const upToOwner = !!owner && owner.key === target.key;
+  if (upToOwner) right = "yes";
   const due = readDue(input.dueAt);
   if (input.dueAt && !due) return say(false, "That due date isn't readable.");
   const sourceHref = safeHref(input.sourceHref);
@@ -489,7 +518,6 @@ export async function assignTask(actor: Actor, input: AssignInput, opts: { now?:
   let assignee = target;
   let recommended: DelegationRecord["recommended"] = null;
   if (right === "recommend") {
-    const owner = await ownerPerson(roster);
     if (!owner) return say(false, "Couldn't find Jordan's login to send the recommendation to.");
     assignee = owner;
     recommended = { at: now.toISOString(), by: actor.name, assigneeKey: target.key, assigneeName: target.name, why: note };
@@ -502,6 +530,14 @@ export async function assignTask(actor: Actor, input: AssignInput, opts: { now?:
     if (!existing) return say(false, "That task no longer exists.");
     if (CLOSED.includes(existing.status)) return say(false, "That task is already closed. Open its record to start new work.");
   }
+  // The creative manager acts on his own tasks only (requireTaskAccess, the
+  // existing permission): a task someone else holds is not his to take or
+  // hand on (audit, Oct 23 2026). A delegated one goes through reassignTask,
+  // which turns that into a recommendation.
+  if (existing && actor.role === "CREATIVE_MANAGER" && !existing.delegatedAt && existing.assignedKey && !actor.keys.has(existing.assignedKey)) {
+    const holder = roster.find((a) => a.key === existing!.assignedKey)?.name ?? firstName(existing.assignedKey);
+    return say(false, `That task is ${holder}'s. Escalate it if it needs to move.`);
+  }
   const dedupeKey = input.sourceTaskId
     ? null
     : sourceHref
@@ -510,7 +546,11 @@ export async function assignTask(actor: Actor, input: AssignInput, opts: { now?:
   if (!existing && dedupeKey) existing = await prisma.smartTask.findUnique({ where: { dedupeKey }, select: TASK_SELECT });
 
   const acceptBy = acceptDeadline(now, due ?? existing?.dueAt ?? null);
-  const assignedEvent = ev(actor, recommended ? "recommended" : "assigned", { to: recommended ? target.name : assignee.name, text: recommended ? `Recommended ${target.name}; Jordan decides${note ? `. ${note}` : ""}` : note }, now);
+  const assignedEvent = ev(actor, recommended ? "recommended" : upToOwner ? "escalated" : "assigned", { to: recommended ? target.name : assignee.name, text: recommended ? `Recommended ${target.name}; Jordan decides${note ? `. ${note}` : ""}` : note }, now);
+  const escalated: DelegationRecord["escalated"] = upToOwner ? { at: now.toISOString(), by: actor.name, why: note ?? outcome ?? title } : null;
+  const sent = recommended
+    ? `Sent to ${assignee.name} as a recommendation for ${target.name}. ${assignee.name} decides.`
+    : upToOwner ? `Sent to ${assignee.name} to decide. They have been notified.` : `Assigned to ${assignee.name}. They have been notified.`;
 
   if (existing) {
     const rec = parseDelegation(existing.delegation);
@@ -527,7 +567,7 @@ export async function assignTask(actor: Actor, input: AssignInput, opts: { now?:
     const reopening = CLOSED.includes(existing.status);
     const fresh: DelegationRecord = {
       v: 1, byName: actor.name, outcome, needsVerification: input.needsVerification === true, sourceHref: sourceHref ?? rec?.sourceHref ?? null,
-      acceptBy: acceptBy.toISOString(), followUpAt: null, nextStep: null, latestUpdate: null, evidence: null, escalated: null, recommended, updateRequestedAt: null,
+      acceptBy: acceptBy.toISOString(), followUpAt: null, nextStep: null, latestUpdate: null, evidence: null, escalated, recommended, updateRequestedAt: null,
       events: [...(rec?.events ?? []), ...(reopening ? [ev(actor, "reopened", { text: "Assigned again after it was closed" }, now)] : []), assignedEvent],
     };
     const r = await mutate(existing.id, () => ({
@@ -537,15 +577,15 @@ export async function assignTask(actor: Actor, input: AssignInput, opts: { now?:
         ...(input.clientId && !existing!.clientId ? { clientId: input.clientId } : {}), ...(input.projectId && !existing!.projectId ? { projectId: input.projectId } : {}),
       },
       rec: fresh,
-      after: () => notifyAssigned(actor, assignee, existing!.id, existing!.title, fresh, existing!.projectId ?? input.projectId ?? null, due ?? existing!.dueAt, now),
-      message: recommended ? `Sent to ${assignee.name} as a recommendation for ${target.name}. ${assignee.name} decides.` : `Assigned to ${assignee.name}. They have been notified.`,
+      after: () => notifyAssigned(actor, assignee, existing!.id, existing!.title, fresh, existing!.projectId ?? input.projectId ?? null, due ?? existing!.dueAt, now, { decision: upToOwner }),
+      message: sent,
     }));
     return r;
   }
 
   const rec: DelegationRecord = {
     v: 1, byName: actor.name, outcome, needsVerification: input.needsVerification === true, sourceHref,
-    acceptBy: acceptBy.toISOString(), followUpAt: null, nextStep: null, latestUpdate: null, evidence: null, escalated: null, recommended, updateRequestedAt: null,
+    acceptBy: acceptBy.toISOString(), followUpAt: null, nextStep: null, latestUpdate: null, evidence: null, escalated, recommended, updateRequestedAt: null,
     events: [assignedEvent],
   };
   let id: string;
@@ -583,13 +623,13 @@ export async function assignTask(actor: Actor, input: AssignInput, opts: { now?:
     if (!again) return say(false, "Couldn't save the task. Try again.");
     return say(true, `Already with ${assignee.name}. Nothing new was sent.`, again.id);
   }
-  await notifyAssigned(actor, assignee, id, title, rec, input.projectId ?? null, due, now);
-  return say(true, recommended ? `Sent to ${assignee.name} as a recommendation for ${target.name}. ${assignee.name} decides.` : `Assigned to ${assignee.name}. They have been notified.`, id);
+  await notifyAssigned(actor, assignee, id, title, rec, input.projectId ?? null, due, now, { decision: upToOwner });
+  return say(true, sent, id);
 }
 
-async function notifyAssigned(actor: Actor, to: Person, taskId: string, title: string, rec: DelegationRecord, projectId: string | null, due: Date | null, now: Date): Promise<void> {
+async function notifyAssigned(actor: Actor, to: Person, taskId: string, title: string, rec: DelegationRecord, projectId: string | null, due: Date | null, now: Date, opts: { decision?: boolean } = {}): Promise<void> {
   const dueWords = due ? ` · due ${etDateTime(due)}` : "";
-  const what = rec.recommended ? `${actor.name} recommends ${rec.recommended.assigneeName}: ${title}` : `${actor.name} assigned you: ${title}`;
+  const what = rec.recommended ? `${actor.name} recommends ${rec.recommended.assigneeName}: ${title}` : opts.decision ? `${actor.name} needs your decision: ${title}` : `${actor.name} assigned you: ${title}`;
   await ring(to, {
     kind: "task_assigned",
     title: what,
@@ -615,7 +655,11 @@ export async function reassignTask(actor: Actor, taskId: string, assigneeKey: st
     if (!t.delegatedAt || !rec) return say(false, "This task was never assigned. Use Assign.");
     if (CLOSED.includes(t.status)) return say(false, "This task is closed.");
     if (t.assignedKey === target.key) return say(true, `It's already with ${target.name}.`, taskId);
-    const right = assignRight(actor, target.key);
+    let right = assignRight(actor, target.key);
+    // The creative manager never TAKES work someone else holds and he didn't
+    // assign (existing permission: his own tasks only). Moving it onto
+    // himself is a recommendation Jordan decides (audit, Oct 23 2026).
+    if (right === "yes" && actor.role === "CREATIVE_MANAGER" && !isAssignee(actor, t) && !isAssigner(actor, t)) right = "recommend";
     // The assignee may hand it BACK to whoever assigned it (setTaskAssignee's
     // old rule: the holder can return work); moving it anywhere else is the
     // assigner's or the office's call, or a recommendation the owner decides.

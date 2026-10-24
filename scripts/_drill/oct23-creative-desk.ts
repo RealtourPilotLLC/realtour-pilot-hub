@@ -244,9 +244,15 @@ async function main() {
     const tamper = await actions.recordFeedbackAction({ group: "FIELD", personId: harrisonTm.id, signalKey: "field:made-up", note: "x x x" });
     c.ok("…evidence comes from the hub, never from the page (an unknown signal is refused)", !tamper.ok);
     const fu = await actions.recordFollowUpAction(item.id, { note: "Two of three uploads were on time", result: "not_yet", nextDay: day(7) });
+    // The REAL delegation rule decides this one (audit, Oct 23 2026): through
+    // the assign action a creative manager naming Harrison was a
+    // recommendation to Jordan, while the screen said "assigned".
+    const callsBefore = assignCalls.length;
     const prac = await actions.assignPracticeAction(item.id, { practice: "Submit the upload page before leaving the driveway", dueDay: day(5) });
-    const practiceTask = [...store.values()].find((t) => t.title.startsWith("Practice:"));
-    c.ok("practice for a field creative is ASSIGNED to him through the delegation workflow", prac.ok && practiceTask?.assigneeKey === "harrison" && practiceTask.needsVerification, prac.message);
+    const practiceRow = await prisma.smartTask.findFirst({ where: { title: { startsWith: "Practice:" } } });
+    const practiceRec = JSON.parse(practiceRow?.delegation ?? "{}") as { needsVerification?: boolean; recommended?: unknown; events?: { kind: string }[] };
+    // No verification step on the task: James verifies on the coaching item (Verify improvement below).
+    c.ok("practice for a field creative is ASSIGNED to him through the delegation workflow (his key, James as the assigner, no recommendation; he marks it done, James verifies the item)", prac.ok && assignCalls.length === callsBefore && practiceRow?.assignedKey === "harrison" && practiceRow.ownerId === harrisonTm.id && practiceRow.delegatedBy === james.email.toLowerCase() && practiceRec.needsVerification === false && !practiceRec.recommended && practiceRec.events?.[0]?.kind === "assigned", `${prac.message} ${practiceRow?.assignedKey}`);
     const verify = await actions.verifyImprovementAction(item.id, { note: "Three on-time uploads in a row", exampleLabel: "71 Later Ave and the next two", exampleHref: "/upload" });
     const item2 = await prisma.developmentItem.findUniqueOrThrow({ where: { id: item.id } });
     const ev2 = JSON.parse(item2.evidenceJson) as { label: string; source: string }[];
@@ -378,7 +384,8 @@ async function main() {
     c.ok("no task appears twice across the sections", new Set(ids).size === ids.length);
     // Delegated work assigned to James shows with who assigned it and its state, and Accept works.
     await signIn(owner);
-    await fakeActions.assignTaskAction({ title: "Review a client's creative concern", assigneeKey: "james", dueAt: at(3 * H).toISOString(), outcome: "A recovery plan" });
+    // Due later TODAY (ET) whatever the hour the drill runs: after 9 PM, three hours on is tomorrow.
+    await fakeActions.assignTaskAction({ title: "Review a client's creative concern", assigneeKey: "james", dueAt: new Date(Math.min(at(3 * H).getTime(), etAt(today, 23, 58).getTime())).toISOString(), outcome: "A recovery plan" });
     await signIn(james);
     d = await desk();
     const del = d.assigned.items.find((x) => x.title === "Review a client's creative concern");
