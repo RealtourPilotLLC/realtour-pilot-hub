@@ -8,7 +8,7 @@ export type PageKey =
   | "communications" | "clients" | "team" | "upload" | "editing" | "sales"
   | "billing" | "catalog" | "payouts" | "resources" | "assistant"
   | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay" | "review" | "trends" | "day" | "settings" | "content" | "ops"
-  | "photos";
+  | "photos" | "media";
 // NOTE: "map", "billing", "payouts", "team" survive in this type only so stored
 // per-user permission JSON keeps resolving and so canAccess() can treat them as
 // legacy grants on the pages they merged into (see canAccess). They no longer
@@ -76,6 +76,11 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   // shot (Sep 18), and editors still receive their feedback on /edit.
   // "Video Delivery" as its menu door (Oct 23 2026).
   { key: "review", label: "Video Delivery", href: "/review" },
+  // THE MEDIA LIBRARY (Oct 23 2026, Jordan: "a really nice media page so we
+  // can see all of the videos that we have done and download them"): /media,
+  // and the listing pages under /listings (the proxy maps those here too).
+  // Owner, office and creative manager; lib/mediaAccess keeps it staff-only.
+  { key: "media", label: "Media", href: "/media" },
   { key: "pipeline", label: "Shoots", href: "/jobs" },
   // Schedule now owns both the day-list and the Map (the ?view=map tab). /map is
   // a redirect stub → /schedule?view=map, so "map" no longer needs its own key.
@@ -147,7 +152,7 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   ADMIN: [
     "dashboard", "ops", "photos", "tasks", "review", "pipeline", "schedule", "shoot",
     "communications", "clients", "content", "users", "upload", "editing",
-    "catalog", "resources", "training", "assistant", "feedback", "settings",
+    "catalog", "resources", "training", "assistant", "feedback", "settings", "media",
   ],
   // No "dashboard": the overview page carries ops counts + owner money strips
   // that aren't an editor's business — middleware bounces them to /editing.
@@ -204,7 +209,7 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   CREATIVE_MANAGER: [
     "dashboard", "tasks", "review", "pipeline", "schedule", "shoot", "mypay",
     "clients", "content", "upload", "editing", "photos",
-    "resources", "training", "assistant", "feedback",
+    "resources", "training", "assistant", "feedback", "media",
   ],
 };
 

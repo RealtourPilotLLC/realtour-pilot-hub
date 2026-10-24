@@ -27,6 +27,8 @@ function pathKey(pathname: string): PageKey | null {
   // bare /shoot list is the photographer nav page (review finding: dropping
   // "shoot" from ADMIN broke every /shoot/<id> link Kyle taps).
   if (pathname.startsWith("/shoot/")) return null;
+  // The listing pages are the media library's (Oct 23 2026): one key, /media.
+  if (pathname === "/listings" || pathname.startsWith("/listings/")) return "media";
   for (const p of PAGES) {
     if (p.href !== "/" && (pathname === p.href || pathname.startsWith(p.href + "/"))) return p.key;
   }

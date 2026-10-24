@@ -5,7 +5,7 @@ const SIDEBAR_GROUPS = [
   // Oct 19 2026: photo delivery and the Shoots board (owner and office; the
   // photo desk view only for the creative manager since Oct 22). Every role
   // but editors reads these as doors of their role menu below.
-  { id: "operations", title: "Operations", frequent: true, paths: ["/jobs", "/ops/photo-delivery", "/day"] },
+  { id: "operations", title: "Operations", frequent: true, paths: ["/jobs", "/ops/photo-delivery", "/media", "/day"] },
   { id: "production", title: "Production", frequent: true, paths: ["/editing", "/review", "/upload", "/shoot"] },
   // Open by default (Oct 5 2026): the office is onboarding clients into the
   // Content Program this week, and a folded group hid both doors.
@@ -142,7 +142,8 @@ export const usesOfficeMenu = usesRoleMenu;
 const MORE_GROUPS = [
   { id: "money", title: "Money", paths: ["/sales", "/trends"] },
   { id: "lists", title: "Lists & schedule", paths: ["/ops/checklist", "/tasks", "/schedule", "/day"] },
-  { id: "work", title: "Work", paths: ["/", "/jobs", "/ops/photo-delivery", "/communications", "/review", "/editing", "/upload", "/shoot"] },
+  // Media (Oct 23 2026): the one door the media library adds, here under More, never a role door.
+  { id: "work", title: "Work", paths: ["/", "/jobs", "/ops/photo-delivery", "/communications", "/review", "/media", "/editing", "/upload", "/shoot"] },
   { id: "clients", title: "Clients", paths: ["/content", "/content/activity", "/clients"] },
   { id: "team", title: "Team", paths: ["/users", "/quality", "/coaching", "/training"] },
   { id: "me", title: "Me", paths: ["/my-pay"] },
