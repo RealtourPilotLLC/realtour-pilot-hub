@@ -180,6 +180,8 @@ export async function resolveActiveReviewer(at: Date = new Date()): Promise<Revi
 // ---- authority ------------------------------------------------------------------
 
 type AuthorityInput = {
+  /** the login being shown (the previewed one in a preview); realRole is the person's own */
+  role?: string;
   realRole: string;
   impersonating: boolean;
   teamMemberId: string | null;
@@ -238,7 +240,13 @@ export async function canRuleOnCuts(me: AuthorityInput): Promise<RuleAuthority> 
  *  when auth is off (local dev), like every guard. */
 export async function isReviewDesk(me: AuthorityInput, opts: { authEnforced: boolean }): Promise<boolean> {
   if (!me) return !opts.authEnforced;
-  return (await canRuleOnCuts(me)).ok;
+  // A PREVIEW SEES THE ROOM THE PREVIEWED LOGIN SEES (Oct 23 2026, Jordan:
+  // "When in james account I cant open video delivery It just takes me back
+  // to his dashboard"). This is the PAGES' question only (/review, a cut,
+  // History); it is asked as that login, while every press on them still asks
+  // canRuleOnCuts as is, which refuses a preview.
+  const seen = me.impersonating && me.role ? { ...me, impersonating: false, realRole: me.role } : me;
+  return (await canRuleOnCuts(seen)).ok;
 }
 
 /** Logins that can never hold a review seat: an editor ruling on cuts would be

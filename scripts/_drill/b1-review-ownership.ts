@@ -696,8 +696,13 @@ async function main() {
     c.ok("#5/#13 both pages now ask isReviewDesk — the actions' own question", /ownerDesk = await isReviewDesk\(me/.test(pageSrc) && /ownerDesk = await isReviewDesk\(me/.test(wsSrc) && !roleOnly.test(pageSrc) && !roleOnly.test(wsSrc));
     const desk = (v: typeof viewer) => ra.isReviewDesk(v, { authEnforced: true });
     c.ok("#5 James seated on a PHOTOGRAPHER login IS the desk (the actions accept him)", await desk(V.jamesSeat));
-    c.ok("#13 …Kyle and Jordan are, Harrison (no seat), Kim (editor) and a preview are not",
-      (await desk(V.kyle)) && (await desk(V.jordan)) && !(await desk(V.harrison)) && !(await desk(V.kim)) && !(await desk(V.preview)));
+    c.ok("#13 …Kyle and Jordan are, Harrison (no seat) and Kim (editor) are not",
+      (await desk(V.kyle)) && (await desk(V.jordan)) && !(await desk(V.harrison)) && !(await desk(V.kim)));
+    // Oct 23 2026 (Jordan: "When in james account I cant open video delivery"):
+    // a preview SEES the room the previewed login sees, and every press in it
+    // is still refused.
+    c.ok("#13 …a preview sees the desk the previewed login sees (James seated: yes), and may press nothing",
+      (await desk(V.preview)) && !(await ra.canRuleOnCuts(V.preview)).ok);
     // The same seat through the real verdict on a cut from a shoot he did not do.
     viewer = V.jamesSeat;
     await editorNote(Jp, cutP, "Horizon tilts at 0:08");
