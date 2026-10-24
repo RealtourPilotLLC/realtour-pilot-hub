@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { parseEvidence, owedNow } from "@/lib/statusEvidence";
+import { parseEvidence, owedNow, owedPhrase } from "@/lib/statusEvidence";
 import { pinnedPromise } from "@/lib/turnaround";
 import { etDateTime } from "@/lib/datetime";
 import { noDashes, scrubMoney } from "@/lib/text";
@@ -49,7 +49,8 @@ const PHOTO_JOB_WORDS: Record<string, string> = {
   READY: "ready to deliver",
   DELIVERING: "delivering",
   DELIVERY_MISMATCH: "delivery mismatch",
-  DELIVERED: "delivered",
+  // Oct 23 2026: the photos' own stage, never the job's (850 Springbank Ln: photos out, the video owed).
+  DELIVERED: "photos delivered",
   REVISION_REQUESTED: "revision requested",
 };
 
@@ -90,10 +91,17 @@ export async function describeJobStages(projectIds: string[]): Promise<Map<strin
     if (ev?.aryeo) parts.push(ev.aryeo.photos > 0 ? `${ev.aryeo.photos} edited photos on the listing` : "no edited photos on the listing yet");
     if (qcOpen.has(p.id)) parts.push("QC card open");
     const owed = owedNow(ev);
+    const projectDone = p.status === "DELIVERED" || !!p.deliveredAt;
     const delivered =
-      p.status === "DELIVERED" || !!p.deliveredAt || job?.stage === "DELIVERED" ||
+      projectDone || job?.stage === "DELIVERED" ||
       (ev?.aryeo?.delivery === "DELIVERED" && owed.categories.length === 0);
-    parts.push(delivered ? "delivered" : "not delivered");
+    // PART OF IT OUT (Oct 23 2026, 30 Caedman Dr and 850 Springbank Ln): the
+    // photos delivered with the floor plan or the video still owed says so,
+    // never "delivered" (the line a "when will it be ready?" reply task
+    // carries) and never "not delivered".
+    const stillOwed = owedPhrase(owed);
+    const partOut = !projectDone && !!stillOwed && (job?.stage === "DELIVERED" || ev?.aryeo?.delivery === "DELIVERED");
+    parts.push(partOut ? `still owed: ${stillOwed}` : delivered ? "delivered" : "not delivered");
     out.set(p.id, { words: parts.join(", "), delivered, source: job ? "photo-job" : "evidence" });
   }
   return out;
