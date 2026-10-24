@@ -40,7 +40,7 @@ import { videoTier } from "@/lib/projectStatus";
 import { submissionTrail, UPLOAD_COMPLETED_BODY, UPLOAD_EDITED_BY_PREFIX, UPLOAD_SUBMITTED_BY_PREFIX } from "@/lib/uploadSummary";
 import { DEBRIEF_PAY_GATE_FROM } from "@/lib/payroll";
 import { payHiddenFor } from "@/lib/settings";
-import type { Contribution, SharedNote } from "@/lib/sharedShootCore";
+import { memberVisits, type Contribution, type SharedNote } from "@/lib/sharedShootCore";
 import type { AgentRequestItem } from "@/lib/agentRequestsCore";
 import type { AddedVideoRecord } from "@/lib/addedOnSite";
 
@@ -459,8 +459,9 @@ export default async function UploadProjectPage({
   // session (one shared brief plus a note per topic) read as before.
   // Oct 23 2026 (lib/addedOnSite): a video added on site whose order line has
   // landed since gets the instructions written for it before anything reads
-  // the job's videos. Does nothing when nothing is waiting.
-  if (addOnTasks.length) {
+  // the job's videos. Does nothing when nothing is waiting, and never from a
+  // "view as" preview (a preview never writes; audit, Oct 23 2026).
+  if (addOnTasks.length && !viewer?.impersonating) {
     await import("@/lib/addedOnSite").then((m) => m.attachAddedVideoInstructions(project.id, "the upload page")).catch(() => []);
   }
   const perVideo = videoOrderedRow && !session && !topicsUnavailable && !project.contentMonthId
@@ -499,7 +500,10 @@ export default async function UploadProjectPage({
     import("@/lib/sharedShoot").then((m) => m.shootRoster(project.id)).catch(() => ({ members: [], shared: false, appointments: [] as { assignedToId: string | null; status: string | null; startAt: Date | null }[] })),
     import("@/lib/sharedShoot").then((m) => m.readContributions(project.id)).catch(() => new Map<string, Contribution>()),
     import("@/lib/sharedShoot").then((m) => m.readSharedNotes(project.id)).catch(() => [] as SharedNote[]),
-    import("@/lib/agentRequests").then((m) => m.agentRequestsFor(project.id, { office: viewerIsOffice })).catch(() => [] as AgentRequestItem[]),
+    // A read that fails is `undefined`, never an empty list: the page then
+    // shows the special requests and the customer note the old way, instead
+    // of an empty card that hides them (audit, Oct 23 2026).
+    import("@/lib/agentRequests").then((m) => m.agentRequestsFor(project.id, { office: viewerIsOffice })).catch((): AgentRequestItem[] | undefined => undefined),
     import("@/lib/addedOnSite").then((m) => m.addedVideoRecords(project.id)).catch(() => new Map<string, AddedVideoRecord>()),
     import("@/lib/actorName").then((m) => m.displayNameFor(viewer)).catch(() => null),
   ]);
@@ -667,6 +671,7 @@ export default async function UploadProjectPage({
           contributions: [...contributionMap.values()],
           notes: sharedNotes,
           floorISO: myFloor?.toISOString() ?? null,
+          visits: memberVisits(roster.appointments, roster.members.map((m) => m.memberId), renderedAt),
           answers: othersAnswers,
         }}
         // Anything the agent added on site that the order doesn't know about —

@@ -237,7 +237,8 @@ export async function sharedBriefFor(projectId: string, opts: { scrub?: boolean 
     const c = contribs.get(m.id) ?? null;
     return {
       name: m.name,
-      services: (c?.captured ?? []).map((s) => SERVICE_LABEL[s]),
+      // "Includes drone footage" reaches the editor with the video (audit, Oct 23 2026).
+      services: (c?.captured ?? []).map((s) => (s === "video" && c?.videoDrone ? "Video (with drone footage)" : SERVICE_LABEL[s])),
       state: contributionState(c),
       submittedAtISO: lastSubmit(c)?.atISO ?? null,
       former: m.former,

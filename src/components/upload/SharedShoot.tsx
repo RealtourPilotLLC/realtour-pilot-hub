@@ -6,7 +6,7 @@ import { etDateTime } from "@/lib/datetime";
 import { cn } from "@/lib/utils";
 import { addSharedInstruction, editSharedInstruction, removeSharedInstruction } from "@/app/upload/sharedActions";
 import {
-  SERVICE_LABEL, SHARED_NOTE_CAP, changedSince, contributionState, findConflicts, lastSubmit,
+  SERVICE_LABEL, SHARED_NOTE_CAP, changedSince, contributionState, coveredByJobHandoff, findConflicts, halfOfService, lastSubmit,
   type Contribution, type ServiceKey, type SharedNote,
 } from "@/lib/sharedShootCore";
 import { Initials, StatusChip } from "@/components/upload/portalUi";
@@ -32,7 +32,7 @@ export type OthersAnswers = {
 const services = (list: ServiceKey[]) => (list.length ? list.map((s) => SERVICE_LABEL[s]).join(", ") : "Nothing ticked yet");
 
 export function ShootHandoffCard({
-  members, contributions, meId, floorISO, answers, wholeDoneISO, crewSlot,
+  members, contributions, meId, floorISO, answers, wholeDoneISO, crewSlot, visits,
 }: {
   members: RosterView[];
   contributions: Contribution[];
@@ -41,6 +41,8 @@ export function ShootHandoffCard({
   answers: OthersAnswers;
   wholeDoneISO: string | null;
   crewSlot?: React.ReactNode;
+  /** each member's own visit (lib/sharedShootCore memberVisits) */
+  visits?: Record<string, string | null>;
 }) {
   const [open, setOpen] = useState<string | null>(null);
   const floor = floorISO ? new Date(floorISO) : null;
@@ -60,7 +62,11 @@ export function ShootHandoffCard({
       <ul className="mt-3 space-y-2">
         {rows.map((m) => {
           const c = byId.get(m.memberId) ?? null;
-          const st = contributionState(c, floor);
+          // No part on file and the whole wrap-up covered them: handed off on
+          // the job's page (before the revamp, or by the office), not "Not
+          // started" (lib/sharedShootCore coveredByJobHandoff).
+          const legacy = !c && coveredByJobHandoff(wholeDoneISO, visits?.[m.memberId] ?? null);
+          const st = legacy ? "submitted" : contributionState(c, floor);
           const last = lastSubmit(c, floor);
           const mine = m.memberId === meId;
           return (
@@ -69,7 +75,7 @@ export function ShootHandoffCard({
                 <Initials name={m.name} />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold">{m.name}{mine && <span className="font-normal text-muted"> · you</span>}{m.former && <span className="font-normal text-muted"> · no longer assigned</span>}</p>
-                  <p className="text-xs text-muted">{services(c?.captured ?? [])}{c?.videoDrone ? " (with drone footage)" : ""}</p>
+                  <p className="text-xs text-muted">{legacy ? "Handed off on the job's page" : services(c?.captured ?? [])}{c?.videoDrone ? " (with drone footage)" : ""}</p>
                 </div>
                 <StatusChip tone={st === "submitted" ? "ok" : st === "in_progress" ? "warn" : "muted"}>
                   {st === "submitted" ? "Submitted" : st === "in_progress" ? "In progress" : "Not started"}
@@ -94,6 +100,14 @@ export function ShootHandoffCard({
                       {(["photos", "video"] as const).map((h) => {
                         const a = answers[h];
                         if (!a || !a.lines.length) return null;
+                        // The job's answers for a half sit under the person who
+                        // did that half (their own part, or the name that handed
+                        // it off); under everyone only when nobody claims it.
+                        const claims = (x: Contribution | null | undefined) => !!x?.captured.some((k) => halfOfService(k) === h);
+                        const first = (s: string | null | undefined) => (s ?? "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+                        const byName = !!a.handedOffBy && first(a.handedOffBy) === first(m.name);
+                        const anyone = contributions.some(claims) || rows.some((r) => !!a.handedOffBy && first(a.handedOffBy) === first(r.name));
+                        if (!claims(c) && !byName && anyone) return null;
                         return (
                           <div key={h} className="border-t border-border pt-1.5">
                             <p className="text-xs font-semibold">{h === "photos" ? "Photo details" : "Video details"}{a.handedOffBy ? ` · handed off by ${a.handedOffBy}` : ""}{a.atISO ? `, ${etDateTime(a.atISO)}` : ""}</p>

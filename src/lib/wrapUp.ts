@@ -56,13 +56,22 @@ export async function completeWrapUpIfWhole(
       select: {
         debriefSubmittedAt: true, photosHandoffAt: true, videoHandoffAt: true,
         deliverables: { where: { removedFromOrderAt: null }, select: { type: true, notCompletedReason: true, waivedAt: true } },
-        appointments: { select: { startAt: true, status: true } },
+        appointments: { select: { startAt: true, status: true, assignedToId: true } },
       },
     });
     if (!row) return null;
     // Oct 23 2026 (lib/visitSubmission): on a job with several visits, an
-    // earlier visit's stamps do not complete this visit's wrap-up.
+    // earlier visit's stamps do not complete this visit's wrap-up…
     const p = currentVisitStamps(row, row.appointments, opts.at ?? new Date());
+    // …unless that half was ANOTHER photographer's part of a shared shoot,
+    // handed off at their own earlier visit (audit, Oct 23 2026: James's
+    // photos on day 1 and Harrison's video on day 2 never made it whole).
+    if (p.visitFloor && ((!p.photosHandoffAt && row.photosHandoffAt) || (!p.videoHandoffAt && row.videoHandoffAt))) {
+      const [{ readContributions }, { halvesKeptFromEarlierVisits }] = await Promise.all([import("@/lib/sharedShoot"), import("@/lib/sharedShootCore")]);
+      const kept = halvesKeptFromEarlierVisits([...(await readContributions(projectId)).values()], row.appointments, p.visitFloor);
+      if (kept.has("photos") && !p.photosHandoffAt) p.photosHandoffAt = row.photosHandoffAt;
+      if (kept.has("video") && !p.videoHandoffAt) p.videoHandoffAt = row.videoHandoffAt;
+    }
     const halves = liveHandoffCategories(p.deliverables);
     const base = { photosAt: p.photosHandoffAt, videoAt: p.videoHandoffAt, halves };
     if (p.debriefSubmittedAt) return { ...base, wholeDone: true, completedNow: false };

@@ -74,7 +74,7 @@ import { AddedAtShoot } from "@/app/upload/[id]/AddedAtShoot";
 import type { ShootAddOn } from "@/app/upload/shootAddOns";
 import { emptySong, songLines, songOfText, songProblem, SONG_LINE_RE, type SongRequest } from "@/lib/songRequest";
 import {
-  BASE_SERVICES, SERVICE_KEYS, SERVICE_LABEL, contributionState, halfOfService, halvesToSubmit, serviceOfAddonItem, serviceOfType,
+  BASE_SERVICES, SERVICE_KEYS, SERVICE_LABEL, contributionState, coveredByJobHandoff, halfOfService, halvesToSubmit, serviceOfAddonItem, serviceOfType,
   type Contribution, type ServiceKey, type SharedNote,
 } from "@/lib/sharedShootCore";
 import type { AgentRequestItem } from "@/lib/agentRequestsCore";
@@ -377,7 +377,15 @@ function LaterVideoArea({
   const sections = state?.sections ?? (Object.fromEntries(VID_SECTIONS.map((x) => [x.key, ""])) as Record<VidKey, string>);
   const color = state?.color ?? null;
   const labelId = `later-color-${video.number}`;
-  const required = (k: VidKey) => (k === "vision" && video.shape === "full") || (k === "intro" && video.shape === "agent_intro");
+  // A video added on site owes nothing yet (pendingNote): no field is marked required.
+  const required = (k: VidKey) => !pendingNote && ((k === "vision" && video.shape === "full") || (k === "intro" && video.shape === "agent_intro"));
+  // The shape's boxes, plus any box that already holds words (a draft typed
+  // under another shape, legacy text read into a box): hidden words still
+  // save, so they are never kept out of sight (audit, Oct 23 2026).
+  const keys: VidKey[] = [
+    ...LATER_KEYS[video.shape],
+    ...VID_SECTIONS.map((x) => x.key as VidKey).filter((k) => k !== "song" && !LATER_KEYS[video.shape].includes(k) && !!sections[k]?.trim()),
+  ];
   return (
     <section data-later-video={video.key} aria-labelledby={`later-video-${video.number}`} className="mt-5 rounded-xl border-2 border-brand/30 bg-brand-soft/20 p-3.5 sm:p-4">
       <h3 id={`later-video-${video.number}`} className="text-sm font-semibold">
@@ -396,7 +404,7 @@ function LaterVideoArea({
       )}
       <div className="mt-3">
         <p id={labelId} className="text-[13px] font-medium text-muted">
-          Color profile you shot this video in <span className="text-danger">*</span>
+          Color profile you shot this video in {pendingNote ? <span className="font-normal">(optional until it is on the order)</span> : <span className="text-danger">*</span>}
         </p>
         <div role="radiogroup" aria-labelledby={labelId} className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
           {COLOR_PROFILE_CHOICES.map((c) => {
@@ -435,7 +443,7 @@ function LaterVideoArea({
         </div>
       )}
       <div className="mt-3 space-y-3">
-        {LATER_KEYS[video.shape].map((k) => {
+        {keys.map((k) => {
           const sec = VID_SECTIONS.find((x) => x.key === k)!;
           return (
             <div key={k}>
@@ -756,6 +764,8 @@ export function UploadPortal({
     floorISO: string | null;
     /** what the others handed off (the job's submitted photo / video answers) */
     answers: OthersAnswers;
+    /** each member's own visit (lib/sharedShootCore memberVisits): whether the job's wrap-up covers someone with no part on file */
+    visits?: Record<string, string | null>;
   } | null;
   /** the "Added at the shoot" cards (upload/[id]/AddedAtShoot), so an added service shows under What did you capture? */
   addOnRows?: ShootAddOn[];
@@ -914,7 +924,17 @@ export function UploadPortal({
   const [contribs, setContribs] = useState<Contribution[]>(sharedShoot?.contributions ?? []);
   const myPart = meId ? contribs.find((x) => x.memberId === meId) ?? null : null;
   const visitFloor = sharedShoot?.floorISO ? new Date(sharedShoot.floorISO) : null;
-  const mySubmitted = !!meId && contributionState(myPart, visitFloor) === "submitted";
+  // A person with no part on file reads as the job does when the job's
+  // wrap-up covered them (audit, Oct 23 2026): a shared shoot handed off on
+  // the page before the revamp (4 live jobs: 538 Onward Ave, 615 Cliff Ln,
+  // 2367 Pheasant Hill Ln, 811 Little Shiloh Rd), or by the office, is
+  // submitted, not an open form with nothing ticked. A wrap-up made before
+  // their own visit was someone else's (lib/sharedShootCore
+  // coveredByJobHandoff). Once they tick anything, their own part counts.
+  const myVisitISO = meId ? sharedShoot?.visits?.[meId] ?? null : null;
+  const mySubmitted = !!meId && (myPart
+    ? contributionState(myPart, visitFloor) === "submitted"
+    : done && (!project.debriefSubmittedAt || coveredByJobHandoff(project.debriefSubmittedAt, myVisitISO)));
   // What was ordered, by service, and what was added on site (the office's cards).
   const [addOns, setAddOns] = useState<ShootAddOn[]>(addOnRows ?? []);
   const orderedBy = new Map<ServiceKey, Deliverable[]>();
@@ -1581,8 +1601,14 @@ export function UploadPortal({
   const splitMode = (asMember ? myHalves.length === 2 : photosLive && videoLive) && !pageDone;
   /** the one button's scope: on a shared shoot, only my half when the job owes two */
   const myScope: HandoffCategory | undefined = asMember && myHalves.length === 1 && liveHalves.length === 2 ? myHalves[0] : undefined;
-  /** a shared-shoot part with no photo or video half of its own (a floor plan, a tour, nothing ticked) */
-  const partOnly = asMember && myHalves.length === 0;
+  /**
+   * a shared-shoot part with no photo or video half of its own (a floor plan,
+   * a tour, nothing ticked). Only while the job owes a half somebody else
+   * hands off: a job that owes neither (a floor-plan-and-tour job, or every
+   * photo and video item "couldn't complete") is handed off by the normal
+   * whole-page submit, or nobody could ever finish it (audit, Oct 23 2026).
+   */
+  const partOnly = asMember && myHalves.length === 0 && liveHalves.length > 0;
 
   // What still blocks the submit — same rules the server enforces. `scope`
   // narrows it to one half (O05); absent = the whole page, as before.
@@ -1732,7 +1758,11 @@ export function UploadPortal({
     submitBusyRef.current = true;
     setErr(null);
     const payload = {
-      editorBrief,
+      // A shared shoot's photographers write the shared instructions instead,
+      // and the job's own note is not on their page to see: an empty field
+      // leaves it as it is (finalizeUpload), so a stale copy never goes back
+      // over the office's Editing Room edit. The office still edits it here.
+      editorBrief: shared && sharedShoot && !viewerIsOffice ? "" : editorBrief,
       cullingConfirmed: cullOk,
       shotOrder: orderChoice ? { mode: orderChoice, notes: orderNotes } : null,
       removalNotes: removal,
@@ -1806,6 +1836,27 @@ export function UploadPortal({
         }
         if (res.conflict) {
           resumeAutosave();
+          // A HALF THAT WRITES NOTHING THEY CHANGED (audit, Oct 23 2026): on a
+          // shared shoot the other photographer's half lands while this page
+          // is open, so nearly every second half met this question, and its
+          // "replaces their version" was not true. When this submit writes
+          // none of the answers that moved, it goes on with the current
+          // fingerprint: nothing of theirs is overwritten. Asked as before
+          // otherwise, and never twice in a row.
+          if (scope && baseHashOverride === undefined) {
+            const norm = (v: unknown) => (typeof v === "string" ? v.trim() : v ?? null);
+            const current = res.conflict.current;
+            const moved = (Object.keys(loadedFields) as (keyof SubmittedFields)[]).filter((k) => norm(loadedFields[k]) !== norm(current[k]));
+            const writes: (keyof SubmittedFields)[] = [
+              ...(payload.editorBrief.trim() ? (["editorBrief"] as const) : []),
+              ...(scope === "photos" ? (["removalNotes", "shotOrderNotes"] as const) : (["videoInstructions", "reelScript", "scriptConfirmNote", "videosFilmed"] as const)),
+            ];
+            if (moved.length && !moved.some((k) => writes.includes(k))) {
+              const hash = res.conflict.currentHash;
+              setTimeout(() => runSubmit(force, scope, hash), 0);
+              return;
+            }
+          }
           // O04: somebody changed the submitted answers since this page loaded.
           const changed = changedSubmittedFields(loadedFields, res.conflict.current);
           const who = res.conflict.by ?? "someone";
@@ -2243,7 +2294,14 @@ export function UploadPortal({
   // THE HEADS-UPS (Oct 21 2026): one folded card instead of a stack of banners.
   // Order inside it: what is late or owed, then what the client asked for.
   const topNotices: Notice[] = [];
-  if (!done && halfAt.photos && !halfAt.video && videoLive) {
+  // On a shared shoot a half still owed is only MY heads-up when it is mine:
+  // I ticked a service of that half, or nobody else on the shoot has (audit,
+  // Oct 23 2026: the photos photographer was told their video was late).
+  const halfIsMine = (half: HandoffCategory) =>
+    !asMember ||
+    captured.some((k) => halfOfService(k) === half) ||
+    !contribs.some((x) => x.memberId !== meId && x.captured.some((k) => halfOfService(k) === half));
+  if (!done && halfAt.photos && !halfAt.video && videoLive && halfIsMine("video")) {
     const due = videoHalfDueAt(new Date(halfAt.photos));
     const past = due.getTime() < nowMs;
     topNotices.push({
@@ -2262,7 +2320,7 @@ export function UploadPortal({
       ),
     });
   }
-  if (!done && halfAt.video && !halfAt.photos && photosLive) {
+  if (!done && halfAt.video && !halfAt.photos && photosLive && halfIsMine("photos")) {
     topNotices.push({
       key: "photos-owed",
       tone: "warning",
@@ -2340,7 +2398,13 @@ export function UploadPortal({
     return folders?.find((f) => f.key === key)?.count ?? null;
   };
   // "My selected files are uploaded": on a shared shoot, my own word on my part; on the single page, every ordered item of what I ticked is ticked.
-  const rowsUploaded = (k: ServiceKey) => (orderedBy.get(k) ?? []).filter((d) => !d.waivedAt && !notDone[d.id]).every((d) => uploaded[d.id]);
+  // A service with no live ordered row (added on site, not ordered, every row
+  // "couldn't complete") is only uploaded on the person's own word, never by
+  // default (audit, Oct 23 2026: `[].every()` read as ticked).
+  const rowsUploaded = (k: ServiceKey) => {
+    const rows = (orderedBy.get(k) ?? []).filter((d) => !d.waivedAt && !notDone[d.id]);
+    return rows.length ? rows.every((d) => uploaded[d.id]) : (myPart?.uploaded ?? []).includes(k);
+  };
   const allMineUploaded = captured.length > 0 && (asMember ? captured.every((k) => (myPart?.uploaded ?? []).includes(k)) : captured.every(rowsUploaded));
   const [removalOpen, setRemovalOpen] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
@@ -2363,7 +2427,9 @@ export function UploadPortal({
     checkUploadRawFiles(project.id)
       .then((r) => { if (rawCheckRequest.current === request) setRawCheck(r); })
       .catch(() => setErr("Dropbox couldn't be read just now. Nothing about your files changed; try again in a minute."))
-      .finally(() => setCheckingAgain(false));
+      // This read replaces a submit review's own (same counter): it ends that
+      // review's "Checking files…" too, or the confirm stayed stuck on it.
+      .finally(() => { setCheckingAgain(false); if (rawCheckRequest.current === request) setCheckingRaw(false); });
   };
   const lastChecked = rawCheck?.checkedAtISO ?? null;
   const [partBusy, setPartBusy] = useState(false);
@@ -2454,6 +2520,7 @@ export function UploadPortal({
       floorISO={sharedShoot!.floorISO}
       answers={sharedShoot!.answers}
       wholeDoneISO={project.debriefSubmittedAt}
+      visits={sharedShoot!.visits}
       crewSlot={slots.crew}
     />
   ) : (
@@ -2687,6 +2754,13 @@ export function UploadPortal({
               <AlertTriangle className="mt-0.5 size-4 shrink-0" />
               <div className="font-medium">{topicsPending}</div>
             </div>
+          )}
+          {/* The agent's requests stay on a submitted page too (audit, Oct 23
+              2026): the old page always showed the special requests and the
+              customer note at the top, submitted or not, and something the
+              agent asks for often comes back after the submit. */}
+          {agentRequests !== undefined && (
+            <AgentRequests projectId={project.id} initial={agentRequests} blocked={briefNoteBlocked} reviewed={requestsReviewed} onReviewed={setRequestsReviewed} />
           )}
           {/* The read-back (Jordan, Sep 15: "see ... what was uploaded and
               the notes for them"): every answer verbatim, above the reopen
@@ -3522,7 +3596,9 @@ export function UploadPortal({
               total: orderedVideoCount + addedVideoRows.length,
               label: `added on site (${a.item})`,
               tier: "Added on site",
-              shape: "agent_intro",
+              // Its kind is not known until the office adds the line: the
+              // plain shape (its instructions, and a script if one was said).
+              shape: "minimal",
               own: addedVideoTexts[a.id]?.text ?? null,
               dueISO: null,
             }}
@@ -3566,13 +3642,25 @@ export function UploadPortal({
               blocked={!!briefNoteBlocked}
               requests={(agentRequests ?? []).filter((r) => r.group !== "history").map((r) => ({ id: r.id, text: r.original, source: r.source }))}
             />
-            {project.editorBrief?.trim() && (
+            {viewerIsOffice ? (
+              // The office corrects the job's own note here, as on the single page.
+              <div className="mt-3">
+                <label className="block text-sm font-semibold">The job&rsquo;s note for the editor <span className="font-normal text-muted">(office)</span></label>
+                <AutoTextarea
+                  value={editorBrief}
+                  onChange={(e) => setEditorBrief(e.target.value)}
+                  minRows={2}
+                  placeholder="Anything else the editor should know, beside the photographers' shared instructions."
+                  className="mt-1.5 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                />
+              </div>
+            ) : project.editorBrief?.trim() ? (
               <div className="mt-3 rounded-xl border border-border bg-surface-2/40 px-3 py-2.5 text-[13px]">
                 <p className="text-xs font-semibold text-muted">Already on the job for the editor{submission.lastEdited ? ` (last edited by ${submission.lastEdited.by})` : ""}</p>
                 <p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{project.editorBrief}</p>
                 <p className="mt-1 text-xs text-muted">Kept as it is. Add to it with a shared instruction above.</p>
               </div>
-            )}
+            ) : null}
           </>
         ) : (
           <div>
@@ -3593,7 +3681,15 @@ export function UploadPortal({
         )}
 
         {!pageDone && <div className="mt-4 sm:hidden">{readinessBlock}</div>}
-        <Fold className="mt-4" title={<span className="inline-flex items-center gap-1.5"><Plus aria-hidden className="size-4" /> Report a problem, new request, or extra service</span>} summary={flags.length || gaps.length ? `${flags.length + gaps.length} on file` : undefined}>
+        <Fold className="mt-4" title={<span className="inline-flex items-center gap-1.5"><Plus aria-hidden className="size-4" /> Report a problem, new request, or extra service</span>} summary={
+          // What is inside, said on the closed line (audit, Oct 23 2026): the
+          // shoot debrief and an overdue missing-work plan used to sit in
+          // plain sight on the old page.
+          [
+            flags.length ? `${flags.length} flagged` : null,
+            gaps.length ? `${gaps.length} missing work${gaps.some((g) => g.overdue) ? " (overdue)" : ""}` : null,
+          ].filter(Boolean).join(" · ") || "flags, missing work, client preferences, how the shoot went"
+        }>
           <div>
             <div className="mb-1.5 flex items-center gap-2 text-sm font-semibold">
               <Flag className="size-4 text-danger" /> Flag a problem

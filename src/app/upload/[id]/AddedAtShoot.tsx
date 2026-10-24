@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { PackagePlus, Plus, Check, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etDateTime } from "@/lib/datetime";
@@ -36,12 +36,15 @@ export function AddedAtShoot({
   embedded?: boolean;
 }) {
   const [rows, setRowsState] = useState<ShootAddOn[]>(initial);
-  const setRows = (next: ShootAddOn[] | ((prev: ShootAddOn[]) => ShootAddOn[])) =>
-    setRowsState((prev) => {
-      const v = typeof next === "function" ? next(prev) : next;
-      onRowsChange?.(v);
-      return v;
-    });
+  // The parent hears the new list outside React's state updater (calling its
+  // setter from inside one is an update during render; audit, Oct 23 2026).
+  const rowsRef = useRef(rows);
+  const setRows = (next: ShootAddOn[] | ((prev: ShootAddOn[]) => ShootAddOn[])) => {
+    const v = typeof next === "function" ? next(rowsRef.current) : next;
+    rowsRef.current = v;
+    setRowsState(v);
+    onRowsChange?.(v);
+  };
   const [open, setOpen] = useState(false);
   const [item, setItem] = useState("");
   const [note, setNote] = useState("");

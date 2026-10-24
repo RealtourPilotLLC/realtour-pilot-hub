@@ -115,9 +115,54 @@ export default async function UploadListPage() {
       },
       _count: { select: { uploads: true } },
       // Oct 23 2026 (lib/visitSubmission): which visit the stamps belong to.
-      appointments: { select: { startAt: true, status: true } },
+      // assignedToId (Oct 23 2026, audit): who is on a shared shoot (below).
+      appointments: { select: { startAt: true, status: true, assignedToId: true } },
     },
   })).map((s) => currentVisitStamps(s, s.appointments, now));
+
+  // A SHARED SHOOT, PER PERSON (audit, Oct 23 2026). The job's own stamps
+  // wait for every part, so the photographer whose part is already in saw the
+  // job as a to-do ("Photos submitted · video pending", "Submit to finish
+  // the job") until the other half landed. For a photographer viewer, a
+  // shared shoot whose page they submitted their part of says so instead.
+  // The upload page's own rule (lib/sharedShootCore rosterOf and
+  // contributionState, the same visit floor). Display only: nothing here
+  // changes a stamp, pay or a KPI. A read that fails reads as before.
+  // The viewer as a team member: a photographer, and also the creative manager
+  // (James sees every job here, and shoots some of them) or the owner.
+  const meMember = mine && mine !== "__none__" ? mine : user ? await photographerMemberId(user).catch(() => null) : null;
+  const myPartIn = new Map<string, string[]>();
+  if (meMember) {
+    const mine = meMember;
+    const open = shoots.filter((s) => !s.debriefSubmittedAt);
+    if (open.length) {
+      try {
+        const core = await import("@/lib/sharedShootCore");
+        const ids = open.map((s) => s.id);
+        const [crewRows, contribRows] = await Promise.all([
+          prisma.projectCrew.findMany({ where: { projectId: { in: ids } }, orderBy: { addedAt: "asc" }, select: { projectId: true, memberId: true } }).catch(() => []),
+          prisma.auditLog.findMany({ where: { action: core.CONTRIBUTION_ACTION, target: { in: ids } }, select: { target: true, detail: true } }),
+        ]);
+        const names = new Map<string, string>();
+        const missingNames = [...new Set([...open.flatMap((s) => s.appointments.map((a) => a.assignedToId)), ...crewRows.map((c) => c.memberId)].filter((x): x is string => !!x))];
+        if (missingNames.length) for (const m of await prisma.teamMember.findMany({ where: { id: { in: missingNames } }, select: { id: true, name: true } })) names.set(m.id, m.name);
+        for (const s of open) {
+          const roster = core.rosterOf({
+            photographer: s.photographer ? { id: s.photographer.id, name: s.photographer.name } : null,
+            appointments: s.appointments,
+            crew: crewRows.filter((c) => c.projectId === s.id).map((c) => ({ memberId: c.memberId, name: names.get(c.memberId) ?? "A photographer" })),
+            names,
+          });
+          if (!roster.shared || !roster.members.some((m) => m.memberId === mine)) continue;
+          const parts = core.latestContributions(contribRows.filter((r) => r.target === s.id).map((r) => r.detail));
+          const floor = s.visitFloor;
+          const myFloor = floor && s.appointments.some((a) => a.assignedToId === mine && a.startAt && a.startAt.getTime() >= floor.getTime() && !/cancel/i.test(a.status ?? "")) ? floor : null;
+          if (core.contributionState(parts.get(mine) ?? null, myFloor) !== "submitted") continue;
+          myPartIn.set(s.id, roster.members.filter((m) => m.memberId !== mine && core.contributionState(parts.get(m.memberId) ?? null, null) !== "submitted").map((m) => m.name.split(/\s+/)[0]));
+        }
+      } catch { /* the rows read as the job's stamps, as before */ }
+    }
+  }
 
   // "Over budget" chip: only SHOT jobs have raws in the folder, so we only spend
   // Dropbox calls on those (one call each, in parallel). A shoot is over budget
@@ -159,7 +204,7 @@ export default async function UploadListPage() {
   // Still to upload. A reopened job has Project.uploadedAt set from its FIRST
   // shoot, so the project stamp alone would count the extra footage as already
   // in — the open extra shoot is what makes it pending again.
-  const stillToUpload = (r: (typeof rows)[number]) => !r.s.uploadedAt || r.extra != null;
+  const stillToUpload = (r: (typeof rows)[number]) => (!r.s.uploadedAt && !myPartIn.has(r.s.id)) || r.extra != null;
   const pendingToday = (grouped.get("today") ?? []).filter(stillToUpload).length;
 
   // Past uploads — first page server-rendered; search / chips / paging go
@@ -200,7 +245,7 @@ export default async function UploadListPage() {
               </div>
               <div className="space-y-2">
                 {items.map((r) => (
-                  <JobRow key={r.s.id} s={r.s} extraShoot={r.extra} overBudget={overBudget.has(r.s.id)} nowMs={now.getTime()} payHidden={payHidden} />
+                  <JobRow key={r.s.id} s={r.s} extraShoot={r.extra} overBudget={overBudget.has(r.s.id)} nowMs={now.getTime()} payHidden={payHidden} myPartWaitingOn={myPartIn.get(r.s.id) ?? null} />
                 ))}
               </div>
             </section>
@@ -260,12 +305,18 @@ function extraShootDay(
 // auto-stamp). The row says so until they do.
 
 // `nowMs` comes from the page's one `now` (a render must not read the clock).
-function JobRow({ s, extraShoot, overBudget, nowMs, payHidden }: { s: Shoot; extraShoot: Date | null; overBudget: boolean; nowMs: number; payHidden: boolean }) {
+function JobRow({ s, extraShoot, overBudget, nowMs, payHidden, myPartWaitingOn = null }: {
+  s: Shoot; extraShoot: Date | null; overBudget: boolean; nowMs: number; payHidden: boolean;
+  /** a shared shoot whose page THIS photographer submitted their part of: who the rest is still with (audit, Oct 23 2026) */
+  myPartWaitingOn?: string[] | null;
+}) {
   const stage = stageMeta(s.status as Parameters<typeof stageMeta>[0]);
   // An extra shoot's raws are not in, whatever the project stamp says: that
   // stamp belongs to the first shoot, and a delivered job carries it.
   const uploaded = s.uploadedAt != null && !extraShoot;
+  const myPartIn = myPartWaitingOn != null && !extraShoot;
   const payrollPending =
+    !myPartIn &&
     !s.debriefSubmittedAt &&
     s.shootDate != null &&
     s.shootDate.getTime() >= DEBRIEF_PAY_GATE_FROM &&
@@ -297,6 +348,9 @@ function JobRow({ s, extraShoot, overBudget, nowMs, payHidden }: { s: Shoot; ext
           )}
           {s.debriefSubmittedAt && !extraShoot ? (
             <Badge color="#34d399" soft="rgba(52,211,153,0.14)">Submitted ✓ {etDateTime(s.debriefSubmittedAt)}</Badge>
+          ) : myPartIn ? (
+            // A shared shoot: my part is in; the rest is the other photographer's.
+            <Badge color="#34d399" soft="rgba(52,211,153,0.14)">Your part submitted ✓{myPartWaitingOn!.length ? ` · waiting on ${myPartWaitingOn!.join(" and ")}` : ""}</Badge>
           ) : s.photosHandoffAt && !s.videoHandoffAt ? (
             // O05: half in, half owed — the row says which, so "Submit to add
             // to payroll" beside it is not read as "nothing was sent".
@@ -339,7 +393,7 @@ function JobRow({ s, extraShoot, overBudget, nowMs, payHidden }: { s: Shoot; ext
         {/* A reopened job reads "Upload" even though its page was submitted
             weeks ago — the extra footage is what the photographer is here for,
             and "View" would send them away from the only thing left to do. */}
-        {s.debriefSubmittedAt && !extraShoot ? "View" : uploaded ? "Review" : <><FolderOpen className="size-4" /> Upload</>} <ArrowRight className="size-4" />
+        {(s.debriefSubmittedAt || myPartIn) && !extraShoot ? "View" : uploaded ? "Review" : <><FolderOpen className="size-4" /> Upload</>} <ArrowRight className="size-4" />
       </span>
     </Link>
   );

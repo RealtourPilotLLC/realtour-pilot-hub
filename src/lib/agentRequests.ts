@@ -85,11 +85,15 @@ export async function agentRequestsFor(projectId: string, opts: { office: boolea
     })
     .catch(() => []);
   const since = now.getTime() - 60 * 86_400_000;
+  // The asks this card shows: a job line below is folded into one of THESE
+  // only (an ask left off the card must not take its copy with it).
+  const shownAsks: { text: string; summary: string | null }[] = [];
   for (const a of asks) {
     if (!isLiveAskSource(a.source)) continue;
     const onSite = (a.sourceRef ?? "").startsWith(ON_SITE_REF);
     const open = a.state === "OPEN" && !closesOnDelivery(a, p);
     if (!open && (a.doneAt ?? a.confirmedAt ?? a.askedAt).getTime() < since) continue;
+    shownAsks.push(a);
     const who = onSite ? decodeURIComponent((a.sourceRef ?? "").slice(ON_SITE_REF.length)) || "the photographer" : null;
     items.push({
       id: `ask:${a.id}`,
@@ -141,7 +145,7 @@ export async function agentRequestsFor(projectId: string, opts: { office: boolea
     const copy = /^Client request \(([^)]*)\):/i.exec(body);
     const words = copy ? stripRequestLabel(body) : body;
     // A client's ask arrives as its own row above; this line is its copy for the editor's brief.
-    if (copy && asks.some((x) => sameRequestWords(x.text, words) || sameRequestWords(x.summary ?? "", words))) continue;
+    if (copy && shownAsks.some((x) => sameRequestWords(x.text, words) || sameRequestWords(x.summary ?? "", words))) continue;
     const onSite = copy && /^on site/i.test(copy[1]);
     items.push({
       id: `line:${a.id}`,
