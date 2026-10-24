@@ -86,6 +86,10 @@ export async function reopenBookkeeping(sub: Sub, opts: { by: string; why: strin
   } catch (e) {
     console.error("[reopen] Topaz pass", sub.id, e);
   }
+  // "Approve and send" / "Run it again, then upload and send" waiting on this
+  // version stops, said once (Oct 23 2026, lib/sendWhenReady): a reopened
+  // version is not the file to send. The next approved version needs its own press.
+  await import("@/lib/sendWhenReady").then((m) => m.dropSendWhenReady(sub.id)).catch((e) => console.error("[reopen] send when ready", sub.id, e));
   try {
     const where = opts.source === "review_room" ? "in the Review Room" : opts.source === "portal" ? "from the client portal" : opts.source === "text" ? "from a client text" : opts.source === "email" ? "from a client email" : "from a client call";
     await prisma.activity.create({ data: { projectId: sub.projectId, type: "SYSTEM", body: `Reopened for revisions ${where}: version ${sub.round} was approved${opts.by ? `, reopened by ${opts.by}` : ""}. ${opts.why}`.slice(0, 1000) } });

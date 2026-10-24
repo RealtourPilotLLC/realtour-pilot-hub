@@ -25,6 +25,12 @@
 export const RERUN_LABEL = "Run Topaz again";
 /** The second press (it spends credits, so it asks first). */
 export const RERUN_CONFIRM = "Yes, run it again";
+/** The confirm's other choice (Jordan, Oct 23 2026: "re-run and send"),
+ *  offered only on a Ready to send row that could go with one press: the new
+ *  file, once back and checked, is uploaded to Aryeo and sent (lib/sendWhenReady). */
+export const RERUN_SEND = "Run it again, then upload and send";
+/** The sentence the cost line gains when that choice is offered. */
+export const RERUN_SEND_LINE = "With the second choice, once the new file is back and checked, the hub uploads it to Aryeo and sends it. If anything would stop that (a client request to check, a listing warning), it waits for you instead.";
 
 /** Every refusal, in the words the screen shows. */
 export const RERUN_SAYS = {
@@ -103,13 +109,16 @@ export function rerunRefusal(f: RerunFacts): string | null {
  *  today's Settings (null = not known until the free price check). */
 export type RerunOffer = { jobId: string; credits: number | null; limit: number | null };
 
-/** The line under the button once it asks: the cost before anything is spent. */
-export function rerunCostLine(o: Pick<RerunOffer, "credits" | "limit">): string {
+/** The line under the button once it asks: the cost before anything is spent.
+ *  `canSendAfter`: "Run it again, then upload and send" is offered too, and
+ *  the line says what that does (one sentence more). */
+export function rerunCostLine(o: Pick<RerunOffer, "credits" | "limit">, opts: { canSendAfter?: boolean } = {}): string {
   const keep = "It sends the editor's original file, not the current Topaz file. The current Topaz file is kept in Dropbox (superseded/), and nothing goes to the client until the new one is finished and checked.";
-  if (o.credits == null) return `It starts with the free price check, so every limit in Settings applies. ${keep}`;
+  const send = opts.canSendAfter ? ` ${RERUN_SEND_LINE}` : "";
+  if (o.credits == null) return `It starts with the free price check, so every limit in Settings applies. ${keep}${send}`;
   const n = Math.max(1, Math.round(o.credits));
   if (o.limit != null && n > o.limit) {
-    return `About ${n} credits with today's Settings, which is over the ${o.limit}-credit limit per video, so the free price check will stop it. ${keep}`;
+    return `About ${n} credits with today's Settings, which is over the ${o.limit}-credit limit per video, so the free price check will stop it. ${keep}${send}`;
   }
-  return `About ${n} credits with today's Settings. It starts with the free price check, so every limit in Settings still applies. ${keep}`;
+  return `About ${n} credits with today's Settings. It starts with the free price check, so every limit in Settings still applies. ${keep}${send}`;
 }
