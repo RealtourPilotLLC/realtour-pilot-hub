@@ -18,6 +18,7 @@ import { AryeoCutover, type CutoverState } from "@/components/connections/AryeoC
 import { TopazLane, type TopazLaneJob, type TopazLaneStats } from "@/components/connections/TopazLane";
 import { topazDashboard, topazJobRows } from "@/lib/topazJobs";
 import { TranscriptionCard } from "@/components/connections/TranscriptionCard";
+import { GeminiCard } from "@/components/connections/GeminiCard";
 import { StripeWebhookCard } from "@/components/connections/StripeWebhookCard";
 import { AutohdrCard } from "@/components/connections/AutohdrCard";
 import { AryeoWebCard } from "@/components/connections/AryeoWebCard";
@@ -174,6 +175,7 @@ export default async function ConnectionsPage({
     topazHistory,
     transcription,
     stripeWebhook,
+    gemini,
   ] = await Promise.all([
     webhookLaneHealth().catch(() => null),
     unresolvedWebhookFailures().catch(() => null),
@@ -225,6 +227,9 @@ export default async function ConnectionsPage({
     // signing secret is saved and readable, the last delivery and refusal,
     // and how signups were activated. Never calls Stripe.
     stripeWebhookStatus().catch(() => null),
+    // Gemini video analysis (Oct 24 2026): database reads and a no-network
+    // key check only. Nothing here can reach Google.
+    import("@/lib/videoAnalysis").then((m) => m.geminiCardData()).catch(() => null),
   ]);
 
   // Mailboxes (§9, Sep 26 2026): connected, reading and sending as three
@@ -526,6 +531,22 @@ export default async function ConnectionsPage({
                   if (provider.id === "transcription") {
                     return transcription ? (
                       <TranscriptionCard key={provider.id} {...transcription} />
+                    ) : (
+                      <CardUnavailable key={provider.id} name={provider.name} />
+                    );
+                  }
+                  // Gemini video analysis (Oct 24 2026): its own card, key and switches.
+                  if (provider.id === "gemini_video") {
+                    return gemini ? (
+                      <GeminiCard
+                        key={provider.id}
+                        key_={gemini.key}
+                        settings={gemini.settings}
+                        usage={gemini.usage}
+                        counts={gemini.counts}
+                        recentErrors={gemini.recentErrors}
+                        trial={{ words: gemini.trial.summary.words, barMet: gemini.trial.summary.barMet, startedAt: gemini.trial.startedAt, endsAt: gemini.trial.endsAt, reviewersOn: gemini.trial.reviewersOn, open: gemini.trial.open }}
+                      />
                     ) : (
                       <CardUnavailable key={provider.id} name={provider.name} />
                     );

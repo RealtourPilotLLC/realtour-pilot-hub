@@ -31,6 +31,10 @@ export const PUBLIC_PREFIXES = [
   // token) and a shoot's scripts (the hub session, or the signed link texted
   // to the agent). Each door authenticates itself (src/app/api/portal/scripts).
   "/api/portal/scripts",
+  // A video's Instagram covers (Oct 24 2026): the Posting Kit's pictures and
+  // their download. Authenticates itself with the same scoped media token over
+  // the video as the download door (src/app/api/portal/cover/[videoId]).
+  "/api/portal/cover",
   "/api/review/cut",
   "/api/review/upload",
   "/api/auth",

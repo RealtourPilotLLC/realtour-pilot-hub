@@ -14,6 +14,8 @@ export type MediaVideoView = {
   playSrc: string;
   downloadHref: string;
   durationSec: number | null;
+  /** Oct 24 2026: the chosen Instagram cover's download (lib/videoAnalysis), when one was made. */
+  coverHref?: string | null;
 };
 
 export type MediaGroupView = {
@@ -26,4 +28,5 @@ export type MediaGroupView = {
 export const toVideoView = (v: MediaVideoView): MediaVideoView => ({
   key: v.key, title: v.title, eyebrow: v.eyebrow, place: v.place, clientId: v.clientId, clientName: v.clientName, projectId: v.projectId,
   dateText: v.dateText, orientation: v.orientation, poster: v.poster, playSrc: v.playSrc, downloadHref: v.downloadHref, durationSec: v.durationSec,
+  coverHref: v.coverHref ?? null,
 });

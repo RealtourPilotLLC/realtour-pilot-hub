@@ -283,6 +283,8 @@ export type ReadyVideo = {
    *  like another job's file (lib/wrongCutFile), before it goes to a client.
    *  Absent: nothing to say, or the check could not run. */
   wrongFile?: string | null;
+  /** Oct 24 2026 (lib/videoAnalysis): the chosen Instagram cover of this version, offered with the download. Absent: none made. */
+  cover?: { src: string; downloadHref: string } | null;
   aryeoUrl: string | null;
   aryeoTitle: string;
   /** the Review Room page for this cut, for a last look before it goes */
@@ -1171,6 +1173,17 @@ export async function readyToSend(opts?: ReadyToSendOpts): Promise<ReadyBoard> {
   for (const v of ready) {
     const w = wrong?.get(v.submissionId);
     if (w?.strong) v.wrongFile = w.reviewerLine;
+  }
+
+  // INSTAGRAM COVERS (Oct 24 2026, lib/videoAnalysis): the chosen cover goes
+  // out with the video, so the row offers it beside Download. A failed read
+  // leaves the rows as they were.
+  const covers = ready.length
+    ? await import("@/lib/videoAnalysis").then((m) => m.staffCoverChips(ready.map((v) => v.submissionId))).catch(() => null)
+    : null;
+  for (const v of ready) {
+    const c = covers?.get(v.submissionId);
+    if (c) v.cover = { src: c.src, downloadHref: c.downloadHref };
   }
 
   // Late first, then oldest first — the order a person would work them in.

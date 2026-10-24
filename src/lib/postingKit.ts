@@ -70,6 +70,8 @@ export type PostingKit = {
   /** Why there is no final file yet (client-safe). */
   finalNote: string | null;
   cover: string | null;
+  /** Oct 24 2026 (lib/videoAnalysis): the three Instagram covers of the file handed over, theirs or our pick chosen; null until made. */
+  covers?: import("@/lib/videoAnalysis").KitCovers | null;
   captions: CaptionView[];
   transcript: { text: string | null; gap: string | null; source: string | null };
   /** `historical` = an imported record we hold, shown as history — never re-labelled as this video’s script. */
@@ -326,6 +328,7 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
     videoId: video.id,
     title: video.title ?? "Video",
     final, finalNote: why, cover,
+    covers: await import("@/lib/videoAnalysis").then((m) => m.kitCoversFor(viewer, video.id, e)).catch(() => null),
     captions: captions.map(captionView),
     // NEITHER IS MONEY-CLAMPED, on purpose. stripMoneySentences DELETES whole
     // sentences, and text.ts:108 scopes it to the case it was written for —

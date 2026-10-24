@@ -290,6 +290,27 @@ export const PROVIDERS: ProviderDef[] = [
     ready: true,
   },
   {
+    // Gemini video analysis (Jordan, Oct 23 2026): Instagram covers and the
+    // on-screen spelling check (trial, owner only). Its own Connection row
+    // ("gemini_video", encrypted by saveSecret); the card is
+    // components/connections/GeminiCard.tsx, owner-only like this page.
+    // Nothing calls Google until a key is saved.
+    id: "gemini_video",
+    name: "Gemini (video analysis)",
+    blurb: "Instagram cover frames, and an on-screen spelling check on trial",
+    segment: "Files",
+    authType: "apikey",
+    icon: "ScanEye",
+    color: "#1a73e8",
+    docsUrl: "https://aistudio.google.com/apikey",
+    capabilities: [
+      "Three 1080×1920 Instagram covers for every approved video, the best pre-selected",
+      "A spelling check of on-screen text against the script and the client's names (owner only while on trial)",
+      "Free tier: a daily ceiling and a pause on every rate limit",
+    ],
+    ready: true,
+  },
+  {
     // Instagram publishing (spec §12, Sep 16 2026). The Meta Graph adapter is
     // built (lib/integrations/instagram.ts) but NO Meta app, account or app
     // review exists tonight: the card (components/connections/InstagramCard.tsx)

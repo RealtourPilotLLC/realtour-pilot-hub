@@ -48,6 +48,8 @@ export type MediaVideo = {
   origin: "hub" | "aryeo";
   /** The logical program video, when there is one (dedupe key). */
   contentVideoId: string | null;
+  /** Oct 24 2026 (lib/videoAnalysis): the chosen Instagram cover's download, when one was made. */
+  coverHref?: string | null;
 };
 
 const VIDEOISH = ["VIDEO", "SOCIAL_REEL"] as const;
@@ -288,7 +290,23 @@ export async function loadFinishedVideos(opts: { projectIds?: string[] } = {}): 
     const drop = keep === it ? cur : it;
     byVideo.set(it.contentVideoId, { ...keep, poster: keep.poster ?? drop.poster });
   }
-  return [...rest, ...byVideo.values()];
+  const list = [...rest, ...byVideo.values()];
+  // INSTAGRAM COVERS (Oct 24 2026, lib/videoAnalysis): a hub video's chosen
+  // cover is offered beside its download, and is the tile's poster when the
+  // video is vertical (a 9:16 cover over a wide tile would be cropped). A failed
+  // read leaves the tiles exactly as they were.
+  const chips = await import("@/lib/videoAnalysis")
+    .then((m) => m.staffCoverChips(list.filter((v) => v.origin === "hub" && v.key.startsWith("cut:")).map((v) => v.key.slice(4))))
+    .catch(() => null);
+  if (chips) {
+    for (const v of list) {
+      const c = v.key.startsWith("cut:") ? chips.get(v.key.slice(4)) : undefined;
+      if (!c) continue;
+      v.coverHref = c.downloadHref;
+      if (v.orientation !== "horizontal") v.poster = c.src;
+    }
+  }
+  return list;
 }
 
 // ---------------------------------------------------------------------------

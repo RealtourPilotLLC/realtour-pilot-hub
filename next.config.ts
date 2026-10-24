@@ -59,6 +59,14 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
+  // THE FRAME GRABBER (Oct 24 2026, lib/videoFrames): the static ffmpeg binary
+  // (about 80 MB on linux-x64) ships with the ONE route that grabs cover
+  // frames, never the rest of the app. lib/videoFrames finds it at
+  // node_modules/ffmpeg-static/ffmpeg at run time; it is never imported, so
+  // webpack never tries to bundle it.
+  outputFileTracingIncludes: {
+    "/api/cron/video-analysis": ["./node_modules/ffmpeg-static/ffmpeg"],
+  },
   // Ask-the-Hub photo/file attachments ride through a server action as base64;
   // the 1MB default would reject a single phone photo.
   experimental: {

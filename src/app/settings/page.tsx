@@ -20,6 +20,7 @@ import { topazDashboard } from "@/lib/topazJobs";
 import { TopazSettingsPanel, type TopazUsage } from "@/components/settings/TopazSettingsPanel";
 import { AutoTextSettings } from "@/components/settings/AutoTextSettings";
 import { TurnaroundSettings, InternalAlertSettings, ReviewRoomSettings } from "@/components/settings/OperatingRules";
+import { SpellingFlagsSetting } from "@/components/settings/SpellingFlagsSetting";
 import { PhotographerBriefSettings } from "@/components/settings/PhotographerBriefSettings";
 import { photographerBriefSettings } from "@/lib/photographerBrief";
 import { TeamNotifications } from "@/components/settings/TeamNotifications";
@@ -226,6 +227,11 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     // The photographer brief (Oct 23 2026): its own row; unreadable reads as off.
     photographerBriefSettings(),
   ]);
+  // "Show spelling flags to reviewers" (Oct 24 2026, lib/videoAnalysis): OFF
+  // until Jordan says the trial is good enough. Unreadable reads as off.
+  const spellingFlags = await import("@/lib/videoAnalysis")
+    .then(async (m) => ({ on: await m.spellingReviewersOn(), words: isOwner ? (await m.spellingTrial()).summary.words : null }))
+    .catch(() => ({ on: false, words: null }));
   // The payday text is about pay: the owner's alone, so Kyle's page never
   // carries it (he never sees dollar amounts).
   const textShown = textRows ? templatesVisibleTo(textRows, isOwner) : null;
@@ -321,6 +327,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     "review-room": card("review-room",
       <Section icon={Clapperboard} title="Video Review Room">
         <ReviewRoomSettings initial={reviewRoom} />
+        <SpellingFlagsSetting initial={spellingFlags.on} isOwner={isOwner} trialWords={spellingFlags.words} />
       </Section>),
 
     // The 1080p pass, straight after the Review Room because that is where it
