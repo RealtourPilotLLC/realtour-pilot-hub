@@ -117,9 +117,14 @@ export function TopazSettingsPanel({
           <div>
             <p className="text-sm font-semibold">Run every approved cut through Topaz</p>
             {/* SET IT AND FORGET IT (Jordan, Oct 22 2026). One plain line for what
-                happens on its own; everything adjustable is folded away below. */}
+                happens on its own; everything adjustable is folded away below.
+                It follows the skip switch (Oct 23 2026 audit): Jordan turned the
+                skip off that day ("46 Fayette should have went to Topaz"), and
+                the line still said finished exports go out as they are. */}
             <p className="text-[13px] leading-relaxed text-foreground/85" data-topaz-plain-line>
-              Videos the editor already exported at 1080p go out as they are; anything else gets the Topaz pass with the house setting.
+              {r.skipFinished1080p
+                ? "Videos the editor already exported at 1080p go out as they are; anything else gets the Topaz pass with the house setting."
+                : "Every approved video gets the Topaz pass with the house setting, including ones the editor already exported at 1080p."}
             </p>
           </div>
           <Toggle on={r.enabled} onChange={(v) => set({ enabled: v })} label="Run approved cuts through Topaz" />
@@ -307,9 +312,13 @@ export function TopazSettingsPanel({
           <div>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-sm font-semibold">The preset</h3>
+              {/* The SLIDERS go back; the mode stays what is on screen (Oct 23
+                  2026 audit). The defaults' mode is Auto, which ignores every
+                  slider: putting the sliders back used to quietly flip a saved
+                  Manual to Auto, the setting Jordan moved off on Oct 23. */}
               <button
                 type="button"
-                onClick={() => { setR((p) => ({ ...p, params: { ...defaults } })); setMsg(null); }}
+                onClick={() => { setR((p) => ({ ...p, params: { ...defaults, auto: p.params.auto } })); setMsg(null); }}
                 className="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[12px] font-medium hover:bg-surface-2"
               >
                 <RotateCcw className="size-3.5" /> Put the sliders back

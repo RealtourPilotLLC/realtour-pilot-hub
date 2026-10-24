@@ -114,7 +114,7 @@ async function main() {
     // Oct 13 2026 (Jordan's audit) kept every block the old anchors link to;
     // Oct 19 each of those ids is an anchor inside the list group holding its
     // work, and the dashboard forwards it there (Messages for the comms one).
-    c.ok("every anchor the old blocks used lands inside a list group, forwarded from the dashboard", ["tower", "video-review", "comms-1", "qc-am", "loops", "closeout"].every((id) => Object.values(GROUP_ALIASES).some((a) => a.includes(id))) && ["tower", "video-review", "qc-am", "loops", "closeout"].every((id) => forwardedHref("/", "", `#${id}`) === `/ops/checklist#${id}`) && forwardedHref("/", "", "#comms-1") === "/communications");
+    c.ok("every anchor the old blocks used lands inside a list group, forwarded from the dashboard", ["tower", "video-review", "comms-1", "qc-am", "loops", "closeout"].every((id) => Object.values(GROUP_ALIASES).some((a) => a.includes(id))) && ["tower", "qc-am", "loops", "closeout"].every((id) => forwardedHref("/", "", `#${id}`) === `/ops/checklist#${id}`) && forwardedHref("/", "", "#video-review") === "/review#ready-to-send" && forwardedHref("/", "", "#comms-1") === "/communications");
     const { default: listPage } = await import("@/app/ops/checklist/page");
     const list = elements(await listPage({}), "DailyChecklist")[0]?.list as import("../../src/lib/opsHome").KyleChecklist;
     // The delivery evidence and actions live with the video (Video Review

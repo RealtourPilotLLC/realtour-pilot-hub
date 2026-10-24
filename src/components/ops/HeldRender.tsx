@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Check, ExternalLink, Headphones, Loader2, RotateCcw, Undo2 } from "lucide-react";
 import { recheckHeldRenderAction, resolveHeldRenderAction } from "@/app/review/actions";
@@ -50,10 +50,6 @@ export function HeldRender({
   const [accepting, setAccepting] = useState(false);
   const [listened, setListened] = useState(false);
   const [busy, start] = useTransition();
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // A row that leaves on a refresh must not take a pending timer with it.
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
   const run = (fn: () => Promise<{ ok: boolean; message: string }>) =>
     start(async () => {
@@ -62,13 +58,12 @@ export function HeldRender({
       if (r.ok) router.refresh();
     });
 
+  // KEEP THE ORIGINAL ASKS FIRST, AND THE QUESTION STAYS until Yes or Cancel
+  // (Oct 23 2026 audit). It used to revert by itself after six seconds, the
+  // same pattern that ate Jordan's two "Run Topaz again" presses on his phone
+  // that day (components/ops/RerunTopaz, 0c918fb): a second tap after the
+  // timer re-armed the question instead of answering it.
   const keepOriginal = () => {
-    if (!askingOriginal) {
-      setAskingOriginal(true);
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => setAskingOriginal(false), 6000);
-      return;
-    }
     setAskingOriginal(false);
     run(() => resolveHeldRenderAction(jobId, "use-original"));
   };
@@ -100,17 +95,32 @@ export function HeldRender({
         >
           {busy ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />} Check again
         </button>
-        {!monthly && (
+        {!monthly && (askingOriginal ? (
+          <>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={keepOriginal}
+              aria-label={`Yes, keep the approved original for ${street}`}
+              className={btn}
+            >
+              {busy ? <Loader2 className="size-3 animate-spin" /> : <Undo2 className="size-3" />} Yes, keep the original
+            </button>
+            <button type="button" disabled={busy} onClick={() => setAskingOriginal(false)} className={btn}>
+              Cancel
+            </button>
+          </>
+        ) : (
           <button
             type="button"
             disabled={busy}
-            onClick={keepOriginal}
-            aria-label={askingOriginal ? `Yes, keep the approved original for ${street}` : `Keep the approved original for ${street}`}
+            onClick={() => { setAskingOriginal(true); setMsg(null); }}
+            aria-label={`Keep the approved original for ${street}`}
             className={btn}
           >
-            <Undo2 className="size-3" /> {askingOriginal ? "Yes, keep the original" : "Keep the approved original"}
+            <Undo2 className="size-3" /> Keep the approved original
           </button>
-        )}
+        ))}
         {!accepting && (
           <button type="button" disabled={busy} onClick={() => setAccepting(true)} className={btn}>
             <Check className="size-3" /> I listened — use this file
