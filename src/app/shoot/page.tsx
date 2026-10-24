@@ -28,13 +28,20 @@ export default async function MyShootsPage({
   // Owner/admin can step into a specific photographer's view (read-only preview
   // of that photographer's My Shoots). Photographers can never use ?as= — they're
   // always scoped to themselves, fail-closed.
-  const viewAs = !isPhotographer && as ? await getShootPhotographer(as) : null;
+  // ?as= naming the viewer THEMSELF is their own page, not a read-only look
+  // at it (audit, Oct 23 2026): James's dashboard opens his shoots with
+  // ?as=<his id>, and the page called itself "James's shoots · Read-only" and
+  // hid the Done on his own tasks.
+  const self = !isPhotographer && as && user ? await photographerMemberId(user).catch(() => null) : null;
+  const viewAs = !isPhotographer && as && as !== self ? await getShootPhotographer(as) : null;
 
   // Photographers see ONLY their own assigned shoots; owner/admin see everyone's,
   // unless they're viewing as a specific photographer.
   const scoped = isPhotographer
     ? ((await photographerMemberId(user)) ?? "__none__")
-    : viewAs?.id ?? null;
+    : viewAs?.id ?? (self && as === self ? self : null);
+  // Their own scope travels with the tabs and the feedback link (their own notes, not the team scoreboard).
+  const ownAs = !viewAs && self && as === self ? self : null;
 
   // The shoots list + the "work on this next shoot" reminder + the person's own
   // open tasks (both only meaningful when scoped to one person — covers the
@@ -67,14 +74,14 @@ export default async function MyShootsPage({
         }
       />
       <div className="mx-auto max-w-2xl px-4 py-5 sm:px-6">
-        <FieldTabs active="shoots" asId={viewAs?.id} feedbackCount={focus?.openFixes ?? 0} />
+        <FieldTabs active="shoots" asId={viewAs?.id ?? ownAs} feedbackCount={focus?.openFixes ?? 0} />
         <MyShootsView
           rows={rows}
           showWho={scoped === null}
           meId={meId}
           viewAs={viewAs}
           focus={focus}
-          focusHref={viewAs ? `/shoot/feedback?as=${viewAs.id}` : "/shoot/feedback"}
+          focusHref={viewAs ? `/shoot/feedback?as=${viewAs.id}` : ownAs ? `/shoot/feedback?as=${ownAs}` : "/shoot/feedback"}
           tasks={tasks}
           // Previews (?as= and owner "view as") are look-don't-touch — the done
           // button would fail requireTaskAccess anyway, so don't offer it.

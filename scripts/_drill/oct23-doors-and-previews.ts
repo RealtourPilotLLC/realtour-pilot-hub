@@ -324,6 +324,16 @@ async function main() {
     // =====================================================================
     for (const v of viewers.filter((x) => !x.as)) await walkViewer(v);
 
+    // James's "View all" on My Production opens /shoot?as=<his own id>: his
+    // own page, not "James's shoots · Read-only" with his tasks' Done hidden.
+    await signIn(viewers.find((v) => v.name === "James")!);
+    const mine = await open(`/shoot?as=${jamesTm.id}`);
+    c.ok("James's own shoots from his dashboard: My Shoots, his own tasks with their Done, not a read-only look at himself", mine.kind === "ok" && (mine.html ?? "").includes("My Shoots") && !(mine.html ?? "").includes("Read-only") && (mine.html ?? "").includes("Plan the premium reel"), `${mine.kind} ${(mine.html ?? "").match(/Read-only[^<]{0,40}/)?.[0] ?? ""}`);
+    await signIn(viewers.find((v) => v.name === "the owner as James")!);
+    const mineP = await open(`/shoot?as=${jamesTm.id}`);
+    const doneButtons = (h: string) => (h.match(/<li\b[^>]*>\s*<button/g) ?? []).length;
+    c.ok("…and the owner's 'view as James' of it stays look-don't-touch (no Done on the tasks)", mineP.kind === "ok" && (mineP.html ?? "").includes("Plan the premium reel") && doneButtons(mineP.html ?? "") === 0 && doneButtons(mine.html ?? "") > 0, `${doneButtons(mineP.html ?? "")}/${doneButtons(mine.html ?? "")}`);
+
     // Every open that did not simply render, for the log (a section that could not draw in a drill is listed, not failed).
     console.log(`\n  (${doorRows.length} door opens, ${linkRows.length} dashboard links; the ones that did not simply render:)`);
     for (const r of [...doorRows, ...linkRows].filter((x) => !/ ok$/.test(x))) console.log(`    ${r}`);
