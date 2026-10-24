@@ -19,7 +19,14 @@ import { contentWordsOf, hasDash, WRITER_LENGTH } from "./rules";
 //     would carry her facts from one video into another), never one on the
 //     same topic, at most one per client, up to three, the most recently
 //     released first (ties by id), so a topic's examples are the same for
-//     every step of one run and its cached prompt block stays stable.
+//     every step of one run and its cached prompt block stays stable;
+//   · never words that are not Jordan's bar (audit, Oct 23 2026): a bulk
+//     plan's script (the client's own bank, kept word for word, bulkPlan.ts),
+//     a version a one-off wrote outside the hub's own presses (createdBy
+//     "dev@local", or "... (via Claude ...)"), and never Erica Walker's four
+//     October scripts Claude rewrote by hand on Oct 23 (CLAUDE_HAND_WRITTEN):
+//     those are never called Jordan's and never used as the bar, whoever
+//     approves them later.
 //
 // Nothing qualifies → no examples: the writer works from the rules alone.
 // Offline (asOf): only scripts released by that moment.
@@ -36,8 +43,27 @@ export type BarExample = { scriptId: string; enrollmentId: string; clientId: str
 export type BarCandidate = {
   scriptId: string; enrollmentId: string; clientId: string; title: string; topicTitle: string | null;
   source: string | null; historical: boolean; approvedBy: string | null; approvedAt: Date | null; sharedAt: Date | null;
-  version: { hook: string; pointsJson: string; close: string; speakerLabelsJson?: string | null; validationJson?: string | null } | null;
+  version: { hook: string; pointsJson: string; close: string; speakerLabelsJson?: string | null; validationJson?: string | null; createdBy?: string | null } | null;
+  /** A bulk plan's script: the client's own bank, never the bar. */
+  bulkBank?: boolean;
 };
+
+/**
+ * Erica Walker's four October scripts Claude rewrote by hand on Oct 23 2026
+ * (scripts/_live/oct23-erica-scripts-rewrite.ts): never the bar, whoever
+ * approves them and whatever version is sent.
+ */
+export const CLAUDE_HAND_WRITTEN: ReadonlySet<string> = new Set([
+  "cmvh4a9mt005ujs08ucz5bvdp", // Your Backyard Vision Starts With the Lot, Not the Landscaper
+  "cmvh4b2jo005zjs08gdq9v1co", // More Space, or Space That Actually Works?
+  "cmvh4s01n00apjs08v7cx0g77", // Empty Nesters Are Upsizing, Not Downsizing
+  "cmvh4spk600aujs08mxo7xf8b", // I Once Watched a Deal Fall Apart Over a Doorknob
+]);
+
+/** A version written outside the hub's own presses (a local one-off's stamp), never the bar. Pure. */
+export function writtenOffHub(createdBy: string | null | undefined): boolean {
+  return /dev@local|\(via claude/i.test(createdBy ?? "");
+}
 
 /** The email in an approvedBy stamp ("info@x.com", or "info@x.com (via ...)"), lowercased, or null. */
 export function approverEmail(approvedBy: string | null | undefined): string | null {
@@ -80,6 +106,7 @@ export function pickBarExamples(candidates: readonly BarCandidate[], o: { enroll
     if (out.length >= BAR_EXAMPLES_SHOWN) break;
     if (c.enrollmentId === o.enrollmentId || clients.has(c.clientId)) continue;
     if (c.historical || (c.source ?? "").toLowerCase() === "import" || !c.sharedAt || !c.approvedAt) continue;
+    if (c.bulkBank || CLAUDE_HAND_WRITTEN.has(c.scriptId) || writtenOffHub(c.version?.createdBy)) continue;
     const by = approverEmail(c.approvedBy);
     if (!by || !owners.has(by)) continue;
     if (versionFormatOf(c.version) === "SKIT") continue;
@@ -110,18 +137,22 @@ export async function barExamplesFor(o: { enrollmentId: string; topicTitle: stri
         source: { not: "import" },
       },
       orderBy: [{ sharedAt: "desc" }, { id: "asc" }], take: CANDIDATES_READ,
-      select: { id: true, enrollmentId: true, clientId: true, title: true, topicId: true, source: true, historical: true, approvedBy: true, approvedAt: true, sharedAt: true, sharedVersionId: true, approvedVersionId: true },
+      select: { id: true, enrollmentId: true, clientId: true, monthId: true, title: true, topicId: true, source: true, historical: true, approvedBy: true, approvedAt: true, sharedAt: true, sharedVersionId: true, approvedVersionId: true },
     });
     const ownerSet = new Set(owners.map((e) => e.toLowerCase()));
     const mine = rows.filter((r) => ownerSet.has(approverEmail(r.approvedBy) ?? ""));
     const versionIds = mine.map((r) => r.sharedVersionId ?? r.approvedVersionId).filter((x): x is string => !!x);
-    const versions = new Map((await prisma.contentScriptVersion.findMany({ where: { id: { in: versionIds } }, select: { id: true, hook: true, pointsJson: true, close: true, speakerLabelsJson: true, validationJson: true } })).map((v) => [v.id, v]));
+    const versions = new Map((await prisma.contentScriptVersion.findMany({ where: { id: { in: versionIds } }, select: { id: true, hook: true, pointsJson: true, close: true, speakerLabelsJson: true, validationJson: true, createdBy: true } })).map((v) => [v.id, v]));
+    // A bulk plan's months hold the client's own bank (bulkPlan.ts).
+    const monthIds = [...new Set(mine.map((r) => r.monthId).filter((x): x is string => !!x))];
+    const bulkMonths = new Set(monthIds.length ? (await prisma.contentBulkPlan.findMany({ where: { monthId: { in: monthIds }, status: { not: "CANCELLED" } }, select: { monthId: true } })).map((b) => b.monthId) : []);
     const topicIds = [...new Set(mine.map((r) => r.topicId).filter((x): x is string => !!x))];
     const topics = new Map((topicIds.length ? await prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, title: true } }) : []).map((t) => [t.id, t.title]));
     return pickBarExamples(mine.map((r) => ({
       scriptId: r.id, enrollmentId: r.enrollmentId, clientId: r.clientId, title: r.title, topicTitle: r.topicId ? topics.get(r.topicId) ?? null : null,
       source: r.source, historical: r.historical, approvedBy: r.approvedBy, approvedAt: r.approvedAt, sharedAt: r.sharedAt,
       version: versions.get(r.sharedVersionId ?? r.approvedVersionId ?? "") ?? null,
+      bulkBank: !!r.monthId && bulkMonths.has(r.monthId),
     })), { enrollmentId: o.enrollmentId, topicTitle: o.topicTitle, owners });
   } catch {
     return [];
