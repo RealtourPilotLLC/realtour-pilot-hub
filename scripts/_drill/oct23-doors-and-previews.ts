@@ -305,6 +305,21 @@ async function main() {
     c.ok("a preview writes nothing: every table's rows and newest update are unchanged after the owner opened every page of every preview", changed.length === 0, changed.join(" | "));
 
     // =====================================================================
+    c.head("§1b · a preview shows the page its login sees (not the owner's)");
+    // =====================================================================
+    // Kim's desk links "Offline or stuck?" (/people/capacity). It read the real
+    // login's role, so "view as Kim" drew the office's whole register.
+    await signIn(viewers.find((v) => v.name === "the owner as Kim")!);
+    const capKim = await open("/people/capacity");
+    c.ok("view as Kim: Offline or stuck? is Kim's own page (record that you're offline), not the office's register", capKim.kind === "ok" && /Tell the office when you(&#x27;|')re offline or stuck/.test(capKim.html ?? "") && !(capKim.html ?? "").includes("Who is out, now and this week"), capKim.kind);
+    await signIn(viewers.find((v) => v.name === "the owner as Harrison")!);
+    const capH = await open("/people/capacity");
+    c.ok("view as Harrison: the page sends him home, as it does Harrison", capH.kind === "redirect" && capH.to === "/shoot", `${capH.kind} ${capH.to ?? ""}`);
+    await signIn(viewers.find((v) => v.name === "the owner as James")!);
+    const qJ = await open("/quality");
+    c.ok("view as James: Team feedback opens on his two tabs (photographers, editors), as it does for James", qJ.kind === "ok" && /photographers/i.test(qJ.html ?? ""), `${qJ.kind} ${qJ.to ?? ""}`);
+
+    // =====================================================================
     c.head("§2 · every real login: every door and dashboard link opens");
     // =====================================================================
     for (const v of viewers.filter((x) => !x.as)) await walkViewer(v);
