@@ -2128,6 +2128,50 @@ function slotLockKey(projectId: string, deliverableId: string | null, slot: numb
   return advisoryKeyPair(`${projectId}|${deliverableId ?? "-"}|${slot}`);
 }
 
+/** The wrong-file warning's words (lib/wrongCutFileCore), as the panel draws them. */
+type WrongFileWords = { lines: string[]; strong: boolean };
+/** How long the registration waits on the check before going ahead without it. */
+const WRONG_FILE_CHECK_MS = 4_000;
+
+/**
+ * WRONG FILE? ASKED BEFORE ANY BYTES GO UP (Jordan, Oct 23 2026: an editor
+ * uploaded his 859 N Lawrence St export as version 1 on 538 Onward Ave). The
+ * upload panel sends the chosen file's name and size for this job and this
+ * video; the answer is the words to show over "Choose another file" and
+ * "Upload anyway", or null for nothing to say. Read-only, and null for anyone
+ * who could not upload here (a preview included), for a failure and for a
+ * slow answer: the panel then uploads as it always did. startCutUpload runs the
+ * same check again and decides.
+ */
+export async function checkCutUploadFile(input: {
+  projectId: string;
+  deliverableId: string;
+  slot: number;
+  fileName: string;
+  sizeBytes: number;
+}): Promise<WrongFileWords | null> {
+  try {
+    if (!input || typeof input.projectId !== "string" || typeof input.fileName !== "string" || typeof input.deliverableId !== "string") return null;
+    const slot = Math.max(1, Math.floor(Number(input.slot) || 1));
+    // The same door the upload itself goes through (the approved-cut
+    // replacement included), so the check never answers for a job the person
+    // could not send a file to.
+    const who = await uploadAuthor(input.projectId, { deliverableId: input.deliverableId, slot });
+    if (!who.ok) return null;
+    const { wrongFileForUpload, withinMs } = await import("@/lib/wrongCutFile");
+    const v = await withinMs(
+      wrongFileForUpload({
+        projectId: input.projectId, deliverableId: input.deliverableId, slot,
+        fileName: input.fileName.slice(0, 200), sizeBytes: Number(input.sizeBytes), uploader: { key: who.key, name: who.name },
+      }),
+      WRONG_FILE_CHECK_MS,
+    );
+    return v ? { lines: v.lines, strong: v.strong } : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function startCutUpload(input: {
   projectId: string;
   deliverableId: string;
@@ -2150,7 +2194,10 @@ export async function startCutUpload(input: {
   /** §8.2: the editor's self-check for THIS file. Required — without it
    *  nothing is reserved. Bound to the bytes at finalize. */
   selfCheck?: import("@/lib/selfCheck").SelfCheckInput | null;
-}): Promise<{ ok: true; submissionId: string; pathname: string; round: number; access: "private" | "public" } | { ok: false; message: string; needsReason?: boolean; needsSelfCheck?: boolean; checkContext?: import("@/lib/selfCheckStore").SlotCheckContext }> {
+  /** The uploader pressed "Upload anyway" on the wrong-file warning for THIS
+   *  file (Oct 23 2026). Recorded on the job's timeline with their name. */
+  wrongFileOverride?: boolean;
+}): Promise<{ ok: true; submissionId: string; pathname: string; round: number; access: "private" | "public" } | { ok: false; message: string; needsReason?: boolean; needsSelfCheck?: boolean; checkContext?: import("@/lib/selfCheckStore").SlotCheckContext; wrongFile?: WrongFileWords }> {
   const reason = (input.reopenReason ?? "").trim();
   // A reason is what turns this into a REPLACEMENT, which is the one upload an
   // editor may make on a job whose task is closed — see uploadAuthor. Without
@@ -2236,6 +2283,25 @@ export async function startCutUpload(input: {
         needsReason: true,
       };
     }
+  }
+  // ---- WRONG FILE? (Jordan, Oct 23 2026) ----------------------------------
+  // The panel asks before any bytes go up (checkCutUploadFile); this is the
+  // same check where it can't be skipped, because the browser's word is worth
+  // nothing. A file that looks like it belongs to another job (its name says
+  // another job's street, or that job already has the same file), or like an
+  // earlier version here, is refused with the words unless the uploader
+  // pressed "Upload anyway" for it. A check that fails or runs slow says
+  // nothing: the upload goes ahead exactly as it did before.
+  const { wrongFileForUpload, withinMs } = await import("@/lib/wrongCutFile");
+  const wrongFile = await withinMs(
+    wrongFileForUpload({
+      projectId: input.projectId, deliverableId: input.deliverableId, slot: slot.slot,
+      fileName: input.fileName.slice(0, 200), sizeBytes: input.sizeBytes, uploader: { key: who.key, name: who.name },
+    }),
+    WRONG_FILE_CHECK_MS,
+  );
+  if (wrongFile && input.wrongFileOverride !== true) {
+    return { ok: false, message: `${wrongFile.lines.join(" ")} Choose another file, or press Upload anyway.`, wrongFile: { lines: wrongFile.lines, strong: wrongFile.strong } };
   }
   // ---- THE EDITOR'S SELF-CHECK (§8.2, Sep 25) -----------------------------
   // "Editors must watch their actual exported edit and complete a required
@@ -2366,6 +2432,19 @@ export async function startCutUpload(input: {
         body: `${who.name ?? "The office"} allowed an over-spec upload — ${resolutionLabel(input.width, input.height) ?? "larger than 1080p"}, ${input.fileName} (version ${round}). Cuts are meant to leave Final Cut at 1080p.`.slice(0, 500),
       },
     }).catch(() => {});
+  }
+  // "Upload anyway" is a decision, so it goes on the job's timeline: who, the
+  // warning they were shown, and the file (Oct 23 2026). Said as the choice it
+  // was, so it stays true if the upload is then cancelled. Best-effort, like
+  // the line above: the reservation exists and the editor keeps their upload.
+  if (wrongFile && input.wrongFileOverride === true) {
+    const { overrideTimelineLine } = await import("@/lib/wrongCutFileCore");
+    const author = await sessionAuthor().catch(() => null);
+    await timelineLine(
+      input.projectId,
+      overrideTimelineLine({ who: who.name, fileName: input.fileName.slice(0, 200), what: slot.label, round, verdict: wrongFile }),
+      author?.authorTmId ?? null,
+    ).catch(() => {});
   }
   // The store decides the browser's access word (reviewCuts.cutStoreAccess):
   // the page no longer bakes it in at build time.

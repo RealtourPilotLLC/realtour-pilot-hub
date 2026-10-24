@@ -284,6 +284,19 @@ export default async function CutReviewPage({
       ? await import("@/lib/sendWhenReady").then((m) => m.approveAndSendOffer(active.id)).catch(() => null)
       : null;
 
+  // WRONG FILE? (Jordan, Oct 23 2026): the upload's own check, for the version
+  // on screen, as of when it came in (lib/wrongCutFile). Computed here at view
+  // time, so it also flags a version that went up before the check existed.
+  // The desk only, on a version still to rule on or approved; a failed or slow
+  // read says nothing, and Approve stays a person's decision either way.
+  const wrongFile =
+    active && !shotThis && (active.status === "PENDING" || active.status === "APPROVED")
+      ? await import("@/lib/wrongCutFile")
+          .then((m) => m.withinMs(m.wrongFileForSubmissions([active.id]), 3_000))
+          .then((found) => found?.get(active.id) ?? null)
+          .catch(() => null)
+      : null;
+
   // The box's parts: this round's ask (until the cut is approved) and the job's own checks.
   const roundAsk = !shotThis && !!clientAsk && !!active && active.status !== "APPROVED";
   const boxHasChecks = !!jobBox && (jobBox.data.flags.length > 0 || jobBox.data.requests.length > 0 || jobBox.data.notes.length > 0);
@@ -429,6 +442,7 @@ export default async function CutReviewPage({
                 nextCut={nextCut ? { href: nextCut.href, label: nextCut.label } : null}
                 street={w.street}
                 sendOffer={sendOffer}
+                wrongFile={wrongFile ? { line: wrongFile.reviewerLine, strong: wrongFile.strong } : null}
               />
 
             </>

@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 // (lib/videoStyles — plain data and pure functions, safe in a client bundle).
 import { protectUploadWorkspace } from "@/lib/uploadNavigation";
 import { EXPORT_SPEC, exportRefusal, isOverExportSpec, resolutionLabel } from "@/lib/videoStyles";
-import { startCutUpload, finishCutUpload, abandonCutUpload, cutTakeBackFlags } from "@/app/review/actions";
+import { startCutUpload, finishCutUpload, abandonCutUpload, cutTakeBackFlags, checkCutUploadFile } from "@/app/review/actions";
 import { cutUploadFinishReceipt } from "@/lib/cutUploadFinishReceipt";
 import { saveCutMessage } from "@/components/editing/cutMessage.actions";
 import { CutTakeBack, CutTakeBackFlags } from "@/components/review/CutTakeBack";
@@ -168,6 +168,20 @@ function readDimensions(file: File): Promise<{ width: number; height: number } |
 /** How long the hand-in waits for an unfinished sound check before sending the
  *  version without its note (the check normally finished minutes earlier). */
 const SOUND_NOTE_WAIT_MS = 5_000;
+
+// ---------------------------------------------------------------------------
+// WRONG FILE? (Jordan, Oct 23 2026). At 10:06 PM an editor uploaded his old
+// "Done_859 N Lawrence St (Joseph Sutow).mov" as version 1 on 538 Onward Ave;
+// the 859 job already had that exact file. So before a byte goes up, the hub
+// is asked about the chosen file's name and size for this job and this video
+// (review/actions checkCutUploadFile, lib/wrongCutFileCore), beside the export
+// check and in the same few seconds. When it looks wrong the row says why,
+// with "Choose another file" first and "Upload anyway" second, and nothing is
+// uploaded until one is pressed. A check that can't run, or runs slow, says
+// nothing and the upload goes as it always did. The server asks again when
+// the cut is registered and refuses without the "anyway".
+// ---------------------------------------------------------------------------
+const WRONG_FILE_WAIT_MS = 5_000;
 
 /** The one warning line under the upload. Nothing when the check found nothing
  *  or couldn't run. */
@@ -584,6 +598,47 @@ export function CutUploader({
     if (timer) clearTimeout(timer);
     return report ? soundReviewerNote(report.findings) : null;
   }
+  // The wrong-file warning per row, holding the file (and whatever the send
+  // already had: the reason, the check) until a button is pressed; and the
+  // files somebody pressed "Upload anyway" for, which ride up with the
+  // reservation so the server records the choice instead of refusing.
+  type WrongFilePending = {
+    cut: CutRow; file: File; dim: { width: number; height: number } | null; override: boolean;
+    replacing: boolean; reopenReason?: string; selfCheck?: SelfCheckInput; lines: string[]; strong: boolean;
+  };
+  const [wrongFile, setWrongFile] = useState<Record<string, WrongFilePending>>({});
+  const clearWrongFile = (key: string) => setWrongFile((s) => { if (!(key in s)) return s; const n = { ...s }; delete n[key]; return n; });
+  const waived = useRef<Record<string, { name: string; size: number; lastModified: number }>>({});
+  const isWaived = (key: string, file: File) => {
+    const w = waived.current[key];
+    return !!w && w.name === file.name && w.size === file.size && w.lastModified === file.lastModified;
+  };
+  // Never longer than a few seconds, and never a refusal of its own.
+  function askWrongFile(cut: CutRow, file: File): Promise<{ lines: string[]; strong: boolean } | null> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const asked = checkCutUploadFile({ projectId, deliverableId: cut.deliverableId, slot: cut.slot, fileName: file.name, sizeBytes: file.size }).catch(() => null);
+    return Promise.race([asked, new Promise<null>((r) => { timer = setTimeout(() => r(null), WRONG_FILE_WAIT_MS); })]).then((v) => {
+      if (timer) clearTimeout(timer);
+      return v && v.lines.length ? v : null;
+    });
+  }
+  function chooseAnotherFile(key: string) {
+    clearWrongFile(key);
+    setErr((e) => ({ ...e, [key]: "" }));
+    inputs.current[key]?.click();
+  }
+  function uploadAnyway(key: string) {
+    const p = wrongFile[key];
+    if (!p) return;
+    waived.current[key] = { name: p.file.name, size: p.file.size, lastModified: p.file.lastModified };
+    clearWrongFile(key);
+    // The approved-cut door still asks why next, exactly as it would have.
+    if (p.replacing) {
+      setReopen((r) => ({ ...r, [key]: { file: p.file, dim: p.dim, override: p.override } }));
+      return;
+    }
+    void send(p.cut, p.file, p.dim, p.override, p.reopenReason, p.selfCheck);
+  }
   // Remove / move state per version (Sep 16). The /edit page hands this panel
   // the cut rows, not these columns, so the panel asks for them itself — one
   // read per job, re-read whenever a version changes here or a control fires.
@@ -631,13 +686,22 @@ export function CutUploader({
     // review). Only the words survive a re-pick; the override does not, because
     // the check below is about to decide it again for the file actually chosen.
     clearReopen(key);
+    clearWrongFile(key);
     // The sound check runs beside everything below and holds nothing up.
     startSoundCheck(key, file);
+    // So does the wrong-file question, asked the moment the file is chosen.
+    const fileCheck = isWaived(key, file) ? Promise.resolve(null) : askWrongFile(cut, file);
     setBusy((b) => ({ ...b, [key]: { pct: 0, label: "Checking the export…" } }));
     const dim = await readDimensions(file);
     if (dim && isOverExportSpec(dim.width, dim.height)) {
       setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
       setBlocked((s) => ({ ...s, [key]: { file, width: dim.width, height: dim.height } }));
+      return;
+    }
+    const warn = await fileCheck;
+    if (warn) {
+      setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
+      setWrongFile((s) => ({ ...s, [key]: { cut, file, dim, override: false, replacing, lines: warn.lines, strong: warn.strong } }));
       return;
     }
     if (replacing) {
@@ -672,10 +736,19 @@ export function CutUploader({
       width: dim?.width ?? null, height: dim?.height ?? null, overrideExportSpec: override,
       ...(reopenReason ? { reopenReason } : {}),
       selfCheck: check,
+      ...(isWaived(key, file) ? { wrongFileOverride: true } : {}),
     })
       .catch(() => ({ ok: false as const, message: "Couldn't start the upload — try again." }));
     if (!started.ok) {
       setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
+      // The server's own wrong-file check (the panel's may not have run): the
+      // same two buttons, with the file and everything already said kept.
+      if ("wrongFile" in started && started.wrongFile) {
+        const words = started.wrongFile;
+        clearReopen(key);
+        setWrongFile((s) => ({ ...s, [key]: { cut, file, dim, override, replacing: false, reopenReason, selfCheck: check, lines: words.lines, strong: words.strong } }));
+        return;
+      }
       // The server would not take the check (a note arrived on this video
       // meanwhile, or the list changed): back to the list, with its reason.
       if ("needsSelfCheck" in started && started.needsSelfCheck) {
@@ -702,6 +775,8 @@ export function CutUploader({
       return;
     }
     clearReopen(key);
+    // "Upload anyway" was for this upload, which the server has now recorded.
+    delete waived.current[key];
     // The reason has been accepted and filed on the job's timeline by the line
     // above, so the words have somewhere permanent to be and the box can empty.
     setReopenWhy((w) => { const n = { ...w }; delete n[key]; return n; });
@@ -1033,6 +1108,47 @@ export function CutUploader({
                 )}
                 {err[key] && <p className="mt-1 text-xs text-danger">{err[key]}</p>}
                 <SoundCheckLine report={sound[key]?.report} />
+                {/* WRONG FILE? (Oct 23 2026). The file is held here and nothing
+                    is uploaded until one of the two is pressed; picking another
+                    file is the default. */}
+                {wrongFile[key] && !blk && (
+                  <div
+                    role="alert"
+                    data-wrong-file
+                    className={cn("mt-2 rounded-xl border p-3", wrongFile[key].strong ? "border-danger/40 bg-danger-soft/40" : "border-warning/40 bg-warning-soft/40")}
+                  >
+                    <p className="flex items-start gap-2 text-sm font-semibold">
+                      <AlertTriangle className={cn("mt-0.5 size-4 shrink-0", wrongFile[key].strong ? "text-danger" : "text-warning")} />
+                      <span data-wrong-file-words>{wrongFile[key].lines.join(" ")} Upload anyway?</span>
+                    </p>
+                    <p className="mt-1 truncate pl-6 text-[11px] text-muted-2">
+                      {wrongFile[key].file.name} · {fmtBytes(wrongFile[key].file.size)}
+                    </p>
+                    <div className="mt-2.5 flex flex-wrap items-center gap-2 pl-6">
+                      <button
+                        type="button"
+                        // The default answer: Enter picks another file.
+                        autoFocus
+                        disabled={!!b}
+                        onClick={() => chooseAnotherFile(key)}
+                        data-wrong-file-choose
+                        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
+                      >
+                        <CloudUpload className="size-3.5" /> Choose another file
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!!b}
+                        onClick={() => uploadAnyway(key)}
+                        data-wrong-file-anyway
+                        className="min-h-11 rounded-lg border border-border px-3 py-2 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-60"
+                      >
+                        Upload anyway
+                      </button>
+                    </div>
+                    <p className="mt-1.5 pl-6 text-[11px] text-muted-2">Upload anyway goes on the job&rsquo;s timeline with your name.</p>
+                  </div>
+                )}
                 {/* THE REFUSAL. Whoever is reading this has just finished an
                     edit and been told "no" by a dialog, so the first line is
                     the only one that has to land: the work is fine. Then what

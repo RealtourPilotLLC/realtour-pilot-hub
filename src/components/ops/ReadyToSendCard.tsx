@@ -416,6 +416,17 @@ function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: (sent?: boole
         <span>· Kyle · <span className={cn(stale && "font-semibold text-danger")}>ready {waited(v.waitingHours)}</span></span>
       </p>
       <p className="mt-1 text-sm text-muted">Approved {etDateTime(new Date(v.approvedAtISO))}{v.approvedBy ? ` by ${v.approvedBy}` : ""}.</p>
+      {/* WRONG FILE? (Oct 23 2026): the Review Room's line, before it goes out.
+          The Review Room has "Wrong video?" to take it down. */}
+      {v.wrongFile && (
+        <p data-wrong-file className="mt-1 flex items-start gap-1 text-sm font-medium text-danger">
+          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <span>
+            {v.wrongFile}{" "}
+            <Link href={v.reviewHref} className="underline underline-offset-2 hover:text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Open it in the Review Room</Link>
+          </span>
+        </p>
+      )}
       {/* WHY THERE IS NO TOPAZ VERSION, on the row and not folded away (Oct
           22 2026): "Already 1080p: the editor's file goes out as is." */}
       {v.originalIsFinal && (

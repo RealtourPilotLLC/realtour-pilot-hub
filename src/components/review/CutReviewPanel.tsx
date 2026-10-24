@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Camera, Check, CornerDownRight, Loader2, MessageSquarePlus, Pencil, RotateCcw, Send, ThumbsUp, Undo2, UploadCloud,
+  AlertTriangle, Camera, Check, CornerDownRight, Loader2, MessageSquarePlus, Pencil, RotateCcw, Send, ThumbsUp, Undo2, UploadCloud,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MentionTextarea } from "@/components/mentions/MentionTextarea";
@@ -103,6 +103,7 @@ export function CutReviewPanel({
   nextCut = null,
   street,
   sendOffer = null,
+  wrongFile = null,
 }: {
   projectId: string;
   submission: CutSubmission;
@@ -143,6 +144,14 @@ export function CutReviewPanel({
    * video, a video the hub can't send).
    */
   sendOffer?: { openAsks: { summary: string; askedBy: string | null }[]; asksUnknown: boolean } | null;
+  /**
+   * WRONG FILE? (Jordan, Oct 23 2026): the upload's own check for this version
+   * (lib/wrongCutFile), worked out by the page as it renders. One line above
+   * the verdict, with "Wrong video?" beside it. `strong`: the file looks like
+   * another job's; otherwise it only looks like an earlier version here.
+   * Approve and Approve and send stay exactly as they are: a person decides.
+   */
+  wrongFile?: { line: string; strong: boolean } | null;
 }) {
   const router = useRouter();
   // Words this reviewer left on this cut when a verdict they pressed did not go
@@ -445,6 +454,25 @@ export function CutReviewPanel({
       {/* Moved-here / leftover-file / (legacy) withdrawn flags — shown whatever
           the verdict state, because they change what the buttons below mean. */}
       {canDecide && takeBack && <CutTakeBackFlags info={takeBack} />}
+      {/* WRONG FILE? One line above the verdict, with the way to take the
+          version down right beside it (it moves here from the bar, so there
+          is only ever one "Wrong video?" on screen). */}
+      {canDecide && wrongFile && (
+        <div
+          role="note"
+          data-wrong-file
+          className={cn(
+            "flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border px-3 py-2 text-sm",
+            wrongFile.strong ? "border-danger/40 bg-danger-soft/40" : "border-warning/40 bg-warning-soft/30",
+          )}
+        >
+          <span className="flex min-w-0 flex-1 items-start gap-1.5 font-medium text-foreground">
+            <AlertTriangle aria-hidden className={cn("mt-0.5 size-4 shrink-0", wrongFile.strong ? "text-danger" : "text-warning")} />
+            <span data-wrong-file-line>{wrongFile.line}</span>
+          </span>
+          {takeBack && <CutTakeBack info={takeBack} cutLabel={cutLabel ?? "this cut"} className="font-medium text-foreground underline underline-offset-2 hover:text-brand" />}
+        </div>
+      )}
       {/* Note + verdict bar */}
       <div className="flex flex-wrap items-center gap-2">
         <button
@@ -455,7 +483,7 @@ export function CutReviewPanel({
           <MessageSquarePlus className="size-4" /> {src ? `Add note at ${fmtClock(now)}` : "Add note"}
         </button>
         {/* The escape hatch, deliberately quiet beside the verdict buttons. */}
-        {canDecide && takeBack && <CutTakeBack info={takeBack} cutLabel={cutLabel ?? "this cut"} />}
+        {canDecide && takeBack && !wrongFile && <CutTakeBack info={takeBack} cutLabel={cutLabel ?? "this cut"} />}
         <span className="hidden flex-1 sm:block" />
         {closing ? (
           // The cut is closed on the click; the move to the next one is under way.
