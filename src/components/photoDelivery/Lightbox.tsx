@@ -76,6 +76,8 @@ export function Lightbox() {
   const photo = idx >= 0 ? photos[idx] : null;
   const [overlays, setOverlays] = useState(true);
   const [view, setView] = useState<{ photoId: string; versionId: string | null } | null>(null);
+  // The photo's shape, read off the file once it loads (the frame below).
+  const [ratio, setRatio] = useState<{ id: string; ar: number } | null>(null);
   const versionId = photo && view?.photoId === photo.id ? view.versionId : null;
 
   const go = (d: number) => {
@@ -115,13 +117,20 @@ export function Lightbox() {
   const current = photo.versions.find((v) => v.current) ?? photo.versions[photo.versions.length - 1] ?? null;
   const showing = versionId ? photo.versions.find((v) => v.id === versionId) ?? null : null;
   const title = photoTitle(photo);
+  // THE PHOTO FILLS THE STAGE (Oct 23 2026, Jordan: "the photos are small on
+  // photo review"). Sized by its own file, a photo stayed at whatever width
+  // that file or its fallback reported; once its shape is known the frame is
+  // as wide as the stage allows, or as tall, and the photo fills the frame
+  // exactly (the finding boxes sit on the frame, so they stay aligned).
+  const ar = ratio?.id === photo.id ? ratio.ar : photo.width && photo.height ? photo.width / photo.height : null;
+  const sideBySide = !!showing && !showing.current;
 
   return (
     <>
     <ModalDialog label={`${title}: ${photo.roomLabel}`} onCancel={() => openLightbox(null)} className="w-[min(98vw,100rem)] max-h-[96dvh] p-0 sm:p-0">
       <div className="flex max-h-[96dvh] flex-col lg:flex-row">
-        <div className="relative flex min-h-[40dvh] min-w-0 flex-1 items-center justify-center overflow-hidden bg-black p-2 sm:p-4">
-          <ZoomStage key={`${photo.id}:${showing && !showing.current ? showing.id : "current"}`} keys={!promptOpen} hiRes={!showing || showing.current ? fullSizeSrc(photo.id, photo.contentHash) : null}>
+        <div className="relative flex min-h-[40dvh] min-w-0 flex-1 items-center justify-center overflow-hidden bg-black p-2 sm:p-4" style={ar ? ({ "--ar": ar } as React.CSSProperties) : undefined}>
+          <ZoomStage key={`${photo.id}:${showing && !showing.current ? showing.id : "current"}`} keys={!promptOpen} hiRes={!showing || showing.current ? fullSizeSrc(photo.id, photo.contentHash) : null} className={ar && !sideBySide ? "w-[min(100%,calc(56dvh*var(--ar)))] lg:w-[min(100%,calc(88dvh*var(--ar)))]" : undefined}>
             {showing && !showing.current ? (
               // An earlier version beside the current one, same size (huddle finding 1).
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -153,7 +162,11 @@ export function Lightbox() {
                 large
                 eager
                 alt={`${title}: ${photo.roomLabel}${photo.description ? `. ${photo.description}` : ""}`}
-                className="block h-auto max-h-[56dvh] w-auto max-w-full lg:max-h-[88dvh]"
+                className={ar ? "block h-auto w-full" : "block h-auto max-h-[56dvh] w-auto max-w-full lg:max-h-[88dvh]"}
+                onLoad={(e) => {
+                  const im = e.currentTarget;
+                  if (im.naturalWidth && im.naturalHeight) setRatio({ id: photo.id, ar: im.naturalWidth / im.naturalHeight });
+                }}
               />
             )}
             {overlays && (!showing || showing.current) && <BoxOverlay photo={photo} findings={findings.filter(shown)} numbers={numbers} />}

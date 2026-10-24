@@ -37,7 +37,7 @@ export function PhotoImg({
   /** Big views: offer qc1024 and qc2048 and let the browser pick. */
   large?: boolean;
   eager?: boolean;
-  onLoad?: () => void;
+  onLoad?: (e: React.SyntheticEvent<HTMLImageElement>) => void;
 }) {
   const primary = photoSrc(photoId, size, hash, versionId);
   // The failure is remembered per source, so a new photo (or version) gets a fresh try.

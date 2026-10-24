@@ -70,6 +70,10 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
   const photo = photos[idx] ?? null;
   const findings = useMemo(() => (photo ? sortFindings(findingsByPhoto.get(photo.id) ?? []) : []), [photo, findingsByPhoto]);
   const [pick, setPick] = useState<{ photoId: string; findingId: string } | null>(null);
+  // The photo fills the stage (Oct 23 2026, Jordan: "the photos are small on
+  // photo review"): its shape, read off the file once it loads, sizes the frame.
+  const [ratio, setRatio] = useState<{ id: string; ar: number } | null>(null);
+  const stageAr = photo ? (ratio?.id === photo.id ? ratio.ar : photo.width && photo.height ? photo.width / photo.height : null) : null;
   const picked = (photo && pick?.photoId === photo.id ? findings.find((f) => f.id === pick.findingId) : null) ?? findings.find((f) => f.status === "OPEN" && shown(f)) ?? findings[0] ?? null;
   const [overlays, setOverlays] = useState(true);
   const [original, setOriginal] = useState<string | null>(null);
@@ -211,6 +215,7 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <div
           className="relative flex min-h-[38dvh] min-w-0 flex-1 items-center justify-center overflow-hidden bg-black p-2"
+          style={stageAr ? ({ "--ar": stageAr } as React.CSSProperties) : undefined}
           onTouchStart={(e) => {
             const t = e.touches[0];
             // A second finger is a pinch, never a swipe.
@@ -225,7 +230,7 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
             if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(t.clientY - s.y)) step(dx < 0 ? 1 : -1);
           }}
         >
-          <ZoomStage key={`${photo.id}-${showOriginal ? "o" : "c"}`} keys={!promptOpen && !cartOpen && !help} hiRes={showOriginal ? null : fullSizeSrc(photo.id, photo.contentHash)} onZoomedChange={onZoomedChange}>
+          <ZoomStage key={`${photo.id}-${showOriginal ? "o" : "c"}`} keys={!promptOpen && !cartOpen && !help} hiRes={showOriginal ? null : fullSizeSrc(photo.id, photo.contentHash)} onZoomedChange={onZoomedChange} className={stageAr ? "w-[min(100%,calc(44dvh*var(--ar)))] lg:w-[min(100%,calc(82dvh*var(--ar)))]" : undefined}>
             <PhotoImg
               key={`${photo.id}-${showOriginal ? "o" : "c"}`}
               photoId={photo.id}
@@ -236,7 +241,11 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
               large
               eager
               alt={`${photoTitle(photo)}: ${photo.roomLabel}${showOriginal ? " (original)" : ""}`}
-              className={cn("block h-auto max-h-[44dvh] w-auto max-w-full lg:max-h-[82dvh]", excluded && "opacity-50")}
+              className={cn(stageAr ? "block h-auto w-full" : "block h-auto max-h-[44dvh] w-auto max-w-full lg:max-h-[82dvh]", excluded && "opacity-50")}
+              onLoad={(e) => {
+                const im = e.currentTarget;
+                if (im.naturalWidth && im.naturalHeight) setRatio({ id: photo.id, ar: im.naturalWidth / im.naturalHeight });
+              }}
             />
             {overlays && !showOriginal && <BoxOverlay photo={photo} findings={findings.filter(shown)} selectedId={picked?.id} numbers={numbers} />}
             {showOriginal && <span className="absolute left-2 top-2 rounded bg-black/75 px-2 py-0.5 text-[12px] font-semibold text-white">Original</span>}
