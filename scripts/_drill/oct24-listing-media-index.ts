@@ -242,6 +242,24 @@ async function main() {
     const scoped = await lib.loadFinishedVideos({ projectIds: [w.pB.id] });
     c.ok("a listing page's scoped read is that job's videos only", scoped.length === 2 && scoped.every((v) => v.projectId === w.pB.id));
 
+    // Audit Oct 25 2026: a row with no file of Aryeo's draws no tile (Watch and
+    // Download would 404); the pages read the library at most once a minute,
+    // the loaders stay fresh; an unchanged re-read leaves the rows alone.
+    const streamOnly = await prisma.listingMediaItem.create({ data: { projectId: w.pB.id, aryeoListingId: "L-B", aryeoMediaId: "stream-only-1", kind: "VIDEO", title: "Premium Cinematic Video (stream)", playbackUrl: "https://stream.mux.com/drill.m3u8", downloadUrl: null } });
+    const afterStream = await lib.loadFinishedVideos({ projectIds: [w.pB.id] });
+    c.ok("a stream-only index row (no downloadUrl) is not a tile", !afterStream.some((v) => v.key === `aryeo:${streamOnly.id}`) && afterStream.length === 2, afterStream.map((v) => v.key).join());
+    await prisma.listingMediaItem.delete({ where: { id: streamOnly.id } });
+    const m1 = lib.libraryVideos();
+    const m2 = lib.libraryVideos();
+    const f1 = lib.loadFinishedVideos();
+    const f2 = lib.loadFinishedVideos();
+    await Promise.all([f1, f2]);
+    c.ok("/media's read is memoised (one build serves the minute), the loader itself is not", m1 === m2 && f1 !== f2 && (await m1).length === all.length);
+    const seenBefore = await prisma.listingMediaItem.findMany({ where: { projectId: w.pA.id, removedAt: null }, select: { id: true, syncedAt: true } });
+    await refreshListingEvidence(w.pA.id);
+    const seenAfter = await prisma.listingMediaItem.findMany({ where: { projectId: w.pA.id, removedAt: null }, select: { id: true, syncedAt: true } });
+    c.ok("an unchanged re-read minutes later rewrites no row's last-seen stamp", seenBefore.length > 0 && seenAfter.every((a) => seenBefore.find((b) => b.id === a.id)?.syncedAt.getTime() === a.syncedAt.getTime()), JSON.stringify(seenAfter.map((a) => a.syncedAt)));
+
     // =====================================================================
     c.head("§5 · covers fill the Photos tab and /listings");
     // =====================================================================

@@ -4,7 +4,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { MediaToolbar } from "@/components/media/MediaToolbar";
 import { ListingTile } from "@/components/media/ListingTile";
 import { requireMediaPage } from "@/lib/mediaAccess";
-import { loadDeliveredListings } from "@/lib/mediaLibrary";
+import { libraryListings } from "@/lib/mediaLibrary";
 import { PAGE_SIZE, byDate, cleanQuery, inRange, matchesQuery, pageCount, parseRange, parseSort, rangeYears } from "@/lib/mediaLibraryCore";
 
 export const dynamic = "force-dynamic";
@@ -28,7 +28,7 @@ export default async function ListingsPage({ searchParams }: { searchParams: Pro
   const range = parseRange(one(sp.range));
   const n = pageCount(one(sp.n));
 
-  const all = await loadDeliveredListings().catch((e) => { console.error("[listings] read failed", e); return null; });
+  const all = await libraryListings().catch((e) => { console.error("[listings] read failed", e); return null; });
   const rows = all ? all.filter((l) => inRange(l.dateISO, range) && matchesQuery(q, [l.title, l.clientName])).sort(byDate(sort, (l) => l.dateISO)) : null;
   const years = rangeYears((all ?? []).map((l) => l.dateISO));
   const hrefMore = () => {

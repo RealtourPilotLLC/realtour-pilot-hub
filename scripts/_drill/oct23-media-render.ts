@@ -252,6 +252,9 @@ async function main() {
       older.push(p.id);
     }
     await ix.startListingMediaBackfill("drill");
+    // The pages read the library at most once a minute (audit Oct 25 2026);
+    // the 30 jobs above were added after the earlier renders' read.
+    (await import("@/lib/mediaLibrary")).__clearLibraryMemoForTests();
     const beforeIx = aryeoCalls.length;
     const pIx = await media({ tab: "premium" });
     save("media-premium-indexed", pIx);
