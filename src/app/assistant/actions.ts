@@ -5,8 +5,8 @@ import { runHubAgent, type HubAttachment } from "@/lib/integrations/ai";
 import { HUB_TOOLS, execHubTool } from "@/lib/hubTools";
 import { etFullDate } from "@/lib/datetime";
 import { getCurrentUser } from "@/lib/auth/user";
-import { canAccess, contentTier } from "@/lib/auth/access";
-import { authEnforced } from "@/lib/auth/guards";
+import { canAccess, contentTier, isOffice } from "@/lib/auth/access";
+import { addressableKeys, authEnforced } from "@/lib/auth/guards";
 
 export type HubSource = { kind: "data" | "knowledge"; title: string };
 export type HubDraft = {
@@ -154,6 +154,10 @@ export async function askHub(question: string, history: HubTurn[] = [], chatId?:
     }
   }
   const viewerRole: HubRole = me ? contentTier(me.role) : "OWNER";
+  // The tier decides what the chat may READ; the office's task tools act only
+  // for the owner and the office (lib/hubTools HubToolCtx, audit Oct 25 2026).
+  const office = me ? isOffice(me.role) : true;
+  const ownKeys = me && !office ? [...(await addressableKeys(me).catch(() => new Set<string>()))] : [];
 
   const key = await getSecret("ai");
   if (!key) {
@@ -176,6 +180,8 @@ export async function askHub(question: string, history: HubTurn[] = [], chatId?:
       role: viewerRole,
       impersonating: me?.impersonating ?? false,
       who: me?.name ?? me?.email ?? null,
+      office,
+      ownKeys,
     });
     const o = out as { drafted?: boolean; client_id?: string; client_name?: string; channel?: string; message?: string; can_text?: boolean; created_task?: boolean; id?: string; title?: string; priority?: string; due?: string; project?: string | null; href?: string; remembered?: boolean; category?: string; min_role?: string; superseded?: number; document_saved?: boolean; kind?: string };
     if (name === "draft_client_message" && o?.drafted && o.message && o.client_id) {
