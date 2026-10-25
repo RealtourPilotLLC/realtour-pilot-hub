@@ -1,31 +1,20 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowRight, ChevronDown } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { authEnforced } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { canAccess, contentTier, homeFor } from "@/lib/auth/access";
 import { prisma } from "@/lib/prisma";
-import { cn, formatMoney } from "@/lib/utils";
-// "-$1,995", never "$-1,995": an overdrawn balance is the one figure on this
-// page a person reads at a glance and must not have to parse (money.usd0Signed).
-import { usd0Signed as usd0 } from "@/lib/money";
 import { etFullDate, etTime } from "@/lib/datetime";
 import { AutoRefresh } from "@/components/ops/AutoRefresh";
-import { PulseStrip } from "@/components/dashboard/PulseStrip";
-import { QualityDials } from "@/components/dashboard/QualityDials";
-import { ownerPulse } from "@/lib/ownerPulse";
-import { getTopAr, getOwnerStats, getOwnerPulse, getOwnerDials } from "@/lib/queries";
 import { syntheticClientIds } from "@/lib/syntheticClients";
 import { listAssignees, viewerAssigneeKey, type Assignee } from "@/lib/assignees";
 import { homeRecordHref } from "@/lib/homeRecordScope";
-import { buildDashboard, kyleDay, kylePerson, ownerWeek, type KyleDay, type OwnerWeek } from "@/lib/opsHome";
+import { buildDashboard, kyleDay, kylePerson, type KyleDay } from "@/lib/opsHome";
 import { behindState, type BehindState } from "@/lib/behindAlert";
-import { ownerShootIssues } from "@/lib/shootIssues";
 import { etMinutes } from "@/components/home/DailyChecklist";
 import { HomeAnchorForward } from "@/components/home/HomeAnchorForward";
-import { OwnerWeekCard, ShootIssuesCard } from "@/components/home/OpsHomeParts";
 import { ExceptionsCard } from "@/components/ops/ExceptionsCard";
 import { emptyExceptionBoard, opsExceptionsBoard, type ExceptionKind, type OpsExceptionBoard } from "@/lib/opsExceptions";
 import { BehindLine } from "@/components/home/Checklist";
@@ -82,113 +71,9 @@ function SectionLoading({ label }: { label: string }) {
   );
 }
 
-type OwnerReads = {
-  stats: Awaited<ReturnType<typeof getOwnerStats>> | null;
-  pulse: Awaited<ReturnType<typeof getOwnerPulse>> | null;
-  dials: Awaited<ReturnType<typeof getOwnerDials>> | null;
-  money: Awaited<ReturnType<typeof ownerPulse>> | null;
-};
-type TopArRead = Awaited<ReturnType<typeof getTopAr>>;
-
-// MONEY — owner only, and last on purpose. Jordan: money after action. The
-// strip merges the old dashboard line (delivered, pipeline, top AR) with My
-// Day's glance (bank, profit, owed), so there is one money answer on this page
-// instead of two. Trends and quality dials fold under it (Oct 5).
-async function OwnerBusiness({ ownerP, topArP, includeTest }: { ownerP: Promise<OwnerReads>; topArP: Promise<TopArRead>; includeTest: boolean }) {
-  const [{ stats, pulse, dials, money }, topAr] = await Promise.all([ownerP, topArP]);
-  if (!stats && !money && !pulse && !dials) {
-    return <p role="status" className="rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-muted">The business numbers couldn&rsquo;t load. Refresh to try again, or open Finance.</p>;
-  }
-  // EACH HALF SAYS WHEN IT FAILED (review, Oct 5 night): the books strip sat
-  // inside the delivery line's block, so a failed delivery read took the
-  // bank / profit / owed numbers with it, and a failed books read just left
-  // them out — either way the money vanished without a word.
-  const couldNotLoad = (what: string) => (
-    <p role="status" data-money-unavailable className="px-5 py-3 text-sm text-muted">
-      {what} couldn&rsquo;t load. Refresh to try again, or <Link href="/sales" className="text-brand hover:underline">open Finance</Link>.
-    </p>
-  );
-  return (
-    <>
-      <section className="panel-shadow rounded-2xl border border-border bg-surface" data-owner-money>
-          {stats ? (
-          <Link href="/sales" className="flex flex-wrap items-center gap-x-6 gap-y-1 border-b border-border px-5 py-3.5 text-sm hover:bg-surface-2/60">
-            <span><span className="text-muted">Delivered this month</span> <b>{formatMoney(stats.revenueThisMonth)}</b> <span className="text-muted-2">({stats.deliveredThisMonth})</span></span>
-            <span><span className="text-muted">Pipeline</span> <b>{formatMoney(stats.pipelineRevenue)}</b> <span className="text-muted-2">({stats.activeCount} active)</span></span>
-            {topAr && <span><span className="text-muted">Top AR</span> <b>{topAr.name} {formatMoney(topAr.total)}</b></span>}
-            <ArrowRight className="ml-auto size-4 text-muted-2" />
-          </Link>
-          ) : couldNotLoad("Delivered this month and the pipeline")}
-          {!money && couldNotLoad("The books (profit, bank, owed to you)")}
-          {money && (
-            <div className="px-5 py-4">
-              {/* TWO CLOCKS, SAID OUT LOUD. The line above is the delivery
-                  ledger — jobs delivered this month × what they were sold
-                  for. These four are the BOOKS — money that actually landed
-                  through a processor, minus categorised spend. They are
-                  different numbers for the same month on purpose, and a
-                  reader who isn't told that reads one of them as wrong. */}
-              <p className="text-[11px] text-muted-2">
-                From the books — money that landed, not jobs delivered.{" "}
-                <Link href="/sales" className="hover:text-foreground">Finance →</Link>
-              </p>
-              <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <MoneyStat label="Profit this month" value={usd0(money.profitMonth)} sub={money.marginPct != null ? `${Math.round(money.marginPct)}% margin · provisional` : "provisional"} tone={money.profitMonth >= 0 ? "good" : "bad"} />
-                <MoneyStat label="In the bank" value={money.bankBalance == null ? "—" : usd0(money.bankBalance)} sub={money.bankLabel ?? "not connected"} tone={money.bankBalance != null && money.bankBalance < 0 ? "bad" : undefined} />
-                <MoneyStat label="Owed to you" value={usd0(money.owedToYou)} sub={`${money.owedCount} unpaid`} tone={money.owedToYou > 0 ? "bad" : undefined} />
-                <MoneyStat label="Money in this year" value={usd0(money.revenueYtd)} sub={`through ${money.monthLabel}`} />
-              </div>
-              {/* QuickBooks stopped syncing (audit H3): the figures above leave its payments out, said in words. */}
-              {money.revenueNote && <p data-quickbooks-note className="mt-2 text-xs text-warning">{money.revenueNote}</p>}
-            </div>
-          )}
-      </section>
-      {(pulse || dials) && (
-        <details className="group/trends rounded-2xl border border-border bg-surface">
-          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-5 py-3 text-sm font-semibold">
-            <ChevronDown aria-hidden="true" className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open/trends:rotate-0" />
-            Trends and quality
-            <span className="font-normal text-muted">· last 30 days against the 30 before</span>
-          </summary>
-          <div className="space-y-3 border-t border-border p-3 sm:p-4">
-            {/* Owner pulse — health trends (30d vs prior 30d). */}
-            {pulse && <PulseStrip pulse={pulse} />}
-            {/* Quality dials — a compact video-SLA roll-up + the QC dial. */}
-            {dials && <QualityDials dials={dials} includeTest={includeTest} />}
-          </div>
-        </details>
-      )}
-    </>
-  );
-}
-
-// THE MONEY IN ONE LINE (Oct 22 2026, Jordan's approved dashboard): near the
-// top, so the owner sees where the business stands without scrolling past the
-// work; the full strip (and its two clocks) stays at the bottom.
-async function OwnerMoneyLine({ ownerP }: { ownerP: Promise<OwnerReads> }) {
-  const { money } = await ownerP;
-  if (!money) return null;
-  return (
-    <Link href="/sales" data-owner-money-line className="flex min-h-11 flex-wrap items-center gap-x-5 gap-y-1 rounded-xl border border-border bg-surface px-4 py-2 text-sm hover:bg-surface-2/60">
-      <span><span className="text-muted">Profit this month</span> <b className={cn("tabular-nums", money.profitMonth >= 0 ? "text-success" : "text-danger")}>{usd0(money.profitMonth)}</b></span>
-      <span><span className="text-muted">In the bank</span> <b className="tabular-nums">{money.bankBalance == null ? "—" : usd0(money.bankBalance)}</b></span>
-      <span><span className="text-muted">Owed to you</span> <b className="tabular-nums">{usd0(money.owedToYou)}</b></span>
-      <ArrowRight aria-hidden className="ml-auto size-4 text-muted-2" />
-    </Link>
-  );
-}
-
 // MONTHLY CONTENT, WHAT NEEDS YOU (Oct 20 2026): Jordan's and the creative manager's.
 async function ContentActionsSection({ contentP }: { contentP: Promise<ContentActions | null> }) {
   return <ContentActionsCard data={await contentP} />;
-}
-
-async function OwnerWeekSection({ weekP }: { weekP: Promise<OwnerWeek | null> }) {
-  return <OwnerWeekCard week={await weekP} />;
-}
-
-async function OwnerShootIssues({ issuesP }: { issuesP: Promise<Awaited<ReturnType<typeof ownerShootIssues>> | null> }) {
-  return <ShootIssuesCard issues={await issuesP} />;
 }
 
 async function KylesDaySection({ dayP, includeTest, doors }: { dayP: Promise<KyleDay | null>; includeTest: boolean; doors: Doors }) {
@@ -370,7 +255,6 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   }
   // One read of the test clients for the whole render (its sections share it).
   const excludedClientIds = includeTest ? [] : await syntheticClientIds();
-  const scope = { excludeClientIds: excludedClientIds };
   const roster: Assignee[] = await listAssignees().catch(() => []);
   const viewerKey = me ? viewerAssigneeKey(me, roster) : null;
   const now = new Date();
@@ -382,8 +266,6 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const behindP: Promise<BehindState | null> = behindState(now).catch((e: unknown) => { console.warn("behindState failed", (e as Error).message); return null; });
   const dayP: Promise<KyleDay | null> | null = creativeHome ? null : kyleDay({ now, excludeClientIds: excludedClientIds, ops, viewer, roster, scrub: !isOwner })
     .catch((e: unknown) => { console.warn("kyleDay failed", (e as Error).message); return null; });
-  const weekP = isOwner ? ownerWeek(now, scope).catch((e: unknown) => { console.warn("ownerWeek failed", (e as Error).message); return null; }) : null;
-  const issuesP = isOwner ? ownerShootIssues(now).catch(() => null) : null;
   // Jordan and the creative manager (Jordan, Oct 20 2026) see what monthly content needs from them (creativeManager, read above).
   const contentP: Promise<ContentActions | null> | null = isOwner || creativeManager || creativeHome
     ? monthlyContentActions({ now, excludeClientIds: excludedClientIds }).catch((e: unknown) => { console.warn("monthlyContentActions failed", (e as Error).message); return null; })
@@ -392,18 +274,6 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
     console.warn("exceptions board failed", (e as Error).message);
     return { ...emptyExceptionBoard(), unavailable: true };
   });
-  // Only the largest balance: the strip used to run every proactive flag for
-  // it and render none of them (audit A4).
-  const topArP: Promise<TopArRead> | null = isOwner ? getTopAr(scope).catch(() => null) : null;
-  const ownerP: Promise<OwnerReads> | null = isOwner
-    ? Promise.all([
-        getOwnerStats(scope).catch(() => null),
-        getOwnerPulse(scope).catch(() => null),
-        getOwnerDials(scope).catch(() => null),
-        ownerPulse(scope).catch(() => null),
-      ]).then(([stats, pulse, dials, money]) => ({ stats, pulse, dials, money }))
-    : null;
-
   const [dash, behind] = await Promise.all([
     buildDashboard({ now, includeTest, excludeClientIds: excludedClientIds, viewer, ops, roster, scrub: !isOwner, focus: creativeHome ? "creative" : "office" }),
     behindP,
@@ -444,13 +314,6 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
             top of the screen. Only flagged issues should show up on the shoot
             itself."): a shoot's flags show on its own page. */}
         <BehindLine state={behind} href={homeRecordHref("/jobs?f=late", includeTest)} />
-        {/* The owner's money in one line near the top (Oct 22 2026); the full
-            strip stays last, below the work. */}
-        {ownerP && (
-          <Suspense fallback={null}>
-            <OwnerMoneyLine ownerP={ownerP} />
-          </Suspense>
-        )}
         <HealthStrip health={dash.health} includeTest={includeTest} doors={doors} creative={creativeHome} office={officeHome} />
 
         {/* EACH READER'S ORDER (Jordan, Oct 22 2026: "The 4 menus and alerts
@@ -470,11 +333,6 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
             {!officeHome && contentP && (
               <Suspense fallback={<SectionLoading label="Reading the monthly content…" />}>
                 <ContentActionsSection contentP={contentP} />
-              </Suspense>
-            )}
-            {issuesP && (
-              <Suspense fallback={<SectionLoading label="Reading shoot issues…" />}>
-                <OwnerShootIssues issuesP={issuesP} />
               </Suspense>
             )}
           </div>
@@ -500,30 +358,8 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
           </div>
         </div>
 
-        {/* OWNER ONLY, below everything: this week, then the money. */}
-        {weekP && (
-          <Suspense fallback={<SectionLoading label="Counting this week…" />}>
-            <OwnerWeekSection weekP={weekP} />
-          </Suspense>
-        )}
-        {ownerP && topArP && (
-          <Suspense fallback={<SectionLoading label="Loading the business numbers…" />}>
-            <OwnerBusiness ownerP={ownerP} topArP={topArP} includeTest={includeTest} />
-          </Suspense>
-        )}
       </div>
     </div>
   );
 }
 
-function MoneyStat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: "good" | "bad" }) {
-  return (
-    <div className="rounded-xl border border-border bg-surface-2/40 p-3">
-      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-2">{label}</div>
-      <div className={cn("mt-0.5 text-xl font-semibold tabular-nums", tone === "good" && "text-success", tone === "bad" && "text-danger")}>
-        {value}
-      </div>
-      {sub && <div className="mt-0.5 text-[11px] text-muted">{sub}</div>}
-    </div>
-  );
-}
