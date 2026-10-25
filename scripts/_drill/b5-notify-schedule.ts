@@ -464,9 +464,16 @@ async function main() {
     c.ok("Kyle's digests OFF: both answer 'switched off', send nothing", !d.sent && /switched off/.test(d.reason ?? "") && !m.sent && /switched off/.test(m.reason ?? "") && dmsTo(kyle, s0).length === 0, JSON.stringify([d, m]));
     c.ok("…and claim nothing, so switching back on the same day still sends", (await prisma.appSetting.count({ where: { key: { in: ["kyle-digest-2026-09-29", "kyle-morning-2026-09-30"] } } })) === 0);
     await putSetting("internal_alerts", { kyleDigests: { enabled: true } });
+    // Audit Oct 25 2026: Kyle's list carries no figure and none of Jordan's own
+    // books-audit items or pay questions (F7), whoever's name is on them.
+    await prisma.smartTask.create({ data: { title: "Invoice Jamie $450 for the reel", taskType: "todo", source: "manual", assignedKey: "kyle", dueAt: edt(9, 28, 12) } });
+    await prisma.smartTask.create({ data: { title: "Pay question — James · 5642 Limeport Rd", taskType: "todo", source: "team", assignedKey: "jordan", dedupeKey: "payflag-drill-job-2026-09-16", dueAt: edt(9, 28, 12) } });
+    await prisma.smartTask.create({ data: { title: "Open a personal checking account and pay yourself a set draw", taskType: "finance_audit", source: "finance_audit", assignedKey: "jordan", dedupeKey: "finance-audit:draw", dueAt: edt(9, 28, 12) } });
     setClock(edt(9, 30, 9, 35));
     const m2 = await notify.kyleMorningDigest();
     c.ok("…back ON: the morning list goes", m2.sent === true && dmsTo(kyle, s0).length === 1, JSON.stringify(m2));
+    const morning = dmsTo(kyle, s0)[0]?.text ?? "";
+    c.ok("…its overdue task keeps its words but not its figure, and Jordan's private items are not on it", /Invoice Jamie/.test(morning) && !/\$450/.test(morning) && !/Pay question|checking account/.test(morning), morning.slice(0, 400));
   }
 
   // =========================================================================
