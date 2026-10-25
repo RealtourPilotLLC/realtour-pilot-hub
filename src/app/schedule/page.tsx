@@ -14,6 +14,7 @@ import { ProjectMap, type MapPin, type MapDay } from "@/components/map/ProjectMa
 import { hasDroneOps } from "@/components/project/DroneBadge";
 import { ScheduleViewToggle, type ScheduleView } from "@/components/schedule/ScheduleViewToggle";
 import { syntheticClientIds } from "@/lib/syntheticClients";
+import { offAt, timeOffBetween } from "@/lib/timeOff";
 
 export const dynamic = "force-dynamic";
 
@@ -48,6 +49,10 @@ async function ListView({ excludeClientIds, includeTest, office, tabs }: { exclu
       assignedTo: true,
     },
   });
+  // Who is off on a shoot's day (audit, Oct 25 2026: Harrison's week off had
+  // five shoots still on him here). The office sees it beside the name; Aryeo
+  // is where the shoot is moved or reassigned.
+  const off = office ? await timeOffBetween(etDayKey(startToday), etDayKey(windowEnd)).catch(() => []) : [];
 
   const groups = new Map<string, typeof appts>();
   for (const a of appts) {
@@ -112,6 +117,11 @@ async function ListView({ excludeClientIds, includeTest, office, tabs }: { exclu
                     ) : (
                       <span className="flex items-center gap-1 text-xs text-muted-2">
                         <Camera className="size-3.5" /> Unassigned
+                      </span>
+                    )}
+                    {a.assignedTo && (offAt(off, a.assignedToId, a.startAt)?.fraction ?? 0) >= 1 && (
+                      <span data-off-that-day className="shrink-0 rounded-md bg-danger/10 px-1.5 py-0.5 text-[11px] font-semibold text-danger">
+                        Off that day
                       </span>
                     )}
                   </Link>

@@ -3,10 +3,10 @@ import { prisma } from "@/lib/prisma";
 import { loadQueue } from "@/app/ops/photo-delivery/data";
 import type { QueueCard, QueueColumnKey, QueueData, ThumbRef } from "@/components/photoDelivery/types";
 import { HOLD_REASON_LABEL } from "@/components/photoDelivery/format";
-import { videoDeliveryBoard, type VideoDeliveryBoard, type VideoRow } from "@/lib/videoDelivery";
+import { videoDeliveryBoard, type VideoDeliveryBoard } from "@/lib/videoDelivery";
 import { clientNotToldYet, type NotTold } from "@/lib/readyToSend";
 import { deliveryNoticeIncidents, type DeliveryNoticeIncident } from "@/lib/deliveryNoticeIncidents";
-import { unansweredCommsBoards, type CommsGroup } from "@/lib/commsBoard";
+import { unansweredCommsBoards } from "@/lib/commsBoard";
 import { schedulingBoard, specialRequestsBoard } from "@/lib/clientAsks";
 import { checklistTasks, checklistTasksClosedToday, personTaskWhere, WEEK_OLD_DAYS, type ChecklistPerson, type ClosedTask, type OldItem } from "@/lib/taskAging";
 import { jobsBoard, type JobsBoard } from "@/lib/jobsBoard";
@@ -16,6 +16,7 @@ import { parseAccessBrief, type AccessInfo } from "@/lib/opsDay";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { briefStatusForAppointments, type BriefState } from "@/lib/photographerBrief";
 import { tasksAssignedTo, type DelegatedTask, type DelegationState } from "@/lib/delegation";
+import { offAt, offWords, timeOffBetween, type TimeOffSpan } from "@/lib/timeOff";
 import { expectedCrons, staleAfterMs, type CronJobHealth } from "@/lib/cronHealth";
 import { scrubMoney } from "@/lib/text";
 import { RERUN_LABEL } from "@/lib/topazRerun";
@@ -834,8 +835,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
         const base: AssetLine = { id: `${plan ? "floorplan" : "tour"}:${p.id}`, kind: plan ? "floorplan" : "tour", label: plan ? "Floor plan" : "3D tour", status: "", tone: "waiting", late: false, dueISO: promise, who: maker, note: null, action: null };
         const check: DeskAction = { kind: "link", label: plan ? "Check floor plan" : "Check tour", href: `/projects/${p.id}` };
         if ((d.status === "DONE" && !missingNow) || onListing) Object.assign(base, { tone: "done", status: onListing ? "On the Aryeo listing" : "Done", who: null });
-        else if (d.status === "FLAGGED") Object.assign(base, { tone: "now", status: `${base.label} flagged: check it before it goes out`, who: null, action: check });
-        else if (d.status === "UPLOADED" || d.status === "IN_PROGRESS") Object.assign(base, { tone: "now", status: plan ? "Floor plan ready to check" : "3D tour ready to verify", who: null, action: check });
+        else if (d.status === "FLAGGED") Object.assign(base, { tone: "now", status: `${base.label} flagged: check it before it goes out`, who: null, action: check, late: lateNow });
+        else if (d.status === "UPLOADED" || d.status === "IN_PROGRESS") Object.assign(base, { tone: "now", status: plan ? "Floor plan ready to check" : "3D tour ready to verify", who: null, action: check, late: lateNow });
         else if (lateNow && photosOut) Object.assign(base, { tone: "now", late: true, status: `${base.label} missing: not on the Aryeo listing yet (${maker})`, action: { kind: "link", label: `Chase ${maker}`, href: `/projects/${p.id}` } });
         else { plansOnTheirWay++; Object.assign(base, { status: missingNow ? "Not on the Aryeo listing yet" : "On its way", late: lateNow }); }
         g.assets.push(base);
@@ -1077,7 +1078,11 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   // TODAY'S SHOOTS: today and the next business day, one row per VISIT.
   // =====================================================================
   const prep = visits ?? [];
-  const briefs = await briefStatusForAppointments(prep.map((v) => v.apptId).filter((x): x is string => !!x)).catch(() => null);
+  const [briefs, timeOff] = await Promise.all([
+    briefStatusForAppointments(prep.map((v) => v.apptId).filter((x): x is string => !!x)).catch(() => null),
+    // Who is off on these days (audit, Oct 25 2026: Harrison's week off read "Ready").
+    prep.length ? timeOffBetween(days[0], nextDay).catch(warn("time off")) : Promise.resolve([] as TimeOffSpan[]),
+  ]);
   const photoDelivered = new Map<string, Date>();
   const askProjects = [...new Set([...prep.map((v) => v.project.id), ...(photoAsks ?? []).map((a) => a.projectId!).filter(Boolean)])];
   if (askProjects.length) {
@@ -1146,12 +1151,17 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     const gaps: string[] = [];
     if (!p.addressLine?.trim() || /^\[No address/i.test(p.addressLine)) gaps.push("No street address on the listing");
     if (!photographer) gaps.push("No photographer assigned");
+    // On PTO or in the capacity register as off: Aryeo still has the shoot on them.
+    const away = !started ? offAt(timeOff ?? [], photographerId, start) : null;
+    if (away) gaps.unshift(away.fraction >= 1 ? `${offWords(photographer, away)}: reassign or move the shoot` : `${offWords(photographer, away)}: check they can make it`);
     if (!acc.lockbox && !acc.access && !acc.presence) gaps.push("No access instructions (lockbox, door code or who is there)");
     if (!acc.phone) gaps.push("No on-site contact phone");
     if (servicesFrom === "none") gaps.push(multi ? "No services listed for this visit (a split order)" : "No services on the order");
     const conflicts = visitConflicts({ services, requests: forThis.map((n) => n.text), orderNotes, lockbox: acc.lockbox, liveVisits: live.length });
     const unconfirmed = confirmation.state === "open" || confirmation.state === "none";
-    const problems = started ? [] : [...(unconfirmed ? [confirmation.words] : []), ...gaps, ...conflicts, ...(offer.problem ? [offer.problem] : [])];
+    // A photographer who is off that day comes first: nothing else about the visit matters until someone is on it.
+    const offGap = away ? gaps[0] : null;
+    const problems = started ? [] : [...(offGap ? [offGap] : []), ...(unconfirmed ? [confirmation.words] : []), ...gaps.filter((g) => g !== offGap), ...conflicts, ...(offer.problem ? [offer.problem] : [])];
     const street = clean(streetOf(p.title));
     const visit: PrepVisit = {
       apptId: v.apptId, projectId: p.id, street, client: p.client ? clean(p.client.name) : null, dayKey: visitDay,
@@ -1181,6 +1191,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     const waitingAck = !problems.length && !started && offer.waiting;
     const ackBy = start ? new Date(start.getTime() - 2 * HOUR) : null;
     const chip: DeskItem["chip"] = started ? { label: over ? "Shot" : "On site", tone: "muted" }
+      : away ? { label: away.fraction >= 1 ? "Photographer off" : "Photographer off part of the day", tone: away.fraction >= 1 ? "bad" : "warn" }
       : unconfirmed ? { label: "Needs confirmation", tone: "warn" }
       : gaps.some((g) => g.startsWith("No access")) ? { label: "Needs access info", tone: "bad" }
       : gaps.length ? { label: "Missing details", tone: "warn" }
@@ -1202,7 +1213,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       dueISO: waitingAck && ackBy ? ackBy.toISOString() : start?.toISOString() ?? null,
       dueWords: start ? `${visitDay === dayKey ? "" : `${etDate(start)} `}${etTime(start)}` : null,
       late: false,
-      rank: problems.length ? (visitDay === dayKey || (!!start && start.getTime() - nowMs < DAY) ? RANK.blocker : RANK.routine) : RANK.housekeeping,
+      // Reassigning a shoot takes the most lead time of anything here, so an off-day clash is a blocker whatever the day.
+      rank: problems.length ? ((!!offGap && !!away && away.fraction >= 1) || visitDay === dayKey || (!!start && start.getTime() - nowMs < DAY) ? RANK.blocker : RANK.routine) : RANK.housekeeping,
       primary: primary ? { label: actionLabel(primary), action: primary } : null,
       actions: [...(confirmAction ? [confirmAction] : []), ...(briefSend ? [briefSend] : []), ...forThis.filter((n) => n.askId).map((n): DeskAction => ({ kind: "ask", askId: n.askId!, askKind: "SPECIAL_REQUEST" })), openJob],
       href: `/projects/${p.id}`,
@@ -1325,8 +1337,12 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   ]);
   const revisionProjects = new Set<string>();
   for (const r of revisions ?? []) {
-    const street = clean(streetOf(r.project?.title));
-    const photoLane = (r.dedupeKey ?? "").includes("photo");
+    // A revision filed from an email with no job on it (Alex's "Photo revision —
+    // 215 Koser Rd" since Sep 28) read "a job · Video revision": its own title
+    // names the street and the lane (audit, Oct 25 2026).
+    const titled = /\s[—–-]\s(.+)$/.exec(r.title)?.[1] ?? null;
+    const street = clean(streetOf(r.project?.title ?? titled));
+    const photoLane = (r.dedupeKey ?? "").includes("photo") || /^photo\b/i.test(r.title.trim());
     const latest = cuts.find((c) => c.projectId === r.projectId && c.createdAt > r.createdAt) ?? null;
     const pj = photoJobsRev.find((j) => j.projectId === r.projectId) ?? null;
     const promise = r.project?.promisedDueAt ?? r.project?.deliveryDue ?? null;
@@ -1349,6 +1365,9 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       [state, line, reason, who, due, primary] = ["waiting", `Returned · In review with ${creativeName}`, `Corrected work returns to review, not done: waiting on ${creativeName}.`, creativeName, follow ?? promise, null];
     } else if (editor) {
       [state, line, reason, who, due, primary] = ["waiting", `Waiting on ${editor}`, `Assigned to ${editor}, not done yet.`, editor, follow ?? promise, null];
+    } else if (photoLane) {
+      // A photo correction is the office's own (request owners: photo → Kyle), never an editor's.
+      [state, line, reason, who, due, primary, label] = ["now", "Yours to fix · Open the photos", "A photo correction is the office's: make the fix (Photo Delivery or the job's photos), confirm with the client, then close.", "You", null, r.projectId ? { kind: "link", label: "Open photos", href: `/projects/${r.projectId}` } : taskAction(r.id), r.projectId ? "Open photos" : "Handle"];
     } else {
       [state, line, reason, who, due, primary, label] = ["now", "Nobody has it yet · Give it to the editor", "Nobody has this change yet. Give it to the editor, then set when to check back.", "You", null, { kind: "link", label: "Open the job", href: base.href ?? "/review" }, "Route it"];
     }
@@ -1642,7 +1661,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   // ---- the next business day, at a glance (the visit rows' own facts) ----
   const nextVisits = nextAll.filter((i) => i.panel.kind === "visit").map((i) => ({ i, v: (i.panel as { kind: "visit"; visit: PrepVisit }).visit }));
   const accessMissing = (v: PrepVisit) => v.gaps.some((g) => g.startsWith("No access") || g.startsWith("No on-site contact"));
-  const instructionsNeedReview = (v: PrepVisit) => v.conflicts.length > 0 || v.servicesFrom === "none" || v.brief.state === "failed" || v.brief.state === "unknown" || v.gaps.some((g) => g.startsWith("No photographer"));
+  const instructionsNeedReview = (v: PrepVisit) => v.conflicts.length > 0 || v.servicesFrom === "none" || v.brief.state === "failed" || v.brief.state === "unknown" || v.gaps.some((g) => g.startsWith("No photographer") || / is off (?:that day|part of that day) /.test(g));
   const nextDayOut: NextDay = {
     dayKey: nextDay,
     dayName: new Date(`${nextDay}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" }),

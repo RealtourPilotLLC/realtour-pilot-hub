@@ -249,12 +249,12 @@ async function ClientIssuesSection({ p }: { p: Promise<ClientIssues | null> }) {
 // D. TEAM COVERAGE
 // =====================================================================================
 
-async function TeamSection({ p }: { p: Promise<TeamCoverage | null> }) {
+async function TeamSection({ p, nowMs }: { p: Promise<TeamCoverage | null>; nowMs: number }) {
   const t = await p;
   if (!t) return <Card title="Team coverage" id="team"><Unavailable what={["team coverage"]} /></Card>;
   const workload: ListRow[] = [
-    ...Object.values(t.byPerson).flat().map((d) => ({ id: d.taskId, title: `${d.assigneeName ?? "Nobody"}: ${d.title}`, sub: [d.state === "ASSIGNED" ? "Awaiting acceptance" : d.state.toLowerCase().replace(/_/g, " "), d.dueAt ? `due ${etDateTime(d.dueAt)}` : null, d.assignedBy ? `from ${d.assignedBy}` : null].filter(Boolean).join(" · "), tone: (d.dueAt && Date.parse(d.dueAt) < Date.now() ? "bad" : d.state === "ASSIGNED" ? "warn" : "ok") as Tone })),
-    ...t.unassigned.map((u) => ({ id: `un:${u.what}`, title: `${u.count} ${u.what.toLowerCase()}`, sub: "Unassigned", tone: "bad" as Tone, href: u.href })),
+    ...Object.values(t.byPerson).flat().map((d) => ({ id: d.taskId, title: `${d.assigneeName ?? "Nobody"}: ${d.title}`, sub: [d.state === "ASSIGNED" ? "Awaiting acceptance" : d.state.toLowerCase().replace(/_/g, " "), d.dueAt ? `due ${etDateTime(d.dueAt)}` : null, d.assignedBy ? `from ${d.assignedBy}` : null].filter(Boolean).join(" · "), tone: (d.dueAt && Date.parse(d.dueAt) < nowMs ? "bad" : d.state === "ASSIGNED" ? "warn" : "ok") as Tone })),
+    ...t.unassigned.map((u) => ({ id: `un:${u.what}`, title: `${u.count} ${u.what.charAt(0).toLowerCase()}${u.what.slice(1)}`, sub: u.what.includes(" while off") ? "Booked on someone who is off" : "Unassigned", tone: "bad" as Tone, href: u.href })),
     ...t.timeOff.map((o, i) => ({ id: `off:${i}`, title: `${o.name}: ${o.words}`, sub: "Time off", tone: "warn" as Tone })),
   ];
   return (
@@ -520,7 +520,7 @@ export async function OwnerHome({ me, includeTest = false, now: at }: {
         <Suspense fallback={<Loading label="Reading production…" />}><ProductionSection p={productionP} /></Suspense>
         <div className="grid items-start gap-5 lg:grid-cols-2">
           <Suspense fallback={<Loading label="Reading client issues…" />}><ClientIssuesSection p={issuesP} /></Suspense>
-          <Suspense fallback={<Loading label="Reading team coverage…" />}><TeamSection p={teamP} /></Suspense>
+          <Suspense fallback={<Loading label="Reading team coverage…" />}><TeamSection p={teamP} nowMs={now.getTime()} /></Suspense>
         </div>
 
         <h2 className="flex items-center gap-3 pt-2 text-xl font-bold tracking-tight">My work<span aria-hidden className="h-px flex-1 bg-border" /></h2>

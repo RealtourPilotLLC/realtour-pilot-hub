@@ -16,6 +16,7 @@ import { opsExceptionsBoard } from "@/lib/opsExceptions";
 import { kylePerson, chipPerson, ownerWeek, etWeekStart, ON_TIME_MIN_JOBS } from "@/lib/opsHome";
 import { ownerShootIssues } from "@/lib/shootIssues";
 import { CLOSE_KEY_PREFIX, closeKeyFor, readClosure, roundsStage, signalClosed, type SignalClosure } from "@/lib/issueSignalsCore";
+import { offAt, offWords, timeOffBetween } from "@/lib/timeOff";
 // The books: Finance's own engines (static, so the drills' seams reach them).
 import { revenueByProcessor } from "@/lib/bookkeeping";
 import { categoryBreakdown, railFreshness } from "@/lib/financeCategories";
@@ -385,7 +386,7 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
   const exclude = opts.excludeClientIds ?? (opts.includeTest ? [] : await syntheticClientIds());
   const current = Math.abs(now.getTime() - Date.now()) < 60_000;
 
-  const [jobs, video, review, photos, exceptions, visits, kyle, flags] = await Promise.all([
+  const [jobs, video, review, photos, exceptions, visits, kyle, flags, off] = await Promise.all([
     jobsBoard(now, { includeTest: !!opts.includeTest }).catch(warn("shoots board")),
     videoDeliveryBoard(current ? {} : { now }).catch(warn("video board")),
     getReviewQueue({ includeTest: !!opts.includeTest }).catch(warn("review queue")),
@@ -402,27 +403,36 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
     }).catch(warn("upcoming shoots")),
     kylePerson(roster).catch(() => null),
     ownerShootIssues(now).catch(warn("shoot issues")),
+    timeOffBetween(etDayKey(now), etDayKey(soonEnd)).catch(warn("time off")),
   ]);
   const officeName = kyle?.name ?? "Kyle";
   const excluded = new Set(exclude);
   const unavailable: string[] = [];
 
   // ---- pre-production: shoots from now to the end of the next business day ----
-  const pre: StageItem[] = (visits ?? []).filter((v): v is typeof v & { startAt: Date } => !!v.startAt).map((v) => ({
-    id: `visit:${v.id}`,
-    street: street(v.project?.title),
-    client: v.project?.client?.name ?? null,
-    what: `Shoot ${etDateTime(v.startAt)}`,
-    dueISO: v.startAt.toISOString(),
-    late: false,
-    dueSoon: true,
-    blocked: v.assignedToId ? null : "No photographer assigned",
-    waitingSinceISO: null,
-    owner: v.assignedTo?.name ? firstName(v.assignedTo.name) : officeName,
-    href: v.project ? `/projects/${v.project.id}` : "/schedule",
-    projectId: v.project?.id ?? null,
-  }));
+  // A shoot on someone who is off that day is blocked (audit, Oct 25 2026:
+  // Harrison's week off with five shoots still on his calendar read "coming
+  // up" in green). The office reassigns or moves it, so it is the office's move.
+  const pre: StageItem[] = (visits ?? []).filter((v): v is typeof v & { startAt: Date } => !!v.startAt).map((v) => {
+    const away = offAt(off ?? [], v.assignedToId, v.startAt);
+    const offAll = !!away && away.fraction >= 1;
+    return {
+      id: `visit:${v.id}`,
+      street: street(v.project?.title),
+      client: v.project?.client?.name ?? null,
+      what: `Shoot ${etDateTime(v.startAt)}${away && !offAll ? ` · ${offWords(v.assignedTo?.name, away)}` : ""}`,
+      dueISO: v.startAt.toISOString(),
+      late: false,
+      dueSoon: true,
+      blocked: !v.assignedToId ? "No photographer assigned" : offAll ? offWords(v.assignedTo?.name, away) : null,
+      waitingSinceISO: null,
+      owner: offAll ? officeName : v.assignedTo?.name ? firstName(v.assignedTo.name) : officeName,
+      href: v.project ? `/projects/${v.project.id}` : "/schedule",
+      projectId: v.project?.id ?? null,
+    };
+  });
   if (!visits) unavailable.push("upcoming shoots");
+  if (!off) unavailable.push("time off");
 
   // ---- capture & upload: the shoot happened, the raws are not in -------------
   const notUploaded = (jobs?.rows ?? []).filter((r) => r.photos?.label === "Not uploaded");
@@ -528,10 +538,12 @@ async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee
     if (!i.late && !i.blocked) continue;
     const sourceHref = i.href;
     const lateH = i.dueISO ? Math.max(1, Math.round((now.getTime() - Date.parse(i.dueISO)) / HOUR)) : null;
+    // A shoot on someone who is off that day has nobody on it either.
+    const offDay = s.key === "pre" && !!i.blocked && / is off that day /.test(i.blocked);
     const issue = i.blocked && !i.late
-      ? `${i.street}: ${i.blocked.toLowerCase()}`
+      ? `${i.street}: ${offDay ? `${i.what}, but ${i.blocked}` : i.blocked.toLowerCase()}`
       : `${i.street}: ${i.what.toLowerCase()}${lateH ? `, ${lateH >= 24 ? `${Math.round(lateH / 24)}d` : `${lateH}h`} late` : ""}`;
-    const noOwner = /^nobody|^no /i.test(i.owner) || !!i.blocked?.startsWith("No ");
+    const noOwner = /^nobody|^no /i.test(i.owner) || !!i.blocked?.startsWith("No ") || offDay;
     cand.push({
       id: `${s.key}:${i.id}`,
       issue,
@@ -539,13 +551,13 @@ async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee
       commitment: i.dueISO ? `${s.key === "pre" ? "Shoot" : "Promised"} ${etDateTime(i.dueISO)}` : null,
       owner: i.owner,
       handledBy: null,
-      nextStep: i.blocked?.startsWith("No photographer") ? "Assign a photographer" : i.blocked?.startsWith("No editor") ? "Assign an editor" : i.late ? "Recovery plan and new ETA" : `Clear: ${i.blocked}`,
+      nextStep: i.blocked?.startsWith("No photographer") ? "Assign a photographer" : offDay ? "Reassign the shoot, or move it" : i.blocked?.startsWith("No editor") ? "Assign an editor" : i.late ? "Recovery plan and new ETA" : `Clear: ${i.blocked}`,
       clientUpdate: i.late && i.projectId ? "pending" : null,
       tone: i.late || noOwner ? "bad" : "warn",
       href: i.href,
       assign: {
-        title: i.late ? `Recovery plan: ${i.street} (${i.what})` : `Unblock: ${i.street} (${i.blocked})`,
-        outcome: i.late ? "A recovery plan with a new ETA, and the client told" : `Cleared: ${i.blocked}`,
+        title: i.late ? `Recovery plan: ${i.street} (${i.what})` : offDay ? `Reassign the shoot: ${i.street} (${i.blocked})` : `Unblock: ${i.street} (${i.blocked})`,
+        outcome: i.late ? "A recovery plan with a new ETA, and the client told" : offDay ? "Another photographer on it, or the shoot moved with the client's OK" : `Cleared: ${i.blocked}`,
         assigneeKey: keyOfName(i.owner),
         sourceHref,
         projectId: i.projectId,
@@ -879,27 +891,6 @@ export type TeamCoverage = {
   unavailable: string[];
 };
 
-/** Who is off (PTO entries and capacity exceptions) between two ET days. */
-async function timeOffBetween(fromKey: string, toKey: string): Promise<{ teamMemberId: string; words: string }[]> {
-  const [ptoRows, caps] = await Promise.all([
-    prisma.appSetting.findMany({ where: { key: { startsWith: "pto:" } }, select: { key: true, value: true } }),
-    prisma.capacityException.findMany({ where: { kind: "TIME_OFF", cancelledAt: null, startsAt: { lte: new Date(`${toKey}T23:59:59Z`) }, OR: [{ endsAt: null }, { endsAt: { gte: new Date(`${fromKey}T00:00:00Z`) } }] }, select: { teamMemberId: true, startsAt: true, endsAt: true } }),
-  ]);
-  const out: { teamMemberId: string; words: string }[] = [];
-  for (const r of ptoRows) {
-    const memberId = r.key.split(":")[1];
-    let entries: { startKey?: string; endKey?: string; type?: string }[] = [];
-    try { entries = (JSON.parse(r.value) as { entries?: typeof entries }).entries ?? []; } catch { continue; }
-    for (const e of entries) {
-      if (!e.startKey || !e.endKey || e.endKey < fromKey || e.startKey > toKey) continue;
-      const d = (k: string) => etMonthDay(new Date(`${k}T12:00:00Z`));
-      out.push({ teamMemberId: memberId, words: `Off ${e.startKey === e.endKey ? d(e.startKey) : `${d(e.startKey)} to ${d(e.endKey)}`}` });
-    }
-  }
-  for (const c of caps) out.push({ teamMemberId: c.teamMemberId, words: `Off ${etMonthDay(c.startsAt)}${c.endsAt ? ` to ${etMonthDay(c.endsAt)}` : ""}` });
-  return out;
-}
-
 export async function teamCoverage(opts: { now?: Date; includeTest?: boolean; roster?: Assignee[]; production?: ProductionHealth | null } = {}): Promise<TeamCoverage> {
   const now = opts.now ?? new Date();
   const roster = opts.roster ?? (await listAssignees());
@@ -907,7 +898,7 @@ export async function teamCoverage(opts: { now?: Date; includeTest?: boolean; ro
   const weekKey = etDayKey(new Date(now.getTime() + 7 * DAY));
   const unavailable: string[] = [];
   const { reviewRoomRules, editorRouting } = await import("@/lib/settings");
-  const [delegations, kyle, rules, routing, managers, off, owners] = await Promise.all([
+  const [delegations, kyle, rules, routing, managers, off, owners, booked] = await Promise.all([
     openDelegations().catch(warn("assignments")),
     kylePerson(roster).catch(() => null),
     reviewRoomRules().catch(() => null),
@@ -915,9 +906,22 @@ export async function teamCoverage(opts: { now?: Date; includeTest?: boolean; ro
     prisma.teamMember.findMany({ where: { active: true, creativeManager: true }, select: { id: true, name: true } }).catch(() => []),
     timeOffBetween(todayKey, weekKey).catch(warn("time off")),
     prisma.programOwnerAssignment.findMany({ where: { scope: "DEFAULT", endedAt: null }, select: { duty: true, appUserId: true, teamMemberId: true, label: true } }).catch(() => []),
+    // The week's assigned shoots, to check against who is off (audit, Oct 25 2026).
+    (opts.includeTest ? Promise.resolve([] as string[]) : syntheticClientIds()).then((ex) => prisma.appointment.findMany({
+      where: {
+        startAt: { gte: now, lte: new Date(now.getTime() + 7 * DAY) }, assignedToId: { not: null },
+        OR: [{ status: null }, { status: { not: "CANCELED" } }],
+        project: { status: { not: "CANCELLED" }, ...(ex.length ? { clientId: { notIn: ex } } : {}) },
+      },
+      select: { startAt: true, assignedToId: true, assignedTo: { select: { name: true } } },
+      take: 200,
+    })).catch(warn("shoots this week")),
   ]);
   if (!delegations) unavailable.push("assignments");
   if (!off) unavailable.push("time off");
+  // Shoots booked on someone who is off that day (whole days only: part of a day is the office's question).
+  const offShoots = off && booked ? booked.filter((b) => (offAt(off, b.assignedToId, b.startAt)?.fraction ?? 0) >= 1) : [];
+  const offNames = [...new Set(offShoots.map((b) => firstName(b.assignedTo?.name ?? "")).filter(Boolean))];
   const list = delegations ?? [];
   const nowMs = now.getTime();
   const byPerson: Record<string, DelegatedTaskView[]> = {};
@@ -974,9 +978,10 @@ export async function teamCoverage(opts: { now?: Date; includeTest?: boolean; ro
   const shooters = await prisma.teamMember.findMany({ where: { active: true, role: "PHOTOGRAPHER" }, select: { id: true } }).catch(() => [] as { id: string }[]);
   const shooterIds = new Set(shooters.map((x) => x.id));
   const field = roster.filter((a) => !!a.teamMemberId && shooterIds.has(a.teamMemberId));
-  if (capture || field.length) {
+  if (capture || field.length || offShoots.length) {
     const owed = capture?.items.length ?? 0;
-    push({ key: "field", person: field.map((f) => f.name).filter((n) => !/^jordan$/i.test(n)).join(", ") || "Photographers", personKey: null, area: "Field shoots & uploads", status: capture ? (owed ? `${plural(owed, "upload")} owed` : "Covered") : "Uploads couldn't load", tone: capture?.counts.overdue ? "bad" : owed ? "warn" : capture ? "ok" : "warn" });
+    const clash = offShoots.length ? `${plural(offShoots.length, "shoot")} this week booked on ${offNames.join(" and ")} while off` : null;
+    push({ key: "field", person: field.map((f) => f.name).filter((n) => !/^jordan$/i.test(n)).join(", ") || "Photographers", personKey: null, area: "Field shoots & uploads", status: [clash, capture ? (owed ? `${plural(owed, "upload")} owed` : clash ? null : "Covered") : "Uploads couldn't load"].filter(Boolean).join(" · "), tone: clash || capture?.counts.overdue ? "bad" : owed ? "warn" : capture ? "ok" : "warn" });
   }
   // The owner's own areas (the content program's default duties).
   const ownerDuties = owners.filter((o) => o.duty === "STRATEGY" || o.duty === "SCRIPTS" || o.duty === "ESCALATION");
@@ -997,6 +1002,7 @@ export async function teamCoverage(opts: { now?: Date; includeTest?: boolean; ro
   const unassigned = [
     unassignedEdits ? { what: "Edit jobs with no editor", count: unassignedEdits, href: "/editing" } : null,
     (stage("pre")?.items.filter((i) => i.blocked === "No photographer assigned").length ?? 0) > 0 ? { what: "Shoots with no photographer", count: stage("pre")!.items.filter((i) => i.blocked === "No photographer assigned").length, href: "/schedule" } : null,
+    offShoots.length ? { what: `Shoots booked on ${offNames.join(" and ")} while off`, count: offShoots.length, href: "/schedule" } : null,
   ].filter((x): x is { what: string; count: number; href: string } => !!x);
   const names = new Map(roster.filter((a) => a.teamMemberId).map((a) => [a.teamMemberId!, a.name]));
   return {
@@ -1023,10 +1029,11 @@ export async function weeklyPerformance(opts: { now?: Date; excludeClientIds?: s
   const weekStart = etWeekStart(now);
   const exclude = opts.excludeClientIds ?? [];
   const in7 = new Date(now.getTime() + 7 * DAY);
-  const [week, upcoming, quality] = await Promise.all([
+  const [week, upcoming, quality, off] = await Promise.all([
     ownerWeek(now, { excludeClientIds: exclude }).catch(warn("week")),
-    prisma.appointment.findMany({ where: { startAt: { gte: now, lte: in7 }, OR: [{ status: null }, { status: { not: "CANCELED" } }], project: { status: { not: "CANCELLED" }, ...(exclude.length ? { clientId: { notIn: exclude } } : {}) } }, select: { assignedToId: true } }).catch(warn("upcoming shoots")),
+    prisma.appointment.findMany({ where: { startAt: { gte: now, lte: in7 }, OR: [{ status: null }, { status: { not: "CANCELED" } }], project: { status: { not: "CANCELLED" }, ...(exclude.length ? { clientId: { notIn: exclude } } : {}) } }, select: { assignedToId: true, startAt: true } }).catch(warn("upcoming shoots")),
     import("@/lib/revisionQuality").then((m) => m.revisionQuality(30, { includeTest: false, now })).catch(warn("revision causes")),
+    timeOffBetween(etDayKey(now), etDayKey(in7)).catch(warn("time off")),
   ]);
   const period = `This week, ${etMonthDay(weekStart)} to now`;
   const pctOf = (ok: number, n: number) => (n ? Math.round((ok / n) * 100) : null);
@@ -1050,8 +1057,16 @@ export async function weeklyPerformance(opts: { now?: Date; excludeClientIds?: s
     measures.push({ key: "week", label: "This week", value: "Couldn't load", detail: "The week's delivery and reply figures didn't load", period, source: "", tone: "warn" });
   }
   if (upcoming) {
-    const covered = upcoming.filter((u) => !!u.assignedToId).length;
-    measures.push({ key: "shoots", label: "Upcoming shoots covered", value: upcoming.length ? `${covered}/${upcoming.length}` : "None booked", detail: "Shoots in the next 7 days with a photographer assigned", period: `Next 7 days to ${etMonthDay(in7)}`, source: "Aryeo appointments", tone: upcoming.length && covered < upcoming.length ? "warn" : upcoming.length ? "ok" : null });
+    // Covered = a photographer is on it AND working that day (audit, Oct 25
+    // 2026: five shoots on Harrison during his week off counted as covered).
+    const away = upcoming.filter((u) => !!u.assignedToId && (offAt(off ?? [], u.assignedToId, u.startAt)?.fraction ?? 0) >= 1).length;
+    const covered = upcoming.filter((u) => !!u.assignedToId).length - away;
+    measures.push({
+      key: "shoots", label: "Upcoming shoots covered", value: upcoming.length ? `${covered}/${upcoming.length}` : "None booked",
+      detail: `Shoots in the next 7 days with a photographer assigned who isn't off that day${away ? ` · ${plural(away, "shoot")} on someone who is off` : ""}${off ? "" : " · time off couldn't be read"}`,
+      period: `Next 7 days to ${etMonthDay(in7)}`, source: "Aryeo appointments, against PTO and the capacity register",
+      tone: away ? "bad" : upcoming.length && covered < upcoming.length ? "warn" : upcoming.length ? "ok" : null,
+    });
   }
   if (quality) {
     const top = [...quality.byCause].sort((a, b) => b.count - a.count)[0];
