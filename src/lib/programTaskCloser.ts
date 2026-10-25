@@ -12,7 +12,11 @@ import { TASK_DONE_INCLUDING_LEGACY, ANSWER_GAP_TASK_PREFIX } from "@/lib/progra
 //   · the ANSWER-GAP follow-up ("Follow up on their answers"),
 //     programDeskTasks.openAnswerGapTask;
 //   · the DISCOVERY BOOKING ("Book the brand discovery call"),
-//     programOnboarding.onProgramActivated.
+//     programOnboarding.onProgramActivated;
+//   · (Oct 25 2026, audit) the 15th's MID-MONTH CHECK for Kyle ("<client>:
+//     mid-month check on 2026-10"), programReminders.raiseMidMonthFollowUp.
+//     Janice Pigga booked her October session on Oct 23 and hers stayed open
+//     beside the ones that still mattered (Mike Ciunci, Kristen Pavillard).
 // Erica booked her October session and her "still needs a content session
 // booking" stayed open; three "still needs a planning path" tasks stayed open
 // after each month's route was chosen; Marcee's answer-gap task stayed open
@@ -28,8 +32,9 @@ import { TASK_DONE_INCLUDING_LEGACY, ANSWER_GAP_TASK_PREFIX } from "@/lib/progra
 
 export const ESCALATION_TASK_PREFIX = "program-reminder-escalation:";
 export const DISCOVERY_TASK_PREFIX = "program-discovery-booking:";
+export const MIDMONTH_TASK_PREFIX = "program-reminder-midmonth:";
 
-export type TaskKind = "escalation" | "answer_gap" | "discovery";
+export type TaskKind = "escalation" | "answer_gap" | "discovery" | "midmonth";
 export type TaskVerdict = {
   taskId: string;
   dedupeKey: string;
@@ -41,9 +46,13 @@ export type TaskVerdict = {
   evidence: string;
 };
 
-const TASK_PREFIXES = [ESCALATION_TASK_PREFIX, ANSWER_GAP_TASK_PREFIX, DISCOVERY_TASK_PREFIX];
+const TASK_PREFIXES = [ESCALATION_TASK_PREFIX, ANSWER_GAP_TASK_PREFIX, DISCOVERY_TASK_PREFIX, MIDMONTH_TASK_PREFIX];
 const kindOf = (key: string): TaskKind | null =>
-  key.startsWith(ESCALATION_TASK_PREFIX) ? "escalation" : key.startsWith(ANSWER_GAP_TASK_PREFIX) ? "answer_gap" : key.startsWith(DISCOVERY_TASK_PREFIX) ? "discovery" : null;
+  key.startsWith(ESCALATION_TASK_PREFIX) ? "escalation"
+    : key.startsWith(ANSWER_GAP_TASK_PREFIX) ? "answer_gap"
+    : key.startsWith(DISCOVERY_TASK_PREFIX) ? "discovery"
+    : key.startsWith(MIDMONTH_TASK_PREFIX) ? "midmonth"
+    : null;
 
 const day = (d: Date | null | undefined) => (d ? d.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : "an unknown date");
 const LIVE_INTERVIEW = ["SUBMITTED_WITH_GAPS", "IN_PROGRESS", "NEEDS_FOLLOWUP", "NOT_STARTED"];
@@ -67,6 +76,24 @@ async function escalationVerdict(key: string, now: Date, cache: Map<string, { ho
   const { reminderAskStillOpen } = await import("@/lib/programReminders");
   const v = await reminderAskStillOpen(parsed.monthId, parsed.action, { now });
   cache.set(cacheKey, v);
+  return v;
+}
+
+/**
+ * The 15th's follow-up (`program-reminder-midmonth:<monthId>`) asked Kyle to
+ * help with whatever the month still needed. It holds while the month's
+ * planning lane still asks the client for something (a snoozed or held ask
+ * still counts); once it asks nothing, the help is no longer needed.
+ */
+async function midMonthVerdict(key: string, now: Date, cache: Map<string, { holds: boolean; evidence: string }>): Promise<{ holds: boolean; evidence: string }> {
+  const monthId = key.slice(MIDMONTH_TASK_PREFIX.length).split(":")[0];
+  if (!monthId) return { holds: true, evidence: "the task's key could not be read, so it is left for a person" };
+  const hit = cache.get(`mid:${monthId}`);
+  if (hit) return hit;
+  const { monthPrimaryAsk } = await import("@/lib/programReminders");
+  const ask = await monthPrimaryAsk(monthId, { now });
+  const v = { holds: ask.action !== null, evidence: ask.evidence };
+  cache.set(`mid:${monthId}`, v);
   return v;
 }
 
@@ -106,7 +133,7 @@ async function discoveryVerdict(key: string): Promise<{ holds: boolean; evidence
 }
 
 /**
- * Every open escalation, answer-gap and discovery task, with whether its
+ * Every open escalation, answer-gap, discovery and mid-month task, with whether its
  * condition still holds and the evidence. Reads only (the escalation check is
  * the reminder preview's evaluation, which writes nothing). `taskIds` narrows
  * it; `budgetMs` stops before the clock runs out (the rest wait an hour).
@@ -130,7 +157,10 @@ export async function programTaskVerdicts(opts: { now?: Date; budgetMs?: number;
     if (!kind) continue;
     let v: { holds: boolean; evidence: string };
     try {
-      v = kind === "escalation" ? await escalationVerdict(key, now, cache) : kind === "answer_gap" ? await answerGapVerdict(key) : await discoveryVerdict(key);
+      v = kind === "escalation" ? await escalationVerdict(key, now, cache)
+        : kind === "answer_gap" ? await answerGapVerdict(key)
+        : kind === "midmonth" ? await midMonthVerdict(key, now, cache)
+        : await discoveryVerdict(key);
     } catch (e) {
       // Unreadable is never a reason to close: the task stays for a person.
       v = { holds: true, evidence: `could not be checked: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}` };
