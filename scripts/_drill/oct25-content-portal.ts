@@ -51,8 +51,13 @@ async function main() {
       const C = await buildContentMonth(prisma, { name: "Midmonth Person TEST", package: "Starter", project: false, monthStatus: "COMPLETED" });
       const tC = await task(C.monthId, C.clientId, "Closed by a person", "COMPLETED");
 
+      // An escalation raised AFTER them: the pass must still read it first.
+      const esc = await prisma.smartTask.create({ data: { taskType: "todo", status: "OPEN", source: "content_program", title: "Asking: still needs a strategy call booking", dedupeKey: `program-reminder-escalation:${A.monthId}:BOOK_CALL`, clientId: A.clientId } });
+
       const dry = await T.closeResolvedProgramTasks({ dryRun: true, now: EVAL_NOW });
       const v = (id: string) => dry.verdicts.find((x) => x.taskId === id);
+      const at = (id: string) => dry.verdicts.findIndex((x) => x.taskId === id);
+      c.ok("the mid-month checks are read after the escalations (the pass has a budget)", at(esc.id) >= 0 && at(esc.id) < at(tA.id) && at(esc.id) < at(tB.id), dry.verdicts.map((x) => x.kind).join(","));
       c.ok("the mid-month task is read as its own kind", v(tA.id)?.kind === "midmonth" && v(tB.id)?.kind === "midmonth", `${v(tA.id)?.kind} ${v(tB.id)?.kind}`);
       c.ok("a month still asking the client something keeps its task", v(tA.id)?.holds === true && /still needs/.test(v(tA.id)?.evidence ?? ""), v(tA.id)?.evidence);
       c.ok("a month that asks nothing lets its task go", v(tB.id)?.holds === false && /no longer needs anything/.test(v(tB.id)?.evidence ?? ""), v(tB.id)?.evidence);

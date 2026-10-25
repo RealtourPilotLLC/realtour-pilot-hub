@@ -150,6 +150,9 @@ export async function programTaskVerdicts(opts: { now?: Date; budgetMs?: number;
   const cache = new Map<string, { holds: boolean; evidence: string }>();
   const verdicts: TaskVerdict[] = [];
   let outOfTime = false;
+  // The mid-month checks go last: each one evaluates its month, and the pass
+  // has a budget, so they must never use up the hour before an escalation is read.
+  open.sort((a, b) => Number(kindOf(a.dedupeKey ?? "") === "midmonth") - Number(kindOf(b.dedupeKey ?? "") === "midmonth"));
   for (const t of open) {
     if (opts.budgetMs != null && Date.now() - started > opts.budgetMs) { outOfTime = true; break; }
     const key = t.dedupeKey ?? "";
