@@ -919,6 +919,7 @@ export async function teamCoverage(opts: { now?: Date; includeTest?: boolean; ro
   ]);
   if (!delegations) unavailable.push("assignments");
   if (!off) unavailable.push("time off");
+  if (!booked) unavailable.push("this week's shoots");
   // Shoots booked on someone who is off that day (whole days only: part of a day is the office's question).
   const offShoots = off && booked ? booked.filter((b) => (offAt(off, b.assignedToId, b.startAt)?.fraction ?? 0) >= 1) : [];
   const offNames = [...new Set(offShoots.map((b) => firstName(b.assignedTo?.name ?? "")).filter(Boolean))];
