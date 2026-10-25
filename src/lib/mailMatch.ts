@@ -82,6 +82,25 @@ export function forwardedSenderAddress(
   return null;
 }
 
+/**
+ * OUR OWN NOTE IN A CLIENT'S THREAD, NOT OUR ANSWER (audit Oct 25 2026).
+ * Jordan forwards a client's email to Kyle ("Fwd: Tomorrow Session", "Hey bro
+ * Bernadette wants some staging"), and Gmail keeps the forward in the
+ * client's thread. The thread readers took "the last message is from our
+ * domain" as "we answered": the forward was logged as our reply to the client
+ * (7 in 45 days, its words in the client's conversation as ours) and it
+ * closed the client's reply task. A message we sent is an internal note when
+ * it is a forward, or when every recipient is on our own domain. Pure.
+ */
+export function isInternalNote(m: { from: string; to?: string | null; cc?: string | null; subject?: string | null }, ourDomain: string): boolean {
+  const ours = (a: string) => a.toLowerCase().endsWith("@" + ourDomain.toLowerCase());
+  const from = (EMAIL_RE.exec(m.from ?? "")?.[0] ?? "").toLowerCase();
+  if (!from || !ours(from)) return false; // not ours: the client's mail
+  if (/^\s*(?:fwd?|fw)\s*:/i.test(m.subject ?? "")) return true;
+  const recipients = `${m.to ?? ""},${m.cc ?? ""}`.match(new RegExp(EMAIL_RE.source, "g")) ?? [];
+  return recipients.length > 0 && recipients.every(ours);
+}
+
 /** The RFC Message-ID as a stable key ("<abc@mail.gmail.com>" → "abc@mail.gmail.com"), or null. */
 export function messageIdKey(raw: string | null | undefined): string | null {
   const t = (raw ?? "").trim().replace(/^<|>$/g, "").trim().toLowerCase();
