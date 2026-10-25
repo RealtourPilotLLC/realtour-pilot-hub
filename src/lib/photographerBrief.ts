@@ -154,7 +154,13 @@ export type BuiltBrief = BriefDay & {
   digest: string;
   /** lat/lng and drone per visit, for the page only */
   extras: Map<string, { lat: number | null; lng: number | null; drone: boolean; title: string; clientName: string }>;
+  /** They are on paid time off that whole day (lib/pto): the hub does not text them the day's shoots by itself. */
+  offWhy?: string | null;
 };
+
+/** Why nothing is texted to a photographer who is off that day (audit Oct 25 2026). */
+export const ptoBlockWhy = (name: string, day: string, n: number) =>
+  `${firstName(name)} is on PTO ${dayWords(day)}. Reassign ${n === 1 ? "this shoot" : `these ${n} shoots`} in Aryeo (the new photographer gets the brief), or press Send brief now if ${firstName(name)} is shooting after all`;
 
 export type BriefBuild = {
   briefs: BuiltBrief[];
@@ -288,6 +294,10 @@ export async function buildBriefDays(days: string[], opts: { now?: Date; teamMem
     const k = `${b.who}|${b.day}`;
     groups.set(k, [...(groups.get(k) ?? []), b]);
   }
+  // Paid time off (audit Oct 25 2026): a whole day off on the tracker means the
+  // shoot still naming them is a booking to fix, not a brief to text.
+  const { fullDaysOff } = await import("@/lib/pto");
+  const off = await fullDaysOff([...groups.keys()].map((k) => ({ teamMemberId: k.split("|")[0], day: k.split("|")[1] }))).catch(() => new Map());
   for (const [k, list] of groups) {
     const [who, day] = k.split("|");
     const m = memberOf.get(who);
@@ -304,6 +314,7 @@ export async function buildBriefDays(days: string[], opts: { now?: Date; teamMem
       material,
       digest: digestOf(material),
       extras: new Map(list.map((x) => [x.a.id, { lat: x.a.project.lat, lng: x.a.project.lng, drone: x.a.project.deliverables.length > 0, title: x.a.project.title, clientName: x.a.project.client.name }])),
+      offWhy: off.has(k) ? ptoBlockWhy(m?.name ?? "The photographer", day, shoots.length) : null,
     });
   }
   out.briefs.sort((x, y) => x.day.localeCompare(y.day) || x.name.localeCompare(y.name));
@@ -513,6 +524,14 @@ export async function sweepPhotographerBriefs(now: Date = new Date()): Promise<B
       kind = "update";
       changes = live.map((c) => c.words);
     }
+    // On PTO that whole day: nothing goes to them by itself, and the dashboards
+    // say why (briefStatusForAppointments). An update that takes every shoot
+    // off their day still goes: it tells them they are off it.
+    if (b.offWhy && b.shoots.length) {
+      await recordBlocked(b, value, record, b.offWhy, now);
+      run.notSent.push(`${label}: ${b.offWhy}`);
+      continue;
+    }
     const quiet = await holdFor(b.teamMemberId, now);
     if (quiet) { run.waiting.push(`${label}: their quiet time until ${quiet.toISOString()}`); continue; }
     if (!ours) {
@@ -667,8 +686,15 @@ export async function briefStatusForAppointments(appointmentIds: string[]): Prom
     const row = rows.find((r) => r.key === briefRecordKey(who, day));
     const record = row ? parseRecord(row.value, who, day) : null;
     const current = b?.material ?? materialOf([]);
-    const blocker = !b ? null : !b.active ? `${b.name} is not an active team member` : !staffTextNumber(b.phone) ? `no phone number on file for ${firstName(b.name)}` : null;
+    const blocker = !b ? null : !b.active ? `${b.name} is not an active team member` : !staffTextNumber(b.phone) ? `no phone number on file for ${firstName(b.name)}` : b.offWhy ?? null;
     const s = briefStateOf({ enabled: true, record, current, firstShootAt: b?.firstShootAt ?? a.startAt, dueAt: due, now, blocker, name: b?.name ?? "the photographer" });
+    // A brief that went before the time off was entered (Monday Oct 26's went on
+    // the Friday) still names someone who is off: the desk shows the booking to
+    // fix, unless they tapped Got it (they are shooting after all).
+    if (b?.offWhy && record?.sent && s.state !== "acknowledged" && s.state !== "off") {
+      out.set(id, { ...s, state: "failed", why: noDashes(`${firstName(b.name)} is on PTO ${dayWords(day)}, but this shoot still names them. Reassign it in Aryeo, or confirm ${firstName(b.name)} is shooting.`) });
+      continue;
+    }
     out.set(id, s);
   }
   return out;

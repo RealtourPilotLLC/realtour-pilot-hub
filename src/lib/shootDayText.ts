@@ -222,6 +222,10 @@ export async function shootDayCandidates(now: Date = new Date()): Promise<ShootD
   // text exactly as it was.
   const { briefsSentFor } = await import("@/lib/photographerBrief");
   const briefed = await briefsSentFor(rows.filter((r) => !takenKeys.has(r.dedupeKey)).map((r) => ({ teamMemberId: r.teamMemberId, day: r.shootDay }))).catch(() => new Set<string>());
+  // Audit Oct 25 2026: someone on paid time off that whole day is not texted
+  // the shoot (the photographer brief holds theirs and the desk shows why).
+  const { fullDaysOff } = await import("@/lib/pto");
+  const off = await fullDaysOff(rows.map((r) => ({ teamMemberId: r.teamMemberId, day: r.shootDay }))).catch(() => new Map());
 
   return rows.map(({ a, teamMemberId, shootDay, dedupeKey }) => {
     const m = memberOf.get(teamMemberId);
@@ -233,6 +237,7 @@ export async function shootDayCandidates(now: Date = new Date()): Promise<ShootD
     };
     if (takenKeys.has(dedupeKey)) return { ...base, requests: [], text: null, skip: "already sent" };
     if (briefed.has(`${teamMemberId}|${shootDay}`)) return { ...base, requests: [], text: null, skip: "in the photographer brief" };
+    if (off.has(`${teamMemberId}|${shootDay}`)) return { ...base, requests: [], text: null, skip: "on PTO that day" };
     const brief = a.description?.trim() || a.project.appointments.map((x) => x.description?.trim()).find(Boolean) || null;
     const requests = shootDayRequests({
       brief,
