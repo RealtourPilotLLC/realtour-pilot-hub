@@ -39,7 +39,10 @@ export async function closeMediaCheckForPhotos(jobId: string, opts: { by: string
     });
     if (!cards.length) return 0;
     const { CLOSED_BY_HAND, recordQcCompletion, reopenedForCategories } = await import("@/lib/tasks");
-    const { parseChecklist } = await import("@/lib/checklist");
+    const { parseChecklist, serializeChecklist } = await import("@/lib/checklist");
+    const { QC_LABEL } = await import("@/lib/qcCategories");
+    // The photo job's own media only: virtual staging and headshots land by other paths and keep their own reopen.
+    const ownRows = new Set(["PHOTOS", "DRONE", "TWILIGHT"].map((t) => `QC ${QC_LABEL[t]}`));
     const reason = `${opts.reason}${opts.human ? ` by ${opts.by}` : ""}.`.slice(0, 300);
     let closed = 0;
     for (const card of cards) {
@@ -53,9 +56,19 @@ export async function closeMediaCheckForPhotos(jobId: string, opts: { by: string
         clientSegment: project.client?.segment ?? null,
         completedBy: opts.human ? card.assignedKey ?? "kyle" : "auto:photo-delivery",
       }).catch(() => {});
+      // The photos' evidence row ("QC Photos") is ticked with the close (audit
+      // Oct 25 2026). The hourly reconciler reopens a by-hand-closed card for
+      // any category whose evidence row was unticked at the close and is
+      // ticked now, and the photos reach the listing minutes AFTER the
+      // approval that closes this card: 8 of the last 8 approvals came back as
+      // "Photos landed on Aryeo after the card was closed by hand" (3745 S
+      // Saucon Ave still open), work Photo Delivery had just done. A video or a
+      // floor plan landing later still brings the card back, as before.
+      const items = parseChecklist(card.checklist);
+      const ticked = items.map((i) => (ownRows.has(i.label.trim()) ? { ...i, done: true } : i));
       const r = await prisma.smartTask.updateMany({
         where: { id: card.id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
-        data: { status: "COMPLETED", completedAt: new Date(), sourceDetail: CLOSED_BY_HAND, summary: reason },
+        data: { status: "COMPLETED", completedAt: new Date(), sourceDetail: CLOSED_BY_HAND, summary: reason, ...(ticked.some((i, n) => i.done !== items[n].done) ? { checklist: serializeChecklist(ticked) } : {}) },
       });
       closed += r.count;
     }
