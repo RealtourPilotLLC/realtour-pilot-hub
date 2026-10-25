@@ -1893,13 +1893,17 @@ export async function portalStrategy(enrollment: { id: string; clientId: string 
   });
   if (!released?.releasedAt) return null;
   const { parseStoredSections } = await import("@/lib/contentStrategy");
-  const { stripMoneySentences } = await import("@/lib/text");
+  const { stripMoneySentences: noMoney } = await import("@/lib/text");
+  // Oct 25 2026 (audit): no em or en dash in anything a client reads; two
+  // released strategies carried three ("John Collins – 2026 Social Content
+  // Strategy"). Presentation only: the stored strategy is unchanged.
+  const stripMoneySentences = (t: string) => stripScriptDashes(noMoney(t));
   const stored = parseStoredSections(released.sectionsJson);
   const sections = (stored?.sections ?? [])
     // A08: the drafter's gap list and a legacy appended proposal are the
     // team's notes — the release refuses them; this is the second guard.
     .filter((s) => !INTERNAL_HEADING.test(s.heading) && s.id !== "gaps" && !s.id.startsWith("proposal-"))
-    .map((s) => ({ id: s.id, heading: s.heading, body: stripMoneySentences(s.text) }))
+    .map((s) => ({ id: s.id, heading: stripScriptDashes(s.heading, { title: true }), body: stripMoneySentences(s.text) }))
     .filter((s) => s.body.trim().length > 0);
   let summary: PortalStrategyView["summary"] = null;
   try {
@@ -1908,11 +1912,11 @@ export async function portalStrategy(enrollment: { id: string; clientId: string 
       const aud = (sj.audience ?? {}) as Record<string, unknown>;
       summary = {
         brandMessage: typeof sj.brandMessage === "string" ? stripMoneySentences(sj.brandMessage) : null,
-        brandVoice: typeof sj.brandVoice === "string" ? sj.brandVoice : null,
-        coreValues: typeof sj.coreValues === "string" ? sj.coreValues : null,
+        brandVoice: typeof sj.brandVoice === "string" ? stripScriptDashes(sj.brandVoice) : null,
+        coreValues: typeof sj.coreValues === "string" ? stripScriptDashes(sj.coreValues) : null,
         audience: [aud.clientTypes, aud.serviceAreas, aud.positioningGoal].filter((x): x is string => typeof x === "string" && !!x.trim()).map(stripMoneySentences),
         goals: Array.isArray(sj.goals) ? sj.goals.filter((x): x is string => typeof x === "string").map(stripMoneySentences) : [],
-        pillars: Array.isArray(sj.pillars) ? (sj.pillars as { name?: string; purpose?: string | null; focusAreas?: string | null }[]).filter((p) => p?.name).map((p) => ({ name: p.name!, purpose: p.purpose ?? null, focusAreas: p.focusAreas ?? null })) : [],
+        pillars: Array.isArray(sj.pillars) ? (sj.pillars as { name?: string; purpose?: string | null; focusAreas?: string | null }[]).filter((p) => p?.name).map((p) => ({ name: stripScriptDashes(p.name!, { title: true }), purpose: stripScriptDashes(p.purpose ?? null), focusAreas: stripScriptDashes(p.focusAreas ?? null) })) : [],
       };
     }
   } catch { summary = null; }

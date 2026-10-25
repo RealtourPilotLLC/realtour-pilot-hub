@@ -88,6 +88,7 @@ async function main() {
       c.ok("the portal topic's concept goes through the dash cleaner", /concept: stripScriptDashes\(t\.concept\)/.test(portal));
       c.ok("…and every \"Why this one\" line", (portal.match(/reason: stripScriptDashes\(x\.reason\)/g) ?? []).length === 4);
       c.ok("…and an imported script's title (its body stays word for word)", /title: stripScriptDashes\(s\.title, \{ title: true \}\), body: s\.body/.test(portal));
+      c.ok("…and the released strategy the Strategy tab shows (sections and summary)", /const stripMoneySentences = \(t: string\) => stripScriptDashes\(noMoney\(t\)\)/.test(portal) && /heading: stripScriptDashes\(s\.heading, \{ title: true \}\)/.test(portal) && /brandVoice: typeof sj\.brandVoice === "string" \? stripScriptDashes\(sj\.brandVoice\)/.test(portal));
       const { stripScriptDashes } = await import("@/lib/contentPolicy/scriptFormat");
       c.ok("the cleaner itself: a concept loses its dash, a null stays null", stripScriptDashes("Price it right — then wait") === "Price it right, then wait" && stripScriptDashes(null) === null);
     }
