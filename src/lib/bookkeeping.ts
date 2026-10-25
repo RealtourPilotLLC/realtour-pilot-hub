@@ -886,18 +886,6 @@ const PAYEE_ALIASES: [RegExp, string][] = [
 // What KIND of payee this is, so "who I pay" can group creatives vs editors vs
 // software vs staff. Ordered: first match wins.
 export const PAYEE_GROUPS = ["Creative specialists", "Editors", "Software & tools", "Staff & VA", "Marketing", "Other"] as const;
-export function payeeGroup(text: string, payee: string): string {
-  const t = `${payee} ${text}`.toLowerCase();
-  // "livingsto" (not "livingston") — the bank feed truncates the last name.
-  if (/harrison|matthew bertsch|livingsto|katie ?macintyre|\bphotographer\b|photography/.test(t)) return "Photographers";
-  // Editors incl. our people: Kim (Cliffside), Remar & Kyle (Staffify).
-  if (/luma|cliffside|\bkim\b|staffify|\bremar\b|\bkyle\b|nguyen|ta thi|dawar|eric visuals|\bwise\b|\beditor\b|editing|post[- ]?production|retouch|autohdr|pixlmob|pixel film|final cut|capcut|\bpop\b/.test(t)) return "Editors";
-  if (/base44|cardinal camera|flylisted|adobe|dropbox|anthropic|openai|midjourney|elevenlabs|seaart|matterport|cubicasa|aryeo|frame\.?io|\bcanva\b|topaz|descript|software|subscription|\bapp\b/.test(t)) return "Software & tools";
-  if (/\bva\b|virtual assistant|\bstaff\b/.test(t)) return "Staff & VA";
-  if (/social pros|social media|marketing|\bads\b|\bseo\b/.test(t)) return "Marketing";
-  return "Other";
-}
-
 // Merge "Harrison Wells Photographer" ≈ "VENMO *Harrison Wells" → "Harrison Wells".
 function normalizePayee(name: string): string {
   const cleaned = name

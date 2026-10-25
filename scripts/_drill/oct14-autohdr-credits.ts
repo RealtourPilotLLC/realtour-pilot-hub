@@ -19,7 +19,7 @@ installNextStubs();
 const TOKEN_URL = "https://new.autohdr.com/api/auth/oauth2/token";
 const API = "https://external.realestatephotoediting.com";
 let balance = 399;
-let acceptSecret = "good-secret-1234567890";
+const acceptSecret = "good-secret-1234567890";
 const tokenBodies: string[] = [];
 let postAttempts = 0;
 let failNextPost = false;

@@ -40,13 +40,6 @@ function appBase(): string {
   return raw.startsWith("http") ? raw.replace(/\/$/, "") : `https://${raw}`;
 }
 
-/** The OAuth return URL Plaid Link redirects to for OAuth banks (Capital One,
- *  Chase, etc.). Must be registered in the Plaid dashboard's allowed redirect
- *  URIs. Only sent on https deploys — Plaid rejects http/localhost redirects. */
-export function plaidRedirectUri(): string {
-  return `${appBase()}/connections/banks`;
-}
-
 /** App-level Plaid credentials from the encrypted connection, or null. */
 export async function getPlaidCreds(): Promise<PlaidCreds | null> {
   const conn = await getConnection(PROVIDER);

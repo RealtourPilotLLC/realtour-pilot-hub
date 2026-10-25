@@ -108,6 +108,13 @@ async function main() {
     c.ok("textTemplateDefaults (the retired Text wording card's copy) is gone", !fs.existsSync(path.join(process.cwd(), "src/lib/textTemplateDefaults.ts")));
     const books = fs.readFileSync(path.join(process.cwd(), "src/lib/bookkeeping.ts"), "utf8");
     c.ok("bookkeeping's unused personal buckets are gone", !books.includes("personalBucket") && !books.includes("PERSONAL_BUCKETS"));
+    const src = (p: string) => fs.readFileSync(path.join(process.cwd(), p), "utf8");
+    const gone: [string, string][] = [
+      ["src/lib/bookkeeping.ts", "payeeGroup"], ["src/lib/integrations/stripe.ts", "stripeBalance"],
+      ["src/lib/integrations/plaid.ts", "plaidRedirectUri"], ["src/lib/integrations/quickbooks.ts", "testQuickBooks"],
+      ["src/lib/integrations/quickbooks.ts", "profitAndLoss"],
+    ];
+    c.ok("five functions nothing called are gone", gone.every(([p, n]) => !new RegExp(`\\b${n}\\b`).test(src(p))), gone.filter(([p, n]) => new RegExp(`\\b${n}\\b`).test(src(p))).map(([, n]) => n).join(", "));
     c.ok("nothing left the machine", fence.blocked.length === 0, fence.blocked.join(", "));
   } finally {
     c.summary();

@@ -69,18 +69,6 @@ export async function testStripeKey(key: string): Promise<{ ok: true; label: str
   }
 }
 
-// Live balance — real money available + about to land. Best-effort (null if the
-// key can't read it), so the cash hero degrades gracefully.
-export async function stripeBalance(): Promise<{ available: number; pending: number } | null> {
-  try {
-    const b = await stripeGet<StripeBalance>("/balance");
-    const sum = (rows?: { amount: number }[]) => dollars((rows ?? []).reduce((s, r) => s + r.amount, 0));
-    return { available: sum(b.available), pending: sum(b.pending) };
-  } catch {
-    return null;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // STRIPE AT A GLANCE (Oct 24 2026, Jordan: "I want to see Stripe balances
 // too. The stripe balances should show incoming, balance, MTD Gross and Net
