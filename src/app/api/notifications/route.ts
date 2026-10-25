@@ -2,6 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
+import { canSeeMoney } from "@/lib/auth/access";
+import { scrubMoney } from "@/lib/text";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -178,7 +180,17 @@ export async function GET(req: NextRequest) {
     select: ROW_SELECT,
   });
   const hasMore = rows.length > take;
-  const items = hasMore ? rows.slice(0, take) : rows;
+  const page = hasMore ? rows.slice(0, take) : rows;
+  // ONLY THE OWNER READS AMOUNTS (audit Oct 25 2026). notifyInApp's clamp
+  // covers creatives and the creative manager at write time, but a row the
+  // office shares with the owner kept its figures and no title was ever
+  // scrubbed: Kyle's bell read "Still needed? Add $150 account credit…" and
+  // "Extra revision round … $75 fee acknowledged". One row serves every role
+  // in its audience, so the figure comes out here, for the reader: the owner
+  // (also the owner previewing someone, who sees what they would) keeps it.
+  const items = canSeeMoney(u.role)
+    ? page
+    : page.map((r) => ({ ...r, title: scrubMoney(r.title), body: r.body ? scrubMoney(r.body) : r.body }));
 
   return NextResponse.json({ items, unread, seenAt: u.notificationsSeenAt, hasMore });
 }

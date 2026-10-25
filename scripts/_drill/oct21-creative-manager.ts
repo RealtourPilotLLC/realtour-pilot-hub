@@ -253,7 +253,13 @@ async function main() {
     c.ok("no money anywhere in their bell", jBell.every((n) => !/\$\d/.test(`${n.title} ${n.body ?? ""}`)), jBell.map((n) => n.body).join(" | "));
     await signIn(kyle);
     const kBell = await bell();
-    c.ok("Kyle still gets the creative bell and the billing one (with its figure, as before)", kBell.some((n) => n.kind === "script_change_request") && kBell.some((n) => n.kind === "revision_fee" && /\$75/.test(n.body ?? "")));
+    // Audit Oct 25 2026: only the owner reads amounts, so the office's copy of
+    // the billing bell keeps its sentence without the figure (lib/notify).
+    c.ok("Kyle still gets the creative bell and the billing one (the sentence, not the figure)", kBell.some((n) => n.kind === "script_change_request") && kBell.some((n) => n.kind === "revision_fee" && /Charge \[amount\] or waive/.test(n.body ?? "")), kBell.map((n) => n.body).join(" | "));
+    c.ok("no figure anywhere in Kyle's bell", kBell.every((n) => !/\$\d/.test(`${n.title} ${n.body ?? ""}`)));
+    await signIn(owner);
+    const oBell = await bell();
+    c.ok("the owner reads the same row with its figure", oBell.some((n) => n.kind === "revision_fee" && /\$75/.test(n.body ?? "")));
     const { officeTeamMemberIds, ownerTeamMemberIds } = await import("@/lib/smsPrefs");
     const office = await officeTeamMemberIds();
     c.ok("the office text bridge (the 'video in review' broadcast) never addresses them: no second text", !office.includes(jamesTm.id) && !(await ownerTeamMemberIds()).includes(jamesTm.id) && office.includes(kyleTm.id), office.join());
