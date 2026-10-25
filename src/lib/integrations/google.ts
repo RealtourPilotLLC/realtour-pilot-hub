@@ -593,6 +593,8 @@ export const GMAIL_MID_PROVIDER = "gmail-mid";
 // checked on its own every scan (gmailHealth.ts), and one missing from the
 // connected map is reported as not connected — never quietly retired.
 export const EXPECTED_MAILBOXES = ["info@realtourpilot.com", "hello@realtourpilot.com"] as const;
+/** How often a good mail scan may refresh the gmail row's lastSyncedAt (syncGmail, audit G11). */
+export const GMAIL_SYNC_STAMP_MS = 10 * 60_000;
 
 // Jordan's personal mailbox — its comms are OWNER-tier (logComm stamps unknown
 // senders minRole OWNER). The task full-view must not live-fetch its threads
@@ -1840,6 +1842,17 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
 
   // Health last, so a slow report can never cost a message its scan.
   await reportReads().catch((e) => console.warn("gmail read-health report failed", e));
+  // CONNECTIONS' "LAST SYNC" (audit Oct 25 2026, G11): the Google card read
+  // Oct 21 while this scan ran every 5 minutes, because only the Drive
+  // call-record sweep stamped the gmail row. A scan that read at least one
+  // inbox stamps it now, in one conditional write that lands at most every
+  // 10 minutes. Only the time: the status and the error stay with the code
+  // that owns them (an unread inbox has its own row and task on that page).
+  if (mailboxes.some((m) => m.ok)) {
+    await prisma.connection
+      .updateMany({ where: { provider: "gmail", OR: [{ lastSyncedAt: null }, { lastSyncedAt: { lt: new Date(Date.now() - GMAIL_SYNC_STAMP_MS) } }] }, data: { lastSyncedAt: new Date() } })
+      .catch(() => {});
+  }
   // `degraded` FIRST: the cron summary clips each step's result at 300
   // characters, and /connections reads this flag off the stored run.
   return { degraded: mailboxes.some((m) => !m.ok), scanned, tasks, mailboxes };

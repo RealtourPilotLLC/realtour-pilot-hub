@@ -22,6 +22,9 @@
 //   7. The footnote (§9 related comms): silent while both read; names hello@
 //      when its last read is over an hour old; the client panel's action
 //      returns the same sentence.
+//   8. Oct 25 2026 (audit G11): a scan that read an inbox stamps the gmail
+//      row's lastSyncedAt (Connections' "Last sync"), at most every 10 minutes,
+//      never its status or error; a scan that read nothing leaves it.
 // ---------------------------------------------------------------------------
 import fs from "node:fs";
 import os from "node:os";
@@ -224,6 +227,33 @@ async function main() {
   const gap = await loadMailboxGap();
   c.ok("a hello@ read over an hour old → the footnote names hello@ and the time", !!gap && /hello@realtourpilot\.com has not been read since Oct 6, 10:30 AM ET/.test(gap), gap ?? "null");
   c.ok("…and does not name info@", !!gap && !/info@/.test(gap));
+
+  // =========================================================================
+  c.head("8 · Connections' Last sync follows the mail scan (audit Oct 25 2026, G11)");
+  // =========================================================================
+  // Only the Drive call-record sweep used to stamp the gmail row, so the
+  // Google card read "Last sync Oct 21" while the scan ran every 5 minutes.
+  const conn = () => prisma.connection.findUniqueOrThrow({ where: { provider: "gmail" }, select: { lastSyncedAt: true, status: true, lastError: true } });
+  // The stale stamp sits before this drill's pinned clock (Oct 6), as Oct 21 sat before Oct 25.
+  await prisma.connection.update({ where: { provider: "gmail" }, data: { lastSyncedAt: new RealDate(RealDate.UTC(2026, 9, 1, 16)), lastError: "drill: an error another part of the hub wrote" } });
+  const at = (h: number, m: number) => RealDate.UTC(2026, 9, 6, h, m);
+  const near = (d: Date | null, ms: number) => !!d && Math.abs(d.getTime() - ms) < 60_000;
+  setNow(at(17, 0));
+  await google2.syncGmail();
+  const s1 = await conn();
+  c.ok("a scan that read the inboxes stamps lastSyncedAt", near(s1.lastSyncedAt, at(17, 0)), s1.lastSyncedAt?.toISOString());
+  c.ok("…and leaves the status and the error to the code that owns them", s1.lastError === "drill: an error another part of the hub wrote");
+  setNow(at(17, 5));
+  await google2.syncGmail();
+  c.ok("5 minutes later: no second write (at most one every 10 minutes)", near((await conn()).lastSyncedAt, at(17, 0)));
+  setNow(at(17, 11));
+  await google2.syncGmail();
+  c.ok("11 minutes later: stamped again", near((await conn()).lastSyncedAt, at(17, 11)));
+  google.helloToken = "refuse";
+  await saveSecret("gmail", JSON.stringify({ [HELLO]: RT.hello }));
+  setNow(at(17, 30));
+  await google2.syncGmail().catch(() => null);
+  c.ok("a scan that read no inbox does not stamp it", near((await conn()).lastSyncedAt, at(17, 11)));
 
   c.ok("nothing left this process but the fake Google", fence.blocked.every((u) => /slack\.com|openphone/.test(u)), fence.blocked.join(" ") || "no refusals");
   c.summary();
