@@ -13,7 +13,7 @@
 import { GENERATION_POLICY, type PolicyStamp, policyRulesText, policyStamp, SCRIPT_PART_BUDGETS } from "./policy";
 import { STRATEGY_TEMPLATE, type StrategyDocument, renderStrategy } from "./strategyTemplate";
 import { CANONICAL_SCRIPT_PRESENTATION } from "./policy";
-import type { ScriptGeneratorInput, InterviewQuestion, FollowUpCondition } from "./interview";
+import type { ScriptGeneratorInput, InterviewQuestion } from "./interview";
 import type { CanonicalScript } from "./scriptFormat";
 import { type Topic, emphasisOfPillar, topicsForEmphasis } from "./topicBank";
 import { renderScript } from "./scriptFormat";
@@ -1002,50 +1002,6 @@ export function buildScriptJudgePrompt(
 }
 
 // ---------------------------------------------------------------------------
-// 4. Interview follow-up (spec §6: adaptive, one question, only when needed)
-// ---------------------------------------------------------------------------
-
-export const FOLLOW_UP_OUTPUT_SCHEMA: JsonSchema = {
-  type: "object",
-  required: ["question", "reason"],
-  additionalProperties: false,
-  properties: {
-    question: { type: "string", description: "One concise question, in plain conversational English, specific to the topic and the answer so far." },
-    reason: { type: "string", description: "One line: which rule the question serves and what is still missing." },
-  },
-};
-
-export function buildInterviewFollowUpPrompt(
-  ctx: ClientContext,
-  opts: { topic: Topic; question: InterviewQuestion; answerSoFar: string; condition: FollowUpCondition; priorAnswers?: { questionId: string; text: string | null }[] },
-): PromptBundle {
-  assertClientScoped(ctx, opts.topic);
-  const system = [
-    "You are helping a Realtour Pilot client explain what they know about one video topic, one concise question at a time.",
-    "",
-    `RULE BEING SERVED: ${opts.question.order}. ${opts.question.rule}`,
-    `WHY A FOLLOW-UP: ${opts.condition}`,
-    "Ask ONE question. Reuse what they already said; never ask them to repeat it. Never suggest an answer, a story or a number for them. Never ask a generic brand questionnaire question. If the client's answer already covers the rule well enough, ask the smallest question that closes the specific gap.",
-    "",
-    NO_INVENTION_RULE,
-    "",
-    "OUTPUT: one JSON object matching the schema.",
-  ].join("\n");
-  const user = [
-    `CLIENT: ${ctx.clientName} (id ${ctx.clientId})`,
-    `TOPIC: ${opts.topic.title} (pillar: ${opts.topic.pillarRef.pillarName})`,
-    opts.topic.description ? `TOPIC DESCRIPTION: ${opts.topic.description}` : "",
-    `QUESTION ASKED: ${opts.question.template}`,
-    `ANSWER SO FAR: ${opts.answerSoFar}`,
-    opts.priorAnswers?.length ? `EARLIER ANSWERS:\n${opts.priorAnswers.map((a) => `- ${a.questionId}: ${a.text ?? "(none)"}`).join("\n")}` : "",
-    `HOUSE FOLLOW-UP FOR THIS CONDITION (adapt it, do not read it verbatim): ${opts.question.followUps.find((f) => f.when === opts.condition)?.ask ?? "(none)"}`,
-  ]
-    .filter(Boolean)
-    .join("\n");
-  return { name: "interview-follow-up", system, user, outputSchema: FOLLOW_UP_OUTPUT_SCHEMA, stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
-}
-
-// ---------------------------------------------------------------------------
 // 4b. THE WHOLE QUESTION SET, PHRASED FOR ONE TOPIC (spec §6, F10).
 //
 // INTERVIEW_QUESTION_PLAN's templates each carry the comment "per-topic wording
@@ -1230,7 +1186,9 @@ export function buildQuestionRequestPrompt(ctx: ClientContext, opts: {
 // SUPERSEDED Oct 23 2026: nothing calls buildCaptionPrompt any more. Captions
 // are drafted from captionRules.buildCaptionDraftPrompt (Instagram's caption
 // rules, a lean strategy excerpt, the transcript first) and checked by
-// captionRules.finishCaption. Kept for reference only.
+// captionRules.finishCaption. Kept because drill caption-grounding rebuilds the
+// retired captionAssistant from git and runs it against this layer (Oct 25 2026
+// audit: the unused interview follow-up prompt beside it was removed).
 // ---------------------------------------------------------------------------
 
 export const CAPTION_OUTPUT_SCHEMA: JsonSchema = {

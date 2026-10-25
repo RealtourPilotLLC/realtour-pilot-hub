@@ -228,7 +228,7 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
   },
   topic_carryover: {
     title: "Carry unfilmed scripts into the new month",
-    onEffect: "On the 1st, every scripted topic that was not filmed last month moves into the new month and takes one of its videos, with its script and every version kept. The client sees it under \"Scripted, not filmed\" and can swap it for another topic, which frees the slot. Check the list first with \"Check carry-over\" on the client's Video Topics tab. Only for the clients the rollout reaches; a pilot client carries only topics scripted after they joined, and their first carry-over is on the next 1st after joining. Nothing is sent to the client; they see it on their portal.",
+    onEffect: "On the 1st, every scripted topic that was not filmed last month moves into the new month and takes one of its videos, with its script and every version kept. The client sees it in that month's list like any other chosen topic; only the office can change it for another topic (the client's swap was retired Oct 21 2026). Check the list first with \"Check carry-over\" on the client's Video Topics tab. Only for the clients the rollout reaches; a pilot client carries only topics scripted after they joined, and their first carry-over is on the next 1st after joining. Nothing is sent to the client; they see it on their portal.",
     // "clients", not "internal": nothing is sent, but the carried topic is on
     // their page and occupies their allowance, which is a client-facing fact.
     reaches: "clients",

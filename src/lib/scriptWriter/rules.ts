@@ -210,11 +210,6 @@ export const WRITER_LENGTH = {
   wordsPerSec: GENERATION_POLICY.timing.wordsPerSec,
 } as const;
 
-/** v2.4: the words over which a version is aim-trimmed (a story: only over the cap). Pure. */
-export function trimAboveFor(story?: boolean | null): number {
-  return story ? WRITER_LENGTH.cap : WRITER_LENGTH.trimAbove;
-}
-
 /**
  * v2.4 (the length fix): the most words each part should take. Over it is a
  * flag (part_length), never a must-fix. A told story's build-up and payoff
@@ -253,15 +248,6 @@ export function lengthBand(words: number): LengthBand {
   if (words > WRITER_LENGTH.aim[1]) return "long";
   if (words < WRITER_LENGTH.aim[0]) return "short";
   return "aim";
-}
-
-/** The one line the script card shows about length, or null when there is nothing to say. */
-export function lengthLabel(words: number): { band: LengthBand; text: string; seconds: number } | null {
-  const band = lengthBand(words);
-  const seconds = estimateSeconds(words);
-  if (band === "over") return { band, seconds, text: `${OVER_CAP_LABEL} (${words} words, about ${seconds} seconds; the cap is ${WRITER_LENGTH.cap})` };
-  if (band === "long") return { band, seconds, text: `${LONG_ADVISORY_LABEL} (${words} words, about ${seconds} seconds). Allowed; trim only if nothing is lost.` };
-  return { band, seconds, text: `${words} words, about ${seconds} seconds` };
 }
 
 /** Every trim instruction starts with this, so a revision can tell a length trim from any other request. */
@@ -362,13 +348,9 @@ export const ASSUMPTION_RULE = `OUR ASSUMPTIONS ARE NOT HER CLAIMS: the topic's 
 
 export const BACKGROUND_RULE = `BACKGROUND IS NOT SPOKEN CONTENT: reasoning, context and strategy notes (ours or the client's) explain why a video exists; they are not approved lines for the client to say. A point the client did not present as part of her message (for example a market cause such as interest rates) stays out of the script unless she said it as part of this message.`;
 
-export const NO_DURATION_RULE = "Never write a duration, a timestamp or a timing note into the script (no \"(10 seconds)\", no \"[0:15]\", no \"30s\").";
-
 export const NO_DASH_RULE = GENERATION_POLICY.punctuation.rule;
 
 export const LENGTH_RULE = `LENGTH (Jordan, Oct 22 2026: "aim for 55 to 85 words without making it dry or incomplete"): write about ${WRITER_LENGTH.target} spoken words (about ${estimateSeconds(WRITER_LENGTH.target)} seconds), inside the ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]} range. The brief's must-keep points are the ONLY things that must survive; optional material, a second example, extra setup and anything that restates a point go first. Count your words before you answer. ${WRITER_LENGTH.cap} spoken words is the hard cap; ${WRITER_LENGTH.aim[1] + 1} to ${WRITER_LENGTH.cap} is a miss, allowed only when the must-keep points cannot fit in fewer. Under ${WRITER_LENGTH.aim[0]} is fine only when nothing the brief marks must-keep is missing. Never make it dry or incomplete to hit the number: each sentence creates interest, builds understanding, delivers value, earns trust or moves the story. An educational script aims for ${WRITER_LENGTH.aim[1]} words or fewer. A told personal story (the brief says the video is a personal story) may use up to ${WRITER_LENGTH.cap} words to tell her moment in order, and never pads to reach it. Each part has a budget: hook ${PART_WORDS.hook} words, re-hook ${PART_WORDS.rehook}, build-up ${PART_WORDS.buildup}, payoff ${PART_WORDS.payoff}, close ${PART_WORDS.close}.`;
-
-export const NEITHER_WINS_RULE = "NEITHER VERSION WINS AUTOMATICALLY: when there is an earlier version, a client's rewrite or a reviewer's instruction, keep the strongest information and language from each while staying on the topic's one message. A client's longer rewrite is mined for its facts and phrases, not accepted for its length; our draft is not defended for being ours.";
 
 // ---------------------------------------------------------------------------
 // v2.6 (Oct 23 2026): THE REVIEW READS IT AS A VIEWER FIRST. The reviewer
@@ -402,7 +384,6 @@ export const REVIEW_CHECKS = [
   { key: "advice", n: 11, label: "Advice", level: "flag", by: "code", passes: "Code's other house rules (a greeting, naming the audience, industry terms, a re-hook that repeats the hook, a template close, a part over its budget, a build-up in fragments, a sentence pasted from the call, a market statement she did not make): advice, never a reason to rewrite." },
 ] as const;
 export type ReviewCheckKey = (typeof REVIEW_CHECKS)[number]["key"];
-export const REVIEW_CHECK_KEYS = REVIEW_CHECKS.map((c) => c.key) as ReviewCheckKey[];
 /** The four questions the reviewer answers (v2.6); the other checks are code's. */
 export const VIEWER_CHECK_KEYS = REVIEW_CHECKS.filter((c) => c.by === "viewer").map((c) => c.key) as ReviewCheckKey[];
 /**

@@ -3437,6 +3437,26 @@ export async function reminderAskStillOpen(monthId: string, action: string, opts
   };
 }
 
+/**
+ * What the month's planning lane still asks of the client, if anything (Oct 25
+ * 2026, audit). The 15th's follow-up for Kyle ("mid-month check") names no
+ * action in its key, so it is closed on this: once the month asks nothing
+ * (booked, planned, filmed, forfeited, closed), the follow-up is done. A
+ * suppressed ask (snoozed, stale feed, quiet hours) still counts as asked.
+ * Reads only, like reminderAskStillOpen.
+ */
+export async function monthPrimaryAsk(monthId: string, opts: { now?: Date } = {}): Promise<{ action: string | null; evidence: string }> {
+  const now = opts.now ?? new Date();
+  const exists = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { id: true } });
+  if (!exists) return { action: null, evidence: "the month is no longer on file" };
+  const { month, e, policy, feeds, clientWindowOpen } = await loadForManual(monthId, now, { orDefaults: true });
+  const rollout = (await freshRollout()).rollout ?? { mode: "TEST_ONLY" as const, modeSince: null, pilot: null };
+  const c = await evaluateMonth(e, month, now, policy, feeds, clientWindowOpen, "PRIMARY", null, rollout);
+  return c.action
+    ? { action: c.action, evidence: `${month.monthKey} still needs ${actionLabel(c.action)} (${c.decision}: ${c.reason})` }
+    : { action: null, evidence: `${month.monthKey} no longer needs anything from the client: ${c.reason}` };
+}
+
 export async function previewReminders(monthId: string, opts: { now?: Date } = {}): Promise<ReminderPreview> {
   const now = opts.now ?? new Date();
   const { month, e, policy, feeds, clientWindowOpen } = await loadForManual(monthId, now, { orDefaults: true });

@@ -44,6 +44,16 @@ import { videoStyleFromOverrides, skitsPerMonthFromOverrides, resolvedTopicForma
 // so it is a closed door rather than a change to anything live.
 export const CLIENT_VISIBLE_SCRIPT = ["CLIENT_VISIBLE", "READY_TO_FILM", "FILMED", "DELIVERED"];
 
+/**
+ * A session request's notes as the client may see them: only their own
+ * "Preferred: …" line (the scheduler shows nothing else). The column also
+ * holds lines the office and the booking engine append, which stay in the hub.
+ */
+export function clientRequestNote(notes: string | null): string | null {
+  const preferred = /^Preferred:\s*(.+)$/m.exec(notes ?? "")?.[1]?.trim();
+  return preferred ? `Preferred: ${preferred}` : null;
+}
+
 export type PortalEnrollment = {
   id: string;
   clientId: string;
@@ -1074,7 +1084,11 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
           !(r.status === "CONFIRMED" && !r.slotStart && r.projectId && filmedJobs.has(r.projectId)),
         slotStartISO: r.slotStart ? r.slotStart.toISOString() : null,
         slotEndISO: r.slotEnd ? r.slotEnd.toISOString() : null,
-        locationText: r.locationText, notes: notes.get(r.id) ?? null, createdAtISO: r.createdAt.toISOString(),
+        // Oct 25 2026 (audit): the request's notes also carry the office's and
+        // the booking engine's own lines ("The hub asked Aryeo to move this…").
+        // The client reads only what they asked for, so only that line leaves
+        // the server (everything here is in the browser, rendered or not).
+        locationText: r.locationText, notes: clientRequestNote(notes.get(r.id) ?? null), createdAtISO: r.createdAt.toISOString(),
       })),
       bookedShootISO: shoots.find((s) => s.contentMonthId === m.id)?.shootDate?.toISOString() ?? null,
       ...sessionsPart,
@@ -1431,7 +1445,9 @@ async function visibleTopicScripts(enrollment: { id: string; clientId: string },
     // the words on 45 of them, worst case 168 words down to 17 (measured Sep
     // 18). A client's own script is not worth normalising into a house format
     // at the price of losing two thirds of it.
-    out.set(topicId, { title: s.title, body: s.body, versionLabel: null, strategyLabel, historical });
+    // Oct 25 2026 (audit): 9 imported titles carry an em dash; a title takes a
+    // colon, as topic titles do. The imported body stays word for word.
+    out.set(topicId, { title: stripScriptDashes(s.title, { title: true }), body: s.body, versionLabel: null, strategyLabel, historical });
   }
   return out;
 }
@@ -1530,7 +1546,7 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
     const tp = sel && openMonth.get(sel.monthId) ? planned?.get(sel.monthId)?.planning.topics.find((x) => x.topicId === t.id) ?? null : null;
     return {
       // Audit, Oct 23 2026: no em or en dash in anything a client reads (183 stored topic titles carried one; a title's takes a colon).
-      id: t.id, title: stripScriptDashes(t.title, { title: true }), concept: t.concept, pillarId: t.pillarId, pillarName, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, source: t.source,
+      id: t.id, title: stripScriptDashes(t.title, { title: true }), concept: stripScriptDashes(t.concept), pillarId: t.pillarId, pillarName, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, source: t.source,
       mine: t.source === "client" || !!mineOfTopic.get(t.id), state,
       // A call's PROPOSED row is its suggestion and always removable (CP-07).
       selection: sel ? { monthId: sel.monthId, monthKey: monthKeyOf.get(sel.monthId) ?? "", status: sel.status,
@@ -1636,8 +1652,10 @@ export async function portalRecommendationsFor(enrollment: { id: string; clientI
     const r = await recommendationsForMonth(enrollment.id, monthId);
     // The kind the CLIENT sees follows the open slots, not the ranking's first
     // cut: once a slot fills, the next alternative moves up.
-    r.recommended.forEach((x, i) => { if (!out.has(x.topicId)) out.set(x.topicId, { monthId, kind: "RECOMMENDED", rank: i + 1, reason: x.reason }); });
-    r.alternatives.forEach((x, i) => { if (!out.has(x.topicId)) out.set(x.topicId, { monthId, kind: "ALTERNATIVE", rank: r.recommended.length + i + 1, reason: x.reason }); });
+    // Oct 25 2026 (audit): the "Why this one" line quotes the strategy's goal
+    // and video titles as stored, dashes and all; a client never reads one.
+    r.recommended.forEach((x, i) => { if (!out.has(x.topicId)) out.set(x.topicId, { monthId, kind: "RECOMMENDED", rank: i + 1, reason: stripScriptDashes(x.reason) }); });
+    r.alternatives.forEach((x, i) => { if (!out.has(x.topicId)) out.set(x.topicId, { monthId, kind: "ALTERNATIVE", rank: r.recommended.length + i + 1, reason: stripScriptDashes(x.reason) }); });
   }
   return out;
 }
@@ -1646,7 +1664,7 @@ export async function portalRecommendationsFor(enrollment: { id: string; clientI
 export async function portalRecommendations(enrollment: { id: string; clientId: string }, monthId: string) {
   const { recommendationsForMonth } = await import("@/lib/contentTopics");
   const r = await recommendationsForMonth(enrollment.id, monthId);
-  return { slotsLeft: r.slotsLeft, recommended: r.recommended.map((x) => ({ topicId: x.topicId, reason: x.reason })), alternatives: r.alternatives.map((x) => ({ topicId: x.topicId, reason: x.reason })) };
+  return { slotsLeft: r.slotsLeft, recommended: r.recommended.map((x) => ({ topicId: x.topicId, reason: stripScriptDashes(x.reason) })), alternatives: r.alternatives.map((x) => ({ topicId: x.topicId, reason: stripScriptDashes(x.reason) })) };
 }
 
 // A topic leaves the client's bank on `status` alone: contentTopics.
@@ -1875,13 +1893,17 @@ export async function portalStrategy(enrollment: { id: string; clientId: string 
   });
   if (!released?.releasedAt) return null;
   const { parseStoredSections } = await import("@/lib/contentStrategy");
-  const { stripMoneySentences } = await import("@/lib/text");
+  const { stripMoneySentences: noMoney } = await import("@/lib/text");
+  // Oct 25 2026 (audit): no em or en dash in anything a client reads; two
+  // released strategies carried three ("John Collins – 2026 Social Content
+  // Strategy"). Presentation only: the stored strategy is unchanged.
+  const stripMoneySentences = (t: string) => stripScriptDashes(noMoney(t));
   const stored = parseStoredSections(released.sectionsJson);
   const sections = (stored?.sections ?? [])
     // A08: the drafter's gap list and a legacy appended proposal are the
     // team's notes — the release refuses them; this is the second guard.
     .filter((s) => !INTERNAL_HEADING.test(s.heading) && s.id !== "gaps" && !s.id.startsWith("proposal-"))
-    .map((s) => ({ id: s.id, heading: s.heading, body: stripMoneySentences(s.text) }))
+    .map((s) => ({ id: s.id, heading: stripScriptDashes(s.heading, { title: true }), body: stripMoneySentences(s.text) }))
     .filter((s) => s.body.trim().length > 0);
   let summary: PortalStrategyView["summary"] = null;
   try {
@@ -1890,11 +1912,11 @@ export async function portalStrategy(enrollment: { id: string; clientId: string 
       const aud = (sj.audience ?? {}) as Record<string, unknown>;
       summary = {
         brandMessage: typeof sj.brandMessage === "string" ? stripMoneySentences(sj.brandMessage) : null,
-        brandVoice: typeof sj.brandVoice === "string" ? sj.brandVoice : null,
-        coreValues: typeof sj.coreValues === "string" ? sj.coreValues : null,
+        brandVoice: typeof sj.brandVoice === "string" ? stripScriptDashes(sj.brandVoice) : null,
+        coreValues: typeof sj.coreValues === "string" ? stripScriptDashes(sj.coreValues) : null,
         audience: [aud.clientTypes, aud.serviceAreas, aud.positioningGoal].filter((x): x is string => typeof x === "string" && !!x.trim()).map(stripMoneySentences),
         goals: Array.isArray(sj.goals) ? sj.goals.filter((x): x is string => typeof x === "string").map(stripMoneySentences) : [],
-        pillars: Array.isArray(sj.pillars) ? (sj.pillars as { name?: string; purpose?: string | null; focusAreas?: string | null }[]).filter((p) => p?.name).map((p) => ({ name: p.name!, purpose: p.purpose ?? null, focusAreas: p.focusAreas ?? null })) : [],
+        pillars: Array.isArray(sj.pillars) ? (sj.pillars as { name?: string; purpose?: string | null; focusAreas?: string | null }[]).filter((p) => p?.name).map((p) => ({ name: stripScriptDashes(p.name!, { title: true }), purpose: stripScriptDashes(p.purpose ?? null), focusAreas: stripScriptDashes(p.focusAreas ?? null) })) : [],
       };
     }
   } catch { summary = null; }
