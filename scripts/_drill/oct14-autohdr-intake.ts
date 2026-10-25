@@ -267,7 +267,10 @@ async function main() {
     dbx.set(rawOf(K).toLowerCase(), Array.from({ length: 10 }, (_, i) => file(rawOf(K), `DSC0${8000 + i}.JPG`, i)));
     const pK = await mkProject(K);
     await jobs.openNewJobs(NOW);
-    const manual = fake.seedShoot({ address: "324 Spring Garden Street, Reading", photos: [{ name: "a.jpg" }], createdAt: new Date(NOW.getTime() - 30 * MIN) });
+    // Created on the fake's own clock (the real one): a date pinned to Oct 14 read as
+    // "expired" (AutoHDR's 7 days) once the drill ran a week later, and dropped out of
+    // the shoot list (audit Oct 25 2026: the drill failed on the date, not the code).
+    const manual = fake.seedShoot({ address: "324 Spring Garden Street, Reading", photos: [{ name: "a.jpg" }], createdAt: new Date(Date.now() - 30 * MIN) });
     await intake.driveIntake({ budgetMs: 60_000, now: NOW });
     await intake.driveIntake({ budgetMs: 120_000, now: new Date(NOW.getTime() + 12 * MIN) });
     const bK = await prisma.photoIntakeBatch.findFirstOrThrow({ where: { projectId: pK.id } });

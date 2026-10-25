@@ -173,6 +173,33 @@ export async function ptoBalance(memberId: string, name: string, yearKey: string
   return balanceOf(memberId, name, year, doc.entries, doc.log);
 }
 
+/** Pure: the entry that takes this whole day off (a partial day never does: they still work part of it). */
+export function fullDayOffEntry(entries: PtoEntry[], dayKey: string): PtoEntry | null {
+  return entries.find((e) => (e.fraction ?? 1) >= 1 && isDayKey(e.startKey) && isDayKey(e.endKey) && e.startKey <= dayKey && dayKey <= e.endKey) ?? null;
+}
+
+/**
+ * THE FIELD SIDE'S READ (audit Oct 25 2026: Harrison's week off, Oct 26 to 30,
+ * was on the tracker while five shoots that week still named him, and the
+ * photographer brief texted him Monday's). For each person and ET day, the PTO
+ * entry that takes the whole day off, keyed `<memberId>|<day>`. Reads only; a
+ * read that fails answers "nobody is off", so nothing is held by a database blip.
+ */
+export async function fullDaysOff(pairs: { teamMemberId: string; day: string }[]): Promise<Map<string, PtoEntry>> {
+  const out = new Map<string, PtoEntry>();
+  const wanted = pairs.filter((p) => p.teamMemberId && isDayKey(p.day));
+  if (!wanted.length) return out;
+  const keys = [...new Set(wanted.map((p) => ptoKey(p.teamMemberId, agreementYearFor(p.day).key)))];
+  const rows = await prisma.appSetting.findMany({ where: { key: { in: keys } }, select: { key: true, value: true } }).catch(() => []);
+  const docs = new Map(rows.map((r) => [r.key, parse(r.value)]));
+  for (const p of wanted) {
+    const doc = docs.get(ptoKey(p.teamMemberId, agreementYearFor(p.day).key));
+    const e = doc ? fullDayOffEntry(doc.entries, p.day) : null;
+    if (e) out.set(`${p.teamMemberId}|${p.day}`, e);
+  }
+  return out;
+}
+
 /** The people PTO is tracked for: active roster rows on the terms (Harrison, James). */
 export async function ptoRoster(): Promise<{ id: string; name: string }[]> {
   const names = FIXED_PAY_ORDER.map((k) => FIXED_PAY[k].fullName.toLowerCase());

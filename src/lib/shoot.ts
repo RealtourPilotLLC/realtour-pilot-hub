@@ -59,14 +59,22 @@ export type ShootBrief = {
 };
 
 const isBlank = (v: string) => !v || /^n\/?a$/i.test(v.trim());
+/** The booking line the hub writes into a session order's notes (lib/sessionBooking bookingMarker). */
+const HUB_BOOKING_LINE = /^\s*hub-session:\S+/i;
 
 export function parseShootBrief(text: string): ShootBrief | null {
   if (!text) return null;
   const out: ShootBrief = { lockbox: null, access: null, presence: null, special: null, timing: null, orderNotes: null, extra: [] };
 
-  // "Order Notes:" value (the block before "Order Questions:").
+  // "Order Notes:" value (the block before "Order Questions:"). The hub's own
+  // booking line on a content session it booked ("hub-session:<id>:<n> · booked
+  // by the hub for <month>, <client>. Prepaid: ... via Stripe <sub> (no charge
+  // on this order).", lib/sessionBooking) is the office's bookkeeping, never a
+  // request: audit Oct 25 2026 found it in Erica Walker's Oct 29 photographer
+  // brief as "Requests: hub-session:…", Stripe id and all.
   const on = text.match(/Order Notes:\s*\n+([\s\S]*?)(?:\n\s*\n|Order Questions:|Or View Full)/i);
-  if (on && !isBlank(on[1])) out.orderNotes = on[1].trim();
+  const notes = on ? on[1].split("\n").filter((l) => !HUB_BOOKING_LINE.test(l)).join("\n").trim() : "";
+  if (notes && !isBlank(notes)) out.orderNotes = notes;
 
   // Parse ONLY the "Order Questions:" block (between that header and the order
   // link) so order-item / customer lines — which also look like "- Key: Value" —
