@@ -11,7 +11,7 @@
 //   §3 a session request's notes reach the client's browser as their own
 //      "Preferred:" line only, never the office's or the booking engine's
 //   §4 dead code gone: the reviseScriptWithInstructions wrapper, the unused
-//      interview follow-up and superseded caption prompts, five writer rules
+//      interview follow-up prompt, five writer rules
 // Disposable PGlite; no model, nothing leaves.
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
 // ---------------------------------------------------------------------------
@@ -111,8 +111,10 @@ async function main() {
       const pipeline = await import("@/lib/contentPipeline");
       c.ok("contentPipeline no longer exports the reviseScriptWithInstructions wrapper", !("reviseScriptWithInstructions" in pipeline));
       const prompts = await import("@/lib/contentPolicy/prompts");
-      c.ok("the unused follow-up and superseded caption prompts are gone", !("buildInterviewFollowUpPrompt" in prompts) && !("buildCaptionPrompt" in prompts) && !("CAPTION_OUTPUT_SCHEMA" in prompts) && !("FOLLOW_UP_OUTPUT_SCHEMA" in prompts));
-      c.ok("…and the live question-set prompts are still there", typeof prompts.buildInterviewPlanPrompt === "function" && typeof prompts.buildQuestionRequestPrompt === "function");
+      c.ok("the never-wired interview follow-up prompt is gone", !("buildInterviewFollowUpPrompt" in prompts) && !("FOLLOW_UP_OUTPUT_SCHEMA" in prompts));
+      // The superseded caption prompt stays: caption-grounding rebuilds the
+      // retired captionAssistant from git and runs it against this layer.
+      c.ok("…the live question-set prompts are still there, and the caption prompt caption-grounding needs", typeof prompts.buildInterviewPlanPrompt === "function" && typeof prompts.buildQuestionRequestPrompt === "function" && typeof prompts.buildCaptionPrompt === "function");
       const rules = await import("@/lib/scriptWriter/rules");
       c.ok("five writer rules nothing read are gone", ["trimAboveFor", "lengthLabel", "NO_DURATION_RULE", "NEITHER_WINS_RULE", "REVIEW_CHECK_KEYS"].every((k) => !(k in rules)));
       c.ok("…and the live ones are kept", typeof rules.lengthBand === "function" && Array.isArray(rules.VIEWER_CHECK_KEYS) && typeof rules.LENGTH_RULE === "string");
