@@ -12,7 +12,7 @@ import { etDayKey, etDayStartUtc } from "@/lib/datetime";
 // the usage block on every answer and threw it away.
 //
 // Now every answer the hub's ONE transport receives (integrations/ai.ts
-// postMessages: callMessages and the photo QC engine both go through it) is
+// postMessages: callMessages goes through it, as the deleted photo QC engine did) is
 // written here: feature, model, input / output / cache tokens and an
 // estimated cost. No new table: one AppSetting row per Eastern day,
 // `ai_usage:<YYYY-MM-DD>`, a JSON map of "<feature>|<model>" → running sums,

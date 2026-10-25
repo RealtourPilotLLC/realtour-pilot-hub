@@ -766,7 +766,7 @@ async function finishCheck(jobId: string, runId: string, photos: Photo[], progre
     }).catch(() => null);
   } else if (checked || unchecked.length) {
     // A re-check that had nothing new to look at says nothing.
-    const { bellOnly } = await import("./qc/run");
+    const { bellOnly } = await import("./notifyOps");
     await bellOnly({
       kind: "photo_free_check",
       title: `${street}: photo check done, ${issues ? `${issues} thing${issues === 1 ? "" : "s"} to look at` : "nothing found"}`.slice(0, 120),

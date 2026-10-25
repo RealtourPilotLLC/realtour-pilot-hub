@@ -126,7 +126,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ photoId: st
     if (!isCurrent) return serveVersion(req, photo.id, v, size);
   }
 
-  // The key the QC run stores under (qc/run.ts hashOf). An AutoHDR photo's
+  // The key derivatives are stored under (the photo's content hash). An AutoHDR photo's
   // content hash IS its current version (versions.ts adoptVersion), so a fix
   // or a restore changes the key. (Until Oct 15 2026 this used its own
   // "ahdr-<version>" key, which never matched what QC stored: every AutoHDR

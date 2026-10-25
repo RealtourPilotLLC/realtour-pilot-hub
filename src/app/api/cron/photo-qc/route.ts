@@ -41,7 +41,8 @@ export async function GET(req: NextRequest) {
   // Oct 23 2026 (Jordan: "Paid Photo QC should be off. Only using the free
   // version. I don't need a paid QC, only paid fixes through AutoHDR."): the
   // paid QC (driveQc) and the coaching drafts made from its runs are no longer
-  // steps of this lane; driveQc refuses on its own as well (settings.PAID_QC_OFF).
+  // steps of this lane, and since Oct 25 2026 (audit D7) the engine itself is
+  // deleted.
 
   await finish();
   return NextResponse.json({ ok: true, ...out });

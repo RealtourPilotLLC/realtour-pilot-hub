@@ -71,8 +71,11 @@ import { getSetting, putSetting } from "@/lib/settings";
 // Oct 23 2026 (Jordan): "Paid Photo QC should be off. Only using the free
 // version. I don't need a paid QC, only paid fixes through AutoHDR." PAID_QC_OFF:
 // qcEnabled and paidQcAuto always read false, whatever is stored, and a save
-// stores them false; the engine (qc/run.ts driveQc, requestQc) refuses on its
-// own as well. The free check and the AutoHDR fixes are untouched. The paid
+// stores them false. The paid engine itself (qc/run.ts, qc/claude.ts, its
+// prompts and the coaching drafts) was deleted on Oct 25 2026 (audit D7), so
+// nothing is left that could run it; this switch still keeps the stored
+// value and the settings save honest. The free check and the AutoHDR fixes
+// are untouched. The paid
 // QC's other settings (monthlyQcBudgetUsd, maxBuildPhase) are kept in the
 // stored value but no screen shows them.
 // ---------------------------------------------------------------------------
