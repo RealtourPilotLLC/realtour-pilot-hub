@@ -103,7 +103,7 @@ async function main() {
     const previewTry = await A.closeIssueSignalAction({ rowId: `revisions:${job.id}`, outcome: "HAPPY", cause: "BRIEF_GAP" });
     c.ok("the owner previewing Kyle can't close it", !previewTry.ok, previewTry.message);
     await signIn(owner);
-    const assigned = await DA.assignTaskAction({ ...rowCopy.assign });
+    const assigned = await DA.assignTaskAction({ ...rowCopy.assign, assigneeKey: rowCopy.assign.assigneeKey ?? "kyle" });
     r = await rowOf();
     c.ok("once assigned, the row names who has the check-in", assigned.ok && r?.owner === "Kyle", `${assigned.message} · ${r?.owner}`);
     const noCause = await A.closeIssueSignalAction({ rowId: `revisions:${job.id}`, outcome: "HAPPY" });
