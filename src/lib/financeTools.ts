@@ -1,6 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
+import { cashBalanceOf } from "@/lib/bankBalance";
 import type { HubTool } from "@/lib/integrations/ai";
 
 // ---------------------------------------------------------------------------
@@ -271,14 +272,14 @@ export async function execFinanceTool(name: string, input: Record<string, unknow
     }
     case "accounts_snapshot": {
       const accounts = await prisma.plaidAccount.findMany({
-        select: { accountId: true, name: true, mask: true, isBusiness: true, currentBalance: true, item: { select: { institutionName: true, lastSyncedAt: true } } },
+        select: { accountId: true, name: true, mask: true, isBusiness: true, type: true, currentBalance: true, availableBalance: true, item: { select: { institutionName: true, lastSyncedAt: true } } },
       });
       const out = [];
       for (const a of accounts) {
         const range = await prisma.plaidTransaction.aggregate({ where: { accountId: a.accountId }, _min: { date: true }, _max: { date: true }, _count: true });
         out.push({
           account: `${a.item?.institutionName ?? "?"} · ${a.name} ···${a.mask}`,
-          business: a.isBusiness === true, balance: a.currentBalance,
+          business: a.isBusiness === true, balance: cashBalanceOf(a), posted_balance: a.currentBalance,
           transactions: range._count, data_from: range._min.date?.toISOString().slice(0, 10) ?? null, data_through: range._max.date?.toISOString().slice(0, 10) ?? null,
           last_synced: a.item?.lastSyncedAt?.toISOString().slice(0, 10) ?? null,
         });

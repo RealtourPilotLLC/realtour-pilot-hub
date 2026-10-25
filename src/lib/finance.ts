@@ -1,6 +1,7 @@
 import "server-only";
 import { cache } from "react";
 import { prisma } from "@/lib/prisma";
+import { cashBalanceOf } from "@/lib/bankBalance";
 import { computePayroll, payPeriodFor, shiftPeriod, periodBounds } from "@/lib/payroll";
 import { etDayStartUtc, etDayKey } from "@/lib/datetime";
 import { getBillingRows } from "@/lib/queries";
@@ -251,8 +252,8 @@ export async function getCashPosition(): Promise<CashPosition> {
     // Business on /connections/banks) — refreshed by the daily sync, so the
     // owner never has to hand-type a number the hub already knows.
     prisma.plaidAccount.findMany({
-      where: { isBusiness: true, type: "depository", currentBalance: { not: null } },
-      select: { currentBalance: true, name: true, mask: true, item: { select: { lastSyncedAt: true } } },
+      where: { isBusiness: true, type: "depository", OR: [{ currentBalance: { not: null } }, { availableBalance: { not: null } }] },
+      select: { type: true, currentBalance: true, availableBalance: true, name: true, mask: true, item: { select: { lastSyncedAt: true } } },
     }),
     Promise.all(sampledMonths.map((m) =>
       prisma.plaidTransaction.count({ where: { date: { gte: m.start, lte: m.end }, amount: { gt: 0 } } }),
@@ -275,7 +276,8 @@ export async function getCashPosition(): Promise<CashPosition> {
   const comingIn30 = round2(income3 / CASH_MONTHS);
 
   // The live Plaid balance of the accounts tagged Business, or nothing.
-  const liveBank = plaidBiz.length > 0 ? round2(plaidBiz.reduce((s, a) => s + (a.currentBalance ?? 0), 0)) : null;
+  // Available, as the bank's own app shows it (lib/bankBalance, Oct 25 2026).
+  const liveBank = plaidBiz.length > 0 ? round2(plaidBiz.reduce((s, a) => s + (cashBalanceOf(a) ?? 0), 0)) : null;
   const liveAsOf = plaidBiz.reduce<Date | null>(
     (m, a) => (a.item.lastSyncedAt && (!m || a.item.lastSyncedAt > m) ? a.item.lastSyncedAt : m),
     null,
@@ -357,7 +359,7 @@ export async function getCashPosition(): Promise<CashPosition> {
     monthsSampled: CASH_MONTHS,
     bankAccounts: plaidBiz.map((a) => ({
       label: [a.name?.trim() || "Account", a.mask ? `···${a.mask}` : null].filter(Boolean).join(" "),
-      balance: round2(a.currentBalance ?? 0),
+      balance: round2(cashBalanceOf(a) ?? 0),
     })),
     sampledFrom, sampledTo,
   };

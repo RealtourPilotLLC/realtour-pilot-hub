@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { cashBalanceOf } from "@/lib/bankBalance";
 import { revenueByProcessor } from "@/lib/bookkeeping";
 import { categoryBreakdown } from "@/lib/financeCategories";
 import { etDayKey, etDayStartUtc } from "@/lib/datetime";
@@ -75,7 +76,7 @@ export async function ownerPulse(opts: TaskClientScope = {}): Promise<OwnerPulse
     prisma.plaidAccount
       .findMany({
         where: { isBusiness: true, type: "depository" },
-        select: { name: true, currentBalance: true, updatedAt: true },
+        select: { name: true, type: true, currentBalance: true, availableBalance: true, updatedAt: true },
       })
       .catch(() => []),
     prisma.project
@@ -112,7 +113,7 @@ export async function ownerPulse(opts: TaskClientScope = {}): Promise<OwnerPulse
   const revenueMonth = money(revMonth?.total ?? 0);
   const spendMonth = money(spend?.businessTotal ?? 0);
   const profitMonth = revenueMonth - spendMonth;
-  const bankBalance = banks.length ? money(banks.reduce((s, b) => s + (b.currentBalance ?? 0), 0)) : null;
+  const bankBalance = banks.length ? money(banks.reduce((s, b) => s + (cashBalanceOf(b) ?? 0), 0)) : null;
   const bankAsOf = banks.length ? banks.reduce<Date | null>((m, b) => (!m || b.updatedAt > m ? b.updatedAt : m), null) : null;
   // Name the accounts. Only the ones tagged Business on /connections/banks are
   // counted, and today that is a single overdrawn payroll account — a bare

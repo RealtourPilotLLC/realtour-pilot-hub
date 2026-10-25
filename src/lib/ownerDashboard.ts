@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { cashBalanceOf, postedBesideCash } from "@/lib/bankBalance";
 import { usd0Signed } from "@/lib/money";
 import { noDashes } from "@/lib/text";
 import { endOfBusinessDaysET, etDate, etDateTime, etDayKey, etMonthDay, etTime } from "@/lib/datetime";
@@ -150,7 +151,7 @@ export async function financialPosition(opts: { now?: Date; excludeClientIds?: s
   const [banks, revenue, spend, ar, pay, recurring, fresh, stripe, qbpMissing] = await Promise.all([
     prisma.plaidAccount.findMany({
       where: { isBusiness: true, type: "depository" },
-      select: { name: true, mask: true, currentBalance: true, item: { select: { lastSyncedAt: true, status: true } } },
+      select: { name: true, mask: true, type: true, currentBalance: true, availableBalance: true, item: { select: { lastSyncedAt: true, status: true } } },
     }).catch(warn("bank balances")),
     revenueByProcessor(monthStartKey, todayKey).catch(warn("revenue")),
     categoryBreakdown(monthStartKey, todayKey).catch(warn("spend")),
@@ -186,15 +187,17 @@ export async function financialPosition(opts: { now?: Date; excludeClientIds?: s
     : null;
 
   // ---- cash: the business bank accounts on the live feed -------------------
-  const withBalance = (banks ?? []).filter((b) => b.currentBalance != null);
-  const cashValue = withBalance.length ? Math.round(withBalance.reduce((s, b) => s + (b.currentBalance ?? 0), 0) * 100) / 100 : null;
+  // The bank's AVAILABLE balance, as its own app shows it (lib/bankBalance; Oct 25 2026).
+  const withBalance = (banks ?? []).filter((b) => cashBalanceOf(b) != null);
+  const cashValue = withBalance.length ? Math.round(withBalance.reduce((s, b) => s + (cashBalanceOf(b) ?? 0), 0) * 100) / 100 : null;
+  const postedValue = withBalance.some((b) => postedBesideCash(b) != null) ? Math.round(withBalance.reduce((s, b) => s + (b.currentBalance ?? 0), 0) * 100) / 100 : null;
   const bankAsOf = withBalance.reduce<Date | null>((m, b) => (b.item.lastSyncedAt && (!m || b.item.lastSyncedAt > m) ? b.item.lastSyncedAt : m), null);
   const bankNames = withBalance.map((b) => (b.mask ? `··${b.mask}` : b.name ?? "account")).join(" + ");
   const cash: Figure = banks == null
     ? { key: "cash", label: "Cash available", value: null, display: "Couldn't load", sub: "The bank balances didn't load. Refresh to try again.", tag: null, tone: null, href: "/connections/banks" }
     : cashValue == null
       ? { key: "cash", label: "Cash available", value: null, display: "Not connected", sub: "No bank account is tagged Business on Connections", tag: null, tone: null, href: "/connections/banks" }
-      : { key: "cash", label: "Cash available", value: cashValue, display: usd0Signed(cashValue), sub: `Bank ${bankNames}${bankAsOf ? ` · synced ${etDateTime(bankAsOf)}` : ""}`, tag: null, tone: cashValue < 0 ? "bad" : null, href: "/connections/banks" };
+      : { key: "cash", label: "Cash available", value: cashValue, display: usd0Signed(cashValue), sub: `Bank ${bankNames}${postedValue != null ? ` · ${usd0Signed(postedValue)} posted` : ""}${bankAsOf ? ` · synced ${etDateTime(bankAsOf)}` : ""}`, tag: null, tone: cashValue < 0 ? "bad" : null, href: "/connections/banks" };
   if ((banks ?? []).some((b) => b.item.status === "ERROR")) limitations.push("A bank login needs reconnecting on Connections, so the balance may be stale.");
   limitations.push(stripe
     ? "Cash available is the bank only. Stripe's balance and payouts on their way are on the Stripe panel; a payout counts as cash once it lands in the bank."

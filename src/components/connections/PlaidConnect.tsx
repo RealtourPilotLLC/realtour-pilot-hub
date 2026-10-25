@@ -9,6 +9,7 @@ import {
 import {
   savePlaidCredsAction, getPlaidLinkToken, exchangePlaidPublicToken, syncPlaidNow, backfillPlaidNow, disconnectPlaidBank, tagPlaidAccount,
 } from "@/app/connections/banks/actions";
+import { cashBalanceOf, postedBesideCash } from "@/lib/bankBalance";
 
 export type PlaidAccountView = {
   id: string; accountId: string; name: string | null; officialName: string | null;
@@ -249,10 +250,10 @@ function BankCard({ bank }: { bank: PlaidBankView }) {
               <div className="truncate text-sm font-medium">
                 {a.name ?? a.officialName ?? "Account"}{a.mask ? <span className="text-muted-2"> ··{a.mask}</span> : null}
               </div>
-              <div className="text-[11px] capitalize text-muted-2">{[a.subtype ?? a.type, a.availableBalance != null ? `${money(a.availableBalance)} available` : null].filter(Boolean).join(" · ")}</div>
+              <div className="text-[11px] capitalize text-muted-2">{[a.subtype ?? a.type, (a.type ?? "depository") === "depository" && a.availableBalance != null ? "available" : null, postedBesideCash(a) != null ? `${money(postedBesideCash(a))} posted` : null].filter(Boolean).join(" · ")}</div>
             </div>
             <div className="flex items-center gap-3">
-              <span className="text-sm font-semibold tabular-nums">{money(a.currentBalance)}</span>
+              <span className="text-sm font-semibold tabular-nums">{money(cashBalanceOf(a))}</span>
               <BizToggle account={a} />
             </div>
           </div>
