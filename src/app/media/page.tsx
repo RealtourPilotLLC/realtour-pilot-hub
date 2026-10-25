@@ -6,7 +6,7 @@ import { VideoGroup } from "@/components/media/VideoTile";
 import { ListingTile } from "@/components/media/ListingTile";
 import { toVideoView } from "@/components/media/types";
 import { requireMediaPage } from "@/lib/mediaAccess";
-import { loadDeliveredListings, loadFinishedVideos, photosByAddress, type ListingCard, type MediaVideo } from "@/lib/mediaLibrary";
+import { libraryListings, libraryVideos, photosByAddress, type ListingCard, type MediaVideo } from "@/lib/mediaLibrary";
 import {
   MEDIA_TABS, PAGE_SIZE, byDate, cleanQuery, groupPlaced, inRange, isMediaTab, matchesQuery, pageCount, parseRange, parseSort, rangeYears,
   type MediaTab, type VideoTab,
@@ -48,8 +48,10 @@ export default async function MediaPage({ searchParams }: { searchParams: Promis
   const n = pageCount(one(sp.n));
 
   const [videos, listings, indexing] = await Promise.all([
-    loadFinishedVideos().catch((e) => { console.error("[media] videos read failed", e); return null; }),
-    loadDeliveredListings().catch((e) => { console.error("[media] listings read failed", e); return null; }),
+    // At most a minute old (lib/mediaLibrary): a tab press or a search no
+    // longer rebuilds the whole library (audit Oct 25 2026).
+    libraryVideos().catch((e) => { console.error("[media] videos read failed", e); return null; }),
+    libraryListings().catch((e) => { console.error("[media] listings read failed", e); return null; }),
     // Oct 24 2026: while the one-time index of the older Aryeo listings is
     // under way, say how far it has got (one row read; nothing when it is done).
     import("@/lib/listingMediaIndex").then((m) => m.listingMediaBackfillLine()).catch(() => null),

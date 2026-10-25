@@ -200,21 +200,33 @@ async function route(briefId: string, now: Date): Promise<CreativeReviewState | 
   const clientName = brief.project?.client?.name ?? "the client";
   const street = (brief.project?.title ?? "the job").split(",")[0].trim();
   const heldItems = items.filter((it) => it.held);
-  const words = [
-    ...heldItems.map((it) => `• ${it.quote || it.ask}`),
-    ...questions.map((q) => `• Open question: ${q}`),
-  ].join("\n");
+  // THE CLIENT'S WORDS AND THE OPEN QUESTIONS, KEPT APART (audit Oct 25 2026).
+  // The open questions are the work order's (the analyser's), not the
+  // client's: on 615 Cliff Ln the card read "Alex Stackhouse said: V1: No
+  // footage has been uploaded yet…", a sentence she never wrote, and her real
+  // words were not on the card at all.
+  const words = heldItems.map((it) => `• ${it.quote || it.ask}`).join("\n");
+  const openQuestions = questions.map((q) => `• ${q}`).join("\n");
+  const who = brief.requestedBy ?? clientName;
   const why = [...reasons].map((r) => REASON_WORDS[r]).join("; ");
   const dedupeKey = `creative-review:${brief.id}`;
   const taskData = {
     taskType: "creative_review",
     title: `Creative review — ${street} · ${first(clientName)}`.slice(0, 200),
-    summary: clip(`${brief.requestedBy ?? clientName} said: ${heldItems[0]?.quote || heldItems[0]?.ask || questions[0] || ""}`, 300),
+    summary: clip(
+      heldItems.length
+        ? `${who} said: ${heldItems[0].quote || heldItems[0].ask}`
+        : questions.length
+          ? `Open question on ${who}'s ask: ${questions[0]}`
+          : `${who} said: ${brief.originalText}`,
+      300,
+    ),
     description: [
       `Why this came to you: ${why}.`,
       "",
       "The client's words:",
       words || clip(brief.originalText, 1500),
+      ...(openQuestions ? ["", "Open questions:", openQuestions] : []),
       "",
       taskHeld
         ? "The editor is waiting: nothing concrete was left for them in this ask. Turn it into changes in the Review Room."

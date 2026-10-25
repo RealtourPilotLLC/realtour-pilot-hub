@@ -130,6 +130,31 @@ function factsOf(c: CutRow, output: { deliveredAt: Date | null; sentSubmissionId
   };
 }
 
+// THE WHOLE LIBRARY, READ AT MOST ONCE A MINUTE PER SERVER (audit Oct 25
+// 2026). /media rebuilt both reads on every request: each tab press, search
+// and "Show more" read every approved cut, every portal row, the 1,158
+// indexed Aryeo videos, every upload receipt and cover, then about 1,550 jobs
+// and 1,399 listing covers. The pages read through these two; the loaders
+// themselves stay fresh for every other caller. A failed read is not kept.
+const LIBRARY_MEMO_MS = 60_000;
+const libraryMemo = new Map<string, { at: number; value: Promise<unknown> }>();
+function memoised<T>(key: string, load: () => Promise<T>): Promise<T> {
+  const hit = libraryMemo.get(key);
+  if (hit && Date.now() - hit.at < LIBRARY_MEMO_MS) return hit.value as Promise<T>;
+  const entry = { at: Date.now(), value: load() as Promise<unknown> };
+  libraryMemo.set(key, entry);
+  entry.value.catch(() => { if (libraryMemo.get(key) === entry) libraryMemo.delete(key); });
+  return entry.value as Promise<T>;
+}
+/** Drills only: forget the minute's reads (a drill changes the data between two renders). */
+export function __clearLibraryMemoForTests(): void {
+  libraryMemo.clear();
+}
+/** The whole library's videos, for the /media page (at most a minute old). */
+export const libraryVideos = (): Promise<MediaVideo[]> => memoised("videos", () => loadFinishedVideos());
+/** Every delivered listing, for /media's Photos tab and /listings (at most a minute old). */
+export const libraryListings = (): Promise<ListingCard[]> => memoised("listings", () => loadDeliveredListings());
+
 /**
  * Every finished video, placed on its tab. `projectIds` narrows the read to
  * those jobs (a listing page); otherwise the whole library.
@@ -363,7 +388,10 @@ async function indexedListingVideos(ctx: {
 }): Promise<MediaVideo[]> {
   const rows = await prisma.listingMediaItem
     .findMany({
-      where: { kind: "VIDEO", removedAt: null, ...(ctx.scope ? { projectId: { in: ctx.scope } } : {}) },
+      // A file to serve, or no tile (audit Oct 25 2026): a row with only Aryeo's
+      // stream (no downloadUrl) drew a tile whose Watch and Download answered
+      // 404, because the file route serves downloadUrl alone.
+      where: { kind: "VIDEO", removedAt: null, downloadUrl: { not: null }, ...(ctx.scope ? { projectId: { in: ctx.scope } } : {}) },
       select: { id: true, projectId: true, aryeoListingId: true, aryeoMediaId: true, title: true, durationSec: true, orientation: true, thumbnailUrl: true, downloadUrl: true, position: true, deliveredAt: true },
       orderBy: [{ projectId: "asc" }, { position: "asc" }],
     })

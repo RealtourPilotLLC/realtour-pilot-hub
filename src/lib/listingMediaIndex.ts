@@ -42,6 +42,9 @@ export function indexTableMissing(e: unknown): boolean {
 
 export type IndexWrite = { created: number; updated: number; removed: number; videos: number; cover: boolean };
 
+/** How old a row's "last seen" stamp may get before an unchanged read rewrites it. */
+const SEEN_RESTAMP_MS = 6 * 3_600_000;
+
 /** One listing read → that job's index rows. Writes only what changed. */
 export async function indexListingRead(projectId: string, listingId: string, listing: unknown, now: Date = new Date()): Promise<IndexWrite | { skipped: string }> {
   const l = listing && typeof listing === "object" ? (listing as Record<string, unknown>) : null;
@@ -60,7 +63,16 @@ export async function indexListingRead(projectId: string, listingId: string, lis
   }
   for (const u of d.update) await prisma.listingMediaItem.update({ where: { id: u.id }, data: u.data });
   if (d.remove.length) await prisma.listingMediaItem.updateMany({ where: { id: { in: d.remove }, removedAt: null }, data: { removedAt: now } });
-  if (d.seen.length) await prisma.listingMediaItem.updateMany({ where: { id: { in: d.seen } }, data: { syncedAt: now, aryeoListingId: listingId } });
+  // "Still there" is stamped at most every few hours per row (audit Oct 25
+  // 2026): the hourly status pass and Ready to send's re-reads see the same
+  // listings all day, and rewrote every unchanged row each time. A row that
+  // moved to another listing is always stamped.
+  if (d.seen.length) {
+    await prisma.listingMediaItem.updateMany({
+      where: { id: { in: d.seen }, OR: [{ syncedAt: { lt: new Date(now.getTime() - SEEN_RESTAMP_MS) } }, { aryeoListingId: { not: listingId } }] },
+      data: { syncedAt: now, aryeoListingId: listingId },
+    });
+  }
   return { created: d.create.length, updated: d.update.length, removed: d.remove.length, videos: read.videos?.length ?? 0, cover: !!read.cover };
 }
 

@@ -621,16 +621,6 @@ async function transcribeOne(id: string, provider: TranscriptionProvider, timeou
     });
     return "invalidated";
   }
-  // Only the hub's own store is reachable by a provider: /api/review/cut/…/stream
-  // needs a signed-in staff session, which Deepgram does not have.
-  if (!cut.blobUrl) {
-    await prisma.contentCutTranscript.update({
-      where: { id },
-      data: { ...release, status: CUT_TRANSCRIPT_STATUS.NEEDS_REVIEW, lastError: "This cut has no hosted file in the hub's store (folder-discovered cuts play from Dropbox). Upload it through the Review Room to transcribe it.", lastErrorAt: new Date(), finishedAt: new Date() },
-    });
-    return "no hosted file";
-  }
-
   // THE PROVIDER'S SERVERS FETCH THIS URL (RTP-01, handover §2). Same shape
   // as Meta's container fetch: a speech-to-text provider pulls the file from
   // its own network with no credential of ours, so on a private store the
@@ -645,22 +635,35 @@ async function transcribeOne(id: string, provider: TranscriptionProvider, timeou
   //
   // (Oct 23 2026: reached now. Deepgram is connected and the AI work job runs
   // this driver; the approved cut's own file is what Deepgram is handed.)
-  const source = await fetchableCutUrl(cut, { ttlMs: 2 * 3600_000, purpose: "transcription" });
+  // Only the hub's own store (presigned) or Dropbox (a temporary link) is
+  // reachable by a provider: /api/review/cut/…/stream needs a signed-in staff
+  // session, which Deepgram does not have.
+  const source = cut.blobUrl ? await fetchableCutUrl(cut, { ttlMs: 2 * 3600_000, purpose: "transcription" }) : null;
   // NO HUB COPY TO HAND OVER (Oct 24 2026): an upload the hub released after
   // its 90 days, or one in a store this deployment holds no token for, is
   // still in Dropbox: the checked Topaz file, else the editor's approved copy.
   // A Dropbox temporary link (four hours, minted now) carries its own
-  // permission, the same as the presigned one above.
-  const dropboxUrl = source.ok ? null : await dropboxLinkForCut(cut.id).catch(() => null);
-  if (!source.ok && !dropboxUrl) {
+  // permission, the same as the presigned one above. Tried for a cut with no
+  // hub copy at all too (audit Oct 25 2026): the 90-day release clears
+  // blobUrl, and the old early return meant this fallback never ran for it.
+  const dropboxUrl = source?.ok ? null : await dropboxLinkForCut(cut.id).catch(() => null);
+  if (!source?.ok && !dropboxUrl) {
     await prisma.contentCutTranscript.update({
       where: { id },
-      data: { ...release, status: CUT_TRANSCRIPT_STATUS.NEEDS_REVIEW, lastError: `The hub could not give the transcription provider a link to this cut's file — ${source.message}`, lastErrorAt: new Date(), finishedAt: new Date() },
+      data: {
+        ...release,
+        status: CUT_TRANSCRIPT_STATUS.NEEDS_REVIEW,
+        lastError: source
+          ? `The hub could not give the transcription provider a link to this cut's file: ${source.ok ? "" : source.message}`
+          : "This cut has no hosted file in the hub's store and no finished copy in Dropbox to hand over. Upload it through the Review Room to transcribe it.",
+        lastErrorAt: new Date(),
+        finishedAt: new Date(),
+      },
     });
-    return "no readable file";
+    return source ? "no readable file" : "no hosted file";
   }
   try {
-    const r = await provider.transcribe({ url: source.ok ? source.url : dropboxUrl!, submissionId: cut.id, timeoutMs });
+    const r = await provider.transcribe({ url: source?.ok ? source.url : dropboxUrl!, submissionId: cut.id, timeoutMs });
     const text = r.text.trim();
     await prisma.contentCutTranscript.update({
       where: { id },
@@ -682,7 +685,10 @@ async function transcribeOne(id: string, provider: TranscriptionProvider, timeou
     return "succeeded";
   } catch (e) {
     const err = e instanceof TranscriptionError ? e : new TranscriptionError(e instanceof Error ? e.message : String(e), "provider_error", false);
-    const attempts = row.attempts + 1;
+    // The claim already counted this try (attempts: increment), so the row's
+    // number IS this attempt; adding one again gave four tries, not five
+    // (audit Oct 25 2026).
+    const attempts = row.attempts;
     const now = new Date();
     if (err.retryable && attempts < MAX_ATTEMPTS) {
       // Exponential backoff, capped at an hour: 2, 4, 8, 16 minutes.
