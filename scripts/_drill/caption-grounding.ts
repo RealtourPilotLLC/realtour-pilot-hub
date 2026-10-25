@@ -243,6 +243,11 @@ async function main() {
     const kit = await pk.postingKitFor(ada.viewer, ada.video);
     c.ok("the posting kit shows the client that note", kit.captions.some((x) => /no transcript yet/.test(x.sourceNote ?? "")));
     c.ok("…and the transcript gap in its own words", !kit.transcript.text && !!kit.transcript.gap, kit.transcript.gap ?? "");
+    // Audit Oct 25 2026: the client reads one plain phrase, never the staff
+    // sentence (em dashes, the hub's own error text).
+    const dash = /[—–]/;
+    c.ok("…in plain client words: no dash, no error text, in the kit and on every draft", !dash.test(kit.transcript.gap ?? "") && ["it isn't available for this version yet", "it is on its way", "it comes with the approved version"].includes(kit.transcript.gap ?? "") && kit.captions.every((x) => !dash.test(x.sourceNote ?? "") && !/\(/.test(x.sourceNote ?? "")), `${kit.transcript.gap} | ${kit.captions.map((x) => x.sourceNote).join(" | ")}`);
+    c.ok("clientTranscriptGap: the staff failure sentence becomes the plain phrase", pk.clientTranscriptGap("No transcript — the last attempt failed: The hub could not give the transcription provider a link to this cut's file — That cut's file is in a store this deployment holds no token for.") === "it isn't available for this version yet" && pk.clientTranscriptGap("No transcript yet — Queued — the next transcript run will pick it up.") === "it is on its way" && pk.clientTranscriptGap(null) === null);
   }
 
   // =========================================================================

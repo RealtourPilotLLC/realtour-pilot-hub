@@ -274,6 +274,21 @@ async function scriptForVideo(video: { id: string; topicId: string | null; scrip
   return { canonical, title: script.title, body: stripRenderPlaceholders(script.body), versionLabel: null, strategyLabel: strategy ? `v${strategy.versionNo}` : null, clientId: script.clientId, historical };
 }
 
+/**
+ * What a CLIENT reads about a missing transcript (audit Oct 25 2026). The gap
+ * transcriptForCut gives is the staff sentence: em dashes ("No transcript —
+ * the last attempt failed: …") and, after a failure, the hub's own error text
+ * ("a store this deployment holds no token for"). The portal's Posting Kit
+ * printed it in brackets under every AI caption. One plain phrase each here;
+ * the full reason still reaches the caption prompt and the staff screens.
+ */
+export function clientTranscriptGap(gap: string | null | undefined): string | null {
+  if (!gap) return null;
+  if (gap === "it comes with the approved version") return gap;
+  if (/^No transcript yet/.test(gap)) return "it is on its way";
+  return "it isn't available for this version yet";
+}
+
 const captionView = (c: { id: string; kind: string; body: string; alternativesJson: string | null; versionNo: number; authorKind: string; status: string; staleReason: string | null; basedOnId: string | null; createdAt: Date }): CaptionView => {
   let alternatives: string[] = [];
   let sourceNote: string | null = null;
@@ -355,7 +370,7 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
     // checked against, so it is served whole for the same reason. What a client
     // may see at all is decided by scriptVisibility above — a release gate, not
     // a word filter.
-    transcript: { text: transcript.text, gap: transcript.gap, source: transcript.source },
+    transcript: { text: transcript.text, gap: clientTranscriptGap(transcript.gap), source: transcript.source },
     script: script ? { title: script.title, body: script.body, versionLabel: script.versionLabel, strategyLabel: script.strategyLabel, historical: script.historical } : null,
     downloadStartedAtISO: lastStarted?.createdAt.toISOString() ?? null,
     downloadCompletedAtISO: lastCompleted?.createdAt.toISOString() ?? null,
@@ -538,7 +553,9 @@ async function draftCaptionRows(input: EngineInput): Promise<EngineResult> {
   const scriptWord = script?.historical ? "an earlier script we have on file" : "the script";
   const sourceNote = transcriptText
     ? `Drafted from the transcript of the final cut, with ${scriptWord} as supporting context.`
-    : `Drafted from ${scriptWord}, with no transcript yet${transcript?.gap ? ` (${transcript.gap})` : ""}.`;
+    // Stored on the draft and shown to the client beside it: never the staff
+    // gap sentence (dashes, the hub's error text; audit Oct 25 2026).
+    : `Drafted from ${scriptWord}, with no transcript yet.`;
   let out: CaptionModelOut;
   let runId: string | null = null;
   let costCents = 0;
@@ -781,7 +798,10 @@ export async function generateCaptionForStaff(videoId: string, by: { userId: str
   }
   const r = await draftCaptionRows({
     video, transcriptSubmissionId: approved.id, draftRef: approved.id, requestedBy: by.userId, unattended: false,
-    dedupeKey: `caption-staff:${approved.id}:${Date.now()}`, scope: { staff: true },
+    // One run at a time per version (audit Oct 25 2026): the timestamp made
+    // every key unique, so a double press paid for two drafts. aiRuns clears
+    // the key when a run ends, so a later press still drafts again.
+    dedupeKey: `caption-staff:${approved.id}`, scope: { staff: true },
   });
   return { ok: r.ok, message: r.message, ...(r.drafted != null ? { drafted: r.drafted } : {}) };
 }

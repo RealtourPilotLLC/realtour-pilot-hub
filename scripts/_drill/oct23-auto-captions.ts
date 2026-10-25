@@ -27,7 +27,8 @@
 //   F  the gates: caption_assistant, ai_runs, an AI outage, the rollout,
 //      cut_transcripts off (script fallback), no backfill, the wait for a
 //      transcript on its way, a cut with no hosted file (script fallback)
-//   G  a transcription run that died mid-call is recovered
+//   G  a transcription run that died mid-call is recovered; a version with no
+//      hub copy left is transcribed from its Dropbox file (Oct 25 2026)
 //   H  the posting kit: a newer version's caption waits while the client keeps
 //      the earlier file, and is not marked stale
 //   I  the office's view: the caption on the video, with where it came from
@@ -49,6 +50,18 @@ type DgCall = { url: string; auth: string | null; body: string };
 const dgCalls: DgCall[] = [];
 let dgTranscript = "";
 const fence = fenceFetch((url, init) => {
+  // Dropbox, at the network edge (cutTranscripts reaches it through a dynamic
+  // import the module intercept never sees): the OAuth refresh against a
+  // drill-only secret, and a temporary link for a file under /drill-final/
+  // only (audit Oct 25 2026: the no-hub-copy fallback). Nothing else answers.
+  if (/^https:\/\/api\.dropbox(api)?\.com\//.test(url)) {
+    const json = (x: unknown, status = 200) => new Response(JSON.stringify(x), { status, headers: { "content-type": "application/json" } });
+    if (url.endsWith("/oauth2/token")) return json({ access_token: "drill-access-token", expires_in: 14400 });
+    if (url.endsWith("/users/get_current_account")) return json({ root_info: { ".tag": "user", root_namespace_id: "1", home_namespace_id: "1" } });
+    const arg = typeof init?.body === "string" && init.body ? (JSON.parse(init.body) as { path?: string }) : {};
+    if (url.endsWith("/files/get_temporary_link") && String(arg.path ?? "").startsWith("/drill-final/")) return json({ link: `https://dl.dropboxusercontent.com/drill${arg.path}`, metadata: { size: 5 } });
+    return json({ error_summary: "drill: not faked" }, 409);
+  }
   if (!url.startsWith("https://api.deepgram.com/")) return null;
   const h = new Headers(init?.headers ?? {});
   dgCalls.push({ url, auth: h.get("authorization"), body: typeof init?.body === "string" ? init.body : "" });
@@ -126,6 +139,7 @@ async function main() {
   await setSwitch("caption_assistant", true);
   await setSwitch("ai_runs", true);
   await saveSecret("transcription_deepgram", DG_KEY);
+  await saveSecret("dropbox", "drill-refresh-token-not-real");
   c.ok("Deepgram is the connected provider (a saved key, no network)", (await tr.activeTranscriptionProvider())?.id === "deepgram" && dgCalls.length === 0);
 
   const BLOB = (id: string) => `https://drillstore.public.blob.vercel-storage.com/review-cuts/${id}.mp4`;
@@ -450,6 +464,18 @@ async function main() {
     const d = await drive();
     const after = (await transcriptsOf(hal.sub))[0];
     c.ok("the dead run's row is put back in the queue and transcribed (one call)", d.recovered === 1 && after.status === "SUCCEEDED" && dgCalls.length === dg0 + 1 && after.attempts === 2, `${JSON.stringify(d)} ${after.status}/${after.attempts}`);
+
+    // Audit Oct 25 2026: a version whose hub copy is gone (the 90-day release
+    // clears blobUrl) but whose finished file is in Dropbox is transcribed from
+    // a Dropbox temporary link; the early "no hosted file" return used to stop
+    // it before that fallback could run.
+    const kai = await program("Kai Dropbox TEST", { blob: false });
+    await review.approveCut(kai.sub);
+    await prisma.reviewSubmission.update({ where: { id: kai.sub }, data: { finalPath: `/drill-final/${kai.sub}.mp4` } });
+    const dg1 = dgCalls.length;
+    await drive();
+    const kr = await transcriptsOf(kai.sub);
+    c.ok("no hub copy, a finished file in Dropbox: transcribed from the Dropbox link (one call)", kr.some((x) => x.status === "SUCCEEDED") && dgCalls.length === dg1 + 1 && dgCalls[dgCalls.length - 1].body.includes(`dl.dropboxusercontent.com/drill/drill-final/${kai.sub}.mp4`), `${kr.map((x) => `${x.status}:${x.lastError ?? ""}`).join(",")} calls=${dgCalls.length - dg1}`);
   }
 
   // =========================================================================
@@ -527,7 +553,7 @@ async function main() {
   }
 
   c.head("Z · isolation");
-  c.ok("nothing left the process (Deepgram answered by the fake, the model by the stub)", fence.blocked.filter((u) => /deepgram|anthropic/i.test(u)).length === 0 && fence.faked.every((u) => u.startsWith("https://api.deepgram.com/")), fence.blocked.slice(0, 3).join(", "));
+  c.ok("nothing left the process (Deepgram and Dropbox answered by the fakes, the model by the stub)", fence.blocked.filter((u) => /deepgram|anthropic|dropbox/i.test(u)).length === 0 && fence.faked.every((u) => u.startsWith("https://api.deepgram.com/") || /^https:\/\/api\.dropbox(api)?\.com\//.test(u)), fence.blocked.slice(0, 3).join(", "));
   c.ok("the Deepgram key never appears in a stored row", (await prisma.contentCutTranscript.count({ where: { OR: [{ lastError: { contains: DG_KEY } }, { text: { contains: DG_KEY } }] } })) === 0);
 
   quiet.restore();
