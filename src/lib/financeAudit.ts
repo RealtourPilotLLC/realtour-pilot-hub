@@ -137,12 +137,12 @@ export async function financeAuditYtd(now: Date = new Date()): Promise<FinanceAu
     checks.push({
       key: "qbp-recorded", title: "QuickBooks payments received are recorded", status: unrecorded.length ? "gap" : "ok",
       result: unrecorded.length
-        ? `${usd(sum)} arrived from QuickBooks Payments that QuickBooks has no payment for, so it isn't in revenue yet.`
+        ? `${usd(sum)} arrived from QuickBooks Payments that doesn't match the payments QuickBooks recorded, so some or all of it isn't in revenue yet.`
         : `Every QuickBooks Payments deposit matches a payment recorded in QuickBooks.`,
-      detail: `This year QuickBooks recorded ${usd(recordedYtd)} of payments; the bank received ${usd(bankedYtd)} of QuickBooks Payments deposits.${unrecorded.length ? ` Not recorded: ${unrecorded.map((u) => `${nice(day(u.date))} ${usd(-u.amount)}`).join(", ")}.` : ""}`,
+      detail: `This year QuickBooks recorded ${usd(recordedYtd)} of payments; the bank received ${usd(bankedYtd)} of QuickBooks Payments deposits.${unrecorded.length ? ` Doesn't match: ${unrecorded.map((u) => `${nice(day(u.date))} ${usd(-u.amount)}`).join(", ")}.` : ""}`,
       amount: sum || null, href: "/connections",
     });
-    if (unrecorded.length) actions.push({ key: "qbp-unrecorded", title: `Record ${usd(sum)} of QuickBooks payments in QuickBooks`, why: `The bank received ${unrecorded.map((u) => `${usd(-u.amount)} on ${nice(day(u.date))}`).join(", ")} from QuickBooks Payments, and QuickBooks has no payment or sales receipt for it, so the hub's revenue is short by that much.`, how: "In QuickBooks → Sales → Invoices, receive payment on the invoices those deposits paid (for a monthly client the deposit is their recurring charge), then the hub picks it up on the next pull.", when: "now", dueDays: 3, amount: sum, href: "https://qbo.intuit.com" });
+    if (unrecorded.length) actions.push({ key: "qbp-unrecorded", title: `Record ${usd(sum)} of QuickBooks payments in QuickBooks`, why: `The bank received ${unrecorded.map((u) => `${usd(-u.amount)} on ${nice(day(u.date))}`).join(", ")} from QuickBooks Payments, and QuickBooks has no payment or sales receipt, nor a set of them, that adds up to it, so the hub's revenue is short by up to that much (part of it may be recorded already).`, how: "In QuickBooks → Sales → Invoices, receive payment on the invoices those deposits paid (for a monthly client the deposit is their recurring charge), then the hub picks it up on the next pull.", when: "now", dueDays: 3, amount: sum, href: "https://qbo.intuit.com" });
   }
 
   // ---- 3. Venmo: every Venmo debit has a statement saying who it paid --------------

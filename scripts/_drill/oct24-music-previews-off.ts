@@ -44,7 +44,7 @@ const login = (role: string, o: Partial<Viewer> = {}): Viewer => ({
   teamMemberId: null, editorKey: null, notificationsSeenAt: null, impersonating: false, realRole: role, realName: null, ...o,
 });
 const JORDAN = login("OWNER", { name: "Jordan" });
-let viewer: Viewer | null = JORDAN;
+const viewer: Viewer | null = JORDAN;
 interceptModule(
   (r) => r === "@/lib/auth/user" || r === "./user" || /[\\/]src[\\/]lib[\\/]auth[\\/]user(\.ts)?$/.test(r),
   (loaded) => new Proxy(loaded as Record<string | symbol, unknown>, { get: (t, k) => (k === "getCurrentUser" ? async () => viewer : t[k]) }),

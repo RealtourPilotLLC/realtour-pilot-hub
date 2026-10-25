@@ -173,7 +173,7 @@ export async function financialPosition(opts: { now?: Date; excludeClientIds?: s
   // beside the rail (the books audit has the task to record it).
   const qbpMissingSum = Math.round((qbpMissing ?? []).reduce((s, b) => s + b.amount, 0) * 100) / 100;
   const qbpMissingWords = qbpMissing?.length
-    ? `${qbpMissing.length === 1 ? `${usd0Signed(qbpMissingSum)} landed in the bank ${etMonthDay(qbpMissing[0].date)}` : `${usd0Signed(qbpMissingSum)} landed in the bank (${qbpMissing.map((b) => `${usd0Signed(b.amount)} ${etMonthDay(b.date)}`).join(", ")})`} that QuickBooks hasn't recorded, so it isn't counted yet`
+    ? `${qbpMissing.length === 1 ? `${usd0Signed(qbpMissingSum)} landed in the bank ${etMonthDay(qbpMissing[0].date)}` : `${usd0Signed(qbpMissingSum)} landed in the bank (${qbpMissing.map((b) => `${usd0Signed(b.amount)} ${etMonthDay(b.date)}`).join(", ")})`} that doesn't match the payments QuickBooks recorded, so some or all of it isn't counted yet`
     : null;
   const month: RevenueMonth | null = revenue
     ? revenueMonth(monthLabel, {

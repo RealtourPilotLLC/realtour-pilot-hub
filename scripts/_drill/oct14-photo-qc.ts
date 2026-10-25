@@ -107,7 +107,7 @@ async function exteriorWithDust(W: number, H: number): Promise<Buffer> {
 // ---- the stubbed Claude transport (end to end) ---------------------------------------
 type Body = { model: string; max_tokens: number; temperature?: number; thinking?: { type: string }; system: { text: string }[]; messages: { content: { type: string; text?: string }[] }[]; output_config?: { format?: { schema: Record<string, unknown> }; effort?: string }; tools?: unknown[]; tool_choice?: unknown };
 const calls: { pass: string; body: Body; text: string }[] = [];
-let clockMs = Date.parse("2026-10-14T14:00:00Z");
+const clockMs = Date.parse("2026-10-14T14:00:00Z");
 const CALL_MS = 20_000;
 
 function passOf(b: Body): string {

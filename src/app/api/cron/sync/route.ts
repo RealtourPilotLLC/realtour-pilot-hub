@@ -120,6 +120,15 @@ export async function GET(req: NextRequest) {
     const r = await runParts({ signups: () => sweepStripeSignups(), subs: () => sweepSubscriptionHealth() });
     return { ...r.signups, subs: r.subs };
   }, { maxMs: 45_000 });
+  // Stripe's ledger every hour, not only at 4 AM (Oct 25 2026 audit): Finance
+  // → Overview and the books audit count Stripe from it, and the dashboard's
+  // Stripe panel reads Stripe live, so a once-a-day pull left them apart by
+  // the day's sales all afternoon. Skips when a pull ran in the last half hour
+  // (the 4 AM daily run lands at the same minute as this one). Reads only.
+  await step("stripeLedger", async () => {
+    const { syncStripeIfStale } = await import("@/lib/integrations/stripe");
+    return syncStripeIfStale();
+  }, { maxMs: 30_000 });
   // Oct 15 2026: once a day (the 4 AM ET run) look 60 days back, so videos
   // added to a listing after its delivery reach the library too. That run
   // gets the longer cap (no client text goes out at 4 AM anyway).
