@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etDayKey, etMonthDay } from "@/lib/datetime";
+import { parse as parsePtoDoc } from "@/lib/pto";
 
 // ---------------------------------------------------------------------------
 // WHO IS OFF ON A SHOOT DAY (audit, Oct 25 2026).
@@ -58,9 +59,8 @@ export async function timeOffBetween(fromKey: string, toKey: string): Promise<Ti
   for (const r of ptoRows) {
     const memberId = r.key.split(":")[1];
     if (!memberId) continue;
-    let entries: { startKey?: string; endKey?: string; fraction?: number }[] = [];
-    try { entries = (JSON.parse(r.value) as { entries?: typeof entries }).entries ?? []; } catch { continue; }
-    for (const e of entries) {
+    // One reader for the tracker's stored year (lib/pto), shared with the brief's fullDaysOff.
+    for (const e of parsePtoDoc(r.value).entries) {
       if (!e.startKey || !e.endKey || e.endKey < fromKey || e.startKey > toKey) continue;
       const fraction = typeof e.fraction === "number" && e.fraction > 0 && e.fraction <= 1 ? e.fraction : 1;
       out.push({ teamMemberId: memberId, startKey: e.startKey, endKey: e.endKey, startsAt: null, endsAt: null, fraction, words: spanWords(e.startKey, e.endKey), source: "pto" });

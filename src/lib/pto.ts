@@ -133,7 +133,8 @@ export type PtoBalance = {
 
 export const ptoKey = (memberId: string, yearKey: string) => `pto:${memberId}:${yearKey}`;
 
-function parse(raw: string | null | undefined): PtoDoc {
+/** A stored PTO year (AppSetting `pto:<memberId>:<yearKey>`), tolerant of a blank or broken value. Also read by lib/timeOff. */
+export function parse(raw: string | null | undefined): PtoDoc {
   if (!raw) return { v: 1, entries: [], log: [] };
   try {
     const j = JSON.parse(raw) as Partial<PtoDoc>;

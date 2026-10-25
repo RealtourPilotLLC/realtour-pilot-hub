@@ -1161,7 +1161,10 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     const unconfirmed = confirmation.state === "open" || confirmation.state === "none";
     // A photographer who is off that day comes first: nothing else about the visit matters until someone is on it.
     const offGap = away ? gaps[0] : null;
-    const problems = started ? [] : [...(offGap ? [offGap] : []), ...(unconfirmed ? [confirmation.words] : []), ...gaps.filter((g) => g !== offGap), ...conflicts, ...(offer.problem ? [offer.problem] : [])];
+    // The brief held for their PTO says the same thing as the off-day line, so it isn't said twice
+    // (Send brief now stays among the actions, for when they are shooting after all).
+    const briefProblem = offer.problem && !(away && / is on PTO /.test(offer.problem)) ? offer.problem : null;
+    const problems = started ? [] : [...(offGap ? [offGap] : []), ...(unconfirmed ? [confirmation.words] : []), ...gaps.filter((g) => g !== offGap), ...conflicts, ...(briefProblem ? [briefProblem] : [])];
     const street = clean(streetOf(p.title));
     const visit: PrepVisit = {
       apptId: v.apptId, projectId: p.id, street, client: p.client ? clean(p.client.name) : null, dayKey: visitDay,
