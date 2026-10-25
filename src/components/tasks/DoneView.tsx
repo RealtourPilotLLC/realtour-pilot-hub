@@ -47,18 +47,21 @@ function friendlyDay(key: string): string {
 // having happened (Jordan's standing rule).
 // ---------------------------------------------------------------------------
 export async function DoneView({ tabs, excludeClientIds, showTest = false }: { tabs: ReactNode; excludeClientIds?: string[]; showTest?: boolean }) {
-  const scope = { excludeClientIds };
-  const [tasksRaw, deliveries, shoots, me, closedRaw] = await Promise.all([
-    getTaskHistory(45, scope),
-    getDeliveryHistory(45, scope),
-    getShootHistory(45, scope),
-    getCurrentUser().catch(() => null),
-    closedWithoutDoing(45, scope).catch(() => [] as ClosedRow[]),
-  ]);
   // No money on an ADMIN screen (Jordan's standing rule): a closed Slack to-do
   // keeps its title here, figure and all, so a non-owner's ledger is redacted
   // the way the board is (audit5 kyle-home §5, Sep 8). Sessionless = owner.
+  // The owner's own books-audit items and pay questions are on nobody else's
+  // ledger at all (audit Oct 25 2026, F7).
+  const me = await getCurrentUser().catch(() => null);
   const isOwner = !me || me.role === "OWNER";
+  const scope = { excludeClientIds };
+  const taskScope = { excludeClientIds, hideOwnerPrivate: !isOwner };
+  const [tasksRaw, deliveries, shoots, closedRaw] = await Promise.all([
+    getTaskHistory(45, taskScope),
+    getDeliveryHistory(45, scope),
+    getShootHistory(45, scope),
+    closedWithoutDoing(45, taskScope).catch(() => [] as ClosedRow[]),
+  ]);
   const tasks = isOwner ? tasksRaw : tasksRaw.map((t) => ({ ...t, title: scrubMoney(t.title) }));
   const closed = isOwner ? closedRaw : closedRaw.map((t) => ({ ...t, title: scrubMoney(t.title), summary: t.summary == null ? t.summary : scrubMoney(t.summary) }));
 

@@ -15,6 +15,7 @@ import { listAssignees, firstName, viewerAssigneeKey } from "@/lib/assignees";
 import { isNeedsAssigning } from "@/lib/triage";
 import { taskWorkCounts, taskWorkHref, taskWorkOwner } from "@/lib/taskNavigation";
 import { boardWhere, BOARD_ACTIVE_STATUSES as ACTIVE, type TaskClientScope } from "@/lib/taskBoard";
+import { notOwnerPrivateWhere } from "@/lib/ownerPrivateTasks";
 import { slackOpenCount } from "@/lib/commsBoard";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced, isUnmappedEditor, taskScopeOf, UNMAPPED_EDITOR_MESSAGE } from "@/lib/auth/guards";
@@ -36,17 +37,22 @@ const dueMs = (t: QueueTask) => (t.dueAt ? new Date(t.dueAt).getTime() : Infinit
 // list the owner sees (RTP-01, Sep 16). editorScopeOf now lives in
 // auth/guards beside the same rule /edit/<id> applies to Review Room notes.
 
+// The books audit's items and pay questions are the owner's alone (audit Oct
+// 25 2026, F7: they sat on Kyle's board). Sessionless renders as the owner,
+// the rule the money scrub below uses; "view as Kyle" carries Kyle's role.
+const hidesOwnerPrivate = (me: { role: string } | null) => !!me && me.role !== "OWNER";
+
 // The shared predicate keeps Home's count and this tab's rows in agreement.
 export async function boardOpenCount(opts: TaskClientScope = {}): Promise<number> {
   const me = await getCurrentUser().catch(() => null);
-  return prisma.smartTask.count({ where: boardWhere(await taskScopeOf(me), opts) });
+  return prisma.smartTask.count({ where: boardWhere(await taskScopeOf(me), { ...opts, hideOwnerPrivate: hidesOwnerPrivate(me) }) });
 }
 
 // Navigation badges use the same source predicate and ownership rule as the rows.
 export async function boardNavigationCounts(opts: TaskClientScope = {}) {
   const me = await getCurrentUser().catch(() => null);
   const [rows, assignees] = await Promise.all([
-    prisma.smartTask.findMany({ where: boardWhere(await taskScopeOf(me), opts), select: { assignedKey: true, taskType: true } }),
+    prisma.smartTask.findMany({ where: boardWhere(await taskScopeOf(me), { ...opts, hideOwnerPrivate: hidesOwnerPrivate(me) }), select: { assignedKey: true, taskType: true } }),
     listAssignees(),
   ]);
   return taskWorkCounts(rows, viewerAssigneeKey(me, assignees));
@@ -116,7 +122,7 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
   // An editor, or the creative manager (Oct 21 2026): their own tasks only.
   const editorScope = await taskScopeOf(me);
   const deadlineOffice = me ? !me.impersonating && (me.role === "OWNER" || me.role === "ADMIN") : !authEnforced();
-  const scope = { excludeClientIds };
+  const scope = { excludeClientIds, hideOwnerPrivate: hidesOwnerPrivate(me) };
   const boardHref = (who: string) => taskWorkHref({ who, showTest, source: sp.source, type: sp.type });
   // An EDITOR login that maps to no editor profile gets NOTHING, and is told
   // why (RTP-01, Sep 16). Before this it fell through to the office board —
@@ -141,7 +147,7 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
   // the recipient lands on an unrelated list with no highlight (review).
   // Editors stay scoped to their own work even through a deep link.
   const deepLink: Prisma.SmartTaskWhereInput | null = sp.task
-    ? { id: sp.task, ...(editorScope ? { assignedKey: editorScope } : {}) }
+    ? { id: sp.task, ...(editorScope ? { assignedKey: editorScope } : {}), ...(scope.hideOwnerPrivate ? { AND: [notOwnerPrivateWhere()] } : {}) }
     : null;
   const [tasks, assignees] = await Promise.all([
     prisma.smartTask.findMany({
@@ -163,7 +169,7 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
   // 11 to assign · 21 overdue · 1340 done" beside a Done tab badge of 2 — the
   // 1340 was every task ever closed). Same query as that badge, so the two
   // numbers can't disagree.
-  const doneToday = await doneTodayCount({ excludeClientIds: excludeRelatedClientIds });
+  const doneToday = await doneTodayCount({ excludeClientIds: excludeRelatedClientIds, hideOwnerPrivate: scope.hideOwnerPrivate });
   // WHERE THE SLACK ASKS WENT (Sep 16). This tab no longer lists them — they
   // have one home now — but every link minted before today still points here,
   // including the 8am Slack DM, which lists overdue rows (Slack rows among

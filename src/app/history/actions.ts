@@ -37,7 +37,9 @@ export async function summarizeDay(dayKey: string, opts: { includeTest?: boolean
   const noon = etAt(dayKey, 12);
   const oneDay = { excludeClientIds, since: etDayStartUtc(noon), until: etDayStartUtc(new Date(noon.getTime() + 24 * HOUR)) };
   const [dt, dd, ds] = await Promise.all([
-    getTaskHistory(0, oneDay),
+    // The ledger's rows for this reader: the owner's books-audit items and pay
+    // questions are in nobody else's recap (audit Oct 25 2026, F7).
+    getTaskHistory(0, { ...oneDay, hideOwnerPrivate: !!me && !canSeeMoney(me.role) }),
     getDeliveryHistory(0, oneDay),
     getShootHistory(0, oneDay),
   ]);

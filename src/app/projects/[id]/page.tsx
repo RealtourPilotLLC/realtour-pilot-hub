@@ -65,6 +65,7 @@ import { photoTargetFor } from "@/lib/culling";
 import { PhotoTargetControl } from "@/components/project/PhotoTargetControl";
 import { formatMoney } from "@/lib/utils";
 import { canSeeMoney, isOffice } from "@/lib/auth/access";
+import { isOwnerPrivateTask } from "@/lib/ownerPrivateTasks";
 import { redactMoney } from "@/lib/hubTools";
 import { customerNote, creativeCustomerNote } from "@/lib/clientNotes";
 import { formatDistanceToNow } from "date-fns";
@@ -198,6 +199,8 @@ export default async function ProjectPage({
   if (!project) notFound();
 
   const assignees = assigneeList.map((a) => ({ key: a.key, name: a.name }));
+  // A teammate's pay question filed on this job is the owner's alone (audit Oct 25 2026, F7).
+  const openTasks = showMoney ? project.smartTasks : project.smartTasks.filter((t) => !isOwnerPrivateTask(t));
   // THE customer note — one list (src/lib/clientNotes.ts). Owner reads it raw;
   // everyone else gets the money-scrubbed cut, LINE BY LINE so a bulleted note
   // keeps its shape (the flat redactor would fold this whitespace-pre-line
@@ -560,11 +563,11 @@ export default async function ProjectPage({
           </details>
           <DetailsHashOpener detailsId="job-details" anchors={["deliverables"]} />
 
-          {/* Open tasks for this job */}
-          {project.smartTasks.length > 0 && (
-            <Section icon={ListTodo} title="Open tasks" count={project.smartTasks.length} flush>
+          {/* Open tasks for this job (a pay question filed on it is the owner's alone: audit Oct 25 2026, F7) */}
+          {openTasks.length > 0 && (
+            <Section icon={ListTodo} title="Open tasks" count={openTasks.length} flush>
               <div className="grid gap-3 p-5 sm:grid-cols-2">
-                {project.smartTasks.map((t) => (
+                {openTasks.map((t) => (
                   <TaskCard key={t.id} task={showMoney ? taskToView(t) : scrubTaskMoney(taskToView(t))} assignees={assignees} editorView={!officeControls} deadlineOffice={viewer ? !viewer.impersonating && (viewer.role === "OWNER" || viewer.role === "ADMIN") : !authEnforced()} />
                 ))}
               </div>

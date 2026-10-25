@@ -82,7 +82,8 @@ export default async function TasksHubPage({ searchParams }: {
 
   const [workCounts, doneN, checklists] = await Promise.all([
     boardOnly ? { all: 0, mine: 0, needsAssignment: 0 } : boardNavigationCounts({ excludeClientIds: excludedOtherClientIds }),
-    boardOnly ? 0 : doneTodayCount({ excludeClientIds: excludedDoneClientIds }),
+    // The owner's books-audit items and pay questions count for the owner alone (audit Oct 25 2026, F7).
+    boardOnly ? 0 : doneTodayCount({ excludeClientIds: excludedDoneClientIds, hideOwnerPrivate: !!me && me.role !== "OWNER" }),
     boardOnly ? { revisions: 0, slack: 0 } : checklistCounts({ excludeRevisionClientIds: excludedRevisionClientIds, excludeSlackClientIds: excludedSlackClientIds }),
   ]);
   const tabs = boardOnly ? null : (
