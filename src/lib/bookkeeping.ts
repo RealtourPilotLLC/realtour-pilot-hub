@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { vendorName, STRIPE_CONNECT_ACCOUNTS, stripeWindow, operatingCutover, OPERATING_CUTOVER_DEFAULT } from "@/lib/financeCategories";
 import { etDayKey } from "@/lib/datetime";
 import { usd0 } from "@/lib/money";
+import { STRIPE_SALE_TYPES, STRIPE_REVERSAL_TYPES } from "@/lib/revenueMonthCore";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -596,10 +597,12 @@ export async function quickbooksCoverageEnd(): Promise<Date | null> {
  * payment_refund and disputes, so a non-card refund or a lost chargeback
  * never reduced the top line. `adjustment` is taken only when Stripe labels it
  * a chargeback or dispute; other adjustments (and Capital movements) are not
- * sales and stay out.
+ * sales and stay out. The type lists live in revenueMonthCore, shared with
+ * the live Stripe panel (Oct 25 2026), which also brought in a failed or
+ * reversed bank payment (payment_failure_refund, payment_reversal).
  */
 export const STRIPE_REVENUE_WHERE = [
-  { type: { in: ["charge", "payment", "refund", "payment_refund"] } },
+  { type: { in: [...STRIPE_SALE_TYPES, ...STRIPE_REVERSAL_TYPES] } },
   { type: "adjustment", description: { contains: "chargeback", mode: "insensitive" as const } },
   { type: "adjustment", description: { contains: "dispute", mode: "insensitive" as const } },
 ];
@@ -1040,27 +1043,3 @@ export async function peoplePayments(startKey: string, endKey: string): Promise<
   }
   return { list, total: list.reduce((s, p) => s + p.total, 0), count: list.length, channelTotals, monthTotals, groupTotals };
 }
-
-// ---------------------------------------------------------------------------
-// PERSONAL SPENDING — the owner-draw side, bucketed into human categories.
-// ---------------------------------------------------------------------------
-const PERSONAL_BUCKETS: [RegExp, string][] = [
-  [/doordash|grubhub|uber ?eats|postmates|taco bell|mcdonald|wendy|burger king|chick-?fil|\bpanera\b|starbucks|dunkin|chipotle|\bsubway\b|\bkfc\b|popeyes|chophouse|steakhouse|\bgrill\b|\bpizza\b|\bcafe\b|\bdiner\b|restaurant|\btst\*|kole/i, "Dining & delivery"],
-  [/stauffers|reiff|farm market|\baldi\b|\bgiant\b|\bweis\b|whole foods|trader joe|wegmans|\bkroger\b|grocery/i, "Groceries"],
-  [/sheetz|\bwawa\b|city convenience|convenience|circle k|7-?eleven|turkey hill/i, "Convenience & snacks"],
-  [/amazon|\bamzn\b|\btarget\b|wal-?mart|walmart|costco|dollar general|dollar tree|best buy|home depot|lowe'?s|\bikea\b/i, "Shopping"],
-  [/netflix|\bhulu\b|disney|hbo|prime video|spotify|youtube|paramount|peacock|apple\.com\/bill|audible|elevenlabs|seaart|anthropic|openai/i, "Subscriptions & streaming"],
-  [/\bcheck\s*#?\s*\d|\brent\b|mortgage/i, "Rent & housing"],
-  [/barber|\bsalon\b|haircut|\bnails\b|carpe|rythm ?health|dentist|pharmacy|\bcvs\b|walgreens/i, "Personal care & health"],
-  [/katie ?macintyre|lauren spackman|laurie spackman|\bnanny\b|good ?and ?beautiful|goodandbeautiful|little ?poppy|littlepoppyco/i, "Family & childcare"],
-  [/whitetail|disposal|verizon|comcast|\bpeco\b|\bppl\b|electric|water authority|\butilit/i, "Utilities"],
-  [/atm withdrawal|cash withdrawal|\batm\b/i, "Cash & ATM"],
-  [/sunbit|\btilt\b|empower|affirm|klarna|afterpay/i, "Loans & financing"],
-  [/exxon|\bshell\b|sunoco|\bmobil\b|\bgulf\b|\bfuel\b|\bpspt\b|parking/i, "Fuel & auto"],
-];
-function personalBucket(text: string): string {
-  for (const [rx, b] of PERSONAL_BUCKETS) if (rx.test(text)) return b;
-  return "Other";
-}
-
-/** Personal (owner-draw) spending bucketed by category, month, and top vendor. */

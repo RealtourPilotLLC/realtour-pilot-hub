@@ -37,6 +37,20 @@ export type RevenueMonth = {
   rails: RevenueRail[];
 };
 
+// ---- which Stripe rows are revenue (one list, Oct 25 2026 audit) -----------
+// The books (bookkeeping STRIPE_REVENUE_WHERE) and the live Stripe panel
+// (integrations/stripe summarizeStripeMonth) each kept their own list, and
+// they disagreed: the panel took EVERY `adjustment` as a refund, the books
+// only a chargeback or dispute; the books missed a failed or reversed bank
+// payment that the panel took off. Both read these now.
+/** Balance-transaction types that are a sale. */
+export const STRIPE_SALE_TYPES = ["charge", "payment"];
+/** Types that take a sale back: card and other refunds, a bank payment that failed or was reversed. */
+export const STRIPE_REVERSAL_TYPES = ["refund", "payment_refund", "payment_failure_refund", "payment_reversal"];
+/** An `adjustment` takes revenue back only when Stripe labels it a chargeback or dispute. */
+export const isStripeDispute = (type: string, description: string | null | undefined): boolean =>
+  type === "adjustment" && /chargeback|dispute/i.test(description ?? "");
+
 /** The ledger categories that hold each rail's fee (financeCategories). Stripe's come from Stripe itself. */
 export const RAIL_FEE_CATEGORY = { quickbooks: "QuickBooks Payments fees", venmo: "Venmo transfer fees" } as const;
 

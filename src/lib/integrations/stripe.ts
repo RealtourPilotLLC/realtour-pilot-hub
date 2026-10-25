@@ -1,6 +1,7 @@
 import "server-only";
-import { getSecret, saveSecret, markSynced, markError, getConnection } from "./connections";
+import { getSecret, markSynced, markError, getConnection } from "./connections";
 import { fetchWithTimeout } from "@/lib/http";
+import { STRIPE_SALE_TYPES, STRIPE_REVERSAL_TYPES, isStripeDispute } from "@/lib/revenueMonthCore";
 
 // ---------------------------------------------------------------------------
 // Stripe — the AUTHORITATIVE money-in source. Stripe always knows exactly what
@@ -103,14 +104,17 @@ export type StripeSnapshot = {
   mtd: { gross: number; refunds: number; fees: number; net: number; charges: number; capitalWithheld: number; billingFees: number; paidOut: number };
   monthLabel: string;
 };
-const SALE_TYPES = new Set(["charge", "payment"]);
-const REVERSAL_TYPES = new Set(["refund", "payment_refund", "adjustment", "payment_failure_refund", "payment_reversal"]);
+// The same rows the books count as revenue (revenueMonthCore, shared with
+// bookkeeping's STRIPE_REVENUE_WHERE): an adjustment is a refund only when it
+// is a chargeback or dispute, so the panel and Finance can't disagree.
+const SALE_TYPES = new Set(STRIPE_SALE_TYPES);
+const REVERSAL_TYPES = new Set(STRIPE_REVERSAL_TYPES);
 
-export function summarizeStripeMonth(rows: { type: string; gross: number; fee: number; net: number }[]): StripeSnapshot["mtd"] {
+export function summarizeStripeMonth(rows: { type: string; gross: number; fee: number; net: number; description?: string | null }[]): StripeSnapshot["mtd"] {
   const m = { gross: 0, refunds: 0, fees: 0, net: 0, charges: 0, capitalWithheld: 0, billingFees: 0, paidOut: 0 };
   for (const r of rows) {
     if (SALE_TYPES.has(r.type)) { m.gross += r.gross; m.fees += r.fee; m.net += r.net; m.charges++; }
-    else if (REVERSAL_TYPES.has(r.type)) { m.refunds += -r.gross; m.fees += r.fee; m.net += r.net; }
+    else if (REVERSAL_TYPES.has(r.type) || isStripeDispute(r.type, r.description)) { m.refunds += -r.gross; m.fees += r.fee; m.net += r.net; }
     else if (r.type === "financing_paydown") m.capitalWithheld += -r.gross;
     else if (r.type === "stripe_fee") m.billingFees += -r.net;
     else if (r.type === "payout") m.paidOut += -r.gross;
@@ -136,13 +140,13 @@ export async function stripeSnapshot(now: Date = new Date()): Promise<StripeSnap
       // payouts and keep the ones still on their way.
       stripeGet<{ data: { amount: number; status: string }[] }>("/payouts", { query: { limit: 30 } }).catch(() => null),
     ]);
-    const rows: { type: string; gross: number; fee: number; net: number }[] = [];
+    const rows: { type: string; gross: number; fee: number; net: number; description: string | null }[] = [];
     let after: string | undefined;
     for (let page = 0; page < 20; page++) {
       const q: Record<string, string | number> = { limit: 100, "created[gte]": Math.floor(monthStart.getTime() / 1000) };
       if (after) q.starting_after = after;
       const res = await stripeGet<{ data: BalanceTxn[]; has_more: boolean }>("/balance_transactions", { query: q });
-      for (const t of res.data) rows.push({ type: t.type, gross: dollars(t.amount), fee: dollars(t.fee), net: dollars(t.net) });
+      for (const t of res.data) rows.push({ type: t.type, gross: dollars(t.amount), fee: dollars(t.fee), net: dollars(t.net), description: t.description ?? null });
       if (!res.has_more || !res.data.length) break;
       after = res.data[res.data.length - 1].id;
     }
@@ -160,7 +164,7 @@ export async function stripeSnapshot(now: Date = new Date()): Promise<StripeSnap
       const { prisma } = await import("@/lib/prisma");
       const conn = await getConnection("stripe");
       if (!conn?.secretEncrypted) return null;
-      const rows = await prisma.stripeTransaction.findMany({ where: { createdAt: { gte: monthStart } }, select: { type: true, gross: true, fee: true, net: true } });
+      const rows = await prisma.stripeTransaction.findMany({ where: { createdAt: { gte: monthStart } }, select: { type: true, gross: true, fee: true, net: true, description: true } });
       const last = await prisma.stripeTransaction.aggregate({ _max: { createdAt: true } });
       return { asOf: (last._max.createdAt ?? now).toISOString(), source: "synced", balance: null, incoming: null, inTransit: null, mtd: summarizeStripeMonth(rows), monthLabel };
     } catch {
@@ -258,4 +262,22 @@ export async function syncStripe(opts: { fullDays?: number } = {}): Promise<{ im
     await markError("stripe", e instanceof Error ? e.message : "Stripe sync failed").catch(() => {});
     throw e;
   }
+}
+
+// ---------------------------------------------------------------------------
+// HOURLY, NOT JUST AT 4 AM (Oct 25 2026 audit). The ledger was pulled once a
+// day, so all afternoon Finance → Overview and the books audit read Stripe as
+// of 4 AM while the dashboard's Stripe panel read it live: the same month,
+// two revenue figures, apart by the day's sales. The hourly cron calls this;
+// an incremental pull is one or two pages. A pull in the last half hour (the
+// 4 AM daily run, or the Sync button) is enough, and skipping it keeps two
+// pulls from upserting the same new rows at once.
+// ---------------------------------------------------------------------------
+export async function syncStripeIfStale(maxAgeMs = 30 * 60_000, now: Date = new Date()): Promise<{ imported: number } | { skipped: string }> {
+  const conn = await getConnection("stripe");
+  if (!conn || conn.status === "DISCONNECTED" || !conn.secretEncrypted) return { skipped: "Stripe isn't connected" };
+  if (conn.lastSyncedAt && now.getTime() - conn.lastSyncedAt.getTime() < maxAgeMs) {
+    return { skipped: `pulled ${Math.round((now.getTime() - conn.lastSyncedAt.getTime()) / 60_000)} min ago` };
+  }
+  return syncStripe();
 }
