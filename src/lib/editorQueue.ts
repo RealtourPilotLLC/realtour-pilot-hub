@@ -298,9 +298,18 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
   // A NULL-key revision counts as video-lane too: personal-branding routing is
   // manual by design, so its revision task sits unassigned in "Needs assigning"
   // — it's still a video revision and must keep the row on "Revisions".
+  // …and so does a "Video revision" card the routing handed to the OFFICE to
+  // relay (audit Oct 25 2026). raiseRevision and revisionLane give a job
+  // pinned to the outside agency (Luma Visuals) or to anyone who is not an
+  // in-house editor to Kyle, titled "Video revision — …" (revisionLane.
+  // laneOfTask's own marker). Counting only editor keys left 615 Cliff Ln, a
+  // Luma reel with the client's retaining-wall change open, reading "Ready for
+  // review" off the video already on Aryeo, and off every revision reminder.
+  const isVideoRevisionCard = (t: { taskType: string; assignedKey: string | null; title: string | null }) =>
+    t.taskType === "revision" && (t.assignedKey == null || VIDEO_LANE.has(t.assignedKey) || /^Video revision/.test(t.title ?? ""));
   const revisionCount = new Map<string, number>();
   for (const t of openTasks)
-    if (t.taskType === "revision" && t.projectId && (t.assignedKey == null || VIDEO_LANE.has(t.assignedKey)))
+    if (t.projectId && isVideoRevisionCard(t))
       revisionCount.set(t.projectId, (revisionCount.get(t.projectId) ?? 0) + 1);
   // ROUND ON THE CARD (Sep 8). A Review Room send-back and the queue's own
   // "Revisions" flip no longer mint a revision task — they add a round to
@@ -338,7 +347,7 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
   // is approved and older than the ask counts as in revisions below — never a
   // video already sent back (that would count it twice), and a version handed
   // in after the ask answers it. Nothing is written; only the lane changes.
-  const clientAskTasks = openTasks.filter((t) => t.taskType === "revision" && t.projectId && (t.assignedKey == null || VIDEO_LANE.has(t.assignedKey)) && !officeReopenOf(t));
+  const clientAskTasks = openTasks.filter((t) => t.projectId && isVideoRevisionCard(t) && !officeReopenOf(t));
   const clientBriefs = clientAskTasks.length
     ? await prisma.revisionBrief
         .findMany({
@@ -479,7 +488,7 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
     if (c.status === "CHANGES_REQUESTED" && c.verdict) offerAsk(c.projectId, c.verdict.atISO ? Date.parse(c.verdict.atISO) : 0, verdictLine(c.verdict));
   }
   {
-    const revTasks = openTasks.filter((t) => t.taskType === "revision" && t.projectId && (t.assignedKey == null || VIDEO_LANE.has(t.assignedKey)));
+    const revTasks = openTasks.filter((t) => t.projectId && isVideoRevisionCard(t));
     // The office's own reopen (the queue-add) is the row's newest word while
     // it is still theirs — a client's later ask rewrites it — so it is offered
     // at the row's last write, ahead of any older brief the reused row still
@@ -512,7 +521,7 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
   for (const t of openTasks) {
     if (!t.projectId) continue;
     if (t.taskType === "edit_video") editCardOf.set(t.projectId, t.id);
-    else if (t.taskType === "revision" && (t.assignedKey == null || VIDEO_LANE.has(t.assignedKey))) {
+    else if (isVideoRevisionCard(t)) {
       const office = officeReopenOf(t);
       const list = revisionCards.get(t.projectId) ?? [];
       list.push({ id: t.id, createdAt: t.createdAt, outputId: t.outputId, office: !!office, officeBy: office?.by ?? null, contactName: t.contactName });

@@ -195,7 +195,17 @@ const MAX_INPUT = 24_000;
  *  `ref` is the short code the model answers with (V1, V2 …) because a cuid is
  *  not something a language model copies reliably — the mapping back is done
  *  here, in code. */
-export type BriefCut = { key: string; label: string; slot: number; fileName?: string | null };
+export type BriefCut = { key: string; label: string; slot: number; fileName?: string | null; delivered?: boolean };
+
+/** One owed video's line for the analyser. Pure. */
+export function briefCutLine(c: BriefCut, ref: string): string {
+  const state = c.fileName
+    ? ` (current file: ${c.fileName})`
+    : c.delivered
+      ? " (already delivered to the client, made outside the hub's review room)"
+      : " (nothing uploaded yet)";
+  return `  ${ref} — ${c.label}${state}`;
+}
 
 export async function analyzeRevisionText(opts: {
   text: string;
@@ -220,7 +230,7 @@ export async function analyzeRevisionText(opts: {
   const byRef = new Map(cuts.map((c, i) => [refOf(i), c.key]));
   const cutList = cuts.length
     ? `VIDEOS ON THIS JOB (${cuts.length}):\n` +
-      cuts.map((c, i) => `  ${refOf(i)} — ${c.label}${c.fileName ? ` (current file: ${c.fileName})` : " (nothing uploaded yet)"}`).join("\n")
+      cuts.map((c, i) => briefCutLine(c, refOf(i))).join("\n")
     : null;
   const context = [
     opts.clientName ? `Client: ${opts.clientName}` : null,
@@ -752,9 +762,26 @@ export async function briefCutsFor(projectId: string): Promise<BriefCut[]> {
     .catch(() => []);
   const fileByKey = new Map<string, string | null>();
   for (const r of rounds) fileByKey.set(slotKeyOf(r.deliverableId!, r.slot), r.fileName);
+  // MADE OUTSIDE THE REVIEW ROOM (audit Oct 25 2026). A video the outside
+  // agency cut, or one delivered before the Room existed, has no round here
+  // and was described to the analyser as "nothing uploaded yet". On 615 Cliff
+  // Ln (a Luma reel already on the listing) that became the open question "No
+  // footage has been uploaded yet", and a creative review for Jordan. A slot
+  // with no round is "already with the client" when its video row says it was
+  // delivered, or when the Aryeo listing holds a video for every owed slot.
+  const bare = slots.filter((s) => !fileByKey.has(slotKeyOf(s.deliverableId, s.slot)));
+  const elsewhere = new Set<string>();
+  if (bare.length) {
+    const [delivered, onListing] = await Promise.all([
+      prisma.deliverableOutput.findMany({ where: { projectId, deliveredAt: { not: null } }, select: { deliverableId: true, slot: true } }).catch(() => []),
+      prisma.listingMediaItem.count({ where: { projectId, kind: "VIDEO", removedAt: null } }).catch(() => 0),
+    ]);
+    for (const o of delivered) elsewhere.add(slotKeyOf(o.deliverableId, o.slot));
+    if (onListing >= slots.length) for (const s of bare) elsewhere.add(slotKeyOf(s.deliverableId, s.slot));
+  }
   return slots.map((s) => {
     const key = slotKeyOf(s.deliverableId, s.slot);
-    return { key, label: s.label, slot: s.slot, fileName: fileByKey.get(key) ?? null };
+    return { key, label: s.label, slot: s.slot, fileName: fileByKey.get(key) ?? null, ...(!fileByKey.has(key) && elsewhere.has(key) ? { delivered: true } : {}) };
   });
 }
 
