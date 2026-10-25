@@ -109,7 +109,7 @@ async function main() {
     c.ok("the revenue panel loaded", !!r);
     c.ok("QuickBooks gross = what QuickBooks recorded (the unrecorded deposit stays out)", rail("quickbooks").gross === 2099, String(rail("quickbooks").gross));
     c.ok("QuickBooks net takes off its fee from the ledger", rail("quickbooks").net === 2034.5, String(rail("quickbooks").net));
-    c.ok("the unrecorded $2,400 is said beside QuickBooks", /\$2,400 landed in the bank .* QuickBooks hasn't recorded, so it isn't counted yet/.test(rail("quickbooks").missing ?? ""), rail("quickbooks").missing ?? "none");
+    c.ok("the unrecorded $2,400 is said beside QuickBooks", /\$2,400 landed in the bank .* doesn't match the payments QuickBooks recorded, so some or all of it isn't counted yet/.test(rail("quickbooks").missing ?? ""), rail("quickbooks").missing ?? "none");
     c.ok("…and in the card's notes, pointing at the task", f.limitations.some((l) => l.startsWith("QuickBooks Payments: $2,400") && l.includes("task list")));
     c.ok("Stripe without a live read: sales before refunds, the refund apart, fees from the ledger", rail("stripe").gross === 1500 && rail("stripe").refunds === 100 && rail("stripe").fees === 44.1 && rail("stripe").net === 1355.9, JSON.stringify(rail("stripe")));
     c.ok("Venmo: client money from the statements, less the instant-transfer fee", rail("venmo").gross === 550 && rail("venmo").net === 540.38, JSON.stringify(rail("venmo")));
