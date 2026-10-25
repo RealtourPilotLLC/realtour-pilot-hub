@@ -1,6 +1,7 @@
 import "server-only";
 import crypto from "crypto";
 import { disconnect, getSecret, saveSecret } from "./connections";
+import { phoneKey } from "@/lib/phoneKey";
 
 // ---------------------------------------------------------------------------
 // OpenPhone (Quo) REST client. Base: https://api.openphone.com/v1
@@ -677,7 +678,6 @@ export async function testOpenPhoneKey(
   }
 }
 
-// Normalize a phone number to its last 10 digits for matching.
-export function phoneKey(p?: string | null): string {
-  return (p ?? "").replace(/\D/g, "").slice(-10);
-}
+// Normalize a phone number to its last 10 digits for matching (lib/phoneKey,
+// the one copy since Oct 25 2026; re-exported here for this module's callers).
+export { phoneKey };

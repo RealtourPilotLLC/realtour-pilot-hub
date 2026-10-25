@@ -2,7 +2,7 @@ import "server-only";
 
 import { prisma } from "@/lib/prisma";
 import { logJobEvent, releaseHold, setStage, JOB_STAGES, type JobStage } from "./jobState";
-import { PAID_QC_OFF, PAID_QC_OFF_MESSAGE, photoDeliverySettings } from "./settings";
+import { photoDeliverySettings } from "./settings";
 import { isExteriorFinding, ruleById, SEVERITIES, type RuleOverride, type Severity } from "./registry";
 import { MIN_OWN_WORDS, needsOwnWords, ownWordsOk } from "./careRules";
 import { houseOverrides, mergeOverrides } from "./houseRules";
@@ -416,31 +416,9 @@ export async function releaseJobHold(jobId: string, by: string): Promise<WriteRe
   return { ok: true, changed: 1, stage: fresh?.stage ?? null, message: "Hold released. The job is back where it left off." };
 }
 
-// ---- QC re-run ----------------------------------------------------------------------------------
-
-/**
- * Ask for a fresh QC run. The QC engine owns the run itself (it is long and
- * runs from the cron); this only raises the same flag the gallery sync raises
- * when a photo is replaced (PhotoJob.qcRequestedAt).
- */
-export async function requestQcRerun(jobId: string, by: string): Promise<WriteResult> {
-  // Oct 23 2026 (Jordan): the paid QC is off; "Check again" is the free check (autohdrCheck.requestFreeRecheck).
-  if (PAID_QC_OFF) return { ok: false, message: PAID_QC_OFF_MESSAGE };
-  const who = clean(by, 120) || "staff";
-  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, qcRequestedAt: true } });
-  if (!job) return { ok: false, message: "Photo job not found." };
-  if (job.stage === "EDITING" || job.stage === "EDIT_FAILED") return { ok: false, message: "The edited gallery has not landed yet, so there is nothing to check." };
-  if (job.stage === "QC_RUNNING") return { ok: false, message: "QC is already running on this job." };
-  if (job.stage === "DELIVERED") return { ok: false, message: "This job is delivered. Open a revision to check it again." };
-  // The free check marks the photos it looked at as inspected (the delivery
-  // checklist needs it); the paid QC still looks at every photo it has not
-  // inspected itself (its own inspections also carry classifiedHash).
-  const freeOnly = (await prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE", inspectedHash: { not: null } }, select: { id: true, inspectedHash: true, classifiedHash: true } })).filter((p) => p.classifiedHash !== p.inspectedHash);
-  if (freeOnly.length) await prisma.photoAsset.updateMany({ where: { id: { in: freeOnly.map((p) => p.id) } }, data: { inspectedHash: null } });
-  await prisma.photoJob.update({ where: { id: jobId }, data: { qcRequestedAt: new Date() } });
-  await logJobEvent(jobId, who, "QC re-run requested");
-  return { ok: true, changed: 1, stage: job.stage, message: "QC re-run requested. It starts on the next pass (within about 5 minutes)." };
-}
+// (The paid QC re-run request, requestQcRerun, was deleted with the paid
+// engine: audit Oct 25 2026, D7. "Check again" is the free check,
+// autohdrCheck.requestFreeRecheck.)
 
 // ---- client QC profiles ---------------------------------------------------------------------------
 

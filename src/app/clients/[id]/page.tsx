@@ -30,6 +30,7 @@ import { autoTextRules } from "@/lib/settings";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced, requirePageAccess } from "@/lib/auth/guards";
 import { canSeeMoney, isCreativeLead } from "@/lib/auth/access";
+import { isOwnerPrivateTask } from "@/lib/ownerPrivateTasks";
 import { redactMoney } from "@/lib/hubTools";
 import { stageMeta } from "@/lib/pipeline";
 import { formatMoney, stripHtml } from "@/lib/utils";
@@ -353,7 +354,8 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
           />
 
           <ClientTodos
-            todos={client.smartTasks.map((t) => ({
+            // The owner's books-audit items and pay questions are the owner's alone (audit Oct 25 2026, F7).
+            todos={client.smartTasks.filter((t) => showMoney || !isOwnerPrivateTask(t)).map((t) => ({
               id: t.id,
               title: t.title,
               taskType: t.taskType,

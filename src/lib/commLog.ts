@@ -1,6 +1,7 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { phoneKey } from "@/lib/phoneKey";
 
 // Central comms-memory writer. Every client text, call transcript, email, and
 // note flows through here so "Ask the Hub" can recall what was actually said.
@@ -44,7 +45,7 @@ export async function logComm(input: {
     // Normalize to the same 10-digit key everything else compares on, so a row
     // logged as "+1 (610) 555-0100" still matches a lookup for "6105550100".
     fromPhone: (() => {
-      const k = (input.fromPhone ?? "").replace(/\D/g, "").slice(-10);
+      const k = phoneKey(input.fromPhone);
       return k.length === 10 ? k : null;
     })(),
     subject: input.subject?.slice(0, 300) ?? null,

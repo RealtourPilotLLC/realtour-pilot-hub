@@ -470,7 +470,7 @@ export async function reconcileScriptApprovalTasks(opts: { now?: Date; max?: num
   // the office — there is no client approval to chase before each session.
   const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", clientSuppliesTopics: false, OR: [{ programKind: null }, { programKind: { not: "BULK" } }] }, select: { id: true, clientId: true } });
   if (!live.length) return { opened, closed, bells, checkedSessions, wouldOpen, wouldRing };
-  const curKey = now.toLocaleDateString("en-CA", { timeZone: "America/New_York" }).slice(0, 7);
+  const curKey = etDayKey(now).slice(0, 7);
   // Oct 21 2026: this month first. Next month is made early for every client
   // (contentProgram.ensureNextMonths) and must not crowd this month out of the
   // cap; it stays in, for a session booked early in the month.

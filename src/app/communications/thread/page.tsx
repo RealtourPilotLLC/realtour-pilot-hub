@@ -5,11 +5,12 @@ import { loadConversation } from "@/lib/commsThread";
 import { getConversationContext, resolveParticipants } from "@/lib/queries";
 import { ConversationView, type ChatItem } from "@/components/comms/ConversationView";
 import { viewerMoneyView } from "@/components/comms/viewerScrub";
+import { phoneKey } from "@/lib/phoneKey";
 
 export const dynamic = "force-dynamic";
 
 function fmtPhone(p: string) {
-  const d = p.replace(/\D/g, "").slice(-10);
+  const d = phoneKey(p);
   return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : p;
 }
 

@@ -220,8 +220,8 @@ async function main() {
     const rel2 = await d.releaseJobHold(job.id, "Kyle");
     c.ok("releasing a job that is not held is refused", !rel2.ok);
     // Oct 23 2026 (Jordan: "Paid Photo QC should be off"): the paid QC re-run is refused; no request flag is raised.
-    const qc = await d.requestQcRerun(job.id, "Kyle");
-    c.ok("a paid QC re-run request is refused (paid QC off) and raises nothing", !qc.ok && /Paid photo QC is off/.test(qc.message) && !(await prisma.photoJob.findUnique({ where: { id: job.id } }))?.qcRequestedAt, qc.message);
+    // Oct 25 2026 (audit D7): the paid re-run request was deleted with the paid engine.
+    c.ok("there is no paid QC re-run request, and nothing raised the flag", !("requestQcRerun" in d) && !(await prisma.photoJob.findUnique({ where: { id: job.id } }))?.qcRequestedAt);
 
     // =======================================================================
     c.head("4 · client QC profile");

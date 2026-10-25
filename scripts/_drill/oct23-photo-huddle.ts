@@ -441,7 +441,7 @@ async function main() {
     c.ok("'Sent to AutoHDR' (the hub did it by itself): Jordan's bell only", (await kyleRows("photo_autohdr_sent")) === 0 && (await ownerRows("photo_autohdr_sent")) === 1);
     await ops.alertOwnerAndKyle({ kind: "autohdr_credits_low", title: "Credits low", href: "/ops/photo-delivery/credits", dedupeKey: "autohdr-credits-250-e1", text: "low", to: "both" });
     c.ok("credits running low (Jordan tops them up): Jordan's only", (await kyleRows("autohdr_credits_low")) === 0 && (await ownerRows("autohdr_credits_low")) === 1);
-    const { bellOnly } = await import("@/lib/photoDelivery/qc/run");
+    const { bellOnly } = await import("@/lib/photoDelivery/notifyOps");
     await bellOnly({ kind: "photo_free_check", title: "110 Bell St: photo check done, 2 things to look at", href, dedupeKey: "photo-free-check-run1", to: "both" });
     await bellOnly({ kind: "photo_free_check", title: "110 Bell St: photo check done, 1 thing to look at", href, dedupeKey: "photo-free-check-run2", to: "both" });
     c.ok("two free checks of the same job in the same state: one bell for Kyle (Jordan's unchanged)", (await kyleRows("photo_free_check")) === 1 && (await ownerRows("photo_free_check")) === 2);

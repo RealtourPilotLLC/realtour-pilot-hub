@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etTime } from "@/lib/datetime";
+import { etDayKey, etTime } from "@/lib/datetime";
 import { noDashes } from "@/lib/text";
 import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
 import { isSyntheticClientRow } from "@/lib/testClients";
@@ -225,9 +225,8 @@ const streetOf = (title: string, addressLine: string | null) =>
   (addressLine?.trim() && !/^\[No address/i.test(addressLine) ? addressLine.trim() : title.split(",")[0].trim()) || "Your shoot";
 
 function shotWhen(startAt: Date, now: Date): string {
-  const day = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
-  if (day(startAt) === day(now)) return "today";
-  if (day(new Date(now.getTime() - 86_400_000)) === day(startAt)) return "yesterday";
+  if (etDayKey(startAt) === etDayKey(now)) return "today";
+  if (etDayKey(new Date(now.getTime() - 86_400_000)) === etDayKey(startAt)) return "yesterday";
   return startAt.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "long" });
 }
 

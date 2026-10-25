@@ -60,7 +60,7 @@ export const AI_MODELS = { FAST: "claude-haiku-4-5-20251001", SMART: "claude-son
 // stalled call could hold a cron step past its budget (the AI job's "start
 // only with the time to finish" rule assumes a call ENDS), let its lease
 // expire ("lease expired") and push the steps after it into `skipped`. Every
-// Messages call, here and the photo QC engine's (qc/claude.ts), now goes
+// Messages call (the photo QC engine's too, until it was deleted Oct 25 2026), now goes
 // through postMessages, which always carries a time limit.
 //
 // The default limit grows with the answer the call may write: a minute at
@@ -114,8 +114,9 @@ export async function postMessages(body: Record<string, unknown> | string, key: 
   /** Oct 22 2026: extra request headers (the script writer's beta opt-in). Never the key, the version or the content type: those are set below and win. */
   headers?: Record<string, string>;
   /** Oct 22 2026: the usage ledger's feature name (lib/aiUsage). Every helper
-   *  in this file passes one; a direct caller that passes none is the photo
-   *  QC engine (qc/claude.ts), this transport's only other caller. */
+   *  in this file passes one; "photo_qc" is the name the deleted photo QC
+   *  engine (qc/claude.ts, gone Oct 25 2026) recorded under, kept as the
+   *  fallback so its old ledger rows and any new one read alike. */
   feature?: string;
 }): Promise<MessagesHttpResponse> {
   const res = await fetch(ANTHROPIC_MESSAGES_URL, {

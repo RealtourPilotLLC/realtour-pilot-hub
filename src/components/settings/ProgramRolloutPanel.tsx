@@ -10,6 +10,7 @@ import { previewHeldAccessReleaseAction, releaseHeldAccessAction } from "@/app/c
 import { EVERY_CLIENT_CONFIRM } from "@/lib/programAutomationCopy";
 import type { AudiencePreviewRow } from "@/lib/programAudiencePreview";
 import { cn } from "@/lib/utils";
+import { etDayKey } from "@/lib/datetime";
 import { attemptPanelOperation, changeSettingsPanel, readSettingsPanel, refreshPanelChoice, type PanelActionResult, type PanelChoice } from "@/lib/settingsPanelFeedback";
 import { Button } from "@/components/ui/Action";
 import { SaveStatus } from "@/components/ui/SaveStatus";
@@ -43,7 +44,7 @@ const day = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleDat
 const endDay = (iso: string | null | undefined) => (iso ? day(new Date(Date.parse(iso) - 1).toISOString()) : null);
 const endDayInput = (iso: string | null | undefined) => (iso ? new Date(Date.parse(iso) - 1).toLocaleDateString("en-CA", { timeZone: "America/New_York" }) : "");
 /** Thirty days from today in ET, for the "suggest" button (the end date is optional). */
-const in30Days = () => new Date(Date.now() + 30 * 86_400_000).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+const in30Days = () => etDayKey(new Date(Date.now() + 30 * 86_400_000));
 
 const MODES: { key: ProgramRolloutPanelData["mode"]; label: string; words: string }[] = [
   { key: "TEST_ONLY", label: "Only my TEST clients", words: "Nothing reaches a real client. This is where everything starts." },

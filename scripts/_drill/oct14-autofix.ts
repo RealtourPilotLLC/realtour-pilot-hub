@@ -356,8 +356,8 @@ async function main() {
     fake.state.describe = prevDescribe;
     // Oct 23 2026 (Jordan: "Paid Photo QC should be off. Only using the free version."): nothing asks for it.
     const inspectedBefore = await prisma.photoAsset.count({ where: { jobId: W9.job.id, inspectedHash: { not: null } } });
-    const rq = await decisions.requestQcRerun(W9.job.id, "Jordan");
-    c.ok("asking for the paid QC is refused, and nothing the free check looked at is touched", !rq.ok && /Paid photo QC is off/.test(rq.message) && (await prisma.photoAsset.count({ where: { jobId: W9.job.id, inspectedHash: { not: null } } })) === inspectedBefore && !(await prisma.photoJob.findUniqueOrThrow({ where: { id: W9.job.id } })).qcRequestedAt, rq.message);
+    // Oct 25 2026 (audit D7): the paid re-run request was deleted with the paid engine.
+    c.ok("there is no way to ask for the paid QC, and nothing the free check looked at is touched", !("requestQcRerun" in decisions) && (await prisma.photoAsset.count({ where: { jobId: W9.job.id, inspectedHash: { not: null } } })) === inspectedBefore && !(await prisma.photoJob.findUniqueOrThrow({ where: { id: W9.job.id } })).qcRequestedAt);
 
     c.head("isolation");
     c.ok("no outbound call escaped the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

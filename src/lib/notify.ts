@@ -6,7 +6,7 @@ import { slackNotify, slackChannels } from "@/lib/integrations/slack";
 import { appBase } from "@/lib/appUrl";
 import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
 import type { Role } from "@/lib/auth/access";
-import { etHour } from "@/lib/datetime";
+import { etDayKey, etHour } from "@/lib/datetime";
 import { allSlackOwnerIds, wantsAllSlack } from "@/lib/notifyAllSlack";
 
 // ---------------------------------------------------------------------------
@@ -2416,7 +2416,7 @@ export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: str
   // still gets that morning's list.
   const off = await digestGate();
   if (off) return { sent: false, reason: off };
-  const day = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const day = etDayKey(new Date());
   const claimKey = `kyle-morning-${day}`;
   try {
     await prisma.appSetting.create({ data: { key: claimKey, value: "sent" } });
@@ -2452,9 +2452,11 @@ export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: str
       return await send("☀️ Morning — nothing on the board yet. Enjoy the quiet start.");
     }
     const lines: string[] = ["☀️ *Morning check* — today's list:"];
-    for (const t of overdue.slice(0, 8)) lines.push(`• 🔴 ${t.title}`);
+    // Kyle never sees a figure: a typed title ("Invoice Jamie $450") passes the
+    // money scrub here as it does on his board (audit Oct 25 2026).
+    for (const t of overdue.slice(0, 8)) lines.push(`• 🔴 ${scrubMoney(t.title)}`);
     if (overdue.length > 8) lines.push(`  …and ${overdue.length - 8} more overdue`);
-    for (const t of openToday.slice(0, 10)) lines.push(`• ${t.title}`);
+    for (const t of openToday.slice(0, 10)) lines.push(`• ${scrubMoney(t.title)}`);
     if (openToday.length > 10) lines.push(`  …and ${openToday.length - 10} more`);
     if (texts.length > 0) lines.push(`✉️ ${texts.length} client text${texts.length === 1 ? "" : "s"} drafted & ready in the Outbox`);
     lines.push(...exceptionLines);

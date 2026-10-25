@@ -8,6 +8,7 @@ import { can, actorLabel, refusalMessage, type PortalPermission } from "@/lib/po
 import { approveCut, noticeApprovalNotes, requestChangesOnCut, replyToComment, setCommentResolved, isMine, recordLinkComment, type OpenNotesChoice } from "@/lib/clientDecisions";
 import { saveCaptionEdit, draftCaptionForVideo } from "@/lib/postingKit";
 import { clip } from "@/lib/text";
+import { etDayKey } from "@/lib/datetime";
 import { contentHref } from "@/lib/contentNav"; // UI-02: the one builder of staff client-file links
 import { STRATEGY_GATE_REFUSAL, strategyGateFor } from "@/lib/strategyGate";
 
@@ -1159,7 +1160,7 @@ export async function portalPlanWithCall(auth: PortalAuth, monthId: string): Pro
 // is cancelled — a booked call stays booked; topics, answers and scripts stay.
 // ---------------------------------------------------------------------------
 /** Planning bells dedupe per month per ET day (Oct 6): one ping a day per kind, so the latest state still reaches the owner the next day. */
-const planBellKey = (prefix: string, monthId: string) => `${prefix}-${monthId}-${new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" })}`;
+const planBellKey = (prefix: string, monthId: string) => `${prefix}-${monthId}-${etDayKey(new Date())}`;
 
 type RUndo = R & { /** Sealed: hand back to portalPlanUndecided to put the month back as it was. */ undo?: string };
 const PLAN_UNDO_KIND = "plan-undo:1";

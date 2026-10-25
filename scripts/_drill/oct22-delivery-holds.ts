@@ -596,14 +596,13 @@ async function main() {
     const policy = await import("@/lib/photoDelivery/fixPolicy");
     const prep = await import("@/lib/photoDelivery/prep");
     const house = await import("@/lib/photoDelivery/houseRules");
-    const { P1_BLOCK } = await import("@/lib/photoDelivery/qc/prompts/p1-photo.v1");
     const rule = reg.ruleById("AIEDIT_FLOATING_OBJECT");
     c.ok("a registry rule: MAJOR, per photo, any room, the editor's (an AutoHDR artifact), in the rule format", rule?.defaultSeverity === "MAJOR" && rule.pass === "P1_PHOTO" && rule.detector === "VISION_PHOTO" && rule.rooms.join() === "ANY" && rule.responsibility === "EDITOR" && rule.groupKey === "FLOATING_OBJECT" && /lamp/.test(rule.visionHint ?? "") && !rule.escalateTo && reg.RULES_REGISTRY_VERSION === "v1.3-2026-10-22", JSON.stringify(rule));
     const bedroomRules = reg.visionRulesForPhoto({ roomType: "BEDROOM", roomConfidence: 0.9, alternateRoomType: null, maxBuildPhase: 1 });
     c.ok("…in the paid QC's rules block for a bedroom photo", bedroomRules.some((r) => r.id === "AIEDIT_FLOATING_OBJECT") && /AIEDIT_FLOATING_OBJECT/.test(reg.renderRulesBlock(bedroomRules, "BEDROOM")));
     c.ok("…and switched off by a house override there too", !reg.visionRulesForPhoto({ roomType: "BEDROOM", roomConfidence: 0.9, alternateRoomType: null, maxBuildPhase: 1, overrides: [{ ruleId: "AIEDIT_FLOATING_OBJECT", disabled: true, reason: "x" }] }).some((r) => r.id === "AIEDIT_FLOATING_OBJECT"));
-    // The paid photo prompt stays the pack's text byte for byte (oct14-photo-qc); its AI_ARTIFACTS check and the rule's line in <rules> carry it.
-    c.ok("…the paid QC's photo prompt is unchanged (its AI artifacts check; the rule reaches it in the rules block above)", /AI_ARTIFACTS: smears, cloned textures/.test(P1_BLOCK) && !/floating or unsupported/.test(P1_BLOCK) && /nothing under it/.test(reg.renderRulesBlock(bedroomRules, "BEDROOM")));
+    // (The paid photo prompt this used to compare was deleted with the paid engine: audit Oct 25 2026, D7.)
+    c.ok("…the rule's line in the rules block says it in plain words", /nothing under it/.test(reg.renderRulesBlock(bedroomRules, "BEDROOM")));
     const off = new Set(["GAL_RESOLUTION_CONSISTENCY", "KIT_CABINET_COLOR_ACROSS_PHOTOS", "PERSP_STRETCHED_EDGE_FURNITURE", "PERSP_EXCESSIVE_FISHEYE", "COMP_MOTION_BLUR"]);
     const fq = check.checkPrompt(off);
     c.ok("the free check's question asks it (v4 on; Oct 23 2026: the lamp shade with no stand named first), in plain words, furniture and decor included", Number(check.CHECK_PROMPT_VERSION) >= 4 && /AIEDIT_FLOATING_OBJECT: a lamp shade with no lamp base or stand under it, a lamp, piece of furniture or decor floating with nothing under it/.test(fq) && /Editing mistakes: .* is AIEDIT_FLOATING_OBJECT, furniture and decor included/.test(fq), fq.split("\n").filter((l) => /FLOATING|Editing/.test(l)).join(" | "));

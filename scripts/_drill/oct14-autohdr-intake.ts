@@ -19,7 +19,7 @@
 //   5. files added later: a second shoot with only the new files
 //   6. a shoot someone already made in AutoHDR: LINKED, nothing sent
 //   7. a lost create reply: looked up, never repeated blindly
-//   8. paid QC no longer starts by itself (Oct 23 2026: it is off for good, PAID_QC_OFF)
+//   8. paid QC no longer starts by itself (Oct 23 2026: off for good; Oct 25: the engine is deleted)
 //   9. Kyle pushes the edits to Aryeo: rows carried over in place, findings
 //      kept; a half-finished push keeps the AutoHDR gallery
 //  10. shoots before the start date, delivered or video-only: untouched
@@ -106,7 +106,6 @@ async function main() {
     const intake = await import("@/lib/photoDelivery/intake");
     const jobs = await import("@/lib/photoDelivery/jobs");
     const check = await import("@/lib/photoDelivery/autohdrCheck");
-    const qc = await import("@/lib/photoDelivery/qc");
     await saveSecret("autohdr", "drill-secret-1234567890", { accountLabel: "drill", metadata: { clientId: "cid" } });
     await saveSecret("dropbox", "drill-refresh", { accountLabel: "drill" });
     await saveSecret("aryeo", "drill-aryeo-key", { accountLabel: "drill" });
@@ -298,8 +297,10 @@ async function main() {
     c.head("8 · the paid QC never starts (off for good since Oct 23 2026)");
     const otherJob = await prisma.photoJob.create({ data: { projectId: (await mkProject("9 Paid Way")).id, stage: "EDITED" } });
     await prisma.photoAsset.create({ data: { jobId: otherJob.id, name: "x.jpg", sourceKind: "ARYEO", sourceUrl: "https://cdn.aryeo.com/x.jpg", contentHash: "h", status: "ACTIVE" } });
-    const paid = await qc.driveQc({ budgetMs: 30_000, leaseBy: "drill" });
-    c.ok("an EDITED gallery is not picked up by the paid QC (it is off: driveQc refuses)", /Paid photo QC is off/.test(paid.skipped ?? "") && !paid.jobs?.some((j) => (j as { jobId?: string }).jobId === otherJob.id) && (await prisma.photoQcRun.count({ where: { jobId: otherJob.id } })) === 0, JSON.stringify(paid).slice(0, 200));
+    // Oct 25 2026 (audit D7): the paid engine (driveQc) is deleted, so nothing can start it.
+    const { existsSync } = await import("node:fs");
+    const engineFiles = ["run.ts", "claude.ts", "index.ts"].map((f) => `${__dirname}/../../src/lib/photoDelivery/qc/${f}`);
+    c.ok("an EDITED gallery opens no paid run: the paid engine is gone from the tree", engineFiles.every((f) => !existsSync(f)) && (await prisma.photoQcRun.count({ where: { jobId: otherJob.id, trigger: { not: "AUTOHDR_CHECK" } } })) === 0, engineFiles.filter((f) => existsSync(f)).join(", "));
 
     // ======================================================================
     c.head("9 · Kyle pushes the edits to Aryeo: same photos, same findings");

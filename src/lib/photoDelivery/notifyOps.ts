@@ -126,6 +126,36 @@ export async function kyleRowKey(a: { kind: string; dedupeKey: string; href: str
   return kyleBellKey(a, stage && stage.stageChangedAt ? { stage: stage.stage, stageChangedAt: stage.stageChangedAt } : null);
 }
 
+/** Bell rows only (no Slack, no text): the free photo check's "check done"
+ *  bell. Same row shape and dedupe slots as alertOwnerAndKyle (owner slot 0,
+ *  Kyle slot 1), so the two never collide. Moved here from the paid QC
+ *  engine (qc/run.ts) when that engine was deleted (audit Oct 25 2026, D7). */
+export async function bellOnly(a: { kind: string; title: string; body?: string; href: string; dedupeKey: string; to: "kyle" | "both" }): Promise<number> {
+  const { ownerId, kyleId } = await opsRecipients();
+  const people: { id: string; role: "OWNER" | "ADMIN"; slot: number }[] = [];
+  if (ownerId && a.to === "both") people.push({ id: ownerId, role: "OWNER", slot: 0 });
+  if (kyleId && kyleId !== ownerId) people.push({ id: kyleId, role: "ADMIN", slot: 1 });
+  // The engine's dash rule: a dash becomes a comma, and a doubled comma one.
+  const plain = (s: string) => noLongDashes(s).replace(/,\s*,/g, ",");
+  let n = 0;
+  const { logDelivery } = await import("@/lib/notify");
+  for (const p of people) {
+    // Oct 23 2026 (huddle item 11): Kyle's bell by his own rule: none for what he can't act on, one per job per state.
+    const key = p.role === "ADMIN" ? await kyleRowKey(a) : a.dedupeKey;
+    if (!key) continue;
+    const row = await prisma.notification
+      .create({ data: { kind: a.kind, title: plain(a.title).slice(0, 90), body: a.body ? plain(a.body).slice(0, 140) : null, href: a.href, audience: JSON.stringify([p.role]), userKey: `tm:${p.id}`, dedupeKey: `${key}-${p.slot}` }, select: { id: true } })
+      .catch((e: unknown) => {
+        if ((e as { code?: string } | null)?.code === "P2002") return null;
+        throw e;
+      });
+    if (!row) continue;
+    n++;
+    await logDelivery({ notificationId: row.id, teamMemberId: p.id, kind: a.kind, channel: "bell", status: "sent" }).catch(() => {});
+  }
+  return n;
+}
+
 /** Returns how many people this call announced to (0 when already announced). */
 export async function alertOwnerAndKyle(a: OpsAlert): Promise<{ announced: number; outcomes: string[] }> {
   const outcomes: string[] = [];

@@ -1,6 +1,7 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { phoneKey } from "@/lib/phoneKey";
 import { reportError } from "@/lib/errorTracker";
 // TYPES ONLY (R03, Sep 28 2026): the gate module is imported lazily, below, and
 // only for the six rollout kinds — a confirmation or a staff text never loads it.
@@ -1205,7 +1206,7 @@ export type PendingManualSend = {
  * with no Client row still has a conversation.
  */
 export async function pendingManualSends(toRefs: string[], opts: { withinMs?: number } = {}): Promise<PendingManualSend[]> {
-  const keys = toRefs.map((t) => t.replace(/\D/g, "").slice(-10)).filter((k) => k.length === 10);
+  const keys = toRefs.map((t) => phoneKey(t)).filter((k) => k.length === 10);
   if (!keys.length) return [];
   const since = new Date(Date.now() - (opts.withinMs ?? 24 * 3600_000));
   const rows = (await prisma.outboxMessage
@@ -1245,7 +1246,7 @@ export async function pendingManualSends(toRefs: string[], opts: { withinMs?: nu
  * nothing here can mark a message failed or send one.
  */
 export async function settleUnknownFromEcho(echo: { toRef: string; body: string; providerId: string | null; at?: Date }): Promise<boolean> {
-  const key = echo.toRef.replace(/\D/g, "").slice(-10);
+  const key = phoneKey(echo.toRef);
   const body = (echo.body ?? "").trim();
   if (key.length !== 10 || !body) return false;
   const at = echo.at ?? new Date();
@@ -1290,7 +1291,7 @@ export async function settleUnknownDeliveryFromEcho(
   echo: { toRef: string; body: string; providerId: string; at: Date },
   options: { throwOnFailure?: boolean } = {},
 ): Promise<boolean> {
-  const key = echo.toRef.replace(/\D/g, "").slice(-10);
+  const key = phoneKey(echo.toRef);
   const providerId = echo.providerId.trim();
   const atMs = echo.at.getTime();
   if (key.length !== 10 || !echo.body.trim() || !providerId || !Number.isFinite(atMs) || atMs > Date.now() + 5 * 60_000) return false;

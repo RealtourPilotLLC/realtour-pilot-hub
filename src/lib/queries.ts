@@ -13,6 +13,8 @@ import { pinnedPromise } from "@/lib/turnaround";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { rankClientRows } from "@/lib/contacts";
 import { taskClientScopeWhere, type TaskClientScope } from "@/lib/taskClientScope";
+import { notOwnerPrivateWhere } from "@/lib/ownerPrivateTasks";
+import { phoneKey } from "@/lib/phoneKey";
 
 // Re-export the QC types so the dashboard can consume them without reaching
 // past this module — queries.ts is the dashboard's single data door.
@@ -200,13 +202,13 @@ export async function resolveParticipants(phones: string[]): Promise<ConvoMember
 // Resolve a phone number (from a conversation) to a client + their recent
 // projects and activity, for the Communications sidebar.
 export async function getConversationContext(rawPhone: string) {
-  const k = (rawPhone || "").replace(/\D/g, "").slice(-10);
+  const k = phoneKey(rawPhone);
   if (k.length !== 10) return { client: null, projects: [], activities: [] };
 
   // A team person's number can also be on a synthetic client record. Keep
   // their conversation and name, without attaching that fixture's projects.
   const team = await prisma.teamMember.findMany({ where: { phone: { not: null } }, select: { phone: true } });
-  if (team.some((member) => (member.phone ?? "").replace(/\D/g, "").slice(-10) === k)) {
+  if (team.some((member) => phoneKey(member.phone) === k)) {
     return { client: null, projects: [], activities: [] };
   }
 
@@ -217,7 +219,7 @@ export async function getConversationContext(rawPhone: string) {
       avatarUrl: true, // headshot for the conversation header (ConversationView)
     },
   });
-  const matchedClients = clients.filter((c) => c.phone && c.phone.replace(/\D/g, "").slice(-10) === k);
+  const matchedClients = clients.filter((c) => c.phone && phoneKey(c.phone) === k);
   const realClients = matchedClients.filter((c) => !isSyntheticClientRow(c));
   const eligible = realClients.length ? realClients : matchedClients;
   const rankedId = eligible.length > 1 ? await rankedPhoneClientId(eligible.map((c) => c.id)) : null;
@@ -455,7 +457,11 @@ export async function getMorningBrief(): Promise<BriefTask[]> {
       // (audit crack #4: an URGENT client-ETA task sat overdue addressed to a
       // vendor). Kyle stays the human checkpoint on all delegated work.
       AND: [
-        {}, // every assignee visible — jordan/photographer keys must not vanish (audit critical)
+        // Every assignee visible — jordan/photographer keys must not vanish
+        // (audit critical) — except the owner's own books-audit items and pay
+        // questions: this read is Kyle's two Slack digests and nothing else
+        // (audit Oct 25 2026, F7).
+        notOwnerPrivateWhere(),
         { OR: [
         // Messages/replies (email, text, Slack, lead, revision): always surface
         // in "Check your messages" while open — any due date, any project age.
@@ -496,6 +502,8 @@ export async function getOverdueTasks(): Promise<BriefTask[]> {
       // them out of Needs Attention to avoid double-listing.
       taskType: { notIn: [...MESSAGE_TASK_TYPES, ...DELIVER_TASK_TYPES] },
       OR: [{ projectId: null }, { project: recentProjectWhere() }],
+      // Kyle's digests only: never the owner's books-audit items or pay questions (F7).
+      AND: [notOwnerPrivateWhere()],
     },
     include: { client: { select: { name: true, avatarUrl: true } } },
     orderBy: [{ priority: "asc" }, { dueAt: "asc" }],

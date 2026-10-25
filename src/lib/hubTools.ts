@@ -8,6 +8,7 @@ import { etDateTime, etDate, etDayKey, etDayStartUtc, etAddDays, etFullDate, etE
 import type { HubTool } from "@/lib/integrations/ai";
 import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
 import { canSeeMoney } from "@/lib/auth/access";
+import { notOwnerPrivateWhere } from "@/lib/ownerPrivateTasks";
 
 // ---------------------------------------------------------------------------
 // Read-only data tools for "Ask the Hub". Each tool maps to a bounded Prisma
@@ -426,6 +427,10 @@ function resolveRange(input: { range?: string; from?: string; to?: string }): { 
 // keys that are theirs. A caller that passes neither keeps the tier rule.
 type HubToolCtx = { role: string; impersonating?: boolean; who?: string | null; office?: boolean; ownKeys?: string[] };
 const notOffice = (ctx: HubToolCtx) => ctx.office === false;
+// The owner's books-audit items and pay questions are read, completed and
+// handed around by the owner alone (audit Oct 25 2026, F7): every task read
+// below ANDs this in, so a non-owner's chat neither lists nor matches them.
+const ownerPrivateScope = (ctx: HubToolCtx): Prisma.SmartTaskWhereInput => (canSeeMoney(ctx.role) ? {} : notOwnerPrivateWhere());
 
 export async function execHubTool(
   name: string,
@@ -492,7 +497,7 @@ export async function execHubTool(
           deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, status: true } },
           appointments: { select: { startAt: true, status: true, assignedTo: { select: { name: true } } }, orderBy: { startAt: "asc" } },
           smartTasks: {
-            where: { status: { notIn: ["COMPLETED", "CANCELLED"] } },
+            where: { status: { notIn: ["COMPLETED", "CANCELLED"] }, AND: [ownerPrivateScope(ctx)] },
             select: { taskType: true, title: true, priority: true, dueAt: true },
             orderBy: { dueAt: "asc" },
           },
@@ -606,7 +611,7 @@ export async function execHubTool(
       const taskType = typeof input.taskType === "string" ? input.taskType.trim() : "";
       const limit = Math.min(Number(input.limit) || 25, 40);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const where: any = { status: { notIn: ["COMPLETED", "CANCELLED"] } };
+      const where: any = { status: { notIn: ["COMPLETED", "CANCELLED"] }, AND: [ownerPrivateScope(ctx)] };
       if (scope === "overdue") where.dueAt = { lt: new Date() };
       if (taskType) where.taskType = taskType;
       const tasks = await prisma.smartTask.findMany({
@@ -666,7 +671,7 @@ export async function execHubTool(
       const end = etAddDays(start, 1);
       const [completed, delivered, shoots] = await Promise.all([
         prisma.smartTask.findMany({
-          where: { status: "COMPLETED", completedAt: { gte: start, lt: end } },
+          where: { status: "COMPLETED", completedAt: { gte: start, lt: end }, AND: [ownerPrivateScope(ctx)] },
           take: 60,
           select: { taskType: true, title: true, project: { select: { title: true } } },
         }),
@@ -928,6 +933,7 @@ export async function execHubTool(
       const matches = await prisma.smartTask.findMany({
         where: {
           ...(ownOnly ? { assignedKey: { in: ctx.ownKeys } } : {}),
+          AND: [ownerPrivateScope(ctx)],
           status: reopen ? "COMPLETED" : { notIn: ["COMPLETED", "CANCELLED"] },
           OR: q.split(/\s+/).filter((w) => w.length > 2).map((w) => ({ title: { contains: w, mode: "insensitive" as const } })),
         },
@@ -982,6 +988,7 @@ export async function execHubTool(
       const matches = await prisma.smartTask.findMany({
         where: {
           status: { notIn: ["COMPLETED", "CANCELLED"] },
+          AND: [ownerPrivateScope(ctx)],
           OR: q.split(/\s+/).filter((w) => w.length > 2).map((w) => ({ title: { contains: w, mode: "insensitive" as const } })),
         },
         orderBy: { createdAt: "desc" },

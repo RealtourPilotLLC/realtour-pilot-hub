@@ -11,7 +11,7 @@
 //
 // Pure module on purpose: no prisma, no "server-only", so the roster, the
 // portal, the call engine (contentCalls.ts used to hold this regex) and a
-// tsx script can all import it.
+// tsx script can all import it. (Its one import, ./phoneKey, is pure too.)
 //
 // ---------------------------------------------------------------------------
 // Sep 21 2026 — THREE THINGS PHASE 0 MEASURED, AND WHAT EACH ONE ADDS HERE.
@@ -46,6 +46,8 @@
 //    client may not have a real provider record written for it, and a test
 //    journey may not reach into a real client's provider record.
 // ---------------------------------------------------------------------------
+
+import { phoneKey } from "./phoneKey";
 
 /** Word-bounded: "Bobby TEST", "Cara TEST", "John Doe" — never "Testa". */
 export const isTestClientName = (name: string | null | undefined): boolean =>
@@ -194,10 +196,6 @@ export const isNeverSyntheticAryeoCustomerId = (id: string | null | undefined): 
  */
 export const UNVERIFIED_LOOKALIKE_PHONE_DIGITS = "2678279038";
 
-const last10 = (phone: string | null | undefined): string => {
-  const digits = (phone ?? "").replace(/\D/g, "");
-  return digits.length > 10 ? digits.slice(-10) : digits;
-};
 
 /**
  * Fold plus-addressing away: info+jordantest@realtourpilot.com is delivered to
@@ -222,7 +220,7 @@ export const isVerifiedTestDestinationEmail = (email: string | null | undefined)
   VERIFIED_INBOXES.has(canonicalInbox(email));
 
 export const isVerifiedTestDestinationPhone = (phone: string | null | undefined): boolean =>
-  last10(phone) === JORDAN_TEST_PHONE_DIGITS;
+  phoneKey(phone) === JORDAN_TEST_PHONE_DIGITS;
 
 /** Real operations only: counts, payouts, reminders and reports exclude these. */
 export const isOperationalClientName = (name: string | null | undefined): boolean => !isTestClientName(name);
