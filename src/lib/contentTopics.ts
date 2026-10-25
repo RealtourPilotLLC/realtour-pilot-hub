@@ -350,7 +350,9 @@ export async function deselectTopic(topicId: string, monthId: string, actor: Act
       prisma.contentScript.findFirst({ where: { topicId, monthId, historical: false }, select: { id: true } }),
       prisma.contentVideo.findFirst({ where: { topicId, monthId, OR: [{ filmedConfirmedAt: { not: null } }, { status: { in: FOOTAGE_VIDEO_STATUSES } }] }, select: { id: true } }),
     ]);
-    if (script || footage) throw new Error(sel?.status === "CARRIED" ? "This is a carried-over script — swap it for another topic instead (the script is kept)." : "This topic already has a script or footage for this month — it stays on the month.");
+    if (script || footage) // Oct 25 2026 (audit): these words reach the client's toast (portalRemoveSelection),
+    // so no em dash, and no "swap": the client's swap was retired on Oct 21 (E9).
+    throw new Error(sel?.status === "CARRIED" ? "This is a carried-over script, so it stays on the month. We can change it for you: just message us." : "This topic already has a script or footage for this month, so it stays on the month.");
   }
   await prisma.contentTopicSelection.updateMany({ where: { topicId, monthId, status: { in: ["SELECTED", "PROPOSED", "RECONCILED"] } }, data: { status: "REMOVED", removedAt: new Date(), removedBy: actor.staffUserId ?? actor.clientUserId ?? actor.kind, removedReason: "DESELECTED" } });
   // The legacy pointer goes back to the bank only when the topic has no script
@@ -535,12 +537,12 @@ export async function declineTopicForClient(topicId: string, actor: Actor, reaso
   if (t.clientDeclinedAt) return;
   const live = await prisma.contentTopicSelection.findMany({ where: { topicId, status: { in: ALLOWANCE_SELECTION_STATUSES } }, select: { monthId: true, status: true } });
   for (const s of live) {
-    if (s.status === "RECONCILED" || s.status === "CARRIED") throw new Error("This one is already planned for a month — swap it for another topic instead.");
+    if (s.status === "RECONCILED" || s.status === "CARRIED") throw new Error("This one is already planned for a month, so it stays. We can change it for you: just message us.");
     const [script, footage] = await Promise.all([
       prisma.contentScript.findFirst({ where: { topicId, monthId: s.monthId, historical: false }, select: { id: true } }),
       prisma.contentVideo.findFirst({ where: { topicId, monthId: s.monthId, OR: [{ filmedConfirmedAt: { not: null } }, { status: { in: FOOTAGE_VIDEO_STATUSES } }] }, select: { id: true } }),
     ]);
-    if (script || footage) throw new Error("This one already has a script or footage — swap it for another topic instead.");
+    if (script || footage) throw new Error("This one already has a script or footage, so it stays. We can change it for you: just message us.");
   }
   const by = actor.clientUserId ?? actor.staffUserId ?? actor.kind;
   const clean = reason?.trim().slice(0, 500) || null;

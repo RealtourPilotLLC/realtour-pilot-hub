@@ -141,7 +141,10 @@ const deadlineLine = (v: TemplateVars) => (v.deadline ? ` We'd love to have it p
 
 const sessionParagraph = (v: TemplateVars) => (v.sessionNote ? `\n\n${v.sessionNote}` : "");
 
-const list = (titles: string[]) => titles.map((t) => `  • ${t}`).join("\n");
+// Oct 25 2026 (audit): a script title is stored as written (older ones carry
+// em dashes, "Hakuna Matata — Working With Me…"), and these lists go straight
+// into a client's email. No em or en dash in anything a client reads.
+const list = (titles: string[]) => titles.map((t) => `  • ${t.replace(/\s*[\u2014\u2013]\s*/g, ", ").replace(/\s+/g, " ").trim()}`).join("\n");
 
 export const REMINDER_TEMPLATES: Record<string, ReminderTemplate> = {
   "reminder.choose_path.v1": {
