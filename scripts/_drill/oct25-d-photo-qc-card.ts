@@ -94,6 +94,23 @@ async function main() {
     c.ok("a card the bug brought back for the photos closes again, evidence ticked", (await closeMediaCheckForPhotos(D.job.id, { by: "audit", reason: "Photos approved and delivered in Photo Delivery", human: false })) === 1 && parseChecklist((await prisma.smartTask.findUniqueOrThrow({ where: { id: D.card.id } })).checklist).find((i) => i.label === "QC Photos")?.done === true);
 
     // =====================================================================
+    c.head("3b · The delivery order: one history line per sitting");
+    // =====================================================================
+    const { setDeliveryOrder } = await import("@/lib/photoDelivery/decisions");
+    const ids: string[] = [];
+    for (let i = 0; i < 4; i++) ids.push((await prisma.photoAsset.create({ data: { jobId: A.job.id, name: `p${i}.jpg`, status: "ACTIVE", sequence: i } })).id);
+    const orderLines = () => prisma.photoJobEvent.findMany({ where: { jobId: A.job.id, action: { startsWith: "delivery order saved" } }, orderBy: { at: "asc" } });
+    for (const perm of [[1, 0, 2, 3], [1, 2, 0, 3], [1, 2, 3, 0], [2, 1, 3, 0]]) await setDeliveryOrder(A.job.id, perm.map((k) => ids[k]), "Jordan Spackman");
+    const l1 = await orderLines();
+    c.ok("four drags by Jordan: one line, holding the latest order", l1.length === 1 && JSON.parse(l1[0].dataJson ?? "{}").first?.[0] === ids[2] && (await prisma.photoJob.findUniqueOrThrow({ where: { id: A.job.id } })).orderJson === JSON.stringify([2, 1, 3, 0].map((k) => ids[k])), JSON.stringify(l1.map((e) => e.action)));
+    await setDeliveryOrder(A.job.id, ids, "Kyle Smith");
+    c.ok("Kyle saving next: his own line", (await orderLines()).length === 2);
+    const kyleLine = (await orderLines())[1];
+    await prisma.photoJobEvent.update({ where: { id: kyleLine.id }, data: { at: new Date(Date.now() - 11 * 60_000) } });
+    await setDeliveryOrder(A.job.id, [...ids].reverse(), "Kyle Smith");
+    c.ok("Kyle again eleven minutes later: a new line", (await orderLines()).length === 3);
+
+    // =====================================================================
     c.head("4 · The repair script");
     // =====================================================================
     const src = fs.readFileSync(path.join(REPO, "scripts/_live/oct25-d-photo-qc-cards.ts"), "utf8");

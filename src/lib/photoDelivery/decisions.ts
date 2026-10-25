@@ -372,7 +372,17 @@ export async function setDeliveryOrder(jobId: string, photoIds: string[], by: st
   const photos = await prisma.photoAsset.findMany({ where: { id: { in: list } }, select: { id: true, jobId: true } });
   if (photos.length !== list.length || photos.some((p) => p.jobId !== jobId)) return { ok: false, message: "That order names a photo that is not part of this job." };
   await prisma.photoJob.update({ where: { id: jobId }, data: { orderJson: JSON.stringify(list) } });
-  await logJobEvent(jobId, who, `delivery order saved (${plural(list.length, "photo")})`, { first: list.slice(0, 5) });
+  // One line per sitting (audit Oct 25 2026): every drag saves the order, and
+  // Jordan's reorder of 615 Cliff Ln wrote nine "delivery order saved" lines
+  // in two minutes over the job's history. The same person saving again
+  // within ten minutes updates their line instead.
+  const action = `delivery order saved (${plural(list.length, "photo")})`;
+  const last = await prisma.photoJobEvent.findFirst({ where: { jobId }, orderBy: { at: "desc" }, select: { id: true, actor: true, action: true, at: true } }).catch(() => null);
+  if (last && last.actor === who && last.action.startsWith("delivery order saved") && Date.now() - last.at.getTime() < 10 * 60_000) {
+    await prisma.photoJobEvent.update({ where: { id: last.id }, data: { at: new Date(), action, dataJson: JSON.stringify({ first: list.slice(0, 5) }) } }).catch(() => logJobEvent(jobId, who, action, { first: list.slice(0, 5) }));
+  } else {
+    await logJobEvent(jobId, who, action, { first: list.slice(0, 5) });
+  }
   return { ok: true, changed: list.length, stage: null, message: "Order saved." };
 }
 
