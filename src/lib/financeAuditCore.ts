@@ -43,3 +43,35 @@ export function groupTotals(
 }
 
 export const STATUS_WORDS: Record<AuditStatus, string> = { ok: "Ties out", flag: "Look at this", gap: "Missing" };
+
+/**
+ * QuickBooks Payments deposits the bank received that QuickBooks has no
+ * record of. A deposit is recorded when one QuickBooks payment, sales receipt
+ * or deposit of the same amount sits within a week of it, or when two to four
+ * payments in that week add up to it: Intuit batches a day's charges into one
+ * deposit, so $4,297 recorded as $2,798 + $1,499 is recorded. Deposits under
+ * $100 (Intuit's account-verification pennies) are ignored. Bank amounts are
+ * negative for money in (Plaid's sign).
+ */
+export function unrecordedDeposits<B extends { amount: number; date: Date }>(
+  bank: B[],
+  qbo: { amount: number; txnDate: Date; type: string }[],
+  windowDays = 7,
+): B[] {
+  const W = windowDays * 86_400_000;
+  const cents = (n: number) => Math.round(n * 100);
+  return bank.filter((b) => {
+    const want = cents(-b.amount);
+    if (want < 10_000) return false;
+    const near = qbo.filter((q) => Math.abs(q.txnDate.getTime() - b.date.getTime()) <= W);
+    if (near.some((q) => cents(q.amount) === want)) return false;
+    const parts = near.filter((q) => q.type !== "Deposit" && q.amount > 0 && cents(q.amount) < want).map((q) => cents(q.amount)).slice(0, 24);
+    const hit = (from: number, left: number, depth: number): boolean => {
+      if (left === 0) return depth >= 2;
+      if (depth === 4) return false;
+      for (let i = from; i < parts.length; i++) if (parts[i] <= left && hit(i + 1, left - parts[i], depth + 1)) return true;
+      return false;
+    };
+    return !hit(0, want, 0);
+  });
+}

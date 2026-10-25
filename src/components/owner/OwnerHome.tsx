@@ -20,6 +20,8 @@ import {
   type CreativeDecisions, type DelegatedByMe, type EmailSection, type Meetings,
 } from "@/lib/ownerWork";
 import { OwnerShell, PanelButton, PRIMARY, QUIET } from "@/components/owner/OwnerShell";
+import { RevenueMonthPanel } from "@/components/finance/RevenueMonthPanel";
+import { StripeCard } from "@/components/finance/StripeCard";
 import type { ListRow, PanelSpec, RosterOption } from "@/components/owner/panelTypes";
 
 // ---------------------------------------------------------------------------
@@ -97,6 +99,10 @@ async function FinanceSection({ p }: { p: Promise<FinancialPosition | null> }) {
                 </Link>
               );
             })}
+          </div>
+          <div className="mt-4 grid items-stretch gap-4 lg:grid-cols-2">
+            <RevenueMonthPanel r={f.revenue} />
+            <StripeCard s={f.stripe} inset />
           </div>
           <p className="mt-3 text-[11px] text-muted">{f.period} · {f.sources}</p>
           <p className="text-[11px] text-muted" data-freshness>Freshness: {f.freshness}</p>

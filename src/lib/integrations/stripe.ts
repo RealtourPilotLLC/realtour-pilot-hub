@@ -119,9 +119,14 @@ export function summarizeStripeMonth(rows: { type: string; gross: number; fee: n
   return { gross: c(m.gross), refunds: c(m.refunds), fees: c(m.fees), net: c(m.net), charges: m.charges, capitalWithheld: c(m.capitalWithheld), billingFees: c(m.billingFees), paidOut: c(m.paidOut) };
 }
 
+// The dashboard refreshes every two minutes and Finance pages read it too: one
+// live read a minute per server instance is plenty.
+let lastLive: { at: number; monthKey: string; s: StripeSnapshot } | null = null;
+
 export async function stripeSnapshot(now: Date = new Date()): Promise<StripeSnapshot | null> {
   const { etDayKey, etDayStartUtc } = await import("@/lib/datetime");
   const monthKey = etDayKey(now).slice(0, 7);
+  if (lastLive && lastLive.monthKey === monthKey && Date.now() - lastLive.at < 60_000 && Math.abs(now.getTime() - Date.now()) < 60_000) return lastLive.s;
   const monthStart = etDayStartUtc(new Date(`${monthKey}-01T12:00:00Z`));
   const monthLabel = new Date(`${monthKey}-15T12:00:00Z`).toLocaleString("en-US", { month: "long", timeZone: "UTC" });
   try {
@@ -142,11 +147,13 @@ export async function stripeSnapshot(now: Date = new Date()): Promise<StripeSnap
       after = res.data[res.data.length - 1].id;
     }
     const sum = (r?: { amount: number }[]) => dollars((r ?? []).reduce((s, x) => s + x.amount, 0));
-    return {
+    const s: StripeSnapshot = {
       asOf: now.toISOString(), source: "live",
       balance: sum(bal.available), incoming: sum(bal.pending), inTransit: transit ? sum(transit.data.filter((p) => p.status === "in_transit" || p.status === "pending")) : null,
       mtd: summarizeStripeMonth(rows), monthLabel,
     };
+    lastLive = { at: Date.now(), monthKey, s };
+    return s;
   } catch {
     // Live read failed (key revoked, Stripe down): the synced ledger, said so.
     try {

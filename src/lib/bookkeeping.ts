@@ -701,6 +701,9 @@ export async function revenueByProcessor(startKey: string, endKey: string) {
   });
   const stripe = stripeRows.reduce((s, r) => s + r.gross, 0);
   const stripeFees = stripeRows.reduce((s, r) => s + r.fee, 0);
+  // The refunds and disputes already netted into `stripe`, as a positive sum,
+  // so a reader can show sales before refunds (stripe + stripeRefunds).
+  const stripeRefunds = r2(stripeRows.filter((r) => r.gross < 0).reduce((s, r) => s - r.gross, 0));
 
   // Rail 3 — Venmo, counted at RECEIPT from the statement pseudo-account's
   // client-inflow rows (imported from Jordan's Venmo statements, category
@@ -829,7 +832,7 @@ export async function revenueByProcessor(startKey: string, endKey: string) {
 
   return {
     start: startKey, end: endKey,
-    quickbooks, stripe, venmo, stripeFees,
+    quickbooks, stripe, venmo, stripeFees, stripeRefunds,
     venmoListed, venmoFeed, venmoCharges: VENMO_CHARGES.length,
     // How the Venmo number was arrived at, and what it is missing. Any surface
     // showing `venmo` (or `total`) should show `venmoNote` when it is non-empty

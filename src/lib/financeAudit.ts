@@ -4,7 +4,7 @@ import { etDayKey, etYearStartKey } from "@/lib/datetime";
 import { revenueByProcessor, expenseCoverage } from "@/lib/bookkeeping";
 import { categoryBreakdown, operatingCutover, OPERATING_MASK } from "@/lib/financeCategories";
 import { stripeSnapshot, type StripeSnapshot } from "@/lib/integrations/stripe";
-import { groupTotals, type AuditAction, type AuditCheck, type MoneyGroup } from "@/lib/financeAuditCore";
+import { groupTotals, unrecordedDeposits, type AuditAction, type AuditCheck, type MoneyGroup } from "@/lib/financeAuditCore";
 
 // ---------------------------------------------------------------------------
 // THE YEAR-TO-DATE BOOKS AUDIT (Oct 24 2026). Jordan: "I want my most recent
@@ -130,7 +130,7 @@ export async function financeAuditYtd(now: Date = new Date()): Promise<FinanceAu
       running = r2(running + recorded - banked);
       qbMonths.push({ month: mk, recorded, banked, running });
     }
-    const unrecorded = bankQbp.filter((b) => -b.amount >= 100 && !qboRows.some((q) => Math.abs(q.amount + b.amount) < 0.01 && Math.abs(q.txnDate.getTime() - b.date.getTime()) <= 7 * DAY));
+    const unrecorded = unrecordedDeposits(bankQbp, qboRows);
     const sum = r2(unrecorded.reduce((s, b) => s - b.amount, 0));
     const recordedYtd = r2(qbMonths.reduce((s, m) => s + m.recorded, 0));
     const bankedYtd = r2(qbMonths.reduce((s, m) => s + m.banked, 0));

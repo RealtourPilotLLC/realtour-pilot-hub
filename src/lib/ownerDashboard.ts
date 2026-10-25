@@ -19,6 +19,9 @@ import { CLOSE_KEY_PREFIX, closeKeyFor, readClosure, roundsStage, signalClosed, 
 // The books: Finance's own engines (static, so the drills' seams reach them).
 import { revenueByProcessor } from "@/lib/bookkeeping";
 import { categoryBreakdown, railFreshness } from "@/lib/financeCategories";
+import { stripeSnapshot, type StripeSnapshot } from "@/lib/integrations/stripe";
+import { feeFrom, RAIL_FEE_CATEGORY, revenueMonth, type RevenueMonth } from "@/lib/revenueMonthCore";
+import { unrecordedDeposits } from "@/lib/financeAuditCore";
 import { getBillingRows } from "@/lib/queries";
 
 // ---------------------------------------------------------------------------
@@ -90,7 +93,21 @@ export type FinancialPosition = {
   freshness: string;
   /** coverage gaps, said once, plainly */
   limitations: string[];
+  /** all revenue this month, gross and net, rail by rail (null = revenue didn't load) */
+  revenue: RevenueMonth | null;
+  /** Stripe's balances and month, live (null = Stripe couldn't be read or isn't connected) */
+  stripe: StripeSnapshot | null;
 };
+
+/** This month's QuickBooks Payments deposits in the bank that QuickBooks has no payment for (the books audit's rule). */
+async function unrecordedQbpThisMonth(monthStartKey: string): Promise<{ amount: number; date: Date }[]> {
+  const from = new Date(`${monthStartKey}T00:00:00Z`);
+  const [bank, qbo] = await Promise.all([
+    prisma.plaidTransaction.findMany({ where: { date: { gte: from }, financeCategory: "QuickBooks Payments (revenue)" }, select: { amount: true, date: true } }),
+    prisma.qboTransaction.findMany({ where: { txnDate: { gte: new Date(from.getTime() - 10 * DAY) }, type: { in: ["Payment", "SalesReceipt", "Deposit"] }, duplicateOf: null }, select: { type: true, txnDate: true, amount: true } }),
+  ]);
+  return unrecordedDeposits(bank, qbo).map((b) => ({ amount: -b.amount, date: b.date }));
+}
 
 /** Paydays in [fromKey, toKey] with the fixed team pay due on each (payStructure's terms). */
 async function fixedPayDue(fromKey: string, toKey: string): Promise<{ total: number; lines: { dayKey: string; names: string[]; amount: number }[] } | null> {
@@ -129,7 +146,7 @@ export async function financialPosition(opts: { now?: Date; excludeClientIds?: s
   const monthStartKey = `${todayKey.slice(0, 7)}-01`;
   const horizon = new Date(now.getTime() + 14 * DAY);
   const horizonKey = etDayKey(horizon);
-  const [banks, revenue, spend, ar, pay, recurring, fresh] = await Promise.all([
+  const [banks, revenue, spend, ar, pay, recurring, fresh, stripe, qbpMissing] = await Promise.all([
     prisma.plaidAccount.findMany({
       where: { isBusiness: true, type: "depository" },
       select: { name: true, mask: true, currentBalance: true, item: { select: { lastSyncedAt: true, status: true } } },
@@ -140,8 +157,32 @@ export async function financialPosition(opts: { now?: Date; excludeClientIds?: s
     fixedPayDue(todayKey, horizonKey).catch((e: unknown) => (warn("fixed pay")(e), "failed" as const)),
     recurringExpensesDue(now, horizon).catch((e: unknown) => (warn("recurring costs")(e), "failed" as const)),
     railFreshness().catch(warn("freshness")),
+    stripeSnapshot(now).catch(warn("stripe")),
+    unrecordedQbpThisMonth(monthStartKey).catch(warn("QuickBooks deposits")),
   ]);
   const limitations: string[] = [];
+
+  // ---- all revenue this month, gross and net (revenueMonthCore) ------------
+  // Stripe from Stripe itself (the same read as the Stripe panel, so the two
+  // agree to the cent); QuickBooks Payments and Venmo from the books' engine,
+  // each rail's fees from the categorized ledger.
+  const monthLabel = new Date(`${monthStartKey.slice(0, 7)}-15T12:00:00Z`).toLocaleString("en-US", { month: "long", timeZone: "UTC" });
+  // Revenue is counted where QuickBooks records it, never from bank deposits,
+  // so a deposit QuickBooks hasn't recorded stays out of gross and is said
+  // beside the rail (the books audit has the task to record it).
+  const qbpMissingSum = Math.round((qbpMissing ?? []).reduce((s, b) => s + b.amount, 0) * 100) / 100;
+  const qbpMissingWords = qbpMissing?.length
+    ? `${qbpMissing.length === 1 ? `${usd0Signed(qbpMissingSum)} landed in the bank ${etMonthDay(qbpMissing[0].date)}` : `${usd0Signed(qbpMissingSum)} landed in the bank (${qbpMissing.map((b) => `${usd0Signed(b.amount)} ${etMonthDay(b.date)}`).join(", ")})`} that QuickBooks hasn't recorded, so it isn't counted yet`
+    : null;
+  const month: RevenueMonth | null = revenue
+    ? revenueMonth(monthLabel, {
+        quickbooks: { gross: revenue.quickbooks, fees: feeFrom(spend?.business, RAIL_FEE_CATEGORY.quickbooks), missing: qbpMissingWords, through: revenue.quickbooksNote && revenue.quickbooksCoverageThrough ? `through ${etMonthDay(new Date(`${revenue.quickbooksCoverageThrough}T12:00:00Z`))}` : null },
+        stripe: stripe
+          ? { gross: stripe.mtd.gross, refunds: stripe.mtd.refunds, fees: stripe.mtd.fees, through: stripe.source === "live" ? null : `as of ${etDateTime(stripe.asOf)}` }
+          : { gross: revenue.stripe + revenue.stripeRefunds, refunds: revenue.stripeRefunds, fees: revenue.stripeFees, through: fresh?.stripe ? `as of ${etDateTime(fresh.stripe)}` : null },
+        venmo: { gross: revenue.venmo, fees: feeFrom(spend?.business, RAIL_FEE_CATEGORY.venmo), through: revenue.venmoNote && revenue.venmoCoverageThrough ? `statements through ${etMonthDay(new Date(`${revenue.venmoCoverageThrough}T12:00:00Z`))}` : null },
+      })
+    : null;
 
   // ---- cash: the business bank accounts on the live feed -------------------
   const withBalance = (banks ?? []).filter((b) => b.currentBalance != null);
@@ -154,7 +195,9 @@ export async function financialPosition(opts: { now?: Date; excludeClientIds?: s
       ? { key: "cash", label: "Cash available", value: null, display: "Not connected", sub: "No bank account is tagged Business on Connections", tag: null, tone: null, href: "/connections/banks" }
       : { key: "cash", label: "Cash available", value: cashValue, display: usd0Signed(cashValue), sub: `Bank ${bankNames}${bankAsOf ? ` · synced ${etDateTime(bankAsOf)}` : ""}`, tag: null, tone: cashValue < 0 ? "bad" : null, href: "/connections/banks" };
   if ((banks ?? []).some((b) => b.item.status === "ERROR")) limitations.push("A bank login needs reconnecting on Connections, so the balance may be stale.");
-  limitations.push("Stripe's balance and payouts still in transit aren't included (no live Stripe read here); a payout counts once it lands in the bank.");
+  limitations.push(stripe
+    ? "Cash available is the bank only. Stripe's balance and payouts on their way are on the Stripe panel; a payout counts as cash once it lands in the bank."
+    : "Stripe's balance and payouts on their way aren't shown (Stripe isn't connected or didn't answer); a payout counts as cash once it lands in the bank.");
 
   // ---- obligations: only what is recorded ----------------------------------
   const obligationsFailed = pay === "failed" || recurring === "failed";
@@ -203,13 +246,17 @@ export async function financialPosition(opts: { now?: Date; excludeClientIds?: s
   } else if (!revenueKnown || !spendKnown) {
     profit = { key: "profit", label: "MTD profit", value: null, display: "Not connected", sub: !revenueKnown ? "No revenue source (Stripe, QuickBooks) has synced" : "No bank or card feed has synced", tag: "provisional", tone: null, href: "/connections" };
   } else {
-    const value = Math.round((revenue.total - spend.businessTotal) * 100) / 100;
+    // Revenue after refunds (before fees: every rail's fee is already in
+    // business spend), from the same figures as the revenue panel.
+    const sales = month ? month.gross - month.refunds : revenue.total;
+    const value = Math.round((sales - spend.businessTotal) * 100) / 100;
     profit = {
       key: "profit", label: "MTD profit", value, display: usd0Signed(value),
-      sub: `Revenue ${usd0Signed(revenue.total)} − business spend ${usd0Signed(spend.businessTotal)}`,
+      sub: `Revenue ${usd0Signed(sales)} − business spend ${usd0Signed(spend.businessTotal)} (fees included)`,
       tag: "provisional", tone: value < 0 ? "bad" : "ok", href: "/sales",
     };
     if (revenue.quickbooksNote) limitations.push(revenue.quickbooksNote);
+    if (qbpMissingWords) limitations.push(`QuickBooks Payments: ${qbpMissingWords}. Receive the payment in QuickBooks and it's counted on the next pull (it's on your task list from the books audit).`);
     if (revenue.venmoNote) limitations.push(revenue.venmoNote);
     if (spend.reviewTotal > 0) limitations.push(`${usd0Signed(spend.reviewTotal)} of this month's spending isn't classified yet, so profit may read high.`);
   }
@@ -218,7 +265,7 @@ export async function financialPosition(opts: { now?: Date; excludeClientIds?: s
   const freshness = [
     bankAsOf ? `Bank ${etDateTime(bankAsOf)}` : null,
     fresh?.quickbooksPulledAt ? `QuickBooks ${etDateTime(fresh.quickbooksPulledAt)}` : "QuickBooks never synced",
-    fresh?.stripe ? `Stripe through ${etDateTime(fresh.stripe)}` : null,
+    stripe?.source === "live" ? "Stripe live" : fresh?.stripe ? `Stripe through ${etDateTime(fresh.stripe)}` : null,
     `read ${etTime(now)} ET`,
   ].filter(Boolean).join(" · ");
   return {
@@ -228,6 +275,8 @@ export async function financialPosition(opts: { now?: Date; excludeClientIds?: s
     freshness,
     // The books' own sentences, in the dashboard's voice (no em dashes).
     limitations: [...new Set(limitations.map((l) => noDashes(l)))],
+    revenue: month,
+    stripe,
   };
 }
 
