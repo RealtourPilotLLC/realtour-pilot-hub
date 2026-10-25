@@ -151,3 +151,23 @@ export async function dismissClientIssueAction(input: { id: string; reason: stri
   }
   return r;
 }
+
+// ---- client issue signals (Jordan's dashboard, Oct 24 2026) --------------------
+
+/** Close a signal on the Client issues card (lib/issueSignals): repeated revision
+ *  rounds with the client's answer and the cause, or a one-line decision. */
+export async function closeIssueSignalAction(input: { rowId: string; outcome: string; cause?: string | null; note?: string | null }): Promise<Result> {
+  const refused = await office();
+  if (refused) return refused;
+  if (!["HAPPY", "COMPLAINT", "DONE"].includes(input.outcome)) return { ok: false, message: "That isn't a way to close it." };
+  const me = await getCurrentUser().catch(() => null);
+  const { LOCAL_OWNER_ACTOR, actorFor } = await import("@/lib/delegation");
+  const actor = me ? await actorFor(me).catch(() => null) : authEnforced() ? null : LOCAL_OWNER_ACTOR;
+  const { closeIssueSignal } = await import("@/lib/issueSignals");
+  const r = await closeIssueSignal({ rowId: input.rowId, outcome: input.outcome as "HAPPY" | "COMPLAINT" | "DONE", cause: input.cause, note: input.note }, { name: await who(), email: me?.email ?? null, actor });
+  if (r.ok) {
+    for (const p of ["/", "/tasks", "/quality"]) revalidatePath(p);
+    await revalidateClient(r.clientId);
+  }
+  return { ok: r.ok, message: r.message };
+}

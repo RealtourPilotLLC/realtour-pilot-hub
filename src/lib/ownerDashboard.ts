@@ -15,6 +15,7 @@ import { loadQueue } from "@/app/ops/photo-delivery/data";
 import { opsExceptionsBoard } from "@/lib/opsExceptions";
 import { kylePerson, chipPerson, ownerWeek, etWeekStart, ON_TIME_MIN_JOBS } from "@/lib/opsHome";
 import { ownerShootIssues } from "@/lib/shootIssues";
+import { CLOSE_KEY_PREFIX, closeKeyFor, readClosure, roundsStage, signalClosed, type SignalClosure } from "@/lib/issueSignalsCore";
 // The books: Finance's own engines (static, so the drills' seams reach them).
 import { revenueByProcessor } from "@/lib/bookkeeping";
 import { categoryBreakdown, railFreshness } from "@/lib/financeCategories";
@@ -606,8 +607,21 @@ export type ClientIssueRow = {
   href: string;
   conversationHref: string | null;
   assign: AssignSeed;
+  /** a signal's reason for being on the card, in words (lib/issueSignalsCore) */
+  whyHere?: string | null;
+  /** how the panel closes a signal; null for complaints and feedback (their own records) */
+  close?: SignalClose | null;
 };
+/** Revisions close with the client's answer and the cause; the rest with one line. */
+export type SignalClose =
+  | { kind: "rounds"; rounds: number; clientFirst: string; settlesAtISO: string | null; reopenedFrom: string | null }
+  | { kind: "done"; prompt: string };
 export type ClientIssues = { rows: ClientIssueRow[]; unavailable: string[] };
+
+/** The Assign link a repeated-revisions row carries: its delegated task is keyed to it. */
+export const roundsHref = (projectId: string) => `/projects/${projectId}#revisions`;
+/** Revision work that, while open, means the round is still being fixed. */
+const FIX_TASKS = ["revision", "creative_review"];
 
 export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?: string[] } = {}): Promise<ClientIssues> {
   const now = opts.now ?? new Date();
@@ -634,6 +648,12 @@ export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?:
   if (!issues) unavailable.push("complaints");
   if (!feedback) unavailable.push("feedback");
   if (!revisions) unavailable.push("revisions");
+  // Closures people recorded on signals (Close it, in the panel).
+  const closureRows = await prisma.appSetting.findMany({ where: { key: { startsWith: CLOSE_KEY_PREFIX } }, select: { key: true, value: true } }).catch(() => []);
+  const closures = new Map<string, SignalClosure>();
+  for (const c of closureRows) { const v = readClosure(c.value); if (v) closures.set(c.key, v); }
+  const closureOf = (rowId: string) => closures.get(closeKeyFor(rowId)) ?? null;
+  const reopenedWords = (c: SignalClosure | null) => (c ? `${c.by ?? "Someone"} closed it ${etDate(c.at)}${c.outcome === "HAPPY" ? " (client happy)" : ""}` : null);
   const rows: ClientIssueRow[] = [];
   const linkedFeedback = new Set<string>();
   const coveredProjects = new Set<string>();
@@ -689,25 +709,61 @@ export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?:
     if (r.createdAt > cur.latest) cur.latest = r.createdAt;
     rounds.set(r.projectId, cur);
   }
-  const repeat = [...rounds.entries()].map(([projectId, v]) => ({ projectId, _count: { _all: v.days.size }, _max: { createdAt: v.latest } })).filter((r) => r._count._all >= 2 && !coveredProjects.has(r.projectId));
+  const repeat = [...rounds.entries()].map(([projectId, v]) => ({ projectId, days: [...v.days].sort(), latest: v.latest })).filter((r) => r.days.length >= 2 && !coveredProjects.has(r.projectId));
   if (repeat.length) {
-    const ps = await prisma.project.findMany({ where: { id: { in: repeat.map((r) => r.projectId) } }, select: { id: true, title: true, clientId: true, client: { select: { name: true } } } }).catch(() => []);
+    // Where each job's rounds stand (lib/issueSignalsCore.roundsStage): still
+    // being fixed, waiting on the client's word, or settled and closed.
+    const ids = repeat.map((r) => r.projectId);
+    const delegKeys = ids.map((id) => `deleg:${roundsHref(id)}`);
+    const [ps, openFix, doneFix, sent, deleg, roster] = await Promise.all([
+      prisma.project.findMany({ where: { id: { in: ids } }, select: { id: true, title: true, clientId: true, client: { select: { name: true } } } }).catch(() => []),
+      prisma.smartTask.findMany({ where: { projectId: { in: ids }, taskType: { in: FIX_TASKS }, status: { notIn: ["COMPLETED", "CANCELLED"] } }, orderBy: { createdAt: "asc" }, select: { projectId: true, title: true, assignedKey: true } }).catch(() => []),
+      // A creative review closing is paperwork, not a fix reaching the client.
+      prisma.smartTask.groupBy({ by: ["projectId"], where: { projectId: { in: ids }, taskType: "revision", status: "COMPLETED" }, _max: { completedAt: true } }).catch(() => []),
+      prisma.reviewSubmission.groupBy({ by: ["projectId"], where: { projectId: { in: ids }, sentToClientAt: { not: null } }, _max: { sentToClientAt: true } }).catch(() => []),
+      prisma.smartTask.findMany({ where: { dedupeKey: { in: delegKeys } }, select: { dedupeKey: true, status: true, assignedKey: true, completedAt: true } }).catch(() => []),
+      listAssignees().catch(() => [] as Assignee[]),
+    ]);
+    const nameOf = (key: string | null | undefined) => (key ? firstName(roster.find((a) => a.key === key)?.name ?? key) : null);
+    const later = (a: Date | null | undefined, b: Date | null | undefined) => (a && b ? (a > b ? a : b) : (a ?? b ?? null));
     for (const r of repeat) {
       const p = ps.find((x) => x.id === r.projectId);
       if (!p || exclude.has(p.clientId)) continue;
+      const id = `revisions:${r.projectId}`;
+      const n = r.days.length;
+      const clientFirst = p.client?.name ? firstName(p.client.name) : "the client";
+      const closure = closureOf(id);
+      const d = deleg.find((t) => t.dedupeKey === `deleg:${roundsHref(r.projectId)}`);
+      const st = roundsStage({
+        rounds: n, latestRoundAt: r.latest, clientFirst, now, closure,
+        openWork: openFix.filter((t) => t.projectId === r.projectId).map((t) => ({ title: t.title.split(" — ")[0].trim() || t.title, who: nameOf(t.assignedKey) })),
+        lastFixAt: later(doneFix.find((x) => x.projectId === r.projectId)?._max.completedAt, sent.find((x) => x.projectId === r.projectId)?._max.sentToClientAt),
+        delegated: d ? { open: !["COMPLETED", "CANCELLED"].includes(d.status), who: nameOf(d.assignedKey), completedAt: d.status === "COMPLETED" ? d.completedAt : null } : null,
+      });
+      if (!st.show) continue;
+      const dayList = r.days.map((k) => etMonthDay(new Date(`${k}T12:00:00Z`))).join(", ");
       rows.push({
-        id: `revisions:${r.projectId}`, kind: "revisions", client: p.client?.name ?? null, clientId: p.clientId, project: street(p.title), projectId: p.id,
-        title: `${r._count._all} revision rounds`, summary: `The client asked for changes on ${r._count._all} different days in 30 days, the latest ${etDateTime(r._max.createdAt)}.`,
-        evidence: "Revision requests on the job", severity: r._count._all >= 3 ? "high" : "medium", severityWhy: "Repeated revisions",
-        suggested: false, owner: null, lastClientUpdateISO: null, nextAction: "Correction plan", deadlineISO: null, decision: null,
+        id, kind: "revisions", client: p.client?.name ?? null, clientId: p.clientId, project: street(p.title), projectId: p.id,
+        title: `${n} revision rounds${st.reopened ? " · new ask after it was closed" : ""}`,
+        summary: `The client asked for changes on ${n} different days in 30 days (${dayList}), the latest ${etDateTime(r.latest)}.`,
+        evidence: "Revision requests on the job", severity: st.reopened || n >= 3 ? "high" : "medium",
+        severityWhy: st.reopened ? "A new ask after it was closed" : "Repeated revisions",
+        suggested: false, owner: st.owner, lastClientUpdateISO: null, nextAction: st.nextAction, deadlineISO: null, decision: null,
         href: `/projects/${p.id}`, conversationHref: `/communications?client=${p.clientId}`,
-        assign: { title: `Correction plan: ${street(p.title)}`, outcome: "A correction plan the client agrees to", sourceHref: `/projects/${p.id}#revisions`, clientId: p.clientId, projectId: p.id },
+        whyHere: st.whyHere,
+        close: { kind: "rounds", rounds: n, clientFirst, settlesAtISO: st.settlesAt?.toISOString() ?? null, reopenedFrom: st.reopened ? reopenedWords(closure) : null },
+        assign: st.stage === "FIXING"
+          ? { title: `Finish the fix: ${street(p.title)}`, outcome: `Round ${n} fixed and sent to ${clientFirst}`, sourceHref: roundsHref(p.id), clientId: p.clientId, projectId: p.id }
+          : { title: `Check in with ${clientFirst}: is ${street(p.title)} right now?`, outcome: `${clientFirst} confirms it's right, or we know what's still wrong`, assigneeKey: "kyle", sourceHref: roundsHref(p.id), clientId: p.clientId, projectId: p.id },
       });
     }
   }
   for (const c of cancels ?? []) {
     if (exclude.has(c.project.clientId)) continue;
+    if (signalClosed(closureOf(`cancel:${c.id}`), { atISO: c.createdAt.toISOString() })) continue;
     rows.push({
+      whyHere: "Nobody has recorded why it was cancelled or what was decided about the money.",
+      close: { kind: "done", prompt: "Why they cancelled, and the refund or write-off decided" },
       id: `cancel:${c.id}`, kind: "cancellation", client: c.project.client?.name ?? null, clientId: c.project.clientId, project: street(c.project.title), projectId: c.projectId,
       title: "Cancelled after delivery", summary: c.body.slice(0, 220), evidence: `Aryeo ${etDate(c.createdAt)}`, severity: "high", severityWhy: "Order cancelled after delivery",
       suggested: false, owner: null, lastClientUpdateISO: null, nextAction: "Find out why and decide on a refund", deadlineISO: null, decision: "Refund or write-off decision",
@@ -716,7 +772,10 @@ export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?:
     });
   }
   for (const r of refunds ?? []) {
+    if (signalClosed(closureOf(`refund:${r.id}`), { atISO: r.createdAt.toISOString() })) continue;
     rows.push({
+      whyHere: "Nobody has recorded why the money went back.",
+      close: { kind: "done", prompt: "Why the refund went out" },
       id: `refund:${r.id}`, kind: "refund", client: r.customerName, clientId: null, project: null, projectId: r.projectId,
       title: `Refund ${usd0Signed(Math.abs(r.gross))}`, summary: r.description ?? "A refund went out through Stripe.", evidence: `Stripe ${etDate(r.createdAt)}`,
       severity: "medium", severityWhy: "Money returned to a client", suggested: false, owner: null, lastClientUpdateISO: null,
@@ -727,7 +786,11 @@ export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?:
   // What keeps happening on one client's shoots (the old Shoot issues card's
   // "by client" line): two or more flags in 60 days.
   for (const b of (flags?.byClient ?? []).filter((x) => x.count >= 2)) {
+    const closed = closureOf(`pattern:${b.client}`);
+    if (signalClosed(closed, { count: b.count })) continue;
     rows.push({
+      whyHere: closed ? `More issues were flagged after ${reopenedWords(closed)}.` : "Nobody has named the common cause yet.",
+      close: { kind: "done", prompt: "The common cause, and the fix agreed" },
       id: `pattern:${b.client}`, kind: "pattern", client: b.client, clientId: null, project: null, projectId: null,
       title: "Shoot issues keep coming up", summary: `${b.count} issues flagged on ${b.client}'s shoots in the last 60 days.`, evidence: "Flags raised on shoots", severity: b.count >= 3 ? "medium" : "low", severityWhy: "A repeating pattern",
       suggested: false, owner: null, lastClientUpdateISO: null, nextAction: "Look for the common cause", deadlineISO: null, decision: null,

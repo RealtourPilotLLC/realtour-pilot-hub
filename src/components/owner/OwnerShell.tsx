@@ -10,7 +10,9 @@ import {
   assignTaskAction, cancelTaskAction, completeTaskAction, reassignTaskAction, requestUpdateAction, returnForChangesAction, updateTaskAction,
 } from "@/app/delegation/actions";
 import { markCommsHandled, setSmartTaskStatus } from "@/app/actions";
-import type { AssignSeed } from "@/lib/ownerDashboard";
+import { closeIssueSignalAction } from "@/app/clients/clientCareActions";
+import { ROUND_CAUSES } from "@/lib/issueSignalsCore";
+import type { AssignSeed, ClientIssueRow } from "@/lib/ownerDashboard";
 import type { PanelSpec, RosterOption } from "@/components/owner/panelTypes";
 
 // ---------------------------------------------------------------------------
@@ -326,8 +328,10 @@ function IssueBody({ spec }: { spec: Extract<PanelSpec, { kind: "issue" }> }) {
         ["Severity", `${r.severity[0].toUpperCase()}${r.severity.slice(1)}: ${r.severityWhy}`],
         ["Project", r.project],
         ["Evidence", r.evidence],
+        ["Why it's here", r.whyHere],
+        ["Closed before", r.close?.kind === "rounds" ? r.close.reopenedFrom : null],
         ["Responsible", r.owner ?? "Nobody yet"],
-        ["Last client update", r.lastClientUpdateISO ? etDateTime(r.lastClientUpdateISO) : "None on record"],
+        ["Last client update", r.close ? null : r.lastClientUpdateISO ? etDateTime(r.lastClientUpdateISO) : "None on record"],
         ["Next action", `${r.nextAction}${r.deadlineISO ? ` by ${etDateTime(r.deadlineISO)}` : ""}`],
         ["Your decision", r.decision],
       ]} />
@@ -335,11 +339,65 @@ function IssueBody({ spec }: { spec: Extract<PanelSpec, { kind: "issue" }> }) {
       <div className="flex flex-wrap gap-2">
         {r.conversationHref && <Link href={r.conversationHref} className={QUIET}>Review conversation</Link>}
         {r.conversationHref && <Link href={r.conversationHref} className={QUIET}>Reply</Link>}
-        {!readOnly && <button type="button" onClick={() => open({ kind: "assign", seed: r.assign, heading: "Assign recovery" })} className={PRIMARY}>Assign recovery</button>}
-        <Link href={r.href} className={QUIET}>Record decision or resolve</Link>
+        {!readOnly && <button type="button" onClick={() => open({ kind: "assign", seed: r.assign, heading: r.close ? "Assign it" : "Assign recovery" })} className={r.close ? QUIET : PRIMARY}>{r.close?.kind === "rounds" ? "Assign the check-in" : r.close ? "Assign it" : "Assign recovery"}</button>}
+        <Link href={r.href} className={QUIET}>{r.close ? (r.projectId ? "Open the job" : "Open the record") : "Record decision or resolve"}</Link>
       </div>
-      <p className="text-[12px] text-muted">A reply or an apology doesn't resolve it: resolve it with the outcome on the client's page.</p>
+      {r.close && !readOnly && <CloseSignal row={r} />}
+      {!r.close && <p className="text-[12px] text-muted">A reply or an apology doesn't resolve it: resolve it with the outcome on the client's page.</p>}
     </div>
+  );
+}
+
+/** Close a signal (lib/issueSignals): revision rounds with the client's answer and why, the rest with one line. */
+function CloseSignal({ row }: { row: ClientIssueRow }) {
+  const c = row.close!;
+  const { busy, msg, run } = useRun();
+  const [mode, setMode] = useState<"HAPPY" | "COMPLAINT" | "DONE" | null>(c.kind === "done" ? "DONE" : null);
+  const [cause, setCause] = useState("");
+  const [note, setNote] = useState("");
+  if (msg?.ok) return <Said msg={msg} />;
+  return (
+    <section className="space-y-3 rounded-xl border border-border p-3" data-close-signal={row.id} aria-labelledby={`close-${row.id}`}>
+      <h3 id={`close-${row.id}`} className="text-sm font-semibold">{c.kind === "rounds" ? "Close it" : "Mark it done"}</h3>
+      {c.kind === "rounds" && (
+        <div className="flex flex-wrap gap-2" role="group" aria-label="How did it end?">
+          <button type="button" aria-pressed={mode === "HAPPY"} onClick={() => setMode("HAPPY")} className={mode === "HAPPY" ? PRIMARY : QUIET} data-close-mode="HAPPY">{c.clientFirst} is happy</button>
+          <button type="button" aria-pressed={mode === "COMPLAINT"} onClick={() => setMode("COMPLAINT")} className={mode === "COMPLAINT" ? PRIMARY : QUIET} data-close-mode="COMPLAINT">Still unhappy</button>
+        </div>
+      )}
+      {mode && (
+        <form
+          className="space-y-3"
+          onSubmit={(e) => { e.preventDefault(); run(() => closeIssueSignalAction({ rowId: row.id, outcome: mode, cause: cause || null, note: note || null })); }}
+        >
+          {c.kind === "rounds" && (
+            <label className="block text-sm">
+              <span className="font-medium">Why did it take {c.rounds} rounds?{mode === "COMPLAINT" ? " (if you know)" : ""}</span>
+              <select required={mode === "HAPPY"} value={cause} onChange={(e) => setCause(e.target.value)} className={cn(FIELD, "mt-1")} data-close-cause>
+                <option value="">Pick one</option>
+                {ROUND_CAUSES.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+              </select>
+            </label>
+          )}
+          {mode !== "HAPPY" && (
+            <label className="block text-sm">
+              <span className="font-medium">{c.kind === "rounds" ? "What's still wrong for them" : c.prompt}</span>
+              <textarea required minLength={3} rows={3} value={note} onChange={(e) => setNote(e.target.value)} className={cn(FIELD, "mt-1")} data-close-note />
+            </label>
+          )}
+          <button type="submit" disabled={busy} className={PRIMARY}>
+            {busy && <Loader2 aria-hidden className="size-4 animate-spin" />}
+            {mode === "COMPLAINT" ? "Open a complaint" : c.kind === "rounds" ? "Close it" : "Mark done"}
+          </button>
+        </form>
+      )}
+      <Said msg={msg} />
+      <p className="text-[12px] text-muted">
+        {c.kind === "rounds"
+          ? `${mode === "COMPLAINT" ? "The complaint takes over with its own owner and check-in. " : ""}${c.settlesAtISO ? `Left alone, it closes on its own ${etDateTime(c.settlesAtISO)} if ${c.clientFirst} asks for nothing more. ` : ""}A new ask from ${c.clientFirst} brings it back.`
+          : "It comes back only if something new happens."}
+      </p>
+    </section>
   );
 }
 
