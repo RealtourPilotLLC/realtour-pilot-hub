@@ -1070,6 +1070,73 @@ export async function closeAsksOnDeliveredJobs(now: Date = new Date()): Promise<
   return out;
 }
 
+// ---- closing on the booking (audit Oct 25 2026) ----------------------------------------------
+//
+// A client's "can we schedule a shoot at 265 Mill Road for Tuesday" is filed
+// with no job (there is none yet), and nothing ever closed it once the office
+// booked it in Aryeo: a job-less scheduling ask has no delivery to close on.
+// Hala Bonner's (booked 4 hours later, under her husband's record) and Stephen
+// Kennedy's 3828 Percy St (booked the same day) sat on Kyle's Scheduling
+// screen and Messages for days, read as "still waiting". The booking is the
+// answer, the same way Aryeo's confirmation closes a portal session request:
+// a job created AFTER the ask whose house number and street the client named
+// in the ask's own words. It closes DONE ("booked in Aryeo: <street>") and
+// files on that job. No address in the words, nothing closes: a person does.
+
+/** Pure: the job (newest first) this job-less scheduling ask booked, or null. */
+export function bookedJobFor(
+  a: { text: string; askedAt: Date },
+  jobs: { id: string; title: string; addressLine: string | null; createdAt: Date; status: string }[],
+  addressKey: (j: { title: string; addressLine: string | null }) => { re: RegExp } | null,
+): { id: string; title: string } | null {
+  const after = a.askedAt.getTime() - 10 * 60_000; // the ask is filed a moment after the text lands
+  for (const j of [...jobs].sort((x, y) => y.createdAt.getTime() - x.createdAt.getTime())) {
+    if (j.status === "CANCELLED" || j.createdAt.getTime() < after) continue;
+    const k = addressKey(j);
+    if (k && k.re.test(a.text)) return { id: j.id, title: j.title };
+  }
+  return null;
+}
+
+/** Close every open job-less scheduling ask whose named address was booked since (see above). Never throws. */
+export async function closeBookedSchedulingAsks(now: Date = new Date()): Promise<{ closed: number; ids: string[] }> {
+  const out = { closed: 0, ids: [] as string[] };
+  try {
+    const since = new Date(now.getTime() - 21 * 86_400_000);
+    const open = await prisma.clientAsk.findMany({
+      where: { state: "OPEN", kind: "SCHEDULING", projectId: null, source: { in: ["text", "email", "call"] }, askedAt: { gte: since } },
+      select: { id: true, text: true, askedAt: true },
+      take: 200,
+    });
+    // Only asks that name a house number can ever match: skip the read otherwise.
+    const named = open.filter((a) => /\b\d+[a-z]?\s+[a-z]/i.test(a.text));
+    if (!named.length) return out;
+    const earliest = new Date(Math.min(...named.map((a) => a.askedAt.getTime())) - 10 * 60_000);
+    const jobs = await prisma.project.findMany({
+      where: { createdAt: { gte: earliest }, status: { not: "CANCELLED" } },
+      select: { id: true, title: true, addressLine: true, createdAt: true, status: true },
+      take: 500,
+    });
+    if (!jobs.length) return out;
+    const { jobAddressKey } = await import("@/lib/teamRouting");
+    for (const a of named) {
+      const job = bookedJobFor(a, jobs, jobAddressKey);
+      if (!job) continue;
+      const street = job.title.split(",")[0];
+      const why = `booked in Aryeo: ${street}`;
+      const r = await move(a.id, ["OPEN"], "DONE", "Hub", { projectId: job.id, doneAt: now, doneBy: "Hub", confirmNote: why }, why);
+      if (r.ok && r.row) {
+        out.closed++;
+        out.ids.push(a.id);
+        await timeline(job.id, `Client's scheduling ask closed: ${why} (${clip(r.row.summary || r.row.text, 160)})`);
+      }
+    }
+  } catch (e) {
+    console.error("[client-asks] closing booked scheduling asks failed", e);
+  }
+  return out;
+}
+
 // ---- the job box (lib/jobChecks) -------------------------------------------------------------
 
 export type JobRequestRow = { id: string; summary: string; text: string; askedBy: string | null; askedAt: Date; medium: string | null; source: string };
