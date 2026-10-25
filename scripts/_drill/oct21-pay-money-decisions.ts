@@ -48,7 +48,10 @@ fs.symlinkSync(path.join(REPO, "node_modules"), path.join(baseDir, "node_modules
 function baseline(rel: string): string {
   const src = execFileSync("git", ["show", `${BASE}:${rel}`], { cwd: REPO, encoding: "utf8", maxBuffer: 64 << 20 });
   const out = path.join(baseDir, rel.replace(/[/[\]]/g, "_"));
-  fs.writeFileSync(out, src.replace(/(["'])@\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${path.join(REPO, "src", p)}${q}`));
+  // A module the old code imports that has since been deleted (the Oct 25 2026
+  // audit removed lib/textTemplateDefaults) is pinned to BASE too.
+  const live = (p: string) => [".ts", ".tsx", "/index.ts"].some((ext) => fs.existsSync(path.join(REPO, "src", p + ext))) || fs.existsSync(path.join(REPO, "src", p));
+  fs.writeFileSync(out, src.replace(/(["'])@\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${live(p) ? path.join(REPO, "src", p) : baseline(`src/${p}.ts`)}${q}`));
   return out;
 }
 
