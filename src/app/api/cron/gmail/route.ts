@@ -327,19 +327,22 @@ export async function GET(req: NextRequest) {
   //    The three run even when one throws, and a failure fails the step
   //    instead of reading `{ closed: 0 }` (Oct 20 2026, audit H5/H6).
   await step("behindAlert", async () => {
-    const { closeAsksOnDeliveredJobs } = await import("@/lib/clientAsks");
+    const { closeAsksOnDeliveredJobs, closeBookedSchedulingAsks } = await import("@/lib/clientAsks");
     const { runBehindAlert } = await import("@/lib/behindAlert");
     const { closeShootFlagsOnDeliveredJobs } = await import("@/lib/shootIssues");
     const { closeChasesOnDeliveredJobs } = await import("@/lib/chaseCounter");
-    const { asks, flags, chases, behind } = await runParts({
+    const { asks, booked, flags, chases, behind } = await runParts({
       asks: () => closeAsksOnDeliveredJobs(),
+      // Audit Oct 25 2026: a client's "can you shoot 265 Mill Rd Tuesday"
+      // closes once that address is booked in Aryeo (lib/clientAsks).
+      booked: () => closeBookedSchedulingAsks(),
       // Oct 22 2026: a "client chasing" task closes when the job is delivered.
       chases: () => closeChasesOnDeliveredJobs(),
       // A shoot's flags clear once the job is delivered (Jordan, Oct 19 2026).
       flags: () => closeShootFlagsOnDeliveredJobs(),
       behind: () => runBehindAlert(),
     });
-    return { asksClosed: asks.closed, flagsClosed: flags.closed, chasesClosed: chases.closed, behind };
+    return { asksClosed: asks.closed, bookedAsksClosed: booked.closed, flagsClosed: flags.closed, chasesClosed: chases.closed, behind };
   }, { maxMs: 30_000 });
 
   await finish();

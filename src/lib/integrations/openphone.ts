@@ -270,9 +270,31 @@ export async function sweepRepliedOpenPhoneTasks(): Promise<number> {
     // Include call-sourced reply tasks (voicemail callbacks) — legacy ones were
     // filed as "openphone-call" and would otherwise never be swept closed.
     where: { source: { in: ["openphone", "openphone-call"] }, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] }, clientId: { not: null } },
-    select: { id: true, clientId: true, client: { select: { phone: true } } },
+    select: { id: true, clientId: true, createdAt: true, client: { select: { phone: true } } },
   });
   if (tasks.length === 0) return 0;
+
+  // THE NUMBER THAT ASKED, AND ONLY A REPLY AFTER IT (audit Oct 25 2026). The
+  // sweep read the thread of the number on the client record, so a question
+  // from a second phone (Tim Bonner texting for Hala's account, an assistant
+  // folded onto their agent) was "answered" by whatever we last said to the
+  // record's own number, days before: Hala's Oct 23 booking request for 265
+  // Mill Rd closed 49 minutes after it arrived with nobody having replied.
+  // The phone is the one on the inbound row that minted the task (fromPhone),
+  // and the newest outbound must come after that message.
+  const asked = new Map<string, { phone: string | null; at: Date }>();
+  for (const t of tasks) {
+    const row = t.clientId
+      ? await prisma.commLog
+          .findFirst({
+            where: { clientId: t.clientId, direction: "in", channel: { in: ["text", "call"] }, occurredAt: { lte: new Date(t.createdAt.getTime() + 2 * 60_000) } },
+            orderBy: { occurredAt: "desc" },
+            select: { fromPhone: true, occurredAt: true },
+          })
+          .catch(() => null)
+      : null;
+    asked.set(t.id, { phone: row?.fromPhone ?? null, at: row?.occurredAt ?? t.createdAt });
+  }
 
   // With per-order reply tasks a client can have several open at once; this
   // phone-level sweep can't tell which order a reply addressed, so skip those
@@ -292,7 +314,8 @@ export async function sweepRepliedOpenPhoneTasks(): Promise<number> {
   let closed = 0;
   for (const t of tasks) {
     if (t.clientId && (perClient.get(t.clientId) ?? 0) > 1) continue; // multi-order: skip
-    const k = phoneKey(t.client?.phone);
+    const ask = asked.get(t.id);
+    const k = phoneKey(ask?.phone || t.client?.phone);
     if (k.length !== 10) continue;
     const participant = `+1${k}`; // OpenPhone wants E.164; their clients are US.
 
@@ -311,6 +334,8 @@ export async function sweepRepliedOpenPhoneTasks(): Promise<number> {
         if (!latest || (m.createdAt && (!latest.createdAt || m.createdAt > latest.createdAt))) latest = m;
       }
     }
+    const latestAt = latest?.createdAt ? new Date(latest.createdAt).getTime() : NaN;
+    if (!Number.isFinite(latestAt) || latestAt <= (ask?.at ?? t.createdAt).getTime()) continue; // nothing said since the question
     if (latest && (latest.direction ?? "").toLowerCase().startsWith("out")) {
       // THE NEWEST OUTBOUND MAY BE A MACHINE (§9, Sep 26 2026). This backstop
       // closed on direction alone, so the after-hours auto-reply sent at 20:06

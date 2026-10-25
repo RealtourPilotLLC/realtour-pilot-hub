@@ -416,12 +416,23 @@ function resolveRange(input: { range?: string; from?: string; to?: string }): { 
   }
 }
 
+// THE OFFICE'S TASK TOOLS ARE THE OFFICE'S (audit Oct 25 2026). `role` here is
+// the CONTENT tier, and the creative manager reads at the ADMIN tier (Oct 21
+// 2026), so the tier gate below let James complete or reassign ANY task in
+// the hub through chat (Kyle's client replies, Jordan's own) and work the
+// Outbox, while his Tasks board shows only his own work and delegation stops
+// him taking over someone else's (lib/delegation). `office` says whether the
+// signed-in person is the owner or the office; `ownKeys` are the assignment
+// keys that are theirs. A caller that passes neither keeps the tier rule.
+type HubToolCtx = { role: string; impersonating?: boolean; who?: string | null; office?: boolean; ownKeys?: string[] };
+const notOffice = (ctx: HubToolCtx) => ctx.office === false;
+
 export async function execHubTool(
   name: string,
   input: Record<string, unknown>,
   // Least privilege if a caller forgets; `impersonating` = the owner is in the
   // read-only "view as" preview, so write tools must refuse.
-  ctx: { role: string; impersonating?: boolean; who?: string | null } = { role: "CREATIVE" },
+  ctx: HubToolCtx = { role: "CREATIVE" },
 ): Promise<unknown> {
   switch (name) {
     case "current_datetime": {
@@ -911,8 +922,12 @@ export async function execHubTool(
       const q = String(input.task ?? "").trim();
       if (!q) return { error: "Which task?" };
       const reopen = input.reopen === true;
+      // Outside the office, only the viewer's own tasks (see HubToolCtx).
+      const ownOnly = notOffice(ctx);
+      if (ownOnly && !(ctx.ownKeys ?? []).length) return { error: "Your login isn't linked to a task owner, so I can't complete tasks for you here. Use your Tasks board." };
       const matches = await prisma.smartTask.findMany({
         where: {
+          ...(ownOnly ? { assignedKey: { in: ctx.ownKeys } } : {}),
           status: reopen ? "COMPLETED" : { notIn: ["COMPLETED", "CANCELLED"] },
           OR: q.split(/\s+/).filter((w) => w.length > 2).map((w) => ({ title: { contains: w, mode: "insensitive" as const } })),
         },
@@ -953,6 +968,9 @@ export async function execHubTool(
       if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.CREATIVE) < ROLE_RANK.ADMIN) {
         return { error: "Assigning tasks is available to admin and owner roles only." };
       }
+      // Handing work around is the office's here; a creative lead assigns or
+      // recommends from the task card (lib/delegation keeps their limits).
+      if (notOffice(ctx)) return { error: "Assigning tasks from chat is for Jordan and the office. Use Assign on the task card instead." };
       const q = String(input.task ?? "").trim();
       let who = String(input.person ?? "").trim().toLowerCase();
       if (!q || !who) return { error: "Which task, and to whom?" };
@@ -1025,6 +1043,7 @@ export async function execHubTool(
       if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.CREATIVE) < ROLE_RANK.ADMIN) {
         return { error: "The Outbox is admin/owner only." };
       }
+      if (notOffice(ctx)) return { error: "The Outbox is Jordan's and the office's." };
       const { listDraftedTexts, sendDraftText } = await import("@/app/tasks/sendAllActions");
       const listed = await listDraftedTexts();
       if (!listed.ok || !listed.rows?.length) return { texts: [], note: "The Outbox is empty — nothing drafted to send." };

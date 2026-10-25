@@ -4,7 +4,7 @@ import { getSecret } from "./connections";
 import { cleanText, clip, stripQuotedReply } from "@/lib/text";
 import { originOrBase } from "@/lib/appUrl";
 import { fetchWithTimeout } from "@/lib/http";
-import { forwardedSenderAddress, messageIdKey, sameSenderName, streetMatchAllowed } from "@/lib/mailMatch";
+import { forwardedSenderAddress, isInternalNote, messageIdKey, sameSenderName, streetMatchAllowed } from "@/lib/mailMatch";
 import { isHoldingReply } from "@/lib/holdingReply";
 
 // ---------------------------------------------------------------------------
@@ -669,13 +669,19 @@ type SentMessage = { id: string; at: Date; to: string; subject: string; from?: s
  *  when the counterparty did, when and under what subject. Null on a read
  *  failure — never suppress on ignorance. */
 type ThreadTail = { reply: SentMessage | null; lastInbound: { at: Date; subject: string } | null };
+
+/** The thread as the client sees it: our internal notes (a forward to Kyle, a
+ *  reply-to-teammate) left out, so neither reader below mistakes one for our
+ *  answer (lib/mailMatch isInternalNote, audit Oct 25 2026). */
+const THREAD_HEADERS = "format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Subject&metadataHeaders=Date";
+function clientFacing(msgs: GmailMsg[]): GmailMsg[] {
+  return msgs.filter((m) => !isInternalNote({ from: header(m, "From"), to: header(m, "To"), cc: header(m, "Cc"), subject: header(m, "Subject") }, OUR_DOMAIN));
+}
+
 async function threadTail(threadId: string, token: string): Promise<ThreadTail | null> {
   try {
-    const thread = await gmail<GmailThread>(
-      `/threads/${threadId}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
-      token,
-    );
-    const msgs = thread.messages ?? [];
+    const thread = await gmail<GmailThread>(`/threads/${threadId}?${THREAD_HEADERS}`, token);
+    const msgs = clientFacing(thread.messages ?? []);
     if (msgs.length === 0) return { reply: null, lastInbound: null };
     const last = msgs[msgs.length - 1];
     const from = header(last, "From").toLowerCase();
@@ -699,11 +705,8 @@ async function threadTail(threadId: string, token: string): Promise<ThreadTail |
  *  nothing), or when Gmail can't be read (never suppress on ignorance). */
 async function lastFromUs(threadId: string, token: string): Promise<SentMessage | null> {
   try {
-    const thread = await gmail<GmailThread>(
-      `/threads/${threadId}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
-      token,
-    );
-    const msgs = thread.messages ?? [];
+    const thread = await gmail<GmailThread>(`/threads/${threadId}?${THREAD_HEADERS}`, token);
+    const msgs = clientFacing(thread.messages ?? []);
     // A one-message thread from us is an outgoing mail, not a reply. Keying on
     // "the last message is from our domain" alone would log a cold forward as
     // an answer to a conversation that never happened.

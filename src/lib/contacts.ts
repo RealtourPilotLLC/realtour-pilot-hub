@@ -355,6 +355,33 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * HOW STRONGLY A MESSAGE NAMES THIS JOB (audit Oct 25 2026). 0 = it doesn't.
+ * A bare street scores its core's length, as the finders always ranked it; the
+ * house number right before the street ("1316 Blair") scores above every bare
+ * street (1001-2000, earlier in the text higher). The longest core used to win outright, so a core that is also a
+ * TOWN beat a real address: Kimberly Mazzenga's "Re: 1316 Blair
+ * Updates/Showcase" (Mike Flatley's job) was filed to Marcee McMullen's 1244
+ * West Chester Pike because her signature says "West Chester PA 19382". The
+ * number and street together are the strongest thing a message can say.
+ * Pure; every finder below and refileRecentCommsToProject share it.
+ */
+export function streetMatchScore(p: { title: string; addressLine: string | null }, text: string): number {
+  const core = streetCore(p.addressLine || p.title).toLowerCase();
+  if (core.length < 5) return 0;
+  const re = new RegExp(`\\b${escapeRegExp(core)}\\b`, "i");
+  if (!re.test(text)) return 0;
+  // The number counts only right before the SAME core the bare rule matches
+  // (direction and all). Deliberately no looser: every Gary Mercer team
+  // signature carries "893 S. Matlack St", a job of Joe Sutow's, and a looser
+  // number match would file the whole team's mail there.
+  // Two numbered addresses: the one named FIRST wins (the subject and the
+  // opening words name the property; a signature's office address comes last).
+  const num = /^\s*(\d+[a-z]?)\s/i.exec((p.addressLine || p.title.split(",")[0] || "").trim())?.[1];
+  const at = num ? text.search(new RegExp(`\\b${escapeRegExp(num)}\\s+${escapeRegExp(core)}\\b`, "i")) : -1;
+  return at >= 0 ? 2000 - Math.min(at, 999) : core.length;
+}
+
 export async function findActiveProjectByText(
   text: string,
 ): Promise<{ id: string; title: string; status: string; clientId: string } | null> {
@@ -366,20 +393,18 @@ export async function findActiveProjectByText(
     orderBy: [{ shootDate: { sort: "desc", nulls: "last" } }],
   });
   let best: { id: string; title: string; status: string; clientId: string } | null = null;
-  let bestLen = 0;
+  let bestScore = 0;
   for (const p of projects) {
     if (!p.clientId) continue;
-    const core = streetCore(p.addressLine || p.title).toLowerCase();
     // Match the FULL street core as a whole word/phrase only. We deliberately do
     // NOT fall back to the bare last word: it is usually a common word ("Market",
     // "Run", "Way") that turns up in unrelated messages, and the old raw substring
     // test also matched "market" inside "marketing" — which once filed a note
     // about one client's video order onto a DIFFERENT client's "E Market St" job.
-    if (core.length < 5) continue;
-    const re = new RegExp(`\\b${escapeRegExp(core)}\\b`, "i");
-    if (re.test(t) && core.length > bestLen) {
+    const score = streetMatchScore(p, t);
+    if (score > bestScore) {
       best = { id: p.id, title: p.title, status: p.status, clientId: p.clientId };
-      bestLen = core.length;
+      bestScore = score;
     }
   }
   return best;
@@ -404,15 +429,13 @@ export async function findProjectByText(
     ],
   });
   let best: { id: string; title: string; status: string; clientId: string } | null = null;
-  let bestLen = 0;
+  let bestScore = 0;
   for (const p of projects) {
     if (!p.clientId) continue;
-    const core = streetCore(p.addressLine || p.title).toLowerCase();
-    if (core.length < 5) continue;
-    const re = new RegExp(`\\b${escapeRegExp(core)}\\b`, "i");
-    if (re.test(t) && core.length > bestLen) {
+    const score = streetMatchScore(p, t);
+    if (score > bestScore) {
       best = { id: p.id, title: p.title, status: p.status, clientId: p.clientId };
-      bestLen = core.length;
+      bestScore = score;
     }
   }
   return best;
@@ -469,17 +492,14 @@ export async function refileRecentCommsToProject(project: {
       { createdAt: "desc" },
     ],
   });
-  const cores = projects
-    .map((p) => ({ id: p.id, core: streetCore(p.addressLine || p.title).toLowerCase() }))
-    .filter((c) => c.core.length >= 5)
-    .map((c) => ({ id: c.id, len: c.core.length, re: new RegExp(`\\b${escapeRegExp(c.core)}\\b`, "i") }));
   const { stripQuotedReply, clip } = await import("@/lib/text");
   const ids: string[] = [];
   for (const r of rows) {
     const text = `${r.subject ?? ""} ${r.channel === "email" ? clip(stripQuotedReply(r.body), 2000) : r.body}`;
-    let best: { id: string; len: number } | null = null;
-    for (const c of cores) {
-      if ((!best || c.len > best.len) && c.re.test(text)) best = { id: c.id, len: c.len };
+    let best: { id: string; score: number } | null = null;
+    for (const p of projects) {
+      const score = streetMatchScore(p, text);
+      if (score > (best?.score ?? 0)) best = { id: p.id, score };
     }
     if (best?.id === project.id) ids.push(r.id);
   }
@@ -507,14 +527,12 @@ export async function findClientProjectByText(
     ],
   });
   let best: { id: string; title: string; status: string } | null = null;
-  let bestLen = 0;
+  let bestScore = 0;
   for (const p of projects) {
-    const core = streetCore(p.addressLine || p.title).toLowerCase();
-    if (core.length < 5) continue;
-    const re = new RegExp(`\\b${escapeRegExp(core)}\\b`, "i");
-    if (re.test(t) && core.length > bestLen) {
+    const score = streetMatchScore(p, t);
+    if (score > bestScore) {
       best = { id: p.id, title: p.title, status: p.status };
-      bestLen = core.length;
+      bestScore = score;
     }
   }
   return best;
