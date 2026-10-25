@@ -80,6 +80,88 @@ export async function stripeBalance(): Promise<{ available: number; pending: num
   }
 }
 
+// ---------------------------------------------------------------------------
+// STRIPE AT A GLANCE (Oct 24 2026, Jordan: "I want to see Stripe balances
+// too. The stripe balances should show incoming, balance, MTD Gross and Net
+// Rev."). The four numbers Stripe's own home page leads with, read LIVE so
+// they match it, not last night's sync:
+//   balance   available now (can be paid out)
+//   incoming  pending: paid by clients, not yet available
+//   inTransit payouts already on their way to the bank
+//   MTD gross every charge this ET month; MTD net = gross − refunds and
+//             disputes − Stripe's fees on those sales
+// Stripe Capital's flex-loan withholding and Stripe's own billing fees are
+// shown beside them, never inside revenue: loan repayments aren't a cost of a
+// sale. A failed live read falls back to the synced ledger, labelled as such.
+// ---------------------------------------------------------------------------
+export type StripeSnapshot = {
+  asOf: string;
+  source: "live" | "synced";
+  balance: number | null;
+  incoming: number | null;
+  inTransit: number | null;
+  mtd: { gross: number; refunds: number; fees: number; net: number; charges: number; capitalWithheld: number; billingFees: number; paidOut: number };
+  monthLabel: string;
+};
+const SALE_TYPES = new Set(["charge", "payment"]);
+const REVERSAL_TYPES = new Set(["refund", "payment_refund", "adjustment", "payment_failure_refund", "payment_reversal"]);
+
+export function summarizeStripeMonth(rows: { type: string; gross: number; fee: number; net: number }[]): StripeSnapshot["mtd"] {
+  const m = { gross: 0, refunds: 0, fees: 0, net: 0, charges: 0, capitalWithheld: 0, billingFees: 0, paidOut: 0 };
+  for (const r of rows) {
+    if (SALE_TYPES.has(r.type)) { m.gross += r.gross; m.fees += r.fee; m.net += r.net; m.charges++; }
+    else if (REVERSAL_TYPES.has(r.type)) { m.refunds += -r.gross; m.fees += r.fee; m.net += r.net; }
+    else if (r.type === "financing_paydown") m.capitalWithheld += -r.gross;
+    else if (r.type === "stripe_fee") m.billingFees += -r.net;
+    else if (r.type === "payout") m.paidOut += -r.gross;
+  }
+  const c = (n: number) => Math.round(n * 100) / 100;
+  return { gross: c(m.gross), refunds: c(m.refunds), fees: c(m.fees), net: c(m.net), charges: m.charges, capitalWithheld: c(m.capitalWithheld), billingFees: c(m.billingFees), paidOut: c(m.paidOut) };
+}
+
+export async function stripeSnapshot(now: Date = new Date()): Promise<StripeSnapshot | null> {
+  const { etDayKey, etDayStartUtc } = await import("@/lib/datetime");
+  const monthKey = etDayKey(now).slice(0, 7);
+  const monthStart = etDayStartUtc(new Date(`${monthKey}-01T12:00:00Z`));
+  const monthLabel = new Date(`${monthKey}-15T12:00:00Z`).toLocaleString("en-US", { month: "long", timeZone: "UTC" });
+  try {
+    const [bal, transit] = await Promise.all([
+      stripeGet<StripeBalance>("/balance"),
+      // The status filter isn't honoured under every key: read the latest
+      // payouts and keep the ones still on their way.
+      stripeGet<{ data: { amount: number; status: string }[] }>("/payouts", { query: { limit: 30 } }).catch(() => null),
+    ]);
+    const rows: { type: string; gross: number; fee: number; net: number }[] = [];
+    let after: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const q: Record<string, string | number> = { limit: 100, "created[gte]": Math.floor(monthStart.getTime() / 1000) };
+      if (after) q.starting_after = after;
+      const res = await stripeGet<{ data: BalanceTxn[]; has_more: boolean }>("/balance_transactions", { query: q });
+      for (const t of res.data) rows.push({ type: t.type, gross: dollars(t.amount), fee: dollars(t.fee), net: dollars(t.net) });
+      if (!res.has_more || !res.data.length) break;
+      after = res.data[res.data.length - 1].id;
+    }
+    const sum = (r?: { amount: number }[]) => dollars((r ?? []).reduce((s, x) => s + x.amount, 0));
+    return {
+      asOf: now.toISOString(), source: "live",
+      balance: sum(bal.available), incoming: sum(bal.pending), inTransit: transit ? sum(transit.data.filter((p) => p.status === "in_transit" || p.status === "pending")) : null,
+      mtd: summarizeStripeMonth(rows), monthLabel,
+    };
+  } catch {
+    // Live read failed (key revoked, Stripe down): the synced ledger, said so.
+    try {
+      const { prisma } = await import("@/lib/prisma");
+      const conn = await getConnection("stripe");
+      if (!conn?.secretEncrypted) return null;
+      const rows = await prisma.stripeTransaction.findMany({ where: { createdAt: { gte: monthStart } }, select: { type: true, gross: true, fee: true, net: true } });
+      const last = await prisma.stripeTransaction.aggregate({ _max: { createdAt: true } });
+      return { asOf: (last._max.createdAt ?? now).toISOString(), source: "synced", balance: null, incoming: null, inTransit: null, mtd: summarizeStripeMonth(rows), monthLabel };
+    } catch {
+      return null;
+    }
+  }
+}
+
 // Sync balance transactions since the high-water mark (first run: last 120 days),
 // upserting StripeTransaction. Fee-accurate: gross/fee/net straight from Stripe.
 //

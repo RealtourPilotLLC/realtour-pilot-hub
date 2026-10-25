@@ -1,15 +1,17 @@
 import Link from "next/link";
-import { Receipt, Banknote, LayoutDashboard, User, Users, Briefcase, PieChart, Sparkles, PiggyBank, Trophy, ArrowLeftRight } from "lucide-react";
+import { Receipt, Banknote, LayoutDashboard, User, Users, Briefcase, PieChart, Sparkles, PiggyBank, Trophy, ArrowLeftRight, ShieldCheck } from "lucide-react";
 
 // Tab bar for the merged Finance page, styled to match CommsTabs: brand pill =
 // active, bordered pill = idle. Which tabs render depends on the viewer's role —
 // everything except Unpaid is owner-only — so the caller passes the allowed tabs.
 // ("money" and "revenue" left the type Oct 20 2026, audit G11: the page maps
 // those old ?tab= links to Overview before a FinanceTab is ever chosen.)
-export type FinanceTab = "overview" | "personal" | "people" | "jobs" | "spending" | "unpaid" | "payroll" | "paystructure" | "advisor" | "budget" | "bonus";
+export type FinanceTab = "overview" | "personal" | "people" | "jobs" | "spending" | "unpaid" | "payroll" | "paystructure" | "advisor" | "budget" | "bonus" | "audit";
 
 const TABS: { key: FinanceTab; label: string; href: string; icon: typeof Receipt }[] = [
   { key: "overview", label: "Overview", href: "/sales?tab=overview", icon: LayoutDashboard },
+  // Oct 24 2026: the year-to-date books audit (lib/financeAudit). Owner only.
+  { key: "audit", label: "Audit", href: "/sales?tab=audit", icon: ShieldCheck },
   { key: "advisor", label: "Advisor", href: "/sales?tab=advisor", icon: Sparkles },
   { key: "jobs", label: "Jobs", href: "/sales?tab=jobs", icon: Briefcase },
   { key: "people", label: "People", href: "/sales?tab=people", icon: Users },

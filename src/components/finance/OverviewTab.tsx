@@ -1,3 +1,5 @@
+import { Suspense } from "react";
+import { StripeBalances } from "@/components/finance/StripeCard";
 import Link from "next/link";
 import {
   Wallet, TrendingUp, TrendingDown, PiggyBank, ArrowRight, ArrowUpRight,
@@ -256,6 +258,11 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
             },
           ]}
         />
+
+        {/* STRIPE — live balance, incoming, month gross and net (Oct 24 2026) */}
+        <Suspense fallback={<div role="status" className="panel-shadow flex min-h-24 items-center rounded-2xl border border-border bg-surface px-5 text-sm text-muted">Reading Stripe…</div>}>
+          <StripeBalances />
+        </Suspense>
 
         {/* SAVINGS PLAN — the $5k/mo cut checklist, tick-off-able */}
         {savingsItems.length > 0 && <SavingsPlan items={savingsItems} />}

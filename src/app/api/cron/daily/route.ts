@@ -87,6 +87,12 @@ export async function GET(req: NextRequest) {
     const { categorizeAllPlaid } = await import("@/lib/financeCategories");
     return categorizeAllPlaid();
   }, { after: "plaidSync" });
+  // The year-to-date books audit (Oct 24 2026): its findings open owner tasks
+  // and close them once the problem is gone (lib/financeAuditTasks).
+  await step("booksAudit", async () => {
+    const { runBooksAudit } = await import("@/lib/financeAuditTasks");
+    return runBooksAudit();
+  }, { maxMs: 45_000, after: "plaidCategorize" });
   // Retire delivery-text nudges that lingered a week (already sent off-app / moot).
   await step("staleDeliveryTexts", async () => {
     const { closeStaleDeliveryTexts } = await import("@/lib/tasks");
