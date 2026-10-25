@@ -754,7 +754,7 @@ async function finishCheck(jobId: string, runId: string, photos: Photo[], progre
     // about it like the other photo alerts; the job stays delivered.
     const fresh = await prisma.photoQcFinding.count({ where: { qcRunId: runId, status: "OPEN", confidence: { gte: settings.displayConfidenceFloor } } });
     const { alertOwnerAndKyle } = await import("./notifyOps");
-    const what = `${checked} new or changed listing photo${checked === 1 ? "" : "s"} checked: ${fresh ? `${fresh} thing${fresh === 1 ? "" : "s"} to look at` : "nothing found"}${unchecked.length ? `; ${unchecked.length} could not be checked (AutoHDR no longer has ${unchecked.length === 1 ? "it" : "them"}), look at ${unchecked.length === 1 ? "it" : "them"} yourself` : ""}`;
+    const what = `${checked} new or changed listing photo${checked === 1 ? "" : "s"} checked: ${fresh ? `${fresh} thing${fresh === 1 ? "" : "s"} to look at` : "nothing found"}${unchecked.length ? `; ${unchecked.length} could not be checked (${unchecked.length === 1 ? "it is" : "they are"} not in AutoHDR: added on the listing by hand, or the shoot closed), look at ${unchecked.length === 1 ? "it" : "them"} yourself` : ""}`;
     await alertOwnerAndKyle({
       kind: "photo_after_delivery",
       title: `${street}: listing photos changed after delivery`,

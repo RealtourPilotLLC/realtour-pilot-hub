@@ -99,6 +99,10 @@ async function main() {
     const src = fs.readFileSync(path.join(REPO, "scripts/_live/oct25-d-photo-qc-cards.ts"), "utf8");
     c.ok("dry run unless --apply, and it proves the read-only connection first", /const APPLY = process\.argv\.includes\("--apply"\)/.test(src) && /default_transaction_read_only=on/.test(src) && /read-only guard is NOT proven/.test(src));
     c.ok("only cards back for the photos, on a delivered photo job, not in revision", /sourceDetail: "reopened-for:Photos"/.test(src) && /job\.stage !== "DELIVERED"/.test(src) && /REVISION/.test(src) && /closeMediaCheckForPhotos/.test(src));
+    // 1316 Blair Cir, Oct 24: the agent added his own edits to the listing after delivery; the
+    // alert said the hub could not check them because "AutoHDR no longer has them" (it never had).
+    const check = fs.readFileSync(path.join(REPO, "src/lib/photoDelivery/autohdrCheck.ts"), "utf8");
+    c.ok("the after-delivery alert says why a photo could not be checked without claiming AutoHDR lost it", !/AutoHDR no longer has \$\{unchecked/.test(check) && /not in AutoHDR: added on the listing by hand, or the shoot closed/.test(check));
     c.ok("no outbound call", fence.blocked.length === 0, fence.blocked.join(" "));
   } finally {
     c.summary();
