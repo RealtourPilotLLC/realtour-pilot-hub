@@ -6,7 +6,7 @@ import { slackNotify, slackChannels } from "@/lib/integrations/slack";
 import { appBase } from "@/lib/appUrl";
 import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
 import type { Role } from "@/lib/auth/access";
-import { etHour } from "@/lib/datetime";
+import { etDayKey, etHour } from "@/lib/datetime";
 import { allSlackOwnerIds, wantsAllSlack } from "@/lib/notifyAllSlack";
 
 // ---------------------------------------------------------------------------
@@ -2416,7 +2416,7 @@ export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: str
   // still gets that morning's list.
   const off = await digestGate();
   if (off) return { sent: false, reason: off };
-  const day = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const day = etDayKey(new Date());
   const claimKey = `kyle-morning-${day}`;
   try {
     await prisma.appSetting.create({ data: { key: claimKey, value: "sent" } });

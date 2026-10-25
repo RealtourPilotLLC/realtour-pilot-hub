@@ -7,6 +7,7 @@ import { topicSourceIsCall, topicSourceNeedsApproval } from "@/lib/contentPolicy
 import { approvedStrategy } from "@/lib/contentStrategy";
 import { isAutomationEnabled, recordAutomationRun } from "@/lib/programAutomation";
 import { confidentialFilter } from "@/lib/clientFacts";
+import { etMonthKey } from "@/lib/datetime";
 import { topicFormatOf, withTopicFormat, asVideoFormat, shownVersionFormat, skitsPerMonthFromOverrides, VIDEO_FORMAT_LABEL, type VideoFormat } from "@/lib/contentPolicy/videoFormat";
 import { normalizeTitle, titleSimilarity, NEAR_DUPLICATE_THRESHOLD, rankRecommendations, clientReasonFor, GENERATION_POLICY, PILLAR_EMPHASIS_WEIGHT, topicsForEmphasis, type Topic, type FilmedRecord, type PriorScript, type StrategyGoal, type SourceExcerpt } from "@/lib/contentPolicy";
 
@@ -1599,7 +1600,7 @@ export async function autoRankMonth(monthId: string, opts: { requestedBy?: strin
  */
 export async function sweepRecommendations(opts: { max?: number; now?: Date } = {}): Promise<{ skipped: string } | { checked: number; ranked: number; unchanged: number; errors: number }> {
   if (!(await isAutomationEnabled("topic_refresh"))) return { skipped: "topic_refresh is off" };
-  const cur = (opts.now ?? new Date()).toLocaleDateString("en-CA", { timeZone: "America/New_York" }).slice(0, 7);
+  const cur = etMonthKey(opts.now ?? new Date());
   const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", OR: [{ programKind: null }, { programKind: { not: "BULK" } }] }, select: { id: true } });
   const months = live.length ? await prisma.contentMonth.findMany({ where: { enrollmentId: { in: live.map((e) => e.id) }, historical: false, status: { notIn: ["CLOSED", "CANCELLED", "IMPORTED"] }, monthKey: { gte: cur } }, select: { id: true }, orderBy: { monthKey: "asc" }, take: opts.max ?? 60 }) : [];
   let ranked = 0, unchanged = 0, errors = 0;

@@ -7,6 +7,7 @@ import { logJobEvent, setStage } from "./jobState";
 import { ruleById, SEVERITY_RANK, type Severity } from "./registry";
 import { creditThresholds } from "./credits";
 import { ClaimLost, transformPrice } from "./fixes";
+import { etDayKey } from "@/lib/datetime";
 import { reviewStage } from "./decisions";
 
 // ---------------------------------------------------------------------------
@@ -441,8 +442,6 @@ function neverWhy(ruleId: string, privacy: boolean): string {
   return "Never automatic: there is no AI edit for this.";
 }
 
-const etDay = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
-
 /** Has this job already been planned for its latest check? (one plan per gallery version) */
 async function alreadyPlanned(jobId: string, since: Date): Promise<boolean> {
   return !!(await prisma.photoFixBatch.findFirst({ where: { jobId, approvedBy: "auto-fix", approvedAt: { gte: since } }, select: { id: true } })) ||
@@ -526,9 +525,9 @@ export async function planAutoFix(jobId: string): Promise<PlanResult> {
   const target = Math.max(0, Math.floor(settings.fixTargetUsd / usdPerCredit + 1e-9) - used.spent - used.pending);
   const max = Math.max(0, Math.floor(settings.fixMaxUsd / usdPerCredit + 1e-9) - used.spent - used.pending);
   // The daily guard: every automatic batch planned today (ET).
-  const today = etDay(new Date());
+  const today = etDayKey(new Date());
   const recent = await prisma.photoFixBatch.findMany({ where: { approvedBy: "auto-fix", approvedAt: { gte: new Date(Date.now() - 36 * 3_600_000) } }, select: { estimatedCredits: true, approvedAt: true } });
-  const spentToday = recent.filter((b) => b.approvedAt && etDay(b.approvedAt) === today).reduce((s, b) => s + (b.estimatedCredits ?? 0), 0);
+  const spentToday = recent.filter((b) => b.approvedAt && etDayKey(b.approvedAt) === today).reduce((s, b) => s + (b.estimatedCredits ?? 0), 0);
 
   type Cand = { photo: Photo; always: typeof findings; prep: typeof findings; worst: number };
   const cands: Cand[] = [];

@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { unansweredComms } from "@/lib/replyQueue";
 import { editorMeta } from "@/lib/editors";
 import { taskClientScopeWhere, type TaskClientScope } from "@/lib/taskClientScope";
-import { etHour } from "@/lib/datetime";
+import { etDayKey, etHour } from "@/lib/datetime";
 import { scrubMoney } from "@/lib/text";
 
 // ---------------------------------------------------------------------------
@@ -492,7 +492,7 @@ export async function afternoonSlackDigest(): Promise<{ sent: boolean; reason?: 
   const { digestGate, kyleDigestRecipient, deliverDigestDm } = await import("@/lib/notify");
   const off = await digestGate();
   if (off) return { sent: false, reason: off };
-  const day = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const day = etDayKey(new Date());
   const claim = `kyle-digest-${day}`;
   try {
     await prisma.appSetting.create({ data: { key: claim, value: "sent" } });
