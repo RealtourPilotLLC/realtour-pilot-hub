@@ -45,7 +45,7 @@ async function main() {
       const ctx = await scs.checkContextForSlot(j.projectId, { deliverableId: j.deliverableId, slot }, { round: 1 });
       return { checklistKey: ctx.profile.checklistKey, answers: Object.fromEntries(sc.itemsFor(ctx.profile, { isRevision: ctx.isRevision, openIssueIds: ctx.issues.map(i => i.id) }).map(i => [i.key, { answer: "YES" as const }])), issues: { addressed: ctx.issues.map(i => i.id), notAddressed: {} }, watchedFile: { name: "fixture.mp4", size: 77 } };
     };
-    const start = async (j: Awaited<ReturnType<typeof job>>, slot = 1) => actions.startCutUpload({ ...j, slot, fileName: "fixture.mp4", sizeBytes: 77, width: 1080, height: 1920, selfCheck: await check(j, slot) });
+    const start = async (j: Awaited<ReturnType<typeof job>>, slot = 1) => actions.startCutUpload({ ...j, slot, fileName: "fixture.mp4", sizeBytes: 77, width: 1080, height: 1920, selfCheck: await check(j, slot), wrongFileOverride: true }); // every fixture is the same 77-byte file: the Oct 23 wrong-file guard is not what this drill tests
     const reserve = async (j: Awaited<ReturnType<typeof job>>, slot = 1) => { const r = await start(j, slot); if (!r.ok) throw new Error(r.message); return r; };
     const blob = (j: Awaited<ReturnType<typeof job>>, id: string) => { const pathname = `review-cuts/${j.projectId}/${id}/fixture-Ab12Cd.mp4`; return { url: `https://drillstore.public.blob.vercel-storage.com/${pathname}`, pathname, size: 77 }; };
     const saved = await job("Newburg manual Kim no task"), automatic = await job("Routing prediction only", false), unassigned = await job("Explicit task unassignment"), reassigned = await job("Task reassigned to John");
@@ -129,7 +129,7 @@ async function main() {
     await prisma.reviewSubmission.create({ data: { projectId: done.projectId, deliverableId: done.deliverableId, slot: 2, round: 1, status: "APPROVED", source: "upload", fileName: "office.mp4", sizeBytes: 77, decidedAt: new Date(), completedAt: new Date() } });
     const needs = await start(done, 2);
     c.ok("an approved video asks why first", !needs.ok && "needsReason" in needs && needs.needsReason === true, needs.ok ? "" : needs.message);
-    const withWhy = await actions.startCutUpload({ ...done, slot: 2, fileName: "fixture.mp4", sizeBytes: 77, width: 1080, height: 1920, reopenReason: "The agent's name is misspelled in the end card", selfCheck: await check(done, 2) });
+    const withWhy = await actions.startCutUpload({ ...done, slot: 2, fileName: "fixture.mp4", sizeBytes: 77, width: 1080, height: 1920, reopenReason: "The agent's name is misspelled in the end card", selfCheck: await check(done, 2), wrongFileOverride: true });
     c.ok("…with a reason, Kim replaces the approved video the office uploaded", withWhy.ok, withWhy.ok ? "" : withWhy.message);
     c.ok("the page draws the revised-version door for her on that approved video", await actions.canReplaceApprovedCut({ projectId: done.projectId, deliverableId: done.deliverableId, slot: 2 }));
     await signIn(john);
