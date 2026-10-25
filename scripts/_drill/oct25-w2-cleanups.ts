@@ -5,6 +5,8 @@
 //        differ only on an invalid date ("Invalid Date" vs a RangeError), so
 //        the copies fed a stored string (BulkPlanPanel, ProgramRolloutPanel's
 //        end day) stay, and yourMonth's (a variable zone) is not ET.
+//   §F13 the inline last-10-digits phone keys became lib/phoneKey (moved out
+//        of the server-only OpenPhone module, which re-exports it).
 // Disposable PGlite; nothing leaves.
 // @drill-run: conditions=react-server
 import fs from "node:fs";
@@ -39,6 +41,23 @@ async function main() {
     c.ok("the replaced files hold no inline ET day key", moved.every((f) => !/toLocaleDateString\("en-CA", \{ timeZone: "America\/New_York" \}\)/.test(src(f))), moved.filter((f) => /toLocaleDateString\("en-CA"/.test(src(f))).join(", "));
     c.ok("ProgramRolloutPanel's 30-day default uses etDayKey; its stored end day keeps the tolerant copy", /in30Days = \(\) => etDayKey\(/.test(src("src/components/settings/ProgramRolloutPanel.tsx")) && /endDayInput[^\n]*toLocaleDateString\("en-CA"/.test(src("src/components/settings/ProgramRolloutPanel.tsx")));
     c.ok("lib/datetime stays client-safe (no imports, no server-only)", !/^\s*import\s/m.test(src("src/lib/datetime.ts")) && !/server-only/.test(src("src/lib/datetime.ts")));
+
+    c.head("§F13 · one phone key");
+    const { phoneKey } = await import("@/lib/phoneKey");
+    const viaOpenPhone = (await import("@/lib/integrations/openphone")).phoneKey;
+    const samples: (string | null | undefined)[] = [null, undefined, "", "abc", "555-0100", "6105550100", "+1 (610) 555-0100", "1-610-555-0100", "610.555.0100 x22", "+44 20 7946 0958", "  +1 610 555 0100  "];
+    const nullish = (p: string | null | undefined) => (p ?? "").replace(/\D/g, "").slice(-10);
+    const falsy = (p: string | null | undefined) => (p || "").replace(/\D/g, "").slice(-10);
+    const last10 = (p: string | null | undefined) => { const d = (p ?? "").replace(/\D/g, ""); return d.length > 10 ? d.slice(-10) : d; };
+    c.ok("phoneKey = every replaced copy's rule (?? / || / testClients' last10 / a plain string's) on every sample", samples.every((p) => phoneKey(p) === nullish(p) && phoneKey(p) === falsy(p) && phoneKey(p) === last10(p) && (typeof p !== "string" || phoneKey(p) === p.replace(/\D/g, "").slice(-10))), samples.map((p) => `${String(p)}→${phoneKey(p)}`).join(" | "));
+    c.ok("openphone.ts's phoneKey is the same function (re-exported)", viaOpenPhone === phoneKey);
+    c.ok("lib/phoneKey is client-safe (no imports), so ConversationView uses it", !/^\s*import\s/m.test(src("src/lib/phoneKey.ts")) && /from "@\/lib\/phoneKey"/.test(src("src/components/comms/ConversationView.tsx")) && /^"use client"/.test(src("src/components/comms/ConversationView.tsx")));
+    const tc = await import("@/lib/testClients");
+    const d = tc.JORDAN_TEST_PHONE_DIGITS;
+    c.ok("testClients still knows Jordan's test phone by its last 10 digits, and only it", [`+1${d}`, d, `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`].every((p) => tc.isVerifiedTestDestinationPhone(p)) && ![null, "", d.slice(1), tc.UNVERIFIED_LOOKALIKE_PHONE_DIGITS].some((p) => tc.isVerifiedTestDestinationPhone(p)));
+    const left = /replace\(\/\\D\/g, ?""\)\.slice\(-10\)/;
+    const cleaned = ["src/app/actions.ts", "src/app/communications/threadActions.ts", "src/app/communications/page.tsx", "src/app/communications/thread/page.tsx", "src/components/comms/ConversationView.tsx", "src/lib/commLog.ts", "src/lib/outbox.ts", "src/lib/smsPrefs.ts"];
+    c.ok("the replaced files hold no inline copy", cleaned.every((f) => !left.test(src(f))), cleaned.filter((f) => left.test(src(f))).join(", "));
 
     c.ok("nothing left the machine", fence.blocked.length === 0, fence.blocked.join(", "));
     c.summary();

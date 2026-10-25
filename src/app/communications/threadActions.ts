@@ -366,7 +366,6 @@ export async function draftThreadReply(
 
     // Build the conversation transcript (messages only, oldest first).
     const memberNames = opts?.memberNames ?? {};
-    const key10 = (p?: string) => (p || "").replace(/\D/g, "").slice(-10);
     const turns = (transcript || [])
       .filter((t) => t.kind === "message" && t.text && t.text.trim())
       .map((t) => {
@@ -375,7 +374,7 @@ export async function draftThreadReply(
           role: (out ? "us" : "client") as "us" | "client",
           text: t.text!,
           at: t.at ?? null,
-          sender: !out && opts?.isGroup ? (memberNames[key10(t.from)] ?? null) : null,
+          sender: !out && opts?.isGroup ? (memberNames[phoneKey(t.from)] ?? null) : null,
         };
       });
     if (turns.length === 0) return { ok: false, message: "Nothing to reply to yet." };

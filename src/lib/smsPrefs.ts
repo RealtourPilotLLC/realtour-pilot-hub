@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { phoneKey } from "@/lib/phoneKey";
 
 // ---------------------------------------------------------------------------
 // The OWNER's text preferences (Jordan, Sep 11: "make sure I get a text when a
@@ -124,7 +125,7 @@ export async function ownerPhoneKeys(): Promise<Set<string>> {
   if (ids.length === 0) return new Set();
   try {
     const rows = await prisma.teamMember.findMany({ where: { id: { in: ids } }, select: { phone: true } });
-    return new Set(rows.map((r) => (r.phone ?? "").replace(/\D/g, "").slice(-10)).filter((k) => k.length === 10));
+    return new Set(rows.map((r) => phoneKey(r.phone)).filter((k) => k.length === 10));
   } catch {
     return new Set();
   }

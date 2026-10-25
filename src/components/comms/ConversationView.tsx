@@ -13,6 +13,7 @@ import { SocialBadge } from "@/components/clients/SocialBadge";
 import { stageMeta } from "@/lib/pipeline";
 import { cn, stripHtml } from "@/lib/utils";
 import { etMonthDayTime } from "@/lib/datetime";
+import { phoneKey } from "@/lib/phoneKey";
 import { sendThreadText, draftThreadReply, uploadCommAttachment } from "@/app/communications/threadActions";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
@@ -33,7 +34,6 @@ export type ChatItem = {
   unconfirmed?: boolean;
 };
 export type ChatMember = { phone: string; key: string; name: string; clientId: string | null; segment: string | null; socialClient: boolean; socialPlan: string | null; avatarUrl?: string | null };
-function phoneKey10(p?: string) { return (p || "").replace(/\D/g, "").slice(-10); }
 export type ConvoClient = {
   id: string; name: string; phone: string | null; email: string | null; backupEmail: string | null;
   company: string | null; segment: string | null; socialClient: boolean; socialPlan: string | null;
@@ -171,7 +171,7 @@ export function ChatPanel({
               </Fragment>
             );
           }
-          const senderName = isGroup && !out ? (nameByKey.get(phoneKey10(it.from)) ?? null) : null;
+          const senderName = isGroup && !out ? (nameByKey.get(phoneKey(it.from)) ?? null) : null;
           return (
             <Fragment key={it.id}>
             {daySep}

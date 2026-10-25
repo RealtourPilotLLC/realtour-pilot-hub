@@ -30,7 +30,7 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Messages" };
 
 function fmtPhone(p: string) {
-  const d = p.replace(/\D/g, "").slice(-10);
+  const d = phoneKey(p);
   return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : p;
 }
 

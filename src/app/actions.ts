@@ -428,7 +428,8 @@ export async function markCommsHandled(
 export async function unmuteCommsNumber(phone: string): Promise<{ ok: boolean; message?: string }> {
   const { requireAdmin } = await import("@/lib/auth/guards");
   try { await requireAdmin(); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "Admins only." }; }
-  const key = (phone ?? "").replace(/\D/g, "").slice(-10);
+  const { phoneKey } = await import("@/lib/phoneKey");
+  const key = phoneKey(phone);
   if (key.length !== 10) return { ok: false, message: "That doesn't look like a number." };
   const { commsMuteKey } = await import("@/lib/replyQueue");
   await prisma.appSetting.deleteMany({ where: { key: commsMuteKey(key) } });
