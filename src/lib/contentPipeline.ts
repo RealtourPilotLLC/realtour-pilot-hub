@@ -151,15 +151,10 @@ export async function generateScriptsForMonth(monthId: string, opts?: PipelineOp
   return { generated, skipped };
 }
 
-// ---------------------------------------------------------------------------
-// 3. AI revision — a NEW version following the reviewer's instruction. The
-// version being revised (and any hand edit in it) stays exactly as it was.
-// ---------------------------------------------------------------------------
-export async function reviseScriptWithInstructions(scriptId: string, instructions: string, opts?: PipelineOpts & { source?: "REVISION" | "CLIENT_REQUEST"; /** Oct 14 2026: "Keep exactly" sections, copied back by code. */ lockSections?: string[] | null }): Promise<void> {
-  const { reviseScript } = await import("@/lib/contentGeneration");
-  const { asLockSections } = await import("@/lib/contentPolicy");
-  await reviseScript(scriptId, instructions, who(opts).requestedBy, opts?.source ?? "REVISION", { lockSections: asLockSections(opts?.lockSections ?? []) });
-}
+// 3. AI revision lives in contentGeneration.reviseScript, reached through the
+// AI queue (aiQueue "script_revise"). The thin wrapper that stood here,
+// reviseScriptWithInstructions, had no caller left in the app (Oct 21 2026)
+// and was removed in the Oct 25 2026 audit.
 
 // ---------------------------------------------------------------------------
 // 4b. Transcript-job handlers for W1-B's driver (src/lib/transcriptJobs.ts).

@@ -13,10 +13,8 @@
 import { GENERATION_POLICY, type PolicyStamp, policyRulesText, policyStamp, SCRIPT_PART_BUDGETS } from "./policy";
 import { STRATEGY_TEMPLATE, type StrategyDocument, renderStrategy } from "./strategyTemplate";
 import { CANONICAL_SCRIPT_PRESENTATION } from "./policy";
-import type { ScriptGeneratorInput, InterviewQuestion, FollowUpCondition } from "./interview";
-import type { CanonicalScript } from "./scriptFormat";
+import type { ScriptGeneratorInput, InterviewQuestion } from "./interview";
 import { type Topic, emphasisOfPillar, topicsForEmphasis } from "./topicBank";
-import { renderScript } from "./scriptFormat";
 import { type CreativeIdentity, creativeIdentityBlock } from "./creativeIdentity";
 import { type CreativeGuard, creativeGuardBlock } from "../creativeGuardCore";
 import { type VideoStyle, type VideoFormat, type SkitCastMember, asVideoStyle, castMemberLabel, defaultFormatFor } from "./videoFormat";
@@ -1002,50 +1000,6 @@ export function buildScriptJudgePrompt(
 }
 
 // ---------------------------------------------------------------------------
-// 4. Interview follow-up (spec §6: adaptive, one question, only when needed)
-// ---------------------------------------------------------------------------
-
-export const FOLLOW_UP_OUTPUT_SCHEMA: JsonSchema = {
-  type: "object",
-  required: ["question", "reason"],
-  additionalProperties: false,
-  properties: {
-    question: { type: "string", description: "One concise question, in plain conversational English, specific to the topic and the answer so far." },
-    reason: { type: "string", description: "One line: which rule the question serves and what is still missing." },
-  },
-};
-
-export function buildInterviewFollowUpPrompt(
-  ctx: ClientContext,
-  opts: { topic: Topic; question: InterviewQuestion; answerSoFar: string; condition: FollowUpCondition; priorAnswers?: { questionId: string; text: string | null }[] },
-): PromptBundle {
-  assertClientScoped(ctx, opts.topic);
-  const system = [
-    "You are helping a Realtour Pilot client explain what they know about one video topic, one concise question at a time.",
-    "",
-    `RULE BEING SERVED: ${opts.question.order}. ${opts.question.rule}`,
-    `WHY A FOLLOW-UP: ${opts.condition}`,
-    "Ask ONE question. Reuse what they already said; never ask them to repeat it. Never suggest an answer, a story or a number for them. Never ask a generic brand questionnaire question. If the client's answer already covers the rule well enough, ask the smallest question that closes the specific gap.",
-    "",
-    NO_INVENTION_RULE,
-    "",
-    "OUTPUT: one JSON object matching the schema.",
-  ].join("\n");
-  const user = [
-    `CLIENT: ${ctx.clientName} (id ${ctx.clientId})`,
-    `TOPIC: ${opts.topic.title} (pillar: ${opts.topic.pillarRef.pillarName})`,
-    opts.topic.description ? `TOPIC DESCRIPTION: ${opts.topic.description}` : "",
-    `QUESTION ASKED: ${opts.question.template}`,
-    `ANSWER SO FAR: ${opts.answerSoFar}`,
-    opts.priorAnswers?.length ? `EARLIER ANSWERS:\n${opts.priorAnswers.map((a) => `- ${a.questionId}: ${a.text ?? "(none)"}`).join("\n")}` : "",
-    `HOUSE FOLLOW-UP FOR THIS CONDITION (adapt it, do not read it verbatim): ${opts.question.followUps.find((f) => f.when === opts.condition)?.ask ?? "(none)"}`,
-  ]
-    .filter(Boolean)
-    .join("\n");
-  return { name: "interview-follow-up", system, user, outputSchema: FOLLOW_UP_OUTPUT_SCHEMA, stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
-}
-
-// ---------------------------------------------------------------------------
 // 4b. THE WHOLE QUESTION SET, PHRASED FOR ONE TOPIC (spec §6, F10).
 //
 // INTERVIEW_QUESTION_PLAN's templates each carry the comment "per-topic wording
@@ -1224,38 +1178,6 @@ export function buildQuestionRequestPrompt(ctx: ClientContext, opts: {
   return { name: "question-request", system, user, outputSchema: QUESTION_REQUEST_OUTPUT_SCHEMA, stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
 }
 
-// ---------------------------------------------------------------------------
-// 5. Caption (spec §10) — the unspoken caption body + CTA for an approved script
-//
-// SUPERSEDED Oct 23 2026: nothing calls buildCaptionPrompt any more. Captions
-// are drafted from captionRules.buildCaptionDraftPrompt (Instagram's caption
-// rules, a lean strategy excerpt, the transcript first) and checked by
-// captionRules.finishCaption. Kept for reference only.
-// ---------------------------------------------------------------------------
-
-export const CAPTION_OUTPUT_SCHEMA: JsonSchema = {
-  type: "object",
-  required: ["captionBody", "captionCta", "gaps"],
-  additionalProperties: false,
-  properties: {
-    captionBody: { type: "string", description: "1–3 sentences that extend the video's idea in the client's voice. No claims the script does not make." },
-    captionCta: { type: ["string", "null"], description: "The direct contact ask (DM keyword / call / text) modelled on the strategy's Caption CTA Examples; null when the strategy has none and the script's close already invites contact." },
-    gaps: { type: "array", items: GAP_SCHEMA },
-  },
-};
-
-export function buildCaptionPrompt(ctx: ClientContext, script: CanonicalScript): PromptBundle {
-  assertClientScoped(ctx, script);
-  const examples = ctx.strategy?.document?.captionCtaExamples?.items ?? [];
-  const system = [
-    systemHeader("You are writing the caption for an approved Realtour Pilot client video."),
-    "",
-    "The caption is NOT spoken. It carries the direct contact CTA (the spoken close stays a takeaway). Keep the client's voice; no hashtag stuffing; no empty superlatives; no promise the video does not make.",
-    `PUNCTUATION: ${GENERATION_POLICY.punctuation.rule}`,
-    examples.length ? `CAPTION CTA EXAMPLES FROM THE APPROVED STRATEGY (match their style and keywords):\n${examples.map((c) => `- ${c}`).join("\n")}` : "The approved strategy lists no Caption CTA Examples.",
-    "",
-    "OUTPUT: one JSON object matching the schema.",
-  ].join("\n");
-  const user = [contextBlock(ctx), "", "APPROVED SCRIPT (client-facing lines only):", renderScript(script)].join("\n");
-  return { name: "caption", system, user, outputSchema: CAPTION_OUTPUT_SCHEMA, stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
-}
+// 5. Captions (spec §10) are drafted by captionRules.buildCaptionDraftPrompt and
+// checked by captionRules.finishCaption. The superseded buildCaptionPrompt and
+// the unused interview follow-up prompt were removed in the Oct 25 2026 audit.

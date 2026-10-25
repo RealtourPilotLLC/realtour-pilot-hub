@@ -986,8 +986,8 @@ export async function executeSingleSuggestionRegeneration(s: { enrollmentId: str
 }
 
 // (The AI-phrased interview follow-up was removed Sep 17: the interview uses the
-// policy's house follow-up wording — buildInterviewFollowUpPrompt stays in the
-// policy layer for the day the UI wires it, and nothing here pretends it is live.)
+// policy's house follow-up wording. The unwired buildInterviewFollowUpPrompt was
+// deleted from the policy layer in the Oct 25 2026 audit.)
 
 // --- call analysis (transcript → proposals, never selections) --------------------------------
 

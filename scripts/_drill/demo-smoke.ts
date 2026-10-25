@@ -272,8 +272,8 @@ async function main() {
   const before = await prisma.contentScriptVersion.count({ where: { scriptId: scriptB } });
   const calls = preload.aiCallCount();
   const blockedBefore = preload.blocked.length;
-  const { reviseScriptWithInstructions } = await import("@/lib/contentPipeline");
-  await reviseScriptWithInstructions(scriptB, "Open on the coffee shop line.", { requestedBy: config.staffEmail, source: "CLIENT_REQUEST" });
+  const { reviseScript } = await import("@/lib/contentGeneration");
+  await reviseScript(scriptB, "Open on the coffee shop line.", config.staffEmail, "CLIENT_REQUEST");
   const after = await prisma.contentScriptVersion.findMany({ where: { scriptId: scriptB }, orderBy: { versionNo: "desc" }, take: 1, select: { versionNo: true, hook: true, spokenWordCount: true, estimatedSeconds: true } });
   c.ok("'Apply with AI' writes a new script version from the stub", (await prisma.contentScriptVersion.count({ where: { scriptId: scriptB } })) === before + 1 && preload.aiCallCount() === calls + 1, after[0]?.hook ?? "");
   // The app's own estimate (spoken parts only, 2.2 words/s), as stored on the version.
