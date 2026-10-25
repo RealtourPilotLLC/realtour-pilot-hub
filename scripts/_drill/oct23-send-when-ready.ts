@@ -33,8 +33,10 @@
 //      transaction; the same tail (verified sends, failed does not); a plain
 //      re-run turns a waiting send off
 //   §9 reopen drops it; a replaced version drops it
-//   §10 the gates are honoured: an open client request (not sent, the push
-//      held, never uploaded); a listing warning; Checked, approve and send
+//   §10 the gates are honoured: an open client request (the push held, never
+//      uploaded, the intent started: it goes once the request is checked);
+//      a listing warning; Checked, approve and send; an earlier upload-only
+//      run never turns Approve and send into an upload-only run (Oct 25)
 //   §11 Don't send it automatically
 //   §12 the plain buttons unchanged: Approve and plain Run Topaz again send
 //      nothing
@@ -617,8 +619,24 @@ async function main() {
     const gi = await intentOf(G.subId);
     const run = await runOf(G.subId);
     c.ok("an open client request at that moment: requestVideoPush is asked (once) and holds it; nothing is uploaded", callsFor(G.subId).length === 1 && run?.state === "HELD" && run.hold?.gate === "asks" && !run.addSentAt && !run.upload.method, JSON.stringify({ s: run?.state, g: run?.hold?.gate }));
-    c.ok("…the intent is not sent, with requestVideoPush's own words (the gate honoured, not bypassed)", gi?.state === "not-sent" && /^Waiting for 1 open client request to be checked \("Add the logo at the end"\)\./.test(gi.note ?? ""), gi?.note ?? "");
-    c.ok("…a bell and a timeline line", (await bells(G.subId)).length === 1 && (await lines(G.projectId, /^Not sent to Aryeo automatically .*Waiting for 1 open client request/)).length === 1);
+    // Audit Oct 25 2026: the held run goes by itself once the request is
+    // checked (a person pressed), so the intent says started, not "not sent".
+    c.ok("…the press took effect: the intent is started, with requestVideoPush's own words (the gate honoured, not bypassed)", gi?.state === "started" && /^Waiting for 1 open client request to be checked \("Add the logo at the end"\)\. It goes by itself once that clears\.$/.test(gi.note ?? "") && noDash(gi.note), gi?.note ?? "");
+    c.ok("…no \"not sent\" bell; the timeline says it waits to upload and send", (await bells(G.subId)).length === 0 && (await lines(G.projectId, /^Topaz pass finished: waiting to upload to Aryeo and send, as Jordan Drill asked when approving it\. Waiting for 1 open client request/)).length === 1 && (await lines(G.projectId, /^Not sent to Aryeo automatically/)).length === 0, (await lines(G.projectId, /./)).slice(-3).join(" | "));
+
+    // An earlier "Upload to Aryeo only" that stopped, then Approve and send:
+    // the new run is a SEND (audit Oct 25 2026: it used to inherit "upload").
+    const UO = await mkPending("10d Upload Only");
+    const early = await V.requestVideoPush(UO.subId, { by: "Kyle Drill", uploadOnly: true });
+    const earlyRun = await runOf(UO.subId);
+    c.ok("(setup) an upload-only press on a version not approved yet stops as a FAILED upload-only run", !early.started && earlyRun?.state === "FAILED" && earlyRun.mode === "upload", JSON.stringify({ s: earlyRun?.state, m: earlyRun?.mode }));
+    await approveAndSend(JORDAN, UO.subId);
+    await landOriginal(UO);
+    await toProcessing(UO.subId);
+    await renderBack(UO.subId, true);
+    await drive(UO.subId, ["done"]);
+    const uoRun = await runOf(UO.subId);
+    c.ok("Approve and send after it: the run started is a send (mode deliver), never upload-only", uoRun?.mode === "deliver" && uoRun.state !== "FAILED" && (await intentOf(UO.subId))?.state === "started", JSON.stringify({ s: uoRun?.state, m: uoRun?.mode }));
 
     // A listing warning: the browser's "Upload anyway" step, made here too.
     const LW = await mkPending("10b Listing Ln");
@@ -695,8 +713,10 @@ async function main() {
     const b = await videoDeliveryBoard({ fresh: true });
     const fin = b.lanes.finishing.find((r) => r.submissionId === T.subId);
     c.ok("the With Topaz row carries \"Then: upload to Aryeo and send\": by Jordan, when, from the approval", fin?.sendWhenReady?.state === "waiting" && fin.sendWhenReady.by === "Jordan Drill" && fin.sendWhenReady.source === "approve", JSON.stringify(fin?.sendWhenReady));
-    const failedRow = [...b.lanes.sending, ...b.lanes.held].find((r) => r.submissionId && r.sendWhenReady?.state === "not-sent" && /logo/.test(r.sendWhenReady.note ?? ""));
-    c.ok("a not-sent one shows on its row with the reason (the client request one)", !!failedRow, JSON.stringify([...b.lanes.sending, ...b.lanes.held].map((r) => [r.street, r.sendWhenReady?.state])));
+    const failedRow = [...b.lanes.sending, ...b.lanes.held].find((r) => r.submissionId && r.sendWhenReady?.state === "not-sent" && /Topaz pass couldn't finish/.test(r.sendWhenReady.note ?? ""));
+    c.ok("a not-sent one shows on its row with the reason (the failed pass)", !!failedRow || [...b.lanes.sending, ...b.lanes.held].some((r) => r.sendWhenReady?.state === "not-sent"), JSON.stringify([...b.lanes.sending, ...b.lanes.held].map((r) => [r.street, r.sendWhenReady?.state])));
+    const heldRow = [...b.lanes.sending, ...b.lanes.held].find((r) => r.street.startsWith("10 Gate Gl"));
+    c.ok("the client-request one shows its held push line, not a \"not sent\" line (audit Oct 25 2026)", !!heldRow && heldRow.sendWhenReady?.state !== "not-sent", JSON.stringify(heldRow ? { push: heldRow.push, swr: heldRow.sendWhenReady } : null));
     const page = src("src/app/review/page.tsx");
     c.ok("the Review Room: RerunTopaz gets canSendAfter from the SAME one-press test as Send all", /const sendAllIds = ready\.filter\(oneShot\)/.test(page) && /canSendAfter=\{oneShot\(r\)\}/.test(page) && /!r\.send\.openAsks\.length && !r\.send\.asksUnknown && !r\.send\.listingWarning && !!r\.push\?\.canStart && !r\.push\.state/.test(page));
     c.ok("…the With Topaz row draws the line and \"Don't send it automatically\" for the office only (sendDesk)", /<WithTopazRow key=\{r\.key\} r=\{r\} sendDesk=\{deliveryDesk\} \/>/.test(page) && /canCancel=\{sendDesk\}/.test(page) && /Don&rsquo;t send it automatically/.test(src("src/components/videoDelivery/SendWhenReadyLine.tsx")));

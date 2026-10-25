@@ -294,20 +294,35 @@ export async function settleSendWhenReady(submissionId: string): Promise<SettleO
     const claimed: SendIntent = { ...intent, state: "starting", claimedAt: new Date().toISOString() };
     const claimedRaw = await swap(prisma, submissionId, raw, claimed);
     if (!claimedRaw) return "none";
-    const r = await requestVideoPush(submissionId, { by: intent.by }).catch((e: unknown) => {
+    // A SEND press, always (audit Oct 25 2026): left out, requestVideoPush
+    // repeats the mode of the cut's last run, so an earlier "Upload to Aryeo
+    // only" that stopped (failed, or retired by a re-run) turned this press
+    // into an upload that waits for Send now, while the intent said "started".
+    const r = await requestVideoPush(submissionId, { by: intent.by, uploadOnly: false }).catch((e: unknown) => {
       console.warn("[send-when-ready] requestVideoPush threw", submissionId, (e as Error)?.message);
       return { ok: false, started: false, message: "The hub couldn't start the upload just now. Press Upload to Aryeo and send on Ready to send." };
     });
-    // Already on its way (or delivered) counts as started; a refusal, a hold
-    // or an upload-only run waiting for Send now does not.
+    // Already on its way (or delivered) counts as started; a refusal, a
+    // person's hold or an upload-only run waiting for Send now does not.
     const run = r.started ? null : await videoPushRun(submissionId).catch(() => null);
-    const going = r.started || (r.ok && !!run && run.state !== "FAILED" && run.state !== "HELD" && !isUploadedOnly(run));
+    // HELD AT A GATE (the client's open requests, the job on hold, the sound,
+    // no listing; audit Oct 25 2026) is the press taking effect: the run goes
+    // by itself once that clears, exactly as a person's press on Ready to send
+    // does. It used to be recorded as "not sent", with an owner bell saying so,
+    // while the run sent the video later on its own.
+    const heldAtGate = !!run && run.state === "HELD" && run.hold?.gate !== "manual" && run.mode !== "upload";
+    const going = r.started || heldAtGate || (r.ok && !!run && run.state !== "FAILED" && run.state !== "HELD" && !isUploadedOnly(run));
     const message = await plain(r.message);
     const done: SendIntent = { ...claimed, state: going ? "started" : "not-sent", note: message.slice(0, 400), doneAt: new Date().toISOString() };
     await swap(prisma, submissionId, claimedRaw, done);
     if (going) {
       const lead = d.how === "rendered" ? "Topaz pass finished" : d.how === "chosen" ? "Topaz file chosen after a listen" : d.how === "not-needed" ? "Topaz pass not needed" : "Approved";
-      await timeline(intent.projectId, `${lead}: uploading to Aryeo and sending, ${asked(intent)}.`);
+      await timeline(
+        intent.projectId,
+        heldAtGate
+          ? `${lead}: waiting to upload to Aryeo and send, ${asked(intent)}. ${message}`
+          : `${lead}: uploading to Aryeo and sending, ${asked(intent)}.`,
+      );
       return "started";
     }
     await sayNotSent(intent, message, d.street);
@@ -325,7 +340,11 @@ export async function sweepSendWhenReady(opts: { max?: number } = {}): Promise<{
     where: { key: { startsWith: SEND_WHEN_READY_PREFIX }, OR: [{ value: { contains: '"state":"waiting"' } }, { value: { contains: '"state":"starting"' } }] },
     select: { key: true },
     orderBy: { updatedAt: "asc" },
-    take: opts.max ?? 40,
+    // A "wait" never rewrites its row, so the oldest rows stay first: a cap as
+    // small as the old 40 would let 40 long waits (held files) hide every newer
+    // press from the sweep for good (audit Oct 25 2026). Waits are few; the cap
+    // is only a ceiling.
+    take: opts.max ?? 150,
   });
   let started = 0;
   let notSent = 0;
@@ -354,7 +373,9 @@ export async function cancelSendWhenReady(submissionId: string, by: string): Pro
   const ended = await endWaitingIntent(prisma, submissionId, { state: "cancelled", note: `Turned off by ${by}.` });
   if (!ended) {
     const { intent } = await readSendIntent(submissionId);
-    if (intent?.state === "started" || intent?.state === "starting") return { ok: false, message: "It has already started uploading to Aryeo. Hold it on Ready to send if it should stop." };
+    // No Hold button exists on Ready to send (audit Oct 25 2026: the old words
+    // sent people looking for one); the row's own line says where it stands.
+    if (intent?.state === "started" || intent?.state === "starting") return { ok: false, message: "It has already been handed to the Aryeo upload. Its line on Ready to send says where it stands." };
     return { ok: true, message: "It wasn't set to send automatically." };
   }
   await timeline(ended.projectId, `${by} turned off the automatic send ${ended.source === "approve" ? "asked for when approving" : "asked for when running it through Topaz again"}. It waits for a person to press Upload to Aryeo and send.`);
