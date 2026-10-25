@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey } from "@/lib/datetime";
 import { isAutomationEnabled, recordAutomationRun } from "@/lib/programAutomation";
+import type { MonthPlanningFacts } from "@/lib/planningFacts";
 
 // ---------------------------------------------------------------------------
 // THE DRAFTING CHAIN (spec §6/§7, F07 + F08) — Sep 22 2026.
@@ -113,50 +114,74 @@ function excerptCount(evidenceJson: string | null | undefined): number {
  * Pure read — safe on every render of the month workspace.
  */
 export async function scriptWorkForMonth(monthId: string): Promise<ScriptWorkItem[]> {
-  const month = await prisma.contentMonth.findUnique({
-    where: { id: monthId },
-    select: { id: true, monthKey: true, enrollmentId: true, clientId: true, callRecordId: true, historical: true },
-  });
-  if (!month || month.historical) return [];
-  // ContentMonth declares no relations, so the name is its own read.
-  const client = await prisma.client.findUnique({ where: { id: month.clientId }, select: { name: true } });
+  return (await scriptWorkForMonths([monthId])).get(monthId) ?? [];
+}
 
-  const planned = await prisma.contentTopicSelection.findMany({
-    where: { monthId, status: { in: ["SELECTED", "RECONCILED", "PROPOSED", "CARRIED"] } },
-    select: { topicId: true, status: true, callRecordId: true, evidenceJson: true, rank: true, createdAt: true, answerRoute: true },
-    orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
-  });
-  if (!planned.length) return [];
+/**
+ * scriptWorkForMonth for any number of months, in one pass of batched reads
+ * (audit Oct 25 2026, B9: Jordan's dashboard card read it month by month, ~12
+ * statements each, about 250 of the card's 320). The single-month reader is
+ * this with one id, so the two can never disagree. A month that does not
+ * exist, is historical or owes nothing maps to [].
+ */
+export async function scriptWorkForMonths(monthIdsIn: string[]): Promise<Map<string, ScriptWorkItem[]>> {
+  const out = new Map<string, ScriptWorkItem[]>();
+  const monthIds = [...new Set(monthIdsIn.filter(Boolean))];
+  if (!monthIds.length) return out;
+  const months = (await prisma.contentMonth.findMany({
+    where: { id: { in: monthIds } },
+    select: { id: true, monthKey: true, enrollmentId: true, clientId: true, callRecordId: true, historical: true },
+  })).filter((m) => !m.historical);
+  if (!months.length) return out;
+  const live = months.map((m) => m.id);
+  // ContentMonth declares no relations, so the names are their own read.
+  const [clients, plannedAll] = await Promise.all([
+    prisma.client.findMany({ where: { id: { in: [...new Set(months.map((m) => m.clientId))] } }, select: { id: true, name: true } }),
+    prisma.contentTopicSelection.findMany({
+      where: { monthId: { in: live }, status: { in: ["SELECTED", "RECONCILED", "PROPOSED", "CARRIED"] } },
+      select: { monthId: true, topicId: true, status: true, callRecordId: true, evidenceJson: true, rank: true, createdAt: true, answerRoute: true },
+      orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
+    }),
+  ]);
+  const nameOf = new Map(clients.map((c) => [c.id, c.name]));
+  const plannedOf = (monthId: string) => plannedAll.filter((s) => s.monthId === monthId);
+  if (!plannedAll.length) return out;
   // CP-07: a topic whose script was CARRIED OUT of this month (to a later one,
   // or parked by a swap) is this month's history, not a script it still owes.
   // Its selection here stays as it was — that WAS the plan — but counting it
   // as owed would show a phantom gap and let "draft what's owed" write a
   // second script for a topic that already has one.
-  const carriedAway = new Set(
-    (await prisma.contentScript.findMany({
-      where: { topicId: { in: planned.map((s) => s.topicId) }, historical: false, carriedFromMonthId: monthId, OR: [{ monthId: null }, { monthId: { not: monthId } }] },
-      select: { topicId: true },
-    })).map((s) => s.topicId as string),
+  const carriedRows = await prisma.contentScript.findMany({
+    where: { topicId: { in: [...new Set(plannedAll.map((s) => s.topicId))] }, historical: false, carriedFromMonthId: { in: live } },
+    select: { topicId: true, monthId: true, carriedFromMonthId: true },
+  });
+  const carriedAway = (monthId: string) => new Set(
+    carriedRows.filter((s) => s.carriedFromMonthId === monthId && s.monthId !== monthId).map((s) => s.topicId as string),
   );
-  const selections = planned.filter((s) => !carriedAway.has(s.topicId));
-  if (!selections.length) return [];
+  const selectionsOf = new Map<string, typeof plannedAll>();
+  for (const m of months) {
+    const planned = plannedOf(m.id);
+    const away = carriedAway(m.id);
+    const selections = planned.filter((s) => !away.has(s.topicId));
+    if (selections.length) selectionsOf.set(m.id, selections);
+  }
+  if (!selectionsOf.size) return out;
+  const owing = [...selectionsOf.keys()];
+  const topicIds = [...new Set([...selectionsOf.values()].flatMap((sels) => sels.map((s) => s.topicId)))];
 
-  const topicIds = selections.map((s) => s.topicId);
   // R01: the ONE planning reader — which of these are the allowance, and how
   // many scrubbed client/Jordan lines THIS month's call left for each (from
   // the selection's evidence, or a DISCUSSED event when the client had already
   // picked the topic in the portal). Unreadable → the old per-row count.
-  const reader = await import("@/lib/planningFacts").then((m) => m.planningForMonth(monthId)).catch(() => null);
-  const [topics, scripts, interviews] = await Promise.all([
+  const readers = await import("@/lib/planningFacts").then((m) => m.planningFactsForMonths(owing)).catch(() => null);
+  const [topics, scriptsAll, interviewsAll] = await Promise.all([
     prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, title: true } }),
     // monthId is part of the identity: a bank-level script (monthId IS NULL) is
     // not this month's script, and a historical import is not a draft.
-    prisma.contentScript.findMany({ where: { monthId, topicId: { in: topicIds }, historical: false }, select: { id: true, topicId: true } }),
-    prisma.contentInterview.findMany({ where: { monthId, topicId: { in: topicIds } }, select: { id: true, topicId: true, status: true, sufficiencyJson: true } }),
+    prisma.contentScript.findMany({ where: { monthId: { in: owing }, topicId: { in: topicIds }, historical: false }, select: { id: true, topicId: true, monthId: true } }),
+    prisma.contentInterview.findMany({ where: { monthId: { in: owing }, topicId: { in: topicIds } }, select: { id: true, topicId: true, monthId: true, status: true, sufficiencyJson: true } }),
   ]);
   const titleOf = new Map(topics.map((t) => [t.id, t.title]));
-  const scriptOf = new Map(scripts.filter((s) => s.topicId).map((s) => [s.topicId as string, s.id]));
-  const interviewOf = new Map(interviews.map((i) => [i.topicId, i]));
 
   // SUFFICIENCY, ASKED — NOT A STATUS READ (CP-08). "SUBMITTED" used to be
   // drafted on sight, which is how an all-skipped interview was drafted from
@@ -172,15 +197,42 @@ export async function scriptWorkForMonth(monthId: string): Promise<ScriptWorkIte
     if (!json) return null;
     try { const v = JSON.parse(json) as { sufficient?: unknown }; return typeof v.sufficient === "boolean" ? v.sufficient : null; } catch { return null; }
   };
-  const fresh = new Map<string, { ready: boolean; seedsFromCall: number }>();
-  for (const iv of interviews) {
-    const scripted = scriptOf.has(iv.topicId);
-    const needsRead = !scripted && (iv.status === "IN_PROGRESS" || iv.status === "NEEDS_FOLLOWUP" || iv.status === "SUBMITTED_WITH_GAPS" || (iv.status === "SUBMITTED" && storedSufficient(iv.sufficiencyJson) === null));
-    if (!needsRead) continue;
-    const r = await readInterviewSufficiency(iv.id).catch(() => null);
-    if (r) fresh.set(iv.id, { ready: r.ready, seedsFromCall: r.seedsFromCall });
-  }
 
+  for (const month of months) {
+    const selections = selectionsOf.get(month.id);
+    if (!selections) continue;
+    const monthTopics = new Set(selections.map((s) => s.topicId));
+    const scripts = scriptsAll.filter((s) => s.monthId === month.id && !!s.topicId && monthTopics.has(s.topicId));
+    const interviews = interviewsAll.filter((i) => i.monthId === month.id && monthTopics.has(i.topicId));
+    const scriptOf = new Map(scripts.map((s) => [s.topicId as string, s.id]));
+    const interviewOf = new Map(interviews.map((i) => [i.topicId, i]));
+    const reader = readers?.get(month.id) ?? null;
+    const fresh = new Map<string, { ready: boolean; seedsFromCall: number }>();
+    for (const iv of interviews) {
+      const scripted = scriptOf.has(iv.topicId);
+      const needsRead = !scripted && (iv.status === "IN_PROGRESS" || iv.status === "NEEDS_FOLLOWUP" || iv.status === "SUBMITTED_WITH_GAPS" || (iv.status === "SUBMITTED" && storedSufficient(iv.sufficiencyJson) === null));
+      if (!needsRead) continue;
+      const r = await readInterviewSufficiency(iv.id).catch(() => null);
+      if (r) fresh.set(iv.id, { ready: r.ready, seedsFromCall: r.seedsFromCall });
+    }
+    const client = nameOf.has(month.clientId) ? { name: nameOf.get(month.clientId)! } : null;
+    out.set(month.id, workItems(month, client, selections, reader, titleOf, scriptOf, interviewOf, fresh, storedSufficient));
+  }
+  return out;
+}
+
+/** One month's rows, from reads already made (the readiness rule itself). */
+function workItems(
+  month: { id: string; monthKey: string; enrollmentId: string; clientId: string; callRecordId: string | null },
+  client: { name: string } | null,
+  selections: { topicId: string; status: string; callRecordId: string | null; evidenceJson: string | null; answerRoute: string | null }[],
+  reader: MonthPlanningFacts | null,
+  titleOf: Map<string, string>,
+  scriptOf: Map<string, string>,
+  interviewOf: Map<string, { id: string; status: string; sufficiencyJson: string | null }>,
+  fresh: Map<string, { ready: boolean; seedsFromCall: number }>,
+  storedSufficient: (json: string | null) => boolean | null,
+): ScriptWorkItem[] {
   return selections.map((sel): ScriptWorkItem => {
     const iv = interviewOf.get(sel.topicId) ?? null;
     const fact = reader?.facts.find((f) => f.topicId === sel.topicId) ?? null;

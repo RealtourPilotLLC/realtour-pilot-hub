@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey } from "@/lib/contentProgram";
 import { contentHref } from "@/lib/contentNav";
-import type { ScriptReadiness } from "@/lib/contentDrafting";
+import type { ScriptReadiness, ScriptWorkItem } from "@/lib/contentDrafting";
 import type { MonthProgress } from "@/lib/monthProgress";
 import type { PlanStep } from "@/lib/planningState";
 import { monthStarted, monthTouched } from "@/lib/forfeit";
@@ -119,7 +119,7 @@ export async function monthlyContentActions(opts: { now?: Date; excludeClientIds
   const clientIds = [...new Set(owed.map((m) => m.clientId))];
   const enrollmentIds = [...live.keys()];
 
-  const [{ monthProgressMany, progressKey, staffMonthView, scriptsAwaitingWords }, { scriptWorkForMonth }, { strategyAwaitingCounts }] = await Promise.all([
+  const [{ monthProgressMany, progressKey, staffMonthView, scriptsAwaitingWords }, { scriptWorkForMonths }, { strategyAwaitingCounts }] = await Promise.all([
     import("@/lib/monthProgress"),
     import("@/lib/contentDrafting"),
     import("@/lib/contentStrategy"),
@@ -148,21 +148,21 @@ export async function monthlyContentActions(opts: { now?: Date; excludeClientIds
     const p = progress.get(progressKey(m.enrollmentId, m.id, m.monthKey));
     return !!p && staffMonthView(p).deliveredDone;
   }).map((m) => m.id));
-  // Videos that need a person to get a script, per month (six months at a
-  // time): this month and next only, and never a month the reader mutes
-  // (skipped, imported or forfeited: nothing is owed on it).
+  // Videos that need a person to get a script, per month: this month and next
+  // only, and never a month the reader mutes (skipped, imported or forfeited:
+  // nothing is owed on it). One batched read for every month (audit Oct 25
+  // 2026, B9: month by month it was most of the card's ~320 statements).
   const needScript = new Map<string, number>();
   const toCheck = owed.filter((m) => !isEarlier.has(m.id) && !quiet.has(m.id) && !finished.has(m.id) && !live.get(m.enrollmentId)?.clientSuppliesTopics && !progress.get(progressKey(m.enrollmentId, m.id, m.monthKey))?.muted);
-  for (let i = 0; i < toCheck.length; i += 6) {
-    await Promise.all(toCheck.slice(i, i + 6).map(async (m) => {
-      const work = await scriptWorkForMonth(m.id).catch(() => []);
-      // Audit M5: only a topic the month page puts on our side.
-      const stepOf = new Map((progress.get(progressKey(m.enrollmentId, m.id, m.monthKey))?.planning?.topics ?? []).map((t) => [t.topicId, t.step] as const));
-      needScript.set(m.id, work.filter((w) => {
-        const step = stepOf.get(w.topicId);
-        return !w.scriptId && NEEDS_A_PERSON.has(w.readiness) && !(step && NOT_OURS_YET.has(step));
-      }).length);
-    }));
+  const workByMonth = await scriptWorkForMonths(toCheck.map((m) => m.id)).catch(() => new Map<string, ScriptWorkItem[]>());
+  for (const m of toCheck) {
+    const work = workByMonth.get(m.id) ?? [];
+    // Audit M5: only a topic the month page puts on our side.
+    const stepOf = new Map((progress.get(progressKey(m.enrollmentId, m.id, m.monthKey))?.planning?.topics ?? []).map((t) => [t.topicId, t.step] as const));
+    needScript.set(m.id, work.filter((w) => {
+      const step = stepOf.get(w.topicId);
+      return !w.scriptId && NEEDS_A_PERSON.has(w.readiness) && !(step && NOT_OURS_YET.has(step));
+    }).length);
   }
 
   // The account-wide items ride on the client's first row the card shows:
