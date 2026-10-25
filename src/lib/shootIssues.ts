@@ -141,8 +141,9 @@ export async function ownerShootIssues(now: Date = new Date()): Promise<{ open: 
 /**
  * A SHOOT FLAG CLEARS WHEN ITS JOB IS DELIVERED (Jordan, Oct 19 2026: "Only
  * flagged issues should show up on the shoot itself. It should clear once the
- * job is delivered."). Every open flag loop (Kyle's `shoot-issue-<job>`,
- * Jordan's `shoot-owner-<job>`) on a job that is DELIVERED or CANCELLED is
+ * job is delivered."). Every open flag loop (Kyle's `field-flag-<job>` and
+ * the older `shoot-issue-<job>`, Jordan's `shoot-owner-<job>`) on a job that
+ * is DELIVERED or CANCELLED is
  * completed with the reason. A job reopened for revisions is not delivered,
  * so its flags stay. Run every five minutes from the comms cron; cheap (open
  * loops only). Never throws.
@@ -154,7 +155,11 @@ export async function closeShootFlagsOnDeliveredJobs(now: Date = new Date()): Pr
       where: {
         status: { notIn: ["COMPLETED", "CANCELLED"] },
         projectId: { not: null },
-        OR: [{ dedupeKey: { startsWith: "shoot-issue-" } }, { dedupeKey: { startsWith: "shoot-owner-" } }],
+        // Kyle's loop has been keyed `field-flag-<job>` since Sep 8 (fieldIssues
+        // fieldFlagLoopKey); `shoot-issue-` is the older debrief key. Without it
+        // Kyle's flags never cleared (audit, Oct 25 2026: 116 W Windsor St,
+        // 326 Spring Garden St and 18 Benner Rd open on delivered jobs).
+        OR: [{ dedupeKey: { startsWith: "field-flag-" } }, { dedupeKey: { startsWith: "shoot-issue-" } }, { dedupeKey: { startsWith: "shoot-owner-" } }],
       },
       select: { id: true, status: true, summary: true, project: { select: { status: true } } },
       take: 500,
