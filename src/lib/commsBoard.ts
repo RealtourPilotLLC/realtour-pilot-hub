@@ -4,6 +4,7 @@ import { unansweredComms } from "@/lib/replyQueue";
 import { editorMeta } from "@/lib/editors";
 import { taskClientScopeWhere, type TaskClientScope } from "@/lib/taskClientScope";
 import { etHour } from "@/lib/datetime";
+import { scrubMoney } from "@/lib/text";
 
 // ---------------------------------------------------------------------------
 // The Comms Checklist boards (Jordan, Sep 1 2026: "we don't need to turn every
@@ -558,8 +559,9 @@ export async function afternoonSlackDigest(): Promise<{ sent: boolean; reason?: 
     }
     if (boardOverdue.length > 0) {
       lines.push(`*Overdue on the board* (${boardOverdue.length}):`);
+      // Kyle never sees a figure: typed titles pass the money scrub, as on his board (audit Oct 25 2026).
       for (const t of boardOverdue.slice(0, DIGEST_ITEMS)) {
-        lines.push(`• 🔴 ${t.title}${where(t.clientName, t.propertyAddress)} → ${linkFor(t)}`);
+        lines.push(`• 🔴 ${scrubMoney(t.title)}${where(t.clientName, t.propertyAddress)} → ${linkFor(t)}`);
       }
       if (boardOverdue.length > DIGEST_ITEMS) {
         lines.push(`  …and ${boardOverdue.length - DIGEST_ITEMS} more → ${base}/tasks?tab=other`);
@@ -568,7 +570,7 @@ export async function afternoonSlackDigest(): Promise<{ sent: boolean; reason?: 
     if (dueToday.length > 0) {
       lines.push(`*Due today* (${dueToday.length}):`);
       for (const t of dueToday.slice(0, DIGEST_ITEMS)) {
-        lines.push(`• ${t.title}${where(t.clientName, t.propertyAddress)} → ${linkFor(t)}`);
+        lines.push(`• ${scrubMoney(t.title)}${where(t.clientName, t.propertyAddress)} → ${linkFor(t)}`);
       }
       if (dueToday.length > DIGEST_ITEMS) {
         lines.push(`  …and ${dueToday.length - DIGEST_ITEMS} more → ${base}/tasks`);
