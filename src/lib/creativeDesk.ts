@@ -436,11 +436,14 @@ async function handoffRows(
     import("@/lib/missingInstructions"),
     prisma.activity.findMany({ where: { projectId: { in: ids }, type: "FLAG" }, orderBy: { createdAt: "desc" }, select: { projectId: true, body: true } }),
   ]);
+  // Every job's missing-instructions read at once (each is its own few
+  // queries; one after another they were most of this desk's wait).
+  const missingOf = new Map(await Promise.all(projects.map(async (p) => [p.id, await missingInstructionsFor(p.id).catch(() => null)] as const)));
   const out: HandoffRow[] = [];
   for (const p of projects) {
     const halves = liveHandoffCategories(p.deliverables);
     const open = halves.filter((h) => !categoryHandoffAt(p, h));
-    const missing = await missingInstructionsFor(p.id).catch(() => null);
+    const missing = missingOf.get(p.id) ?? null;
     const missingWords = missing ? [...missing.video, ...missing.photos].map((m) => clean(m, 120)) : [];
     if (!open.length && !missingWords.length) continue;
     const pv = visits.filter((v) => v.projectId === p.id && liveAppt(v)).sort((a, b) => a.startAt!.getTime() - b.startAt!.getTime());
