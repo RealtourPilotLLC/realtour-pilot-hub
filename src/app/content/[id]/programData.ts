@@ -326,7 +326,9 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
   const queueCount = rows.filter((r) => !r.historical && (curOf(r)?.status === "DRAFT" || curOf(r)?.status === "INTERNAL_REVIEW")).length;
   // Oct 23 2026: the month's open question requests (Send Question Request): "Questions sent · waiting on …", Undo, Resend.
   const questionRequests = month ? await import("@/lib/questionRequests").then((m) => m.questionRequestsForMonth(month.id)).catch(() => []) : [];
-  return { scripts: rows, queueCount, scriptOwner: owners.SCRIPTS.label, owed: owed.filter((o) => o.readiness !== "HAS_SCRIPT"), revising, drafting: aq.topics, queueActive: aq.active, questionRequests };
+  // Oct 26 2026: scripts removed from this month (Remove from this month), each with Put it back.
+  const removed = month ? await import("@/lib/scriptRemoval").then((m) => m.removedScriptsForMonth(month.id)).catch(() => []) : [];
+  return { scripts: rows, queueCount, scriptOwner: owners.SCRIPTS.label, owed: owed.filter((o) => o.readiness !== "HAS_SCRIPT"), revising, drafting: aq.topics, queueActive: aq.active, questionRequests, removed };
 }
 
 export async function loadFactsTab(clientId: string, enrollmentId: string) {

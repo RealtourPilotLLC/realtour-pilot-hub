@@ -2022,6 +2022,40 @@ export async function returnScriptAction(scriptId: string, note: string): Promis
 }
 
 /**
+ * REMOVE FROM THIS MONTH (Oct 26 2026, Jordan: "add an option for me to remove
+ * a script from the month"): the script steps off the month, its topic goes
+ * back to the bank, nothing is deleted, and Put it back restores it
+ * (lib/scriptRemoval). A script on the client's portal is pulled back first and
+ * needs a reason, like Pull back. Guarded like Pull back.
+ */
+export async function removeScriptFromMonthAction(scriptId: string, reason: string): Promise<Result> {
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { removeScriptFromMonth } = await import("@/lib/scriptRemoval");
+    const r = await removeScriptFromMonth(String(scriptId ?? ""), { email: me.email, appUserId: me.id, name: me.name }, (reason ?? "").replace(/[ \t]*[—–][ \t]*/g, ", "));
+    const work = async () => { try { const { recalcProgramMonth } = await import("@/lib/programMonths"); await recalcProgramMonth(r.monthId); } catch { /* the hourly recalc catches up */ } };
+    try { after(work); } catch { void work(); }
+    path(r.enrollmentId);
+    return { ok: true, message: r.pulledFromPortal ? "Pulled off their portal and removed from the month. Put it back from the bottom of this page." : "Removed from the month. Put it back from the bottom of this page." };
+  } catch (e) { return fail(e); }
+}
+
+/** Put it back: a removed script returns to its month as it was (never back on the portal by itself). */
+export async function putScriptBackAction(removalId: string): Promise<Result> {
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { putScriptBack } = await import("@/lib/scriptRemoval");
+    const r = await putScriptBack(String(removalId ?? ""), { email: me.email, appUserId: me.id, name: me.name });
+    const work = async () => { try { const { recalcProgramMonth } = await import("@/lib/programMonths"); await recalcProgramMonth(r.monthId); } catch { /* the hourly recalc catches up */ } };
+    try { after(work); } catch { void work(); }
+    path(r.enrollmentId);
+    return { ok: true, message: r.pulledFromPortal ? `"${r.title}" is back on the month, in the review queue. Send it again when you're ready.` : `"${r.title}" is back on the month.` };
+  } catch (e) { return fail(e); }
+}
+
+/**
  * SEND QUESTION REQUEST (Oct 23 2026, Jordan): withdraw a draft the client has
  * not seen, ask the client three to five AI-written questions about its topic,
  * and email them a one-tap link to answer (lib/questionRequests). The same

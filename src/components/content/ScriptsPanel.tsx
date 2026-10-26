@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Check, ChevronDown, CircleDashed, Eye, FileText, History, Loader2, MessageSquareText, PenLine, RefreshCw, RotateCcw, Send, Sparkles } from "lucide-react";
+import { Check, ChevronDown, CircleDashed, Eye, FileText, History, Loader2, MessageSquareText, MinusCircle, PenLine, RefreshCw, RotateCcw, Send, Sparkles, Undo2 } from "lucide-react";
 import type { QueueItemUi } from "@/lib/aiQueue";
 import type { QuestionRequestUi } from "@/lib/questionRequests";
+import type { RemovedScriptUi } from "@/lib/scriptRemoval";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { useToast } from "@/components/ui/Toast";
@@ -20,7 +21,7 @@ import { lengthBand, trimInstruction } from "@/lib/scriptWriter/rules";
 // the Shorten offer and the validator can never drift from each other.
 import { GENERATION_POLICY } from "@/lib/contentPolicy/policy";
 import { VIDEO_FORMAT_LABEL, type VideoFormat } from "@/lib/contentPolicy/videoFormat";
-import { approveAndSendScriptAction, approveAndSendScriptsAction, approveScriptVersionAction, queueOwedScriptsAction, queueScriptRevisionAction, queueScriptRewriteAction, releaseScriptAction, resendQuestionRequestAction, restoreScriptVersionAction, retryAiJobAction, returnScriptAction, saveScriptText, sendQuestionRequestAction, undoQuestionRequestAction } from "@/app/content/actions";
+import { approveAndSendScriptAction, approveAndSendScriptsAction, approveScriptVersionAction, putScriptBackAction, queueOwedScriptsAction, queueScriptRevisionAction, queueScriptRewriteAction, releaseScriptAction, removeScriptFromMonthAction, resendQuestionRequestAction, restoreScriptVersionAction, retryAiJobAction, returnScriptAction, saveScriptText, sendQuestionRequestAction, undoQuestionRequestAction } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
 // Scripts tab (spec §22/§27): ONE review queue for both planning paths, the
@@ -138,8 +139,10 @@ type RevCtl = { server: QueueItemUi | null; sending: boolean; sendingLabel?: str
 /** Oct 14 2026: "Keep exactly" on a revision: these sections are copied back word for word by code. */
 const LOCKS: [string, string][] = [["hook", "Hook"], ["rehook", "Re-hook"], ["buildup", "Build up"], ["payoff", "Payoff"], ["close", "Close"], ["captionCta", "Caption CTA"]];
 
-export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwner, owed = [], revising = {}, drafting = {}, queueActive = [], questionRequests = [], clientFirst = "" }: {
+export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwner, owed = [], revising = {}, drafting = {}, queueActive = [], questionRequests = [], removed = [], clientFirst = "" }: {
   enrollmentId?: string; scripts: ScriptUi[]; queueCount: number; scriptOwner: string; owed?: OwedUi[];
+  /** Oct 26 2026: scripts removed from this month (Remove from this month), each with Put it back. */
+  removed?: RemovedScriptUi[];
   /** Oct 26 2026: the client's first name, for "What <first> said" on the card. */
   clientFirst?: string;
   /** Oct 23 2026: the month's open question requests (Send Question Request). */
@@ -244,6 +247,21 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
           {rest.length === 0 && <p className="px-5 py-3 text-sm text-muted">No approved scripts on this month yet.</p>}
         </div>
       </Section>
+      {removed.length > 0 && (
+        <Section icon={MinusCircle} title="Removed from this month" count={removed.length} flush action={<span className="text-[11px] text-muted-2">nothing was deleted: put one back any time</span>}>
+          <div className="divide-y divide-border" data-removed-scripts>
+            {removed.map((r) => (
+              <div key={r.removalId} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-5 py-3" data-removed-script={r.removalId}>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-foreground">{r.title}</p>
+                  <p className="text-[11px] text-muted">Removed by {r.by} on {fmt(r.at)}{r.pulledFromPortal ? " · it was taken off their portal" : ""}{r.reason ? ` · ${r.reason}` : ""}</p>
+                </div>
+                <button disabled={busy} onClick={() => run(() => putScriptBackAction(r.removalId))} className={`${quiet} min-h-9`}><Undo2 className="mr-1 inline size-3" />Put it back</button>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
       {historical.length > 0 && (
         <Section icon={History} title="Historical (imported)" count={historical.length} flush action={<span className="text-[11px] text-muted-2">history — never approved, filmed or released by an import</span>}>
           <div className="divide-y divide-border">{historical.map((s) => <ScriptItem key={s.id} s={s} busy={busy} run={runCard} />)}</div>
@@ -298,6 +316,9 @@ function ScriptItem({ s, busy, run, open, rev, onAsk, clientFirst = "" }: { s: S
   const [overrideWhy, setOverrideWhy] = useState("");
   const [pulling, setPulling] = useState(false);
   const [pullWhy, setPullWhy] = useState("");
+  // Oct 26 2026: Remove from this month (its topic goes back to the bank; Put it back undoes it).
+  const [removing, setRemoving] = useState(false);
+  const [removeWhy, setRemoveWhy] = useState("");
   // Oct 23 2026: Send Question Request, for a draft the client has never seen
   // (never shared or released, no verdict of theirs, not filmed). The server
   // asks the same questions again and refuses in words (questionRequestRefusal).
@@ -443,6 +464,7 @@ function ScriptItem({ s, busy, run, open, rev, onAsk, clientFirst = "" }: { s: S
                 {!s.historical && (onPortal
                   ? <button disabled={busy} onClick={() => { closeMenu(); setPullWhy(""); setPulling(true); }} className={menuItem}><RotateCcw className="size-3" />Pull back from the client&rsquo;s portal</button>
                   : (s.approvedVersionId || s.sharedVersionId) && <button disabled={busy} onClick={() => { closeMenu(); setSaid(null); run(() => returnScriptAction(s.id, ""), setSaid); }} className={menuItem}><RotateCcw className="size-3" />Back to the queue</button>)}
+                {!s.historical && <button disabled={busy} onClick={() => { closeMenu(); setSaid(null); setRemoveWhy(""); setPulling(false); setRemoving(true); }} className={menuItem} data-remove-from-month><MinusCircle className="size-3" />Remove from this month</button>}
                 {s.historical && s.versions.length <= 1 && <p className="px-2.5 py-1.5 text-xs text-muted">Imported history: nothing to change.</p>}
               </div>
             </details>
@@ -482,6 +504,19 @@ function ScriptItem({ s, busy, run, open, rev, onAsk, clientFirst = "" }: { s: S
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               <button disabled={busy || !pullWhy.trim()} onClick={() => run(() => returnScriptAction(s.id, pullWhy.trim()), (r) => { setSaid(r); if (r.ok) setPulling(false); })} className={`${btn} min-h-9 border border-border text-foreground hover:bg-surface-2`}>Pull it back</button>
               <button onClick={() => setPulling(false)} className={`${quiet} min-h-9`}>Keep it on their portal</button>
+            </div>
+          </div>
+        )}
+        {mode === "read" && removing && (
+          <div className="mt-2 rounded-lg border border-border bg-surface-2/50 px-2.5 py-2 text-[12px]" data-remove-confirm>
+            <label className="block font-medium text-muted" htmlFor={`remove-${s.id}`}>
+              Take &ldquo;{s.title}&rdquo; off this month? Its topic goes back to the bank and the slot opens up. Nothing is deleted: Put it back from the bottom of this page.
+              {onPortal ? ` ${clientFirst || "The client"} has this one on their portal, so it comes off it too. Say why (kept with its history)` : " Why (optional, kept with its history)"}
+            </label>
+            <AutoTextarea id={`remove-${s.id}`} value={removeWhy} onChange={(e) => setRemoveWhy(e.target.value)} minRows={2} className="mt-1 w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-base sm:text-xs" />
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              <button disabled={busy || (onPortal && !removeWhy.trim())} onClick={() => run(() => removeScriptFromMonthAction(s.id, removeWhy.trim()), (r) => { setSaid(r); if (r.ok) setRemoving(false); })} className={`${btn} min-h-9 border border-border text-foreground hover:bg-surface-2`}>Remove it</button>
+              <button onClick={() => setRemoving(false)} className={`${quiet} min-h-9`}>Keep it</button>
             </div>
           </div>
         )}
