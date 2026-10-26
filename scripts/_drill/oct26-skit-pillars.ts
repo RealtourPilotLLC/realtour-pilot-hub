@@ -58,6 +58,18 @@ const freshTitle = () => { const w = () => { const x = WORDS[wordAt++ % WORDS.le
 type Idea = { title: string; description: string; audienceNeed: string; businessGoal: string; intendedMessage: string; sourceRef: null; format?: string };
 const idea = (format: "SKIT" | "DIRECT" | null): Idea => ({ title: freshTitle(), description: format === "SKIT" ? "She plays the seller and the agent; the point lands on pricing." : "Plain advice to camera.", audienceNeed: "Sellers", businessGoal: "Trust", intendedMessage: "Plan first", sourceRef: null, ...(format ? { format } : {}) });
 const bankCalls: { system: string; prompt: string; schema: unknown; maxTokens: number | null }[] = [];
+// Section 4b: a skit refill that comes back with the husband in half its ideas and mostly parodies (Oct 26 eve).
+let shareMode = false;
+const shareIdeas = new Map<string, { cast: boolean; parody: boolean }>();
+const GEMS = ["Opal", "Quartz", "Garnet", "Topaz", "Amber", "Jade", "Onyx", "Pearl", "Ruby", "Coral", "Agate", "Beryl", "Flint", "Mica", "Slate"];
+const PLACES = ["Lantern", "Compass", "Anchor", "Harbor", "Beacon", "Summit", "Canyon", "Meadow", "Prairie", "Glacier", "Fjord", "Delta", "Mesa", "Tundra", "Bayou"];
+const shareIdea = (i: number, n: number) => {
+  const cast = i < n / 2, parody = cast || i % 3 === 0;
+  const title = `${GEMS[i]} ${PLACES[i]}`;
+  shareIdeas.set(title, { cast, parody });
+  // Every other husband idea is NOT flagged by the model: the description naming him is enough.
+  return { ...idea("SKIT"), title, description: cast ? "Her husband's off-camera voice plays the buyer while she plays a judge." : "She plays the agent and the buyer in a split-screen.", castUsed: cast && i % 2 === 0, skitKind: parody ? "PARODY" : "SPLIT_SCREEN" };
+};
 interceptModule(
   (r) => r === "@/lib/integrations/ai" || r.endsWith("/integrations/ai"),
   (loaded) => new Proxy(loaded as Record<string | symbol, unknown>, {
@@ -73,7 +85,7 @@ interceptModule(
           // One format only: what was asked, plus one idea in the other format (it must be dropped).
           const only = /exactly (\d+) (skit concepts?|talking-to-camera topics?) in total/.exec(opts.system);
           const out = only
-            ? pillars.map((p) => { const f = only[2].startsWith("skit") ? "SKIT" as const : "DIRECT" as const; return { pillarName: p, topics: [...Array.from({ length: Number(only[1]) }, () => idea(f)), idea(f === "SKIT" ? "DIRECT" : "SKIT")] }; })
+            ? pillars.map((p) => { const f = only[2].startsWith("skit") ? "SKIT" as const : "DIRECT" as const; return { pillarName: p, topics: shareMode && f === "SKIT" ? Array.from({ length: Number(only[1]) }, (_, i) => shareIdea(i, Number(only[1]))) : [...Array.from({ length: Number(only[1]) }, () => idea(f)), idea(f === "SKIT" ? "DIRECT" : "SKIT")] }; })
             // A whole bank: two of each format a pillar, and one idea that says no format.
             : pillars.map((p) => ({ pillarName: p, topics: [idea("SKIT"), idea("SKIT"), idea("DIRECT"), idea("DIRECT"), idea(null)] }));
           return { result: { complete: true, pillars: out, gaps: [] }, usage, model: "drill-stub" };
@@ -326,6 +338,47 @@ async function main() {
     const sOld = await prisma.contentTopicSuggestion.findMany({ where: { refreshRunId: old.runId } });
     const fOld = await ct.suggestionFormats(sOld);
     c.ok("a skit-only run queued before today still runs: skits only, across the bank, two kept", oldRun.status === "SUCCEEDED" && /SKITS ONLY/.test(bankCalls[0]?.system ?? "") && /exactly 2 skit concepts in total/.test(bankCalls[0]?.system ?? "") && sOld.length === 2 && sOld.every((x) => fOld.get(x.id) === "SKIT"), `${oldRun.status} ${sOld.length} ${oldRun.changeSummary ?? oldRun.lastError}`);
+
+    // =======================================================================
+    c.head("4b · the cast and parody share (Oct 26 eve: not every skit with her husband, and different kinds of skit)");
+    // =======================================================================
+    c.ok("a cast member is spotted by role or by name, whatever the model says", vf.skitUsesCast("Her husband's off-camera voice plays the seller.", [{ name: null, role: "Her husband" }]) && vf.skitUsesCast("Mark reads the questions.", [{ name: "Mark", role: "Her husband" }]) && !vf.skitUsesCast("She plays both sides.", [{ name: "Mark", role: "Her husband" }]) && vf.skitUsesCast("She plays both sides.", [], true) && !vf.skitUsesCast("Her husband helps.", []));
+    c.ok("the share: a third of the pillar less what it holds; a third of a refill as parodies, at least one", vf.skitCastRoom(15, 3) === 2 && vf.skitCastRoom(15, 6) === 0 && vf.skitCastRoom(5, 0) === 1 && vf.skitParodyRoom(11) === 4 && vf.skitParodyRoom(1) === 1 && vf.skitParodyRoom(6) === 2);
+    {
+      const e = await prisma.contentEnrollment.findUniqueOrThrow({ where: { id: M.enrollmentId }, select: { overridesJson: true } });
+      const bag = JSON.parse(e.overridesJson ?? "{}") as Record<string, unknown>;
+      await prisma.contentEnrollment.update({ where: { id: M.enrollmentId }, data: { overridesJson: JSON.stringify({ ...bag, [vf.SKIT_CAST_KEY]: [{ id: "cast_drill", name: null, role: "Her husband", note: "Does voices.", addedBy: STAFF_EMAIL, addedAt: "2026-10-22T21:29:45.389Z" }] }) } });
+      // The brand pillar already holds one skit with him in it; an unmarked topic (talking to camera on a Mix account) and an archived skit with him do not count.
+      for (const t of ["Husband skit cobalt"]) await prisma.contentTopic.create({ data: { enrollmentId: M.enrollmentId, clientId: M.clientId, pillarId: mP.brand, title: t, concept: "Her husband plays the nervous buyer.", status: "SAVED", approvalState: "APPROVED", source: "staff", scoresJson: JSON.stringify({ videoFormat: "SKIT" }) } });
+      await prisma.contentTopic.create({ data: { enrollmentId: M.enrollmentId, clientId: M.clientId, pillarId: mP.brand, title: "Husband unmarked vermilion", concept: "Her husband plays the nervous buyer.", status: "SAVED", approvalState: "APPROVED", source: "staff" } });
+      await prisma.contentTopic.create({ data: { enrollmentId: M.enrollmentId, clientId: M.clientId, pillarId: mP.brand, title: "Husband archived sepia", concept: "Her husband plays the nervous buyer.", status: "ARCHIVED", approvalState: "APPROVED", source: "staff", scoresJson: JSON.stringify({ videoFormat: "SKIT" }) } });
+    }
+    bankCalls.length = 0; shareMode = true; shareIdeas.clear();
+    const rSh = await ct.startTopicRefresh({ enrollmentId: M.enrollmentId, kind: "REFRESH", requestedBy: STAFF_EMAIL, pillarId: mP.brand, keep: 6, format: "SKIT" });
+    shareMode = false;
+    const runSh = await prisma.contentTopicRefreshRun.findUniqueOrThrow({ where: { id: rSh.runId } });
+    const sysSh = bankCalls[0]?.system ?? "";
+    const castMax = /none of them uses a cast member/.test(sysSh) ? 0 : Number((/at most (\d+) uses? a cast member/.exec(sysSh) ?? [])[1] ?? NaN);
+    const parodyMax = Number((/at most (\d+) (?:is a parody|are parodies) of a format/.exec(sysSh) ?? [])[1] ?? NaN);
+    const target = vf.pillarFormatTargets("MIX", runSh.topicsPerPillar ?? 0)?.find((f) => f.format === "SKIT")?.target ?? -1;
+    c.ok("the refill asks a third more than it keeps (8 for 6) and states the limits as numbers: the cast room counts the one marked skit, not the unmarked or archived one", /exactly 8 skit concepts in total/.test(sysSh) && castMax === vf.skitCastRoom(target, 1) && castMax > 0 && parodyMax === 2 && /Ideas past these limits are not kept\. Mark every concept's kind and whether it uses a cast member\./.test(sysSh), `${castMax} ${parodyMax} ${(/^COUNT:.*$/m.exec(sysSh) ?? [""])[0].slice(0, 400)}`);
+    const itemSchema = JSON.stringify(bankCalls[0]?.schema ?? {});
+    c.ok("…and every idea comes back marked: castUsed and skitKind are required", /"castUsed"/.test(itemSchema) && /"skitKind"/.test(itemSchema) && /"required":\[[^\]]*"castUsed","skitKind"/.test(itemSchema));
+    const sSh = await prisma.contentTopicSuggestion.findMany({ where: { refreshRunId: rSh.runId } });
+    // What the guard should keep, in order: up to 6, no cast idea past the room, no parody past 2.
+    let cr = castMax, pr = parodyMax; const expect: string[] = [];
+    for (const [title, k] of shareIdeas) { if (expect.length >= 6) break; if ((k.cast && cr <= 0) || (k.parody && pr <= 0)) continue; if (k.cast) cr--; if (k.parody) pr--; expect.push(title); }
+    const keptTitles = sSh.map((x) => x.title).sort();
+    const keptCast = sSh.filter((x) => shareIdeas.get(x.title)?.cast).length, keptParody = sSh.filter((x) => shareIdeas.get(x.title)?.parody).length;
+    c.ok("the guard keeps no more cast or parody ideas than the room, the husband ones the model did not flag included", keptTitles.join() === [...expect].sort().join() && keptCast <= castMax && keptParody <= parodyMax && runSh.status === "SUCCEEDED", `kept ${keptTitles.join(", ")} · expected ${[...expect].sort().join(", ")} · cast ${keptCast}/${castMax} parody ${keptParody}/${parodyMax}`);
+    c.ok("…some husband ideas are kept while there is room", keptCast === castMax, `${keptCast}/${castMax}`);
+    c.ok("…and the run says how many it did not keep", /\d+ skit ideas? past the cast or parody share not kept/.test(runSh.changeSummary ?? ""), runSh.changeSummary ?? "");
+    bankCalls.length = 0;
+    await ct.startTopicRefresh({ enrollmentId: S.enrollmentId, kind: "REFRESH", requestedBy: STAFF_EMAIL, pillarId: sP.brand, keep: 3, format: "SKIT" });
+    c.ok("a client with no cast: only the parody limit, never a cast line", /at most 1 is a parody of a format/.test(bankCalls[0]?.system ?? "") && !/uses? a cast member, on camera or as a voice;|none of them uses a cast member/.test((/^COUNT:.*$/m.exec(bankCalls[0]?.system ?? "") ?? [""])[0]), (/^COUNT:.*$/m.exec(bankCalls[0]?.system ?? "") ?? [""])[0]);
+    bankCalls.length = 0;
+    await ct.startTopicRefresh({ enrollmentId: M.enrollmentId, kind: "REFRESH", requestedBy: STAFF_EMAIL, pillarId: mP.brand, keep: 2, format: "DIRECT" });
+    c.ok("a talking-to-camera refill carries no skit limits", !!bankCalls[0] && !/a cast member, on camera or as a voice;|parod(y|ies) of a format/.test((/^COUNT:.*$/m.exec(bankCalls[0].system) ?? [""])[0]));
 
     // =======================================================================
     c.head("5 · the strategy calls in the bank prompt");

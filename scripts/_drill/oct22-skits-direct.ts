@@ -332,7 +332,7 @@ async function main() {
     // Oct 26 2026: both formats under every pillar, the other one at OTHER_FORMAT_PER_PILLAR (5).
     c.ok("MIX bank: skit concepts beside direct topics, 5 under every pillar, reusing the skit concept rules", pM.system.includes(policy.mixTopicRule(2)) && pM.system.includes(policy.SKIT_CONCEPT_RULES) && policy.SKIT_TOPIC_RULE.includes(policy.SKIT_CONCEPT_RULES) && /Skit concepts \(format "SKIT"\): 5 under each pillar/.test(pM.system) && !/never fewer than \d+ across the bank/.test(pM.system));
     const fmtSchema = JSON.stringify(pM.outputSchema);
-    c.ok("…every topic in a Mix bank must say its format (DIRECT or SKIT)", /"format":\{"type":"string","enum":\["DIRECT","SKIT"\]/.test(fmtSchema) && /"required":\["title","description","audienceNeed","businessGoal","intendedMessage","sourceRef","format"\]/.test(fmtSchema));
+    c.ok("…every topic in a Mix bank must say its format (DIRECT or SKIT), and (Oct 26 eve) a skit's cast and kind", /"format":\{"type":"string","enum":\["DIRECT","SKIT"\]/.test(fmtSchema) && /"required":\["title","description","audienceNeed","businessGoal","intendedMessage","sourceRef","format","castUsed","skitKind"\]/.test(fmtSchema) && /"skitKind":\{"type":"string","enum":\["PARODY",/.test(fmtSchema));
     // A real Mix refresh, end to end.
     const text = await strategyText("Mix Drill TEST");
     const { stored } = structuredFromText(text);

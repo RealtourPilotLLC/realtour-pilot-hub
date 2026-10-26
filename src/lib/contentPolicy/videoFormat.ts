@@ -296,6 +296,40 @@ export function skitCastFromOverrides(overrides: string | Record<string, unknown
   return list.map(cleanCastMember).filter((m): m is SkitCastMember => !!m).slice(0, MAX_SKIT_CAST);
 }
 
+/**
+ * THE CAST AND PARODY SHARE (Oct 26 2026 eve). Jordan: "Not all of
+ * bernadettes skit ideas should be with her husband" and "10-15 different
+ * skit ideas per pillar". The prompt said "at most one in three" and a refill
+ * still came back with her husband in 5 of 8 and nearly every idea a deadpan
+ * parody, so a skit refill now keeps at most this share of a pillar's skit
+ * concepts with a cast member in them, and of a refill's ideas as parodies.
+ */
+export const SKIT_SHARE_MAX = 1 / 3;
+/** The kinds of skit a concept is marked with; PARODY is the one held to the share. NONE = a talking-to-camera topic. */
+export const SKIT_KINDS = ["PARODY", "SPLIT_SCREEN", "POV", "SAY_VS_MEAN", "REENACTMENT", "BEFORE_AFTER", "REACTION", "OTHER", "NONE"] as const;
+
+/** Whether a skit concept uses a cast member: the model said so, or the concept names one ("her husband's off-camera voice"). */
+export function skitUsesCast(text: string, cast: readonly Pick<SkitCastMember, "name" | "role">[], said?: boolean | null): boolean {
+  if (said === true) return true;
+  const words = new Set<string>();
+  for (const m of cast) {
+    if (m.name?.trim()) words.add(m.name.trim());
+    const role = m.role.replace(/^(her|his|their|my|the)\s+/i, "").trim();
+    if (role) words.add(role);
+  }
+  return [...words].some((w) => new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text));
+}
+
+/** How many more cast-member skits a pillar can take: a third of its skit target, less those it holds. */
+export function skitCastRoom(target: number, held: number): number {
+  return Math.max(0, Math.floor(target * SKIT_SHARE_MAX) - held);
+}
+
+/** How many of a refill's kept skit concepts may be parodies: a third, rounded up (one for a refill of one to three). */
+export function skitParodyRoom(keep: number): number {
+  return Math.max(1, Math.ceil(keep * SKIT_SHARE_MAX));
+}
+
 /** How a cast member is named in a prompt or on a card: "Her husband (Mark)". */
 export function castMemberLabel(m: Pick<SkitCastMember, "name" | "role">): string {
   return m.name ? `${m.role} (${m.name})` : m.role;

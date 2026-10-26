@@ -22,6 +22,7 @@ import { scriptFormatOf } from "@/lib/contentPolicy/prompts";
 import {
   asVideoStyle, asVideoFormat, formatForWrite, scriptRoute, skitCastFromOverrides, skitsPerMonthFromOverrides, topicFormatOf, versionFormatOf, VERSION_FORMAT_KEY,
   skitsOn, mainFormatFor, otherFormat, FORMAT_PLURAL, OTHER_FORMAT_PER_PILLAR,
+  pillarFormatTargets, resolvedTopicFormat, skitUsesCast, skitCastRoom, skitParodyRoom,
   type ScriptRoute, type VideoFormat,
 } from "@/lib/contentPolicy/videoFormat";
 import { namesToScrub, namesRegex, speakerLabels, splitTurns } from "@/lib/scriptWriter/transcriptScrub";
@@ -856,7 +857,7 @@ export async function reviseScript(scriptId: string, instructions: string, reque
 
 // --- topic refresh ------------------------------------------------------------------
 
-type BankOut = { complete: boolean; pillars: { pillarName: string; topics: { title: string; description: string; audienceNeed: string; businessGoal: string; intendedMessage: string; sourceRef: string | null; /** Oct 22 2026: a Mix account's bank marks each topic DIRECT or SKIT. */ format?: string | null }[] }[]; gaps: Gap[] };
+type BankOut = { complete: boolean; pillars: { pillarName: string; topics: { title: string; description: string; audienceNeed: string; businessGoal: string; intendedMessage: string; sourceRef: string | null; /** Oct 22 2026: a Mix account's bank marks each topic DIRECT or SKIT. */ format?: string | null; /** Oct 26 2026 eve: a skit's cast and kind. */ castUsed?: boolean | null; skitKind?: string | null }[] }[]; gaps: Gap[] };
 
 /**
  * A new idea's format (Oct 22 2026): an account that does skits marks each
@@ -908,7 +909,7 @@ export async function executeTopicRefreshRun(runId: string, opts: {
   // anything outside 10–15); a single-suggestion regeneration asks for the
   // policy count and KEEPS one (opts.keep) — never a forked prompt rule.
   const perPillar = opts.count ?? run.topicsPerPillar ?? GENERATION_POLICY.topicsPerPillar.default;
-  const existingRows = await prisma.contentTopic.findMany({ where: { enrollmentId: run.enrollmentId }, select: { title: true, concept: true, status: true, pillarId: true, pillar: true, rejectionReason: true, archiveReason: true, clientDeclinedAt: true, clientDeclineReason: true } });
+  const existingRows = await prisma.contentTopic.findMany({ where: { enrollmentId: run.enrollmentId }, select: { title: true, concept: true, status: true, pillarId: true, pillar: true, rejectionReason: true, archiveReason: true, clientDeclinedAt: true, clientDeclineReason: true, scoresJson: true } });
   const nameOf = (id: string | null, label: string | null) => pillars.find((p) => p.id === id)?.name ?? label ?? "(no pillar)";
   // A topic the client said "not interested" to (CP-07) reads to the model as
   // ARCHIVED with their reason, and blockedTopicHashes withholds it below too.
@@ -943,8 +944,22 @@ export async function executeTopicRefreshRun(runId: string, opts: {
   const legacySkits = opts.skitsOnly === true && !opts.format;
   const onlyFormat: VideoFormat | null = opts.format ?? (legacySkits ? "SKIT" : null);
   const keepOnly = onlyFormat ? (legacySkits ? Math.max(1, Math.min(opts.keep ?? 4, 12)) : Math.max(1, Math.min(opts.keep ?? OTHER_FORMAT_PER_PILLAR, GENERATION_POLICY.topicsPerPillar.max))) : null;
-  const askOnly = keepOnly ? (legacySkits ? keepOnly : Math.min(keepOnly + FORMAT_REFILL_SPARE, GENERATION_POLICY.topicsPerPillar.max)) : null;
-  const bundle = buildTopicBankPrompt(ctx, { topicsPerPillar: Math.min(Math.max(perPillar, GENERATION_POLICY.topicsPerPillar.min), GENERATION_POLICY.topicsPerPillar.max), existingTopics: existing, refresh: run.kind === "REFRESH", pillarEmphasis, formatOnly: onlyFormat && askOnly ? { format: onlyFormat, count: askOnly } : null, pillarNames: askPillars.map((p) => p.name) });
+  // A skit refill asks for a third more than it keeps: ideas past the cast or parody share (below) are not kept.
+  const spare = onlyFormat === "SKIT" && keepOnly ? Math.max(FORMAT_REFILL_SPARE, Math.ceil(keepOnly / 3)) : FORMAT_REFILL_SPARE;
+  const askOnly = keepOnly ? (legacySkits ? keepOnly : Math.min(keepOnly + spare, GENERATION_POLICY.topicsPerPillar.max)) : null;
+  // THE CAST AND PARODY SHARE (Oct 26 2026 eve, videoFormat.SKIT_SHARE_MAX):
+  // one pillar's skit refill keeps at most a third of the pillar's skit
+  // concepts with a cast member in them (those it holds count), and at most a
+  // third of its own ideas as parodies. The prompt is told the numbers too.
+  const cast = built.ctx.skitCast ?? [];
+  let castRoom = Number.POSITIVE_INFINITY, parodyRoom = Number.POSITIVE_INFINITY;
+  if (onlyFormat === "SKIT" && keepOnly && !legacySkits && opts.pillarId) {
+    const skitTarget = pillarFormatTargets(style, perPillar)?.find((f) => f.format === "SKIT")?.target ?? perPillar;
+    const castHeld = existingRows.filter((t) => t.pillarId === opts.pillarId && t.status !== "REJECTED" && t.status !== "ARCHIVED" && !t.clientDeclinedAt && resolvedTopicFormat(topicFormatOf(t.scoresJson), style) === "SKIT" && skitUsesCast(`${t.title} ${t.concept ?? ""}`, cast)).length;
+    if (cast.length) castRoom = skitCastRoom(skitTarget, castHeld);
+    parodyRoom = skitParodyRoom(keepOnly);
+  }
+  const bundle = buildTopicBankPrompt(ctx, { topicsPerPillar: Math.min(Math.max(perPillar, GENERATION_POLICY.topicsPerPillar.min), GENERATION_POLICY.topicsPerPillar.max), existingTopics: existing, refresh: run.kind === "REFRESH", pillarEmphasis, formatOnly: onlyFormat && askOnly ? { format: onlyFormat, count: askOnly, castMax: Number.isFinite(castRoom) ? castRoom : null, parodyMax: Number.isFinite(parodyRoom) ? parodyRoom : null } : null, pillarNames: askPillars.map((p) => p.name) });
   // A whole bank in both formats is a third longer (each pillar's main count plus OTHER_FORMAT_PER_PILLAR).
   const maxTokens = twoFormats && !onlyFormat ? 24_000 : 16_000;
   const runRes = await runAiJson<BankOut>({
@@ -972,8 +987,11 @@ export async function executeTopicRefreshRun(runId: string, opts: {
   const bank: TopicBank = { clientId: run.clientId, clientName: built.ctx.clientName, intro: [], strategyVersion: built.strategyLabel, stamp: policyStamp(built.strategyLabel), pillars: [] };
   // Oct 22 2026: each new idea's format, by its title, kept on the run until the idea is accepted.
   const formatSaid = new Map<string, VideoFormat>();
+  // Oct 26 2026 eve: each skit idea's kind and whether the model says it uses a cast member, by title.
+  const castSaid = new Map<string, boolean>();
+  const kindSaid = new Map<string, string>();
   // A format-only refresh's ideas are in that format (one the model marked otherwise is dropped below).
-  for (const p of Array.isArray(out.pillars) ? out.pillars : []) for (const t of p.topics ?? []) { const f = onlyFormat ? (asVideoFormat(t.format) ?? onlyFormat) : newIdeaFormat(style, t.format); if (f && t.title) formatSaid.set(topicDedupeHash(t.title), f); }
+  for (const p of Array.isArray(out.pillars) ? out.pillars : []) for (const t of p.topics ?? []) { const f = onlyFormat ? (asVideoFormat(t.format) ?? onlyFormat) : newIdeaFormat(style, t.format); if (f && t.title) formatSaid.set(topicDedupeHash(t.title), f); if (t.title) { if (typeof t.castUsed === "boolean") castSaid.set(topicDedupeHash(t.title), t.castUsed); if (typeof t.skitKind === "string") kindSaid.set(topicDedupeHash(t.title), t.skitKind.toUpperCase()); } }
   const formats: Record<string, VideoFormat> = {};
   // Each group's pillarName → the confirmed pillar it names (the schema allows
   // only those names; a model that strays anyway is matched by the one rule,
@@ -1003,7 +1021,7 @@ export async function executeTopicRefreshRun(runId: string, opts: {
   const otherGaps: Gap[] = twoFormats && !onlyFormat
     ? bank.pillars.flatMap((p) => { const n = p.topics.filter((t) => fmtOfIdea(t.title) !== mainF).length; return n < OTHER_FORMAT_PER_PILLAR ? [{ kind: "insufficient-context" as const, field: `pillars.${p.name}`, text: `Only ${n} of ${OTHER_FORMAT_PER_PILLAR} ${FORMAT_PLURAL[otherFormat(mainF)]} could be supported for “${p.name}” at the quality bar.`, question: null }] : []; })
     : [];
-  let created = 0, resurfaced = 0, duplicates = 0, notKept = 0;
+  let created = 0, resurfaced = 0, duplicates = 0, notKept = 0, overShare = 0;
   const formulaic: string[] = [];
   // Oct 15 2026: an idea that names a series this client stopped never reaches the bank.
   const stopped: string[] = [];
@@ -1023,6 +1041,13 @@ export async function executeTopicRefreshRun(runId: string, opts: {
       if (onlyFormat && keepOnly) {
         // The shortfall is counted across the run, and an idea in the other format is not what was asked for.
         if (formatSaid.get(hash) !== onlyFormat || created >= keepOnly) { notKept++; continue; }
+        if (onlyFormat === "SKIT") {
+          const withCast = skitUsesCast(`${t.title} ${t.description ?? ""}`, cast, castSaid.get(hash));
+          const parody = kindSaid.get(hash) === "PARODY";
+          if ((withCast && castRoom <= 0) || (parody && parodyRoom <= 0)) { overShare++; notKept++; continue; }
+          if (withCast) castRoom--;
+          if (parody) parodyRoom--;
+        }
       } else if (opts.keep && rank >= opts.keep) { notKept++; continue; } // "regenerate ONE": the replacement is the first fresh idea, the rest are not stored
       existingHashes.add(hash);
       // Audit, Oct 23 2026: the client reads these titles in their portal: no em or en dash (a title's takes a colon).
@@ -1057,7 +1082,7 @@ export async function executeTopicRefreshRun(runId: string, opts: {
   await finishRefreshRun(runId, {
     status, generatedCount: created, pillarCount: bank.pillars.length, aiRunId: runRes.runId,
     missingContext: gaps.length || droppedPillars.length || !out.complete ? { gaps: gaps.map((g) => g.text), droppedPillars, complete: out.complete === true } : undefined,
-    changeSummary: `${created} new suggestion${created === 1 ? "" : "s"}${opts.keep ? ` (kept ${created} of ${created + notKept} fresh ideas as the replacement)` : ""} · ${duplicates} already in the bank · ${resurfaced} archived concept${resurfaced === 1 ? "" : "s"} withheld · ${validation.duplicates.length} near-duplicate warning${validation.duplicates.length === 1 ? "" : "s"}${formulaic.length ? ` · ${formulaic.length} formulaic title${formulaic.length === 1 ? "" : "s"} dropped` : ""}${stopped.length ? ` · ${stopped.length} idea${stopped.length === 1 ? "" : "s"} from a discontinued series dropped` : ""}${droppedGroups.length ? ` · ${droppedGroups.reduce((n, g) => n + g.topics, 0)} idea(s) outside the confirmed pillars dropped` : ""}${out.complete === false ? " · the model reported it could not reach the count at the quality bar" : ""}`,
+    changeSummary: `${created} new suggestion${created === 1 ? "" : "s"}${opts.keep ? ` (kept ${created} of ${created + notKept} fresh ideas as the replacement)` : ""} · ${duplicates} already in the bank · ${resurfaced} archived concept${resurfaced === 1 ? "" : "s"} withheld · ${validation.duplicates.length} near-duplicate warning${validation.duplicates.length === 1 ? "" : "s"}${formulaic.length ? ` · ${formulaic.length} formulaic title${formulaic.length === 1 ? "" : "s"} dropped` : ""}${overShare ? ` · ${overShare} skit idea${overShare === 1 ? "" : "s"} past the cast or parody share not kept` : ""}${stopped.length ? ` · ${stopped.length} idea${stopped.length === 1 ? "" : "s"} from a discontinued series dropped` : ""}${droppedGroups.length ? ` · ${droppedGroups.reduce((n, g) => n + g.topics, 0)} idea(s) outside the confirmed pillars dropped` : ""}${out.complete === false ? " · the model reported it could not reach the count at the quality bar" : ""}`,
   });
 }
 

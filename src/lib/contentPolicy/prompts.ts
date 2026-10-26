@@ -19,7 +19,7 @@ import { type Topic, emphasisOfPillar, topicsForEmphasis } from "./topicBank";
 import { renderScript } from "./scriptFormat";
 import { type CreativeIdentity, creativeIdentityBlock } from "./creativeIdentity";
 import { type CreativeGuard, creativeGuardBlock } from "../creativeGuardCore";
-import { type VideoStyle, type VideoFormat, type SkitCastMember, asVideoStyle, castMemberLabel, defaultFormatFor, mainFormatFor, otherFormat, skitsOn, FORMAT_PLURAL, OTHER_FORMAT_PER_PILLAR } from "./videoFormat";
+import { type VideoStyle, type VideoFormat, type SkitCastMember, asVideoStyle, castMemberLabel, defaultFormatFor, mainFormatFor, otherFormat, skitsOn, FORMAT_PLURAL, OTHER_FORMAT_PER_PILLAR, SKIT_KINDS } from "./videoFormat";
 import type { StrategyCallNotes } from "./callNotes";
 
 export type JsonSchema = Record<string, unknown>;
@@ -289,16 +289,25 @@ ${SKIT_CONCEPT_RULES}`;
  * asked for skit concepts across the whole bank and still runs that way for
  * a run queued before today (several pillars named, "spread over").
  */
-export function formatOnlyLines(ctx: Pick<ClientContext, "videoStyle" | "skitsPerMonth" | "skitCast">, only: { format: VideoFormat; count: number }, pillarNames: readonly string[]): { header: string; count: string; lines: string[] } {
+export function formatOnlyLines(ctx: Pick<ClientContext, "videoStyle" | "skitsPerMonth" | "skitCast">, only: { format: VideoFormat; count: number; castMax?: number | null; parodyMax?: number | null }, pillarNames: readonly string[]): { header: string; count: string; lines: string[] } {
   const style = asVideoStyle(ctx.videoStyle);
   const n = only.count;
   const where = pillarNames.length === 1 ? `all under the pillar "${pillarNames[0]}"` : "spread over the client's pillars with the most on the personal brand pillar; a pillar may get none";
   if (only.format === "SKIT") {
     const perMonth = ctx.skitsPerMonth && ctx.skitsPerMonth > 0 ? ctx.skitsPerMonth : 2;
+    // Oct 26 2026 eve: the cast and parody shares as numbers (videoFormat.SKIT_SHARE_MAX); the run keeps no more than these.
+    const hasCast = (ctx.skitCast ?? []).length > 0;
+    const castMax = hasCast && only.castMax != null ? Math.max(0, Math.floor(only.castMax)) : null;
+    const parodyMax = only.parodyMax != null ? Math.max(0, Math.floor(only.parodyMax)) : null;
+    const shares = [
+      castMax == null ? null : castMax === 0 ? "none of them uses a cast member (this pillar already has its share of skits with one)" : `at most ${castMax} use${castMax === 1 ? "s" : ""} a cast member, on camera or as a voice`,
+      parodyMax == null ? null : `at most ${parodyMax} ${parodyMax === 1 ? "is a parody" : "are parodies"} of a format`,
+    ].filter(Boolean);
+    const shareLine = shares.length ? ` Of these, ${shares.join(", and ")}; the rest are the client alone, in the other kinds of skit. Ideas past these limits are not kept. Mark every concept's kind and whether it uses a cast member.` : "";
     const why = style === "SKITS" ? "skits are this client's main format" : style === "MIX" ? `this client films about ${perMonth} skits a month, and every pillar keeps a full set of skit concepts to choose from` : `this client films about ${perMonth} skits a month and their bank is short of them`;
     return {
       header: "SKITS ONLY",
-      count: `COUNT: exactly ${n} skit concept${n === 1 ? "" : "s"} in total (see SKITS ONLY below). Never more, never padded. If the source context cannot support that many at the quality bar, return fewer and set complete=false.`,
+      count: `COUNT: exactly ${n} skit concept${n === 1 ? "" : "s"} in total (see SKITS ONLY below). Never more, never padded. If the source context cannot support that many at the quality bar, return fewer and set complete=false.${shareLine}`,
       lines: [
         `SKITS ONLY: this refresh is for skit concepts only (${why}). Return exactly ${n} new skit concept${n === 1 ? "" : "s"} in total, ${where}. Every topic's format is "SKIT". No talking-to-camera topics.`,
         SKIT_CONCEPT_RULES,
@@ -395,7 +404,7 @@ function formatTopicBankSchema(): JsonSchema {
           ...pillarItems,
           properties: {
             ...pillarProps,
-            topics: { ...pillarProps.topics, items: { ...topicItems, required: [...topicItems.required, "format"], properties: { ...topicItems.properties, description: { type: "string", description: "Talking to camera: one sentence, what the video would show or explain. A skit: the skit in one or two sentences: who plays what, the situation, and the real point it lands." }, format: { type: "string", enum: ["DIRECT", "SKIT"], description: "DIRECT = talking to camera; SKIT = a skit concept." } } } },
+            topics: { ...pillarProps.topics, items: { ...topicItems, required: [...topicItems.required, "format", "castUsed", "skitKind"], properties: { ...topicItems.properties, description: { type: "string", description: "Talking to camera: one sentence, what the video would show or explain. A skit: the skit in one or two sentences: who plays what, the situation, and the real point it lands." }, format: { type: "string", enum: ["DIRECT", "SKIT"], description: "DIRECT = talking to camera; SKIT = a skit concept." }, castUsed: { type: "boolean", description: "SKIT: true when a cast member is in it, on camera or as a voice. DIRECT: false." }, skitKind: { type: "string", enum: [...SKIT_KINDS], description: "SKIT: PARODY = the client plays a character in a parody of a format (a TV show, a courtroom, a documentary, a straight-faced meeting); SPLIT_SCREEN = the client plays both sides; POV = a buyer's or seller's point of view acted out; SAY_VS_MEAN = what people say vs what they mean; REENACTMENT = a real moment acted out; BEFORE_AFTER; REACTION = a reaction to something real; OTHER. DIRECT: NONE." } } } },
           },
         },
       },
@@ -690,7 +699,7 @@ export function buildTopicBankPrompt(
      * count does not apply): a refill of one pillar's skit concepts or its
      * talking-to-camera topics on an account that does skits.
      */
-    formatOnly?: { format: VideoFormat; count: number } | null;
+    formatOnly?: { format: VideoFormat; count: number; castMax?: number | null; parodyMax?: number | null } | null;
     /**
      * Oct 23 2026: the client's CONFIRMED pillar names, exactly as stored.
      * Every topic group names one of them (an enum on pillarName); unset =
@@ -742,7 +751,7 @@ export function buildTopicBankPrompt(
     .join(" ");
   // One format only (Oct 26 2026), or the Oct 22 skit-only refresh it generalises.
   const legacySkits = opts.skitsOnly && opts.skitsOnly > 0 ? Math.floor(opts.skitsOnly) : null;
-  const only = opts.formatOnly && opts.formatOnly.count > 0 ? { format: opts.formatOnly.format, count: Math.floor(opts.formatOnly.count) } : legacySkits ? { format: "SKIT" as const, count: legacySkits } : null;
+  const only = opts.formatOnly && opts.formatOnly.count > 0 ? { format: opts.formatOnly.format, count: Math.floor(opts.formatOnly.count), castMax: opts.formatOnly.castMax ?? null, parodyMax: opts.formatOnly.parodyMax ?? null } : legacySkits ? { format: "SKIT" as const, count: legacySkits } : null;
   const onlyBlock = only ? formatOnlyLines(ctx, only, confirmedNames) : null;
   // Oct 26 2026: the client's strategy and discovery calls, when the caller loaded them.
   const callsBlock = strategyCallsBlock(ctx.strategyCalls);
