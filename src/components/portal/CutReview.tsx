@@ -8,7 +8,7 @@ import { portalAddComment, portalApproveCut, portalDeleteComment, portalRecordCl
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import { PortalPlayer, type PortalPlayerHandle } from "@/components/portal/PortalPlayer";
 import { contactLine } from "@/components/portal/ContactTeam";
-import { approvalCopy, NOTE_COPY, noteDraftKey } from "@/components/portal/cutReviewCopy";
+import { approvalCopy, NOTE_COPY, noteDraftKey, UNSENT_NOTE_QUIET_MINUTES } from "@/components/portal/cutReviewCopy";
 import type { CutVersion, CommentView } from "@/lib/clientDecisions";
 
 // ---------------------------------------------------------------------------
@@ -165,10 +165,14 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
   // compare — the reader's own seat decides the wording there.
   const yours = (v: CutVersion) => (v.clientState === "AWAITING_YOUR_DECISION" ? perms.request || perms.approve || perms.comment : v.decidedByMe);
   // What a sent note does next, said plainly under "We have your note".
+  // Oct 26 2026 (lib/unsentNotes): a client's unsent notes go to the editor on
+  // their own 15 minutes after the last one, so the page says when. Staff
+  // writing in the owner view are not sent for (onBehalf).
+  const onTheirOwn = onBehalf ? "" : ` If you don't, ${requested ? "they're added to your request" : `they go to ${yourEditor}`} on their own ${UNSENT_NOTE_QUIET_MINUTES} minutes after your last note.`;
   const afterSend = perms.request && !linkVisitor
     ? approved
-      ? `When you're ready, press Request changes below and it goes to ${yourEditor}.`
-      : `When you've added everything, press Request changes below to send your notes to ${yourEditor}${perms.approve && !requested ? ", or approve if nothing needs changing" : ""}.`
+      ? `When you're ready, press Request changes below and it goes to ${yourEditor}.${onTheirOwn}`
+      : `When you've added everything, press Request changes below to send your notes to ${yourEditor}${perms.approve && !requested ? ", or approve if nothing needs changing" : ""}.${onTheirOwn}`
     : "Our team can see it. The program owner sends notes to the editor with a change request.";
 
   const sendReply = (parentId: string) => {
@@ -324,7 +328,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
               editor. Say so, every time, until they go or are resolved. */}
           {open.length > 0 && perms.request && !asking && !approving && (
             <p className="mb-2 rounded-lg border border-warning/30 bg-warning-soft/30 px-2.5 py-2 text-xs">
-              {open.length === 1 ? "1 note hasn't" : `${open.length} notes haven't`} gone to {yourEditor} yet. Press Request changes to send {open.length === 1 ? "it" : "them"}{perms.approve && !requested && !approved ? ", or approve if nothing needs changing" : ""}.
+              {open.length === 1 ? "1 note hasn't" : `${open.length} notes haven't`} gone to {yourEditor} yet. Press Request changes to send {open.length === 1 ? "it" : "them"} now{perms.approve && !requested && !approved ? ", or approve if nothing needs changing" : ""}.{onBehalf ? "" : ` Otherwise ${open.length === 1 ? "it goes" : "they go"} on ${open.length === 1 ? "its" : "their"} own ${UNSENT_NOTE_QUIET_MINUTES} minutes after your last note.`}
             </p>
           )}
           {!asking && !approving && (

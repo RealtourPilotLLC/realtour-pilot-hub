@@ -84,6 +84,8 @@ export function buttonLabelFor(url: string, before = ""): string {
   }
   const ctx = before.toLowerCase();
   const aboutSession = /\bsession|\bfilming/.test(ctx) && !/\bcall\b/.test(ctx);
+  // Oct 26 2026: the filming session confirmation's two links.
+  if (host === "calendar.google.com") return "Add to Google Calendar";
   if (host === "calendly.com" || host.endsWith(".calendly.com") || /\/(book|booking|schedule)(\/|$)/.test(path)) return aboutSession ? "Book your session" : "Book your call";
   if (/^\/portal\/login\/?$/.test(path)) return "Open your portal";
   if (/^\/portal\/address\//.test(path)) return "Add the address";

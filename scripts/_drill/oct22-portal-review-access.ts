@@ -378,7 +378,8 @@ async function main() {
       const withOpen = { versions: [cut({ comments: [{ id: "n1", body: "Logo too small", timeSec: 3, status: "OPEN", resolvedAtISO: null, resolvedBy: null, mine: true, byStaff: false, decisionId: null, author: "Mike", createdAtISO: "2026-10-21T16:00:00.000Z", replies: [] }] })], perms: OWNER_PERMS };
       const P2 = hookHost();
       const openTree = P2.render(() => CutReview(withOpen as any));
-      c.ok("a saved note not yet in a change request: '1 note hasn't gone to your editor yet. Press Request changes…'", /1 note hasn't gone to your editor yet\. Press Request changes to send it, or approve if nothing needs changing\./.test(say(openTree)) && !!buttonWith(openTree, "Request changes (1 note)"));
+      // Oct 26 2026: and it says the note goes on its own after 15 minutes (lib/unsentNotes).
+      c.ok("a saved note not yet in a change request: '1 note hasn't gone to your editor yet. Press Request changes… Otherwise it goes on its own 15 minutes after your last note.'", /1 note hasn't gone to your editor yet\. Press Request changes to send it now, or approve if nothing needs changing\. Otherwise it goes on its own 15 minutes after your last note\./.test(say(openTree)) && !!buttonWith(openTree, "Request changes (1 note)"));
     } finally {
       Object.assign(g, saved);
       for (const k of Object.keys(saved) as (keyof typeof saved)[]) if (saved[k] === undefined) delete g[k];

@@ -165,7 +165,8 @@ async function main() {
     c.ok("200, ok", res.status === 200 && body.ok === true, `${res.status}`);
     // Oct 20 2026: the scripting platform's reconcile rides this job too.
     // Oct 24 2026: and, last, the media index's one-time backfill (idle until started).
-    c.ok("its seven steps ran, in order", steps.join() === "orders,appointments,sessionRequests,sessionBookings,readyToSendAryeo,scripting,listingMediaBackfill", steps.join());
+    // Oct 26 2026: and the session confirmation email, right after bookings.
+    c.ok("its eight steps ran, in order", steps.join() === "orders,appointments,sessionRequests,sessionBookings,sessionConfirmations,readyToSendAryeo,scripting,listingMediaBackfill", steps.join());
     c.ok("…the media index backfill is idle until someone starts it (no Aryeo call)", (body.listingMediaBackfill as { idle?: string; read?: number } | undefined)?.idle === "not started" && (body.listingMediaBackfill as { read?: number }).read === 0, JSON.stringify(body.listingMediaBackfill).slice(0, 160));
     c.ok("none skipped for budget, none errored", (body.skipped ?? []).length === 0 && !Object.keys(body).some((k) => k.endsWith("Error")), Object.keys(body).filter((k) => k.endsWith("Error")).map((k) => `${k}: ${String(body[k]).slice(0, 80)}`).join(" | ") || "clean");
     c.ok("session booking stays behind its switch (off → skipped, zero calls)", /session_booking is off/.test(JSON.stringify(body.sessionBookings)), JSON.stringify(body.sessionBookings).slice(0, 120));

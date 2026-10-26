@@ -68,3 +68,8 @@ export function clientFirstName(name: string | null | undefined): string {
 
 /** Where a note's draft waits on this device until it is sent (per cut). */
 export const noteDraftKey = (submissionId: string) => `rtp_portal_note:${submissionId}`;
+
+/** Oct 26 2026: a client's unsent notes on a video go to the editor on their
+ *  own this many minutes after the last one (lib/unsentNotes). Here so the page
+ *  and the sweep say the same number. */
+export const UNSENT_NOTE_QUIET_MINUTES = 15;

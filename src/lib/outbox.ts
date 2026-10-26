@@ -7,6 +7,7 @@ import { reportError } from "@/lib/errorTracker";
 // only for the six rollout kinds — a confirmation or a staff text never loads it.
 import type { GateCode, GateVerdict } from "@/lib/programRolloutGate";
 import { onboardingSubject } from "@/lib/clientOnboardingCore";
+import { sessionConfirmationSubject } from "@/lib/sessionConfirmationKey";
 
 // ---------------------------------------------------------------------------
 // THE OUTBOX (RTP-08, Sep 16 2026). One durable record per message the hub
@@ -114,7 +115,14 @@ export type OutboxKind =
   /** Oct 23 2026: a TEAM text. The photographer brief: one per photographer per
    *  shoot day, the business day before, plus an updated brief when something
    *  material changes (lib/photographerBrief). Not a CLIENT_KIND. */
-  | "photographer_brief";
+  | "photographer_brief"
+  /** Oct 26 2026: a CLIENT email. Their filming session is booked (or moved):
+   *  when, where, who, the calendar link (lib/sessionConfirmation). The hub
+   *  books in Aryeo with the customer notice off, so this is the only
+   *  confirmation they get. TRANSACTIONAL like portal_login: it answers the
+   *  client's own booking, so it is not a CLIENT_KIND and is never held for the
+   *  client hours, and not a rollout kind (the client booked it themselves). */
+  | "session_confirmation";
 const CLIENT_KINDS: readonly OutboxKind[] = ["confirmation", "delivery", "welcome", "afterhours"];
 /** CONTENT-PROGRAM kinds (W2-F, Sep 17 2026). Client-facing EMAILS from the
  *  program: a §24 reminder, a §22 "your scripts are ready" notice, a §21
@@ -129,7 +137,7 @@ const CLIENT_KINDS: readonly OutboxKind[] = ["confirmation", "delivery", "welcom
  *  enqueued unless its ProgramAutomation switch (`reminders`,
  *  `script_share_email`) is on — a missing row is off. */
 const PROGRAM_KINDS: readonly OutboxKind[] = ["program_reminder", "script_share", "strategy_ready", "program_message"];
-const ALL_KINDS: readonly OutboxKind[] = [...CLIENT_KINDS, "staff", "portal_login", "portal_invite", ...PROGRAM_KINDS, "onboarding", "shoot_day", "upload_gap", "instructions_missing", "photographer_brief"];
+const ALL_KINDS: readonly OutboxKind[] = [...CLIENT_KINDS, "staff", "portal_login", "portal_invite", ...PROGRAM_KINDS, "onboarding", "shoot_day", "upload_gap", "instructions_missing", "photographer_brief", "session_confirmation"];
 export const isClientKind = (k: OutboxKind | null): boolean => !!k && (CLIENT_KINDS.includes(k) || PROGRAM_KINDS.includes(k));
 export const isProgramKind = (k: OutboxKind | null): boolean => !!k && PROGRAM_KINDS.includes(k);
 /** R03 (Sep 28 2026): the kinds the rollout scope governs — the four program
@@ -507,6 +515,8 @@ export function subjectFor(kind: OutboxKind | null, dedupeKey?: string | null): 
     case "program_message": return dedupeKey?.endsWith(":script") ? "A reply about your script in your Realtour Pilot portal" : "New reply in your Realtour Pilot portal";
     // Oct 5 2026: the onboarding message names its own subject (its key carries it).
     case "onboarding": return onboardingSubject(dedupeKey);
+    // Oct 26 2026: the session's date rides in its key (lib/sessionConfirmation).
+    case "session_confirmation": return sessionConfirmationSubject(dedupeKey);
     default: return "Realtour Pilot";
   }
 }

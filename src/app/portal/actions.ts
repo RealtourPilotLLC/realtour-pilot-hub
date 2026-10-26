@@ -380,7 +380,49 @@ export async function portalUseFolderFile(auth: PortalAuth, name: string, kind: 
   }
 }
 
-export type SessionRequestResult = R & { requestId?: string; label?: string; duplicate?: boolean };
+/** Oct 26 2026: what the portal shows once a session is on the calendar (PortalScheduler's booked panel). */
+export type BookedSession = {
+  startISO: string;
+  endISO: string | null;
+  location: string | null;
+  creativeName: string | null;
+  moved: boolean;
+  /** Where the confirmation email went (or is going): the program's own seats. */
+  emailedTo: string[];
+  emailPending: boolean;
+};
+export type SessionRequestResult = R & { requestId?: string; label?: string; duplicate?: boolean; booked?: BookedSession | null };
+
+/**
+ * Oct 26 2026 (Jordan: "make sure clients get email confirmations and it tells
+ * them on screen a confirmation when they booked"): the confirmation email for
+ * a session the hub just booked or moved, sent now (lib/sessionConfirmation),
+ * and the details the portal's booked panel shows. Never throws: an email that
+ * could not go now is the aryeo cron's to send.
+ */
+async function confirmBooked(requestId: string, moved: boolean): Promise<BookedSession | null> {
+  const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId }, select: { status: true, slotStart: true, slotEnd: true, locationText: true, creativeName: true } }).catch(() => null);
+  if (!r || r.status !== "CONFIRMED" || !r.slotStart) return null;
+  const { sendSessionConfirmation } = await import("@/lib/sessionConfirmation");
+  const c = await sendSessionConfirmation(requestId).catch(() => null);
+  return {
+    startISO: r.slotStart.toISOString(),
+    endISO: r.slotEnd?.toISOString() ?? null,
+    location: r.locationText?.trim() || null,
+    creativeName: r.creativeName,
+    moved,
+    emailedTo: c?.emailedTo ?? [],
+    emailPending: !!c && (c.pendingTo.length > 0 || (!c.emailedTo.length && !c.skipped)),
+  };
+}
+
+/** A request the office still has to confirm, in the client's words, with the email it will bring
+ *  (said before "You still have N sessions to book", which stays last). */
+function withEmailNote(message: string): string {
+  const note = " You'll get an email as soon as it's confirmed.";
+  const at = message.indexOf(" You still have ");
+  return at < 0 ? `${message}${note}` : `${message.slice(0, at)}${note}${message.slice(at)}`;
+}
 
 /** A slot before the gate (either route), in the client's words: the first
  *  time they CAN pick, not "the prep window after your strategy call" — which
@@ -585,6 +627,7 @@ export async function portalRequestSession(
   const { openConflictFor, CONFIRMING_WITH_CREATIVE, CONFIRMING_LABEL } = await import("@/lib/bookingConflictHold");
   const held = state.status === "CONFIRMED" && !r.duplicate ? await openConflictFor({ requestId: r.id }) : null;
   const label = held ? CONFIRMING_LABEL : sessionRequestLabel(state.status, state.bookingState);
+  const booked = state.status === "CONFIRMED" && !r.duplicate && !held ? await confirmBooked(r.id, false) : null;
   return {
     ok: state.bookingState !== "CONFLICT",
     message: r.duplicate
@@ -592,10 +635,11 @@ export async function portalRequestSession(
       : held ? CONFIRMING_WITH_CREATIVE
       : state.status === "CONFIRMED" ? "Booked. Your session is on the calendar."
       : state.bookingState === "CONFLICT" ? label
-      : r.message,
+      : withEmailNote(r.message),
     requestId: r.id,
     label,
     duplicate: r.duplicate,
+    booked,
   };
 }
 
@@ -615,7 +659,7 @@ export async function portalRescheduleSession(
   auth: PortalAuth,
   requestId: string,
   input: { slotISO: string; creativeTeamMemberId?: string | null; location?: string | null },
-): Promise<R & { id?: string }> {
+): Promise<R & { id?: string; booked?: BookedSession | null }> {
   const v = await viewerFor(auth, "requestSession");
   if (typeof v === "string") return fail(v);
   if (!/^[a-z0-9]{10,40}$/i.test(requestId)) return fail("That request isn't on your page.");
@@ -654,7 +698,11 @@ export async function portalRescheduleSession(
   if (out.ok && /^Moved\b/.test(out.message)) {
     const { openConflictFor, CONFIRMING_WITH_CREATIVE } = await import("@/lib/bookingConflictHold");
     if (await openConflictFor({ requestId: out.id ?? r.id })) return { ...out, message: CONFIRMING_WITH_CREATIVE };
+    // Oct 26 2026: the new time's confirmation email, and the panel that says so.
+    return { ...out, booked: await confirmBooked(out.id ?? r.id, true) };
   }
+  // Kyle moves it by hand: the email comes when he confirms the new time.
+  if (out.ok && /\bKyle\b/.test(out.message) && !/email/i.test(out.message)) return { ...out, message: withEmailNote(out.message) };
   return out;
 }
 

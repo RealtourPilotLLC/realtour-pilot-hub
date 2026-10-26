@@ -173,6 +173,15 @@ export async function GET(req: NextRequest) {
           }
           return true;
         }
+        // A filming session confirmation (lib/sessionConfirmation) is
+        // transactional, so no client hours; but it must still be true: a
+        // session cancelled or moved since it was queued is not confirmed.
+        if (kind === "session_confirmation") {
+          const { sessionConfirmationStillTrue } = await import("@/lib/sessionConfirmation");
+          const still = await sessionConfirmationStillTrue(row);
+          if (!still.ok) superseded.push(`session_confirmation: ${still.why}`);
+          return still.ok;
+        }
         if (!isClientKind(kind)) return true; // team texts ignore the window by design
         if (windowOpen === null) windowOpen = await clientTextWindowOpen();
         if (!windowOpen) return false;
@@ -242,6 +251,14 @@ export async function GET(req: NextRequest) {
   // unanswered (30m → ADMIN bell + Slack, 2h → OWNER + urgent; VIPs faster).
   // Best-effort by construction — sweepReplySla never throws — and the step()
   // wrapper keeps even a surprise failure from blocking Gmail polling.
+  // Oct 26 2026 (Jordan: "Mike sent a revision so it should open up in the
+  // ops hub as revision status"): a client's notes on a video, still unsent 15
+  // minutes after their last one, go to the editor as their change request
+  // (lib/unsentNotes); what the portal would refuse goes to Kyle.
+  await step("unsentPortalNotes", async () => {
+    const { sweepUnsentClientNotes } = await import("@/lib/unsentNotes");
+    return sweepUnsentClientNotes();
+  }, { maxMs: 40_000 });
   await step("replySla", () => sweepReplySla());
 
   // THE PHOTOGRAPHER BRIEF (Oct 23 2026, lib/photographerBrief): at the send

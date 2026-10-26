@@ -26,7 +26,10 @@ export const maxDuration = 300;
 //                      3 a run, no new write with under 30 s left. Aryeo's
 //                      customer notifications stay OFF (notifyCustomer false),
 //                      exactly as before;
-//   · scripting      the scripting platform's reconcile: every job's current
+//   · sessionConfirmations  the hub's own confirmation email for each session
+//                      confirmed or moved (lib/sessionConfirmation, Oct 26 2026),
+//                      since Aryeo's is off;
+//   · scripting     the scripting platform's reconcile: every job's current
 //                      script (lib/scriptSync.reconcileScripting, Oct 20 2026);
 //   · readyToSendAryeo  one Aryeo listing read per job on the Ready-to-send
 //                      card (at most 12): it files what the listing shows
@@ -66,6 +69,15 @@ export async function GET(req: NextRequest) {
     const { driveSessionBookings } = await import("@/lib/sessionBooking");
     return driveSessionBookings({ budgetMs: 60_000 });
   }, { maxMs: 70_000 });
+  // Oct 26 2026 (Jordan: Mike Ciunci booked and got no confirmation): the
+  // filming session confirmation email for every session confirmed or moved
+  // since the last tick, however it was confirmed (lib/sessionConfirmation).
+  // The portal sends its own at once; this catches Kyle's hand confirmations,
+  // bookings the step above finished, and anything held while a conflict was open.
+  await step("sessionConfirmations", async () => {
+    const { sweepSessionConfirmations } = await import("@/lib/sessionConfirmation");
+    return sweepSessionConfirmations();
+  }, { maxMs: 25_000 });
   // The Ready-to-send card's Aryeo evidence and the delivery proof. Aryeo's
   // LISTING_DELIVERED webhook has been silent since Sep 7 and only Aryeo's
   // team can switch it back on; until they do, this is how the proof runs.

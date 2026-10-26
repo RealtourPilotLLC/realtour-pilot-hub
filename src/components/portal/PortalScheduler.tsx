@@ -4,9 +4,10 @@ import { zonedDateTime, zonedTime } from "@/lib/datetime";
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { CalendarClock, Camera, CheckCircle2, ChevronLeft, ChevronRight, Clock, Info, Loader2, Lock, MapPin, MoveRight, Phone, XCircle } from "lucide-react";
+import { CalendarClock, CalendarPlus, Camera, CheckCircle2, ChevronLeft, ChevronRight, Clock, Info, Loader2, Lock, Mail, MapPin, MoveRight, Phone, User, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { portalRequestSession, portalRescheduleSession, portalSaveSessionPlanAddress, portalSessionSlots, portalSubmitSessionAddress } from "@/app/portal/actions";
+import { portalRequestSession, portalRescheduleSession, portalSaveSessionPlanAddress, portalSessionSlots, portalSubmitSessionAddress, type BookedSession } from "@/app/portal/actions";
+import { filmingSessionEvent, googleCalendarLink } from "@/lib/calendarLink";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import type { PortalSlotDay, PortalScheduleMonth } from "@/lib/portal";
 import type { PreparationHold, SessionSlotsResult, TravelLabel, TravelSlotDay } from "@/lib/sessionTravel";
@@ -149,6 +150,41 @@ function KyleLine() {
   );
 }
 
+/**
+ * THE BOOKED PANEL (Oct 26 2026, Jordan: "make sure ... it tells them on
+ * screen a confirmation when they booked"). Mike Ciunci booked on Oct 26 and
+ * saw one small green line; this is the confirmation itself: when, where, who,
+ * where the email went, and the session on their own calendar in one tap.
+ */
+function BookedPanel({ b, tz }: { b: BookedSession; tz: string }) {
+  const end = b.endISO ? ` to ${timeLabel(b.endISO, tz)}` : "";
+  const calendar = googleCalendarLink(filmingSessionEvent({ start: new Date(b.startISO), end: b.endISO ? new Date(b.endISO) : null, location: b.location, creativeName: b.creativeName, office: KYLE }));
+  return (
+    <div role="status" className="mt-3 rounded-xl border border-success/30 bg-success/5 p-4">
+      <div className="flex items-center gap-2 text-base font-semibold text-success">
+        <CheckCircle2 className="size-5 shrink-0" /> {b.moved ? "Your session has moved" : "You're booked"}
+      </div>
+      <dl className="mt-3 space-y-1.5 text-sm">
+        <div className="flex items-start gap-2"><dt className="sr-only">When</dt><CalendarClock className="mt-0.5 size-4 shrink-0 text-muted-2" /><dd className="font-medium">{whenLabel(b.startISO, tz)}{end} {zoneAt(b.startISO, tz)}</dd></div>
+        {b.location && <div className="flex items-start gap-2"><dt className="sr-only">Where</dt><MapPin className="mt-0.5 size-4 shrink-0 text-muted-2" /><dd>{b.location}</dd></div>}
+        {b.creativeName && <div className="flex items-start gap-2"><dt className="sr-only">Videographer</dt><User className="mt-0.5 size-4 shrink-0 text-muted-2" /><dd>With {b.creativeName}</dd></div>}
+      </dl>
+      <p className="mt-3 flex items-start gap-2 text-sm text-muted">
+        <Mail className="mt-0.5 size-4 shrink-0" />
+        <span>
+          {b.emailedTo.length
+            ? <>We emailed your confirmation to <span className="break-all font-medium text-foreground">{b.emailedTo.join(", ")}</span>.</>
+            : b.emailPending ? "Your confirmation email is on its way." : "It's on our calendar. Kyle will reach out if anything changes."}
+        </span>
+      </p>
+      <a href={calendar} target="_blank" rel="noopener noreferrer"
+        className="mt-3 inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-border bg-surface px-3.5 py-2 text-sm font-semibold text-brand hover:border-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+        <CalendarPlus className="size-4" /> Add to Google Calendar
+      </a>
+    </div>
+  );
+}
+
 /** One request, in the client's words: what they asked for and where it stands. */
 function RequestRow({ r, readOnly, tz, selfBooking, onMove, moving }: { r: PortalScheduleMonth["requests"][number]; readOnly: boolean; tz: string; selfBooking: boolean; onMove: (id: string) => void; moving: boolean }) {
   const conflict = r.status === "REQUESTED" && r.bookingState === "CONFLICT";
@@ -286,7 +322,7 @@ export function PortalScheduler({
   const [slotsRes, setSlotsRes] = useState<{ key: string; res: SessionSlotsResult } | null>(null);
   const [editAddress, setEditAddress] = useState(false);
   const [reload, setReload] = useState(0);
-  const [done, setDone] = useState<string | null>(null);
+  const [done, setDone] = useState<{ text: string; booked: BookedSession | null } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, start] = useTransition();
 
@@ -347,7 +383,7 @@ export function PortalScheduler({
             slot ? { monthId: month.monthId, slotISO: slot, creativeTeamMemberId: chosenCreative, sessionIndex: pickIdx, ...plan } : { monthId: month.monthId, when, sessionIndex: pickIdx, ...plan },
           ).catch(() => ({ ok: false, message: "That didn't send. Try again." }));
       if (r.ok) {
-        setDone(r.message);
+        setDone({ text: r.message, booked: "booked" in r ? r.booked ?? null : null });
         setSlot(null);
         setMoving(null);
         // The request is a row now: re-render from the server so the list
@@ -506,7 +542,9 @@ export function PortalScheduler({
                 ))}
               </ul>
             )}
-            {done && <div className="mt-2"><StatusRow icon={CheckCircle2} tone="ok">{done}</StatusRow></div>}
+            {done && (done.booked
+              ? <BookedPanel b={done.booked} tz={tz} />
+              : <div className="mt-2" role="status"><StatusRow icon={CheckCircle2} tone="ok">{done.text}</StatusRow></div>)}
 
             {showPicker && (
               <div className="mt-2">

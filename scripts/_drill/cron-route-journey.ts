@@ -306,6 +306,13 @@ async function main() {
     await ct.selectTopicForMonth(id, seed.monthId, { source: "call", actor: { kind: "STAFF", staffUserId: null }, callRecordId: seed.callRecordId, status: "SELECTED", evidence: { excerpts: [{ speaker: "client", source: "call", text: line }] } });
     return id;
   };
+  // Oct 26 2026: the seeded month has a CONFIRMED filming session ahead, and
+  // its booking confirmation email (lib/sessionConfirmation, the aryeo cron's
+  // sessionConfirmations step) is transactional: no program switch holds it.
+  // Everything else program-side must still stand still, so the counts below
+  // leave those rows out, and §8 checks they never got past the fence.
+  const SESSION_CONFIRMATION = { requestedBy: { startsWith: "session-confirmation:" } };
+  const queued = () => prisma.outboxMessage.count({ where: { NOT: SESSION_CONFIRMATION } });
   const scriptsFor = async (topicId: string) => {
     const rows = await prisma.contentScript.findMany({ where: { topicId }, select: { id: true } });
     return Promise.all(rows.map(async (r) => ({ id: r.id, versions: await prisma.contentScriptVersion.count({ where: { scriptId: r.id } }) })));
@@ -327,7 +334,7 @@ async function main() {
     c.ok("transcriptJobs reports skipped", /transcript_jobs is off/.test(JSON.stringify(r.body.transcriptJobs)), JSON.stringify(r.body.transcriptJobs));
     c.ok("scriptDrafting reports skipped (plans and drafts)", /off/.test(sd?.plans?.skipped ?? "") && /off/.test(sd?.drafts?.skipped ?? ""), JSON.stringify(sd));
     c.ok("programReminders and shareNotices report skipped", /skip|off/i.test(JSON.stringify(r.body.programReminders)) && /skip|off/i.test(JSON.stringify(r.body.shareNotices)), `${JSON.stringify(r.body.programReminders).slice(0, 80)} · ${JSON.stringify(r.body.shareNotices).slice(0, 80)}`);
-    c.ok("no OutboxMessage, no ProgramAiRun", (await prisma.outboxMessage.count()) === 0 && (await prisma.programAiRun.count()) === 0);
+    c.ok("no OutboxMessage (but the session confirmation), no ProgramAiRun", (await queued()) === 0 && (await prisma.programAiRun.count()) === 0);
     c.ok("F is still undrafted", (await scriptsFor(F)).length === 0);
     c.ok("the pasted transcript's jobs are still QUEUED", jobsQueued >= 2 && (await prisma.programTranscriptJob.count({ where: { state: "QUEUED" } })) === jobsQueued, `${jobsQueued} queued`);
     const run = await latestRun();
@@ -372,7 +379,7 @@ async function main() {
     c.ok("…and drafts nothing more (nothing was owed)", (await owedNow()).length === 0 && (await prisma.contentScriptVersion.count()) === versionsBefore + 1);
     const run = await latestRun();
     c.ok("the CronRun row is ok, with the deploy stamp", !!run?.finishedAt && run.ok === true && summaryOf(run.summary).deploy === "0123456789ab", `${run?.ok} ${run?.error ?? ""}`);
-    c.ok("still nothing queued to send", (await prisma.outboxMessage.count()) === 0);
+    c.ok("still nothing queued to send (but the session confirmation)", (await queued()) === 0);
   }
 
   // Every other provider from here on holds a credential the fence refuses —
@@ -546,7 +553,9 @@ async function main() {
 
   c.head("8 · nothing left the machine");
   c.ok("every outbound attempt was stopped at the fence", fence.blocked.every((u) => !/^https?:\/\/(127\.|localhost)/.test(u)), `${fence.blocked.length} blocked in this process`);
-  c.ok("no message was ever queued", (await prisma.outboxMessage.count()) === 0);
+  c.ok("no message was ever queued but the session confirmation", (await queued()) === 0);
+  const confirmations = await prisma.outboxMessage.findMany({ where: SESSION_CONFIRMATION, select: { state: true, providerError: true } });
+  c.ok("…and that one never left: stopped at the fence, failed, so nothing reached Gmail", confirmations.every((m) => m.state === "failed"), JSON.stringify(confirmations).slice(0, 300));
   c.ok("the database was this drill's", (process.env.DATABASE_URL ?? "").startsWith(`postgresql://postgres:postgres@127.0.0.1:${PORT}/`));
   console.log(`    model calls in this process: ${aiCalls} (${draftCalls} drafts)`);
 
