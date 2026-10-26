@@ -195,7 +195,8 @@ export function skitTargetFor(formats: readonly VideoFormat[], target: number | 
  * formats: the account's MAIN format at the policy's count per pillar (as
  * before), and the OTHER format at OTHER_FORMAT_PER_PILLAR.
  *   Skits: skit concepts are the main format; 5 talking-to-camera topics a pillar.
- *   Mix:   talking to camera is the main format; 5 skit concepts a pillar.
+ *   Mix:   talking to camera is the main format; skit concepts at the full
+ *          count too since the same evening (otherFormatTarget below).
  * A Direct account has one format and is unchanged everywhere.
  *
  * This replaced the one "Skits" section above the pillars (Oct 22): each
@@ -216,14 +217,28 @@ export function otherFormat(f: VideoFormat): VideoFormat {
 export type PillarFormatTarget = { format: VideoFormat; main: boolean; target: number };
 
 /**
+ * What one pillar keeps of the OTHER format. Skit concepts: the policy's full
+ * count on every account that does skits — Jordan, Oct 26 2026 evening: "I
+ * need 10-15 different skit ideas per pillar" (Bernadette, a Mix account, had
+ * 5). Talking-to-camera topics on a Skits account: OTHER_FORMAT_PER_PILLAR.
+ * A whole first bank still asks for OTHER_FORMAT_PER_PILLAR of the other
+ * format (one call; thirty ideas a pillar would not fit, prompts.ts COUNT),
+ * and the per-pillar refill (contentTopics.planPillarRefills) tops it up.
+ */
+export function otherFormatTarget(other: VideoFormat, policyCount: number): number {
+  return other === "SKIT" ? policyCount : OTHER_FORMAT_PER_PILLAR;
+}
+
+/**
  * What one pillar is stocked to, per format, on an account that does skits:
- * the main format at the policy's count, the other at OTHER_FORMAT_PER_PILLAR
+ * the main format at the policy's count, the other at otherFormatTarget
  * (main first). Null on a Direct account: one format, the policy's count.
  */
 export function pillarFormatTargets(style: VideoStyle | null | undefined, policyCount: number): PillarFormatTarget[] | null {
   if (!skitsOn(style)) return null;
   const main = mainFormatFor(style);
-  return [{ format: main, main: true, target: policyCount }, { format: otherFormat(main), main: false, target: OTHER_FORMAT_PER_PILLAR }];
+  const other = otherFormat(main);
+  return [{ format: main, main: true, target: policyCount }, { format: other, main: false, target: otherFormatTarget(other, policyCount) }];
 }
 
 /** The pillar switch's two options, always in this order. */

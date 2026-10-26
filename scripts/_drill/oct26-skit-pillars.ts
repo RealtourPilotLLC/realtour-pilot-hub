@@ -160,7 +160,7 @@ async function main() {
     // =======================================================================
     c.ok("the other format is 5 a pillar", vf.OTHER_FORMAT_PER_PILLAR === 5);
     const tMix = vf.pillarFormatTargets("MIX", 12), tSkits = vf.pillarFormatTargets("SKITS", 12);
-    c.ok("Mix: talking to camera is the main format at the policy count, skits at 5", JSON.stringify(tMix) === JSON.stringify([{ format: "DIRECT", main: true, target: 12 }, { format: "SKIT", main: false, target: 5 }]), JSON.stringify(tMix));
+    c.ok("Mix: talking to camera is the main format at the policy count, and skits at the policy count too (Jordan, Oct 26 evening: 10-15 skit ideas a pillar)", JSON.stringify(tMix) === JSON.stringify([{ format: "DIRECT", main: true, target: 12 }, { format: "SKIT", main: false, target: 12 }]), JSON.stringify(tMix));
     c.ok("Skits: skits are the main format at the policy count, talking to camera at 5", JSON.stringify(tSkits) === JSON.stringify([{ format: "SKIT", main: true, target: 12 }, { format: "DIRECT", main: false, target: 5 }]), JSON.stringify(tSkits));
     c.ok("Direct: one format, no targets per format", vf.pillarFormatTargets("DIRECT", 12) === null && vf.mainFormatFor("DIRECT") === "DIRECT");
     c.ok("the switch reads 'Talking to camera | Skits', in that order", vf.FORMAT_SWITCH_OPTIONS.map((o) => o.label).join(" | ") === "Talking to camera | Skits");
@@ -235,7 +235,7 @@ async function main() {
     const fmt = (p: typeof mSeller, f: "SKIT" | "DIRECT") => p.formats?.find((x) => x.format === f);
     c.ok("Mix: talking to camera first and main (the unmarked topic counts there), at the policy count", T >= 10 && mSeller.formats?.[0].format === "DIRECT" && mSeller.formats[0].main && fmt(mSeller, "DIRECT")?.usable === 4 && fmt(mSeller, "DIRECT")?.target === T, JSON.stringify(mSeller));
     c.ok("…an idea with no recorded format waits as the main format; the recorded skit as a skit", fmt(mSeller, "DIRECT")?.pending === 1 && fmt(mSeller, "SKIT")?.pending === 1 && fmt(mSeller, "DIRECT")?.need === T - 5);
-    c.ok("…skits at 5: 2 usable (the declined one is not stock) + 1 pending, needs 2", fmt(mSeller, "SKIT")?.usable === 2 && fmt(mSeller, "SKIT")?.target === 5 && fmt(mSeller, "SKIT")?.need === 2);
+    c.ok("…skits at the full count: 2 usable (the declined one is not stock) + 1 pending, needs the rest", fmt(mSeller, "SKIT")?.usable === 2 && fmt(mSeller, "SKIT")?.target === T && fmt(mSeller, "SKIT")?.need === T - 3, JSON.stringify(fmt(mSeller, "SKIT")));
     c.ok("…the top-level numbers are the main format's", mSeller.usable === 4 && mSeller.pending === 1 && mSeller.need === T - 5 && mBrand.need === T);
     const stockS = await ct.bankStock(S.enrollmentId);
     const sSeller = stockS.find((p) => p.pillarId === sP.seller)!;
@@ -250,7 +250,7 @@ async function main() {
     const sw1 = await ct.sweepTopicBanks({ max: 0 });
     const qM = await queuedOf(M.enrollmentId);
     const want = (q: typeof qM, pillarId: string, format: string | null, keep: number) => q.some((r) => r.pillarId === pillarId && r.format === format && r.keep === keep);
-    c.ok("Mix: four refills, one per pillar and format, each keeping its shortfall", qM.length === 4 && want(qM, mP.seller, "DIRECT", T - 5) && want(qM, mP.seller, "SKIT", 2) && want(qM, mP.brand, "DIRECT", T) && want(qM, mP.brand, "SKIT", 5), JSON.stringify(qM));
+    c.ok("Mix: four refills, one per pillar and format, each keeping its shortfall", qM.length === 4 && want(qM, mP.seller, "DIRECT", T - 5) && want(qM, mP.seller, "SKIT", T - 3) && want(qM, mP.brand, "DIRECT", T) && want(qM, mP.brand, "SKIT", T), JSON.stringify(qM));
     c.ok("…and no account-wide skit-only refresh any more", !qM.some((r) => r.skitsOnlyRaw || (!r.pillarId && r.format)));
     const qS = await queuedOf(S.enrollmentId);
     c.ok("Skits: skit concepts at the policy count, talking to camera at 5", qS.length === 4 && want(qS, sP.seller, "SKIT", T - 3) && want(qS, sP.seller, "DIRECT", 4) && want(qS, sP.brand, "SKIT", T) && want(qS, sP.brand, "DIRECT", 5), JSON.stringify(qS));
@@ -266,9 +266,10 @@ async function main() {
     // Eight days later for the Mix account's SKIT refills only: those two come back, the DIRECT ones stay cooled.
     const mRuns = await prisma.contentTopicRefreshRun.findMany({ where: { enrollmentId: M.enrollmentId, status: "SUCCEEDED" } });
     for (const r of mRuns) if (ct.refreshScopeOf(r.inputsJson).format === "SKIT") await prisma.contentTopicRefreshRun.update({ where: { id: r.id }, data: { createdAt: new Date(Date.now() - 8 * 86_400_000) } });
-    // …and five skit ideas now wait for review in Branding: pending ideas are stock, so Branding's skits need nothing.
-    const brandRun = await doneRun(M, { formats: Object.fromEntries(["Branding skit one", "Branding skit two", "Branding skit three", "Branding skit four", "Branding skit five"].map((t) => [ct.topicDedupeHash(t), "SKIT"])) });
-    for (const t of ["Branding skit one", "Branding skit two", "Branding skit three", "Branding skit four", "Branding skit five"]) await pend(M, brandRun.id, mP.brand, t);
+    // …and a full pillar of skit ideas now waits for review in Branding: pending ideas are stock, so Branding's skits need nothing.
+    const brandSkits = Array.from({ length: T }, (_, i) => `Branding skit number ${i + 1}`);
+    const brandRun = await doneRun(M, { formats: Object.fromEntries(brandSkits.map((t) => [ct.topicDedupeHash(t), "SKIT"])) });
+    for (const t of brandSkits) await pend(M, brandRun.id, mP.brand, t);
     await ct.sweepTopicBanks({ max: 0 });
     const qM2 = await queuedOf(M.enrollmentId);
     c.ok("the cooldown is per pillar and format; pending ideas stop new spend", qM2.length === 1 && qM2[0].pillarId === mP.seller && qM2[0].format === "SKIT", JSON.stringify(qM2));

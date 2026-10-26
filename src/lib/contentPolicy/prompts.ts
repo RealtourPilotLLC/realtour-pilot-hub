@@ -226,7 +226,7 @@ export function skitCastBlock(cast: readonly SkitCastMember[] | null | undefined
   const list = (cast ?? []).filter((m) => m.role);
   if (!list.length) return "SKIT CAST: nobody confirmed. The client is alone on camera; off-camera voices only.";
   return [
-    "SKIT CAST (confirmed by the client; the only people besides the client who may appear on camera, one at most per skit, with few, short lines):",
+    "SKIT CAST (confirmed by the client; the only people besides the client who may appear on camera, one at most per skit, with few, short lines, and only in a skit whose concept calls for them: most of this client's skits are the client alone):",
     ...list.map((m) => `- ${castMemberLabel(m)}${m.note ? `: ${m.note}` : ""}`),
   ].join("\n");
 }
@@ -242,6 +242,7 @@ export const SKIT_CONCEPT_RULES = `- The title is the premise: a recognisable fo
 - The description is the skit in one or two sentences: who plays what (the client, or the client and one confirmed cast member), the situation, and the real point it lands, naming the real takeaway the skit delivers: what the viewer learns, or why they trust the agent. The intended message is that takeaway.
 - Each concept lands a real point from its own pillar (that pillar's purpose and focus areas), built around this client: their strategy, their audience and what they said on their calls.
 - Every concept can be filmed by the client alone: they play every role or talk to an off-camera voice. A concept may use one cast member the client confirmed (SKIT CAST in the client's context), never anyone else. Never a stranger, an actor or an invented character.
+- Most concepts are the client alone. Of the concepts you return, at most one in three uses a cast member, on camera or as an off-camera voice (their voice counts as using them); the rest are the client playing every part (a costume, prop or split-screen swap), talking to camera in character, or answering an off-camera voice the videographer reads. A bank where the same co-star is in every skit reads as one joke told over and over.
 - Every concept can be filmed in a normal content session: a place the client already films (their home, office, car or a listing), simple props, no crowd, no stunt, no special set.
 - No concept rests on impersonating a real, named person, or on a voice or accent that plays on race, ethnicity, religion, disability or any other protected characteristic.
 - The value or trust point is delivered inside the joke, never instead of it. The personal brand pillar's concepts are the funniest.`;
@@ -264,7 +265,8 @@ ${SKIT_CONCEPT_RULES}`;
  * marked with its format. Skits are good for attention and personality; too
  * many and the agent looks like they are only playing around (Jordan).
  * Oct 26 2026: the skit concepts are OTHER_FORMAT_PER_PILLAR under every
- * pillar, not a share of the whole bank.
+ * pillar in a whole first bank, not a share of it; the per-pillar refills
+ * then top them up to the full count (videoFormat.otherFormatTarget).
  */
 export function mixTopicRule(skitsPerMonth: number | null | undefined): string {
   const n = skitsPerMonth && skitsPerMonth > 0 ? skitsPerMonth : 2;
@@ -288,7 +290,7 @@ export function formatOnlyLines(ctx: Pick<ClientContext, "videoStyle" | "skitsPe
   const where = pillarNames.length === 1 ? `all under the pillar "${pillarNames[0]}"` : "spread over the client's pillars with the most on the personal brand pillar; a pillar may get none";
   if (only.format === "SKIT") {
     const perMonth = ctx.skitsPerMonth && ctx.skitsPerMonth > 0 ? ctx.skitsPerMonth : 2;
-    const why = style === "SKITS" ? "skits are this client's main format" : style === "MIX" ? `this client films about ${perMonth} skits a month, and every pillar keeps ${OTHER_FORMAT_PER_PILLAR} skit concepts` : `this client films about ${perMonth} skits a month and their bank is short of them`;
+    const why = style === "SKITS" ? "skits are this client's main format" : style === "MIX" ? `this client films about ${perMonth} skits a month, and every pillar keeps a full set of skit concepts to choose from` : `this client films about ${perMonth} skits a month and their bank is short of them`;
     return {
       header: "SKITS ONLY",
       count: `COUNT: exactly ${n} skit concept${n === 1 ? "" : "s"} in total (see SKITS ONLY below). Never more, never padded. If the source context cannot support that many at the quality bar, return fewer and set complete=false.`,

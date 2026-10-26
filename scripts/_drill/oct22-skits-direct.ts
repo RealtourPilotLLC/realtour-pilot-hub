@@ -291,7 +291,7 @@ async function main() {
     c.ok("…ledgered as a plain line", /Skit cast: added Her husband \(Mark\)\./.test((await prisma.programEnrollmentChange.findFirst({ where: { enrollmentId: D.enrollmentId, field: "overrides" }, orderBy: { createdAt: "desc" } }))?.reason ?? ""));
     prompts.length = 0;
     const tCast = await gen.generateScriptForTopic({ topicId: T0, monthId: D.monthId, requestedBy: STAFF_EMAIL, unattended: false });
-    c.ok("the skit prompt now lists the cast member, one at most, few short lines", prompts.length === 1 && /SKIT CAST \(confirmed by the client; the only people besides the client who may appear on camera, one at most per skit, with few, short lines\):\n- Her husband \(Mark\): A voice impressionist\. Happy to act in her skits\./.test(prompts[0].system), (prompts[0]?.system.match(/SKIT CAST[^\n]*\n[^\n]*/) ?? [""])[0]);
+    c.ok("the skit prompt now lists the cast member, one at most, few short lines, only where the concept calls for them (Oct 26: most skits are the client alone)", prompts.length === 1 && /SKIT CAST \(confirmed by the client; the only people besides the client who may appear on camera, one at most per skit, with few, short lines, and only in a skit whose concept calls for them: most of this client's skits are the client alone\):\n- Her husband \(Mark\): A voice impressionist\. Happy to act in her skits\./.test(prompts[0].system), (prompts[0]?.system.match(/SKIT CAST[^\n]*\n[^\n]*/) ?? [""])[0]);
     void tCast;
     prompts.length = 0;
     await gen.generateScriptForTopic({ topicId: T2, monthId: D.monthId, requestedBy: STAFF_EMAIL, unattended: false });
