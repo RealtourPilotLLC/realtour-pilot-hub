@@ -6,6 +6,7 @@ import { sourceMeta, taskTypeLabel } from "@/lib/taskSource";
 import { taskWorkOwner } from "@/lib/taskNavigation";
 import { taskRowAction, type TaskRowAction } from "@/lib/taskRowPresentation";
 import type { QueueTask } from "@/components/queue/TaskCard";
+import { LeadDisregardButton } from "@/components/tasks/ChecklistButtons";
 
 const control = "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50";
 
@@ -55,6 +56,9 @@ export function TaskCompactRow({ task, assignees, editorView, deadlineOffice = f
                 {assignees.map((person) => <option key={person.key} value={person.key}>{person.name}</option>)}
               </select>
             </label>
+          )}
+          {task.taskType === "lead" && !editorView && task.status !== "COMPLETED" && task.status !== "CANCELLED" && (
+            <LeadDisregardButton taskId={task.id} phoneLead={!!task.sourceDetail?.startsWith("phone:")} className={`${control} border border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground`} />
           )}
           {task.canEditDeadline === true && deadlineOffice && !editorView && task.status !== "COMPLETED" && task.status !== "CANCELLED" && <button type="button" disabled={busy} aria-haspopup="dialog" onClick={() => onOpen("deadline")} className={`${control} border border-border bg-surface hover:bg-surface-2`}>Edit due date</button>}
           {action.href ? <Link href={action.href} className={`${control} bg-brand-action text-brand-fg`}>{action.label}</Link> : (

@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { Check, Loader2, X } from "lucide-react";
 import { markCommsHandled, setSmartTaskStatus, dismissTask, setTaskAssignee } from "@/app/actions";
 import { DISMISS_REASONS } from "@/lib/triage";
+import { flashNotice } from "@/components/ui/Toast";
 import { useRouter } from "next/navigation";
 
 // "I handled this outside the hub" — completes the silent client_reply task,
@@ -178,6 +179,61 @@ export function NotNeededButton({ taskId, compact = false }: { taskId: string; c
       </button>
       {busy && <Loader2 className="size-3.5 animate-spin text-muted" />}
       {err && <span className="basis-full text-[11px] font-medium text-danger">{err}</span>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// DISREGARD A LEAD (Kyle, Oct 26 2026: "can we have an option to disregard
+// these? a lot are spam"). The lead row's own Not needed, with a lead's two
+// reasons (lib/triage LEAD_DISMISS_REASONS): Spam also mutes a phone number,
+// so it opens no new lead, Slack ping or Texts row; Not a lead closes this one
+// only. The server's words go to the board's notice (ui/Toast NoticeHost),
+// which outlives the row.
+// ---------------------------------------------------------------------------
+
+export function LeadDisregardButton({ taskId, phoneLead, className }: { taskId: string; phoneLead: boolean; className: string }) {
+  const router = useRouter();
+  const [busy, start] = useTransition();
+  const [open, setOpen] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  if (said) return <p role="status" className="order-last basis-full text-right text-sm font-medium text-muted"><Check aria-hidden="true" className="mr-1 inline size-4" />{said}</p>;
+
+  const pick = (reason: "spam" | "not a lead") =>
+    start(async () => {
+      setErr(null);
+      const r = await dismissTask(taskId, reason).catch(() => ({ ok: false as const, message: "That didn't save. Try again." }));
+      if (!r.ok) { setErr(r.message); return; }
+      setOpen(false);
+      // The board's notice outlives this row; without one, say it here first.
+      if (flashNotice(r.message)) { router.refresh(); return; }
+      setSaid(r.message);
+      setTimeout(() => router.refresh(), 2500);
+    });
+
+  if (!open) {
+    return (
+      <>
+        <button type="button" disabled={busy} onClick={() => setOpen(true)} aria-expanded={false} className={className}>
+          <X aria-hidden="true" className="size-4" /> Disregard
+        </button>
+        {err && <p role="alert" className="basis-full text-sm text-danger">{err}</p>}
+      </>
+    );
+  }
+  const choice = "inline-flex min-h-11 items-center justify-center rounded-lg border border-border bg-surface px-3 py-2 text-sm font-medium hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50";
+  return (
+    <div role="group" aria-label="Why disregard this lead?" className="order-last flex basis-full flex-wrap items-center justify-end gap-2">
+      <p className="basis-full text-right text-sm text-muted">
+        {phoneLead ? "Spam mutes the number: no new lead, ping or Texts row from it." : "Spam: this sender won't open a new lead."} Not a lead closes just this one.
+      </p>
+      <button type="button" disabled={busy} onClick={() => pick("spam")} className={`${choice} text-danger`}>Spam</button>
+      <button type="button" disabled={busy} onClick={() => pick("not a lead")} className={choice}>Not a lead</button>
+      <button type="button" disabled={busy} onClick={() => { setOpen(false); setErr(null); }} className="inline-flex min-h-11 items-center px-2 text-sm text-muted hover:text-foreground">Cancel</button>
+      {busy && <Loader2 aria-hidden="true" className="size-4 animate-spin text-muted" />}
+      {err && <p role="alert" className="basis-full text-right text-sm text-danger">{err}</p>}
     </div>
   );
 }

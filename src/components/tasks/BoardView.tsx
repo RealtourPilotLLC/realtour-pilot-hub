@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { TaskCard, type QueueTask, type SiblingTask } from "@/components/queue/TaskCard";
 import { TaskFocus } from "@/components/queue/TaskFocus";
+import { NoticeHost } from "@/components/ui/Toast";
 import { AddTask } from "@/components/queue/AddTask";
 import { doneTodayCount } from "@/components/tasks/DoneView";
 import { taskToView } from "@/lib/taskView";
@@ -322,6 +323,7 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
   return (
     <div>
       <TaskFocus />
+      <NoticeHost />
       <PageHeader
         eyebrow="Lists"
         title="Tasks"

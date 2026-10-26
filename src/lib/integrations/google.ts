@@ -6,6 +6,7 @@ import { originOrBase } from "@/lib/appUrl";
 import { fetchWithTimeout } from "@/lib/http";
 import { forwardedSenderAddress, isInternalNote, messageIdKey, sameSenderName, streetMatchAllowed } from "@/lib/mailMatch";
 import { isHoldingReply } from "@/lib/holdingReply";
+import { isSpamDismissal } from "@/lib/triage";
 
 // ---------------------------------------------------------------------------
 // Google / Gmail integration (OAuth2 with offline refresh tokens, read-only).
@@ -1587,6 +1588,9 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
           const key = `lead-${email}`;
           const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
           if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") return 0;
+          // Disregarded as spam on the lead row (Kyle, Oct 26 2026): that sender
+          // opens no new lead. The mail is still logged above.
+          if (existing?.status === "CANCELLED" && isSpamDismissal(existing.summary)) return 0;
           // Kyle by the delivery duty (leadDesk.leadAssignee, never a name
           // search); nobody when it does not resolve, as before (Oct 14 2026).
           const { leadAssignee, startLeadEpisode } = await import("@/lib/leadDesk");

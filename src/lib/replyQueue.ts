@@ -252,6 +252,29 @@ export function commsMuteKey(phone: string): string {
   return `comms-mute:${phone}`;
 }
 
+/** Mute one number as spam and cut its conversation (the Texts tab's Spam, and
+ *  a lead disregarded as spam). NEVER one of our own people: Harrison's
+ *  "Photos uploaded" is a status text, not spam, and a muted photographer is a
+ *  silent field. */
+export async function muteNumberAsSpam(phone: string, at: Date = new Date()): Promise<"muted" | "teammate" | "not a phone number"> {
+  const key = phoneKey(phone);
+  if (key.length !== 10) return "not a phone number";
+  const team = await prisma.teamMember.findMany({ select: { phone: true } });
+  if (team.some((t) => phoneKey(t.phone) === key)) return "teammate";
+  const value = ackValue(at, "spam");
+  const ack = threadAckKey("phone", `p:${key}`);
+  const mute = commsMuteKey(key);
+  await prisma.appSetting.upsert({ where: { key: ack }, create: { key: ack, value }, update: { value } });
+  await prisma.appSetting.upsert({ where: { key: mute }, create: { key: mute, value }, update: { value } });
+  return "muted";
+}
+
+/** Is this 10-digit number muted as spam right now? */
+export async function isMutedNumber(phone: string): Promise<boolean> {
+  const row = await prisma.appSetting.findUnique({ where: { key: commsMuteKey(phoneKey(phone)) }, select: { value: true } });
+  return !!parseAckValue(row?.value);
+}
+
 /** An ack/mute value is "<ISO>" or "<ISO>|<reason>" — one column, two facts. */
 export function ackValue(at: Date, reason?: string | null): string {
   return reason ? `${at.toISOString()}|${reason}` : at.toISOString();

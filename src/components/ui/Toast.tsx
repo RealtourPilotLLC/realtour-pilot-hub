@@ -37,3 +37,29 @@ export function useToast(ms = 6000): { toast: ReactNode; show: (kind: "ok" | "er
   );
   return { toast, show };
 }
+
+// ---------------------------------------------------------------------------
+// A NOTICE THAT OUTLIVES ITS ROW (Oct 26 2026). A control whose row leaves the
+// list the moment its action lands (a lead disregarded as spam) can't hold its
+// own toast: the server action's refresh unmounts it first, and the words
+// ("the number is muted, un-mute it on Messages") went with it. A page mounts
+// one NoticeHost; flashNotice() hands it the words and says whether anyone was
+// there to show them, so the control can fall back to its own line.
+// ---------------------------------------------------------------------------
+
+const noticeHosts = new Set<(text: string) => void>();
+
+export function flashNotice(text: string): boolean {
+  noticeHosts.forEach((show) => show(text));
+  return noticeHosts.size > 0;
+}
+
+export function NoticeHost() {
+  const { toast, show } = useToast(8000);
+  useEffect(() => {
+    const host = (text: string) => show("ok", text);
+    noticeHosts.add(host);
+    return () => { noticeHosts.delete(host); };
+  }, [show]);
+  return toast;
+}

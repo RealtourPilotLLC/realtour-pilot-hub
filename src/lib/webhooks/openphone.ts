@@ -5,7 +5,7 @@ import { resolveClientByPhones, resolveSenderName, findActiveProjectByText, find
 import { recordClientCommunication } from "@/lib/comms";
 import { logComm } from "@/lib/commLog";
 import { HUB_REPLY_SOURCE, HUB_SMS_SOURCES, isHubSms } from "@/lib/hubSms";
-import { isAutomatedOutbound, isOpenPhoneGreeting, OPENPHONE_GREETING_SOURCE } from "@/lib/replyQueue";
+import { isAutomatedOutbound, isMutedNumber, isOpenPhoneGreeting, OPENPHONE_GREETING_SOURCE } from "@/lib/replyQueue";
 import { hasVerifiedOpenPhoneDeliveryProof, verifiedOpenPhoneDeliveryReceipt } from "@/lib/openPhoneDeliveryProof";
 
 export const runtime = "nodejs";
@@ -1079,12 +1079,18 @@ async function handleTranscript(data: Record<string, unknown>) {
 // lead gets the same treatment an emailed one always did. Missed call →
 // voicemail → text about the same number all collapse onto one task; a
 // voicemail upgrades an open task's summary with what the caller actually said.
+//
+// Spam stays quiet (Kyle, Oct 26 2026: "a lot are spam"): a number muted as
+// spam (the Texts tab's Spam, or a lead disregarded as spam) opens no lead and
+// pings nobody until someone un-mutes it on Messages. The message itself is
+// still logged, so Messages · All keeps the history.
 export async function upsertPhoneLeadTask(opts: {
   phone: string; // 10-digit key
   kind: "call" | "voicemail" | "text";
   senderName: string | null;
   snippet: string;
 }) {
+  if (await isMutedNumber(opts.phone)) return;
   const pretty = prettyPhone(opts.phone);
   const who = opts.senderName ? `${opts.senderName} (${pretty})` : pretty;
   const key = `lead-${opts.phone}`;

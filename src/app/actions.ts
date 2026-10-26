@@ -21,7 +21,7 @@ import { getSecret } from "@/lib/integrations/connections";
 import { noteRevisionLanesClosed, resolveRevisionForTask, resolveRevisionWholeJob } from "@/lib/comms";
 import { closeObsoleteTasks, CLOSED_BY_HAND, qcGateComplete, reopenedForCategories, qcCategoryOfRow } from "@/lib/tasks";
 import { etEndOfDay } from "@/lib/datetime";
-import { DISMISS_REASONS, DISMISSED_PREFIX, type DismissReason } from "@/lib/triage";
+import { DISMISS_REASONS, DISMISSED_PREFIX, LEAD_DISMISS_REASONS, type DismissReason, type LeadDismissReason } from "@/lib/triage";
 
 export type ApptResult = { ok: boolean; message: string; outcome?: "confirmed" | "refused" | "unknown" };
 
@@ -199,7 +199,7 @@ export async function markCommsHandled(
 
   // --- the thread-scoped cut: the exit every row now has ---------------------
   if (threadKey) {
-    const { threadAckKey, commsMuteKey, ackValue } = await import("@/lib/replyQueue");
+    const { threadAckKey, ackValue } = await import("@/lib/replyQueue");
     const at = new Date();
     const key = threadAckKey(family, threadKey);
     const value = ackValue(at, reason);
@@ -207,16 +207,12 @@ export async function markCommsHandled(
     if (reason === "spam") {
       const phone = threadKey.startsWith("p:") ? threadKey.slice(2) : null;
       if (phone && phone.length === 10) {
-        // NEVER mute our own people. Harrison's "Photos uploaded" is a status
-        // text, not spam, and a muted photographer is a silent field.
-        const { phoneKey } = await import("@/lib/integrations/openphone");
-        const team = await prisma.teamMember.findMany({ select: { phone: true } });
-        if (team.some((t) => phoneKey(t.phone) === phone)) {
+        // NEVER mute our own people (replyQueue.muteNumberAsSpam refuses them).
+        const { muteNumberAsSpam } = await import("@/lib/replyQueue");
+        if ((await muteNumberAsSpam(phone, at)) === "teammate") {
           revalidatePath("/communications");
           return { ok: true, message: "Cleared — but that's one of our own numbers, so it wasn't muted." };
         }
-        const mk = commsMuteKey(phone);
-        await prisma.appSetting.upsert({ where: { key: mk }, create: { key: mk, value }, update: { value } });
       }
     }
     // A client's own thread carries BOTH: the ack above (so the row goes
@@ -473,9 +469,17 @@ export async function listMutedNumbers(): Promise<
 // The reasons, the stamp prefix and its readers live in src/lib/triage.ts —
 // a "use server" module may only export async functions, and the Done tab and
 // the janitor need the same vocabulary.
+//
+// A LEAD's Disregard (Kyle, Oct 26 2026: "can we have an option to disregard
+// these? a lot are spam") is this same dismissal with its own two reasons.
+// "spam" on a phone lead also mutes the number, as the Texts tab's Spam does,
+// so it opens no lead, no Slack ping and no Texts row again until someone
+// un-mutes it (the mute is the one switch, so un-muting brings its leads
+// back); an email lead closed as spam never reopens (google.ts), until someone
+// reopens that row. "not a lead" closes this one only.
 export async function dismissTask(
   taskId: string,
-  reason: DismissReason | string,
+  reason: DismissReason | LeadDismissReason | string,
   duplicateOfId?: string,
 ): Promise<{ ok: boolean; message: string }> {
   try {
@@ -483,7 +487,7 @@ export async function dismissTask(
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "No access." };
   }
-  const base = (DISMISS_REASONS as readonly string[]).includes(reason) ? reason : "not needed";
+  const base = (DISMISS_REASONS as readonly string[]).includes(reason) || (LEAD_DISMISS_REASONS as readonly string[]).includes(reason) ? reason : "not needed";
   // "Duplicate" without the row it duplicates is a dead end — a month later
   // nobody can tell whether the work happened on the other row or nowhere. So
   // the id is required AND checked: a typo must fail loudly here rather than
@@ -499,7 +503,7 @@ export async function dismissTask(
   }
   const t = await prisma.smartTask.findUnique({
     where: { id: taskId },
-    select: { id: true, title: true, status: true, summary: true, projectId: true, taskType: true, assignedKey: true },
+    select: { id: true, title: true, status: true, summary: true, projectId: true, taskType: true, assignedKey: true, dedupeKey: true },
   });
   if (!t) return { ok: false, message: "That task no longer exists." };
   if (t.status === "CANCELLED") return { ok: true, message: "Already dismissed." };
@@ -578,7 +582,24 @@ export async function dismissTask(
   revalidatePath("/queue");
   revalidatePath("/ops");
   revalidatePath("/");
+  if (t.taskType === "lead") return { ok: true, message: await leadDismissedMessage(t.dedupeKey, base) };
   return { ok: true, message: `Dismissed — ${why}.` };
+}
+
+/** What a lead's Disregard did, after muting a spam number (office only, as on the Texts tab). */
+async function leadDismissedMessage(dedupeKey: string | null, reason: string): Promise<string> {
+  if (reason === "not a lead") return "Disregarded: not a lead. If they write again, it comes back.";
+  if (reason !== "spam") return `Disregarded: ${reason}.`;
+  const phone = /^lead-(\d{10})$/.exec(dedupeKey ?? "")?.[1] ?? null;
+  if (!phone) return "Disregarded as spam. That sender won't open a new lead again.";
+  const { requireAdmin } = await import("@/lib/auth/guards");
+  const office = await requireAdmin().then(() => true, () => false);
+  if (!office) return "Disregarded. Only the office can mute a number, so a new message from it will open a lead again.";
+  const { muteNumberAsSpam } = await import("@/lib/replyQueue");
+  const muted = await muteNumberAsSpam(phone);
+  revalidatePath("/communications");
+  if (muted === "teammate") return "Disregarded. That's one of our own numbers, so it wasn't muted.";
+  return "Disregarded as spam. The number is muted: no new lead or Texts row from it until someone un-mutes it on Messages.";
 }
 
 // ---- the edit card and the editor's declared work (§7.1, Sep 25) ----------

@@ -21,6 +21,7 @@ import { TaskSlackPing } from "@/components/queue/TaskSlackPing";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { ModalDialog } from "@/components/ui/ModalDialog";
 import { TaskCompactRow } from "@/components/queue/TaskCompactRow";
+import { LeadDisregardButton } from "@/components/tasks/ChecklistButtons";
 import type { TaskRowAction } from "@/lib/taskRowPresentation";
 import { TaskDeadlineEditor } from "@/components/queue/TaskDeadlineEditor";
 import { finishTaskNoteReceipt, finishTaskReplyDraft } from "@/lib/taskTextReceipt";
@@ -946,6 +947,9 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
                 <MessageSquarePlus className="size-3.5" /> Text
               </a>
             </>
+          )}
+          {!done && !editorView && task.taskType === "lead" && task.status !== "CANCELLED" && (
+            <LeadDisregardButton taskId={task.id} phoneLead={!!leadPhone} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50" />
           )}
           {!done && canSend && (
             <button

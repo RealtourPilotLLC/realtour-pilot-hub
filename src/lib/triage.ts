@@ -25,6 +25,13 @@ export const TRIAGE_TYPES = new Set(["internal_instruction", "todo", "revision",
 export const DISMISS_REASONS = ["already done", "not needed", "duplicate", "spam"] as const;
 export type DismissReason = (typeof DISMISS_REASONS)[number];
 
+/** A lead row's own two (Kyle, Oct 26 2026: "can we have an option to
+ *  disregard these? a lot are spam"). "spam" also stops that sender opening a
+ *  new lead (a phone number is muted, as the Texts tab's Spam does); "not a
+ *  lead" closes this one only, so a new message from them brings it back. */
+export const LEAD_DISMISS_REASONS = ["spam", "not a lead"] as const;
+export type LeadDismissReason = (typeof LEAD_DISMISS_REASONS)[number];
+
 /** How a dismissed row announces itself in its own summary. The Done tab reads
  *  it to group the row, and the reopen guards read it to leave it alone. */
 export const DISMISSED_PREFIX = "Dismissed by ";
@@ -42,6 +49,11 @@ export function dismissedReason(summary: string | null | undefined): string | nu
   const dash = first.indexOf(" — ");
   if (dash < 0) return null;
   return first.slice(dash + 3).replace(/\.\s*$/, "").trim() || null;
+}
+
+/** A row a person closed as spam: an email lead like it never reopens on its own. */
+export function isSpamDismissal(summary: string | null | undefined): boolean {
+  return dismissedReason(summary) === "spam";
 }
 
 /** Who dismissed it ("Dismissed by Kyle Smith — …" → "Kyle Smith"). */
