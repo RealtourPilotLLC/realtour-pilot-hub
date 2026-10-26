@@ -237,8 +237,13 @@ export function skitCastBlock(cast: readonly SkitCastMember[] | null | undefined
  * summary of the skit concept"): the description is the skit itself in one
  * or two sentences (who plays what, the situation, the point it lands), and
  * every concept fits a normal content session and lands its own pillar's point.
+ * Oct 26 2026 eve (Jordan: "10-15 different skit ideas per pillar"): the
+ * first 15-a-pillar refill came back as eleven "she plays a deadpan X"
+ * parodies, so parody formats are capped at one in three and the other kinds
+ * of skit are named.
  */
-export const SKIT_CONCEPT_RULES = `- The title is the premise: a recognisable format or situation (for example "Shark Tank Listing Pitch", "The Postgame Closing Interview", "Nature Documentary: The First-Time Buyer").
+export const SKIT_CONCEPT_RULES = `- The title is the premise: the situation or the bit in a few words (for example "Shark Tank Listing Pitch", "What Buyers Say vs What They Mean", "POV: Your Agent Actually Answers the Phone").
+- Vary the kind of skit, across the concepts you return and against the skit concepts already in the bank. At most one in three is the client playing a character in a parody of a format (a TV show, a courtroom, a documentary, a straight-faced meeting). The rest are other kinds: the client playing both sides in a split-screen (the agent and the buyer, the seller and the neighbour), a buyer's or seller's point of view acted out (POV), what people say vs what they mean, a real moment re-enacted (the showing, the inspection, the offer call, the drive to a listing), an exaggerated before and after, a reaction to something real (a listing photo, a headline, a Zestimate). Two concepts with the same set-up are one concept, whatever the topic.
 - The description is the skit in one or two sentences: who plays what (the client, or the client and one confirmed cast member), the situation, and the real point it lands, naming the real takeaway the skit delivers: what the viewer learns, or why they trust the agent. The intended message is that takeaway.
 - Each concept lands a real point from its own pillar (that pillar's purpose and focus areas), built around this client: their strategy, their audience and what they said on their calls.
 - Every concept can be filmed by the client alone: they play every role or talk to an off-camera voice. A concept may use one cast member the client confirmed (SKIT CAST in the client's context), never anyone else. Never a stranger, an actor or an invented character.
