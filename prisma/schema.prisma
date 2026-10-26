@@ -6324,3 +6324,30 @@ model ProjectCrew {
   @@unique([projectId, memberId])
   @@index([memberId])
 }
+
+// WHAT THE AGENT SAID, PER TOPIC (Oct 26 2026). Jordan's own workflow before
+// the hub: ChatGPT read the strategy call and wrote, per chosen topic, a
+// detailed summary of what the agent said; his Scripting GPT wrote each script
+// from that summary (src/lib/scriptWriter/topicBrief.ts, briefFormat.ts). One
+// row per summary written; the newest per (monthId, topicId) is current. A row
+// with no topicId holds the month's opening, main request and held topics.
+model ContentTopicBrief {
+  id           String    @id @default(cuid())
+  enrollmentId String
+  clientId     String
+  monthId      String // -> ContentMonth
+  topicId      String? // -> ContentTopic; null = the month's header row
+  route        String // CALL | WRITTEN
+  callRecordId String? // -> ProgramCallRecord read (CALL)
+  interviewId  String? // -> ContentInterview read (WRITTEN)
+  briefJson    String // TopicBrief, or the month header {opening, mainRequest, held}
+  editedText   String? // the office's own wording of the summary; the writer reads it instead
+  editedBy     String?
+  editedAt     DateTime?
+  aiRunId      String? // -> ProgramAiRun
+  createdBy    String
+  createdAt    DateTime  @default(now())
+
+  @@index([monthId, topicId])
+  @@index([topicId])
+}

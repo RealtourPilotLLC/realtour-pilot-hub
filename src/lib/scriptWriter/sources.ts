@@ -127,7 +127,7 @@ const FACT_POOL_MAX = 80;
 /** Fact categories that are never for a buyer or seller: they stay with the team. */
 export const TEAM_ONLY_CATEGORIES = new Set(["PRODUCTION_PREFERENCE", "INTERNAL", "PERFORMANCE_REPORTED", "PERFORMANCE_MEASURED", "COMMITMENT"]);
 
-const ANSWER_LABEL: Record<string, string> = { audienceProblem: "The viewer's problem", pointOfView: "Her point of view", talkingPoints: "Her talking points", evidence: "Her experience or evidence", story: "A story or visual", nextAction: "What the viewer should do next" };
+export const ANSWER_LABEL: Record<string, string> = { audienceProblem: "The viewer's problem", pointOfView: "Her point of view", talkingPoints: "Her talking points", evidence: "Her experience or evidence", story: "A story or visual", nextAction: "What the viewer should do next" };
 
 const fmtDate = (d: Date | null | undefined) => (d ? d.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }) : "an earlier date");
 

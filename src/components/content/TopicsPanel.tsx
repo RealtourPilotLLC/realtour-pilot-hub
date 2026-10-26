@@ -19,6 +19,7 @@ import {
   suggestionBulkAction, releaseSuggestionHoldAction, setSuggestionReasonAction,
 } from "@/app/content/actions";
 import { InterviewPanel, type InterviewUi } from "./InterviewPanel";
+import { TopicBriefFold, type TopicBriefUi } from "./TopicBriefFold";
 import { useAiQueueWatch } from "./useAiQueueWatch";
 
 // ---------------------------------------------------------------------------
@@ -59,6 +60,10 @@ import { useAiQueueWatch } from "./useAiQueueWatch";
 // camera | Skits" switch with both counts (FormatSwitch), each pillar opening
 // on the account's main format and keeping its own choice; the stock line
 // counts each pillar per format; a skit's concept reads "The skit: ...".
+//
+// Oct 26 2026 (Jordan: "I want to see a summary of what the agent said about
+// the topic"): each of the month's chosen topics carries "What <first> said"
+// (TopicBriefFold), the summary of the call or the written answers.
 // ---------------------------------------------------------------------------
 
 export type TopicUi = {
@@ -85,7 +90,7 @@ const fmt = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZon
 /** A click whose server answer has not been rendered yet: "pending" while the call is out, then the run it queued. */
 type SentDraft = { runId: string | null };
 
-export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, monthTopics, suggestions, recommended, runs, interviews, histories, pillars, topicsPerPillar, isOwner, archivedCount, declined = [], stock = [], held = [], drafts = {}, queueActive = [], videoStyle = "DIRECT", skitsPerMonth = null }: {
+export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, monthTopics, suggestions, recommended, runs, interviews, histories, pillars, topicsPerPillar, isOwner, archivedCount, declined = [], stock = [], held = [], drafts = {}, queueActive = [], videoStyle = "DIRECT", skitsPerMonth = null, briefs = null, clientFirst = "" }: {
   enrollmentId: string; month: { id: string; label: string; short: string; key?: string | null } | null; capacity: { owed: number; selected: number; overflow: number } | null;
   groups: GroupUi[]; proposed: ProposedUi[]; monthTopics: TopicUi[]; suggestions: SuggestionUi[]; recommended: SuggestionUi[]; runs: RunUi[];
   interviews: Record<string, InterviewUi>; histories: Record<string, EventUi[]>; pillars: { id: string; name: string }[]; topicsPerPillar: number; isOwner: boolean; archivedCount: number;
@@ -99,6 +104,10 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
   /** Oct 22 2026: the account's video style, and a Mix account's skits a month. */
   videoStyle?: VideoStyle;
   skitsPerMonth?: number | null;
+  /** Oct 26 2026: what the agent said, by topic id: every chosen topic (null while it has none). Absent = no fold. */
+  briefs?: Record<string, TopicBriefUi | null> | null;
+  /** The client's first name, for "What <first> said". */
+  clientFirst?: string;
 }) {
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
@@ -188,7 +197,8 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
           <div className="divide-y divide-border">
             {monthTopics.map((t) => (
               <TopicRow key={t.id} t={t} busy={busy} month={month} pillars={pillars} history={histories[t.id] ?? []} interview={interviews[t.id] ?? null} inMonth run={run}
-                draft={{ server: drafts[t.id] ?? null, sent: sent[t.id] ?? null, onDraft: () => draftScript(t), scriptsHref }} />
+                draft={{ server: drafts[t.id] ?? null, sent: sent[t.id] ?? null, onDraft: () => draftScript(t), scriptsHref }}
+                brief={briefs && t.id in briefs ? briefs[t.id] : undefined} clientFirst={clientFirst} />
             ))}
             {monthTopics.length === 0 && <p className="px-5 py-3 text-sm text-muted">Nothing planned yet — pick from the bank below, or confirm the call&rsquo;s proposals.</p>}
           </div>
@@ -377,7 +387,9 @@ function DraftButton({ t, draft }: { t: TopicUi; draft: DraftCtl }) {
   return <button onClick={draft.onDraft} className={`${btn} inline-flex items-center bg-brand-action text-white`}><Sparkles className="mr-1 size-3" />Draft script</button>;
 }
 
-function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, run, draft }: { t: TopicUi; idx?: number; busy: boolean; month: { id: string; short: string } | null; pillars: { id: string; name: string }[]; history: EventUi[]; interview: InterviewUi | null; inMonth?: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void; draft?: DraftCtl }) {
+function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, run, draft, brief, clientFirst = "" }: { t: TopicUi; idx?: number; busy: boolean; month: { id: string; short: string } | null; pillars: { id: string; name: string }[]; history: EventUi[]; interview: InterviewUi | null; inMonth?: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void; draft?: DraftCtl;
+  /** Oct 26 2026: this chosen topic's summary of what the agent said (null = none yet; undefined = not a chosen topic, no fold). */
+  brief?: TopicBriefUi | null; clientFirst?: string }) {
   const [open, setOpen] = useState<"none" | "edit" | "history" | "discuss" | "interview">(interview && inMonth ? "interview" : "none");
   const [form, setForm] = useState({ title: t.title, concept: t.concept ?? "", pillarId: t.pillarId ?? "", audienceNeed: t.audienceNeed ?? "", businessGoal: t.businessGoal ?? "", intendedMessage: t.intendedMessage ?? "" });
   const [disc, setDisc] = useState("");
@@ -414,6 +426,8 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
             <p className="mt-0.5 text-[11px] text-muted-2">{[t.audienceNeed && `need: ${t.audienceNeed}`, t.businessGoal && `goal: ${t.businessGoal}`, t.intendedMessage && `message: ${t.intendedMessage}`].filter(Boolean).join(" · ")}</p>
           )}
           {draft && draftStateOf(t, draft) === "failed" && draft.server?.error && <p className="mt-1 text-[12px] text-danger">Why it failed: {draft.server.error}</p>}
+          {/* Oct 26 2026: "What <first> said", the summary of the call or the written answers (TopicBriefFold). */}
+          {inMonth && month && brief !== undefined && <TopicBriefFold topicId={t.id} monthId={month.id} brief={brief} clientFirst={clientFirst} />}
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-1">
           {!inMonth && month && (!inProduction || parkedScript) && t.monthId !== month.id && (

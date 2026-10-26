@@ -11,6 +11,7 @@ import { useDetailsMenu } from "@/components/ui/useDetailsMenu";
 import { useAiQueueWatch } from "@/components/content/useAiQueueWatch";
 import { ScriptView } from "@/components/script/ScriptView";
 import { WriterNotes, versionHow } from "@/components/content/WriterNotes";
+import { TopicBriefFold, type TopicBriefUi } from "@/components/content/TopicBriefFold";
 import type { WriterCardUi } from "@/lib/scriptWriter/record";
 import { lengthBand, trimInstruction } from "@/lib/scriptWriter/rules";
 // policy.ts is pure data with no imports of its own ("no node:crypto so this
@@ -100,7 +101,9 @@ export type ScriptUi = { id: string; title: string; status: string; historical: 
   /** Oct 22 2026 (audit M5): a bulk plan's script, the client's own bank: the client is never asked to approve it. */
   bulkBank?: boolean;
   /** Oct 23 2026: why "Write it again" is refused for this script (lib/scriptRewriteRule), or null when it may run. */
-  rewrite?: string | null };
+  rewrite?: string | null;
+  /** Oct 26 2026: what the agent said about this script's topic (lib/scriptWriter/topicBrief), on a monthly topic's script. */
+  brief?: TopicBriefUi | null };
 
 /**
  * The script's CURRENT version (Oct 23 2026). An automatic fix round that was
@@ -135,8 +138,10 @@ type RevCtl = { server: QueueItemUi | null; sending: boolean; sendingLabel?: str
 /** Oct 14 2026: "Keep exactly" on a revision: these sections are copied back word for word by code. */
 const LOCKS: [string, string][] = [["hook", "Hook"], ["rehook", "Re-hook"], ["buildup", "Build up"], ["payoff", "Payoff"], ["close", "Close"], ["captionCta", "Caption CTA"]];
 
-export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwner, owed = [], revising = {}, drafting = {}, queueActive = [], questionRequests = [] }: {
+export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwner, owed = [], revising = {}, drafting = {}, queueActive = [], questionRequests = [], clientFirst = "" }: {
   enrollmentId?: string; scripts: ScriptUi[]; queueCount: number; scriptOwner: string; owed?: OwedUi[];
+  /** Oct 26 2026: the client's first name, for "What <first> said" on the card. */
+  clientFirst?: string;
   /** Oct 23 2026: the month's open question requests (Send Question Request). */
   questionRequests?: QuestionRequestUi[];
   /** Oct 12: queued / running / failed AI revisions, by script id (aiQueue.queueStateFor). */
@@ -226,7 +231,7 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
                     <input type="checkbox" className="size-4" checked={picked.has(vid!)} onChange={(e) => setPicked((cur) => { const next = new Set(cur); if (e.target.checked) next.add(vid!); else next.delete(vid!); return next; })} />
                   </label>
                 )}
-                <div className="min-w-0 flex-1"><ScriptItem s={s} busy={busy} run={runCard} rev={revCtl(s)} open onAsk={askQuestions} /></div>
+                <div className="min-w-0 flex-1"><ScriptItem s={s} busy={busy} run={runCard} rev={revCtl(s)} open onAsk={askQuestions} clientFirst={clientFirst} /></div>
               </div>
             );
           })}
@@ -235,7 +240,7 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
       </Section>
       <Section icon={Check} title="Approved and released" count={rest.length} flush>
         <div className="divide-y divide-border">
-          {rest.map((s) => <ScriptItem key={s.id} s={s} busy={busy} run={runCard} rev={revCtl(s)} onAsk={askQuestions} />)}
+          {rest.map((s) => <ScriptItem key={s.id} s={s} busy={busy} run={runCard} rev={revCtl(s)} onAsk={askQuestions} clientFirst={clientFirst} />)}
           {rest.length === 0 && <p className="px-5 py-3 text-sm text-muted">No approved scripts on this month yet.</p>}
         </div>
       </Section>
@@ -248,7 +253,7 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
   );
 }
 
-function ScriptItem({ s, busy, run, open, rev, onAsk }: { s: ScriptUi; busy: boolean; run: Run; open?: boolean; rev?: RevCtl; onAsk?: (scriptId: string) => Promise<{ ok: boolean; message: string }> }) {
+function ScriptItem({ s, busy, run, open, rev, onAsk, clientFirst = "" }: { s: ScriptUi; busy: boolean; run: Run; open?: boolean; rev?: RevCtl; onAsk?: (scriptId: string) => Promise<{ ok: boolean; message: string }>; clientFirst?: string }) {
   const [showVersions, setShowVersions] = useState(false);
   const [viewing, setViewing] = useState<string | null>(null);
   const [mode, setMode] = useState<"read" | "revise" | "edit">("read");
@@ -506,6 +511,8 @@ function ScriptItem({ s, busy, run, open, rev, onAsk }: { s: ScriptUi; busy: boo
             ))}
           </ul>
         )}
+        {/* Oct 26 2026: what the agent said about this topic (TopicBriefFold), read and Edit, above the writer's notes. Staff only. */}
+        {s.brief && !s.historical && <TopicBriefFold monthId={null} brief={s.brief} clientFirst={clientFirst} variant="card" />}
         {/* Oct 23 2026: the one fold at the very bottom, closed, grey. Staff only: never sent to the portal. */}
         {cur && !s.historical && (
           <WriterNotes

@@ -459,8 +459,16 @@ async function ownTopicFormat(topicId: string | null | undefined): Promise<Video
  * its switch is on for this client, else the direct prompt. The context's
  * format is set here, so the prompt, the stored parts and the judge follow it.
  */
-export async function routeScriptDraft(o: { topicId: string | null; enrollmentId: string; ctx: ClientContext }): Promise<{ format: VideoFormat; route: ScriptRoute }> {
+export async function routeScriptDraft(o: { topicId: string | null; enrollmentId: string; ctx: ClientContext; monthId?: string | null }): Promise<{ format: VideoFormat; route: ScriptRoute | "brief" }> {
   const format = formatForWrite({ topicFormat: await ownTopicFormat(o.topicId), style: asVideoStyle(o.ctx.videoStyle) });
+  // Oct 26 2026: Jordan's own two-step workflow (scriptWriter/briefWriter.ts:
+  // the topic's summary of what the agent said, then one script from it), for
+  // a client it is switched on for, in both formats. A month's topic only: the
+  // summary is read from that month's call or answers.
+  if (o.topicId && o.monthId && await (await import("@/lib/scriptWriter/briefWriter")).briefWriterOnFor(o.enrollmentId)) {
+    o.ctx.videoFormat = format;
+    return { format, route: "brief" };
+  }
   const writerOn = format === "DIRECT" ? await (await import("@/lib/scriptWriter/pipeline")).writerOnFor(o.enrollmentId) : false;
   o.ctx.videoFormat = format;
   return { format, route: scriptRoute(format, writerOn) };
@@ -526,7 +534,14 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
   assertNotDiscontinued(`${row.title} ${row.concept ?? ""}`, built.ctx, row.title);
   // Oct 22 2026: the new writer (src/lib/scriptWriter), when its switch is on
   // for this client. A skit stays on this writer (routeScriptDraft).
-  const { format, route } = await routeScriptDraft({ topicId: o.topicId, enrollmentId: row.enrollmentId, ctx: built.ctx });
+  const { format, route } = await routeScriptDraft({ topicId: o.topicId, enrollmentId: row.enrollmentId, ctx: built.ctx, monthId: o.monthId });
+  if (route === "brief" && o.monthId) {
+    const r = await generateWithBriefWriter({
+      topicId: o.topicId, monthId: o.monthId, pillarId: row.pillarId, enrollmentId: row.enrollmentId, clientId: row.clientId, title: row.title, category: topic.pillarRef.pillarName, format, requestedBy: o.requestedBy, unattended: o.unattended,
+      callRecordId: o.callRecordId ?? null, interviewId: null, onlyIfUnscripted: !!o.onlyIfUnscripted, claimedRun: o.claimedRun ?? null, deadline: o.deadline ?? null,
+    });
+    return { scriptId: r.scriptId, versionId: r.versionId, versionNo: r.versionNo, ok: r.ok, findings: r.findings, gaps: r.gaps };
+  }
   if (route === "writer") {
     const r = await generateWithWriter({
       topicId: o.topicId, monthId: o.monthId, pillarId: row.pillarId, enrollmentId: row.enrollmentId, clientId: row.clientId, title: row.title, requestedBy: o.requestedBy, unattended: o.unattended,
@@ -571,6 +586,52 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
   // Oct 14 2026: judged, and fixed when it fails (two rounds at most). The draft is written already; nothing here can lose it.
   await checkDraft(out.scriptId, { requestedBy: o.requestedBy, unattended: o.unattended, deadline: o.checkDeadline ?? null });
   return out;
+}
+
+/**
+ * THE BRIEF WRITER'S DRAFT (Oct 26 2026, scriptWriter/briefWriter.ts): Jordan's
+ * own workflow. The topic's summary of what the agent said (written first if
+ * it is missing or out of date), then ONE call that writes the script from it
+ * to his Scripting GPT's standard. The same claims, fences and writes as the
+ * paths around it (onlyIfUnscripted, the held dedupe key, claimRunWrite, one
+ * script per video). No review or rewrite rounds: the draft goes to Jordan's
+ * review as written, with the code checks (length, dashes) on the card.
+ */
+async function generateWithBriefWriter(o: {
+  topicId: string; monthId: string; pillarId: string | null; enrollmentId: string; clientId: string; title: string; category: string; format: VideoFormat; requestedBy: string; unattended: boolean;
+  callRecordId: string | null; interviewId: string | null; answerIds?: string[] | null; interviewGaps?: Gap[]; onlyIfUnscripted: boolean; claimedRun: ClaimedRun | null; deadline: number | null;
+}): Promise<{ scriptId: string; versionId: string; versionNo: number; ok: boolean; findings: number; gaps: number }> {
+  const bw = await import("@/lib/scriptWriter/briefWriter");
+  const what = `"${o.title}"`;
+  if (o.onlyIfUnscripted) await assertUnscripted(o.topicId, o.monthId, o.interviewId, what);
+  const dedupeKey = o.interviewId ? `script:interview:${o.interviewId}` : `script:${o.topicId}:${o.monthId}`;
+  const skit = o.format === "SKIT";
+  const d = await bw.runBriefDraft({
+    topicId: o.topicId, monthId: o.monthId, enrollmentId: o.enrollmentId, clientId: o.clientId, title: o.title, category: o.category, skit,
+    requestedBy: o.requestedBy, unattended: o.unattended, claimedRun: o.claimedRun, dedupeKey, scope: { topicId: o.topicId, monthId: o.monthId, callRecordId: o.callRecordId, interviewId: o.interviewId }, deadline: o.deadline,
+  });
+  try {
+    const { parts, validation, gaps } = partsFromGenerated(d.json, o.pillarId ?? (await confirmedPillarIdFor(o.enrollmentId, d.json.category, { activeOnly: true })), o.clientId, { skit });
+    if (!parts.title) parts.title = o.title;
+    const existing = o.interviewId
+      ? (await prisma.contentScript.findFirst({ where: { interviewId: o.interviewId }, select: { id: true, currentVersionId: true } })) ?? (await prisma.contentScript.findFirst({ where: { topicId: o.topicId, monthId: o.monthId, historical: false }, select: { id: true, currentVersionId: true } }))
+      : await prisma.contentScript.findFirst({ where: { topicId: o.topicId, monthId: o.monthId, historical: false }, select: { id: true, currentVersionId: true } });
+    if (existing && o.onlyIfUnscripted) throw new AlreadyDraftedError(what);
+    await claimRunWrite(d.runId);
+    const bag = { ok: validation.ok, findings: validation.findings, angle: null, [bw.BRIEF_WRITER_KEY]: { briefId: d.brief.id, briefRoute: d.brief.route, briefEdited: d.brief.edited, runId: d.runId, version: bw.BRIEF_WRITER_VERSION, lengthFit: d.fit }, [VERSION_FORMAT_KEY]: o.format };
+    const r = await createScriptVersion({
+      scriptId: existing?.id ?? null, enrollmentId: o.enrollmentId, monthId: o.monthId, topicId: o.topicId, parts, source: "AI", createdBy: o.requestedBy, status: o.interviewId ? "DRAFT" : "INTERNAL_REVIEW",
+      basedOnVersionId: o.interviewId ? existing?.currentVersionId ?? null : null, interviewId: o.interviewId, answerIds: o.answerIds ?? null, callRecordId: o.callRecordId,
+      strategyVersionId: d.strategyVersionId, policyVersionId: d.policyVersionId, aiRunId: d.runId, validation: bag, gaps: [...(o.interviewGaps ?? []), ...gaps],
+      changeSummary: `Written from the summary of what the agent said ${d.brief.route === "WRITTEN" ? "in the written answers" : "on the call"}${d.brief.edited ? " (as edited in the office)" : ""}`,
+    });
+    await setRunOutputRef(d.runId, `ContentScriptVersion:${r.versionId}`);
+    await prisma.contentTopic.updateMany({ where: { id: o.topicId, status: "SELECTED" }, data: { status: "SCRIPTED" } });
+    await recordTopicEvent(o.topicId, o.enrollmentId, "SCRIPTED", { kind: "AI" }, { monthId: o.monthId, sourceRef: `ContentScriptVersion:${r.versionId}` });
+    return { scriptId: r.scriptId, versionId: r.versionId, versionNo: r.versionNo, ok: validation.ok, findings: validation.findings.length, gaps: (o.interviewGaps?.length ?? 0) + gaps.length };
+  } finally {
+    await releaseRunKey(d.runId);
+  }
 }
 
 /**
@@ -634,7 +695,14 @@ export async function generateScriptFromInterview(interviewId: string, requested
   const built = await buildClientContext(a.enrollmentId, { monthId: a.monthId });
   assertNotDiscontinued(`${a.topic.title} ${a.topic.description ?? ""}`, built.ctx, a.topic.title); // Oct 15 2026
   // Oct 22 2026: the new writer, when its switch is on for this client (it reads the answers and the call alike).
-  const { format, route } = await routeScriptDraft({ topicId: a.topic.id ?? null, enrollmentId: a.enrollmentId, ctx: built.ctx });
+  const { format, route } = await routeScriptDraft({ topicId: a.topic.id ?? null, enrollmentId: a.enrollmentId, ctx: built.ctx, monthId: a.monthId });
+  if (a.topic.id && route === "brief") {
+    const r = await generateWithBriefWriter({
+      topicId: a.topic.id, monthId: a.monthId, pillarId: a.topic.pillarRef.pillarId, enrollmentId: a.enrollmentId, clientId: a.clientId, title: a.topic.title, category: a.topic.pillarRef.pillarName, format, requestedBy, unattended: opts.unattended ?? false,
+      callRecordId: null, interviewId, answerIds: a.answerIds, interviewGaps: a.input.gaps, onlyIfUnscripted: !!opts.onlyIfUnscripted, claimedRun: opts.claimedRun ?? null, deadline: opts.deadline ?? null,
+    });
+    return { scriptId: r.scriptId, versionId: r.versionId, ok: r.ok, gaps: r.gaps };
+  }
   if (a.topic.id && route === "writer") {
     const r = await generateWithWriter({
       topicId: a.topic.id, monthId: a.monthId, pillarId: a.topic.pillarRef.pillarId, enrollmentId: a.enrollmentId, clientId: a.clientId, title: a.topic.title, requestedBy, unattended: opts.unattended ?? false,
@@ -772,7 +840,24 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   let raw: GeneratedScriptJson;
   let runId: string;
   let writerOut: import("@/lib/scriptWriter/prompts").DraftOut | null = null;
-  if (w && writerRec) {
+  // Oct 26 2026: a script the brief writer drafted is revised by it, from the
+  // topic's summary (a person's revision, a client's request, a trim).
+  const bw = await import("@/lib/scriptWriter/briefWriter");
+  const briefRevise = !autoFix && await bw.briefWrittenScript(scriptId);
+  let briefRevisedFrom: string | null = null;
+  let briefFit: import("@/lib/scriptWriter/briefWriter").LengthFit | null = null;
+  if (briefRevise) {
+    const r = await bw.runBriefRevise({
+      scriptId, monthId: s.monthId, topicId: s.topicId, enrollmentId: s.enrollmentId, clientId: s.clientId, title: base.title, category: base.categoryLabel ?? "", skit,
+      current: { hook: base.hook ?? "", points: pointsFromJson(base.pointsJson).map((p) => p.text), close: base.close ?? "", captionCta: base.captionCta ?? null },
+      instruction: instructions, lockedLabels: locks.map((k) => LOCKABLE_SECTION_LABEL[k]), who: source === "CLIENT_REQUEST" ? "client" : (await import("@/lib/scriptWriter/rules")).isLengthTrimInstruction(instructions) ? "trim" : "person",
+      requestedBy, unattended: opts.unattended ?? false, claimedRun: opts.claimedRun ?? null, deadline: opts.deadline ?? null,
+    });
+    runId = r.runId;
+    raw = r.json;
+    briefRevisedFrom = r.briefId;
+    briefFit = r.fit;
+  } else if (w && writerRec) {
     // v2.6: an automatic round is the ONE whole rewrite (the version and the review's note; nothing locked).
     const who = autoFix ? "rewrite" : personTrim ? "trim" : source === "CLIENT_REQUEST" ? "client" : "person";
     const step = await w.writerRevisePrompt(s, writerRec, { versionNo: base.versionNo, body: base.body, parts: w.partsOfVersion(base) }, instructions, { lockedLabels: locks.map((k) => LOCKABLE_SECTION_LABEL[k]), who });
@@ -828,7 +913,9 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   // (v2.6: the one whole rewrite; a person's revision or trim owes none).
   const candidateOf = autoFix?.candidate ? baseId : null;
   const owedJudge = autoFix ? pendingJudge(autoFix.round, { writer: true, candidateOf }) : null;
-  const bag = w && writerRec
+  const bag = briefRevise
+    ? { ok: validation.ok, findings: validation.findings, angle: null, instruction: instructions, [bw.BRIEF_WRITER_KEY]: { briefId: briefRevisedFrom, runId, version: bw.BRIEF_WRITER_VERSION, revision: true, lengthFit: briefFit } }
+    : w && writerRec
     ? {
         ok: validation.ok, findings: validation.findings, angle: null, instruction: instructions,
         closeType: writerOut?.closeType === "callback" ? "callback" : writerOut?.closeType === "cta" ? "cta" : writerRec.brief.closeType,

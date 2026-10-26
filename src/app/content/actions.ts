@@ -2410,3 +2410,87 @@ export async function generateInstagramCaptionAction(videoId: string): Promise<R
     return fail(e);
   }
 }
+
+// ---------------------------------------------------------------------------
+// WHAT THE AGENT SAID, PER TOPIC (Oct 26 2026). Jordan: "I want to see a
+// summary of what the agent said about the topic or what they said for
+// answered questions if they went that route." lib/scriptWriter/topicBrief
+// writes the summaries (one model call reads the month's call once for every
+// chosen topic that needs one); these two let the office ask for them and put
+// one in its own words. The office reads them on the topic and the script
+// card (components/content/TopicBriefFold). Inline, not queued: the content
+// page allows 300 s and the read takes one to two minutes. Guarded like
+// "Draft script" (requireCreativeLead: the owner, the office, the creative
+// manager; an owner previewing as someone else is refused).
+// ---------------------------------------------------------------------------
+const BRIEF_CHOSEN = ["SELECTED", "RECONCILED", "CARRIED"];
+const briefDay = (d: Date) => d.toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "America/New_York" });
+/** These answers are read on screen: no em or en dashes, and the duplicate-click refusal in plain words. */
+const plainResult = (r: Result): Result => ({
+  ...r,
+  message: /already running/i.test(r.message) ? "That summary is already being written. Give it a moment." : r.message.replace(/\s*[—–]\s*/g, ", "),
+});
+
+/**
+ * "Summarize the call" (the month's card, or a topic with none yet): every
+ * chosen topic whose summary is missing or older than its call or answers.
+ * "Summarize again" on one topic: that topic, written fresh (force).
+ */
+export async function buildTopicBriefsAction(monthId: string, topicIds?: string[] | null, force?: boolean): Promise<Result> {
+  try { await requireCreativeLead(); } catch (e) { return plainResult(fail(e)); }
+  try {
+    const me = await actor();
+    const month = await prisma.contentMonth.findUnique({ where: { id: String(monthId ?? "") }, select: { id: true, clientId: true, historical: true } });
+    if (!month) return { ok: false, message: "That month isn't there any more. Reload the page." };
+    if (month.historical) return { ok: false, message: "That month is imported history, so there's no call to summarize." };
+    const chosen = (await prisma.contentTopicSelection.findMany({ where: { monthId: month.id, status: { in: BRIEF_CHOSEN }, removedAt: null }, select: { topicId: true } })).map((s) => s.topicId);
+    if (!chosen.length) return { ok: false, message: "No topics are chosen for this month yet." };
+    const asked = Array.isArray(topicIds) ? [...new Set(topicIds.map((t) => String(t ?? "")).filter(Boolean))] : [];
+    const scope = asked.filter((t) => chosen.includes(t));
+    if (asked.length && !scope.length) return { ok: false, message: "That topic isn't one of this month's picks any more. Reload the page." };
+    const client = await prisma.client.findUnique({ where: { id: month.clientId }, select: { name: true } });
+    const first = client?.name.trim().split(/\s+/)[0] || "the client";
+    const { buildMonthBriefs, currentBriefs } = await import("@/lib/scriptWriter/topicBrief");
+    // Inside the page's 300 s, with room to save what came back.
+    const r = await buildMonthBriefs(month.id, { requestedBy: me.email, unattended: false, topicIds: scope.length ? scope : null, force: !!force, deadline: Date.now() + 270_000 });
+    if (r.written > 0) {
+      revalidatePath("/content");
+      const rows = await prisma.contentTopicBrief.findMany({ where: { monthId: month.id, topicId: { in: r.topicIds }, ...(r.runId ? { aiRunId: r.runId } : {}) }, select: { route: true, callRecordId: true } });
+      const callId = rows.find((x) => x.route !== "WRITTEN" && x.callRecordId)?.callRecordId ?? null;
+      const at = callId ? (await prisma.programCallRecord.findUnique({ where: { id: callId }, select: { scheduledStart: true } }))?.scheduledStart ?? null : null;
+      const theCall = at ? `the ${briefDay(at)} call` : "the strategy call";
+      const fromCall = rows.length === 0 || rows.some((x) => x.route !== "WRITTEN");
+      const fromAnswers = rows.some((x) => x.route === "WRITTEN");
+      const from = fromCall && fromAnswers ? `${theCall} and ${first}'s written answers` : fromAnswers ? `${first}'s written answers` : theCall;
+      return { ok: true, message: `Wrote ${r.written} ${r.written === 1 ? "summary" : "summaries"} from ${from}.` };
+    }
+    // The model answered without the topic(s) it was asked for.
+    if (r.runId) return { ok: false, message: "The summary came back without that topic. Try again." };
+    const have = (await currentBriefs(month.id)).byTopic;
+    const inScope = scope.length ? scope : chosen;
+    if ((force && scope.length > 0) || inScope.some((t) => !have.get(t)?.brief)) {
+      return { ok: false, message: `Nothing to summarize yet: this month has no call transcript, and ${first} hasn't sent written answers.` };
+    }
+    return { ok: true, message: "Nothing new to summarize: every topic's summary is up to date." };
+  } catch (e) { return plainResult(fail(e)); }
+}
+
+/** Edit on "What <first> said": the office's own wording of a summary (empty = back to the AI's). */
+export async function saveTopicBriefEditAction(briefId: string, text: string): Promise<Result> {
+  try { await requireCreativeLead(); } catch (e) { return plainResult(fail(e)); }
+  try {
+    const me = await actor();
+    const row = await prisma.contentTopicBrief.findUnique({ where: { id: String(briefId ?? "") }, select: { id: true, monthId: true, topicId: true, editedText: true } });
+    if (!row) return { ok: false, message: "That summary isn't there any more. Reload the page." };
+    // Only the current summary is edited: a newer one written since the page opened is the one the writer reads.
+    const newest = await prisma.contentTopicBrief.findFirst({ where: { monthId: row.monthId, topicId: row.topicId }, orderBy: { createdAt: "desc" }, select: { id: true } });
+    if (newest && newest.id !== row.id) return { ok: false, message: "A newer summary was written since you opened this one. Reload the page, then edit that one." };
+    // No em or en dashes in the office's wording either, said as a comma (saveBriefEdit drops any left).
+    const words = (typeof text === "string" ? text : "").replace(/[ \t]*[—–][ \t]*/g, ", ");
+    if (!words.trim() && !row.editedText) return { ok: true, message: "It's already the AI's version." };
+    const { saveBriefEdit } = await import("@/lib/scriptWriter/topicBrief");
+    await saveBriefEdit(row.id, words, me.name?.trim() || me.email);
+    revalidatePath("/content");
+    return { ok: true, message: words.trim() ? "Saved your wording." : "Back to the AI's version." };
+  } catch (e) { return plainResult(fail(e)); }
+}

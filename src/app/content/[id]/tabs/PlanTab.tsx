@@ -12,6 +12,7 @@ import { StrategyCallCard, NotesCard } from "@/components/content/Workspace";
 import { ScriptRequestsPanel } from "@/components/content/ScriptRequestsPanel";
 import { ScriptUploadPanel } from "@/components/content/ScriptUploadPanel";
 import { BulkPlanPanel } from "@/components/content/BulkPlanPanel";
+import { CallSummaryCard } from "@/components/content/TopicBriefFold";
 import { BriefReadOnly } from "@/components/brief/BriefReadOnly";
 import { contentHref } from "@/lib/contentNav";
 import { loadTopicsTab, loadScriptsTab, loadStrategyTab, loadFactsTab, loadCallsTab, loadScriptRequests, loadLegacyNotes } from "../programData";
@@ -60,6 +61,7 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
   const v = ctx.view ?? "topics";
   const monthName = monthLabel(month?.monthKey ?? ctx.activeKey);
   const monthShort = monthName.split(" ")[0];
+  const clientFirst = client.name.split(" ")[0] || client.name;
   const sub = <SubNav id={id} tab="plan" current={v} views={PLAN_VIEWS} month={month?.monthKey ?? null} badges={badges} />;
 
   if (v === "bulk") {
@@ -98,9 +100,11 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
         {sub}
         <MonthHeader ctx={ctx} tab="plan" view="topics" title={`Topics — ${monthName}`} />
         <ClientOwnPlan ctx={ctx} />
+        {/* Oct 26 2026: what the client said on the month's call, per chosen topic (TopicBriefFold). Not on a month with no chosen topics. */}
+        {month && d.briefs && d.briefs.chosenIds.length > 0 && <CallSummaryCard monthId={month.id} clientFirst={clientFirst} briefs={d.briefs} />}
         <TopicsPanel enrollmentId={id} month={month ? { id: month.id, label: monthName, short: monthShort, key: month.monthKey } : null} capacity={d.capacity} groups={d.groups} proposed={d.proposed} monthTopics={d.monthTopics}
           suggestions={d.suggestions} recommended={d.recommended} runs={d.runs} interviews={d.interviews} histories={d.histories} pillars={d.pillars} topicsPerPillar={d.topicsPerPillar} isOwner={ownerEyes} archivedCount={d.archivedCount} declined={d.declined} stock={d.stock} held={d.held}
-          drafts={d.drafts} queueActive={d.queueActive} videoStyle={d.videoStyle} skitsPerMonth={d.skitsPerMonth} />
+          drafts={d.drafts} queueActive={d.queueActive} videoStyle={d.videoStyle} skitsPerMonth={d.skitsPerMonth} briefs={d.briefs?.byTopic ?? null} clientFirst={clientFirst} />
       </div>
     );
   }
@@ -123,7 +127,7 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
           <ScriptUploadPanel enrollmentId={id} monthId={uploadMonth.id} monthName={monthShort} clientName={client.name.split(" ")[0] || client.name} batches={uploads.batches} monthHasScripts={uploads.monthHasScripts} />
         )}
         <ScriptRequestsPanel groups={requests} />
-        <ScriptsPanel enrollmentId={id} scripts={d.scripts} queueCount={d.queueCount} scriptOwner={d.scriptOwner} owed={d.owed} revising={d.revising} drafting={d.drafting} queueActive={d.queueActive} questionRequests={d.questionRequests} />
+        <ScriptsPanel enrollmentId={id} scripts={d.scripts} queueCount={d.queueCount} scriptOwner={d.scriptOwner} owed={d.owed} revising={d.revising} drafting={d.drafting} queueActive={d.queueActive} questionRequests={d.questionRequests} clientFirst={clientFirst} />
       </div>
     );
   }

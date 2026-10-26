@@ -23,6 +23,9 @@ import { scriptDecisionsFor } from "@/lib/scriptDecisions";
 import { LEGACY_CLIENT_STATUSES, rewriteRefusal } from "@/lib/scriptRewriteRule";
 import type { ScriptUi, VersionUi } from "@/components/content/ScriptsPanel";
 import type { FactUi } from "@/components/content/FactsPanel";
+import type { MonthBriefsUi, TopicBriefUi } from "@/components/content/TopicBriefFold";
+import type { BriefRow } from "@/lib/scriptWriter/topicBrief";
+import { monthBriefText, topicBriefText } from "@/lib/scriptWriter/briefFormat";
 import type { BatchUi, ReviewUi } from "@/components/content/ImportPanel";
 
 // Server-side loaders for the workspace tabs — one function per tab so the
@@ -95,13 +98,62 @@ async function loadDiscoveryUi(enrollmentId: string, versions: { versionNo: numb
   };
 }
 
+// ---------------------------------------------------------------------------
+// WHAT THE AGENT SAID, PER TOPIC (Oct 26 2026): the month's current summaries
+// (lib/scriptWriter/topicBrief.currentBriefs, newest row per topic, no model
+// call), shaped for the office (components/content/TopicBriefFold). Read in
+// one round of small queries beside the month's chosen topics, then one for
+// the date of the call they were written from ("From the October 20 call").
+// ---------------------------------------------------------------------------
+const BRIEF_CHOSEN = ["SELECTED", "RECONCILED", "CARRIED"];
+const briefDay = (d: Date) => d.toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "America/New_York" });
+
+export async function loadMonthBriefs(monthId: string): Promise<MonthBriefsUi> {
+  const { currentBriefs } = await import("@/lib/scriptWriter/topicBrief");
+  const [cur, sels, links] = await Promise.all([
+    currentBriefs(monthId),
+    prisma.contentTopicSelection.findMany({ where: { monthId, status: { in: BRIEF_CHOSEN }, removedAt: null }, orderBy: [{ rank: "asc" }, { createdAt: "asc" }], select: { topicId: true } }),
+    prisma.contentTopicBrief.findMany({ where: { monthId, callRecordId: { not: null } }, select: { id: true, callRecordId: true } }),
+  ]);
+  const callIds = [...new Set(links.map((l) => l.callRecordId!))];
+  const calls = callIds.length ? await prisma.programCallRecord.findMany({ where: { id: { in: callIds } }, select: { id: true, scheduledStart: true } }) : [];
+  const callOf = new Map(links.map((l) => [l.id, l.callRecordId!]));
+  const dayOf = (briefId: string) => { const at = calls.find((c) => c.id === callOf.get(briefId))?.scheduledStart; return at ? briefDay(at) : null; };
+  const ui = (r: BriefRow): TopicBriefUi | null => (!r.brief && !r.text.trim() ? null : {
+    briefId: r.id, title: r.brief?.title ?? "", text: r.text, route: r.route === "WRITTEN" ? "WRITTEN" : "CALL", edited: r.edited, editedBy: r.editedBy,
+    discussed: r.brief ? r.brief.discussed !== false : true, createdAt: r.createdAt.toISOString(), callDate: r.route === "WRITTEN" ? null : dayOf(r.id),
+  });
+  const chosenIds = [...new Set(sels.map((s) => s.topicId))];
+  const byTopic: Record<string, TopicBriefUi | null> = {};
+  for (const [topicId, r] of cur.byTopic) byTopic[topicId] = ui(r);
+  for (const id of chosenIds) byTopic[id] ??= null;
+  const h = cur.header?.header ?? null;
+  const header = cur.header && h ? { opening: h.opening, mainRequest: h.mainRequest ?? null, held: (h.held ?? []).map((x) => ({ title: String(x.title ?? ""), why: String(x.why ?? "") })), callDate: dayOf(cur.header.id) } : null;
+  // "Copy all": the month in Jordan's layout (monthBriefText), each topic in
+  // its chosen order and in the office's wording where it was edited.
+  const numbered = (r: BriefRow, n: number) => {
+    if (!r.edited && r.brief) return topicBriefText(r.brief, n);
+    const title = r.brief?.title?.trim() ?? "";
+    return title && r.text.split("\n")[0].trim() !== title ? `${n}. ${title}\n\n${r.text.trim()}` : `${n}. ${r.text.trim()}`;
+  };
+  const rows = chosenIds.map((id) => cur.byTopic.get(id)).filter((r): r is BriefRow => !!r && !!ui(r));
+  const parts = [
+    h ? monthBriefText({ opening: h.opening, mainRequest: h.mainRequest ?? null, topics: [], held: [] }) : "",
+    ...rows.map((r, i) => numbered(r, i + 1)),
+    h?.held?.length ? monthBriefText({ opening: "", mainRequest: null, topics: [], held: h.held.map((x) => ({ title: String(x.title ?? ""), why: String(x.why ?? ""), ideas: Array.isArray(x.ideas) ? x.ideas.map(String) : [] })) }) : "",
+  ].map((x) => x.trim()).filter(Boolean);
+  return { monthId, chosenIds, header, byTopic, copyText: parts.length ? parts.join("\n\n") : null };
+}
+
 export async function loadTopicsTab(enrollmentId: string, month: { id: string; monthKey: string } | null) {
-  const [bank, suggestions, runs, pillars, policy, capacity, stock, queue] = await Promise.all([
+  const [bank, suggestions, runs, pillars, policy, capacity, stock, queue, briefs] = await Promise.all([
     topicBankByPillar(enrollmentId), pendingSuggestions(enrollmentId), refreshRuns(enrollmentId, 5), listPillars(enrollmentId), activePolicyVersion(), month ? monthCapacity(month.id) : Promise.resolve(null),
     // CP-07: usable stock per pillar against the target, pending shown apart.
     bankStock(enrollmentId).catch(() => []),
     // Oct 12: the month's queued / drafting / failed script drafts (aiQueue.ts).
     queueStateFor(enrollmentId, { monthId: month?.id ?? null }).catch(() => ({ topics: {}, scripts: {}, strategy: null, active: [] as string[] })),
+    // Oct 26 2026: what the agent said, per chosen topic (no model call).
+    month ? loadMonthBriefs(month.id).catch(() => null) : Promise.resolve(null),
   ]);
   const scriptTopics = new Map((await prisma.contentScript.findMany({ where: { enrollmentId, historical: false, topicId: { not: null }, ...(month ? { monthId: month.id } : {}) }, select: { id: true, topicId: true } })).map((s) => [s.topicId!, s.id]));
   // CP-07: where a month's topic was carried from, and the internal alignment
@@ -174,15 +226,17 @@ export async function loadTopicsTab(enrollmentId: string, month: { id: string; m
       };
     }
   }
-  return { groups, proposed, monthTopics, suggestions: bankSugg, recommended, held, runs: runRows, interviews, histories, pillars: pillars.map((p) => ({ id: p.id, name: p.name })), topicsPerPillar: policy.topicsPerPillar, capacity, archivedCount: bank.archived, declined, stock, drafts: queue.topics, queueActive: queue.active, videoStyle, skitsPerMonth };
+  return { groups, proposed, monthTopics, suggestions: bankSugg, recommended, held, runs: runRows, interviews, histories, pillars: pillars.map((p) => ({ id: p.id, name: p.name })), topicsPerPillar: policy.topicsPerPillar, capacity, archivedCount: bank.archived, declined, stock, drafts: queue.topics, queueActive: queue.active, videoStyle, skitsPerMonth, briefs };
 }
 
 export async function loadScriptsTab(enrollmentId: string, month: { id: string } | null) {
-  const [scripts, owners, pillars, strategyVs, policies] = await Promise.all([
+  const [scripts, owners, pillars, strategyVs, policies, briefs] = await Promise.all([
     // Oct 23 2026: a draft withdrawn for a question request is not a script of the month (its card is the request's).
     prisma.contentScript.findMany({ where: { enrollmentId, status: { not: "WITHDRAWN" }, ...(month ? { monthId: month.id } : {}) }, orderBy: { createdAt: "asc" } }),
     ownersFor(enrollmentId, month?.id), listPillars(enrollmentId, { includeRetired: true }),
     prisma.contentStrategyVersion.findMany({ where: { enrollmentId }, select: { id: true, versionNo: true } }), prisma.programGenerationPolicyVersion.findMany({ select: { id: true, versionNo: true } }),
+    // Oct 26 2026: what the agent said about each script's topic, for the card's fold above the Writer's notes.
+    month ? loadMonthBriefs(month.id).catch(() => null) : Promise.resolve(null),
   ]);
   const versions = scripts.length ? await prisma.contentScriptVersion.findMany({ where: { scriptId: { in: scripts.map((s) => s.id) } }, orderBy: { versionNo: "desc" } }) : [];
   // Oct 22 2026: each script's topic format (its own, else the account's default), beside the format each version was written in.
@@ -231,6 +285,8 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
       filmed: verdicts.get(s.id)?.filmed ? { atISO: verdicts.get(s.id)!.filmed!.atISO, signal: verdicts.get(s.id)!.filmed!.signal } : null,
       topicFormat: s.topicId ? resolvedTopicFormat(topicFormats.get(s.topicId) ?? null, accountStyle) : null,
       bulkBank: !!s.monthId && bulkMonths.has(s.monthId),
+      // Oct 26 2026: the topic's summary of what the agent said (TopicBriefFold), on a monthly topic's script.
+      brief: briefs && s.topicId && s.monthId === briefs.monthId && !s.historical ? briefs.byTopic[s.topicId] ?? null : null,
       // Oct 23 2026: "Write it again" and why it is greyed (lib/scriptRewriteRule; the action checks again, the ledger and siblings too).
       rewrite: rewriteRefusal({
         historical: s.historical || s.releaseState === "historical",
