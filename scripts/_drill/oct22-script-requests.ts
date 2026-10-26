@@ -340,7 +340,8 @@ async function main() {
     const code = (src: string) => src.replace(/\{\/\*[\s\S]*?\*\/\}/g, "").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     const strings = (raw: string) => { const src = code(raw); return [...src.matchAll(/>([^<>{}]*[A-Za-z][^<>{}]*)</g), ...src.matchAll(/"([^"\n]{12,})"/g), ...src.matchAll(/`([^`\n]{12,})`/g)].map((m) => m[1]); };
     c.ok("the client's script card and Scripts view print no em dash", !strings(card).some((s) => EM.test(s)) && !strings(planTab.slice(planTab.indexOf("function ScriptsView"))).some((s) => EM.test(s)));
-    c.ok("…the card has the approved copy: Change this part, Ask for a change in your own words, About, Send to Jordan, the part note", /Change this part/.test(card) && /Ask for a change in your own words/.test(card) && /Anything we should know\?/.test(card) && /Send to \{READER\}/.test(card) && /const READER = "Jordan"/.test(card) && /\+ Change another part too/.test(card) && /Send my change/.test(card));
+    // Oct 26 2026 (Jordan: "I don't like the 'Change this part' Options ... Just give them an edit button"): the part change left the card; its action stays for any old page.
+    c.ok("…the card has the copy: Edit, Ask for a change in your own words, About, Send to Jordan; no Change this part", !/Change this part|Change a part|Send my change/.test(card) && /Ask for a change in your own words/.test(card) && /Send to \{READER\}/.test(card) && /const READER = "Jordan"/.test(card) && /\/> Edit<\/button>/.test(card));
     const reqLib = read("src/lib/scriptRequests.ts");
     const clientMsgs = [...reqLib.matchAll(/message: "([^"]+)"/g)].map((m) => m[1]);
     c.ok("…and no message the portal returns carries one", clientMsgs.length > 10 && !clientMsgs.some((m) => EM.test(m)));

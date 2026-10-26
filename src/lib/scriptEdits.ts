@@ -26,6 +26,16 @@ import type { TalkingPointRole } from "@/lib/contentPolicy";
 // The office hears about every edit on the bell. Shape rules still hold (a
 // hook, three talking points, a close, no greeting): an edit that breaks one
 // is refused in plain words, with the text left in the box.
+//
+// OCT 26 2026 (Jordan: "Just give them an edit button and the ability to undo
+// their edit or view the previous version"). The account owner may edit a
+// script BEFORE approving it too: the edit becomes the shared version and
+// still waits on their Approve (no sign-off is recorded for them). Every
+// client edit is marked in its version's validation bag (`clientEdit`: the
+// version it started from), and `undoClientEdit` puts the words before it back
+// as one more version on top (marked `undo`), only while their edit is the
+// version on their page. The portal reads the mark (clientEditInfo) to offer
+// "Undo my edit" and "View previous version".
 // ---------------------------------------------------------------------------
 
 export type EditedWords = { hook: string; points: string[]; close: string; captionCta?: string | null };
@@ -35,6 +45,22 @@ export type EditBy =
   | { kind: "CREW"; email: string; appUserId: string | null; name: string; projectId: string };
 
 export type EditOutcome = { ok: true; versionId: string; versionNo: number; message: string; unchanged?: boolean } | { ok: false; message: string; stale?: boolean };
+
+/** The mark a client's own edit (or its undo) leaves in the version's validation bag. */
+export type ClientEditMark = { from: string; fromNo: number; by: string; undo?: boolean };
+export const CLIENT_EDIT_KEY = "clientEdit";
+const LEGACY_CLIENT_EDIT = /^Edited by the client \(/;
+
+/** The client-edit mark of a version, from its bag (or, for an edit saved before Oct 26 2026, its change note). */
+export function clientEditMarkOf(v: { validationJson: string | null; changeSummary: string | null; basedOnVersionId: string | null }): ClientEditMark | null {
+  try {
+    const bag = v.validationJson ? JSON.parse(v.validationJson) as Record<string, unknown> : null;
+    const m = bag?.[CLIENT_EDIT_KEY] as ClientEditMark | undefined;
+    if (m && typeof m.from === "string") return m;
+  } catch { /* an unreadable bag is no mark */ }
+  if (v.basedOnVersionId && LEGACY_CLIENT_EDIT.test(v.changeSummary ?? "")) return { from: v.basedOnVersionId, fromNo: Number(/after approving v(\d+)/.exec(v.changeSummary ?? "")?.[1] ?? 0), by: "" };
+  return null;
+}
 
 const ID_RE = /^[a-z0-9]{10,40}$/i;
 const PART_CAP = 2000;
@@ -62,7 +88,7 @@ export async function versionOnShootScreen(s: { approvedVersionId: string | null
   return s.sharedVersionId;
 }
 
-export async function adoptEditedScript(scriptId: string, baseVersionId: string, words: EditedWords, by: EditBy): Promise<EditOutcome> {
+export async function adoptEditedScript(scriptId: string, baseVersionId: string, words: EditedWords, by: EditBy, opts: { undoOf?: { versionNo: number } } = {}): Promise<EditOutcome> {
   if (!ID_RE.test(scriptId) || !ID_RE.test(baseVersionId)) return { ok: false, message: "That script isn't available." };
   const s = await prisma.contentScript.findUnique({
     where: { id: scriptId },
@@ -72,6 +98,8 @@ export async function adoptEditedScript(scriptId: string, baseVersionId: string,
 
   // WHO MAY EDIT WHICH VERSION.
   const released = s.releaseState === "released" && !!s.sharedVersionId;
+  // Oct 26 2026: the owner may edit before approving; their approval stays theirs to give.
+  let clientApproved = false;
   if (by.kind === "CLIENT") {
     const v = by.viewer;
     if (s.enrollmentId !== v.enrollment.id || s.clientId !== v.enrollment.clientId || !released) return { ok: false, message: "That script isn't on your page." };
@@ -79,7 +107,7 @@ export async function adoptEditedScript(scriptId: string, baseVersionId: string,
     if (s.sharedVersionId !== baseVersionId) return { ok: false, stale: true, message: "We've published a newer version of this script since this page loaded. Refresh to read it, then make your edit." };
     const { scriptDecisionsFor } = await import("@/lib/scriptDecisions");
     const d = (await scriptDecisionsFor(s.enrollmentId, [s.id])).get(s.id);
-    if (d?.decision !== "APPROVED") return { ok: false, message: "Approve the script first. Once it's approved, you can change the wording yourself." };
+    clientApproved = d?.decision === "APPROVED";
   } else {
     const shown = await versionOnShootScreen(s);
     if (!shown) return { ok: false, message: "This script is still with the office, so it can't be edited here yet." };
@@ -120,20 +148,26 @@ export async function adoptEditedScript(scriptId: string, baseVersionId: string,
 
   const who = by.kind === "CLIENT" ? (await import("@/lib/portalAccess")).actorLabel(by.viewer) : `${by.name} (on site)`;
   const actor = by.kind === "CLIENT" ? { email: who, appUserId: null } : { email: by.email, appUserId: by.appUserId };
-  const summary = by.kind === "CLIENT" ? `Edited by the client (${who}) after approving v${base.versionNo}` : `Edited on site at the shoot by ${by.name} (from v${base.versionNo})`;
+  const summary = by.kind === "CREW"
+    ? `Edited on site at the shoot by ${by.name} (from v${base.versionNo})`
+    : opts.undoOf
+      ? `The client (${who}) undid their edit: back to the words of v${opts.undoOf.versionNo}`
+      : clientApproved ? `Edited by the client (${who}) after approving v${base.versionNo}` : `Edited by the client (${who}) before approving, from v${base.versionNo}`;
+  const mark: ClientEditMark | null = by.kind === "CLIENT" ? { from: base.id, fromNo: base.versionNo, by: who, ...(opts.undoOf ? { undo: true } : {}) } : null;
   const created = await createScriptVersion({
     scriptId: s.id, enrollmentId: s.enrollmentId, monthId: s.monthId, topicId: s.topicId, parts,
     source: by.kind === "CLIENT" ? "CLIENT_REQUEST" : "MANUAL", basedOnVersionId: base.id, createdBy: actor.email,
-    changeSummary: summary, status: "INTERNAL_REVIEW", validation: { ok: check.ok, findings: check.findings }, gaps: check.gaps,
+    changeSummary: summary, status: "INTERNAL_REVIEW", validation: { ok: check.ok, findings: check.findings, ...(mark ? { [CLIENT_EDIT_KEY]: mark } : {}) } as { ok: boolean; findings: typeof check.findings }, gaps: check.gaps,
   });
   // Approved with the note (a pillar-mapping finding is the office's to sort,
   // never a reason to refuse the agent's own words), released when it was live.
   await approveScriptVersion(created.versionId, actor, summary);
   if (released) await releaseScriptVersion(s.id, actor, { note: summary, quiet: by.kind === "CLIENT" ? "the client's own edit, nothing to announce." : "edited on site with the client, nothing to announce." });
 
-  // THE AGENT'S SIGN-OFF ON THE NEW WORDS.
+  // THE AGENT'S SIGN-OFF ON THE NEW WORDS (only when they had approved: an
+  // edit before approving still waits on their Approve).
   let signOff = false;
-  if (released && by.kind === "CLIENT") {
+  if (released && by.kind === "CLIENT" && clientApproved) {
     const { clientApproveScript } = await import("@/lib/scriptDecisions");
     const r = await clientApproveScript(by.viewer, s.id, created.versionId).catch(() => null);
     signOff = !!r?.ok;
@@ -159,8 +193,10 @@ export async function adoptEditedScript(scriptId: string, baseVersionId: string,
     const clientName = c?.name ?? "a client";
     await notifyInApp({
       kind: "script_edited",
-      title: by.kind === "CLIENT" ? `Script edited by ${clientName}` : `Script edited on site: ${clientName}`,
-      body: `${who} changed the wording of "${base.title}" (v${base.versionNo} → v${created.versionNo}).${draftNo ? ` A newer office draft (v${draftNo}) was set aside under it.` : ""}`,
+      title: by.kind === "CREW" ? `Script edited on site: ${clientName}` : opts.undoOf ? `Script edit undone by ${clientName}` : `Script edited by ${clientName}`,
+      body: opts.undoOf
+        ? `${who} undid their edit of "${base.title}": the words of v${opts.undoOf.versionNo} are back (v${base.versionNo} → v${created.versionNo}).${draftNo ? ` A newer office draft (v${draftNo}) was set aside under it.` : ""}`
+        : `${who} changed the wording of "${base.title}" (v${base.versionNo} → v${created.versionNo})${by.kind === "CLIENT" && !clientApproved ? " before approving it" : ""}.${draftNo ? ` A newer office draft (v${draftNo}) was set aside under it.` : ""}`,
       href: by.kind === "CREW" ? `/shoot/${by.projectId}` : `/content/${s.enrollmentId}?tab=plan&view=scripts`,
       targets: [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }],
       dedupeKey: `script-edited-${created.versionId}`,
@@ -172,7 +208,60 @@ export async function adoptEditedScript(scriptId: string, baseVersionId: string,
     versionId: created.versionId,
     versionNo: created.versionNo,
     message: by.kind === "CLIENT"
-      ? "Saved. This is the version we'll film, and the PDF has your new wording."
+      ? opts.undoOf
+        ? "Done. The script is back to the wording before your edit."
+        : clientApproved ? "Saved. This is the version we'll film, and the PDF has your new wording." : "Saved. Your wording is the script now. Approve it when you're happy with it."
       : signOff ? "Saved. The agent's page and the PDF have the new wording." : released ? "Saved. The agent's page and the PDF have the new wording; the agent hasn't approved this script yet." : "Saved. The PDF has the new wording.",
   };
+}
+
+/**
+ * "UNDO MY EDIT" (Oct 26 2026). The version on the client's page is their own
+ * edit: the words it started from go back on as one more version (nothing is
+ * deleted; the office's trail keeps both), approved and released the same way,
+ * and their sign-off follows the edit's (approved before, approved after).
+ * Refused once anything newer has been shared, or when the page is stale.
+ */
+export async function undoClientEdit(viewer: PortalViewer, scriptId: string, readVersionId: string): Promise<EditOutcome> {
+  if (!ID_RE.test(scriptId) || !ID_RE.test(readVersionId)) return { ok: false, message: "That script isn't available." };
+  const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { enrollmentId: true, sharedVersionId: true } });
+  if (!s || s.enrollmentId !== viewer.enrollment.id) return { ok: false, message: "That script isn't on your page." };
+  if (s.sharedVersionId !== readVersionId) return { ok: false, stale: true, message: "We've shared a newer version of this script since your edit, so your edit can't be undone now. Refresh to read the latest one, and edit it again if you like." };
+  const edit = await prisma.contentScriptVersion.findUnique({ where: { id: readVersionId }, select: { scriptId: true, validationJson: true, changeSummary: true, basedOnVersionId: true } });
+  const mark = edit && edit.scriptId === scriptId ? clientEditMarkOf(edit) : null;
+  if (!mark || mark.undo) return { ok: false, message: "There's no edit of yours to undo on this script." };
+  const before = await prisma.contentScriptVersion.findUnique({ where: { id: mark.from } });
+  if (!before || before.scriptId !== scriptId) return { ok: false, message: "The earlier wording isn't available, so this can't be undone here. Send us a message and we'll put it back." };
+  const { partsFromVersionRow } = await import("@/lib/contentScripts");
+  const was = partsFromVersionRow(before);
+  return adoptEditedScript(scriptId, readVersionId, { hook: was.hook, points: was.points.map((p) => p.text), close: was.close, captionCta: was.captionCta ?? null }, { kind: "CLIENT", viewer }, { undoOf: { versionNo: before.versionNo } });
+}
+
+export type ClientEditInfo = {
+  /** This version is their undo (it put the earlier words back). */
+  undo: boolean;
+  /** The version before it, read-only ("View previous version"). */
+  previous: { versionNo: number; hook: string; points: { role: "re-hook" | "build-up" | "payoff" | null; text: string }[]; close: string; captionCta: string | null };
+  /** "Undo my edit" is offered: their edit is the version on their page. */
+  undoable: boolean;
+};
+
+/** For the portal: each shown version that is the client's own edit (or its undo), with the words before it. */
+export async function clientEditInfo(rows: { id: string; scriptId: string; validationJson: string | null; changeSummary: string | null; basedOnVersionId: string | null; shared: boolean }[]): Promise<Map<string, ClientEditInfo>> {
+  const out = new Map<string, ClientEditInfo>();
+  const marked = rows.map((r) => ({ r, m: clientEditMarkOf(r) })).filter((x): x is { r: (typeof rows)[number]; m: ClientEditMark } => !!x.m);
+  if (!marked.length) return out;
+  const prev = await prisma.contentScriptVersion.findMany({ where: { id: { in: marked.map((x) => x.m.from) } } });
+  const { partsFromVersionRow } = await import("@/lib/contentScripts");
+  for (const { r, m } of marked) {
+    const p = prev.find((x) => x.id === m.from && x.scriptId === r.scriptId);
+    if (!p) continue;
+    const parts = partsFromVersionRow(p);
+    out.set(r.id, {
+      undo: !!m.undo,
+      previous: { versionNo: p.versionNo, hook: parts.hook, points: parts.points.map((x) => ({ role: (x.role as ClientEditInfo["previous"]["points"][number]["role"]) ?? null, text: x.text })), close: parts.close, captionCta: parts.captionCta ?? null },
+      undoable: !m.undo && r.shared,
+    });
+  }
+  return out;
 }

@@ -40,7 +40,8 @@ export function ScriptWordsEditor({ parts, onSave, onCancel, onSaved, intro, sav
     });
   const box = "mt-1 block w-full rounded-lg border border-border bg-surface px-3 py-2 text-base leading-relaxed outline-none focus:border-brand sm:text-sm";
   // Sized for a phone (about 30 characters a line), so a talking point reads whole without scrolling the box.
-  const rows = (t: string) => Math.min(10, Math.max(3, Math.ceil(t.length / 30) + 1));
+  // Oct 26 2026: a skit's lines each start a new line in the box, so each line is counted on its own.
+  const rows = (t: string) => Math.min(14, Math.max(3, t.split("\n").reduce((n, line) => n + Math.max(1, Math.ceil(line.length / 30)), 0) + 1));
   const label = "block text-[11px] font-bold uppercase tracking-wider text-brand";
   return (
     <div className="mt-2 space-y-3 rounded-xl border border-border bg-surface-2/40 p-3">

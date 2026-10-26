@@ -2,13 +2,14 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCheck, Clapperboard, Download, Loader2, MessageSquare, PencilLine } from "lucide-react";
+import { CheckCheck, Clapperboard, Download, Loader2, MessageSquare, PencilLine, Undo2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { portalApproveScript, portalEditApprovedScript, portalRequestScriptChanges, portalScriptPdfLink, portalSendPartChanges } from "@/app/portal/actions";
+import { portalApproveScript, portalEditApprovedScript, portalRequestScriptChanges, portalScriptPdfLink, portalSuggestScriptEdit, portalUndoScriptEdit } from "@/app/portal/actions";
 import { ScriptWordsEditor, type EditableParts } from "@/components/script/ScriptWordsEditor";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import type { PortalTopic } from "@/lib/portal";
 import type { PortalScriptUpdate } from "@/lib/scriptRequests";
+import type { ClientEditInfo } from "@/lib/scriptEdits";
 import { CTA_WORDS } from "@/lib/portalWords";
 import { ScriptThread } from "@/components/portal/ScriptThread";
 import { DRAFT_COPY, scriptChangeDraftKey, useDraft } from "@/components/portal/portalDraft";
@@ -38,16 +39,20 @@ import { DRAFT_COPY, scriptChangeDraftKey, useDraft } from "@/components/portal/
 // request never got an answer (the network), and only while the version on
 // screen is still the one it would send.
 //
-// TWO WAYS TO ASK FOR A CHANGE (Oct 22 2026, the design Jordan approved,
-// mock-script-requests Main / Portal-Part / Portal-Message / Portal-Updated):
-//   · "Change this part": one or more parts (hook, a talking point, the close)
-//     in their own words beside ours, each with an optional note, sent as one
-//     request (decision 6);
+// TWO WAYS TO CHANGE IT (Oct 26 2026, Jordan: "I don't like the 'Change this
+// part' Options - it messes up the formatting of the skit scripts. Just give
+// them an edit button and the ability to undo their edit or view the previous
+// version."):
+//   · "Edit": the whole script in one editor, each part in its own box with
+//     its line breaks kept (a skit's speaker lines stay on their own lines).
+//     The account owner's edit is saved as the script (before approving too;
+//     it then still waits on their Approve); another seat's goes to Jordan as
+//     a suggestion. Their own edit on the page offers "Undo my edit" and
+//     "View previous version" (lib/scriptEdits).
 //   · "Ask for a change in your own words": a message, about the whole script,
 //     the title, the hook or the close (a pasted rewrite is welcome).
-// Neither changes the script: Jordan reads it and sends back an updated
-// version, which comes back here with the parts that changed marked and his
-// message on top (`update`).
+// A version that answered their request comes back with the parts that
+// changed marked and Jordan's message on top (`update`).
 // ---------------------------------------------------------------------------
 
 export type ScriptVerdict = NonNullable<PortalTopic["script"]>;
@@ -70,16 +75,16 @@ const labelOf = (p: EditableParts, k: PartKey) => {
   const role = p.points[i]?.role;
   return `Talking point ${i + 1}${role ? ` · ${ROLE[role]}` : ""}`;
 };
-const shortName = (k: PartKey) => (k === "hook" ? "hook" : k === "close" ? "close" : `talking point ${Number(k.slice(5))}`);
-const nameList = (xs: string[]) => (xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
 
-export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: parentBusy, large = false, canApprove = true, inlineParts = false, update = null, canReply = true }: {
+export function ScriptApprovalCard({ script, parts = null, edit = null, onResult, run, busy: parentBusy, large = false, canApprove = true, inlineParts = false, update = null, canReply = true }: {
   script: ScriptVerdict;
   /** Oct 20 2026 (audit E1): approving, and editing an approved script, are the
    *  account owner's. Everyone else may suggest wording and ask for changes. */
   canApprove?: boolean;
-  /** Oct 14 2026: the words of the version on the page, so the client can edit them once they approve. */
+  /** Oct 14 2026: the words of the version on the page, so the client can edit them (Oct 26 2026: before approving too). */
   parts?: EditableParts | null;
+  /** Oct 26 2026: the version on the page is their own edit (or their undo): the words before it, and whether it can be undone. */
+  edit?: ClientEditInfo | null;
   /** The parent's status line (TopicBank v1). Absent → the result renders here. */
   onResult?: (r: R) => void;
   /** The parent's transition, so every button on the bank disables together. */
@@ -87,7 +92,7 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
   busy?: boolean;
   /** 44px touch targets (v2). */
   large?: boolean;
-  /** Oct 22 2026: the card shows the parts itself, each with "Change this part" (the Scripts view). */
+  /** Oct 22 2026: the card shows the parts itself (the Scripts view). */
   inlineParts?: boolean;
   /** Oct 22 2026: this version answered their request: the parts that changed are marked. */
   update?: PortalScriptUpdate | null;
@@ -135,7 +140,7 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
     });
   // Audit E8: a phone needs a real target even on the compact card.
   const btn = large ? "min-h-11 rounded-xl px-4 text-sm" : "min-h-9 px-2.5 text-xs";
-  // AFTER THEY APPROVE (Oct 14 2026, Jordan): the PDF and their own edits.
+  // The PDF (Oct 14 2026, once approved) and their own edits (Oct 26 2026: any time before filming).
   const [editing, setEditing] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
   const downloadPdf = async () => {
@@ -146,34 +151,21 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
     if (r.ok && r.url) window.location.assign(r.url);
     else setOwn({ ok: false, text: r.message });
   };
-  const saveWords = async (w: { hook: string; points: string[]; close: string; captionCta?: string | null }) => portalEditApprovedScript(portalAuthFromLocation(), script.id, script.sharedVersionId ?? "", w);
-
-  // "CHANGE THIS PART" (Oct 22 2026): the parts open for changing, their new words and notes.
-  const [open, setOpen] = useState<PartKey[]>([]);
-  const [draft, setDraft] = useState<Record<string, string>>({});
-  const [notes, setNotes] = useState<Record<string, string>>({});
-  const openPart = (k: PartKey) => {
-    if (!parts) return;
-    setChanging(false);
-    setOwn(null);
-    setOpen((o) => (o.includes(k) ? o : [...o, k]));
-    setDraft((d) => (k in d ? d : { ...d, [k]: textOf(parts, k) }));
-  };
-  const closePart = (k: PartKey) => setOpen((o) => o.filter((x) => x !== k));
-  const changedOpen = parts ? open.filter((k) => (draft[k] ?? "").replace(/\s+/g, " ").trim() !== textOf(parts, k).replace(/\s+/g, " ").trim()) : [];
-  const sendParts = () =>
+  // Oct 26 2026: the owner's edit is the script (before approving too); another seat's goes to Jordan as a suggestion.
+  const saveWords = async (w: { hook: string; points: string[]; close: string; captionCta?: string | null }) =>
+    canApprove
+      ? portalEditApprovedScript(portalAuthFromLocation(), script.id, script.sharedVersionId ?? "", w)
+      : portalSuggestScriptEdit(portalAuthFromLocation(), script.id, script.sharedVersionId ?? "", w);
+  const undoEdit = () =>
     start(async () => {
       setOwn(null);
-      const r: Outcome = await portalSendPartChanges(portalAuthFromLocation(), script.id, script.sharedVersionId ?? "", changedOpen.map((k) => ({ part: k, text: draft[k] ?? "", note: notes[k]?.trim() || null })))
-        .catch((): Outcome => ({ ok: false, message: "That didn't send. Try again.", transport: true }));
-      if (r.ok) { setOpen([]); setDraft({}); setNotes({}); }
-      done(r, sendParts);
+      done(await portalUndoScriptEdit(portalAuthFromLocation(), script.id, script.sharedVersionId ?? "").catch((): Outcome => ({ ok: false, message: "That didn't work. Try again.", transport: true })), undoEdit);
     });
   const pill = cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn);
   const box = "mt-1 block w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-base leading-relaxed outline-none focus:border-brand sm:text-sm";
-  const canChange = !!parts;
+  const canEdit = !!parts && !!script.sharedVersionId;
 
-  /** The parts, each with "Change this part"; the ones this version changed are marked. */
+  /** The parts, line breaks kept (a skit's lines stay on their own lines); the ones this version changed are marked. */
   const partsList = parts && (
     <div className="space-y-1.5">
       {update?.changed.includes("title") && (
@@ -184,66 +176,54 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
       )}
       {keysOf(parts).map((k) => (
         <div key={k} className={cn("rounded-xl bg-surface-2/60 px-3 py-2", update?.changed.includes(k) && "ring-1 ring-brand/30")}>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="flex items-center gap-2">
-              <span className="text-[10.5px] font-bold uppercase tracking-wider text-muted-2">{labelOf(parts, k)}</span>
-              {update?.changed.includes(k) && <span className="rounded-full bg-brand-soft px-2 text-[10.5px] font-semibold text-brand">Updated</span>}
-            </span>
-            {canChange && <button type="button" onClick={() => openPart(k)} disabled={busy} className="inline-flex min-h-9 items-center gap-1 rounded-full border border-border bg-surface px-2.5 text-xs font-semibold text-brand disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><PencilLine className="size-3" aria-hidden /> Change this part</button>}
-          </div>
-          <p className="mt-0.5 text-sm leading-relaxed">{textOf(parts, k)}</p>
+          <span className="flex items-center gap-2">
+            <span className="text-[10.5px] font-bold uppercase tracking-wider text-muted-2">{labelOf(parts, k)}</span>
+            {update?.changed.includes(k) && <span className="rounded-full bg-brand-soft px-2 text-[10.5px] font-semibold text-brand">Updated</span>}
+          </span>
+          <p className="mt-0.5 whitespace-pre-line text-sm leading-relaxed">{textOf(parts, k)}</p>
         </div>
       ))}
       {parts.captionCta && (
         <div className="rounded-xl bg-surface-2/60 px-3 py-2">
           <span className="text-[10.5px] font-bold uppercase tracking-wider text-muted-2">Caption</span>
-          <p className="mt-0.5 text-sm leading-relaxed">{parts.captionCta}</p>
+          <p className="mt-0.5 whitespace-pre-line text-sm leading-relaxed">{parts.captionCta}</p>
         </div>
       )}
     </div>
   );
 
-  /** Portal-Part: the parts being changed open, the rest folded, one Send. */
-  const partsEditor = parts && open.length > 0 && (
-    <div className="mt-2 space-y-2 rounded-xl border border-brand/30 bg-surface p-3">
-      {keysOf(parts).filter((k) => open.includes(k)).map((k) => (
-        <div key={k} className="space-y-1.5 rounded-xl bg-surface-2/40 p-2.5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-brand">{labelOf(parts, k)} · your wording</span>
-            <button type="button" onClick={() => closePart(k)} disabled={busy} className="min-h-9 text-xs text-muted hover:text-foreground">Keep it as it is</button>
-          </div>
-          <div>
-            <div className="text-[11px] font-semibold text-muted">Now it says</div>
-            <p className="text-sm leading-relaxed text-muted">{textOf(parts, k)}</p>
-          </div>
-          <label className="block">
-            <span className="text-xs font-semibold">Your new {shortName(k)}</span>
-            <textarea value={draft[k] ?? ""} onChange={(e) => { const v = e.target.value; setDraft((d) => ({ ...d, [k]: v })); setRetry(null); setOwn(null); }} rows={3} className={box} />
-          </label>
-          <label className="block">
-            <span className="text-xs font-semibold">Anything we should know? <span className="font-normal text-muted">(optional)</span></span>
-            <textarea value={notes[k] ?? ""} onChange={(e) => { const v = e.target.value; setNotes((n) => ({ ...n, [k]: v })); }} rows={2} placeholder="For example: I want it to sound more like a question" className={box} />
-          </label>
-        </div>
-      ))}
-      {keysOf(parts).some((k) => !open.includes(k)) && (
-        <div className="space-y-1">
-          <div className="text-[11px] font-semibold text-muted">+ Change another part too</div>
-          {keysOf(parts).filter((k) => !open.includes(k)).map((k) => (
-            <button key={k} type="button" onClick={() => openPart(k)} disabled={busy} className="flex min-h-11 w-full items-center gap-2 rounded-lg border border-border px-2.5 text-left text-xs hover:border-brand/40 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
-              <span className="shrink-0 font-semibold">{labelOf(parts, k)}</span>
-              <span className="min-w-0 truncate text-muted">{textOf(parts, k)}</span>
-            </button>
-          ))}
-        </div>
-      )}
+  /** "Edit": the whole script, each part in its own box. */
+  const editor = editing && parts && (
+    <ScriptWordsEditor
+      parts={parts}
+      intro={canApprove
+        ? script.decision === "APPROVED"
+          ? "Change any line to say it your way. Keep a hook, each talking point and a close. What you save is the version we film."
+          : "Change any line to say it your way. Keep a hook, each talking point and a close. What you save becomes the script; approve it when you're happy with it."
+        : `Change any line to say it your way. Your edit goes to ${READER}, who shares the final version here.`}
+      saveLabel={canApprove ? "Save my edit" : `Send my edit to ${READER}`}
+      onSave={saveWords}
+      onCancel={() => setEditing(false)}
+      onSaved={(m) => { setEditing(false); setOwn({ ok: true, text: m }); router.refresh(); }}
+    />
+  );
+
+  /** Their own edit on the page: undo it, or read what it replaced. */
+  const editNote = edit && !editing && (
+    <div className="mt-2 rounded-xl border border-border bg-surface-2/40 px-3 py-2">
       <div className="flex flex-wrap items-center gap-1.5">
-        <button type="button" onClick={sendParts} disabled={busy || changedOpen.length === 0} className={cn("inline-flex items-center gap-1 rounded-lg bg-brand-action font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}>
-          {busy && <Loader2 className="size-3 animate-spin" />} {changedOpen.length > 1 ? `Send my changes (${nameList(changedOpen.map((k) => shortName(k)))})` : `Send my change${changedOpen.length ? ` (${shortName(changedOpen[0])})` : ""}`}
-        </button>
-        <button type="button" onClick={() => { setOpen([]); setDraft({}); setNotes({}); }} disabled={busy} className={pill}>Cancel</button>
+        <span className="text-[11px] font-semibold text-muted">{edit.undo ? "You undid your edit: this is the wording from before it." : "This version has your edit."}</span>
+        {edit.undoable && canApprove && <button type="button" onClick={undoEdit} disabled={busy} className={pill}><Undo2 className="size-3" aria-hidden /> Undo my edit</button>}
       </div>
-      <p className="text-[11px] text-muted">{READER} looks at your wording and sends back an updated version for your OK. The rest of the script stays as it is.</p>
+      <details className="mt-1">
+        <summary className="flex min-h-9 cursor-pointer items-center text-xs font-medium text-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">View previous version (version {edit.previous.versionNo})</summary>
+        <div className="mt-1 space-y-1.5 text-sm text-muted">
+          <p><span className="text-[10.5px] font-bold uppercase tracking-wider">Hook</span><br /><span className="whitespace-pre-line">{edit.previous.hook}</span></p>
+          {edit.previous.points.map((p, i) => <p key={i}><span className="text-[10.5px] font-bold uppercase tracking-wider">Talking point {i + 1}{p.role ? ` · ${ROLE[p.role]}` : ""}</span><br /><span className="whitespace-pre-line">{p.text}</span></p>)}
+          <p><span className="text-[10.5px] font-bold uppercase tracking-wider">Close</span><br /><span className="whitespace-pre-line">{edit.previous.close}</span></p>
+          {edit.previous.captionCta && <p><span className="text-[10.5px] font-bold uppercase tracking-wider">Caption</span><br /><span className="whitespace-pre-line">{edit.previous.captionCta}</span></p>}
+        </div>
+      </details>
     </div>
   );
 
@@ -274,18 +254,11 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
           {!editing && (
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
               <button type="button" onClick={downloadPdf} disabled={pdfBusy || busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}>{pdfBusy ? <Loader2 className="size-3 animate-spin" /> : <Download className="size-3" />} Download PDF</button>
-              {parts && canApprove && <button type="button" onClick={() => { setEditing(true); setOwn(null); }} disabled={busy} className={pill}><PencilLine className="size-3" /> Edit the wording</button>}
+              {canEdit && canApprove && <button type="button" onClick={() => { setEditing(true); setOwn(null); }} disabled={busy} className={pill}><PencilLine className="size-3" /> Edit</button>}
             </div>
           )}
-          {editing && parts && (
-            <ScriptWordsEditor
-              parts={parts}
-              intro="Change any line to say it your way. Keep a hook, each talking point and a close. What you save is the version we film."
-              onSave={saveWords}
-              onCancel={() => setEditing(false)}
-              onSaved={(m) => { setEditing(false); setOwn({ ok: true, text: m }); router.refresh(); }}
-            />
-          )}
+          {editNote}
+          {editor}
         </>
       ) : script.decision === "CHANGES_REQUESTED" ? (
         <>
@@ -298,16 +271,16 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
       ) : (
         <>
           {script.staleApproval && <p className="mb-1.5 text-[11px] text-muted">We&rsquo;ve rewritten this since you last approved it. Have another read.</p>}
-          {inlineParts && open.length === 0 && partsList}
-          {partsEditor}
-          {open.length === 0 && (
+          {inlineParts && !editing && partsList}
+          {editNote}
+          {editor}
+          {!editing && (
             <>
               {!changing && (
                 <div className={cn("flex flex-wrap items-center gap-1.5", inlineParts && "mt-2.5")}>
                   {canApprove && <button type="button" onClick={approve} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><CheckCheck className="size-3" /> {CTA_WORDS.APPROVE}</button>}
                   <span role="group" aria-label={CTA_WORDS.CHANGES} className="contents">
-                    {/* The parts are on screen with their own buttons in the Scripts view; elsewhere this opens the hook first. */}
-                    {canChange && !inlineParts && <button type="button" onClick={() => openPart("hook")} disabled={busy} className={pill}><PencilLine className="size-3" /> Change a part</button>}
+                    {canEdit && <button type="button" onClick={() => { setEditing(true); setChanging(false); setOwn(null); }} disabled={busy} className={pill}><PencilLine className="size-3" /> Edit</button>}
                     <button type="button" onClick={() => { setChanging(true); setOwn(null); }} disabled={busy} className={pill}><MessageSquare className="size-3" /> Ask for a change in your own words</button>
                   </span>
                   {!onResult && busy && <span role="status" className="inline-flex items-center gap-1 text-[11px] text-muted"><Loader2 className="size-3 animate-spin" /> Saving…</span>}
@@ -315,8 +288,8 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
               )}
               <p className="mt-1.5 text-[11px] text-muted">
                 {canApprove
-                  ? <>Reword one section with &ldquo;Change this part&rdquo;, or tell us what you&rsquo;d like changed and we&rsquo;ll take it from there. Once it&rsquo;s approved you can download it as a PDF and edit the wording yourself.</>
-                  : <>Reword one section with &ldquo;Change this part&rdquo;, or tell us what you&rsquo;d like changed. The account owner approves scripts.</>}
+                  ? <>Edit it yourself, or tell us what you&rsquo;d like changed and we&rsquo;ll take it from there. Once it&rsquo;s approved you can download it as a PDF.</>
+                  : <>Suggest an edit, or tell us what you&rsquo;d like changed. The account owner approves scripts.</>}
               </p>
             </>
           )}

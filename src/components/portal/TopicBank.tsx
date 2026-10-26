@@ -306,7 +306,7 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
                     hold as history is not theirs to approve, and a
                     draft they cannot see has nothing to approve. */}
                 {!t.scriptText.historical && t.script?.shared && canAct && !readOnly && (
-                  <ScriptApprovalCard script={t.script} parts={t.scriptText.parts ?? null} onResult={(r) => done(r, t.id)} run={(fn) => act(t.id, fn)} busy={busy} large canApprove={canApprove} />
+                  <ScriptApprovalCard script={t.script} parts={t.scriptText.parts ?? null} edit={t.scriptText.clientEdit ?? null} onResult={(r) => done(r, t.id)} run={(fn) => act(t.id, fn)} busy={busy} large canApprove={canApprove} />
                 )}
               </details>
             )}

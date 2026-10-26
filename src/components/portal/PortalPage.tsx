@@ -230,7 +230,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       attempt("planning", () => portalPlanning(enrollment, homeMonth?.id)),
       attempt("schedule", () => portalScheduleMonths(enrollment)),
       attempt("videos", () => portalVideoList(enrollment, { page: 1, perPage: 24 })),
-      attempt("topics", () => portalTopics(enrollment)),
+      attempt("topics", () => portalTopics(enrollment, { staff: actor.kind === "STAFF" })),
       // Audit E4: a hiccup here used to fail the whole page.
       attempt("month", () => prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, monthKey: homeKey }, select: { videosOwed: true } })),
       // The month through lib/monthProgress (CP-10): sessions and the meter
@@ -338,7 +338,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   if (dataTab === "topics") {
     const ivId = query.iv && ID_RE.test(query.iv) ? query.iv : null;
     if (ivId) interviewRes = await attempt("interview", () => portalInterview(enrollment, ivId));
-    if (!ivId || (interviewRes?.ok && !interviewRes.data)) topicsRes = await attempt("topics", () => portalTopics(enrollment));
+    if (!ivId || (interviewRes?.ok && !interviewRes.data)) topicsRes = await attempt("topics", () => portalTopics(enrollment, { staff: actor.kind === "STAFF" }));
   }
   if (dataTab === "strategy") {
     const [s, m] = await Promise.all([
@@ -442,7 +442,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   const needTopics = route.dest === "plan" || badgePlan;
   const [attn, topicsAll, guides, setupMore] = await Promise.all([
     !badgeLibrary ? Promise.resolve(null) : home?.attention ? Promise.resolve({ ok: true as const, data: home.attention }) : attempt("attention", () => libraryAttention(enrollment)),
-    topicsRes?.ok ? Promise.resolve(topicsRes) : home?.topics ? Promise.resolve({ ok: true as const, data: home.topics }) : needTopics ? attempt("topics", () => portalTopics(enrollment)) : Promise.resolve(null),
+    topicsRes?.ok ? Promise.resolve(topicsRes) : home?.topics ? Promise.resolve({ ok: true as const, data: home.topics }) : needTopics ? attempt("topics", () => portalTopics(enrollment, { staff: actor.kind === "STAFF" })) : Promise.resolve(null),
     resourcesRes ?? attempt("resources", () => publishedResources()),
     dataTab === "more" && !readOnly && perms.profile
       ? attempt("setup", async () => (await import("@/lib/portalSetup")).setupChecklist(viewer, { folder: false }))

@@ -16,6 +16,12 @@ import type { PortalTopic } from "@/lib/portal";
 // the client plans on her own, or a topic is asked for in writing, she answers
 // them right here. The team (Jordan in her portal on the call) can switch one
 // topic to written answers ("she needed more time on that one") and back.
+//
+// Oct 26 2026 (Jordan): "I don't even need them to see questions for the
+// call. I just need to see it on my end." A client never sees a call topic's
+// questions, nor any topic's once its script is shared (lib/portal sends them
+// `clientHidden` with no items); staff in the portal still see them, with the
+// switch to written answers.
 // ---------------------------------------------------------------------------
 
 const tap = "min-h-11 px-3 text-xs sm:min-h-0 sm:px-2 sm:text-[11px]";
@@ -30,7 +36,7 @@ export function TopicQuestions({ t, canAct, readOnly, staff, tabHref }: { t: Por
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string; gaps?: boolean } | null>(null);
   const [busy, start] = useTransition();
-  if (!q || !monthId || t.state === "FILMED") return null;
+  if (!q || !monthId || t.state === "FILMED" || q.clientHidden || (q.route === "CALL" && !staff)) return null;
 
   const editable = canAct && !readOnly;
   const sent = q.status === "SUBMITTED";
@@ -91,7 +97,7 @@ export function TopicQuestions({ t, canAct, readOnly, staff, tabHref }: { t: Por
         </summary>
         {q.route === "CALL" ? (
           <>
-            <p className="mt-1 text-[11px] text-muted">We talk these through on your strategy call, and your script is written from what you say. Nothing to write.</p>
+            <p className="mt-1 text-[11px] text-muted">Only the team sees these: they are read out on the call, and the script is written from what the client says.</p>
             <ol className="mt-1.5 list-decimal space-y-1 pl-5 text-xs">
               {q.items.map((i) => <li key={i.key}>{i.text}</li>)}
             </ol>

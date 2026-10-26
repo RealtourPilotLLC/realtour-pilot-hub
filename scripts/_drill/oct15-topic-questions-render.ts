@@ -4,9 +4,11 @@
 //
 //   node scripts/_drill/run-all.cjs scripts/_drill/oct15-topic-questions-render.ts
 //
-// A topic on a month planned on a call: "Questions for the call", the six
-// read-only, nothing to write; the team sees "Answer this one in writing
-// instead", the client does not. A topic asked in writing: a box under each
+// A topic on a month planned on a call: the team sees "Questions for the
+// call", the six read-only, and "Answer this one in writing instead"; the
+// client sees nothing (Oct 26 2026, Jordan: "I don't even need them to see
+// questions for the call"), nor any topic's questions the server marked
+// hidden (a shared script). A topic asked in writing: a box under each
 // question with what was saved, "Send my answers", and the team's "Back to the
 // call (undo)". Sent answers read back, no boxes. No em dashes anywhere.
 // ---------------------------------------------------------------------------
@@ -48,11 +50,13 @@ async function main() {
 
     c.head("on the call");
     const callClient = render(topic("CALL"), false);
-    c.ok("the client sees 'Questions for the call', the six numbered, nothing to write", /Questions for the call/.test(text(callClient)) && (callClient.match(/<li>/g) ?? []).length === 6 && !/<textarea/.test(callClient) && /Nothing to write/.test(text(callClient)));
-    c.ok("…and no team switch", !/in writing instead/.test(text(callClient)));
+    c.ok("Oct 26 2026: the client sees no questions for the call at all", callClient === "", callClient.slice(0, 120));
     const callStaff = render(topic("CALL"), true);
+    c.ok("the team sees 'Questions for the call', the six numbered, nothing to write, marked as the team's", /Questions for the call/.test(text(callStaff)) && (callStaff.match(/<li>/g) ?? []).length === 6 && !/<textarea/.test(callStaff) && /Only the team sees these/.test(text(callStaff)));
     c.ok("the team (Jordan on the call) can ask for this one in writing", /Answer this one in writing instead/.test(text(callStaff)));
-    c.ok("the questions are open under the topic (not folded away)", /<details open=""/.test(callClient));
+    c.ok("the questions are open under the topic (not folded away)", /<details open=""/.test(callStaff));
+    const hidden = { ...topic("WRITTEN", "SUBMITTED"), questions: { ...topic("WRITTEN", "SUBMITTED").questions!, items: [], clientHidden: true } } as PortalTopic;
+    c.ok("a topic the server marked hidden (its script is shared) renders nothing", render(hidden, false) === "");
 
     c.head("in writing");
     const written = render(topic("WRITTEN", "IN_PROGRESS"), false);
@@ -64,7 +68,7 @@ async function main() {
     c.ok("sent answers read back, no boxes, no Send", !/<textarea/.test(sent) && /Your answers \(sent\)/.test(text(sent)) && /Left blank/.test(text(sent)) && !/Send my answers/.test(text(sent)));
     const viewOnly = render(topic("WRITTEN", "IN_PROGRESS"), false, false);
     c.ok("a view-only seat reads the questions and answers, no boxes", !/<textarea/.test(viewOnly) && /Malvern has the best downtown/.test(viewOnly));
-    c.ok("no em dashes in what the client reads", [callClient, written, sent].every((h) => !text(h).includes("—")));
+    c.ok("no em dashes in what the client reads", [callStaff, written, sent].every((h) => !text(h).includes("—")));
 
     c.head("isolation");
     c.ok("no outbound call escaped", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

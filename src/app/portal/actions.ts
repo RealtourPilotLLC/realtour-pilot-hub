@@ -130,7 +130,9 @@ export async function portalMonthScriptsPdfLink(auth: PortalAuth, monthKey: stri
 /**
  * The agent changes the WORDS of a script they approved (Oct 14 2026: "able
  * to edit the scripts themselves after they approve it"). The edit becomes
- * the version we film, everywhere at once; see lib/scriptEdits.
+ * the version we film, everywhere at once; see lib/scriptEdits. Oct 26 2026
+ * (Jordan: "Just give them an edit button"): before approving too, and then
+ * the script still waits on their Approve.
  */
 export async function portalEditApprovedScript(auth: PortalAuth, scriptId: string, baseVersionId: string, words: { hook: string; points: string[]; close: string; captionCta?: string | null }): Promise<R> {
   // An edit to an approved script IS a sign-off on the new words: the owner's (audit E1).
@@ -143,8 +145,23 @@ export async function portalEditApprovedScript(auth: PortalAuth, scriptId: strin
 }
 
 /**
+ * Oct 26 2026: "Undo my edit": the version on their page is their own edit,
+ * and the words before it go back on (lib/scriptEdits.undoClientEdit). The
+ * owner's, as the edit was.
+ */
+export async function portalUndoScriptEdit(auth: PortalAuth, scriptId: string, readVersionId: string): Promise<R> {
+  const v = await viewerFor(auth, "approveEdits");
+  if (typeof v === "string") return fail(v);
+  const { undoClientEdit } = await import("@/lib/scriptEdits");
+  const r = await undoClientEdit(v, scriptId, readVersionId).catch(() => ({ ok: false as const, message: "That didn't work. Try again." }));
+  if (r.ok) { try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ } }
+  return { ok: r.ok, message: r.message };
+}
+
+/**
  * Oct 20 2026: the client edits the words of a script still waiting on their
- * OK. It goes to the office as a change request with their exact words
+ * OK. Oct 26 2026: a seat that is not the owner's (the owner's edit is saved
+ * directly, portalEditApprovedScript). It goes to the office as a change request with their exact words
  * (lib/scriptRequests.clientEditAsRequest); an approved script is edited
  * directly (portalEditApprovedScript).
  */

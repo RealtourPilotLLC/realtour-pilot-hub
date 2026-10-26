@@ -63,8 +63,11 @@ async function main() {
     c.head("1 · the six questions open under each chosen topic");
     const lib = await import("@/lib/contentInterview");
     const { portalTopics } = await import("@/lib/portal");
-    const page = await portalTopics({ id: f.enrollmentId, clientId: f.clientId });
+    // Oct 26 2026: staff in the portal (Jordan on the call) see the call's questions; a client does not.
+    const page = await portalTopics({ id: f.enrollmentId, clientId: f.clientId }, { staff: true });
     const topicOf = (id: string) => page.groups.flatMap((g) => g.topics).find((t) => t.id === id);
+    const clientPage = await portalTopics({ id: f.enrollmentId, clientId: f.clientId });
+    c.ok("Oct 26 2026: a client gets none of the call's questions (hidden, no items)", [tSen, tMal, tReno].every((id) => { const q = clientPage.groups.flatMap((g) => g.topics).find((t) => t.id === id)?.questions; return q?.clientHidden === true && q.items.length === 0; }));
     const qSen = topicOf(tSen)?.questions;
     c.ok("every chosen topic carries its questions", [tSen, tMal, tReno].every((id) => (topicOf(id)?.questions?.items.length ?? 0) === 6), JSON.stringify([tSen, tMal, tReno].map((id) => topicOf(id)?.questions?.items.length)));
     c.ok("…on a month planned on a call they are read out on the call (CALL)", [tSen, tMal, tReno].every((id) => topicOf(id)?.questions?.route === "CALL" && topicOf(id)?.questions?.callMonth === true));

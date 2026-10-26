@@ -191,8 +191,9 @@ function ScriptsView({ plan, canAct, canApprove, readOnly, monthHref, pdfs, upda
       ) : (
         cards.map((t) => {
           // Oct 22 2026 (Main / Portal-Updated boards): a script waiting on
-          // them shows its parts with "Change this part" on each; a version
-          // that answered their request says so, with the message on top.
+          // them shows its parts (Oct 26 2026: with one Edit for the whole
+          // script); a version that answered their request says so, with the
+          // message on top.
           const actHere = canAct && !readOnly && !!t.script;
           const inline = actHere && !t.script?.decision && !!t.scriptText?.parts;
           const up = t.script ? updates[t.script.id] ?? null : null;
@@ -233,7 +234,7 @@ function ScriptsView({ plan, canAct, canApprove, readOnly, monthHref, pdfs, upda
                 )}
                 {t.scriptText && !inline && <div className="mt-3 rounded-xl border border-border bg-surface-2/40 px-4 py-4"><div className="max-w-[70ch]"><ScriptBody body={t.scriptText.body} size="lg" /></div></div>}
                 {actHere ? (
-                  <div className={inline ? "mt-3" : ""}><ScriptApprovalCard script={t.script!} parts={t.scriptText?.parts ?? null} large canApprove={canApprove} inlineParts={inline} update={fresh} /></div>
+                  <div className={inline ? "mt-3" : ""}><ScriptApprovalCard script={t.script!} parts={t.scriptText?.parts ?? null} edit={t.scriptText?.clientEdit ?? null} large canApprove={canApprove} inlineParts={inline} update={fresh} /></div>
                 ) : (
                   <p className="mt-2 text-xs text-muted">{readOnly ? "Scripts can’t be approved while your program is paused or ended." : "The program owner approves scripts on this account."}</p>
                 )}
@@ -256,7 +257,7 @@ function ScriptsView({ plan, canAct, canApprove, readOnly, monthHref, pdfs, upda
                 <StatusChip word={SCRIPT_WORDS.APPROVED} />
               </summary>
               {t.scriptText && <div className="mt-2 rounded-xl border border-border bg-surface-2/40 px-4 py-4"><div className="max-w-[70ch]"><ScriptBody body={t.scriptText.body} size="lg" /></div></div>}
-              {canAct && !readOnly && t.script && <ScriptApprovalCard script={t.script} parts={t.scriptText?.parts ?? null} large canApprove={canApprove} />}
+              {canAct && !readOnly && t.script && <ScriptApprovalCard script={t.script} parts={t.scriptText?.parts ?? null} edit={t.scriptText?.clientEdit ?? null} large canApprove={canApprove} />}
             </details>
           ))}
         </section>
@@ -274,7 +275,7 @@ function ScriptsView({ plan, canAct, canApprove, readOnly, monthHref, pdfs, upda
                 <StatusChip word={{ ...SCRIPT_WORDS.FILMED, label: filmedWords(t.script?.filmed?.atISO) }} />
               </summary>
               {t.scriptText && <div className="mt-2 rounded-xl border border-border bg-surface-2/40 px-4 py-4"><div className="max-w-[70ch]"><ScriptBody body={t.scriptText.body} size="lg" /></div></div>}
-              {canAct && !readOnly && t.script && <ScriptApprovalCard script={t.script} parts={t.scriptText?.parts ?? null} large canApprove={canApprove} />}
+              {canAct && !readOnly && t.script && <ScriptApprovalCard script={t.script} parts={t.scriptText?.parts ?? null} edit={t.scriptText?.clientEdit ?? null} large canApprove={canApprove} />}
             </details>
           ))}
         </section>

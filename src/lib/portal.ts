@@ -1285,8 +1285,16 @@ export type PortalTopic = {
    * questions, shown under it. CALL: read out on the strategy call (the
    * answers are on the recording); WRITTEN: answered here. `callMonth` = the
    * month is planned on a call, so staff may ask for one topic in writing.
+   *
+   * Oct 26 2026 (Jordan: "I don't even need them to see questions for the
+   * call. I just need to see it on my end"): for a client viewer a CALL
+   * topic's questions, and any topic's once its script is shared with them,
+   * are not sent:
+   * `clientHidden` true and `items` empty (the block still exists, so the bank
+   * does not offer "Answer questions" in its place). Staff in the portal see
+   * them all.
    */
-  questions?: { route: "CALL" | "WRITTEN"; callMonth: boolean; interviewId: string | null; status: string | null; items: { key: string; text: string; answer: string | null; skipped: boolean }[] } | null;
+  questions?: { route: "CALL" | "WRITTEN"; callMonth: boolean; interviewId: string | null; status: string | null; items: { key: string; text: string; answer: string | null; skipped: boolean }[]; clientHidden?: boolean } | null;
   scriptedNotFilmed: boolean;
   /**
    * R01: where this topic stands in its open month's plan — the one planning
@@ -1322,6 +1330,8 @@ export type PortalTopicScript = {
   parts?: { hook: string; points: { role: "re-hook" | "build-up" | "payoff" | null; text: string }[]; close: string; captionCta: string | null } | null;
   /** The pillar's CURRENT name (by pillarId), else the frozen label; never a no-pillar placeholder. */
   pillarName?: string | null;
+  /** Oct 26 2026: this version is the client's own edit (or their undo): the words before it, and whether "Undo my edit" is offered (lib/scriptEdits). */
+  clientEdit?: import("@/lib/scriptEdits").ClientEditInfo | null;
 };
 
 export type PortalTopicMonth = {
@@ -1408,8 +1418,13 @@ async function visibleTopicScripts(enrollment: { id: string; clientId: string },
 
   const versionIds = [...winner.values()].map((w) => w.s.sharedVersionId ?? w.s.approvedVersionId).filter((x): x is string => !!x);
   const versions = versionIds.length
-    ? await prisma.contentScriptVersion.findMany({ where: { id: { in: versionIds }, enrollmentId: enrollment.id, clientId: enrollment.clientId }, select: { id: true, versionNo: true, title: true, categoryLabel: true, pillarId: true, hook: true, pointsJson: true, close: true, captionCta: true, clientId: true, strategyVersionId: true } })
+    ? await prisma.contentScriptVersion.findMany({ where: { id: { in: versionIds }, enrollmentId: enrollment.id, clientId: enrollment.clientId }, select: { id: true, scriptId: true, versionNo: true, title: true, categoryLabel: true, pillarId: true, hook: true, pointsJson: true, close: true, captionCta: true, clientId: true, strategyVersionId: true, validationJson: true, changeSummary: true, basedOnVersionId: true } })
     : [];
+  // Oct 26 2026: their own edit on the page offers "Undo my edit" and "View previous version".
+  const sharedIds = new Set([...winner.values()].map((w) => w.s.sharedVersionId).filter((x): x is string => !!x));
+  const edits = versions.length
+    ? await import("@/lib/scriptEdits").then((m) => m.clientEditInfo(versions.map((v) => ({ id: v.id, scriptId: v.scriptId, validationJson: v.validationJson, changeSummary: v.changeSummary, basedOnVersionId: v.basedOnVersionId, shared: sharedIds.has(v.id) })))).catch((e) => { console.error("[portal] client edits", e); return new Map<string, import("@/lib/scriptEdits").ClientEditInfo>(); })
+    : new Map<string, import("@/lib/scriptEdits").ClientEditInfo>();
   const stratIds = [...new Set([...versions.map((v) => v.strategyVersionId), ...[...winner.values()].map((w) => w.s.strategyVersionId)].filter((x): x is string => !!x))];
   const strategies = stratIds.length ? await prisma.contentStrategyVersion.findMany({ where: { id: { in: stratIds } }, select: { id: true, versionNo: true } }) : [];
   const stratLabel = new Map(strategies.map((s) => [s.id, `v${s.versionNo}`]));
@@ -1435,6 +1450,7 @@ async function visibleTopicScripts(enrollment: { id: string; clientId: string },
         title: v.title, body: renderScript(canonical, { audience: "client" }), versionLabel: `v${v.versionNo}`, strategyLabel, historical,
         parts: { hook: v.hook, points: points.map((p) => ({ role: p.role, text: p.text })), close: v.close, captionCta: v.captionCta || null },
         pillarName,
+        clientEdit: edits.get(v.id) ?? null,
       });
       continue;
     }
@@ -1462,7 +1478,7 @@ export async function portalTopicScript(enrollment: { id: string; clientId: stri
 }
 
 /** The client's bank by their pillars (Arielle's presentation) with the month selections, interviews and scripts each topic carries. */
-export async function portalTopics(enrollment: { id: string; clientId: string }): Promise<PortalTopicsData> {
+export async function portalTopics(enrollment: { id: string; clientId: string }, opts: { staff?: boolean } = {}): Promise<PortalTopicsData> {
   const { topicBankByPillar, clientCanSeeTopic } = await import("@/lib/contentTopics");
   const { listPillars } = await import("@/lib/contentPillars");
   const [bank, pillars, monthsRaw] = await Promise.all([
@@ -1586,6 +1602,7 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
         const mp = planned?.get(sel.monthId)?.planning ?? null;
         const callMonth = mp?.route === "CALL";
         const route: "CALL" | "WRITTEN" = sel.answerRoute === "WRITTEN" || sel.answerRoute === "CALL" ? sel.answerRoute : callMonth ? "CALL" : "WRITTEN";
+        if (!opts.staff && (route === "CALL" || !!sc?.sharedVersionId)) return { route, callMonth, interviewId: sheet.interviewId, status: sheet.status, items: [], clientHidden: true };
         return { route, callMonth, interviewId: sheet.interviewId, status: sheet.status, items: sheet.questions };
       })(),
     };

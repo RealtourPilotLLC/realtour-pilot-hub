@@ -10,7 +10,8 @@
 // scripts to the agent."
 //
 //   1. The PDF builder: a real PDF, one page per script, no dashes.
-//   2. Portal: no PDF and no edit before the agent approves; after, the PDF
+//   2. Portal: no PDF before the agent approves (an edit before approving:
+//      oct26-portal-edit-questions.ts); after, the PDF
 //      downloads and the agent's edit becomes the version everywhere (new
 //      version, approved, released, their sign-off on it, no email, the office
 //      belled). Stale, shape-breaking and unchanged edits write nothing.
@@ -114,8 +115,7 @@ async function main() {
     c.ok("a link is minted on the click", before.ok && !!before.url && before.url.startsWith(`/api/portal/scripts/one/${a1.scriptId}?m=`), before.message);
     const r0 = await onePdf(new NextRequest(`https://hub.example.test${before.url}`), { params: Promise.resolve({ scriptId: a1.scriptId }) });
     c.ok("…but the door refuses before they approve", r0.status === 403 && /Approve the script first/.test(JSON.stringify(await r0.json())));
-    const e0 = await editAsOwner(a1.scriptId, a1.versionId, { hook: "Changed", points: ["a", "b", "c"], close: "c" });
-    c.ok("an edit before approving is refused", !e0.ok && /Approve the script first/.test(e0.message), e0.message);
+    // Oct 26 2026: an edit before approving is the owner's now too (scripts/_drill/oct26-portal-edit-questions.ts).
     const linkApprove = await portalActions.portalApproveScript(auth, a1.scriptId, a1.versionId);
     c.ok("the shared link cannot approve a script (audit E1: the owner signs off)", !linkApprove.ok, linkApprove.message);
     const ok1 = await approveAsOwner(a1.scriptId, a1.versionId);
@@ -232,7 +232,8 @@ async function main() {
     const read = (p: string) => fs.readFileSync(path.join(process.cwd(), p), "utf8");
     const card = read("src/components/portal/ScriptApprovalCard.tsx");
     // Oct 20 2026: they can edit before approving too (it goes to the office as a request).
-    c.ok("the portal says they can edit, and download once approved", /edit the wording yourself/.test(card) && /Once it&rsquo;s approved you can download it as a PDF/.test(card) && /Download PDF/.test(card) && /Edit the wording/.test(card));
+    // Oct 26 2026: one Edit, before approving too ("Edit it yourself").
+    c.ok("the portal says they can edit, and download once approved", /Edit it yourself/.test(card) && /change the wording yourself any time before we film/.test(card) && /Once it&rsquo;s approved you can download it as a PDF/.test(card) && /Download PDF/.test(card) && /\/> Edit<\/button>/.test(card));
     const page = read("src/app/shoot/[id]/page.tsx");
     c.ok("the shoot screen has the per-script tools and the session bar", /<ScriptCardTools /.test(page) && /<ShootScriptsBar /.test(page));
     c.ok("My Shoots marks shoots with scripts", /hasScripts && <Badge/.test(read("src/components/shoot/MyShootsView.tsx")));
