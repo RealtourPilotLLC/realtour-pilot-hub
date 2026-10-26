@@ -607,8 +607,49 @@ export async function afternoonSlackDigest(): Promise<{ sent: boolean; reason?: 
 
 const EXCEPTION_DIGEST_ROWS = 5;
 
-/** Lines for a Kyle digest; [] when there is nothing to say. Never throws. */
-export async function exceptionDigestLines(base: string, opts: { now?: Date; limit?: number } = {}): Promise<string[]> {
+/**
+ * WHO IS WAITING, BY NAME (Oct 26 2026). The digests said "💬 Unanswered: 9
+ * texts" and no more, so a count was all Kyle had: Logan Hartzell's Saturday
+ * "please give me a call back" was still waiting at 1:48 PM on Monday. Every
+ * client still waiting on a phone answer, ONE line each — the Comms board's
+ * view (the walk plus the persisted asks, so the names match the count above
+ * them) and a missed call nobody returned (commsSla.callbacksOwed) — a
+ * complaint first, then the longest wait, with what they said (money
+ * scrubbed: Kyle never sees a figure) and the page to answer from. [] when
+ * nobody is waiting. Never throws.
+ */
+export async function waitingClientLines(base: string, opts: { now?: Date; limit?: number } = {}): Promise<string[]> {
+  const limit = opts.limit ?? 10;
+  try {
+    const { findUnansweredInbound, callbacksOwed, fmtAge } = await import("@/lib/commsSla");
+    const now = opts.now ?? new Date();
+    const board = await findUnansweredInbound(now, { families: ["phone"], includeOwed: true });
+    const lone = await callbacksOwed(now, new Set(board.map((w) => w.clientId))).catch(() => []);
+    // A client on two threads (a group chat and the direct line) is one person
+    // waiting: their longest wait, unhappy if any of it is.
+    const byClient = new Map<string, (typeof board)[number]>();
+    for (const w of [...board, ...lone]) {
+      const prev = byClient.get(w.clientId);
+      if (!prev) byClient.set(w.clientId, w);
+      else byClient.set(w.clientId, { ...(w.ageMin > prev.ageMin ? w : prev), unhappy: prev.unhappy || w.unhappy });
+    }
+    const waiting = [...byClient.values()].sort((a, b) => Number(b.unhappy) - Number(a.unhappy) || b.ageMin - a.ageMin);
+    if (!waiting.length) return [];
+    const out = [`📞 *Waiting on a reply or call back* (${waiting.length}):`];
+    for (const w of waiting.slice(0, limit)) {
+      out.push(`• ${w.unhappy ? "🔴 " : ""}${w.clientName}${w.isVip ? " (VIP)" : ""}, ${fmtAge(w.ageMin)}: "${scrubMoney(w.snippet)}" → ${base}/clients/${w.clientId}`);
+    }
+    if (waiting.length > limit) out.push(`  …and ${waiting.length - limit} more → ${base}/tasks?tab=comms`);
+    return out;
+  } catch (e) {
+    console.warn("waiting-clients digest lines failed", e);
+    return [];
+  }
+}
+
+/** Lines for a Kyle digest; [] when there is nothing to say. Never throws.
+ *  `names: false` when the digest already leads with waitingClientLines. */
+export async function exceptionDigestLines(base: string, opts: { now?: Date; limit?: number; names?: boolean } = {}): Promise<string[]> {
   const limit = opts.limit ?? EXCEPTION_DIGEST_ROWS;
   const out: string[] = [];
   try {
@@ -636,5 +677,6 @@ export async function exceptionDigestLines(base: string, opts: { now?: Date; lim
   } catch (e) {
     console.warn("exception digest: unanswered count failed", e);
   }
+  if (opts.names !== false) out.push(...(await waitingClientLines(base, { now: opts.now, limit: EXCEPTION_DIGEST_ROWS })));
   return out;
 }

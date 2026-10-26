@@ -2436,9 +2436,12 @@ export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: str
     const send = (text: string) => deliverDigestDm({ ...to, text, kind: "kyle_morning", claimKey });
     // The exceptions with Kyle's name on them and the unanswered counts (§9,
     // Sep 26 — commsBoard.exceptionDigestLines, shared with the 4 o'clock).
-    const exceptionLines = await import("@/lib/commsBoard")
-      .then((m) => m.exceptionDigestLines(appBase()))
-      .catch(() => [] as string[]);
+    // WHO IS WAITING leads the list, by name (Oct 26 2026): Logan Hartzell's
+    // Saturday call-back request was #14 on this list Sunday and Monday, under
+    // "…and 27 more" (commsBoard.waitingClientLines).
+    const commsBoard = await import("@/lib/commsBoard");
+    const waitingLines = await commsBoard.waitingClientLines(appBase()).catch(() => [] as string[]);
+    const exceptionLines = await commsBoard.exceptionDigestLines(appBase(), { names: false }).catch(() => [] as string[]);
     // "JORDAN ASKED, STILL OPEN" (Oct 14 2026): his Slack asks to Kyle no
     // longer expire on the 7-day timer, so they are listed here with their
     // ages every morning until they close (on evidence, or by Kyle). No money
@@ -2448,10 +2451,10 @@ export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: str
       .catch(() => []);
     // (Oct 19 2026: an "old items" list rode here for a few hours; it repeated
     // the overdue lines below, so it was taken out the same evening.)
-    if (overdue.length + openToday.length + texts.length + exceptionLines.length + jordanAsks.length === 0) {
+    if (overdue.length + openToday.length + texts.length + exceptionLines.length + jordanAsks.length + waitingLines.length === 0) {
       return await send("☀️ Morning — nothing on the board yet. Enjoy the quiet start.");
     }
-    const lines: string[] = ["☀️ *Morning check* — today's list:"];
+    const lines: string[] = ["☀️ *Morning check* — today's list:", ...waitingLines];
     // Kyle never sees a figure: a typed title ("Invoice Jamie $450") passes the
     // money scrub here as it does on his board (audit Oct 25 2026).
     for (const t of overdue.slice(0, 8)) lines.push(`• 🔴 ${scrubMoney(t.title)}`);

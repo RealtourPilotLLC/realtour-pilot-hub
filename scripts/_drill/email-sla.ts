@@ -287,10 +287,65 @@ async function main() {
   for (let i = 0; i < 3; i++) await sla.sweepReplySla();
   const vicRows = await prisma.notification.findMany({ where: { kind: "reply_sla", dedupeKey: { startsWith: `sla-1-${vic.id}-` } } });
   const wenRows = await prisma.notification.findMany({ where: { kind: "reply_sla", dedupeKey: { startsWith: `sla-1-${wen.id}-` } } });
-  c.ok("Kyle owns Victor's reply: ONE row, the ADMIN broadcast, naming him (Kyle is not rung twice)", vicRows.length === 1 && !vicRows[0].userKey && /Kyle Smith's to answer/.test(vicRows[0].body ?? ""), vicRows.map((r) => `${r.userKey ?? "broadcast"}: ${r.body}`).join(" | "));
-  const wenPersonal = wenRows.find((r) => r.userKey === `tm:${harrison.id}`);
+  c.ok("Kyle owns Victor's reply: ONE tier-1 row, the ADMIN broadcast, naming him", vicRows.length === 1 && !vicRows[0].userKey && /Kyle Smith's to answer/.test(vicRows[0].body ?? ""), vicRows.map((r) => `${r.userKey ?? "broadcast"}: ${r.body}`).join(" | "));
+  const ownerRows = (clientId: string) => prisma.notification.findMany({ where: { kind: "reply_sla", dedupeKey: { startsWith: `sla-o-${clientId}-` } } });
+  const vicOwn = await ownerRows(vic.id);
+  c.ok("Oct 26: …and Kyle's OWN ping, once over three sweeps, addressed to him", vicOwn.length === 1 && vicOwn[0].userKey === `tm:${kyle.id}`, vicOwn.map((r) => r.userKey).join(" | "));
+  const kyleLegs = await prisma.notificationDelivery.findMany({ where: { teamMemberId: kyle.id, kind: "reply_sla" } });
+  c.ok("Oct 26: the ping went to Kyle's channels too (notifyStaffSms; no Slack or phone in the drill, so one 'skipped' leg beside his bell — the attempt is on record)", kyleLegs.filter((d) => d.channel !== "bell").length === 1 && kyleLegs.some((d) => d.channel === "bell"), kyleLegs.map((d) => `${d.channel}/${d.status}`).join(" "));
   const wenBroadcast = wenRows.find((r) => !r.userKey);
-  c.ok("Harrison (a photographer login) owns Wendy's: the ADMIN copy at index 0 AND his own row", wenRows.length === 2 && !!wenPersonal && !!wenBroadcast && wenBroadcast.dedupeKey?.endsWith("-0") === true, wenRows.map((r) => `${r.dedupeKey?.slice(-2)} ${r.userKey ?? "broadcast"}`).join(" | "));
+  const wenOwn = await ownerRows(wen.id);
+  c.ok("Harrison (a photographer login) owns Wendy's: the ADMIN copy at index 0, and his own row is the owner ping (Oct 26), not a second tier-1 row", wenRows.length === 1 && !!wenBroadcast && wenBroadcast.dedupeKey?.endsWith("-0") === true && wenOwn.length === 1 && wenOwn[0].userKey === `tm:${harrison.id}`, [...wenRows, ...wenOwn].map((r) => `${r.dedupeKey?.slice(0, 5)}…${r.dedupeKey?.slice(-2)} ${r.userKey ?? "broadcast"}`).join(" | "));
+
+  // =========================================================================
+  c.head("9b · Oct 26 2026: a Saturday call-back reaches its owner, by name, the same hour");
+  // =========================================================================
+  // Logan Hartzell, Sat Oct 24 12:08 PM: a missed call, OpenPhone's greeting,
+  // then "please give me a call back". Old: nothing until Monday 9:00, and
+  // then a bell-only broadcast. Sat Oct 31 here: after CALLBACK_PAGING_FROM.
+  const SAT = et(2026, 10, 31, 12, 9);
+  const lo = await mkClient("Logan Drill", "logan@clients.invalid", "(484) 555-0171");
+  await replyTask(lo.id, kyle.id, "openphone", `${lo.id}|noproject|client_reply`);
+  await textIn({ clientId: lo.id, name: "Logan Drill", phone: "4845550171", body: "Hey Kyle, my media was not pulled over. I did pay for the $150 showcase package. Please give me a call back", at: SAT });
+  setNow(new Date(SAT.getTime() + 36 * 60_000));
+  await oldSla.sweepReplySla();
+  const tierRows = (clientId: string) => prisma.notification.findMany({ where: { kind: "reply_sla", dedupeKey: { startsWith: `sla-`, contains: clientId } } });
+  c.ok("OLD: Saturday 12:45, the wait is 36 minutes and the pager rings nobody (out of cover, routine)", (await tierRows(lo.id)).length === 0, (await tierRows(lo.id)).map((r) => r.dedupeKey).join(" "));
+  await sla.sweepReplySla();
+  await sla.sweepReplySla();
+  const loOwn = await ownerRows(lo.id);
+  c.ok("NEW: the same sweep pings Kyle by name — one row, his", loOwn.length === 1 && loOwn[0].userKey === `tm:${kyle.id}`, loOwn.map((r) => r.userKey).join(" | "));
+  c.ok("…with no figure in it (Kyle never sees money)", !/\$\s?\d/.test(`${loOwn[0]?.title} ${loOwn[0]?.body}`), loOwn[0]?.title ?? undefined);
+  const loTier = (await tierRows(lo.id)).filter((r) => !r.dedupeKey?.startsWith("sla-o-"));
+  c.ok("…while the office broadcast, the ops line and Jordan's tier 2 keep their cover rules (none on a Saturday)", loTier.length === 0, loTier.map((r) => r.dedupeKey).join(" "));
+  const dm = sla.ownerPingText({ clientName: "Logan Drill", channel: "text", snippet: "I did pay for the $150 showcase package", isVip: false }, "36m", "https://hub/clients/x");
+  c.ok("the DM names the client, the wait and the link, money scrubbed, no em dash", /Logan Drill/.test(dm) && /36m/.test(dm) && /https:\/\/hub\/clients\/x/.test(dm) && !/\$\s?150/.test(dm) && !/—/.test(dm), dm);
+
+  // A wait older than a day is not pinged this way (the deploy-morning backlog).
+  const old = await mkClient("Olive Backlog", "olive@clients.invalid", "(484) 555-0172");
+  await replyTask(old.id, kyle.id, "openphone", `${old.id}|noproject|client_reply`);
+  await textIn({ clientId: old.id, name: "Olive Backlog", phone: "4845550172", body: "Any update on the floor plan for 9 Birch Ln?", at: new Date(SAT.getTime() - 30 * 3_600_000) });
+  await sla.sweepReplySla();
+  c.ok("a wait that began 30 hours ago gets no owner ping (it is on the morning list instead)", (await ownerRows(old.id)).length === 0);
+
+  // A missed call with NO words: only the "call back" task exists.
+  const cal = await mkClient("Cal Nowords", "cal@clients.invalid", "(484) 555-0173");
+  const CALL = et(2026, 10, 31, 13, 0);
+  await prisma.smartTask.create({ data: { taskType: "client_reply", title: "Return the missed call", source: "openphone", clientId: cal.id, ownerId: kyle.id, dedupeKey: `${cal.id}|noproject|client_reply`, priority: "HIGH", reasonCreated: "Missed call from client (OpenPhone)", createdAt: CALL } });
+  setNow(new Date(CALL.getTime() + 20 * 60_000));
+  c.ok("a lone missed call is waiting (callbacksOwed)", (await sla.callbacksOwed(new Date(), new Set())).some((w) => w.clientId === cal.id && w.channel === "call"));
+  setNow(new Date(CALL.getTime() + 35 * 60_000));
+  await sla.sweepReplySla();
+  const calOwn = await ownerRows(cal.id);
+  c.ok("…and past 30 minutes Kyle is pinged to call back", calOwn.length === 1 && /call back/i.test(calOwn[0].body ?? ""), calOwn[0]?.body ?? undefined);
+  c.ok("…the DM reads as a call, not a text", /called .* call back/.test(sla.ownerPingText({ clientName: "Cal Nowords", channel: "call", snippet: "Missed call, call them back", isVip: false }, "35m", "https://hub/c")));
+  await prisma.commLog.create({ data: { channel: "text", direction: "out", clientId: cal.id, clientName: "Cal Nowords", contactName: "Us", fromPhone: "4845550173", body: "Hi Cal, sorry we missed you! What can we help with?", occurredAt: new Date(CALL.getTime() + 40 * 60_000), source: "openphone" } });
+  setNow(new Date(CALL.getTime() + 45 * 60_000));
+  c.ok("…a real text back settles it (even before the receiver closes the task)", !(await sla.callbacksOwed(new Date(), new Set())).some((w) => w.clientId === cal.id));
+  const early = await mkClient("Early Caller", "early@clients.invalid", "(484) 555-0174");
+  await prisma.smartTask.create({ data: { taskType: "client_reply", title: "Return the missed call", source: "openphone", clientId: early.id, ownerId: kyle.id, dedupeKey: `${early.id}|noproject|client_reply`, priority: "HIGH", reasonCreated: "Missed call from client (OpenPhone)", createdAt: et(2026, 10, 26, 9, 0) } });
+  setNow(et(2026, 10, 26, 10, 0));
+  c.ok("a callback task raised before the switch-on time is listed, never paged (no deploy burst)", !(await sla.callbacksOwed(new Date(), new Set())).some((w) => w.clientId === early.id));
 
   // =========================================================================
   c.head("10 · Settings");

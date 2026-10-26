@@ -1,9 +1,11 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { unansweredComms, type WaitingFamily } from "@/lib/replyQueue";
+import { outboundIsAnswer, unansweredComms, type WaitingFamily } from "@/lib/replyQueue";
 import { notifyInApp, notifyStaffSms, notifyUrgent, opsAlert } from "@/lib/notify";
 import { coverageRules, coveredHoursBetween, withinCoverageAt } from "@/lib/coverage";
 import { hasStrongComplaint } from "@/lib/comms";
+import { scrubMoney } from "@/lib/text";
+import { appBase } from "@/lib/appUrl";
 import { getSetting, putSetting } from "@/lib/settings";
 import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 import { loadTextTemplates } from "@/lib/textTemplateStore";
@@ -46,6 +48,29 @@ const TIER1_MIN = 30;
 const TIER1_MIN_VIP = 15;
 const TIER2_MIN = 120;
 const TIER2_MIN_VIP = 60;
+
+// THE REPLY'S OWNER, BY NAME, AT ANY HOUR (Oct 26 2026). Logan Hartzell rang
+// on Saturday at 12:08 PM, got OpenPhone's greeting, and texted a minute later
+// asking for a call back. The task engine filed it to Kyle as URGENT within
+// seconds — and then nothing reached Kyle. Tier 1 below waited for cover
+// (Monday 9:00 AM), and when it fired it was an ADMIN bell broadcast, which is
+// bell-only: no Slack, no text. Tier 2 went to Jordan. Kyle's 8 AM list had
+// the task at #14 behind month-old leads, under "…and 27 more". Logan was
+// still waiting at 1:48 PM Monday when Jordan asked why.
+//
+// So the person whose reply it is now gets a ping of their own once the wait
+// crosses tier 1's age: a Slack DM (notifyStaffSms, the pingKyle road — his
+// roster phone is the company line) plus a bell row addressed to them. ANY
+// HOUR, any day — Jordan, Oct 6 2026: "Anyone on the team can get pinged
+// anytime. Just not Jordan on Saturday until 7:30PM." Only the person's own
+// saved quiet time holds it. The ops-channel line, the office broadcast and
+// Jordan's tier 2 keep their cover rules exactly as they were.
+//
+// A wait that began more than a day ago is not pinged this way: the sweep runs
+// every five minutes, so in steady state the ping goes at ~30 minutes, and the
+// cap only stops the backlog on the morning this went live (and after an
+// outage) from arriving as one burst. Those waits are on the morning list.
+const OWNER_PING_MAX_AGE_MIN = 24 * 60;
 
 // First-tier pings only fire while somebody is ON — a 2am text shouldn't page
 // anyone at 2:05am. It escalates the moment cover opens (the dedupe key is
@@ -122,7 +147,7 @@ export function onCallPageText(
   return t.render(key, { vip: w.isVip ? "(VIP)" : "", clientName: w.clientName, age: w.age, snippet: w.snippet });
 }
 
-function fmtAge(min: number): string {
+export function fmtAge(min: number): string {
   if (min < 60) return `${min}m`;
   if (min < 48 * 60) {
     const h = Math.floor(min / 60);
@@ -181,13 +206,16 @@ export type UnansweredInbound = {
  */
 export async function findUnansweredInbound(
   now: Date = new Date(),
-  opts: { families?: WaitingFamily[]; windowDays?: number; excludeClientIds?: string[] } = {},
+  opts: { families?: WaitingFamily[]; windowDays?: number; excludeClientIds?: string[]; includeOwed?: boolean } = {},
 ): Promise<UnansweredInbound[]> {
   const threads = await unansweredComms({
     now,
     families: opts.families,
     windowDays: opts.windowDays,
     excludeClientIds: opts.excludeClientIds,
+    // The work lists' view (Kyle's digests, Oct 26): the persisted asks too.
+    // Never the pager's — a ledger row is visibility, not an alert (replyQueue).
+    includeOwed: opts.includeOwed,
     includeUnmatched: false, // a page needs a client to point at
     includeTeam: false, // "unanswered CLIENTS", not our own photographers
   });
@@ -254,6 +282,105 @@ export function pagerView(waiting: UnansweredInbound[], now: Date): UnansweredIn
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// A MISSED CALL WITH NO WORDS (Oct 26 2026). Logan texted after his missed
+// call, and the text is what the walk saw. Had he only called, nothing would
+// have: a known client's missed call writes no comms row, just its "call back"
+// task (webhooks/openphone → tasks.createCommTask), and OpenPhone's greeting
+// settles the call in the walk (replyQueue, OPENPHONE_GREETING — "the decision
+// stays Jordan's"). Jordan decided, Oct 26: a callback nobody returned must
+// not wait out a weekend. So the pager also reads those open callback tasks:
+// a client with one, and nothing waiting in the walk, is waiting on a call.
+//
+// The receiver closes the task on an outbound text or a connected callback;
+// an answered call the CLIENT placed afterwards closes nothing, so a later
+// call row that is not itself missed counts as handled here. Only tasks raised
+// from CALLBACK_PAGING_FROM on: the open ones from before it (one, a stale
+// Oct 21 voicemail) are on the lists, not paged on deploy.
+// ---------------------------------------------------------------------------
+/** createCommTask's reasonCreated for a missed call and a voicemail. */
+const CALLBACK_REASONS = ["Missed call from client (OpenPhone)", "Voicemail from client (OpenPhone)"];
+const CALLBACK_PAGING_FROM = new Date("2026-10-26T18:00:00Z");
+/** replyQueue's VIP_SEGMENTS (the walk's own isVip), for rows the walk never sees. */
+const VIP_SEGMENTS = new Set(["vip", "heavy"]);
+
+export async function callbacksOwed(now: Date, skipClientIds: ReadonlySet<string>): Promise<UnansweredInbound[]> {
+  const since = new Date(Math.max(CALLBACK_PAGING_FROM.getTime(), now.getTime() - SCAN_DAYS * 86_400_000));
+  const tasks = await prisma.smartTask.findMany({
+    where: {
+      taskType: "client_reply",
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      reasonCreated: { in: CALLBACK_REASONS },
+      clientId: { not: null },
+      createdAt: { gte: since, lte: now },
+    },
+    orderBy: { createdAt: "asc" },
+    select: {
+      clientId: true,
+      createdAt: true,
+      reasonCreated: true,
+      client: { select: { name: true, avatarUrl: true, segment: true, parent: { select: { segment: true } } } },
+    },
+  });
+  const out: UnansweredInbound[] = [];
+  const seen = new Set(skipClientIds);
+  for (const t of tasks) {
+    const clientId = t.clientId as string;
+    if (seen.has(clientId)) continue;
+    seen.add(clientId);
+    const later = await prisma.commLog.findMany({
+      where: { clientId, channel: { in: ["text", "call"] }, occurredAt: { gt: t.createdAt, lte: now } },
+      select: { channel: true, direction: true, source: true, body: true },
+      take: 50,
+    });
+    const handled = later.some((r) =>
+      r.direction === "out" ? outboundIsAnswer(r) : r.channel === "call" && !/missed|voicemail|no answer/i.test(r.body ?? ""),
+    );
+    if (handled) continue;
+    const voicemail = (t.reasonCreated ?? "").startsWith("Voicemail");
+    out.push({
+      holdingDueAt: null,
+      clientId,
+      clientName: t.client?.name ?? "Unknown client",
+      clientAvatarUrl: t.client?.avatarUrl ?? null,
+      snippet: voicemail ? "Left a voicemail, call them back" : "Missed call, call them back",
+      occurredAt: t.createdAt,
+      ageMin: Math.max(0, Math.floor((now.getTime() - t.createdAt.getTime()) / 60_000)),
+      isVip: VIP_SEGMENTS.has(t.client?.segment ?? "") || VIP_SEGMENTS.has(t.client?.parent?.segment ?? ""),
+      unhappy: false,
+      family: "phone",
+      channel: "call",
+      threadKey: `c:${clientId}`,
+      groupKey: `c:${clientId}`,
+      inboxes: [],
+    });
+  }
+  return out;
+}
+
+/** Everyone waiting on a phone answer the pager acts on: the walk (holding
+ *  lines per pagerView) plus the lone callbacks above, oldest wait first. */
+export async function phoneWaiting(now: Date): Promise<UnansweredInbound[]> {
+  const live = pagerView(await findUnansweredInbound(now, { families: ["phone"], windowDays: SCAN_DAYS }), now);
+  const lone = await callbacksOwed(now, new Set(live.map((w) => w.clientId))).catch((e) => {
+    console.warn("callbacksOwed failed (the walk still pages)", e);
+    return [] as UnansweredInbound[];
+  });
+  return [...live, ...lone].sort((a, b) => b.ageMin - a.ageMin);
+}
+
+/** The reply owner's own ping (Oct 26 2026): who, how long, what they said,
+ *  the link. Money scrubbed — Kyle never sees a figure. No em dashes. Pure. */
+export function ownerPingText(
+  w: Pick<UnansweredInbound, "clientName" | "channel" | "snippet" | "isVip">,
+  age: string,
+  link: string,
+): string {
+  const who = `${w.clientName}${w.isVip ? " (VIP)" : ""}`;
+  if (w.channel === "call") return `📞 ${who} called ${age} ago and is still waiting on a call back. ${link}`;
+  return `💬 ${who} has been waiting ${age} for a reply: "${scrubMoney(w.snippet)}" Call or text them back: ${link}`;
+}
+
 // Has this tier already been announced for this exact inbound message?
 // notifyInApp suffixes dedupeKey with the target index ("-0" for our single
 // target), so we probe that concrete row. Knowing freshness OURSELVES (rather
@@ -270,8 +397,8 @@ async function alreadySent(dedupeKey: string): Promise<boolean> {
 // The every-5-minutes sweep (wired into /api/cron/gmail). NEVER throws —
 // a broken escalation must not take down Gmail polling. Returns counts for
 // the cron's step log.
-export async function sweepReplySla(): Promise<{ checked: number; tier1: number; tier2: number; email: EmailSlaCounts; followUp?: import("@/lib/emailFollowUp").FollowUpCounts }> {
-  const counts: { checked: number; tier1: number; tier2: number; email: EmailSlaCounts; followUp?: import("@/lib/emailFollowUp").FollowUpCounts } = { checked: 0, tier1: 0, tier2: 0, email: { ...NO_EMAIL_COUNTS } };
+export async function sweepReplySla(): Promise<{ checked: number; owner: number; tier1: number; tier2: number; email: EmailSlaCounts; followUp?: import("@/lib/emailFollowUp").FollowUpCounts }> {
+  const counts: { checked: number; owner: number; tier1: number; tier2: number; email: EmailSlaCounts; followUp?: import("@/lib/emailFollowUp").FollowUpCounts } = { checked: 0, owner: 0, tier1: 0, tier2: 0, email: { ...NO_EMAIL_COUNTS } };
   try {
     const now = new Date();
     // One read of the rota per sweep, not per client — this runs every five
@@ -283,8 +410,9 @@ export async function sweepReplySla(): Promise<{ checked: number; tier1: number;
     // pill's. Every message it wakes someone about is one a person can act on
     // in the next few minutes. Unanswered EMAIL has its own, quieter lane below
     // (Sep 26 2026): bell only, covered hours only, and never a backlog.
-    // A holding line is not paged before its answer is due (audit H4).
-    const waiting = pagerView(await findUnansweredInbound(now, { families: ["phone"], windowDays: SCAN_DAYS }), now);
+    // A holding line is not paged before its answer is due (audit H4). A
+    // missed call nobody returned is waiting too (Oct 26, callbacksOwed).
+    const waiting = await phoneWaiting(now);
     counts.checked = waiting.length;
     // WHOSE IT IS (§9, Sep 26): the open reply task's owner — Kyle, as a rule.
     const owners = await replyOwners(waiting.map((w) => w.clientId), "phone");
@@ -298,6 +426,31 @@ export async function sweepReplySla(): Promise<{ checked: number; tier1: number;
       const title = `${w.clientName} waiting ${age} — "${w.snippet.slice(0, 45)}"`; // notifyInApp caps at 90
       const href = `/clients/${w.clientId}`; // client page hosts the comms thread (ClientChat)
       const owner = owners.get(w.clientId) ?? null;
+      // What the office's own rows say: no figure on Kyle's screen.
+      const officeTitle = scrubMoney(title);
+
+      // --- The owner, by name: bell row + Slack DM, ANY hour (Oct 26). ---
+      // The bell row at index 0 is this ping's ledger, the tier keys' way.
+      const ownerKey = `sla-o-${w.clientId}-${iso}`;
+      let ownerPinged = false;
+      if (owner && w.ageMin > (w.isVip ? TIER1_MIN_VIP : TIER1_MIN) && w.ageMin <= OWNER_PING_MAX_AGE_MIN) {
+        ownerPinged = await alreadySent(ownerKey);
+        if (!ownerPinged) {
+          await notifyInApp({
+            kind: "reply_sla",
+            title: officeTitle,
+            body: w.channel === "call" ? "Waiting on a call back from you. Tap to see the conversation." : "Waiting on your reply. Tap to answer.",
+            href,
+            targets: [{ roles: ["ADMIN"], userKey: `tm:${owner.teamMemberId}` }],
+            dedupeKey: ownerKey,
+          });
+          await notifyStaffSms([owner.teamMemberId], ownerPingText(w, age, `${appBase()}${href}`), "reply_sla").catch((e) =>
+            console.warn("reply owner ping failed (the bell row went)", e),
+          );
+          ownerPinged = true;
+          counts.owner++;
+        }
+      }
 
       // --- Tier 1: bell → ADMIN + one Slack line. Coverage gated. ---
       // Gating the HELPER alone would have left this condition firing — the
@@ -306,18 +459,19 @@ export async function sweepReplySla(): Promise<{ checked: number; tier1: number;
       // in the function it came from.
       const tier1Urgent = urgencyOf(w, 1) === "urgent";
       if (w.ageMin > (w.isVip ? TIER1_MIN_VIP : TIER1_MIN) && (inHours || tier1Urgent) && !(await alreadySent(tier1Key))) {
+        const what = w.channel === "call" ? "Missed call not returned yet" : "Inbound text has no reply yet";
         await notifyInApp({
           kind: "reply_sla",
-          title,
+          title: officeTitle,
           // The ADMIN row is the informational copy; it names whose reply it
           // is, so nobody reads a broadcast as "someone should" (§9).
-          body: owner ? `Inbound text has no reply yet — ${owner.name}'s to answer. Tap to answer.` : `Inbound text has no reply yet. Tap to answer.`,
+          body: owner ? `${what} — ${owner.name}'s to answer. Tap to answer.` : `${what}. Tap to answer.`,
           href,
           // Index 0 stays the ADMIN broadcast: it is the ledger alreadySent()
-          // reads. The owner gets a row of their own only when their login
-          // cannot see ADMIN broadcasts — Kyle can, and two rows for one page
-          // would ring him twice.
-          targets: [{ roles: ["ADMIN"] }, ...(owner && !owner.seesAdminBroadcasts ? [{ roles: ["ADMIN" as const], userKey: `tm:${owner.teamMemberId}` }] : [])],
+          // reads. The owner's own row is the ping above (Oct 26); this adds
+          // one only when that did not go (a wait older than a day) and their
+          // login cannot see ADMIN broadcasts.
+          targets: [{ roles: ["ADMIN"] }, ...(owner && !ownerPinged && !owner.seesAdminBroadcasts ? [{ roles: ["ADMIN" as const], userKey: `tm:${owner.teamMemberId}` }] : [])],
           dedupeKey: tier1Key,
         });
         await opsAlert(`💬 Unanswered text${vipTag} — ${w.clientName} waiting ${age}: "${w.snippet}"`);

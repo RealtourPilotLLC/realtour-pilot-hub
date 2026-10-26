@@ -487,7 +487,17 @@ export async function getMorningBrief(): Promise<BriefTask[]> {
     include: { client: { select: { name: true, avatarUrl: true } } },
     orderBy: { dueAt: "asc" },
   });
-  return tasks.map((t) => mapTask(t, startToday));
+  return tasks.map((t) => mapTask(t, startToday)).sort(byUrgencyThenDue);
+}
+
+// URGENT FIRST (Oct 26 2026). Both digests print the top of these lists and
+// cut the rest to "…and N more". By due date alone, Logan Hartzell's URGENT
+// call-back sat at #14 behind month-old HIGH leads, two mornings running; and
+// Prisma's `priority: "asc"` sorts the words alphabetically (HIGH, LOW,
+// MEDIUM, URGENT), which put URGENT last. Rank, then due date (undated last).
+const PRIORITY_RANK: Record<string, number> = { URGENT: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+function byUrgencyThenDue(a: BriefTask, b: BriefTask): number {
+  return (PRIORITY_RANK[a.priority] ?? 2) - (PRIORITY_RANK[b.priority] ?? 2) || (a.dueAt ?? "￿").localeCompare(b.dueAt ?? "￿");
 }
 
 // Overdue, still-open to-dos — the things not finished on prior days.
@@ -508,7 +518,7 @@ export async function getOverdueTasks(): Promise<BriefTask[]> {
     include: { client: { select: { name: true, avatarUrl: true } } },
     orderBy: [{ priority: "asc" }, { dueAt: "asc" }],
   });
-  return tasks.map((t) => mapTask(t, startToday));
+  return tasks.map((t) => mapTask(t, startToday)).sort(byUrgencyThenDue);
 }
 
 // Stuck jobs (getStuckJobs) were deleted on Oct 21 2026 (Jordan's decisions):
