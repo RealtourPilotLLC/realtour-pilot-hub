@@ -524,6 +524,8 @@ type PrepRow = {
   project: {
     id: string; title: string; addressLine: string | null; status: string; deliveredAt: Date | null; shootDate: Date | null; clientId: string | null;
     photographerId: string | null;
+    /** a monthly content session: no access answer or on-site phone needed */
+    contentMonthId: string | null;
     client: { name: string } | null;
     photographer: { name: string } | null;
     deliverables: { type: string; label: string | null }[];
@@ -534,7 +536,7 @@ type PrepRow = {
 };
 
 const PREP_PROJECT_SELECT = {
-  id: true, title: true, addressLine: true, status: true, deliveredAt: true, shootDate: true, clientId: true, photographerId: true,
+  id: true, title: true, addressLine: true, status: true, deliveredAt: true, shootDate: true, clientId: true, photographerId: true, contentMonthId: true,
   client: { select: { name: true } },
   photographer: { select: { name: true } },
   deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true } },
@@ -1154,8 +1156,13 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     // On PTO or in the capacity register as off: Aryeo still has the shoot on them.
     const away = !started ? offAt(timeOff ?? [], photographerId, start) : null;
     if (away) gaps.unshift(away.fraction >= 1 ? `${offWords(photographer, away)}: reassign or move the shoot` : `${offWords(photographer, away)}: check they can make it`);
-    if (!acc.lockbox && !acc.access && !acc.presence) gaps.push("No access instructions (lockbox, door code or who is there)");
-    if (!acc.phone) gaps.push("No on-site contact phone");
+    // A monthly content session needs no access answer or on-site phone: the
+    // client is there and is the session (Jordan, Oct 26 2026: "monthly
+    // content doesnt need access info").
+    if (!p.contentMonthId) {
+      if (!acc.lockbox && !acc.access && !acc.presence) gaps.push("No access instructions (lockbox, door code or who is there)");
+      if (!acc.phone) gaps.push("No on-site contact phone");
+    }
     if (servicesFrom === "none") gaps.push(multi ? "No services listed for this visit (a split order)" : "No services on the order");
     const conflicts = visitConflicts({ services, requests: forThis.map((n) => n.text), orderNotes, lockbox: acc.lockbox, liveVisits: live.length });
     const unconfirmed = confirmation.state === "open" || confirmation.state === "none";

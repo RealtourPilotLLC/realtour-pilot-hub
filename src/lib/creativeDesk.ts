@@ -11,6 +11,9 @@ import { contentHref } from "@/lib/contentNav";
 import { etDate, etDateTime, etDayBoundsUtc, etDayKey, etDayStartUtc, etFullDate, etMonthKey, etTime } from "@/lib/datetime";
 import { DEV_GROUPS, developmentSeat, readDevelopment, type DevelopmentRead, type DevGroupKey, type DevItemView, type Signal } from "@/lib/teamDevelopment";
 import { delegationFor, tasksAssignedTo, type DelegatedTask, type DelegationState } from "@/lib/delegation";
+import { handoffClosedKey, handoffSig, isClosedOut, readClosedHandoffs } from "@/lib/handoffCloseOut";
+import { resolveVideoSpec } from "@/lib/pipeline";
+import { videoTier } from "@/lib/projectStatus";
 
 // ---------------------------------------------------------------------------
 // THE CREATIVE MANAGER'S DASHBOARD (Oct 23 2026, Jordan's spec §6): James's
@@ -105,6 +108,8 @@ export type HandoffRow = {
   missing: string[];
   exceptions: string[];
   links: LinkOut[];
+  /** the row as it reads now (lib/handoffCloseOut): a closed-out row comes back when this changes */
+  sig: string;
 };
 
 export type CutRow = {
@@ -209,7 +214,7 @@ export type CreativeDesk = {
   development: boolean;
   unavailable: string[];
   glance: { shoots: number | null; reviews: number | null; followUps: number | null; urgent: number | null; line: string };
-  production: { mine: ShootRow[]; handoffs: HandoffRow[]; team: HandoffRow[]; unavailable: boolean; myShootsHref: string };
+  production: { mine: ShootRow[]; handoffs: HandoffRow[]; team: HandoffRow[]; unavailable: boolean; myShootsHref: string; /** rows he closed out, hidden until something on them changes */ closedOut: number };
   review: { ready: CutRow[]; delayed: CutRow[]; coverHours: number; unavailable: boolean };
   team: { groups: DevGroupView[]; dueIds: string[]; unavailable: string[]; recordsUnavailable: boolean } | null;
   readiness: { items: DevelopmentRead["readiness"]; criteria: DevelopmentRead["criteria"]; people: { id: string; name: string }[]; unavailable: boolean } | null;
@@ -274,8 +279,9 @@ const STUDIO_READY = new Set(["approved", "sent_to_client", "client_approved", "
 type Ctx = { now: Date; tmId: string | null; appUserId: string | null; email: string | null; ex: string[]; myKey: string | null };
 
 const PROD_SELECT = {
-  id: true, title: true, status: true, addressLine: true, shootDate: true, photographerId: true, contentMonthId: true,
+  id: true, title: true, status: true, addressLine: true, shootDate: true, photographerId: true, contentMonthId: true, packageName: true,
   photographer: { select: { name: true } },
+  orderItems: { where: { isCanceled: false }, select: { title: true } },
   client: { select: { name: true } },
   scriptingId: true, scriptingStatus: true, scriptingUrl: true, scriptingScript: true, reelScript: true, reelShotList: true,
   debriefSubmittedAt: true, photosHandoffAt: true, videoHandoffAt: true, statusEvidence: true, handoffReadyAt: true, handoffBlockedReason: true,
@@ -286,7 +292,7 @@ type ProdProject = Prisma.ProjectGetPayload<{ select: typeof PROD_SELECT }>;
 async function readProduction(ctx: Ctx): Promise<CreativeDesk["production"]> {
   const { now, tmId, ex } = ctx;
   const myShootsHref = tmId ? `/shoot?as=${tmId}` : "/shoot";
-  if (!tmId) return { mine: [], handoffs: [], team: [], unavailable: false, myShootsHref };
+  if (!tmId) return { mine: [], handoffs: [], team: [], unavailable: false, myShootsHref, closedOut: 0 };
   const dayStart = etDayStartUtc(now);
   const today = etDayKey(now);
   const clientScope = ex.length ? { clientId: { notIn: ex } } : {};
@@ -329,7 +335,7 @@ async function readProduction(ctx: Ctx): Promise<CreativeDesk["production"]> {
     upcoming.length ? import("@/lib/photographerBrief").then((m) => m.briefStatusForAppointments(upcoming.map((v) => v.id))).catch(() => null) : Promise.resolve(null),
     upcoming.length && ctx.appUserId ? prisma.shootBriefRead.findMany({ where: { projectId: { in: upIds }, readerUserId: ctx.appUserId }, select: { projectId: true, readAt: true } }) : Promise.resolve([]),
     upcoming.length ? prisma.smartTask.findMany({ where: { projectId: { in: upIds }, taskType: "confirmation_text" }, orderBy: { createdAt: "desc" }, select: { projectId: true, status: true, dueAt: true, completedAt: true } }) : Promise.resolve([]),
-    upcoming.length ? prisma.clientAsk.findMany({ where: { projectId: { in: upIds }, kind: "SPECIAL_REQUEST", state: "OPEN" }, orderBy: { askedAt: "asc" }, select: { projectId: true, summary: true, text: true } }) : Promise.resolve([]),
+    upcoming.length ? prisma.clientAsk.findMany({ where: { projectId: { in: upIds }, kind: "SPECIAL_REQUEST", state: "OPEN" }, orderBy: { askedAt: "asc" }, select: { projectId: true, summary: true, text: true, askedAt: true } }) : Promise.resolve([]),
     (() => {
       const monthIds = [...new Set(upcoming.map((v) => byId.get(v.projectId)?.contentMonthId).filter((x): x is string => !!x))];
       return monthIds.length
@@ -354,7 +360,11 @@ async function readProduction(ctx: Ctx): Promise<CreativeDesk["production"]> {
       : conf.status === "COMPLETED" ? { key: "confirm", label: "Confirmation sent", tone: "ok" }
       : conf.status === "CANCELLED" ? { key: "confirm", label: "Confirmed another way", tone: "ok" }
       : { key: "confirm", label: "Not confirmed yet (Kyle)", tone: "info" });
-    chips.push(acc.lockbox || acc.access || acc.presence ? { key: "access", label: "Access noted", tone: "ok" } : { key: "access", label: "No access details", tone: "todo" });
+    // ACCESS IS KYLE'S (Jordan, Oct 26 2026: "no access details are not
+    // needed for him - really for kyle. But monthly content doesnt need
+    // access info"). Kyle's desk and the night-before task chase it; the
+    // creative's list says only what is on file, and nothing on a session.
+    if (!p.contentMonthId && (acc.lockbox || acc.access || acc.presence)) chips.push({ key: "access", label: "Access noted", tone: "ok" });
     const b = briefs?.get(v.id) ?? null;
     chips.push(!b ? { key: "brief", label: "Brief state unknown", tone: "info" }
       : b.state === "off" ? { key: "brief", label: "Daily brief off", tone: "off" }
@@ -363,7 +373,7 @@ async function readProduction(ctx: Ctx): Promise<CreativeDesk["production"]> {
       : b.state === "changed" ? { key: "brief", label: "Brief changed, Got it to tap", tone: "todo" }
       : b.state === "failed" ? { key: "brief", label: "Brief not sent (Kyle)", tone: "info" }
       : { key: "brief", label: "Brief not sent yet", tone: "info" });
-    const read = briefReads.find((r) => r.projectId === p.id);
+    const read = briefReads.filter((r) => r.projectId === p.id).sort((a, b) => b.readAt.getTime() - a.readAt.getTime())[0] ?? null;
     chips.push(read ? { key: "read", label: "Shoot brief read", tone: "ok" } : { key: "read", label: "Shoot brief to read", tone: "todo" });
     if (video) {
       const shotList = !!p.reelShotList?.trim() || outputs.some((o) => o.projectId === p.id);
@@ -377,14 +387,24 @@ async function readProduction(ctx: Ctx): Promise<CreativeDesk["production"]> {
     } else if (p.contentMonthId) {
       const n = monthScripts.find((m) => m.monthId === p.contentMonthId)?._count ?? 0;
       chips.push(n > 0 ? { key: "direction", label: `${plural(n, "script")} approved for the session`, tone: "ok" } : { key: "direction", label: "No approved scripts for the session yet", tone: "todo" });
-    } else if (live.some((d) => /agent/i.test(d.videoStyle ?? ""))) {
-      chips.push(p.reelScript?.trim() ? { key: "direction", label: "Agent direction written", tone: "ok" } : { key: "direction", label: "Agent direction to write", tone: "todo" });
+    } else if (video && resolveVideoSpec({ deliverables: p.deliverables, orderItems: p.orderItems, packageName: p.packageName, isPremium: videoTier(live) === "premium" }).spec.requireScript) {
+      // Oct 26 2026: only a video that takes a script waits on one (the
+      // listing-script rule, 9b89919). "Agent direction to write" asked him to
+      // write lines for an agent-intro reel, which has no script: the agent's
+      // words are typed at upload exactly as delivered.
+      chips.push(p.reelScript?.trim() ? { key: "direction", label: "Script ready", tone: "ok" } : { key: "direction", label: "Script not in yet (Script Writing)", tone: "info" });
     }
     // The visit's time has passed and the field has recorded nothing: said
     // as exactly that (never "shot", never "uploaded").
     if (start.getTime() < now.getTime()) chips.unshift({ key: "field", label: "Nothing recorded from the field yet", tone: "todo" });
-    const reqs = asks.filter((a) => a.projectId === p.id).map((a) => clean(a.summary?.trim() || a.text, 140));
-    if (reqs.length) chips.push({ key: "requests", label: `${plural(reqs.length, "special request")} to review`, tone: "todo" });
+    const askRows = asks.filter((a) => a.projectId === p.id);
+    const reqs = askRows.map((a) => clean(a.summary?.trim() || a.text, 140));
+    // A special request is in the shoot brief (its must-gets): reading the
+    // brief reviews it. One that came in after his read waits for a re-read.
+    const unread = askRows.filter((a) => !read || a.askedAt > read.readAt).length;
+    if (askRows.length) chips.push(unread === 0 ? { key: "requests", label: `${plural(askRows.length, "special request")}, in the brief you read`, tone: "ok" }
+      : read ? { key: "requests", label: `${plural(unread, "new special request")}: read the brief again`, tone: "todo" }
+      : { key: "requests", label: `${plural(unread, "special request")} in the brief`, tone: "info" });
     return {
       id: v.id,
       projectId: p.id,
@@ -416,11 +436,18 @@ async function readProduction(ctx: Ctx): Promise<CreativeDesk["production"]> {
     const stillAhead = upcoming.some((v) => v.projectId === p.id);
     return (past || recorded) && !stillAhead;
   });
-  const handoffs = (await handoffRows(handedProjects, visits, drafts, ctx, true)).slice(0, 40);
+  const allHandoffs = await handoffRows(handedProjects, visits, drafts, ctx, true);
 
   // The team he supervises: the other field creatives' last two weeks.
   const team = await readTeamHandoffs(ctx).catch((e: unknown) => { console.warn("creativeDesk: team handoffs failed", (e as Error).message); return null; });
-  return { mine, handoffs, team: team ?? [], unavailable: team === null, myShootsHref };
+  // The rows he closed out (lib/handoffCloseOut), while they read as they did then.
+  const closedRow = ctx.myKey ? await prisma.appSetting.findUnique({ where: { key: handoffClosedKey(ctx.myKey) }, select: { value: true } }).catch(() => null) : null;
+  const closed = readClosedHandoffs(closedRow?.value);
+  const open = (rows: HandoffRow[]) => rows.filter((r) => !isClosedOut(r, closed, now));
+  const handoffs = open(allHandoffs);
+  const teamOpen = open(team ?? []);
+  const closedOut = allHandoffs.length - handoffs.length + (team ?? []).length - teamOpen.length;
+  return { mine, handoffs: handoffs.slice(0, 40), team: teamOpen, unavailable: team === null, myShootsHref, closedOut };
 }
 
 async function handoffRows(
@@ -487,6 +514,7 @@ async function handoffRows(
       lines,
       missing: missingWords,
       exceptions,
+      sig: handoffSig({ status, lines, missing: missingWords, exceptions }),
       links: [
         { label: open.length ? "Upload" : "Finish handoff", href: `/upload/${p.id}` },
         { label: "Flag an issue", href: `/shoot/${p.id}` },
@@ -523,7 +551,7 @@ async function readTeamHandoffs(ctx: Ctx): Promise<HandoffRow[]> {
     prisma.uploadDraft.findMany({ where: { projectId: { in: ids }, consumedAt: null }, select: { projectId: true, savedAt: true } }),
   ]);
   const rows = await handoffRows(projects, visits, drafts, ctx, false);
-  return rows.sort((a, b) => (a.visitISO ?? "").localeCompare(b.visitISO ?? "")).slice(0, 40);
+  return rows.sort((a, b) => (a.visitISO ?? "").localeCompare(b.visitISO ?? "")).slice(0, 60);
 }
 
 // ---- C · creative review ---------------------------------------------------------------------
@@ -856,7 +884,7 @@ export async function buildCreativeDesk(me: DeskViewer, opts: { now?: Date; incl
   // /development reads only D, E and G (its own full lists).
   const devOnly = opts.only === "development";
   const [production, review, dev, prep, improvements] = await Promise.all([
-    devOnly ? Promise.resolve({ mine: [], handoffs: [], team: [], unavailable: false, myShootsHref: "/shoot" }) : readProduction(ctx).catch(warn("your shoots")),
+    devOnly ? Promise.resolve({ mine: [], handoffs: [], team: [], unavailable: false, myShootsHref: "/shoot", closedOut: 0 }) : readProduction(ctx).catch(warn("your shoots")),
     devOnly ? Promise.resolve({ ready: [], delayed: [], coverHours: 9, unavailable: false }) : readReview(ctx, !!opts.includeTest).catch(warn("the review queue")),
     seat ? readDevelopment({ now, excludeClientIds: ex, includeRecent: devOnly, decisionsBy: me.email ? [me.email] : [] }).catch(warn("team development")) : Promise.resolve(null),
     devOnly ? Promise.resolve([] as PrepRow[]) : readPrep(ctx, { jordan: jordanName, me: first(me.name) || "You" }).catch(warn("creative preparation")),
@@ -939,7 +967,7 @@ export async function buildCreativeDesk(me: DeskViewer, opts: { now?: Date; incl
     development: seat,
     unavailable,
     glance: { shoots: shootsToday, reviews, followUps: seat ? followUps : null, urgent, line },
-    production: production ?? { mine: [], handoffs: [], team: [], unavailable: true, myShootsHref: me.teamMemberId ? `/shoot?as=${me.teamMemberId}` : "/shoot" },
+    production: production ?? { mine: [], handoffs: [], team: [], unavailable: true, myShootsHref: me.teamMemberId ? `/shoot?as=${me.teamMemberId}` : "/shoot", closedOut: 0 },
     review: review ?? { ready: [], delayed: [], coverHours: 9, unavailable: true },
     team,
     readiness,

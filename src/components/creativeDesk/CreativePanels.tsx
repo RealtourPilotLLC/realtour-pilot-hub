@@ -12,8 +12,9 @@ import { approveCut } from "@/app/review/actions";
 import {
   acceptTaskAction, completeTaskAction, escalateTaskAction, flagBlockerAction, submitForVerificationAction, updateTaskAction,
 } from "@/app/delegation/actions";
+import { HANDOFF_CLOSE_REASONS, type HandoffCloseReason } from "@/lib/handoffCloseOut";
 import {
-  addImprovementAction, askJordanImprovementAction, assignPracticeAction, creativeCloseoutTickAction, escalateCutAction,
+  addImprovementAction, askJordanImprovementAction, assignPracticeAction, closeOutHandoffAction, creativeCloseoutTickAction, escalateCutAction,
   finishImprovementAction, recommendToJordanAction, recordFeedbackAction, recordFollowUpAction, saveAssessmentAction,
   startAssessmentAction, updateImprovementAction, updatePlanAction, verifyImprovementAction,
 } from "@/app/creativeDeskActions";
@@ -650,5 +651,51 @@ export function CloseoutTick({ line, dayKey, readOnly }: { line: CloseoutLine; d
       <p className={cn("pl-7 text-[12px]", line.done ? "text-success" : "text-muted")}>{line.words}{line.tick && !auto ? ` · ticked ${etDateTime(line.tick.atISO)}` : ""}</p>
       {msg && !msg.ok && <p role="alert" className="pl-7 text-[12px] text-danger">{msg.message}</p>}
     </div>
+  );
+}
+
+/**
+ * "Close out" on a handoff row (Oct 26 2026, lib/handoffCloseOut): takes it off
+ * his list with a reason and leaves a note on the job. It comes back if
+ * anything on the row changes ("I followed up" brings it back in two days).
+ */
+export function HandoffCloseOut({ row, readOnly }: { row: { projectId: string; sig: string; street: string; photographer: string; mine: boolean }; readOnly: boolean }) {
+  const { busy, msg, run } = useRun();
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState<HandoffCloseReason | null>(null);
+  const [note, setNote] = useState("");
+  if (readOnly) return null;
+  const first = row.photographer.trim().split(/\s+/)[0] || "the photographer";
+  // His own shoot: there is nobody to follow up with.
+  const reasons = HANDOFF_CLOSE_REASONS.filter((r) => !(row.mine && r.key === "followed_up"));
+  if (!open) {
+    return (
+      <button type="button" data-close-out={row.projectId} onClick={() => setOpen(true)} className="inline-flex min-h-8 items-center text-[12px] font-medium text-muted hover:text-brand">
+        Close out
+      </button>
+    );
+  }
+  return (
+    <form
+      data-close-out-form={row.projectId}
+      className="mt-2 w-full basis-full space-y-2 rounded-xl border border-border p-3"
+      onSubmit={(e) => { e.preventDefault(); if (reason) run(() => closeOutHandoffAction(row.projectId, row.sig, reason, note)); }}
+    >
+      <fieldset className="space-y-0.5">
+        <legend className={LABEL}>Why is {row.street} closed out?</legend>
+        {reasons.map((r) => (
+          <label key={r.key} className="flex min-h-10 items-center gap-2 text-sm">
+            <input type="radio" name={`close-out-${row.projectId}`} value={r.key} checked={reason === r.key} onChange={() => setReason(r.key)} className="size-4 accent-[var(--color-brand)]" />
+            {r.key === "followed_up" ? `I followed up with ${first} (back in 2 days if nothing changes)` : r.label}
+          </label>
+        ))}
+      </fieldset>
+      <input className={INPUT} value={note} onChange={(e) => setNote(e.target.value)} maxLength={300} placeholder="Note for the job (optional)" aria-label="Note for the job (optional)" />
+      <div className="flex flex-wrap gap-2">
+        <button type="submit" className={PRIMARY} disabled={busy || !reason}>{busy && <Loader2 aria-hidden className="size-4 animate-spin" />}Close out</button>
+        <button type="button" className={QUIET} onClick={() => setOpen(false)} disabled={busy}>Cancel</button>
+      </div>
+      <Said msg={msg} />
+    </form>
   );
 }

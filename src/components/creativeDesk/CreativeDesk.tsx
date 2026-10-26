@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import { homeRecordHref } from "@/lib/homeRecordScope";
 import type { AssignedRow, Chip, CreativeDesk as Desk, CutRow, DevGroupView, HandoffRow, ImprovementRow, PrepRow, ShootRow } from "@/lib/creativeDesk";
 import type { ReadinessView } from "@/lib/teamDevelopment";
-import { CloseoutTick, PanelBody, type Panel } from "@/components/creativeDesk/CreativePanels";
+import { CloseoutTick, HandoffCloseOut, PanelBody, type Panel } from "@/components/creativeDesk/CreativePanels";
 
 // ---------------------------------------------------------------------------
 // THE CREATIVE MANAGER'S DASHBOARD, the screen (Oct 23 2026, Jordan's spec §6
@@ -101,7 +101,7 @@ export function CreativeDesk({ desk, mode = "home", includeTest = false, initial
               <>
                 <SubHead>Handoffs to finish</SubHead>
                 <ul data-list="my-handoffs" className="divide-y divide-border">
-                  {desk.production.handoffs.slice(0, limit).map((h) => <HandoffLine key={h.projectId} h={h} href={href} />)}
+                  {desk.production.handoffs.slice(0, limit).map((h) => <HandoffLine key={h.projectId} h={h} href={href} readOnly={desk.readOnly} />)}
                 </ul>
                 <More n={desk.production.handoffs.length - limit} href={href("/upload")} what="handoff" />
               </>
@@ -111,10 +111,13 @@ export function CreativeDesk({ desk, mode = "home", includeTest = false, initial
               <Empty>{desk.production.unavailable ? "The team's shoots couldn't be read." : "Every team shoot from the last two weeks is handed off."}</Empty>
             ) : (
               <ul data-list="team-handoffs" className="divide-y divide-border">
-                {desk.production.team.slice(0, limit).map((h) => <HandoffLine key={h.projectId} h={h} href={href} team />)}
+                {desk.production.team.slice(0, limit).map((h) => <HandoffLine key={h.projectId} h={h} href={href} readOnly={desk.readOnly} team />)}
               </ul>
             )}
             <More n={desk.production.team.length - limit} href={href("/upload")} what="team handoff" />
+            {desk.production.closedOut > 0 && (
+              <p data-closed-out={desk.production.closedOut} className="mt-1 text-[12px] text-muted">{desk.production.closedOut} closed out. Each comes back if anything new turns up on the job.</p>
+            )}
           </Section>
 
           {/* C · CREATIVE REVIEW */}
@@ -324,7 +327,7 @@ function ShootLine({ s, href }: { s: ShootRow; href: (h: string) => string }) {
   );
 }
 
-function HandoffLine({ h, href, team = false }: { h: HandoffRow; href: (h: string) => string; team?: boolean }) {
+function HandoffLine({ h, href, readOnly, team = false }: { h: HandoffRow; href: (h: string) => string; readOnly: boolean; team?: boolean }) {
   return (
     <li data-handoff={h.projectId} data-mine={h.mine ? "true" : "false"} className="py-2.5">
       <div className="flex items-start gap-3">
@@ -337,9 +340,10 @@ function HandoffLine({ h, href, team = false }: { h: HandoffRow; href: (h: strin
       <Chips chips={h.lines} />
       {h.missing.length > 0 && <p className="mt-1 text-[12px] text-muted [overflow-wrap:anywhere]">Missing: {h.missing.join("; ")}</p>}
       {h.exceptions.length > 0 && <p className="mt-0.5 text-[12px] text-muted [overflow-wrap:anywhere]">Exceptions: {h.exceptions.join("; ")}</p>}
-      {!team && (
-        <p className="mt-0.5 text-[12px]"><Link href={href(h.links[1].href)} className="inline-flex min-h-8 items-center font-medium text-brand hover:underline">{h.links[1].label}</Link></p>
-      )}
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-4 text-[12px]">
+        {!team && <Link href={href(h.links[1].href)} className="inline-flex min-h-8 items-center font-medium text-brand hover:underline">{h.links[1].label}</Link>}
+        <HandoffCloseOut row={h} readOnly={readOnly} />
+      </div>
     </li>
   );
 }

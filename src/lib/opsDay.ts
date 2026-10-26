@@ -391,7 +391,7 @@ const shootOver = (start: Date | null, appointments: ApptTimes[], now: Date): bo
 };
 
 const SHOOT_SELECT = {
-  id: true, title: true, shootDate: true, debriefSubmittedAt: true,
+  id: true, title: true, shootDate: true, debriefSubmittedAt: true, contentMonthId: true,
   lat: true, lng: true, aryeoListingId: true, aryeoOrderId: true, clientId: true,
   // The street itself — a pin-only Aryeo order arrives with addressLine null
   // and the title "[No address provided]", and the card must call that a gap.
@@ -410,7 +410,7 @@ const SHOOT_SELECT = {
 } as const;
 
 type ShootRowInput = {
-  id: string; title: string; shootDate: Date | null; debriefSubmittedAt: Date | null;
+  id: string; title: string; shootDate: Date | null; debriefSubmittedAt: Date | null; contentMonthId: string | null;
   lat: number | null; lng: number | null; aryeoListingId: string | null; aryeoOrderId: string | null; clientId: string | null;
   addressLine: string | null;
   photographer: { name: string } | null;
@@ -465,7 +465,10 @@ async function shootRow(
   // Content, not existence: a 1,200-character brief with every access field
   // blank used to pass, so /ops promised "every shoot assigned with access
   // notes on file" while the cards showed none (audit).
-  if (!access.lockbox && !access.access && !access.presence && !access.special && !access.orderNotes && !access.notes) {
+  // A monthly content session needs no access answer (Jordan, Oct 26 2026:
+  // "monthly content doesnt need access info"), so no night-before
+  // "Get access details" task for Kyle either (eveningPush reads this gap).
+  if (!p.contentMonthId && !access.lockbox && !access.access && !access.presence && !access.special && !access.orderNotes && !access.notes) {
     gaps.push("no lockbox / access answer on the appointment");
   }
   if (p.deliverables.length === 0) gaps.push("no services on the order");

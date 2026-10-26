@@ -154,7 +154,8 @@ async function main() {
     c.ok("…Kyle's confirmation (the desk's own record): sent", chip("confirm")?.label === "Confirmation sent" && chip("confirm")?.tone === "ok");
     c.ok("…access from the order, the daily brief's state (switched off here), the shoot brief not yet read", chip("access")?.label === "Access noted" && chip("brief")?.tone === "off" && chip("read")?.label === "Shoot brief to read");
     c.ok("…the agent script from Script Studio, in words (waiting on Jordan's review: missing prep)", chip("direction")?.label === "Agent script waiting on Jordan's review" && chip("direction")?.tone === "todo");
-    c.ok("…the special request, to review", s1?.requests.includes("Pool at dusk") === true && s1?.missing.some((m) => /special request/.test(m)) === true);
+    // Oct 26 2026: a special request is in the shoot brief, so reading the brief reviews it.
+    c.ok("…the special request, carried by the brief to read (not a separate thing to prepare)", s1?.requests.includes("Pool at dusk") === true && chip("requests")?.label === "1 special request in the brief" && chip("requests")?.tone === "info" && s1?.missing.includes("Shoot brief to read") === true && !s1?.missing.some((m) => /special request/.test(m)), JSON.stringify(s1?.chips));
     c.ok("…actions open the existing pages: Open brief (/shoot/<id>), the daily brief, Script Studio", s1?.links[0]?.href === `/shoot/${p1.id}` && s1?.links.some((l) => l.href === `/shoot/brief/${tomorrowKey}`) === true);
     c.ok("a split job's second visit is upcoming (the first visit's handoff is not this visit's)", mine.some((s) => s.id === v4b.id) && !d.production.handoffs.some((h) => h.projectId === p4.id));
     const h2 = d.production.handoffs.find((h) => h.projectId === p2.id);
@@ -163,6 +164,43 @@ async function main() {
     c.ok("…its capture exception (the field flag) and Flag an issue are on the row", !!h2 && h2.exceptions.some((e) => /Gate code/.test(e)) && h2.links.some((l) => l.label === "Flag an issue"));
     c.ok("a complete handoff is not listed", !d.production.handoffs.some((h) => h.projectId === p3.id));
     c.ok("the team's shoots are apart from his own (Harrison's, with his name)", d.production.team.some((h) => h.projectId === p5.id && h.photographer === "Harrison Wells" && !h.mine) && !d.production.handoffs.some((h) => h.projectId === p5.id) && !mine.some((s) => s.projectId === p5.id));
+    // Oct 26 2026 (Jordan: "no way to close these out"; access is Kyle's; monthly content needs none; "Agent direction to write - what does").
+    await prisma.shootBriefRead.create({ data: { projectId: p1.id, readerUserId: james.id, digest: "a".repeat(64), snapshotJson: "[]", readAt: at(-H) } });
+    d = await desk();
+    let s1r = d.production.mine.find((s) => s.id === v1.id);
+    c.ok("brief read after the request came in: the request reads as reviewed, nothing about it to prepare", s1r?.chips.find((x) => x.key === "read")?.label === "Shoot brief read" && s1r?.chips.find((x) => x.key === "requests")?.label === "1 special request, in the brief you read" && s1r?.chips.find((x) => x.key === "requests")?.tone === "ok" && !s1r?.missing.some((m) => /special request|brief to read/i.test(m)), JSON.stringify(s1r?.chips));
+    await prisma.clientAsk.create({ data: { clientId: client.id, projectId: p1.id, kind: "SPECIAL_REQUEST", medium: "video", text: "Also the fire pit", summary: "Fire pit", source: "text", askedAt: at(-30 * 60_000), state: "OPEN" } });
+    d = await desk();
+    s1r = d.production.mine.find((s) => s.id === v1.id);
+    c.ok("…a request that came in after his read: read the brief again", s1r?.chips.find((x) => x.key === "requests")?.label === "1 new special request: read the brief again" && s1r?.missing.includes("1 new special request: read the brief again") === true, JSON.stringify(s1r?.chips));
+    const pNoAccess = await job("77 No Access Way, Town", { deliverables: { create: [{ type: "PHOTOS", label: "Photos" }, { type: "SOCIAL_REEL", label: "Standard Reel w/ Agent intro", videoStyle: "agent_intro_reel" }] } });
+    const vNoAccess = await visit(pNoAccess.id, etAt(day(3), 9), jamesTm.id, { description: desc(null), rawJson: raw(["Photos", "Standard Reel w/ Agent intro"]) });
+    const month = await prisma.contentMonth.create({ data: { enrollmentId: (await prisma.contentEnrollment.create({ data: { clientId: client.id, status: "ACTIVE", package: "Accelerator", videosPerMonth: 4, sessionsPerMonth: 1, sessionHours: 2, startedAt: at(-30 * D) } as never })).id, clientId: client.id, monthKey: etDayKey(at(3 * D)).slice(0, 7), videosOwed: 4 } as never });
+    const pSession = await job("88 Session St, Town", { contentMonthId: month.id, deliverables: { create: [{ type: "VIDEO", label: "Content Session" }] } });
+    const vSession = await visit(pSession.id, etAt(day(3), 13), jamesTm.id, { description: desc("9999"), rawJson: raw(["Full Day Content Shoot"]) });
+    d = await desk();
+    const sNo = d.production.mine.find((s) => s.id === vNoAccess.id);
+    const sSes = d.production.mine.find((s) => s.id === vSession.id);
+    c.ok("no access on file: no access line on his list (Kyle's desk and the night-before task chase it)", !!sNo && !sNo.chips.some((x) => x.key === "access") && !JSON.stringify(d.production).includes("No access details"), JSON.stringify(sNo?.chips));
+    c.ok("an agent-intro reel has no script to write: no 'Agent direction to write' (the agent's words are typed at upload)", !!sNo && !sNo.chips.some((x) => x.key === "direction") && !JSON.stringify(d.production).includes("Agent direction"), JSON.stringify(sNo?.chips));
+    c.ok("a monthly content session: no access line at all, even with a lockbox on the order", !!sSes && !sSes.chips.some((x) => x.key === "access"), JSON.stringify(sSes?.chips));
+    // CLOSE OUT: a team row off his list with a reason and a note on the job; back when anything on it changes.
+    const t5 = d.production.team.find((h) => h.projectId === p5.id)!;
+    const closedRes = await actions.closeOutHandoffAction(p5.id, t5.sig, "outside", "Files came in by Dropbox");
+    d = await desk();
+    c.ok("Close out takes Harrison's row off his list, counts it, and leaves a note on the job", closedRes.ok && !d.production.team.some((h) => h.projectId === p5.id) && d.production.closedOut === 1 && (await prisma.activity.count({ where: { projectId: p5.id, type: "NOTE", body: { contains: "closed out this handoff on the creative dashboard: handled outside the hub. Files came in by Dropbox" } } })) === 1, closedRes.message);
+    c.ok("…nothing on the job itself changed (status, handoff stamps)", (await prisma.project.findUniqueOrThrow({ where: { id: p5.id } })).photosHandoffAt === null && (await prisma.project.findUniqueOrThrow({ where: { id: p5.id } })).status === "SCHEDULED");
+    await prisma.activity.create({ data: { projectId: p5.id, type: "FLAG", body: "Lockbox was empty" } });
+    d = await desk();
+    c.ok("…something new on the job (a field flag) brings the row back", d.production.team.some((h) => h.projectId === p5.id && h.exceptions.some((e) => /Lockbox was empty/.test(e))) && d.production.closedOut === 0);
+    const t5b = d.production.team.find((h) => h.projectId === p5.id)!;
+    const snooze = await actions.closeOutHandoffAction(p5.id, t5b.sig, "followed_up", null);
+    const stored = JSON.parse((await prisma.appSetting.findUniqueOrThrow({ where: { key: "creative_handoff_closed:james" } })).value) as Record<string, { until: string | null; reason: string }>;
+    c.ok("\"I followed up with Harrison\" is a two-day snooze, with his name on the job's note", snooze.ok && stored[p5.id]?.reason === "followed_up" && Math.abs(new Date(stored[p5.id].until!).getTime() - (Date.now() + 2 * D)) < 60_000 && (await prisma.activity.count({ where: { projectId: p5.id, body: { contains: "followed up with Harrison" } } })) === 1, JSON.stringify(stored[p5.id]));
+    d = await buildCreativeDesk(await me(), { now: new Date(Date.now() + 3 * D) });
+    c.ok("…and it is back once the two days are up", d.production.team.some((h) => h.projectId === p5.id));
+    c.ok("a bad reason or a stale row is refused", !(await actions.closeOutHandoffAction(p5.id, t5b.sig, "whatever" as never, null)).ok && !(await actions.closeOutHandoffAction("nope", t5b.sig, "outside", null)).ok);
+
     // Today: the visit time passes and nothing is recorded: still "nothing recorded", not done.
     const p6 = await job("66 Today Ct, Town", { deliverables: { create: [{ type: "PHOTOS", label: "Photos" }] } });
     const v6 = await visit(p6.id, new Date(Math.max(etAt(today, 0, 5).getTime(), T.getTime() - 3 * H)), jamesTm.id);

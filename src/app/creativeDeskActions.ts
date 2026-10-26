@@ -12,6 +12,7 @@ import {
   CLOSEOUT_ITEMS, IMPROVEMENT_AREAS, IMPROVEMENT_TASK_TYPE, creativeCloseoutKey, improvementMetaKey,
   type CreativeCloseoutKey, type CreativeCloseoutRecord, type ImprovementMeta,
 } from "@/lib/creativeDesk";
+import { HANDOFF_CLOSE_REASONS, handoffClosedKey, pruneClosedHandoffs, readClosedHandoffs, type HandoffCloseReason } from "@/lib/handoffCloseOut";
 import {
   assessmentHref, cleanText, developmentPeople, developmentSeat, existingCriteria, isDevGroup, isRecommendation, isTrack, itemHref,
   parseCriteria, parseEvidence, parseLog, readDevelopment, trackLabel,
@@ -34,7 +35,9 @@ import {
 //   · readiness (ReadinessAssessment): start, assess, recommend to Jordan (a
 //     decision task for Jordan; nothing about staffing or pay is written);
 //   · process improvements (a SmartTask of type process_improvement, its next
-//     step and outcome beside it), and escalating a cut decision to Jordan.
+//     step and outcome beside it), and escalating a cut decision to Jordan;
+//   · closing out a handoff row on his list (Oct 26 2026, lib/handoffCloseOut):
+//     a reason, a note on the job, nothing else on the job changed.
 // Every write refuses the owner's "view as" preview, is limited to the owner
 // and the creative manager, and writes its AuditLog row first.
 // ---------------------------------------------------------------------------
@@ -92,6 +95,33 @@ export async function creativeCloseoutTickAction(dayKey: string, key: CreativeCl
   await audit(s.by, on ? "creative_closeout_tick" : "creative_closeout_untick", `${person}:${dayKey}:${key}`, { person, dayKey, key, at });
   await prisma.appSetting.upsert({ where: { key: k }, create: { key: k, value: JSON.stringify(rec), updatedBy: s.email ?? s.by }, update: { value: JSON.stringify(rec), updatedBy: s.email ?? s.by } });
   return done(on ? "Ticked. Nothing else changed." : "Unticked.");
+}
+
+// ---- closing out a handoff row ------------------------------------------------------------
+
+export async function closeOutHandoffAction(projectId: string, sig: string, reason: HandoffCloseReason, note?: string | null): Promise<CreativeResult> {
+  const s = await seat();
+  if (!s.ok) return s;
+  if (!ID.test(String(projectId)) || typeof sig !== "string" || !/^[a-z0-9]{1,16}$/.test(sig)) return { ok: false, message: "That row isn't recognised. Reload the page." };
+  const why = HANDOFF_CLOSE_REASONS.find((r) => r.key === reason);
+  if (!why) return { ok: false, message: "Pick why it's closed out." };
+  const roster = await listAssignees().catch(() => []);
+  const person = s.me ? viewerAssigneeKey(s.me, roster) : "james";
+  if (!person) return { ok: false, message: "Your login isn't linked to a team member, so there is no list to close this on." };
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true, photographer: { select: { name: true } } } });
+  if (!project) return { ok: false, message: "That job wasn't found. Reload the page." };
+  const words = reason === "followed_up" ? `followed up with ${firstName(project.photographer?.name ?? "the photographer")}` : why.label.toLowerCase();
+  const n = text(note, 300) || null;
+  const now = new Date();
+  const k = handoffClosedKey(person);
+  const row = await prisma.appSetting.findUnique({ where: { key: k } });
+  const closed = readClosedHandoffs(row?.value);
+  pruneClosedHandoffs(closed, now);
+  closed[projectId] = { at: now.toISOString(), by: s.by, reason, note: n, sig, until: why.snoozeDays ? new Date(now.getTime() + why.snoozeDays * 86_400_000).toISOString() : null };
+  await audit(s.by, "creative_handoff_close_out", projectId, { person, reason, note: n, sig });
+  await prisma.appSetting.upsert({ where: { key: k }, create: { key: k, value: JSON.stringify(closed), updatedBy: s.email ?? s.by }, update: { value: JSON.stringify(closed), updatedBy: s.email ?? s.by } });
+  await prisma.activity.create({ data: { projectId, type: "NOTE", body: `${firstName(s.by)} closed out this handoff on the creative dashboard: ${words}${n ? `. ${n}` : "."}`.slice(0, 1000), authorId: s.me?.teamMemberId ?? null } });
+  return done(why.snoozeDays ? `Closed out. It comes back in ${why.snoozeDays} days if nothing has changed.` : "Closed out. It comes back if anything new turns up on this job.");
 }
 
 // ---- coaching ---------------------------------------------------------------------------
