@@ -1,5 +1,8 @@
 import Link from "next/link";
-import { Plug, ShieldCheck, ShieldOff, AlertTriangle, CheckCircle2, Landmark, ChevronRight } from "lucide-react";
+import { Plug, ShieldOff, AlertTriangle, CheckCircle2, Landmark, ChevronRight } from "lucide-react";
+import { ConnectionsNav } from "@/components/connections/ConnectionsNav";
+import { HashView } from "@/components/ui/HashViews";
+import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/PageHeader";
 import { requirePageAccess } from "@/lib/auth/guards";
 import { ProviderCard, type ConnState } from "@/components/connections/ProviderCard";
@@ -129,6 +132,16 @@ const GMAIL_RESULT: Record<string, { ok: boolean; text: string }> = {
     text: "Google refused the connection, or returned no refresh token. Remove this app under your Google account’s third-party access, then press “Connect Gmail” again.",
   },
 };
+
+// A section's heading and its one sentence (Oct 26 2026).
+function ViewHeader({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <h2 id={`${id}-heading`} className="text-lg font-semibold tracking-tight">{title}</h2>
+      <p className="mt-1 max-w-3xl text-sm leading-relaxed text-muted">{children}</p>
+    </div>
+  );
+}
 
 // A card whose data read failed. Says so, rather than an all-clear it never checked.
 function CardUnavailable({ name }: { name: string }) {
@@ -366,6 +379,122 @@ export default async function ConnectionsPage({
   const hiddenFromCount = (p: string) => p.endsWith("_webhook") || p.startsWith("frameio");
   const errorCount = connections.filter((c) => c.status === "ERROR" && !hiddenFromCount(c.provider)).length;
 
+  const providerCard = (provider: (typeof CARDS)[number]) => {
+    // The Sep 16 speech-to-text card carries its own state and actions.
+    if (provider.id === "transcription") {
+      return transcription ? (
+        <TranscriptionCard {...transcription} />
+      ) : (
+        <CardUnavailable name={provider.name} />
+      );
+    }
+    // Gemini video analysis (Oct 24 2026): its own card, key and switches.
+    if (provider.id === "gemini_video") {
+      return gemini ? (
+        <GeminiCard
+          key={provider.id}
+          key_={gemini.key}
+          settings={gemini.settings}
+          usage={gemini.usage}
+          counts={gemini.counts}
+          recentErrors={gemini.recentErrors}
+          trial={{ words: gemini.trial.summary.words, barMet: gemini.trial.summary.barMet, startedAt: gemini.trial.startedAt, endsAt: gemini.trial.endsAt, reviewersOn: gemini.trial.reviewersOn, open: gemini.trial.open }}
+        />
+      ) : (
+        <CardUnavailable name={provider.name} />
+      );
+    }
+    const c = byProvider.get(provider.id);
+    const conn: ConnState | null = c
+      ? {
+          status: c.status,
+          accountLabel: c.accountLabel,
+          lastSyncedAt: c.lastSyncedAt ? c.lastSyncedAt.toISOString() : null,
+          lastError: c.lastError,
+        }
+      : null;
+    return (
+      <ProviderCard
+        key={provider.id}
+        provider={provider}
+        conn={conn}
+        deployed={deployed}
+        dropboxAuthorizeUrl={
+          provider.id === "dropbox" && dropboxConfigured() ? dropboxAuthorizeUrl() : undefined
+        }
+        googleAuthorizeUrl={
+          provider.id === "gmail" && googleConfigured() ? googleAuthorizeUrl() : undefined
+        }
+        gmailSendHealth={provider.id === "gmail" ? gmailSend : undefined}
+        slackScopes={provider.id === "slack" ? slackScopes : undefined}
+        // Only the two providers that POST into this app have a
+        // receiver to secure; every other card omits the chip.
+        webhookSecurity={
+          provider.id in webhookSigned
+            ? {
+                signed: webhookSigned[provider.id],
+                unsignedAccepted: unsignedAccepted.get(provider.id) ?? 0,
+                // Whether this receiver currently REFUSES what it
+                // can't verify (RTP-28). Default is each
+                // receiver's long-standing behaviour, so an
+                // untouched hub reads exactly as it did before.
+                enforced: webhookLanes?.find((l) => l.provider === provider.id)?.enforced ?? false,
+                armMode: webhookLanes?.find((l) => l.provider === provider.id)?.armMode ?? null,
+              }
+            : undefined
+        }
+      />
+    );
+  };
+
+  // THE OVERVIEW (Oct 26 2026: "same with the connections page"). Four
+  // numbers, then one list of everything that needs a look, each line linking
+  // to the section that fixes it, then every service with its state. Read off
+  // the same values the sections below render, nothing new is asked of a provider.
+  const nameOf = (id: string) => PROVIDERS.find((p) => p.id === id)?.name ?? (id === "plaid" ? "Bank feeds (Plaid)" : id);
+  // A feed from a service that is not connected is quiet by definition, not a fault.
+  const quietLanes = (webhookLanes ?? []).filter((l) => (l.silent || l.neverDelivered) && !(providerIds.has(l.provider) && byProvider.get(l.provider)?.status !== "CONNECTED"));
+  const scheduled = crons.filter((c) => c.expected);
+  const lateCrons = scheduled.filter((c) => c.stale || c.neverRecorded || (c.lastActing ?? c.runs[0])?.ok === false);
+  const mailboxProblems = (mailboxRows ?? []).filter((m) => !m.connected || !m.reading || m.problem);
+  const topazFailures = topazStats?.recentFailures ?? 0;
+  const attention: { key: string; text: string; href: string }[] = [
+    ...connections
+      .filter((c) => c.status === "ERROR" && !hiddenFromCount(c.provider))
+      .map((c) => ({
+        key: `error-${c.provider}`,
+        text: `${nameOf(c.provider)}: ${c.lastError ? c.lastError.slice(0, 160) : "the last check failed"}`,
+        href: c.provider === "plaid" ? "/connections/banks" : providerIds.has(c.provider) ? `#svc-${c.provider}` : "#services",
+      })),
+    ...quietLanes.map((l) => ({
+      key: `lane-${l.provider}`,
+      text: l.neverDelivered ? `${l.name}: nothing received in the last 30 days` : `${l.name}: nothing received for ${l.quietHours ?? "many"} hours`,
+      href: "#feeds",
+    })),
+    ...(webhookUnresolvedTotal
+      ? [{ key: "webhook-failures", text: `${webhookUnresolvedTotal} incoming event${webhookUnresolvedTotal === 1 ? "" : "s"} failed and wait${webhookUnresolvedTotal === 1 ? "s" : ""} for Retry or Dismiss`, href: "#feeds" }]
+      : []),
+    ...lateCrons.map((c) => ({
+      key: `cron-${c.job}`,
+      text: `The “${c.job}” sync ${c.neverRecorded ? "has never recorded a run" : c.stale ? "is running late" : "failed on its last run"}`,
+      href: "#syncs",
+    })),
+    ...mailboxProblems.map((m) => ({
+      key: `mailbox-${m.email}`,
+      text: `${m.email}: ${m.problem ?? (!m.connected ? "not connected" : "not being read")}`,
+      href: "#syncs",
+    })),
+    ...(topazFailures ? [{ key: "topaz", text: `Topaz: ${topazFailures} recent render${topazFailures === 1 ? "" : "s"} failed`, href: "#media" }] : []),
+  ];
+  const ATTENTION_SHOWN = 10;
+  const serviceState = (id: string): "connected" | "error" | "off" => {
+    if (id === "transcription") return transcription?.providers.some((p) => p.configured) ? "connected" : "off";
+    const c = byProvider.get(id);
+    return c?.status === "CONNECTED" ? "connected" : c?.status === "ERROR" ? "error" : "off";
+  };
+  const badge = (n: number) => (n > 0 ? <span className="rounded-full bg-warning/15 px-1.5 text-ui-status font-semibold text-warning">{n}</span> : undefined);
+  const stat = "flex flex-col rounded-2xl border border-border bg-surface p-4 transition-colors hover:bg-surface-2/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+
   return (
     <div>
       <PageHeader
@@ -375,228 +504,250 @@ export default async function ConnectionsPage({
           (errorCount > 0 ? ` · ${errorCount} need${errorCount === 1 ? "s" : ""} attention` : "")
         }
       />
-      <div className="space-y-6 p-6">
-        {/* An open receiver is the loudest thing on this page, above everything
-            else. A forged POST to the OpenPhone endpoint injects a message
-            attributed to a named client — which mints tasks, can raise a
-            revision, and is fed to the AI as that client's own words. */}
-        {unsignedProviders.length > 0 && (
-          <div className="flex items-start gap-3 rounded-2xl border-2 border-danger/60 bg-danger-soft p-4">
-            <ShieldOff className="mt-0.5 size-5 shrink-0 text-danger" />
-            <div className="text-sm">
-              <p className="font-semibold text-danger">
-                {unsignedProviders.length === 1 ? "1 webhook receiver is" : `${unsignedProviders.length} webhook receivers are`} accepting
-                UNSIGNED posts — anyone who knows the URL can post to {unsignedProviders.length === 1 ? "it" : "them"}.
-              </p>
-              <ul className="mt-1 space-y-0.5 text-muted">
-                {unsignedProviders.map((p) => {
-                  const n = unsignedAccepted.get(p) ?? 0;
-                  return (
-                    <li key={p}>
-                      <span className="font-medium text-foreground">{p}</span> — nothing is verified
-                      {n > 0 && ` · ${n.toLocaleString()} event${n === 1 ? "" : "s"} accepted unchecked in the last 7 days`}.{" "}
-                      {p === "openphone"
-                        ? "Fix: press “Enable real-time” on the OpenPhone card to register a signing token."
-                        : "Fix: work through “Aryeo real-time feed” below — make a secret, put it into Aryeo, then turn checking on."}
-                    </li>
-                  );
-                })}
-              </ul>
-              <p className="mt-1 text-muted">
-                OpenPhone starts rejecting unsigned posts the moment its token is registered — the same press does both ends, so
-                nothing can be refused before the other side has the token. Aryeo can&apos;t work that way: only Aryeo can put the
-                secret into Aryeo, so the hub keeps accepting its posts until one arrives proving Aryeo has it, and only then starts
-                refusing. Saving a secret and demanding one are separate steps there, on purpose — doing both at once on 8 September
-                is what took the Aryeo feed off the air for eight days.
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* The answer to the "Connect Gmail" click that just happened — kept
-            below the unsigned-receiver banner (a standing security condition
-            outranks a one-shot result) but above the fold either way. Sits at
-            page level, not on the card, because the round trip lands here and
-            the Gmail card is three sections down. */}
-        {gmailResult && (
-          <div
-            className={`flex items-start gap-3 rounded-2xl border p-4 text-sm ${
-              gmailResult.ok ? "border-success/40 bg-success-soft" : "border-warning/40 bg-warning/10"
-            }`}
-          >
-            {gmailResult.ok ? (
-              <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-success" />
-            ) : (
-              <AlertTriangle className="mt-0.5 size-5 shrink-0 text-warning" />
-            )}
-            <p className="font-medium">{gmailResult.text}</p>
-          </div>
-        )}
-
-        {/* The Aryeo cutover, above the health strip: the strip says WHAT is
-            wrong, this card is the three steps that fix it. Only shown when
-            Aryeo is actually connected — there is nothing to re-enable
-            otherwise. */}
-        {byProvider.get("aryeo")?.status === "CONNECTED" && <AryeoCutover state={cutover} />}
-
-        {/* Webhook health (RTP-28, Sep 16): per provider, when something last
-            ARRIVED, when something was last REFUSED and why, the plain sentence
-            for the office, the per-provider verification switch, and every
-            unresolved event with Retry/Dismiss. Above Sync health because a
-            provider that stopped talking to us outranks how the crons ran.
-            This replaced a standalone "N events failed in the last 7 days"
-            banner whose 7-day window was itself hiding the oldest failures. */}
-        <WebhookHealthStrip
-          lanes={webhookLanes ?? []}
-          failures={webhookFailures ?? []}
-          unresolvedTotal={webhookUnresolvedTotal}
-          degraded={webhookLanes === null || webhookFailures === null}
-        />
-
-        {/* Stripe's receiver is not a lane on the strip above on purpose (the
-            poll is the activation path), so it gets its own card: the signing
-            secret, the last delivery and refusal, and whether the hourly check
-            had to cover for a delivery that never came. Shown once Stripe is
-            connected, or whenever a secret is on file. */}
-        {(byProvider.get("stripe")?.status === "CONNECTED" || byProvider.has("stripe_webhook")) &&
-          (stripeWebhook ? <StripeWebhookCard status={stripeWebhook} /> : <CardUnavailable name="Stripe webhook" />)}
-
-        {/* Sync health: cron run history + webhook rejections + unsigned receivers. */}
-        <SyncHealth crons={crons} webhooks={webhookHealth} unsignedProviders={unsignedProviders} cronLogReady={cronLogReady} reconcile={reconcile} />
-
-        {/* Mailboxes (§9, Sep 26): is each inbox actually being READ? */}
-        {mailboxRows && <MailboxHealth rows={mailboxRows} />}
-
-        {/* The 1080p pass (Sep 16). It sits with the other lane-health panels
-            rather than on the Topaz card below, because it answers an
-            operational question — what is running, what did it cost, what
-            failed — and not a wiring one. Aryeo's half of Jordan's ask has no
-            API to build against at all, so the card says that in plain words
-            where it is explained. */}
-        <TopazLane stats={topazStats} jobs={topazRows} />
-
-        {/* AutoHDR (§10 AU-20, Sep 26): not a provider the hub connects to —
-            its own card says so, with the last reading and the last top-up
-            seen in the bank. The reading form is on Settings, where Kyle is. */}
-        <AutohdrCard />
-        <AryeoWebCard />
-        <div className="flex items-start gap-3 rounded-2xl border bg-brand-soft/40 p-4">
-          <ShieldCheck className="mt-0.5 size-5 shrink-0 text-brand" />
-          <div className="text-sm">
-            <p className="font-medium">Your keys are encrypted and stay server-side.</p>
-            <p className="text-muted">
-              API keys are encrypted at rest and never sent back to the browser. Aryeo is wired and
-              ready to connect now. OAuth services (Gmail, Slack, HubSpot, Facebook, Dropbox,
-              QuickBooks) light up once the app is deployed to a public URL.
-            </p>
-          </div>
-        </div>
-
-        {/* Plaid — bank & card connections live on their own screen (Link flow). */}
-        <Link
-          href="/connections/banks"
-          className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-surface p-4 hover:border-brand/50 hover:bg-surface-2"
+      <div className="mx-auto min-w-0 max-w-7xl p-4 pb-16 sm:p-6">
+        <ConnectionsNav
+          sections={[
+            { id: "overview", label: "Overview", badge: badge(attention.length) },
+            { id: "services", label: "Services", badge: badge(errorCount) },
+            { id: "feeds", label: "Live feeds", badge: badge(quietLanes.length + (webhookUnresolvedTotal ?? 0)) },
+            { id: "syncs", label: "Syncs & mailboxes", badge: badge(lateCrons.length + mailboxProblems.length) },
+            { id: "media", label: "Photo & video", badge: badge(topazFailures) },
+            { id: "banks", label: "Bank accounts", href: "/connections/banks" },
+          ]}
         >
-          <div className="flex items-start gap-3">
-            <span className="grid size-10 shrink-0 place-items-center rounded-xl" style={{ backgroundColor: "#00b8951a", color: "#00b895" }}>
-              <Landmark className="size-5" />
-            </span>
-            <div>
-              <div className="flex items-center gap-2 text-sm font-semibold">
-                Bank &amp; card accounts <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-brand">Plaid</span>
-                {byProvider.get("plaid")?.status === "CONNECTED" && (
-                  <span className="rounded-full bg-success/15 px-2 py-0.5 text-[10px] font-medium text-success">Connected</span>
-                )}
+          {/* An open receiver is the loudest thing on this page, above every
+              section, whichever one is open. A forged POST to the OpenPhone
+              endpoint injects a message attributed to a named client. */}
+          {unsignedProviders.length > 0 && (
+            <div className="flex items-start gap-3 rounded-2xl border-2 border-danger/60 bg-danger-soft p-4">
+              <ShieldOff className="mt-0.5 size-5 shrink-0 text-danger" />
+              <div className="text-sm">
+                <p className="font-semibold text-danger">
+                  {unsignedProviders.length === 1 ? "1 webhook receiver is" : `${unsignedProviders.length} webhook receivers are`} accepting
+                  UNSIGNED posts — anyone who knows the URL can post to {unsignedProviders.length === 1 ? "it" : "them"}.
+                </p>
+                <ul className="mt-1 space-y-0.5 text-muted">
+                  {unsignedProviders.map((p) => {
+                    const n = unsignedAccepted.get(p) ?? 0;
+                    return (
+                      <li key={p}>
+                        <span className="font-medium text-foreground">{p}</span> — nothing is verified
+                        {n > 0 && ` · ${n.toLocaleString()} event${n === 1 ? "" : "s"} accepted unchecked in the last 7 days`}.{" "}
+                        {p === "openphone"
+                          ? "Fix: press “Enable real-time” on the OpenPhone card, under Services, to register a signing token."
+                          : "Fix: work through “Aryeo real-time feed” under Live feeds — make a secret, put it into Aryeo, then turn checking on."}
+                      </li>
+                    );
+                  })}
+                </ul>
+                <p className="mt-1 text-muted">
+                  OpenPhone starts rejecting unsigned posts the moment its token is registered — the same press does both ends, so
+                  nothing can be refused before the other side has the token. Aryeo can&apos;t work that way: only Aryeo can put the
+                  secret into Aryeo, so the hub keeps accepting its posts until one arrives proving Aryeo has it, and only then starts
+                  refusing. Saving a secret and demanding one are separate steps there, on purpose — doing both at once on 8 September
+                  is what took the Aryeo feed off the air for eight days.
+                </p>
               </div>
-              <p className="mt-0.5 text-xs text-muted">
-                Link your personal account (…0942), Venmo &amp; Capital One card — read-only — to complete the money picture the audit found missing.
-              </p>
             </div>
-          </div>
-          <ChevronRight className="size-5 shrink-0 text-muted-2" />
-        </Link>
+          )}
 
-        {SEGMENTS.map((segment) => {
-          const items = CARDS.filter((p) => p.segment === segment);
-          if (items.length === 0) return null;
-          return (
-            <section key={segment}>
-              <div className="mb-3 flex items-center gap-2">
-                <Plug className="size-4 text-muted" />
-                <h2 className="text-sm font-semibold">{segment}</h2>
+
+          {/* The answer to the "Connect Gmail" click that just happened: at the
+              top, because the round trip lands on the overview. */}
+          {gmailResult && (
+            <div
+              className={`flex items-start gap-3 rounded-2xl border p-4 text-sm ${
+                gmailResult.ok ? "border-success/40 bg-success-soft" : "border-warning/40 bg-warning/10"
+              }`}
+            >
+              {gmailResult.ok ? (
+                <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-success" />
+              ) : (
+                <AlertTriangle className="mt-0.5 size-5 shrink-0 text-warning" />
+              )}
+              <p className="font-medium">{gmailResult.text}</p>
+            </div>
+          )}
+
+
+          <HashView id="overview" className="space-y-4">
+            <h2 id="overview-heading" className="sr-only">Overview</h2>
+            <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+              <a href="#services" className={stat}>
+                <span className="text-ui-status text-muted">Services connected</span>
+                <span className="mt-1 text-2xl font-semibold tabular-nums">{connectedCount}<span className="text-base font-medium text-muted"> of {CARDS.length}</span></span>
+              </a>
+              <a href={attention.length ? "#overview-attention" : "#services"} className={stat}>
+                <span className="text-ui-status text-muted">Need a look</span>
+                <span className={cn("mt-1 text-2xl font-semibold tabular-nums", attention.length ? "text-warning" : "text-success")}>{attention.length || "None"}</span>
+              </a>
+              <a href="#feeds" className={stat}>
+                <span className="text-ui-status text-muted">Live feeds delivering</span>
+                {webhookLanes
+                  ? <span className="mt-1 text-2xl font-semibold tabular-nums">{webhookLanes.filter((l) => !l.silent && !l.neverDelivered).length}<span className="text-base font-medium text-muted"> of {webhookLanes.length}</span></span>
+                  : <span className="mt-1 text-sm font-medium text-warning">Couldn&apos;t read</span>}
+              </a>
+              <a href="#syncs" className={stat}>
+                <span className="text-ui-status text-muted">Scheduled syncs on time</span>
+                {cronLogReady
+                  ? <span className="mt-1 text-2xl font-semibold tabular-nums">{scheduled.length - lateCrons.length}<span className="text-base font-medium text-muted"> of {scheduled.length}</span></span>
+                  : <span className="mt-1 text-sm font-medium text-muted">No run history yet</span>}
+              </a>
+            </div>
+
+            <section id="overview-attention" aria-labelledby="overview-attention-heading" className="scroll-mt-28 overflow-hidden rounded-2xl border border-border bg-surface">
+              <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+                <h3 id="overview-attention-heading" className="font-semibold">Needs a look</h3>
+                {attention.length > 0 && <span className="rounded-full bg-warning/15 px-2 text-ui-status font-semibold text-warning">{attention.length}</span>}
               </div>
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {items.map((provider) => {
-                  // The Sep 16 speech-to-text card carries its own state and actions.
-                  if (provider.id === "transcription") {
-                    return transcription ? (
-                      <TranscriptionCard key={provider.id} {...transcription} />
-                    ) : (
-                      <CardUnavailable key={provider.id} name={provider.name} />
-                    );
-                  }
-                  // Gemini video analysis (Oct 24 2026): its own card, key and switches.
-                  if (provider.id === "gemini_video") {
-                    return gemini ? (
-                      <GeminiCard
-                        key={provider.id}
-                        key_={gemini.key}
-                        settings={gemini.settings}
-                        usage={gemini.usage}
-                        counts={gemini.counts}
-                        recentErrors={gemini.recentErrors}
-                        trial={{ words: gemini.trial.summary.words, barMet: gemini.trial.summary.barMet, startedAt: gemini.trial.startedAt, endsAt: gemini.trial.endsAt, reviewersOn: gemini.trial.reviewersOn, open: gemini.trial.open }}
-                      />
-                    ) : (
-                      <CardUnavailable key={provider.id} name={provider.name} />
-                    );
-                  }
-                  const c = byProvider.get(provider.id);
-                  const conn: ConnState | null = c
-                    ? {
-                        status: c.status,
-                        accountLabel: c.accountLabel,
-                        lastSyncedAt: c.lastSyncedAt ? c.lastSyncedAt.toISOString() : null,
-                        lastError: c.lastError,
-                      }
-                    : null;
+              {attention.length ? (
+                <ul className="divide-y divide-border">
+                  {attention.slice(0, ATTENTION_SHOWN).map((a) => (
+                    <li key={a.key}>
+                      <a href={a.href} className="flex items-start gap-3 px-4 py-2.5 text-sm hover:bg-surface-2">
+                        <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />
+                        <span className="min-w-0 flex-1 break-words">{a.text}</span>
+                        <ChevronRight aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-2" />
+                      </a>
+                    </li>
+                  ))}
+                  {attention.length > ATTENTION_SHOWN && (
+                    <li className="px-4 py-2.5 text-ui-status text-muted">And {attention.length - ATTENTION_SHOWN} more, each in its section.</li>
+                  )}
+                </ul>
+              ) : (
+                <p className="flex items-center gap-2 px-4 py-3 text-sm">
+                  <CheckCircle2 aria-hidden className="size-4 shrink-0 text-success" /> Everything is connected and running on time.
+                </p>
+              )}
+            </section>
+
+            <section aria-labelledby="overview-services-heading" className="rounded-2xl border border-border bg-surface p-4">
+              <h3 id="overview-services-heading" className="font-semibold">Every service</h3>
+              <div className="mt-3 grid gap-x-8 gap-y-4 sm:grid-cols-2 2xl:grid-cols-3">
+                {SEGMENTS.map((segment) => {
+                  const items = CARDS.filter((p) => p.segment === segment);
+                  if (!items.length) return null;
                   return (
-                    <ProviderCard
-                      key={provider.id}
-                      provider={provider}
-                      conn={conn}
-                      deployed={deployed}
-                      dropboxAuthorizeUrl={
-                        provider.id === "dropbox" && dropboxConfigured() ? dropboxAuthorizeUrl() : undefined
-                      }
-                      googleAuthorizeUrl={
-                        provider.id === "gmail" && googleConfigured() ? googleAuthorizeUrl() : undefined
-                      }
-                      gmailSendHealth={provider.id === "gmail" ? gmailSend : undefined}
-                      slackScopes={provider.id === "slack" ? slackScopes : undefined}
-                      // Only the two providers that POST into this app have a
-                      // receiver to secure; every other card omits the chip.
-                      webhookSecurity={
-                        provider.id in webhookSigned
-                          ? {
-                              signed: webhookSigned[provider.id],
-                              unsignedAccepted: unsignedAccepted.get(provider.id) ?? 0,
-                              // Whether this receiver currently REFUSES what it
-                              // can't verify (RTP-28). Default is each
-                              // receiver's long-standing behaviour, so an
-                              // untouched hub reads exactly as it did before.
-                              enforced: webhookLanes?.find((l) => l.provider === provider.id)?.enforced ?? false,
-                              armMode: webhookLanes?.find((l) => l.provider === provider.id)?.armMode ?? null,
-                            }
-                          : undefined
-                      }
-                    />
+                    <div key={segment} className="min-w-0">
+                      <p className="text-ui-status font-semibold uppercase tracking-wide text-muted-2">{segment}</p>
+                      <ul className="mt-1.5 space-y-0.5">
+                        {items.map((provider) => {
+                          const state = serviceState(provider.id);
+                          return (
+                            <li key={provider.id}>
+                              <a href={`#svc-${provider.id}`} className="-mx-2 flex min-h-9 items-center gap-2 rounded-lg px-2 text-sm hover:bg-surface-2">
+                                <span aria-hidden className={cn("size-2 shrink-0 rounded-full", state === "connected" ? "bg-success" : state === "error" ? "bg-warning" : "bg-border-strong")} />
+                                <span className="min-w-0 flex-1 break-words">{provider.name}</span>
+                                <span className={cn("shrink-0 text-ui-status", state === "connected" ? "text-success" : state === "error" ? "text-warning" : "text-muted")}>
+                                  {state === "connected" ? "Connected" : state === "error" ? "Needs a look" : "Not connected"}
+                                </span>
+                              </a>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
                   );
                 })}
               </div>
             </section>
-          );
-        })}
+          </HashView>
+
+          <HashView id="services" className="space-y-6">
+            <ViewHeader id="services" title="Services">
+              Every outside service the hub talks to: connect, reconnect or test each one here. Keys are encrypted and never sent back to the browser.
+            </ViewHeader>
+            {SEGMENTS.map((segment) => {
+              const items = CARDS.filter((p) => p.segment === segment);
+              if (items.length === 0) return null;
+              return (
+                <section key={segment}>
+                  <div className="mb-3 flex items-center gap-2">
+                    <Plug className="size-4 text-muted" />
+                    <h3 className="text-sm font-semibold">{segment}</h3>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
+                    {items.map((provider) => (
+                      <div key={provider.id} id={`svc-${provider.id}`} className="min-w-0 scroll-mt-28">
+                        {providerCard(provider)}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
+            {/* Plaid — bank & card connections live on their own screen (Link flow). */}
+            <Link
+              href="/connections/banks"
+              className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-surface p-4 hover:border-brand/50 hover:bg-surface-2"
+            >
+              <div className="flex items-start gap-3">
+                <span className="grid size-10 shrink-0 place-items-center rounded-xl" style={{ backgroundColor: "#00b8951a", color: "#00b895" }}>
+                  <Landmark className="size-5" />
+                </span>
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-semibold">
+                    Bank &amp; card accounts <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-brand">Plaid</span>
+                    {byProvider.get("plaid")?.status === "CONNECTED" && (
+                      <span className="rounded-full bg-success/15 px-2 py-0.5 text-[10px] font-medium text-success">Connected</span>
+                    )}
+                  </div>
+                  <p className="mt-0.5 text-xs text-muted">
+                    Link your personal account (…0942), Venmo &amp; Capital One card — read-only — to complete the money picture the audit found missing.
+                  </p>
+                </div>
+              </div>
+              <ChevronRight className="size-5 shrink-0 text-muted-2" />
+            </Link>
+          </HashView>
+
+          <HashView id="feeds" className="space-y-4">
+            <ViewHeader id="feeds" title="Live feeds">
+              What outside services send us as it happens: when each one last delivered, anything refused, and how to fix it.
+            </ViewHeader>
+            {/* The Aryeo cutover, above the health strip: the strip says WHAT is
+                wrong, this card is the three steps that fix it. Only shown when
+                Aryeo is actually connected. */}
+            {byProvider.get("aryeo")?.status === "CONNECTED" && <AryeoCutover state={cutover} />}
+            {/* Webhook health (RTP-28, Sep 16): per provider, when something last
+                ARRIVED, when something was last REFUSED and why, the
+                per-provider verification switch, and every unresolved event
+                with Retry/Dismiss. */}
+            <WebhookHealthStrip
+              lanes={webhookLanes ?? []}
+              failures={webhookFailures ?? []}
+              unresolvedTotal={webhookUnresolvedTotal}
+              degraded={webhookLanes === null || webhookFailures === null}
+            />
+            {/* Stripe's receiver is not a lane on the strip above on purpose (the
+                poll is the activation path), so it gets its own card. Shown
+                once Stripe is connected, or whenever a secret is on file. */}
+            {(byProvider.get("stripe")?.status === "CONNECTED" || byProvider.has("stripe_webhook")) &&
+              (stripeWebhook ? <StripeWebhookCard status={stripeWebhook} /> : <CardUnavailable name="Stripe webhook" />)}
+          </HashView>
+
+          <HashView id="syncs" className="space-y-4">
+            <ViewHeader id="syncs" title="Syncs & mailboxes">
+              The scheduled jobs that pull from each service, and whether every inbox is being read and can send.
+            </ViewHeader>
+            <SyncHealth crons={crons} webhooks={webhookHealth} unsignedProviders={unsignedProviders} cronLogReady={cronLogReady} reconcile={reconcile} />
+            {/* Mailboxes (§9, Sep 26): is each inbox actually being READ? */}
+            {mailboxRows && <MailboxHealth rows={mailboxRows} />}
+          </HashView>
+
+          <HashView id="media" className="space-y-4">
+            <ViewHeader id="media" title="Photo & video">
+              The Topaz 1080p pass for approved videos, AutoHDR for photo edits, and uploads to Aryeo.
+            </ViewHeader>
+            {/* The 1080p pass (Sep 16): what is running, what it cost, what failed. */}
+            <TopazLane stats={topazStats} jobs={topazRows} />
+            {/* AutoHDR (§10 AU-20, Sep 26): its own card, with the last reading
+                and the last top-up seen in the bank. */}
+            <AutohdrCard />
+            <AryeoWebCard />
+          </HashView>
+        </ConnectionsNav>
       </div>
     </div>
   );

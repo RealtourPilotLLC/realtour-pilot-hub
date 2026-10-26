@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SettingsGroup } from "../../src/components/settings/SettingsGroup";
 import { SettingsNav } from "../../src/components/settings/SettingsNav";
-import { SettingsSearchCard, SettingsSearchOverview } from "../../src/components/settings/SettingsGroupDisclosure";
+import { SettingsSearchCard, SettingsView } from "../../src/components/settings/SettingsGroupDisclosure";
+import { HashViews } from "../../src/components/ui/HashViews";
 import { SettingsSearchContext } from "../../src/components/settings/SettingsSearchContext";
 import { SETTINGS_CARD_KEYS, SETTINGS_LAYOUT, settingsCardMatches, settingsGroupMatches, settingsGroupsFor } from "../../src/lib/settingsNavigation";
 
@@ -33,19 +34,24 @@ const tree = (owner: boolean, query = "") => <SettingsSearchContext.Provider val
 const initial = renderToStaticMarkup(tree(true));
 const admin = renderToStaticMarkup(tree(false));
 const filtered = renderToStaticMarkup(tree(true, "reviewer coverage"));
-check("default sections use native collapsed disclosures", (initial.match(/data-settings-disclosure/g) ?? []).length === 7 && !/<details[^>]*\sopen(?:[\s=>])/.test(initial));
+// Oct 26 2026: one section at a time (components/ui/HashViews), not collapsed disclosures.
+check("with no section open, all seven sections render hidden, forms mounted", (initial.match(/<section[^>]*data-settings-group="[^"]+"[^>]*hidden=""/g) ?? []).length === 7 && SETTINGS_CARD_KEYS.every((key) => initial.includes(`value="unsaved-${key}"`)));
 check("all original cards render once under disclosures", SETTINGS_CARD_KEYS.every((key) => (initial.match(new RegExp(`data-settings-card="${key}"`, "g")) ?? []).length === 1));
 check("admin rendering omits financial controls and values", !admin.includes('id="financial"') && !admin.includes('name="pay-view"'));
 check("filtered-out cards keep their input mounted", SETTINGS_CARD_KEYS.every((key) => filtered.includes(`value="unsaved-${key}"`)));
 check("filtered-out groups and cards leave the focusable tree", /<section[^>]*id="scheduling"[^>]*hidden=""/.test(filtered) && /<div[^>]*data-settings-card="topaz"[^>]*hidden=""/.test(filtered));
 check("matching card stays exposed in its matching section", !/<section[^>]*id="production"[^>]*hidden=""/.test(filtered) && !/<div[^>]*data-settings-card="review-room"[^>]*hidden=""/.test(filtered));
-check("unreadable snapshot is visible without claiming off or healthy", initial.includes("Loaded values:") && initial.includes("Switches could not be read."));
+check("unreadable snapshot is rendered as written, without claiming off or healthy", initial.includes("Switches could not be read."));
+const opened = renderToStaticMarkup(<HashViews initial="production">{tree(true)}</HashViews>);
+check("the open section shows and every other one stays hidden", !/<section[^>]*id="production"[^>]*hidden=""/.test(opened) && /<section[^>]*id="team"[^>]*hidden=""/.test(opened) && /<section[^>]*id="financial"[^>]*hidden=""/.test(opened));
+const landing = renderToStaticMarkup(<HashViews initial="overview"><SettingsView id="overview"><span>Tiles</span></SettingsView><SettingsView id="readiness"><span>Report</span></SettingsView>{tree(true)}</HashViews>);
+check("the page opens on the overview: readiness and every section hidden", /<div id="overview"[^>]*data-view="overview"(?![^>]*hidden)/.test(landing) && /<div id="readiness"[^>]*hidden=""/.test(landing) && (landing.match(/<section[^>]*data-settings-group="[^"]+"[^>]*hidden=""/g) ?? []).length === 7);
 const ids = [...initial.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
 check("group and setting anchors remain unique", ids.length === new Set(ids).size && groups.every((group) => ids.includes(group.id)) && SETTINGS_CARD_KEYS.every((key) => ids.includes(key)));
 const navigation = renderToStaticMarkup(<SettingsNav groups={settingsGroupsFor(false)} />);
 check("admin navigation keeps plain section anchors and omits Financial", navigation.includes('href="#program"') && navigation.includes('href="#readiness"') && !navigation.includes('href="#financial"'));
 check("search has an accessible label and result announcement", navigation.includes('for="settings-search"') && navigation.includes('role="status"'));
-const overview = renderToStaticMarkup(<SettingsSearchContext.Provider value="reminders"><SettingsSearchOverview><span>Readiness stays mounted</span></SettingsSearchOverview></SettingsSearchContext.Provider>);
+const overview = renderToStaticMarkup(<HashViews initial="readiness"><SettingsSearchContext.Provider value="reminders"><SettingsView id="readiness"><span>Readiness stays mounted</span></SettingsView></SettingsSearchContext.Provider></HashViews>);
 check("search clears the readiness wall while retaining its content", overview.includes('hidden=""') && overview.includes("Readiness stays mounted"));
 console.log(`\n${checked} passed, 0 failed`);
 console.log("Browser keyboard/hash/dirty-input acceptance remains separate.");

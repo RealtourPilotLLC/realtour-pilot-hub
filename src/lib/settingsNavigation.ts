@@ -28,6 +28,8 @@ export type SettingsGroupDef = {
   short: string;
   /** What the controls in here decide, in plain words. */
   summary: string;
+  /** One short line for the overview tile (Oct 26 2026). */
+  blurb: string;
   ownerOnly?: boolean;
 };
 
@@ -37,42 +39,49 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDef[] = [
     id: "team",
     title: "Team, permissions & coverage",
     short: "Team",
+    blurb: "Who hears about what, comms coaching, logins and coverage hours.",
     summary: "Who on the team is told about what, who is coached on their client messages, and where logins and coverage hours are managed. These decide which person hears about work, not what the work is.",
   },
   {
     id: "scheduling",
     title: "Scheduling & turnaround",
     short: "Scheduling",
+    blurb: "The delivery times we promise clients.",
     summary: "The delivery times we promise clients for photos, video, floor plans, 3D tours and monthly content.",
   },
   {
     id: "production",
     title: "Production & review",
     short: "Production",
+    blurb: "Editor routing, video review, the Topaz pass and the product map.",
     summary: "Who a new edit goes to, who reviews a finished cut, what happens to an approved video, and what each Aryeo product actually produces.",
   },
   {
     id: "program",
     title: "Content program",
     short: "Content program",
+    blurb: "Automations, reminders, Calendly calls and client onboarding.",
     summary: "Everything for the content program in one place: its automations, its client reminders, how strategy calls are booked and matched to a client's month through Calendly, and client onboarding. Every switch that would reach a client stays closed until launch is approved, and each one says what it needs before it can work.",
   },
   {
     id: "comms",
     title: "Communication & notifications",
     short: "Communication",
+    blurb: "Automatic texts and their wording, email copies and team alerts.",
     summary: "The texts clients and the team receive without anyone pressing send, the words every one of them uses, where your copy of every client email goes, and the team's alerts, coverage hours and quiet time.",
   },
   {
     id: "integrations",
     title: "Integrations",
     short: "Integrations",
+    blurb: "Which outside services are connected and running on time.",
     summary: "Which outside services are connected and working, and which automations depend on each one. Read-only here: nothing on this page connects or disconnects a service.",
   },
   {
     id: "financial",
     title: "Financial",
     short: "Financial",
+    blurb: "Payroll and bank feeds. Only you see this.",
     summary: "Where payroll and bank feeds are managed. Pay itself is yours alone: everyone else sees My Performance. Only you see this group.",
     ownerOnly: true,
   },

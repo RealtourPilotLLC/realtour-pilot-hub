@@ -27,7 +27,7 @@ import { TeamNotifications } from "@/components/settings/TeamNotifications";
 import { teamNotifyRows } from "@/lib/notifyPrefs";
 import { CalendlyMappingsPanel } from "@/components/settings/CalendlyMappingsPanel";
 import { loadCalendlyPanelState } from "@/app/settings/calendlyActions";
-import { CalendarCheck, Zap, Bug, Mail, type LucideIcon } from "lucide-react";
+import { CalendarCheck, ChevronRight, Zap, Bug, Mail, type LucideIcon } from "lucide-react";
 import { ClientEmailMonitorSettings } from "@/components/settings/ClientEmailMonitorSettings";
 import { clientEmailMonitor } from "@/lib/clientEmailMonitor";
 import { ProgramAutomationPanel } from "@/components/settings/ProgramAutomationPanel";
@@ -39,8 +39,10 @@ import { RemindersPanel } from "@/components/settings/RemindersPanel";
 import { loadRemindersPanelState } from "@/app/settings/reminderActions";
 import { SettingsGroup, settingsGroupsFor, SETTINGS_LAYOUT, type SettingsGroupDef, type SettingsCardKey } from "@/components/settings/SettingsGroup";
 import { SettingsNav } from "@/components/settings/SettingsNav";
-import { SettingsSearchCard, SettingsSearchOverview } from "@/components/settings/SettingsGroupDisclosure";
-import { ReadinessPanel, IntegrationsReadiness } from "@/components/settings/ReadinessPanel";
+import { SettingsSearchCard, SettingsView } from "@/components/settings/SettingsGroupDisclosure";
+import { SettingsFacts, type SettingsFact } from "@/components/settings/SettingsFacts";
+import { SETTINGS_GROUP_ICONS } from "@/components/settings/settingsIcons";
+import { ReadinessPanel, ReadinessSummary, ReadinessBadge, IntegrationsReadiness } from "@/components/settings/ReadinessPanel";
 import { readinessReport } from "@/lib/readiness";
 import type { ReadinessReport, SettingsGroupId } from "@/lib/readiness";
 import { boundedWait } from "@/lib/boundedWait";
@@ -158,12 +160,26 @@ async function CalendlyCard({ canOpenOperations }: { canOpenOperations: boolean 
   );
 }
 
-async function IntegrationSummary({ report }: { report: Promise<ReadinessReport | null> }) {
+async function IntegrationFacts({ report, layout }: { report: Promise<ReadinessReport | null>; layout: "rows" | "grid" }) {
   const current = await report;
-  if (!current) return <>Connection status could not be read.</>;
+  if (!current) return <SettingsFacts layout={layout} facts={[{ label: "Connections", value: "Couldn't read", tone: "warn" }]} />;
   const errors = current.providers.filter((provider) => provider.status === "error").length;
-  return <>{current.providers.filter((provider) => provider.connected).length} of {current.providers.length} providers connected{errors ? ` · ${errors} reported an error on the last check` : ""}. Run timing and dependencies are below.</>;
+  const late = current.crons.filter((c) => c.stale).length;
+  return (
+    <SettingsFacts
+      layout={layout}
+      facts={[
+        { label: "Services automations use", value: `${current.providers.filter((provider) => provider.connected).length} of ${current.providers.length} connected` },
+        { label: "Refused on last check", value: errors ? String(errors) : "None", tone: errors ? "warn" : "ok" },
+        { label: "Scheduled runs", value: late ? `${late} late` : "On time", tone: late ? "warn" : "ok" },
+      ]}
+    />
+  );
 }
+
+/** "8 AM", "8:30 PM": the texts' sending window in words. */
+const clock = (hour: number, minute: number) =>
+  `${hour % 12 || 12}${minute ? `:${String(minute).padStart(2, "0")}` : ""} ${hour % 24 < 12 ? "AM" : "PM"}`;
 
 // SETTINGS — the rules the business runs on, editable by Jordan and Kyle
 // without a deploy. First resident: editor auto-routing (who gets standard /
@@ -430,7 +446,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           <a href="#internal-alerts" className={linkRow}>
             <span className="min-w-0 flex-1">
               <span className="font-medium">Coverage hours & on call</span>
-              <span className="block text-[12px] text-muted">When somebody is here, and who answers urgent alerts outside it. In Internal alerts, below.</span>
+              <span className="block text-[12px] text-muted">When somebody is here, and who answers urgent alerts outside it. In Communication, under Internal alerts.</span>
             </span>
             <ArrowRight className="size-4 shrink-0 text-muted-2" aria-hidden />
           </a>
@@ -483,56 +499,101 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
   const groups = settingsGroupsFor(isOwner);
   const primaryReviewer = reviewRoom.creativeApproverTeamMemberId
-    ? notifyRows?.find((person) => person.teamMemberId === reviewRoom.creativeApproverTeamMemberId)?.name ?? "Selected reviewer; name unavailable in this roster"
-    : "No primary reviewer selected";
-  // Summaries describe the same loaded values passed to the existing forms.
-  // A saved switch is not proof of its effective scope or provider health.
-  const snapshots: Record<SettingsGroupId, React.ReactNode> = {
-    team: `${notifyRows ? `${notifyRows.length} active notification profiles` : "Notification roster could not be read"} · ${coaching ? `coaching includes ${coaching.teamMemberIds.length} people; sending ${coaching.sendEnabled ? "on" : "off"}` : "coaching settings could not be read"}.`,
-    scheduling: `Photos: ${turns.photos} hours · standard video: ${turns.standardVideoHours} hours · monthly content: ${turns.monthlyBusinessDays} days.`,
-    production: `Primary review: ${primaryReviewer} · backup offered after ${reviewRoom.coverOfferHours} covered hours · Topaz pass switch ${topaz.enabled ? "on" : "off"}.`,
-    program: `${automations ? `${automations.filter((automation) => automation.enabled).length} of ${automations.length} automation switches on` : "Automation switches could not be read"} · ${reminders ? `reminder policy uses ${reminders.policySource === "stored" ? "saved values" : "defaults"}; its switch is ${reminders.switch.enabled ? "on" : reminders.switch.missing ? "not configured" : "off"}` : "reminder policy could not be read"}.`,
-    comms: `Automated text master switch ${textRules.enabled ? "on" : "off"} · client email copies ${emailMonitor.enabled ? `to ${emailMonitor.address}` : "off"} · sending window ${String(textRules.sendFromHour).padStart(2, "0")}:00–${String(textRules.sendUntilHour).padStart(2, "0")}:${String(textRules.sendUntilMinute).padStart(2, "0")} Eastern time${textRules.weekdaysOnly ? ", weekdays" : ""}.`,
-    integrations: <Suspense fallback={<>Reading connection status…</>}><IntegrationSummary report={readiness} /></Suspense>,
-    financial: "Only you see pay. Everyone else gets My Performance: their scorecard and the bonus it tracks, never their shoot pay or mileage.",
+    ? notifyRows?.find((person) => person.teamMemberId === reviewRoom.creativeApproverTeamMemberId)?.name ?? "Selected; name not on the roster"
+    : "None selected";
+  // THE KEY VALUES PER SECTION (Oct 26 2026: "an actual nice settings page
+  // dashboard"), on the overview tile and under the section's heading. They
+  // describe the same loaded values passed to the forms; a saved switch is not
+  // proof of its effect, which is what Readiness is for.
+  const unreadable = (label: string): SettingsFact => ({ label, value: "Couldn't read", tone: "warn" });
+  const onOff = (label: string, on: boolean): SettingsFact => ({ label, value: on ? "On" : "Off", tone: on ? "ok" : "muted" });
+  const edited = textShown ? textShown.filter((r) => r.source !== "default").length : 0;
+  const facts: Record<SettingsGroupId, SettingsFact[]> = {
+    team: [
+      notifyRows ? { label: "Notification profiles", value: `${notifyRows.length} people` } : unreadable("Notification profiles"),
+      coaching ? { label: "Comms coaching", value: `${coaching.teamMemberIds.length === 1 ? "1 person" : `${coaching.teamMemberIds.length} people`}, notes ${coaching.sendEnabled ? "sent" : "not sent"}` } : unreadable("Comms coaching"),
+    ],
+    scheduling: [
+      { label: "Photos", value: `${turns.photos} hours` },
+      { label: "Standard video", value: `${turns.standardVideoHours} hours` },
+      { label: "Monthly content", value: `${turns.monthlyBusinessDays} business days` },
+    ],
+    production: [
+      { label: "Primary reviewer", value: primaryReviewer, tone: reviewRoom.creativeApproverTeamMemberId ? undefined : "muted" },
+      { label: "Backup offered after", value: `${reviewRoom.coverOfferHours} covered hours` },
+      onOff("Topaz pass", topaz.enabled),
+    ],
+    program: [
+      automations ? { label: "Automations", value: `${automations.filter((a) => a.enabled).length} of ${automations.length} on` } : unreadable("Automations"),
+      reminders
+        ? { label: "Reminders", value: reminders.switch.enabled ? "On" : reminders.switch.missing ? "Never configured" : "Off", tone: reminders.switch.enabled ? "ok" : "muted" }
+        : unreadable("Reminders"),
+    ],
+    comms: [
+      onOff("Automated texts", textRules.enabled),
+      { label: "Sending window", value: `${clock(textRules.sendFromHour, 0)} to ${clock(textRules.sendUntilHour, textRules.sendUntilMinute)} ET${textRules.weekdaysOnly ? ", weekdays" : ""}` },
+      textShown ? { label: "Text wording", value: edited ? `${edited} edited` : "All default" } : unreadable("Text wording"),
+      { label: "Client email copies", value: emailMonitor.enabled ? emailMonitor.address : "Off", tone: emailMonitor.enabled ? undefined : "muted" },
+    ],
+    integrations: [],
+    financial: [
+      { label: "Who sees pay", value: "Only you" },
+      { label: "Everyone else sees", value: "My Performance" },
+    ],
   };
+  const factsFor = (id: SettingsGroupId, layout: "rows" | "grid") =>
+    id === "integrations"
+      ? <Suspense fallback={<SettingsFacts layout={layout} facts={[{ label: "Services automations use", value: "Reading…", tone: "muted" }]} />}><IntegrationFacts report={readiness} layout={layout} /></Suspense>
+      : <SettingsFacts layout={layout} facts={facts[id]} />;
+
   const render = (g: SettingsGroupDef) => (
-    <SettingsGroup key={g.id} group={g} snapshot={snapshots[g.id]}>
+    <SettingsGroup key={g.id} group={g} snapshot={factsFor(g.id, "grid")}>
       {SETTINGS_LAYOUT[g.id].map((k) => cards[k])}
       {extras[g.id]}
     </SettingsGroup>
   );
+  const tile = (g: SettingsGroupDef) => {
+    const Icon = SETTINGS_GROUP_ICONS[g.id];
+    return (
+      <a key={g.id} href={`#${g.id}`} className="group flex flex-col rounded-2xl border border-border bg-surface p-4 transition-colors hover:bg-surface-2/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+        <span className="flex items-start gap-3">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-brand/10 text-brand"><Icon aria-hidden className="size-[18px]" /></span>
+          <span className="min-w-0 flex-1">
+            <span className="block font-semibold leading-snug">{g.title}</span>
+            <span className="mt-0.5 block text-ui-status text-muted">{g.blurb}</span>
+          </span>
+          <ChevronRight aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-2 transition-transform group-hover:translate-x-0.5" />
+        </span>
+        <span className="mt-4 block border-t border-border pt-3">{factsFor(g.id, "rows")}</span>
+      </a>
+    );
+  };
 
   return (
     <div>
-      {/* "Within a minute" is true of the rules themselves (getSetting caches
-          them for 60 seconds), but up here it read as a promise about all
-          fourteen cards, and the automated texts are not one of them: flipping
-          a text switch changes nothing until the hourly sweep runs, which the
-          Automated texts card says in its own words. Say "most" up here and let
-          that card be the specific one. */}
+      {/* "Most changes" on purpose: getSetting caches the rules for 60
+          seconds, but the automated texts change nothing until the hourly
+          sweep runs, which their own card says. */}
       <PageHeader
         title="Settings"
-        subtitle="The rules the platform runs on — most changes apply within a minute; the automated texts wait for the next hourly run"
+        subtitle="The rules the hub runs on. Most changes apply within a minute; automated texts wait for the next hourly run."
       />
-      <div className="mx-auto min-w-0 max-w-3xl space-y-8 p-4 pb-16 [overflow-wrap:anywhere] sm:p-6">
-        <SettingsNav groups={groups}>
-          <SettingsSearchOverview>
-          <div id="readiness" className="scroll-mt-28">
+      <div className="mx-auto min-w-0 max-w-6xl p-4 pb-16 [overflow-wrap:anywhere] sm:p-6">
+        <SettingsNav groups={groups} badges={{ readiness: <Suspense fallback={null}><ReadinessBadge report={readiness} /></Suspense> }}>
+          <SettingsView id="overview" className="space-y-4">
+            <h2 className="sr-only">Overview</h2>
+            <Suspense fallback={<ProviderCardSkeleton icon={Gauge} title="Readiness" note="reading every switch…" />}>
+              <ReadinessSummary report={readiness} />
+            </Suspense>
+            <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">{groups.map(tile)}</div>
+          </SettingsView>
+          <SettingsView id="readiness">
             <Suspense fallback={<ProviderCardSkeleton icon={Gauge} title="Readiness" note="reading every switch…" />}>
               <ReadinessPanel report={readiness} />
             </Suspense>
-          </div>
-          </SettingsSearchOverview>
-        {groups.map(render)}
+          </SettingsView>
+          {groups.map(render)}
         </SettingsNav>
-        {/* RETIRED Sep 20: the "More settings" card promised that turnaround
-            promises, alert thresholds and text templates were "next to move in
-            here". All three have shipped on this very page for months — they
-            are the Turnaround promises, Internal alerts and Text wording cards
-            above — so the card was telling the three people who use this screen
-            that a finished tool was half-built. Anything hard-coded can still
-            become a setting; that is a conversation, not a card. */}
       </div>
     </div>
   );

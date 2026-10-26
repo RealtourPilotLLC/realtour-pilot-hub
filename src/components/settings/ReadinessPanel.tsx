@@ -271,7 +271,7 @@ export async function ReadinessPanel({ report: pending }: { report: Promise<Read
           <span className="font-medium text-muted">Configured</span>: saved, and its settings would run ·{" "}
           <span className="font-medium text-muted">Connected</span>: the outside services it needs are connected ·{" "}
           <span className="font-medium text-muted">Enabled</span>: switched on ·{" "}
-          <span className="font-medium text-muted">Healthy</span>: running on time with no error. The switches themselves are in the cards below.
+          <span className="font-medium text-muted">Healthy</span>: running on time with no error. The switches themselves are in each section of Settings.
         </p>
 
         <Block title="Content program switches" rows={program} note="Turned on or off in Content program → Content program automations. A dash means it does not apply (it needs no connection, or it is off so there is nothing to check)." />
@@ -332,4 +332,55 @@ export async function IntegrationsReadiness({ report: pending, isOwner }: { repo
       </p>
     </Section>
   );
+}
+
+/**
+ * The overview's one-line readiness (Oct 26 2026): the launch gate, how many
+ * switched-on automations are working, and how many need a look. The whole
+ * report is one press away, in its own section (#readiness).
+ */
+export async function ReadinessSummary({ report: pending }: { report: Promise<ReadinessReport | null> }) {
+  const report = await pending;
+  const box = "flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl border border-border bg-surface p-4 transition-colors hover:bg-surface-2/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+  if (!report) {
+    return (
+      <a href="#readiness" className={box}>
+        <TriangleAlert className="size-5 shrink-0 text-warning" aria-hidden />
+        <span className="min-w-0 flex-1 text-sm">Readiness could not be read just now. Reload to try again.</span>
+      </a>
+    );
+  }
+  const on = report.rows.filter((r) => r.enabled.ok);
+  const working = on.filter((r) => r.effective.ok).length;
+  const attention = report.rows.filter(needsAttention).length;
+  const closed = report.rolloutClosed.ok;
+  return (
+    <a href="#readiness" className={box}>
+      <span className="flex min-w-0 items-center gap-2 text-sm font-semibold">
+        {closed ? <ShieldCheck className="size-5 shrink-0 text-success" aria-hidden /> : <TriangleAlert className="size-5 shrink-0 text-warning" aria-hidden />}
+        {closed ? "Client launch is closed" : `Client launch is open${report.rolloutClosed.openFor ? ` for ${report.rolloutClosed.openFor}` : ""}`}
+      </span>
+      <span className="text-sm text-muted">{working} of {on.length} switched-on automations working</span>
+      {attention > 0 ? (
+        <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-ui-status font-semibold text-warning">
+          <TriangleAlert className="size-3" aria-hidden /> {attention} need{attention === 1 ? "s" : ""} a look
+        </span>
+      ) : (
+        <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-ui-status font-semibold text-success">
+          <Check className="size-3" aria-hidden /> Nothing needs a look
+        </span>
+      )}
+      <span className="ml-auto inline-flex items-center gap-1 text-sm font-medium text-brand">
+        Readiness <ArrowRight className="size-3.5" aria-hidden />
+      </span>
+    </a>
+  );
+}
+
+/** The menu's count beside Readiness: how many switched-on automations need a look. */
+export async function ReadinessBadge({ report: pending }: { report: Promise<ReadinessReport | null> }) {
+  const report = await pending;
+  const n = report ? report.rows.filter(needsAttention).length : 0;
+  if (!n) return null;
+  return <span aria-label={`${n} need a look`} className="rounded-full bg-warning/15 px-1.5 text-ui-status font-semibold text-warning">{n}</span>;
 }
