@@ -384,9 +384,9 @@ async function main() {
     c.head("7 · the live one-off (never run by the drill)");
     // =======================================================================
     const live = read("scripts/_live/oct26-skit-banks.ts");
-    c.ok("dry run unless --apply, behind the read-only guard", /import \{ APPLY, db \} from "\.\/_oct22-guard"/.test(live) && /if \(!APPLY\) continue;/.test(live) && /if \(APPLY\) \{/.test(live));
+    c.ok("dry run unless --apply, behind the read-only guard", /import \{ APPLY, db \} from "\.\/_oct22-guard"/.test(live) && /if \(!APPLY\) continue;/.test(live) && /if \(APPLY && MARK_PRE_SKITS\) \{/.test(live));
     c.ok("the four clients by name", ["Bernadette Rabel", "Janice Pigga", "Joseph Sutow", "Mike Flatley"].every((n) => live.includes(`"${n}"`)));
-    c.ok("it queues per pillar and format with its own requester, the cooldown waived, and marks only with --apply", /queuePillarRefills\(e\.id, \{ requestedBy: BY, ignoreCooldown: true \}\)/.test(live) && /const BY = "staff:oct26-skit-banks"/.test(live) && /if \(APPLY\) \{\s*for \(const t of pre\.topics\) \{ const r = await ct\.setTopicFormat\(t\.id, "DIRECT"/.test(live));
+    c.ok("it queues per pillar and format with its own requester, the cooldown waived, and marks pre-Skits topics only with --apply --mark-pre-skits (Oct 26 review: those banks hold real skits)", /queuePillarRefills\(e\.id, \{ requestedBy: BY, ignoreCooldown: true \}\)/.test(live) && /const BY = "staff:oct26-skit-banks"/.test(live) && /process\.argv\.includes\("--mark-pre-skits"\)/.test(live) && /if \(APPLY && MARK_PRE_SKITS\) \{\s*for \(const t of pre\.topics\) \{ const r = await ct\.setTopicFormat\(t\.id, "DIRECT"/.test(live));
     c.ok("the client copy added today carries no em or en dash", noDash(read("src/components/content/FormatSwitch.tsx").replace(/\/\/.*$/gm, "")) && noDash((read("src/components/portal/TopicBank.tsx").match(/No \{FORMAT_PLURAL\[onFormat\]\} in this pillar yet\./) ?? ["x"])[0]) && noDash(vf.FORMAT_PLURAL.SKIT + vf.FORMAT_PLURAL.DIRECT));
 
     c.ok("no call left the drill", fence.blocked.length === 0, fence.blocked.join(", "));

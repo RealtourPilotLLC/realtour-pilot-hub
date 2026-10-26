@@ -7,7 +7,7 @@ export {};
 // for each pillar."
 //
 // For each client, in this order:
-//   1. (Skits accounts) the bank topics written BEFORE the account was set to
+//   1. (Skits accounts, ONLY with --mark-pre-skits) the bank topics written BEFORE the account was set to
 //      Skits, with no format of their own, still in the bank and never
 //      scripted (contentTopics.preSkitsBankTopics). They are talking-to-camera
 //      topics that have read as skits since the switch; --apply marks each one
@@ -34,6 +34,12 @@ installNextStubs();
 
 export const CLIENTS = ["Bernadette Rabel", "Janice Pigga", "Joseph Sutow", "Mike Flatley"] as const;
 const BY = "staff:oct26-skit-banks";
+// Oct 26 2026 review: the date rule is not reliable on its own. Joseph's and
+// Janice's pre-switch banks hold real skit concepts ("The Buyer Panic
+// Olympics", "Zillow / Redfin Zestimate Parody Video"), so step 1 is opt-in
+// and was NOT run: those topics stay as they read, and a card can be flipped
+// by hand.
+const MARK_PRE_SKITS = process.argv.includes("--mark-pre-skits");
 
 async function main() {
   const prisma = await db();
@@ -60,7 +66,7 @@ async function main() {
     const pre = await ct.preSkitsBankTopics(e.id);
     if (pre.since) {
       console.log(`  set to Skits ${pre.since.toISOString()}: ${pre.topics.length} older bank topic(s) with no format read as skits${pre.topics.length ? `; --apply marks them Talking to camera, e.g. ${pre.topics.slice(0, 4).map((t) => `"${t.title}"`).join(", ")}` : ""}`);
-      if (APPLY) {
+      if (APPLY && MARK_PRE_SKITS) {
         for (const t of pre.topics) { const r = await ct.setTopicFormat(t.id, "DIRECT", { kind: "STAFF" }); if (r.changed) marked++; }
         console.log(`  marked ${pre.topics.length} Talking to camera`);
       }
