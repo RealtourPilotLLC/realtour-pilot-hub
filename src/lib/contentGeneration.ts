@@ -462,10 +462,12 @@ async function ownTopicFormat(topicId: string | null | undefined): Promise<Video
 export async function routeScriptDraft(o: { topicId: string | null; enrollmentId: string; ctx: ClientContext; monthId?: string | null }): Promise<{ format: VideoFormat; route: ScriptRoute | "brief" }> {
   const format = formatForWrite({ topicFormat: await ownTopicFormat(o.topicId), style: asVideoStyle(o.ctx.videoStyle) });
   // Oct 26 2026: Jordan's own two-step workflow (scriptWriter/briefWriter.ts:
-  // the topic's summary of what the agent said, then one script from it), for
-  // a client it is switched on for, in both formats. A month's topic only: the
-  // summary is read from that month's call or answers.
-  if (o.topicId && o.monthId && await (await import("@/lib/scriptWriter/briefWriter")).briefWriterOnFor(o.enrollmentId)) {
+  // the topic's summary of what the agent said, then one script from it by his
+  // Scripting GPT's rules), for a client it is switched on for. Direct to
+  // camera only (Jordan: "This is for direct to camera - not skits"): a skit
+  // stays on its own writer. A month's topic only: the summary is read from
+  // that month's call or answers.
+  if (format === "DIRECT" && o.topicId && o.monthId && await (await import("@/lib/scriptWriter/briefWriter")).briefWriterOnFor(o.enrollmentId)) {
     o.ctx.videoFormat = format;
     return { format, route: "brief" };
   }

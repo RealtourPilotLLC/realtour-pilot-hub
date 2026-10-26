@@ -29,9 +29,15 @@ import { barExamplesFor } from "./barExamples";
 import { BRIEF_SCRIPT_SCHEMA, LENGTH, briefWriterSystem, briefWriterUser, fitInstruction, scriptAsText } from "./briefWriterPrompt";
 import { JORDAN_GPT_SCRIPTS, JORDAN_GPT_SCRIPTS_CLIENT } from "./houseReference";
 import { BRIEF_MODEL, ensureTopicBrief, monthChosenTopics, currentBriefs, type BriefRow } from "./topicBrief";
+import { topicBriefText } from "./briefFormat";
+
+/** The summary as the writer reads it: the office's edit as written, else the AI's without the agent's verbatim lines. */
+function writerBriefText(b: BriefRow): string {
+  return b.edited || !b.brief ? b.text : topicBriefText(b.brief, undefined, { herWords: false });
+}
 
 export const BRIEF_WRITER_SWITCH = "script_brief_writer";
-export const BRIEF_WRITER_VERSION = "brief-writer.v2";
+export const BRIEF_WRITER_VERSION = "brief-writer.v3";
 /** validationJson key on a version this writer wrote. */
 export const BRIEF_WRITER_KEY = "briefWriter";
 
@@ -59,13 +65,13 @@ export function briefSpokenWords(o: { hook: string; points: string[]; close: str
   return [o.hook, ...(o.points ?? []), o.close].reduce((n, t) => n + countSpokenWords(said(t ?? "")), 0);
 }
 
-/** How far a count is over 99 (0 = fine as it is). */
-const offTarget = (n: number) => Math.max(0, n - LENGTH.max);
+/** How far a count is over LENGTH.cut (0 = fine as it is). */
+const offTarget = (n: number) => Math.max(0, n - LENGTH.cut);
 const FIT_TRIES = 2;
 export type LengthFit = { from: number; to: number; runIds: string[] };
 
 /**
- * A script of 100 spoken words or more goes back to the writer with its
+ * A script over LENGTH.cut spoken words goes back to the writer with its
  * count, at most twice; the shortest is kept. A failed or
  * late call leaves the best so far (the card shows its length as always).
  */
@@ -97,7 +103,7 @@ export function generatedFromBriefScript(o: BriefScriptOut, fallbackCategory: st
   };
 }
 
-type WriterCtx = { clientName: string; strategy: string | null; voice: string | null; cast: string | null; good: { title: string; text: string }[]; examples: { title: string; text: string }[]; otherTopics: string[]; strategyVersionId: string | null; policyVersionId: string | null };
+type WriterCtx = { clientName: string; strategy: string | null; voice: string | null; cast: string | null; good: { title: string; text: string }[]; examples: { title: string; text: string }[]; otherTopics: string[]; priority: string | null; strategyVersionId: string | null; policyVersionId: string | null };
 
 /** Jordan's Scripting GPT scripts, as the writer is shown them; never to the agent they were written for. */
 function goodScriptsFor(clientName: string): { title: string; text: string }[] {
@@ -117,15 +123,17 @@ async function writerContext(o: { enrollmentId: string; monthId: string | null; 
   const bar = (await barExamplesFor({ enrollmentId: o.enrollmentId, topicTitle: o.title }))
     .filter((b) => briefSpokenWords({ hook: b.hook, points: [b.rehook, b.buildup, b.payoff], close: b.close }, false) <= 80);
   const others = o.monthId ? (await monthChosenTopics(o.monthId)).topics.filter((t) => t.id !== o.topicId).map((t) => t.title) : [];
+  // The month's main request, for his rules' buyer and seller balance.
+  const priority = o.monthId ? (await currentBriefs(o.monthId)).header?.header?.mainRequest ?? null : null;
   return {
     clientName: built.ctx.clientName, strategy, voice, cast: skitCastBlock(built.ctx.skitCast) || null, good: goodScriptsFor(built.ctx.clientName),
     examples: bar.map((b) => ({ title: b.title, text: [`HOOK: ${b.hook}`, `TALKING POINT 1: ${b.rehook}`, `TALKING POINT 2: ${b.buildup}`, `TALKING POINT 3: ${b.payoff}`, `CLOSE: ${b.close}`].join("\n") })),
-    otherTopics: others, strategyVersionId: built.strategyVersionId ?? null, policyVersionId: built.policyVersionId ?? null,
+    otherTopics: others, priority, strategyVersionId: built.strategyVersionId ?? null, policyVersionId: built.policyVersionId ?? null,
   };
 }
 
 function userPrompt(ctx: WriterCtx, briefText: string, skit: boolean): string {
-  const base = briefWriterUser({ clientName: ctx.clientName, briefText, strategy: ctx.strategy, voice: ctx.voice, good: ctx.good, examples: ctx.examples, otherTopics: ctx.otherTopics, skit });
+  const base = briefWriterUser({ clientName: ctx.clientName, briefText, strategy: ctx.strategy, voice: ctx.voice, good: ctx.good, priority: ctx.priority, examples: ctx.examples, otherTopics: ctx.otherTopics, skit });
   return skit && ctx.cast ? base.replace("THE SUMMARY OF WHAT", `${ctx.cast}\n\nTHE SUMMARY OF WHAT`) : base;
 }
 
@@ -139,7 +147,7 @@ export async function runBriefDraft(o: BriefDraftOpts): Promise<{ brief: BriefRo
   const brief = await ensureTopicBrief(o.topicId, o.monthId, { requestedBy: o.requestedBy, unattended: o.unattended, deadline: o.deadline });
   if (!brief || (!brief.edited && brief.brief && !brief.brief.discussed)) throw new NothingToWriteFromError(o.title);
   const ctx = await writerContext({ enrollmentId: o.enrollmentId, monthId: o.monthId, topicId: o.topicId, title: o.title });
-  const prompt = userPrompt(ctx, brief.text, o.skit);
+  const prompt = userPrompt(ctx, writerBriefText(brief), o.skit);
   const call = (p: string, fitAttempt: number | null) => runAiJson<BriefScriptOut>({
     kind: "script_draft", engine: "writer", model: BRIEF_MODEL, effort: "high", maxTokens: 3000,
     enrollmentId: o.enrollmentId, clientId: o.clientId, scope: { ...o.scope, briefWriter: true, ...(fitAttempt ? { lengthFit: fitAttempt } : {}) },
@@ -173,7 +181,7 @@ export async function runBriefRevise(o: {
   const ctx = await writerContext({ enrollmentId: o.enrollmentId, monthId: o.monthId, topicId: o.topicId, title: o.title, excludeScriptId: o.scriptId });
   const asked = o.who === "client" ? "THE CLIENT ASKED FOR THIS CHANGE" : o.who === "trim" ? "MAKE IT SHORTER" : "JORDAN ASKED FOR THIS CHANGE";
   const prompt = [
-    userPrompt(ctx, brief?.text ?? "(No summary on file for this topic: keep to what the current script already says.)", o.skit).replace(/\n\nWrite the script for this topic\.$/, ""),
+    userPrompt(ctx, brief ? writerBriefText(brief) : "(No summary on file for this topic: keep to what the current script already says.)", o.skit).replace(/\n\nWrite the script for this topic\.$/, ""),
     `THE CURRENT SCRIPT:\n${scriptAsText({ title: o.title, ...o.current })}`,
     `${asked}:\n${o.instruction.trim()}`,
     o.lockedLabels.length ? `Keep these parts word for word: ${o.lockedLabels.join(", ")}.` : "",

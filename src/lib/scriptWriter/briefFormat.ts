@@ -119,8 +119,13 @@ How to write it:
 
 const EXAMPLE_KIND: Record<BriefExample["kind"], string> = { real: "Real example", speculation: "Her guess, not a confirmed outcome", hypothetical: "Illustration, not a real event" };
 
-/** One topic as Jordan read it in his extraction. */
-export function topicBriefText(t: TopicBrief, n?: number): string {
+/**
+ * One topic as Jordan read it in his extraction. The writer's copy leaves out
+ * the agent's verbatim lines (herWords: false): it wrote them into the scripts
+ * word for word, which Jordan called "taking ... the agent's words too
+ * literally" (Oct 26 2026).
+ */
+export function topicBriefText(t: TopicBrief, n?: number, o: { herWords?: boolean } = {}): string {
   const lines: string[] = [];
   if (!t.discussed) return `${n ? `${n}. ` : ""}${t.title}\n\n${t.summary.trim() || "Not discussed on the call and no written answers yet."}`;
   lines.push(`${n ? `${n}. ` : ""}${t.title}`);
@@ -128,7 +133,7 @@ export function topicBriefText(t: TopicBrief, n?: number): string {
   lines.push(t.summary.trim());
   if (t.details.length) lines.push(t.details.map((d) => `* ${d}`).join("\n"));
   for (const e of t.examples) lines.push(`${EXAMPLE_KIND[e.kind]}: ${e.text}`);
-  if (t.herWords.length) lines.push(`In her words: ${t.herWords.map((w) => `"${w.replace(/^"|"$/g, "")}"`).join(" ")}`);
+  if (o.herWords !== false && t.herWords.length) lines.push(`In her words: ${t.herWords.map((w) => `"${w.replace(/^"|"$/g, "")}"`).join(" ")}`);
   for (const s of t.fromStrategist) lines.push(`From the strategist: ${s}`);
   for (const s of t.notEstablished) lines.push(`Not established: ${s}`);
   if (t.overlap) lines.push(`Overlap to watch: ${t.overlap}`);

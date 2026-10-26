@@ -2,20 +2,22 @@
 // ---------------------------------------------------------------------------
 // DRILL: THE BRIEF WRITER (Oct 26 2026). Jordan's own two-step workflow: the
 // topic's summary of what the agent said (topicBrief.ts), then ONE script from
-// it with his Scripting GPT's standard (briefWriter.ts), near his length:
-// "that's not a firm rule; I just want them to be less than 100 words" (his
-// GPT scripts, about 70, are the feel; only 100 or more goes back to be cut).
+// it by his Scripting GPT's own rules (houseReference.PERSONAL_BRANDING_GENERATOR:
+// about 55 to 75 spoken words; Jordan: "I just want them to be less than 100
+// words"). Over 85 goes back to come in nearer 70. Direct to camera only.
 //
 //   node scripts/_drill/run-all.cjs scripts/_drill/oct26-brief-writer.ts --logs <dir>
 //
-//   1. the switch: off, a pilot list without this client, no month: the other
-//      writers; on for this client with a month: the brief writer
-//   2. a draft: the summary and Jordan's GPT scripts in the prompt; 110 words
+//   1. the switch: off, a pilot list without this client, no month, a skit:
+//      the other writers; on for this client, a month's direct topic: the
+//      brief writer
+//   2. a draft: his GPT's rules, the summary (facts, not the agent's verbatim
+//      lines) and Jordan's GPT scripts in the prompt; 110 words
 //      goes back once with its count and comes back 71; the version carries
 //      briefWriter (summary id, length fit), no judge, no v2 writer record;
 //      INTERNAL_REVIEW, the topic SCRIPTED, every run key released
-//   3. the office's edited summary is what the writer reads; 95 words is
-//      fine as it is (under 100) = no second call
+//   3. the office's edited summary is what the writer reads; 84 words is
+//      fine as it is (85 or under) = no second call
 //   4. a topic the call never covered: refused before any model call
 //   5. the length pass: two tries at most, the shortest kept; a failed pass
 //      keeps the draft
@@ -72,7 +74,7 @@ async function main() {
   const gen = await import("@/lib/contentGeneration");
   const bw = await import("@/lib/scriptWriter/briefWriter");
   const { LENGTH } = await import("@/lib/scriptWriter/briefWriterPrompt");
-  const { JORDAN_GPT_SCRIPTS } = await import("@/lib/scriptWriter/houseReference");
+  const { JORDAN_GPT_SCRIPTS, PERSONAL_BRANDING_GENERATOR } = await import("@/lib/scriptWriter/houseReference");
   const { createPillar } = await import("@/lib/contentPillars");
   type TopicBrief = import("@/lib/scriptWriter/briefFormat").TopicBrief;
   const versionOf = (id: string) => prisma.contentScriptVersion.findUniqueOrThrow({ where: { id } });
@@ -125,6 +127,12 @@ async function main() {
     await prisma.appSetting.update({ where: { key: bw.BRIEF_WRITER_SWITCH }, data: { value: JSON.stringify({ on: true, enrollmentIds: [M.enrollmentId] }) } });
     c.ok("on for this client, but no month (a bank topic): not the brief writer", (await routeOf(null)).route !== "brief");
     c.ok("on for this client, a month's topic: the brief writer", (await routeOf(M.monthId)).route === "brief");
+    const { withTopicFormat } = await import("@/lib/contentPolicy/videoFormat");
+    const scoresA = (await prisma.contentTopic.findUniqueOrThrow({ where: { id: tA } })).scoresJson;
+    await prisma.contentTopic.update({ where: { id: tA }, data: { scoresJson: withTopicFormat(scoresA, "SKIT") } });
+    c.ok("…but a skit topic stays on the skit writer (direct to camera only)", (await routeOf(M.monthId)).route === "skit", (await routeOf(M.monthId)).route);
+    await prisma.contentTopic.update({ where: { id: tA }, data: { scoresJson: scoresA } });
+    c.ok("…and the topic back to direct: the brief writer again", (await routeOf(M.monthId)).route === "brief");
     await prisma.appSetting.update({ where: { key: bw.BRIEF_WRITER_SWITCH }, data: { value: "not json" } });
     c.ok("an unreadable switch: off", (await routeOf(M.monthId)).route !== "brief");
     await prisma.appSetting.update({ where: { key: bw.BRIEF_WRITER_SWITCH }, data: { value: JSON.stringify({ on: true }) } });
@@ -135,10 +143,13 @@ async function main() {
     const rA = await gen.generateScriptForTopic({ topicId: tA, monthId: M.monthId, requestedBy: owner, unattended: false });
     const [draftCall, fitCall] = writerCalls;
     c.ok("two calls to the writer, both Jordan's Scripting GPT, nothing else", writerCalls.length === 2 && otherCalls === 0, `${writerCalls.length} / ${otherCalls}`);
-    c.ok("the draft read the topic's summary (her point, her words, what's not established)", /King Street on Saturday mornings sells Malvern/.test(draftCall.prompt) && /Main Line without the Main Line price/.test(draftCall.prompt) && /Not established: No sale price was given/.test(draftCall.prompt));
+    c.ok("the draft read the topic's summary (her point, what's not established)", /King Street on Saturday mornings sells Malvern/.test(draftCall.prompt) && /Not established: No sale price was given/.test(draftCall.prompt));
+    c.ok("…but not her verbatim lines (Jordan: the hub took her words too literally)", !draftCall.prompt.includes("Main Line without the Main Line price") && !/In her words/i.test(draftCall.prompt));
     c.ok("…and Jordan's GPT scripts as what good looks like, with their counts", /WHAT GOOD LOOKS LIKE/.test(draftCall.prompt) && draftCall.prompt.includes(JORDAN_GPT_SCRIPTS[1].hook) && /\(7\d spoken words\)/.test(draftCall.prompt));
-    c.ok("…and under 100 in the standard, not a set count", /Length: under 100 spoken words/.test(draftCall.system) && /it is not a set count/.test(draftCall.system) && LENGTH.aim === 70 && LENGTH.max === 99);
-    c.ok("the second call: its own script back, its count and 'cut it'", /YOUR SCRIPT:\nTitle: [^\n]+\nHOOK:/.test(fitCall.prompt) && /YOUR SCRIPT ABOVE IS 110 spoken words/.test(fitCall.prompt) && /It must be under 100, nearer 70 like Jordan's\. Cut it/.test(fitCall.prompt) && !/Write the script for this topic\.$/.test(fitCall.prompt));
+    c.ok("the standard is his GPT's own instructions, word for word, then its files", draftCall.system.includes(`=== YOUR INSTRUCTIONS ===\n${PERSONAL_BRANDING_GENERATOR}`) && /Target approximately 55 to 75 spoken words/.test(PERSONAL_BRANDING_GENERATOR) && draftCall.system.indexOf("YOUR INSTRUCTIONS") < draftCall.system.indexOf("=== FILE: THE ANATOMY OF THE SCRIPT"));
+    c.ok("…the summary is for facts and stories, not wording", /The summary is your source for facts, stories and opinions, not for wording/.test(draftCall.system) && /Don't copy the agent's sentences from the call/.test(draftCall.system));
+    c.ok("…about 55 to 75 words, never 100 or more; over 85 goes back", /Length: about 55 to 75 spoken words \(hook \+ three talking points \+ close\), and never 100 or more/.test(draftCall.system) && LENGTH.aim === 70 && LENGTH.cut === 85 && LENGTH.max === 99);
+    c.ok("the second call: its own script back, its count and 'bring it nearer 70'", /YOUR SCRIPT:\nTitle: [^\n]+\nHOOK:/.test(fitCall.prompt) && /YOUR SCRIPT ABOVE IS 110 spoken words/.test(fitCall.prompt) && /That runs long: your instructions aim for about 55 to 75, and it is never 100 or more\. Bring it nearer 70/.test(fitCall.prompt) && !/Write the script for this topic\.$/.test(fitCall.prompt));
     c.ok("the saved script is the 71-word one", (await spoken(rA.versionId)) === 71, String(await spoken(rA.versionId)));
     const bag = await bagOf(rA.versionId);
     c.ok("the version carries briefWriter: the summary it read and the length pass (110 to 71, one run)", bag.briefWriter?.briefId === bA.id && bag.briefWriter?.version === bw.BRIEF_WRITER_VERSION && bag.briefWriter?.lengthFit?.from === 110 && bag.briefWriter?.lengthFit?.to === 71 && bag.briefWriter?.lengthFit?.runIds?.length === 1, JSON.stringify(bag.briefWriter));
@@ -150,13 +161,13 @@ async function main() {
     c.ok("…the version points at the draft's run, and no run still holds a key", vA.aiRunId === runs[0].id && runs.every((r) => r.dedupeKey === null));
 
     // ==================================================================
-    c.head("3 · the office's edited summary; 95 words is fine as it is");
+    c.head("3 · the office's edited summary; 84 words is fine as it is");
     writerCalls.length = 0;
-    writerQueue = [95];
+    writerQueue = [84];
     const rB = await gen.generateScriptForTopic({ topicId: tB, monthId: M.monthId, requestedBy: owner, unattended: false });
     c.ok("the writer read the office's wording, not the AI's", writerCalls.length === 1 && /EDITED BY KYLE: Marcee wants first-time buyers pre-approved/.test(writerCalls[0].prompt) && !/Marcee's point on Get pre-approved/.test(writerCalls[0].prompt));
     const bagB = await bagOf(rB.versionId);
-    c.ok("95 words the first time: kept, one call, no length pass (under 100)", (await spoken(rB.versionId)) === 95 && bagB.briefWriter?.lengthFit === null && bagB.briefWriter?.briefEdited === true, JSON.stringify(bagB.briefWriter));
+    c.ok("84 words the first time: kept, one call, no length pass (85 or under)", (await spoken(rB.versionId)) === 84 && bagB.briefWriter?.lengthFit === null && bagB.briefWriter?.briefEdited === true, JSON.stringify(bagB.briefWriter));
 
     // ==================================================================
     c.head("4 · a topic the call never covered");
@@ -207,8 +218,8 @@ async function main() {
     c.ok("…a talking-to-camera script counts every word", bw.briefSpokenWords({ hook: "Here's the truth: pricing matters.", points: [], close: "" }, false) === 5);
     c.ok("Jordan's five GPT scripts (the length shown) are 69 to 73 spoken words each", JORDAN_GPT_SCRIPTS.length === 5 && JORDAN_GPT_SCRIPTS.every((g) => { const n = bw.briefSpokenWords(g, false); return n >= 69 && n <= 73; }), JORDAN_GPT_SCRIPTS.map((g) => bw.briefSpokenWords(g, false)).join());
     const { briefWriterSystem } = await import("@/lib/scriptWriter/briefWriterPrompt");
-    const rules = briefWriterSystem().slice(briefWriterSystem().indexOf("=== HOW THIS RUNS NOW"));
-    c.ok("no em or en dash in the writer's rules or Jordan's examples", !/[—–]/.test(rules) && !/[—–]/.test(JSON.stringify(JORDAN_GPT_SCRIPTS)));
+    const hub = briefWriterSystem().indexOf("=== HOW THE HUB HANDS YOU THE WORK");
+    c.ok("no em or en dash in his GPT's rules, the hub's notes or Jordan's examples", hub > 0 && !/[—–]/.test(PERSONAL_BRANDING_GENERATOR) && !/[—–]/.test(briefWriterSystem().slice(hub)) && !/[—–]/.test(JSON.stringify(JORDAN_GPT_SCRIPTS)));
     c.ok("nothing left the drill", fence.blocked.length === 0, fence.blocked.join(" "));
   } finally {
     quiet.restore();
