@@ -2,42 +2,38 @@ import "server-only";
 // ---------------------------------------------------------------------------
 // THE BRIEF WRITER (Oct 26 2026): step two of Jordan's own workflow. One model
 // call writes one topic's script from that topic's summary of what the agent
-// said (topicBrief.ts), with his Scripting GPT's instructions and files as the
-// standard (briefWriterPrompt.ts). No passage hunt, no hooks round, no review
-// and rewrite rounds: the summary carries the substance, the GPT's standard
-// carries the craft, and Jordan reviews the draft as he always has.
+// said (topicBrief.ts), the way his Scripting GPT does (briefWriterPrompt.ts:
+// his GPT's instructions, his additional rules, his GPT's Erica scripts as how
+// a script reads), in his GPT's own output format. Then his rule 6: a second
+// call checks structure, word count (the hub's count), source accuracy and
+// spoken delivery, and returns the script as it was or fixed (checkBeforeSubmit).
+// No passage hunt, no hooks round; Jordan reviews the draft as he always has.
 //
 // Switched per client by AppSetting `script_brief_writer`:
 //   {"on": true}                        every client
 //   {"on": true, "enrollmentIds": [..]} those clients only
 // Off (or unreadable) = the writers that ran before, untouched. Drafts route
-// here from contentGeneration.routeScriptDraft; a script this writer drafted
-// is revised here too (contentGeneration.reviseScript).
-//
-// Length (Jordan, Oct 26 2026: "that's not a firm rule; I just want them to be
-// less than 100 words"): the writer is shown his Scripting GPT's own scripts
-// (about 70) as the feel; a draft or revision of 100 spoken words or more goes
-// back to the same writer with its count (fitToLength, at most two more calls;
-// the shortest is kept).
+// here from contentGeneration.routeScriptDraft (direct to camera only); a
+// script this writer drafted is revised here too (contentGeneration.reviseScript).
 // ---------------------------------------------------------------------------
 import { prisma } from "@/lib/prisma";
-import { runAiJson, type ClaimedRun } from "@/lib/aiRuns";
-import { renderStrategy, creativeIdentityBlock, type GeneratedScriptJson } from "@/lib/contentPolicy";
+import { runAiJson, releaseRunKey, type ClaimedRun } from "@/lib/aiRuns";
+import { creativeIdentityBlock, type GeneratedScriptJson, type StrategyDocument } from "@/lib/contentPolicy";
 import { countSpokenWords } from "@/lib/contentPolicy/policy";
 import { skitCastBlock } from "@/lib/contentPolicy/prompts";
-import { barExamplesFor } from "./barExamples";
-import { BRIEF_SCRIPT_SCHEMA, LENGTH, briefWriterSystem, briefWriterUser, fitInstruction, scriptAsText } from "./briefWriterPrompt";
+import { noDashes } from "@/lib/text";
+import { BRIEF_SCRIPT_SCHEMA, CHECK_SCHEMA, LENGTH, briefWriterSystem, briefWriterUser, checkerSystem, checkPrompt, parseScriptFormat, scriptInFormat } from "./briefWriterPrompt";
 import { JORDAN_GPT_SCRIPTS, JORDAN_GPT_SCRIPTS_CLIENT } from "./houseReference";
 import { BRIEF_MODEL, ensureTopicBrief, monthChosenTopics, currentBriefs, type BriefRow } from "./topicBrief";
 import { topicBriefText } from "./briefFormat";
 
-/** The summary as the writer reads it: the office's edit as written, else the AI's without the agent's verbatim lines. */
+/** The summary as the writer reads it: the office's edit as written, else the AI's, with the agent's strongest lines (his rule 2). */
 function writerBriefText(b: BriefRow): string {
-  return b.edited || !b.brief ? b.text : topicBriefText(b.brief, undefined, { herWords: false });
+  return b.edited || !b.brief ? b.text : topicBriefText(b.brief);
 }
 
 export const BRIEF_WRITER_SWITCH = "script_brief_writer";
-export const BRIEF_WRITER_VERSION = "brief-writer.v3";
+export const BRIEF_WRITER_VERSION = "brief-writer.v4";
 /** validationJson key on a version this writer wrote. */
 export const BRIEF_WRITER_KEY = "briefWriter";
 
@@ -59,39 +55,61 @@ export class NothingToWriteFromError extends Error {
   constructor(title: string) { super(`"${title}" was not discussed on the call and has no written answers yet, so there is nothing of the agent's to write it from.`); this.name = "NothingToWriteFromError"; }
 }
 
+/** The writer's answer was not a script in his GPT's format (no hook, three talking points and close to read). */
+export class ScriptFormatError extends Error {
+  constructor() { super("The writer's answer wasn't a script in the usual format (hook, three talking points, close). Try drafting it again."); this.name = "ScriptFormatError"; }
+}
+
 /** Spoken words as Jordan counts them: hook, the talking points, close (a skit's speaker names and stage directions are not said). */
 export function briefSpokenWords(o: { hook: string; points: string[]; close: string }, skit: boolean): number {
   const said = (t: string) => (skit ? t.replace(/\([^)]*\)/g, " ").replace(/(^|[\n.!?]\s*)[A-Z][A-Za-z.']*(?: [A-Z][A-Za-z.']*){0,2}\s*:\s/g, "$1") : t);
   return [o.hook, ...(o.points ?? []), o.close].reduce((n, t) => n + countSpokenWords(said(t ?? "")), 0);
 }
 
-/** How far a count is over LENGTH.cut (0 = fine as it is). */
-const offTarget = (n: number) => Math.max(0, n - LENGTH.cut);
-const FIT_TRIES = 2;
-export type LengthFit = { from: number; to: number; runIds: string[] };
+/** A script in his GPT's format, read into its parts, never a dash. Null when it is not one. */
+export function readBriefScript(text: string, fallbackTitle: string): BriefScriptOut | null {
+  const p = parseScriptFormat(text);
+  if (!p) return null;
+  const d = (t: string) => noDashes(t).trim();
+  return { title: d(p.title ?? fallbackTitle), category: d(p.category ?? ""), hook: d(p.hook), points: p.points.map(d), close: d(p.close), captionCta: p.captionCta ? d(p.captionCta) : null, production: p.production ? d(p.production) : null };
+}
+
+type WriterRaw = { script: string };
+type CheckRaw = { verdict: string; issues: string[]; script: string };
+/** What the check did: the count before and after, its runs, verdicts and the issues it named. */
+export type ScriptCheck = { from: number; to: number; runIds: string[]; verdicts: string[]; issues: string[] };
 
 /**
- * A script over LENGTH.cut spoken words goes back to the writer with its
- * count, at most twice; the shortest is kept. A failed or
- * late call leaves the best so far (the card shows its length as always).
+ * HIS RULE 6: "Before submitting, independently check structure, word count,
+ * source accuracy, and spoken delivery." One check always; a second only when
+ * the script is still over LENGTH.again. A fixed script is taken unless it
+ * reaches 100 words and is longer than what it fixed; a failed or late check
+ * keeps the script as it stands (the card shows its length as always).
  */
-export async function fitToLength(first: BriefScriptOut, o: { skit: boolean; prompt: string; deadline: number | null; call: (prompt: string, attempt: number) => Promise<{ output: BriefScriptOut; runId: string }> }): Promise<{ output: BriefScriptOut; fit: LengthFit | null }> {
+export async function checkBeforeSubmit(first: BriefScriptOut, o: { skit: boolean; writerPrompt: string; deadline: number | null; call: (prompt: string, attempt: number) => Promise<{ output: CheckRaw; runId: string }> }): Promise<{ output: BriefScriptOut; check: ScriptCheck | null }> {
   const from = briefSpokenWords(first, o.skit);
   let best = first;
-  let bestN = from;
+  let n = from;
   const runIds: string[] = [];
-  for (let i = 1; i <= FIT_TRIES && offTarget(bestN) > 0; i++) {
+  const verdicts: string[] = [];
+  const issues: string[] = [];
+  for (let i = 1; i <= 2; i++) {
+    if (i === 2 && n <= LENGTH.again) break;
     if (o.deadline && o.deadline - Date.now() < 60_000) break;
     try {
-      const r = await o.call(`${o.prompt}\n\nYOUR SCRIPT:\n${scriptAsText(best)}\n\n${fitInstruction(bestN, o.skit)}`, i);
+      const r = await o.call(checkPrompt({ writerPrompt: o.writerPrompt, script: scriptInFormat(best), words: n, again: i === 2 }), i);
       runIds.push(r.runId);
-      const n = briefSpokenWords(r.output, o.skit);
-      if (offTarget(n) < offTarget(bestN)) { best = r.output; bestN = n; }
+      verdicts.push(r.output?.verdict === "FIXED" ? "FIXED" : "PASS");
+      issues.push(...(Array.isArray(r.output?.issues) ? r.output.issues : []).map((x) => noDashes(String(x)).slice(0, 200)).slice(0, 8));
+      const next = readBriefScript(r.output?.script ?? "", best.title);
+      if (!next) continue;
+      const m = briefSpokenWords(next, o.skit);
+      if (m <= LENGTH.hard || m <= n) { best = next; n = m; }
     } catch {
       break;
     }
   }
-  return { output: best, fit: runIds.length ? { from, to: bestN, runIds } : null };
+  return { output: best, check: runIds.length ? { from, to: n, runIds, verdicts, issues } : null };
 }
 
 const ROLES = ["re-hook", "build-up", "payoff"] as const;
@@ -103,38 +121,44 @@ export function generatedFromBriefScript(o: BriefScriptOut, fallbackCategory: st
   };
 }
 
-type WriterCtx = { clientName: string; strategy: string | null; voice: string | null; cast: string | null; good: { title: string; text: string }[]; examples: { title: string; text: string }[]; otherTopics: string[]; priority: string | null; strategyVersionId: string | null; policyVersionId: string | null };
+type WriterCtx = { clientName: string; profile: string | null; voice: string | null; cast: string | null; good: { forClient: string; text: string; title: string }[]; otherTopics: string[]; priority: string | null; strategyVersionId: string | null; policyVersionId: string | null };
 
-/** Jordan's Scripting GPT scripts, as the writer is shown them; never to the agent they were written for. */
-function goodScriptsFor(clientName: string): { title: string; text: string }[] {
-  if (clientName.trim().toLowerCase() === JORDAN_GPT_SCRIPTS_CLIENT.toLowerCase()) return [];
-  return JORDAN_GPT_SCRIPTS.map((g) => ({ title: g.title, text: `${scriptAsText({ hook: g.hook, points: g.points, close: g.close, captionCta: g.captionCta })}\n(${briefSpokenWords(g, false)} spoken words)` }));
+/** His GPT's Erica scripts in its own format; never the one written for this same topic. */
+function goodScriptsFor(topicId: string | null): { forClient: string; text: string; title: string }[] {
+  return JORDAN_GPT_SCRIPTS.filter((g) => g.topicId !== topicId).map((g, i) => ({ forClient: JORDAN_GPT_SCRIPTS_CLIENT, title: g.title, text: scriptInFormat({ ...g, production: null }, i + 1) }));
 }
 
-async function writerContext(o: { enrollmentId: string; monthId: string | null; topicId: string | null; title: string; excludeScriptId?: string | null }): Promise<WriterCtx> {
+/** Market, audience and voice from their strategy: a few lines, not the document. */
+function profileOf(doc: StrategyDocument | null | undefined): string | null {
+  if (!doc) return null;
+  const cut = (v: string | null | undefined, n = 400) => { const t = (v ?? "").replace(/\s+/g, " ").trim(); return t ? (t.length > n ? `${t.slice(0, n)} ...` : t) : null; };
+  const rows: [string, string | null][] = [
+    ["Market", cut(doc.targetAudience?.primaryServiceAreas)],
+    ["Who they serve", cut(doc.targetAudience?.primaryClientTypes)],
+    ["Price point", cut(doc.targetAudience?.pricePositioning, 200)],
+    ["Brand voice", cut(doc.brandOverview?.brandVoice)],
+    ["What they stand for", cut(doc.brandOverview?.shortBrandStatement ?? doc.brandOverview?.brandMessage)],
+  ];
+  const lines = rows.filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`);
+  return lines.length ? lines.join("\n") : null;
+}
+
+async function writerContext(o: { enrollmentId: string; monthId: string | null; topicId: string | null; excludeScriptId?: string | null }): Promise<WriterCtx> {
   const gen = await import("@/lib/contentGeneration");
   const built = await gen.buildClientContext(o.enrollmentId, { monthId: o.monthId, excludeScriptId: o.excludeScriptId ?? null });
-  const doc = built.ctx.strategy?.document ?? null;
-  let strategy = doc ? renderStrategy(doc, { preserveSourceHeadings: true }) : null;
-  if (strategy && strategy.length > 14_000) strategy = `${strategy.slice(0, 14_000)} ...`;
   let voice = creativeIdentityBlock(built.ctx.creativeIdentity) || null;
-  if (voice && voice.length > 3500) voice = `${voice.slice(0, 3500)} ...`;
-  // Only the sent scripts near Jordan's length: a long one would pull the draft long.
-  const bar = (await barExamplesFor({ enrollmentId: o.enrollmentId, topicTitle: o.title }))
-    .filter((b) => briefSpokenWords({ hook: b.hook, points: [b.rehook, b.buildup, b.payoff], close: b.close }, false) <= 80);
+  if (voice && voice.length > 1500) voice = `${voice.slice(0, 1500)} ...`;
   const others = o.monthId ? (await monthChosenTopics(o.monthId)).topics.filter((t) => t.id !== o.topicId).map((t) => t.title) : [];
   // The month's main request, for his rules' buyer and seller balance.
   const priority = o.monthId ? (await currentBriefs(o.monthId)).header?.header?.mainRequest ?? null : null;
   return {
-    clientName: built.ctx.clientName, strategy, voice, cast: skitCastBlock(built.ctx.skitCast) || null, good: goodScriptsFor(built.ctx.clientName),
-    examples: bar.map((b) => ({ title: b.title, text: [`HOOK: ${b.hook}`, `TALKING POINT 1: ${b.rehook}`, `TALKING POINT 2: ${b.buildup}`, `TALKING POINT 3: ${b.payoff}`, `CLOSE: ${b.close}`].join("\n") })),
+    clientName: built.ctx.clientName, profile: profileOf(built.ctx.strategy?.document), voice, cast: skitCastBlock(built.ctx.skitCast) || null, good: goodScriptsFor(o.topicId),
     otherTopics: others, priority, strategyVersionId: built.strategyVersionId ?? null, policyVersionId: built.policyVersionId ?? null,
   };
 }
 
-function userPrompt(ctx: WriterCtx, briefText: string, skit: boolean): string {
-  const base = briefWriterUser({ clientName: ctx.clientName, briefText, strategy: ctx.strategy, voice: ctx.voice, good: ctx.good, priority: ctx.priority, examples: ctx.examples, otherTopics: ctx.otherTopics, skit });
-  return skit && ctx.cast ? base.replace("THE SUMMARY OF WHAT", `${ctx.cast}\n\nTHE SUMMARY OF WHAT`) : base;
+function userPrompt(ctx: WriterCtx, briefText: string, skit: boolean, topicTitle: string): string {
+  return briefWriterUser({ clientName: ctx.clientName, profile: ctx.profile, voice: ctx.voice, priority: ctx.priority, good: ctx.good, otherTopics: ctx.otherTopics, skit, cast: ctx.cast, topicTitle, briefText });
 }
 
 export type BriefDraftOpts = {
@@ -142,26 +166,34 @@ export type BriefDraftOpts = {
   requestedBy: string; unattended: boolean; claimedRun: ClaimedRun | null; dedupeKey: string; scope: Record<string, unknown>; deadline: number | null;
 };
 
-/** One topic's script from its summary: the model's answer, the run, and the summary it read. */
-export async function runBriefDraft(o: BriefDraftOpts): Promise<{ brief: BriefRow; json: GeneratedScriptJson; output: BriefScriptOut; runId: string; fit: LengthFit | null; strategyVersionId: string | null; policyVersionId: string | null }> {
+const timeout = (deadline: number | null) => (deadline ? { timeoutMs: Math.max(30_000, deadline - Date.now()) } : {});
+
+/** One topic's script from its summary, checked: the script, the writer's run, the check, and the summary it read. */
+export async function runBriefDraft(o: BriefDraftOpts): Promise<{ brief: BriefRow; json: GeneratedScriptJson; output: BriefScriptOut; runId: string; check: ScriptCheck | null; strategyVersionId: string | null; policyVersionId: string | null }> {
   const brief = await ensureTopicBrief(o.topicId, o.monthId, { requestedBy: o.requestedBy, unattended: o.unattended, deadline: o.deadline });
   if (!brief || (!brief.edited && brief.brief && !brief.brief.discussed)) throw new NothingToWriteFromError(o.title);
-  const ctx = await writerContext({ enrollmentId: o.enrollmentId, monthId: o.monthId, topicId: o.topicId, title: o.title });
-  const prompt = userPrompt(ctx, writerBriefText(brief), o.skit);
-  const call = (p: string, fitAttempt: number | null) => runAiJson<BriefScriptOut>({
-    kind: "script_draft", engine: "writer", model: BRIEF_MODEL, effort: "high", maxTokens: 3000,
-    enrollmentId: o.enrollmentId, clientId: o.clientId, scope: { ...o.scope, briefWriter: true, ...(fitAttempt ? { lengthFit: fitAttempt } : {}) },
-    inputRefs: { briefId: brief.id, briefEdited: brief.edited, goodExampleTitles: ctx.good.map((e) => e.title), barExampleTitles: ctx.examples.map((e) => e.title), strategyVersionId: ctx.strategyVersionId },
-    promptKey: fitAttempt ? "script.brief_writer.fit" : "script.brief_writer", promptVersion: BRIEF_WRITER_VERSION, strategyVersionId: ctx.strategyVersionId, policyVersionId: ctx.policyVersionId,
-    requestedBy: o.requestedBy, unattended: o.unattended,
-    // The first call holds the script's key until the version is written; a length pass is its own short run.
-    ...(fitAttempt ? { dedupeKey: `${o.dedupeKey}:fit${fitAttempt}`, claimedRun: null } : { dedupeKey: o.dedupeKey, holdDedupeKey: true, claimedRun: o.claimedRun }),
-    system: briefWriterSystem(), prompt: p, schema: BRIEF_SCRIPT_SCHEMA as unknown as Record<string, unknown>,
-    ...(o.deadline ? { timeoutMs: Math.max(30_000, o.deadline - Date.now()) } : {}),
+  const ctx = await writerContext({ enrollmentId: o.enrollmentId, monthId: o.monthId, topicId: o.topicId });
+  const prompt = userPrompt(ctx, writerBriefText(brief), o.skit, o.title);
+  const common = { engine: "writer" as const, model: BRIEF_MODEL, effort: "high" as const, maxTokens: 3000, enrollmentId: o.enrollmentId, clientId: o.clientId, promptVersion: BRIEF_WRITER_VERSION, strategyVersionId: ctx.strategyVersionId, policyVersionId: ctx.policyVersionId, requestedBy: o.requestedBy, unattended: o.unattended };
+  // The writer's call holds the script's key until the version is written.
+  const run = await runAiJson<WriterRaw>({
+    ...common, kind: "script_draft", scope: { ...o.scope, briefWriter: true },
+    inputRefs: { briefId: brief.id, briefEdited: brief.edited, goodExampleTitles: ctx.good.map((e) => e.title), strategyVersionId: ctx.strategyVersionId },
+    promptKey: "script.brief_writer", dedupeKey: o.dedupeKey, holdDedupeKey: true, claimedRun: o.claimedRun,
+    system: briefWriterSystem(), prompt, schema: BRIEF_SCRIPT_SCHEMA as unknown as Record<string, unknown>, ...timeout(o.deadline),
   });
-  const run = await call(prompt, null);
-  const fitted = await fitToLength(run.output, { skit: o.skit, prompt: prompt.replace(/\n\nWrite the script for this topic\.$/, ""), deadline: o.deadline, call: (p, i) => call(p, i) });
-  return { brief, json: generatedFromBriefScript(fitted.output, o.category), output: fitted.output, runId: run.runId, fit: fitted.fit, strategyVersionId: ctx.strategyVersionId, policyVersionId: ctx.policyVersionId };
+  try {
+    const draft = readBriefScript(run.output?.script ?? "", o.title);
+    if (!draft) throw new ScriptFormatError();
+    const checked = await checkBeforeSubmit(draft, {
+      skit: o.skit, writerPrompt: prompt, deadline: o.deadline,
+      call: (p, i) => runAiJson<CheckRaw>({ ...common, kind: "script_review", scope: { ...o.scope, briefWriter: true, check: i }, inputRefs: { briefId: brief.id, writerRunId: run.runId }, promptKey: "script.brief_writer.check", dedupeKey: `${o.dedupeKey}:check${i}`, claimedRun: null, system: checkerSystem(), prompt: p, schema: CHECK_SCHEMA as unknown as Record<string, unknown>, ...timeout(o.deadline) }),
+    });
+    return { brief, json: generatedFromBriefScript(checked.output, o.category), output: checked.output, runId: run.runId, check: checked.check, strategyVersionId: ctx.strategyVersionId, policyVersionId: ctx.policyVersionId };
+  } catch (e) {
+    await releaseRunKey(run.runId);
+    throw e;
+  }
 }
 
 /** Did this writer draft (any version of) the script? Then its revisions are written here too. */
@@ -170,33 +202,35 @@ export async function briefWrittenScript(scriptId: string): Promise<boolean> {
   return n > 0;
 }
 
-/** A revision of a script this writer drafted: the same standard, the topic's summary, the current script and the change asked for. */
+/** A revision of a script this writer drafted: the same instructions, the topic's summary, the current script and the change asked for; checked like a draft. */
 export async function runBriefRevise(o: {
   scriptId: string; monthId: string | null; topicId: string | null; enrollmentId: string; clientId: string; title: string; category: string; skit: boolean;
   current: { hook: string; points: string[]; close: string; captionCta: string | null };
   instruction: string; lockedLabels: string[]; who: "person" | "client" | "rewrite" | "trim";
   requestedBy: string; unattended: boolean; claimedRun: ClaimedRun | null; deadline: number | null;
-}): Promise<{ json: GeneratedScriptJson; output: BriefScriptOut; runId: string; briefId: string | null; fit: LengthFit | null }> {
+}): Promise<{ json: GeneratedScriptJson; output: BriefScriptOut; runId: string; briefId: string | null; check: ScriptCheck | null }> {
   const brief = o.monthId && o.topicId ? (await currentBriefs(o.monthId)).byTopic.get(o.topicId) ?? null : null;
-  const ctx = await writerContext({ enrollmentId: o.enrollmentId, monthId: o.monthId, topicId: o.topicId, title: o.title, excludeScriptId: o.scriptId });
+  const ctx = await writerContext({ enrollmentId: o.enrollmentId, monthId: o.monthId, topicId: o.topicId, excludeScriptId: o.scriptId });
   const asked = o.who === "client" ? "THE CLIENT ASKED FOR THIS CHANGE" : o.who === "trim" ? "MAKE IT SHORTER" : "JORDAN ASKED FOR THIS CHANGE";
   const prompt = [
-    userPrompt(ctx, brief ? writerBriefText(brief) : "(No summary on file for this topic: keep to what the current script already says.)", o.skit).replace(/\n\nWrite the script for this topic\.$/, ""),
-    `THE CURRENT SCRIPT:\n${scriptAsText({ title: o.title, ...o.current })}`,
+    userPrompt(ctx, brief ? writerBriefText(brief) : "(No summary on file for this topic: keep to what the current script already says.)", o.skit, o.title).replace(/\n\nWrite Video 1: [^\n]*$/, ""),
+    `THE CURRENT SCRIPT:\n${scriptInFormat({ title: o.title, category: o.category, ...o.current })}`,
     `${asked}:\n${o.instruction.trim()}`,
     o.lockedLabels.length ? `Keep these parts word for word: ${o.lockedLabels.join(", ")}.` : "",
-    "Rewrite the script with that change. Change what the request asks for and what it needs to read well; keep the rest. Everything else in your standard still applies.",
+    "Write it again with that change, in your exact output format. Change what the request asks for and what it needs to read well; keep the rest.",
   ].filter(Boolean).join("\n\n");
-  const call = (p: string, fitAttempt: number | null) => runAiJson<BriefScriptOut>({
-    kind: "script_revise", engine: "writer", model: BRIEF_MODEL, effort: "high", maxTokens: 3000,
-    enrollmentId: o.enrollmentId, clientId: o.clientId, scope: { scriptId: o.scriptId, briefWriter: true, who: o.who, ...(fitAttempt ? { lengthFit: fitAttempt } : {}) },
+  const common = { engine: "writer" as const, model: BRIEF_MODEL, effort: "high" as const, maxTokens: 3000, enrollmentId: o.enrollmentId, clientId: o.clientId, promptVersion: BRIEF_WRITER_VERSION, strategyVersionId: ctx.strategyVersionId, policyVersionId: ctx.policyVersionId, requestedBy: o.requestedBy, unattended: o.unattended };
+  const run = await runAiJson<WriterRaw>({
+    ...common, kind: "script_revise", scope: { scriptId: o.scriptId, briefWriter: true, who: o.who },
     inputRefs: { briefId: brief?.id ?? null, instructionText: o.instruction.slice(0, 20_000) },
-    promptKey: fitAttempt ? "script.brief_writer.fit" : "script.brief_writer.revise", promptVersion: BRIEF_WRITER_VERSION, strategyVersionId: ctx.strategyVersionId, policyVersionId: ctx.policyVersionId,
-    requestedBy: o.requestedBy, unattended: o.unattended, dedupeKey: fitAttempt ? `revise:${o.scriptId}:fit${fitAttempt}` : `revise:${o.scriptId}`, claimedRun: fitAttempt ? null : o.claimedRun,
-    system: briefWriterSystem(), prompt: p, schema: BRIEF_SCRIPT_SCHEMA as unknown as Record<string, unknown>,
-    ...(o.deadline ? { timeoutMs: Math.max(30_000, o.deadline - Date.now()) } : {}),
+    promptKey: "script.brief_writer.revise", dedupeKey: `revise:${o.scriptId}`, claimedRun: o.claimedRun,
+    system: briefWriterSystem(), prompt, schema: BRIEF_SCRIPT_SCHEMA as unknown as Record<string, unknown>, ...timeout(o.deadline),
   });
-  const run = await call(prompt, null);
-  const fitted = await fitToLength(run.output, { skit: o.skit, prompt, deadline: o.deadline, call: (p, i) => call(p, i) });
-  return { json: generatedFromBriefScript(fitted.output, o.category), output: fitted.output, runId: run.runId, briefId: brief?.id ?? null, fit: fitted.fit };
+  const revised = readBriefScript(run.output?.script ?? "", o.title);
+  if (!revised) throw new ScriptFormatError();
+  const checked = await checkBeforeSubmit(revised, {
+    skit: o.skit, writerPrompt: prompt, deadline: o.deadline,
+    call: (p, i) => runAiJson<CheckRaw>({ ...common, kind: "script_review", scope: { scriptId: o.scriptId, briefWriter: true, check: i }, inputRefs: { briefId: brief?.id ?? null, writerRunId: run.runId }, promptKey: "script.brief_writer.check", dedupeKey: `revise:${o.scriptId}:check${i}`, claimedRun: null, system: checkerSystem(), prompt: p, schema: CHECK_SCHEMA as unknown as Record<string, unknown>, ...timeout(o.deadline) }),
+  });
+  return { json: generatedFromBriefScript(checked.output, o.category), output: checked.output, runId: run.runId, briefId: brief?.id ?? null, check: checked.check };
 }

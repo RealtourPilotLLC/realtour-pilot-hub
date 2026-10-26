@@ -620,7 +620,7 @@ async function generateWithBriefWriter(o: {
       : await prisma.contentScript.findFirst({ where: { topicId: o.topicId, monthId: o.monthId, historical: false }, select: { id: true, currentVersionId: true } });
     if (existing && o.onlyIfUnscripted) throw new AlreadyDraftedError(what);
     await claimRunWrite(d.runId);
-    const bag = { ok: validation.ok, findings: validation.findings, angle: null, [bw.BRIEF_WRITER_KEY]: { briefId: d.brief.id, briefRoute: d.brief.route, briefEdited: d.brief.edited, runId: d.runId, version: bw.BRIEF_WRITER_VERSION, lengthFit: d.fit }, [VERSION_FORMAT_KEY]: o.format };
+    const bag = { ok: validation.ok, findings: validation.findings, angle: null, [bw.BRIEF_WRITER_KEY]: { briefId: d.brief.id, briefRoute: d.brief.route, briefEdited: d.brief.edited, runId: d.runId, version: bw.BRIEF_WRITER_VERSION, check: d.check }, [VERSION_FORMAT_KEY]: o.format };
     const r = await createScriptVersion({
       scriptId: existing?.id ?? null, enrollmentId: o.enrollmentId, monthId: o.monthId, topicId: o.topicId, parts, source: "AI", createdBy: o.requestedBy, status: o.interviewId ? "DRAFT" : "INTERNAL_REVIEW",
       basedOnVersionId: o.interviewId ? existing?.currentVersionId ?? null : null, interviewId: o.interviewId, answerIds: o.answerIds ?? null, callRecordId: o.callRecordId,
@@ -847,7 +847,7 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   const bw = await import("@/lib/scriptWriter/briefWriter");
   const briefRevise = !autoFix && await bw.briefWrittenScript(scriptId);
   let briefRevisedFrom: string | null = null;
-  let briefFit: import("@/lib/scriptWriter/briefWriter").LengthFit | null = null;
+  let briefCheck: import("@/lib/scriptWriter/briefWriter").ScriptCheck | null = null;
   if (briefRevise) {
     const r = await bw.runBriefRevise({
       scriptId, monthId: s.monthId, topicId: s.topicId, enrollmentId: s.enrollmentId, clientId: s.clientId, title: base.title, category: base.categoryLabel ?? "", skit,
@@ -858,7 +858,7 @@ export async function reviseScript(scriptId: string, instructions: string, reque
     runId = r.runId;
     raw = r.json;
     briefRevisedFrom = r.briefId;
-    briefFit = r.fit;
+    briefCheck = r.check;
   } else if (w && writerRec) {
     // v2.6: an automatic round is the ONE whole rewrite (the version and the review's note; nothing locked).
     const who = autoFix ? "rewrite" : personTrim ? "trim" : source === "CLIENT_REQUEST" ? "client" : "person";
@@ -916,7 +916,7 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   const candidateOf = autoFix?.candidate ? baseId : null;
   const owedJudge = autoFix ? pendingJudge(autoFix.round, { writer: true, candidateOf }) : null;
   const bag = briefRevise
-    ? { ok: validation.ok, findings: validation.findings, angle: null, instruction: instructions, [bw.BRIEF_WRITER_KEY]: { briefId: briefRevisedFrom, runId, version: bw.BRIEF_WRITER_VERSION, revision: true, lengthFit: briefFit } }
+    ? { ok: validation.ok, findings: validation.findings, angle: null, instruction: instructions, [bw.BRIEF_WRITER_KEY]: { briefId: briefRevisedFrom, runId, version: bw.BRIEF_WRITER_VERSION, revision: true, check: briefCheck } }
     : w && writerRec
     ? {
         ok: validation.ok, findings: validation.findings, angle: null, instruction: instructions,

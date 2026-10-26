@@ -19,7 +19,9 @@ installNextStubs();
 
 async function main() {
   if (!APPLY) { console.log("This test spends AI and saves summaries: run it with --apply."); return; }
-  const args = process.argv.slice(2).filter((a) => a !== "--apply");
+  const args = process.argv.slice(2).filter((a) => a !== "--apply" && a !== "--rebuild");
+  // The month's summaries are written once; later runs reuse them (--rebuild writes them again).
+  const rebuild = process.argv.includes("--rebuild");
   const outPath = args.shift()!;
   const prisma = await db();
   const tb = await import("../../src/lib/scriptWriter/topicBrief");
@@ -36,7 +38,8 @@ async function main() {
     const enr = await prisma.contentEnrollment.findUnique({ where: { id: month.enrollmentId }, select: { overridesJson: true } });
     const style = asVideoStyle(videoStyleFromOverrides(enr?.overridesJson ?? null));
     const t0 = Date.now();
-    const built = await tb.buildMonthBriefs(month.id, { requestedBy: "claude:oct26-brief-eval", unattended: false });
+    const have = (await tb.currentBriefs(month.id)).byTopic.size;
+    const built = rebuild || !have ? await tb.buildMonthBriefs(month.id, { requestedBy: "claude:oct26-brief-eval", unattended: false }) : { written: 0, runId: "(reused)" };
     const cur = await tb.currentBriefs(month.id);
     const chosen = await tb.monthChosenTopics(month.id);
     console.log(`\n== ${name} ${monthKey}: ${built.written} summaries written in ${Math.round((Date.now() - t0) / 1000)} s (run ${built.runId})`);
@@ -51,8 +54,8 @@ async function main() {
         await releaseRunKey(r.runId);
         const o = r.output;
         const words = bw.briefSpokenWords(o, skit);
-        console.log(`  ✓ ${t.title} (${skit ? "skit" : "direct"}): ${words} words${r.fit ? ` (first draft ${r.fit.from}, ${r.fit.runIds.length} length pass${r.fit.runIds.length === 1 ? "" : "es"})` : ""}`);
-        scripts.push({ topicId: t.id, topic: t.title, skit, words, fit: r.fit, script: o, runId: r.runId });
+        console.log(`  ✓ ${t.title} (${skit ? "skit" : "direct"}): ${words} words${r.check ? ` (draft ${r.check.from}; check ${r.check.verdicts.join(", ")}${r.check.issues.length ? `: ${r.check.issues.join("; ")}` : ""})` : " (no check)"}`);
+        scripts.push({ topicId: t.id, topic: t.title, skit, words, check: r.check, script: o, runId: r.runId });
       } catch (e) {
         console.log(`  - ${t.title}: ${String((e as Error).message).slice(0, 200)}`);
         scripts.push({ topicId: t.id, topic: t.title, skit, error: String((e as Error).message) });
