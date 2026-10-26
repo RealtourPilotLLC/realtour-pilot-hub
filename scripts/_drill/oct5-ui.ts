@@ -212,7 +212,7 @@ async function main() {
 
     const offline = async () => { throw new Error("isolated: the connection dropped"); };
     const view0: any = {
-      project: { id: "weak-signal-job", title: "12 Signal St, Testville", street: "12 Signal St", addressFull: "12 Signal St, Testville", mapsQuery: "12 Signal St", packageName: "Video Starter", status: "SCHEDULED", shootDateISO: null, editorBrief: "First note", uploadedAt: null, squareFeet: null, photoTarget: null, aryeoListingId: null, reelHook: null, reelScript: null, reelSong: null, reelShotList: null, reelScriptUrl: null, reelRecipeUpdatedAt: null, addressChangePending: null, contentSession: true },
+      project: { id: "weak-signal-job", title: "12 Signal St, Testville", street: "12 Signal St", addressFull: "12 Signal St, Testville", mapsQuery: "12 Signal St", packageName: "Video Starter", status: "SCHEDULED", shootDateISO: null, editorBrief: "First note", uploadedAt: null, squareFeet: null, photoTarget: null, aryeoListingId: null, reelHook: null, reelScript: null, reelSong: null, reelShotList: null, reelScriptUrl: null, reelRecipeUpdatedAt: null, addressChangePending: null, contentSession: true, scriptExpected: false },
       appointment: null, extraAppointments: 0,
       client: { id: "c", name: "Signal Client TEST", firstName: "Signal", phone: "2155550100", phoneE164: "+12155550100", email: null, socialClient: true, socialPlan: "Starter", avatarUrl: null, customerNote: null, theirStyle: null, theirPreferences: null, brandColors: [] },
       segment: null, profile: null,

@@ -12,6 +12,8 @@ import { ActivityType, type DeliverableType, type DeliverableStatus } from "@pri
 import { isFieldFlag } from "@/lib/debrief";
 import { isAdditionalShootRow } from "@/app/upload/additionalShoots";
 import { captureShape } from "@/lib/videoStyles";
+import { resolveVideoSpec } from "@/lib/pipeline";
+import { videoTier } from "@/lib/projectStatus";
 import type { SessionBrief, OutputBrief, ScriptDirection } from "@/lib/deliverableOutputs";
 
 // Data layer for the guided photographer experience (/shoot). Assembles one
@@ -172,6 +174,10 @@ export type ShootView = {
     /** A monthly content session (the job belongs to a content month): the
      *  screen speaks about topics and scripts, not a listing's rooms. */
     contentSession: boolean;
+    /** Oct 26 2026: this job's video takes a script (premium, or Script Studio
+     *  already holds it). A standard, agent-intro or cinematic video never
+     *  waits on one, so it never shows "No script yet". */
+    scriptExpected: boolean;
   };
   appointment: {
     id: string;
@@ -288,6 +294,7 @@ export async function getShoot(projectId: string, opts: { viewerMemberId?: strin
         orderBy: { createdAt: "asc" },
         include: { uploads: { select: { id: true } } },
       },
+      orderItems: { where: { isCanceled: false }, select: { title: true } },
       appointments: { orderBy: { startAt: "asc" }, include: { assignedTo: { select: { name: true } } } },
       activities: {
         where: { type: { in: [ActivityType.SPECIAL_REQUEST, ActivityType.FLAG] } },
@@ -364,6 +371,12 @@ export async function getShoot(projectId: string, opts: { viewerMemberId?: strin
       scriptConfirmNote: p.scriptConfirmNote,
       addressChangePending,
       contentSession: !!p.contentMonthId,
+      scriptExpected: !!p.scriptingId || resolveVideoSpec({
+        deliverables: p.deliverables,
+        orderItems: p.orderItems,
+        packageName: p.packageName,
+        isPremium: videoTier(p.deliverables.filter((d) => !d.notCompletedReason && !d.waivedAt)) === "premium",
+      }).spec.requireScript,
     },
     appointment: primary
       ? (() => {

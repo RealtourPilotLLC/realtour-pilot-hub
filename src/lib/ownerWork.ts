@@ -4,6 +4,8 @@ import { etDateTime, etMonthDay, etTime, endOfBusinessDaysET } from "@/lib/datet
 import { firstName } from "@/lib/assignees";
 import { delegationFor, resurfaceOf, tasksDelegatedByAny, STATE_WORDS, type DelegatedTaskView, type Resurface } from "@/lib/delegation";
 import type { AssignSeed, Tone } from "@/lib/ownerDashboard";
+import { resolveVideoSpec } from "@/lib/pipeline";
+import { videoTier } from "@/lib/projectStatus";
 
 // ---------------------------------------------------------------------------
 // JORDAN'S DASHBOARD, MY WORK (Oct 23 2026, his spec §4 E–H): meetings and
@@ -264,10 +266,26 @@ export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: s
     },
     orderBy: { shootDate: "asc" },
     take: 40,
-    select: { id: true, title: true, shootDate: true, clientId: true, client: { select: { name: true } }, reelScript: true, scriptingId: true, scriptingStatus: true, scriptingDraftVersion: true, scriptingVersion: true },
+    select: {
+      id: true, title: true, shootDate: true, clientId: true, client: { select: { name: true } }, reelScript: true, scriptingId: true, scriptingStatus: true, scriptingDraftVersion: true, scriptingVersion: true,
+      packageName: true,
+      deliverables: { select: { type: true, label: true, productTitle: true, videoStyle: true, notCompletedReason: true, waivedAt: true, removedFromOrderAt: true } },
+      orderItems: { where: { isCanceled: false }, select: { title: true } },
+    },
   }).catch(warn("listing scripts"));
   if (!listing) unavailable.push("listing scripts");
   for (const p of listing ?? []) {
+    // Only a job whose video takes a script (Oct 26 2026, Jordan: "I think some
+    // of these dont get listing scripts?"). The video step's own rule: premium
+    // reels and premium cinematic videos need one; a standard reel, an
+    // agent-intro reel (the agent's intro lines go on the upload page) or a
+    // standard cinematic video never do. A job Script Studio already holds
+    // stays, whatever it was ordered as.
+    if (!p.scriptingId) {
+      const live = p.deliverables.filter((d) => !d.notCompletedReason && !d.waivedAt && !d.removedFromOrderAt);
+      const { spec } = resolveVideoSpec({ deliverables: p.deliverables, orderItems: p.orderItems, packageName: p.packageName, isPremium: videoTier(live) === "premium" });
+      if (!spec.requireScript) continue;
+    }
     const st = (p.scriptingStatus ?? "").toLowerCase();
     let what: string | null = null;
     let next = "";

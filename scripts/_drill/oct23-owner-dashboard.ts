@@ -288,10 +288,20 @@ async function main() {
     c.head("§7 · scripts, and the week's measures");
     // =====================================================================
     const pScript = await prisma.project.create({ data: { clientId: client.id, title: "90 Script St, Town", status: "SCHEDULED", shootDate: new Date(T.getTime() + 2 * D) } });
-    await prisma.deliverable.create({ data: { projectId: pScript.id, type: "VIDEO", label: "Listing video" } as never });
+    await prisma.deliverable.create({ data: { projectId: pScript.id, type: "SOCIAL_REEL", label: "Premium Social Media Reel", productTitle: "Social Influencer", videoStyle: "premium_social_reel" } as never });
+    // Oct 26 2026 (Jordan: "I think some of these dont get listing scripts?"):
+    // a standard cinematic video and an agent-intro reel never take a script.
+    const pCine = await prisma.project.create({ data: { clientId: client.id, title: "91 Cinema St, Town", status: "SCHEDULED", shootDate: new Date(T.getTime() + 2 * D) } });
+    await prisma.deliverable.create({ data: { projectId: pCine.id, type: "VIDEO", label: "Standard Package", productTitle: "Standard Package", videoStyle: "standard_cinematic" } as never });
+    const pIntro = await prisma.project.create({ data: { clientId: client.id, title: "92 Intro St, Town", status: "SCHEDULED", shootDate: new Date(T.getTime() + 3 * D) } });
+    await prisma.deliverable.create({ data: { projectId: pIntro.id, type: "SOCIAL_REEL", label: "Photography and Standard Reel w/ Agent intro", productTitle: "Photography and Standard Reel w/ Agent intro", videoStyle: "standard_reel_agent_intro" } as never });
     const cd = await ow.creativeDecisions({ now: T, ownerEmail: "info@realtourpilot.com" });
     const ls = cd.rows.find((r) => r.id === `listing:${pScript.id}`);
-    c.ok("a listing shoot in two days with no script: a listing row, Jordan writes and approves, due with the shoot", ls?.kind === "listing" && /No script yet/.test(ls.what) && ls.approver === "Jordan" && ls.dueISO === pScript.shootDate!.toISOString(), JSON.stringify(ls));
+    c.ok("a premium reel shoot in two days with no script: a listing row, Jordan writes and approves, due with the shoot", ls?.kind === "listing" && /No script yet/.test(ls.what) && ls.approver === "Jordan" && ls.dueISO === pScript.shootDate!.toISOString(), JSON.stringify(ls));
+    c.ok("a standard cinematic video and an agent-intro reel never ask for a listing script", !cd.rows.some((r) => r.id === `listing:${pCine.id}` || r.id === `listing:${pIntro.id}`), cd.rows.map((r) => r.id).join(", "));
+    const { getShoot } = await import("@/lib/shoot");
+    const [shootPremium, shootCine, shootIntro] = await Promise.all([pScript.id, pCine.id, pIntro.id].map((id) => getShoot(id)));
+    c.ok("the photographer's shoot page expects a script on the premium reel only (no \"No script yet\" on the others)", shootPremium?.project.scriptExpected === true && shootCine?.project.scriptExpected === false && shootIntro?.project.scriptExpected === false, `${shootPremium?.project.scriptExpected} ${shootCine?.project.scriptExpected} ${shootIntro?.project.scriptExpected}`);
     const w = await od.weeklyPerformance({ now: T });
     c.ok("every weekly measure states its period and its source; photos and videos are never one average", w.measures.length >= 4 && w.measures.every((x) => !!x.period && !!x.source) && w.measures.some((x) => x.key === "photos") && w.measures.some((x) => x.key === "videos"), w.measures.map((x) => `${x.label}=${x.value}`).join(" | "));
 

@@ -184,7 +184,9 @@ export function ShootScreen({
             photographer directs the agent from it in the field.
             A CONTENT SESSION never waits on Studio (Sep 28): its scripts come
             from the program and are on the session card (view.session), so
-            the "No script yet" warning is a listing job's alone. */}
+            the "No script yet" warning is a listing job's alone, and only one
+            whose video takes a script (Oct 26 2026: a standard, agent-intro or
+            cinematic video never gets one). */}
         {isVideo &&
           (project.reelHook || project.reelScript ? (
             <ReelScriptCard
@@ -196,7 +198,7 @@ export function ShootScreen({
               current={project.currentScript ?? null}
               recordNote={project.scriptConfirmNote}
             />
-          ) : view.session ? null : (
+          ) : view.session || !project.scriptExpected ? null : (
             <div className="rounded-2xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-foreground/85">
               <span className="font-semibold">No script yet.</span>{" "}
               {project.currentScript?.status && ["awaiting_review", "generating", "revising", "generating_hooks", "hooks_proposed", "approved"].includes(project.currentScript.status)
