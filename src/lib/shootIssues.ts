@@ -88,7 +88,10 @@ const streetOf = (title?: string | null) => (title ?? "").split(",")[0].trim() |
 const DAY = 86_400_000;
 
 /** Jordan's open non-editing shoot issues, and those flags counted by client over 60 days (most first). */
-export async function ownerShootIssues(now: Date = new Date()): Promise<{ open: ShootIssue[]; byClient: { client: string; count: number }[] }> {
+/** One client's flags over the window, newest first: what the Client issues panel lists as the records (Oct 26 2026). */
+export type ShootFlagGroup = { client: string; clientId: string | null; count: number; items: { id: string; text: string; street: string | null; atISO: string; href: string }[] };
+
+export async function ownerShootIssues(now: Date = new Date()): Promise<{ open: ShootIssue[]; byClient: ShootFlagGroup[] }> {
   try {
     const [loops, flags] = await Promise.all([
       prisma.smartTask.findMany({
@@ -101,7 +104,7 @@ export async function ownerShootIssues(now: Date = new Date()): Promise<{ open: 
         where: { type: "FLAG", createdAt: { gte: new Date(now.getTime() - 60 * DAY) } },
         orderBy: { createdAt: "desc" },
         take: 1000,
-        select: { body: true, project: { select: { clientId: true, client: { select: { name: true } } } } },
+        select: { id: true, body: true, createdAt: true, projectId: true, project: { select: { title: true, clientId: true, client: { select: { name: true } } } } },
       }),
     ]);
     const { isFieldFlag } = await import("@/lib/debrief");
@@ -122,15 +125,18 @@ export async function ownerShootIssues(now: Date = new Date()): Promise<{ open: 
           href: l.projectId ? `/projects/${l.projectId}` : "/tasks",
         };
       });
-    const counts = new Map<string, number>();
+    const groups = new Map<string, ShootFlagGroup>();
     for (const f of flags) {
       if (!isFieldFlag(f.body)) continue;
       const name = f.project?.client?.name;
       if (!name || isSyntheticClientRow({ id: f.project?.clientId, name })) continue;
       if (!isOwnerFlag(sortShootFlag(f.body).route)) continue;
-      counts.set(name, (counts.get(name) ?? 0) + 1);
+      const g = groups.get(name) ?? { client: name, clientId: f.project?.clientId ?? null, count: 0, items: [] };
+      g.count++;
+      g.items.push({ id: f.id, text: clip(flagWords(f.body).replace(/\s+/g, " "), 240), street: streetOf(f.project?.title), atISO: f.createdAt.toISOString(), href: f.projectId ? `/projects/${f.projectId}` : "/jobs" });
+      groups.set(name, g);
     }
-    const byClient = [...counts.entries()].map(([client, count]) => ({ client, count })).sort((a, b) => b.count - a.count || a.client.localeCompare(b.client));
+    const byClient = [...groups.values()].sort((a, b) => b.count - a.count || a.client.localeCompare(b.client));
     return { open, byClient };
   } catch (e) {
     console.error("[shoot-issues] owner list failed", e);

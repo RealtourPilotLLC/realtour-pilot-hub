@@ -675,6 +675,10 @@ export type ClientIssueRow = {
   whyHere?: string | null;
   /** how the panel closes a signal; null for complaints and feedback (their own records) */
   close?: SignalClose | null;
+  /** The open task somebody was given from this row (Assign): the card shows who has it instead of Assign (Oct 26 2026). */
+  handledBy?: { taskId: string; words: string } | null;
+  /** The records behind a pattern, listed in the panel with a link to each job (Oct 26 2026: the shoot-issues row opened the Shoots list). */
+  records?: { id: string; label: string; text: string; atISO: string; href: string }[] | null;
 };
 /** Revisions close with the client's answer and the cause; the rest with one line. */
 export type SignalClose =
@@ -850,17 +854,38 @@ export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?:
   // What keeps happening on one client's shoots (the old Shoot issues card's
   // "by client" line): two or more flags in 60 days.
   for (const b of (flags?.byClient ?? []).filter((x) => x.count >= 2)) {
+    if (b.clientId && exclude.has(b.clientId)) continue;
     const closed = closureOf(`pattern:${b.client}`);
     if (signalClosed(closed, { count: b.count })) continue;
     rows.push({
       whyHere: closed ? `More issues were flagged after ${reopenedWords(closed)}.` : "Nobody has named the common cause yet.",
       close: { kind: "done", prompt: "The common cause, and the fix agreed" },
-      id: `pattern:${b.client}`, kind: "pattern", client: b.client, clientId: null, project: null, projectId: null,
+      id: `pattern:${b.client}`, kind: "pattern", client: b.client, clientId: b.clientId, project: null, projectId: null,
       title: "Shoot issues keep coming up", summary: `${b.count} issues flagged on ${b.client}'s shoots in the last 60 days.`, evidence: "Flags raised on shoots", severity: b.count >= 3 ? "medium" : "low", severityWhy: "A repeating pattern",
       suggested: false, owner: null, lastClientUpdateISO: null, nextAction: "Look for the common cause", deadlineISO: null, decision: null,
-      href: "/jobs", conversationHref: null,
+      href: b.clientId ? `/clients/${b.clientId}` : "/jobs", conversationHref: null,
+      records: b.items.map((f) => ({ id: f.id, label: f.street ?? "A shoot", text: f.text, atISO: f.atISO, href: f.href })),
+      // sourceHref is this row's assignment key (deleg:<sourceHref>): unchanged, so a task already given from it still matches.
       assign: { title: `Find the cause: ${b.client}'s shoot issues`, outcome: "The common cause named and a fix agreed", sourceHref: `/jobs#shoot-issues-${b.client.toLowerCase().replace(/[^a-z0-9]+/g, "-")}` },
     });
+  }
+  // Who already has each row: its canonical delegated task (dedupeKey
+  // "deleg:<sourceHref>"), the same lookup the bottlenecks use. Without it the
+  // card kept offering Assign after Jordan had given the row to someone (Mike
+  // Ciunci's rounds, given to John, Oct 26 2026).
+  const keys = [...new Set(rows.filter((r) => r.assign.sourceHref).map((r) => `deleg:${r.assign.sourceHref}`.slice(0, 190)))];
+  const handled = keys.length
+    ? await prisma.smartTask.findMany({ where: { dedupeKey: { in: keys }, status: { notIn: ["COMPLETED", "CANCELLED"] }, delegatedAt: { not: null } }, select: { id: true, dedupeKey: true } }).catch(() => [])
+    : [];
+  if (handled.length) {
+    const views = await import("@/lib/delegation").then((m) => m.delegationFor(handled.map((t) => t.id))).catch(() => new Map());
+    const byKey = new Map(handled.map((t) => [t.dedupeKey, views.get(t.id)]));
+    for (const r of rows) {
+      const v = r.assign.sourceHref ? byKey.get(`deleg:${r.assign.sourceHref}`.slice(0, 190)) : undefined;
+      if (!v) continue;
+      r.handledBy = { taskId: v.taskId, words: `${v.assigneeName ? firstName(v.assigneeName) : "Someone"} has it · ${v.state === "ASSIGNED" ? "not accepted yet" : v.state.toLowerCase().replace(/_/g, " ")}` };
+      r.owner = v.assigneeName ? firstName(v.assigneeName) : r.owner;
+    }
   }
   const sev = { high: 0, medium: 1, low: 2 } as const;
   rows.sort((a, b) => sev[a.severity] - sev[b.severity] || Number(a.suggested) - Number(b.suggested) || (a.deadlineISO ?? "9999").localeCompare(b.deadlineISO ?? "9999"));

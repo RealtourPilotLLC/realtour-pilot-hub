@@ -106,6 +106,11 @@ async function main() {
     const assigned = await DA.assignTaskAction({ ...rowCopy.assign, assigneeKey: rowCopy.assign.assigneeKey ?? "kyle" });
     r = await rowOf();
     c.ok("once assigned, the row names who has the check-in", assigned.ok && r?.owner === "Kyle", `${assigned.message} · ${r?.owner}`);
+    // Oct 26 2026 (Jordan: "I assigned it to John. It's still showing that I need to assign it").
+    const given = await prisma.smartTask.findUnique({ where: { dedupeKey: `deleg:/projects/${job.id}#revisions` }, select: { id: true } });
+    c.ok("…and carries the task it was given as, so the card offers that task, not Assign again", !!given && r?.handledBy?.taskId === given.id && /^Kyle has it · /.test(r.handledBy.words), JSON.stringify(r?.handledBy));
+    const givenHtml = ssr(createElement(OwnerShell, { roster: [{ key: "kyle", name: "Kyle" }], readOnly: false, initial: { kind: "issue", row: r! } }, null));
+    c.ok("…its panel says who has it and offers Reassign", givenHtml.includes("Kyle has it") && givenHtml.includes("Reassign") && !givenHtml.includes("Assign the check-in"), givenHtml.slice(0, 200));
     const noCause = await A.closeIssueSignalAction({ rowId: `revisions:${job.id}`, outcome: "HAPPY" });
     c.ok("closing as happy asks why it took 5 rounds", !noCause.ok && /why it took 5 rounds/.test(noCause.message), noCause.message);
     const closed = await A.closeIssueSignalAction({ rowId: `revisions:${job.id}`, outcome: "HAPPY", cause: "BRIEF_GAP", note: "Lot-line spec now in the brief" });
@@ -154,6 +159,9 @@ async function main() {
     c.ok("a one-line close shows its own prompt and 'Mark done'", cancelHtml.includes("Why they cancelled, and the refund or write-off decided") && cancelHtml.includes("Mark done") && cancelHtml.includes("data-close-note"));
     const complaintHtml = panel({ kind: "issue", row: complaint! });
     c.ok("a complaint keeps its own panel: no close controls, resolve on the client's page", !complaintHtml.includes("data-close-signal") && complaintHtml.includes("resolve it with the outcome on the client"));
+    // Oct 26 2026 (Jordan: Stephen Kennedy's shoot issues "just takes me to the shoots list page").
+    const patternHtml = panel({ kind: "issue", row: { ...rowCopy, id: "pattern:Stephen Kennedy", kind: "pattern", projectId: null, clientId: heather.id, href: `/clients/${heather.id}`, close: { kind: "done", prompt: "The common cause, and the fix agreed" }, records: [{ id: "f1", label: "322 N 62nd St", text: "Homeowner wasn't ready when we arrived", atISO: new Date(T.getTime() - 2 * D).toISOString(), href: `/projects/${job.id}` }] } });
+    c.ok("a shoot-issues pattern lists its flags, each opening its job, and opens the client (not the Shoots list)", patternHtml.includes("The flags") && patternHtml.includes(`href="/projects/${job.id}"`) && patternHtml.includes("wasn&#x27;t ready") && patternHtml.includes("Open the client") && patternHtml.includes(`href="/clients/${heather.id}"`) && !patternHtml.includes('href="/jobs"'), patternHtml.slice(0, 200));
     c.ok("nothing left the box", fence.blocked.length === 0, JSON.stringify(fence.blocked));
     c.summary();
   } finally { fence.restore(); await db.stop(); }

@@ -20,7 +20,7 @@ import { createRequire } from "node:module";
 import { bootDrillDb, installNextStubs, fenceFetch, interceptModule, makeChecker } from "./_harness";
 import type { VideoRow } from "../../src/lib/videoDelivery";
 import type { BehindState } from "../../src/lib/behindAlert";
-import type { ShootIssue } from "../../src/lib/shootIssues";
+import type { ShootIssue, ShootFlagGroup } from "../../src/lib/shootIssues";
 import type { JobRow, JobsBoard } from "../../src/lib/jobsBoard";
 import type { KyleChecklist, Dashboard, KyleDay, AttentionItem } from "../../src/lib/opsHome";
 import type { OfficeDesk } from "../../src/lib/officeDesk";
@@ -47,7 +47,7 @@ const fence = fenceFetch(async (url, init) => {
 type Lanes = { late: VideoRow[]; today: VideoRow[]; sending: VideoRow[]; held: VideoRow[]; finishing: VideoRow[]; delivered: VideoRow[] };
 let videoLanes: Lanes | null = null;
 let behindOverride: BehindState | null = null;
-let issuesOverride: { open: ShootIssue[]; byClient: { client: string; count: number }[] } | null = null;
+let issuesOverride: { open: ShootIssue[]; byClient: ShootFlagGroup[] } | null = null;
 let jobsOverride: JobsBoard | null = null;
 const jobsCalls: { includeTest?: boolean }[] = [];
 interceptModule((r) => r === "@/lib/videoDelivery" || /src[\\/]lib[\\/]videoDelivery(?:\.ts)?$/.test(r), (loaded) => {
@@ -496,7 +496,7 @@ async function main() {
     // tiles, shoots in progress, needs attention and Kyle's day are held there.
     await signIn(james);
     videoLanes = lanes;
-    issuesOverride = { open: [{ id: "si1", client: "Real Agent", street: "1 Elm St", text: "Lockbox code didn't work", by: "Harrison", atISO: ago(H).toISOString(), href: `/projects/${pShot.id}` }], byClient: [{ client: "Real Agent", count: 3 }, { client: "Other", count: 1 }] };
+    issuesOverride = { open: [{ id: "si1", client: "Real Agent", street: "1 Elm St", text: "Lockbox code didn't work", by: "Harrison", atISO: ago(H).toISOString(), href: `/projects/${pShot.id}` }], byClient: [{ client: "Real Agent", clientId: null, count: 3, items: [] }, { client: "Other", clientId: null, count: 1, items: [] }] };
     const dashBefore = JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } }));
     jobsCalls.length = 0;
     const ownerTree = await settle(await home({}));

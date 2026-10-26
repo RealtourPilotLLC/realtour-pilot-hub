@@ -330,17 +330,35 @@ function IssueBody({ spec }: { spec: Extract<PanelSpec, { kind: "issue" }> }) {
         ["Evidence", r.evidence],
         ["Why it's here", r.whyHere],
         ["Closed before", r.close?.kind === "rounds" ? r.close.reopenedFrom : null],
-        ["Responsible", r.owner ?? "Nobody yet"],
+        ["Responsible", r.handledBy ? r.handledBy.words : r.owner ?? "Nobody yet"],
         ["Last client update", r.close ? null : r.lastClientUpdateISO ? etDateTime(r.lastClientUpdateISO) : "None on record"],
         ["Next action", `${r.nextAction}${r.deadlineISO ? ` by ${etDateTime(r.deadlineISO)}` : ""}`],
         ["Your decision", r.decision],
       ]} />
       <blockquote className="rounded-lg bg-surface-2 px-3 py-2 text-sm">{r.summary}</blockquote>
+      {r.records && r.records.length > 0 && (
+        <section aria-labelledby={`records-${r.id}`} data-issue-records={r.records.length}>
+          <h3 id={`records-${r.id}`} className="text-sm font-semibold">The flags</h3>
+          <ul className="mt-1.5 divide-y divide-border rounded-lg border border-border">
+            {r.records.map((f) => (
+              <li key={f.id}>
+                <Link href={f.href} className="block px-3 py-2 text-sm hover:bg-surface-2">
+                  <span className="flex flex-wrap items-baseline justify-between gap-x-3">
+                    <span className="font-medium">{f.label}</span>
+                    <span className="text-[12px] text-muted">{etDateTime(f.atISO)}</span>
+                  </span>
+                  <span className="mt-0.5 block text-muted [overflow-wrap:anywhere]">{f.text}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       <div className="flex flex-wrap gap-2">
         {r.conversationHref && <Link href={r.conversationHref} className={QUIET}>Review conversation</Link>}
         {r.conversationHref && <Link href={r.conversationHref} className={QUIET}>Reply</Link>}
-        {!readOnly && <button type="button" onClick={() => open({ kind: "assign", seed: r.assign, heading: r.close ? "Assign it" : "Assign recovery" })} className={r.close ? QUIET : PRIMARY}>{r.close?.kind === "rounds" ? "Assign the check-in" : r.close ? "Assign it" : "Assign recovery"}</button>}
-        <Link href={r.href} className={QUIET}>{r.close ? (r.projectId ? "Open the job" : "Open the record") : "Record decision or resolve"}</Link>
+        {!readOnly && <button type="button" onClick={() => open({ kind: "assign", seed: r.assign, heading: r.handledBy ? "Reassign" : r.close ? "Assign it" : "Assign recovery" })} className={r.close || r.handledBy ? QUIET : PRIMARY}>{r.handledBy ? "Reassign" : r.close?.kind === "rounds" ? "Assign the check-in" : r.close ? "Assign it" : "Assign recovery"}</button>}
+        <Link href={r.href} className={QUIET}>{r.close ? (r.projectId ? "Open the job" : r.kind === "pattern" && r.clientId ? "Open the client" : "Open the record") : "Record decision or resolve"}</Link>
       </div>
       {r.close && !readOnly && <CloseSignal row={r} />}
       {!r.close && <p className="text-[12px] text-muted">A reply or an apology doesn't resolve it: resolve it with the outcome on the client's page.</p>}

@@ -197,11 +197,11 @@ async function ProductionSection({ p }: { p: Promise<ProductionHealth | null> })
 }
 
 /** A delegated task's panel, opened by id (the task is read here, server side). */
-async function TaskOpen({ taskId, label }: { taskId: string; label: string }) {
+async function TaskOpen({ taskId, label, className = "w-full" }: { taskId: string; label: string; className?: string }) {
   const { delegationFor, resurfaceOf } = await import("@/lib/delegation");
   const v = (await delegationFor([taskId]).catch(() => new Map())).get(taskId);
-  if (!v) return <Link href="/" className={cn(QUIET, "w-full")}>{label}</Link>;
-  return <PanelButton spec={{ kind: "task", task: { ...v, resurface: resurfaceOf(v, new Date()) } }} className={cn(QUIET, "w-full")}>{label}</PanelButton>;
+  if (!v) return <Link href="/" className={cn(QUIET, className)}>{label}</Link>;
+  return <PanelButton spec={{ kind: "task", task: { ...v, resurface: resurfaceOf(v, new Date()) } }} className={cn(QUIET, className)}>{label}</PanelButton>;
 }
 
 // =====================================================================================
@@ -217,7 +217,7 @@ const SEV: Record<"high" | "medium" | "low", { bar: string; chip: string; word: 
 async function ClientIssuesSection({ p }: { p: Promise<ClientIssues | null> }) {
   const c = await p;
   const rows = c?.rows ?? [];
-  const all: ListRow[] = rows.map((r) => ({ id: r.id, title: `${r.client ?? "A client"}: ${r.title}`, sub: [r.suggested ? "Suggested flag" : SEV[r.severity].word, r.owner ? `Owner ${r.owner}` : "No owner yet", r.nextAction].join(" · "), tone: r.severity === "high" ? "bad" : r.severity === "medium" ? "warn" : "ok", open: { kind: "issue", row: r } }));
+  const all: ListRow[] = rows.map((r) => ({ id: r.id, title: `${r.client ?? "A client"}: ${r.title}`, sub: [r.suggested ? "Suggested flag" : SEV[r.severity].word, r.handledBy ? r.handledBy.words : r.owner ? `Owner ${r.owner}` : "No owner yet", r.nextAction].join(" · "), tone: r.severity === "high" ? "bad" : r.severity === "medium" ? "warn" : "ok", open: { kind: "issue", row: r } }));
   return (
     <Card title="Client issues" id="client-issues" right={rows.length > 3 ? <ViewAll n={rows.length} spec={{ kind: "list", title: "Client issues", rows: all }} /> : undefined}>
       {!c ? <Unavailable what={["client issues"]} /> : <Unavailable what={c.unavailable} />}
@@ -231,11 +231,14 @@ async function ClientIssuesSection({ p }: { p: Promise<ClientIssues | null> }) {
               <span className={cn("rounded-md px-1.5 py-0.5 text-[11px] font-semibold", r.suggested ? "bg-warning/15 text-warning" : SEV[r.severity].chip)}>{r.suggested ? "Suggested flag" : SEV[r.severity].word}</span>
             </p>
             <div className="mt-1.5 flex flex-wrap items-end gap-x-6 gap-y-2">
-              <p className="text-[13px]"><span className="block text-[11px] text-muted">Owner</span>{r.owner ?? "Nobody yet"}</p>
+              <p className="text-[13px]"><span className="block text-[11px] text-muted">Owner</span>{r.owner ?? "Nobody yet"}{r.handledBy && <span className="block text-[11px] text-muted" data-issue-handled>{r.handledBy.words}</span>}</p>
               <p className="text-[13px]"><span className="block text-[11px] text-muted">{r.deadlineISO ? "Due" : "Next"}</span>{r.deadlineISO ? etDateTime(r.deadlineISO) : r.nextAction}</p>
               <div className="ml-auto flex gap-2">
                 <PanelButton spec={{ kind: "issue", row: r }} className={PRIMARY}>Review</PanelButton>
-                <PanelButton spec={{ kind: "assign", seed: r.assign, heading: "Assign recovery" }}>Assign</PanelButton>
+                {/* Given to someone already: open their task (see it, nudge, reassign), not Assign again. */}
+                {r.handledBy
+                  ? <TaskOpen taskId={r.handledBy.taskId} label="Request update" className="" />
+                  : <PanelButton spec={{ kind: "assign", seed: r.assign, heading: "Assign recovery" }}>Assign</PanelButton>}
               </div>
             </div>
           </li>
