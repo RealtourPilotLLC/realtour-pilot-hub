@@ -383,7 +383,7 @@ export function PortalScheduler({
             slot ? { monthId: month.monthId, slotISO: slot, creativeTeamMemberId: chosenCreative, sessionIndex: pickIdx, ...plan } : { monthId: month.monthId, when, sessionIndex: pickIdx, ...plan },
           ).catch(() => ({ ok: false, message: "That didn't send. Try again." }));
       if (r.ok) {
-        setDone({ text: r.message, booked: "booked" in r ? r.booked ?? null : null });
+        setDone({ text: r.message, booked: "booked" in r ? ((r.booked as BookedSession | null | undefined) ?? null) : null });
         setSlot(null);
         setMoving(null);
         // The request is a row now: re-render from the server so the list
