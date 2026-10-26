@@ -123,9 +123,26 @@ export function herKeywords(o: { title: string; passages: { quote: string; conte
  */
 export function transcriptBody(text: string): string {
   const t = text ?? "";
-  const m = /^[^\S\n]*(?:📖\s*)?Transcript[^\S\n]*$/m.exec(t);
+  const m = TRANSCRIPT_HEADING_RE.exec(t);
   if (!m) return t;
   return t.slice(m.index + m[0].length).replace(/^\s+/, "");
+}
+
+/** The "📖 Transcript" line of a Gemini export: the notes are above it, the raw transcript below. */
+const TRANSCRIPT_HEADING_RE = /^[^\S\n]*(?:📖\s*)?Transcript[^\S\n]*$/m;
+
+/**
+ * The other half (Oct 26 2026): a Gemini export's NOTES, the summary and the
+ * per-topic "Details" above the "Transcript" heading. The topic bank reads
+ * these (contentPolicy/callNotes.ts), not the raw transcript. Null when the
+ * text has no heading (a pasted transcript, no notes) or nothing above it.
+ */
+export function transcriptNotes(text: string): string | null {
+  const t = text ?? "";
+  const m = TRANSCRIPT_HEADING_RE.exec(t);
+  if (!m) return null;
+  const notes = t.slice(0, m.index).trim();
+  return notes || null;
 }
 
 /** How many of the keywords a text mentions (each counted once). */

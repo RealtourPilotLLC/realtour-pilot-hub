@@ -15,7 +15,8 @@ import { awaitingScript, filmedScript, inBank } from "@/lib/portalHome";
 import { CTA_WORDS, SCRIPT_WORDS, TOPIC_WORDS, answerCta, filmedWords, planStepWord } from "@/lib/portalWords";
 import type { PortalTopic, PortalTopicMonth, PortalTopicState } from "@/lib/portal";
 import { portalMonthHref } from "@/lib/portalScheduling";
-import { VIDEO_FORMAT_LABEL, splitSkitSection, skitTargetFor, type VideoStyle } from "@/lib/contentPolicy/videoFormat";
+import { FORMAT_PLURAL, VIDEO_FORMAT_LABEL, formatCounts, mainFormatFor, skitTargetFor, skitsOn, type VideoFormat, type VideoStyle } from "@/lib/contentPolicy/videoFormat";
+import { FormatSwitch } from "@/components/content/FormatSwitch";
 
 // ---------------------------------------------------------------------------
 // VIDEO TOPICS (spec §5): the client's bank by their pillars, in the
@@ -58,11 +59,20 @@ import { VIDEO_FORMAT_LABEL, splitSkitSection, skitTargetFor, type VideoStyle } 
 // move on.
 //
 // Oct 22 2026 (Jordan's action item from Bernadette Rabel's call: "Organize a
-// skits category ... within the portal"): when the bank holds skits beside
-// talking-to-camera topics (or the account is Mix), the skits are listed
-// together under "Skits" first, and every card says "Skit" or "Talking to
-// camera" on an account where skits are on. A Mix month says how many skits
+// skits category ... within the portal"): every card says "Skit" or "Talking
+// to camera" on an account where skits are on. A Mix month says how many skits
 // are picked against its target; nothing is blocked.
+//
+// Oct 26 2026 (Jordan: "They should be able to switch back and forth between
+// direct to camera and skits for each pillar"): the one "Skits" section above
+// the pillars is gone. On an account that does skits each pillar holds both
+// formats, and its heading in the bank carries a "Talking to camera | Skits"
+// switch with the count on each side (FormatSwitch). It filters that pillar's
+// cards only; each pillar opens on the account's main format (Skits on a
+// Skits account, Talking to camera on a Mix one) and keeps its own choice, and
+// a #topic- link opens its pillar on that topic's format. A skit's line reads
+// "The skit: ..." (the concept summary). The month view lists the month's
+// picks in both formats, unfiltered.
 // ---------------------------------------------------------------------------
 
 const subscribeHash = (cb: () => void) => { window.addEventListener("hashchange", cb); return () => window.removeEventListener("hashchange", cb); };
@@ -148,13 +158,15 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
   const shows = (t: PortalTopic) =>
     justActed(t) || (view === "month" ? !!month && t.selection?.monthId === month.id : (inBank(t, openIds) || t.id === targetId) && (effFilter === "ALL" || t.state === effFilter));
   const visible = active.map((g) => ({ ...g, topics: g.topics.filter(shows) })).filter((g) => g.topics.length > 0);
-  // Oct 22 2026: the Skits category, first, when the bank holds skits beside talking-to-camera topics.
-  const skitSplit = splitSkitSection(visible, (t) => t.format, { always: videoStyle === "MIX" });
-  const sections = skitSplit.show && skitSplit.skits.length > 0
-    ? [{ pillarId: "skits", pillarName: "Skits", purpose: "Short acted videos: the same kind of message, played as a scene. They take a little longer to film.", topics: skitSplit.skits }, ...skitSplit.groups.filter((g) => g.topics.length > 0)]
-    : visible;
   /** Each card says Skit or Talking to camera wherever skits are part of the plan. */
   const showFormat = videoStyle !== "DIRECT" || groups.some((g) => g.topics.some((t) => t.format === "SKIT"));
+  // Oct 26 2026: each pillar's format switch (the bank view, an account that does skits).
+  const switchable = view === "bank" && skitsOn(videoStyle);
+  const mainFormat = mainFormatFor(videoStyle);
+  const [pillarFormat, setPillarFormat] = useState<Record<string, VideoFormat>>({});
+  /** The format a pillar lists: the one chosen on it, else the format of a topic a #topic- link names in it, else the account's main one. */
+  const formatOf = (g: { pillarId: string | null; topics: PortalTopic[] }): VideoFormat =>
+    (g.pillarId ? pillarFormat[g.pillarId] : undefined) ?? g.topics.find((t) => t.id === targetId)?.format ?? mainFormat;
   // 6.3 RECOMMENDED FOR THIS MONTH (month view only): the ranking's picks for
   // the slots still open, each with the one line about why, then the
   // alternatives behind "Choose another topic". The server already cut them to
@@ -228,6 +240,11 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
     </>
   );
 
+  /** The topic's one-line concept; a skit's is the skit itself, said as such (Oct 26 2026). */
+  const conceptLine = (t: PortalTopic) => t.concept ? (
+    <p className="mt-0.5 text-xs text-muted">{t.format === "SKIT" && <span className="font-semibold text-foreground/80">The skit: </span>}{t.concept}</p>
+  ) : null;
+
   /** One topic in the bank (or the month's list), numbered within its pillar. */
   const topicCard = (t: PortalTopic, i: number) => {
     // Just turned down: the card stays where it was, with Undo, until they move on.
@@ -265,7 +282,7 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
               {t.mine && <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">your idea</span>}
               {t.selection && <span className="text-[11px] text-muted-2">{t.selection.status === "PROPOSED" ? "proposed on your call for" : "for"} {shortMonth(t.selection.monthKey)}{t.selection.overflow ? " (extra)" : ""}</span>}
             </div>
-            {t.concept && <p className="mt-0.5 text-xs text-muted">{t.concept}</p>}
+            {conceptLine(t)}
             {/* THE SCRIPT. The server sends words only when
                 postingKit.scriptVisibility says this client may
                 read them, so there is nothing to decide here — if
@@ -366,7 +383,7 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
                   <span className="min-w-0 break-words text-sm font-semibold">{t.title}</span>
                   {t.pillarId && pillarName && <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">{pillarName}</span>}
                 </div>
-                {t.concept && <p className="mt-0.5 text-xs text-muted">{t.concept}</p>}
+                {conceptLine(t)}
                 {t.recommended?.reason && <p className="mt-1 text-xs text-foreground/80"><span className="font-semibold">Why this one: </span>{t.recommended.reason}</p>}
                 {canAct && !readOnly && (
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
@@ -434,11 +451,15 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
           <p className="rounded-2xl border border-border bg-surface/70 p-4 text-sm text-muted">No new ideas in your topic bank right now.{canAct && !readOnly ? " Suggest one of your own below." : ""}</p>
         )
       ) : (
-        sections.map((g) => {
+        visible.map((g) => {
+          // Oct 26 2026: a pillar with the switch lists the format it is on.
+          const withSwitch = switchable && !!g.pillarId;
+          const onFormat = withSwitch ? formatOf(g) : null;
+          const listed = onFormat ? g.topics.filter((t) => t.format === onFormat) : g.topics;
           // The bank lists what they can choose first, PER_PILLAR to a pillar;
           // the rest (and everything with no pillar) folds under "More ideas".
           const choosable = (t: PortalTopic) => t.state === "SUGGESTED" && !t.selection;
-          const ordered = view === "bank" ? [...g.topics.filter(choosable), ...g.topics.filter((t) => !choosable(t))] : g.topics;
+          const ordered = view === "bank" ? [...listed.filter(choosable), ...listed.filter((t) => !choosable(t))] : listed;
           const cap = view === "bank" ? (g.pillarId ? PER_PILLAR : 0) : ordered.length;
           const shown = ordered.slice(0, cap);
           const more = ordered.slice(cap);
@@ -446,8 +467,15 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
             <section key={g.pillarId ?? "none"} className="panel-shadow rounded-2xl border border-border bg-surface/70 p-4 backdrop-blur">
               {g.pillarId || view !== "bank" ? (
                 <>
-                  <h2 className="text-base font-semibold">{g.pillarName}</h2>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h2 className="text-base font-semibold">{g.pillarName}</h2>
+                    {onFormat && g.pillarId && (
+                      <FormatSwitch value={onFormat} counts={formatCounts(g.topics, (t) => t.format)} label={`${g.pillarName}: talking to camera or skits`}
+                        onChange={(f) => { const id = g.pillarId!; setPillarFormat((cur) => ({ ...cur, [id]: f })); }} />
+                    )}
+                  </div>
                   {g.purpose && <p className="text-xs text-muted">Purpose: {g.purpose}</p>}
+                  {onFormat && listed.length === 0 && <p className="mt-3 text-xs text-muted">No {FORMAT_PLURAL[onFormat]} in this pillar yet.</p>}
                   {shown.length > 0 && <ol className="mt-3 space-y-2">{shown.map((t, i) => topicCard(t, i))}</ol>}
                   {more.length > 0 && (
                     <details className="mt-3" open={!!targetId && more.some((t) => t.id === targetId)}>

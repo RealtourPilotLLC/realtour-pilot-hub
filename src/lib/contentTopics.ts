@@ -8,7 +8,7 @@ import { approvedStrategy } from "@/lib/contentStrategy";
 import { isAutomationEnabled, recordAutomationRun } from "@/lib/programAutomation";
 import { confidentialFilter } from "@/lib/clientFacts";
 import { etMonthKey } from "@/lib/datetime";
-import { topicFormatOf, withTopicFormat, asVideoFormat, shownVersionFormat, skitsPerMonthFromOverrides, VIDEO_FORMAT_LABEL, type VideoFormat } from "@/lib/contentPolicy/videoFormat";
+import { topicFormatOf, withTopicFormat, asVideoFormat, shownVersionFormat, skitsPerMonthFromOverrides, videoStyleFromOverrides, resolvedTopicFormat, pillarFormatTargets, mainFormatFor, skitsOn, FORMAT_PLURAL, VIDEO_FORMAT_LABEL, type VideoFormat } from "@/lib/contentPolicy/videoFormat";
 import { normalizeTitle, titleSimilarity, NEAR_DUPLICATE_THRESHOLD, rankRecommendations, clientReasonFor, GENERATION_POLICY, PILLAR_EMPHASIS_WEIGHT, topicsForEmphasis, type Topic, type FilmedRecord, type PriorScript, type StrategyGoal, type SourceExcerpt } from "@/lib/contentPolicy";
 
 // ---------------------------------------------------------------------------
@@ -128,6 +128,30 @@ export async function setTopicFormat(topicId: string, format: VideoFormat, actor
     return { changed: true, format: want };
   }
   throw new Error("The topic changed while saving. Try again.");
+}
+
+/**
+ * TALKING-TO-CAMERA TOPICS FROM BEFORE AN ACCOUNT WENT TO SKITS (Oct 26 2026).
+ * A topic with no format of its own follows the account, so the day an
+ * account was set to Skits (Oct 13 2026 for Janice Pigga, Joseph Sutow and
+ * Mike Flatley) every older bank topic, written for talking to camera, began
+ * to read as a skit. Now that a Skits account's pillars hold both formats,
+ * those would sit under "Skits" and count as skit stock. These are the ones to
+ * mark Talking to camera: no format of their own, created before the
+ * account's last switch to Skits, still in the bank (not chosen for a month),
+ * and no script on file (a topic already drafted keeps what it was drafted
+ * as). Read-only; scripts/_live/oct26-skit-banks.ts marks them on --apply.
+ */
+export async function preSkitsBankTopics(enrollmentId: string): Promise<{ since: Date | null; topics: { id: string; title: string }[] }> {
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true } });
+  if (videoStyleFromOverrides(e?.overridesJson ?? null) !== "SKITS") return { since: null, topics: [] };
+  const changes = await prisma.programEnrollmentChange.findMany({ where: { enrollmentId, field: "overrides" }, orderBy: { createdAt: "desc" }, select: { createdAt: true, fromValue: true, toValue: true } });
+  const into = changes.find((c) => /"videoStyle"/.test(c.toValue ?? "") && videoStyleFromOverrides(c.toValue) === "SKITS" && videoStyleFromOverrides(c.fromValue) !== "SKITS");
+  if (!into) return { since: null, topics: [] };
+  const rows = await prisma.contentTopic.findMany({ where: { enrollmentId, createdAt: { lt: into.createdAt }, status: { in: ["IDEA", "SAVED", "RECOMMENDED"] } }, orderBy: { createdAt: "asc" }, select: { id: true, title: true, scoresJson: true } });
+  const unmarked = rows.filter((t) => !topicFormatOf(t.scoresJson));
+  const scripted = new Set((unmarked.length ? await prisma.contentScript.findMany({ where: { topicId: { in: unmarked.map((t) => t.id) } }, select: { topicId: true } }) : []).map((s) => s.topicId));
+  return { since: into.createdAt, topics: unmarked.filter((t) => !scripted.has(t.id)).map(({ id, title }) => ({ id, title })) };
 }
 
 /**
@@ -710,7 +734,24 @@ export async function pendingSuggestionHashes(enrollmentId: string): Promise<Set
   return new Set(rows.map((r) => r.dedupeHash ?? topicDedupeHash(r.title)));
 }
 
-type RefreshRequest = { enrollmentId: string; kind: RefreshKind; monthId?: string | null; topicsPerPillar?: number | null; pillarId?: string | null; keep?: number | null; /** Oct 22 2026 (audit M3): a Mix account short of skit ideas gets a refresh of skit concepts only. */ skitsOnly?: boolean | null };
+type RefreshRequest = {
+  enrollmentId: string; kind: RefreshKind; monthId?: string | null; topicsPerPillar?: number | null; pillarId?: string | null; keep?: number | null;
+  /** Oct 22 2026 (audit M3): a Mix account short of skit ideas gets a refresh of skit concepts only. */ skitsOnly?: boolean | null;
+  /** Oct 26 2026: one format only, with `pillarId` (a pillar's skit concepts or its talking-to-camera topics on an account that does skits). */ format?: VideoFormat | null;
+};
+
+/** What a queued or finished run was for, from its inputs: one pillar or the bank, one format or both. A pre-Oct 26 skit-only run reads as SKIT across the bank. */
+export function refreshScopeOf(inputsJson: string | null | undefined): { pillarId: string | null; format: VideoFormat | null; keep: number | null; skitsOnly: boolean } {
+  let i: { pillarId?: unknown; format?: unknown; keep?: unknown; skitsOnly?: unknown } = {};
+  try { i = JSON.parse(inputsJson ?? "{}") ?? {}; } catch { i = {}; }
+  const skitsOnly = i.skitsOnly === true;
+  return {
+    pillarId: typeof i.pillarId === "string" && i.pillarId ? i.pillarId : null,
+    format: asVideoFormat(i.format) ?? (skitsOnly ? "SKIT" : null),
+    keep: typeof i.keep === "number" && i.keep > 0 ? i.keep : null,
+    skitsOnly,
+  };
+}
 
 /**
  * The run's inputs and its dedupe key — ONE computation, so a person's click
@@ -728,11 +769,12 @@ async function refreshPlan(opts: RefreshRequest) {
   const perPillar = Math.min(Math.max(opts.topicsPerPillar ?? policy.topicsPerPillar, GENERATION_POLICY.topicsPerPillar.min), policy.topicsPerPillarMax);
   const keep = opts.keep && opts.keep > 0 ? Math.floor(opts.keep) : null;
   const skitsOnly = opts.skitsOnly === true;
-  const inputsHash = sha256(JSON.stringify({ s: strategy?.versionId ?? null, p: policy.id, n: perPillar, m: opts.monthId ?? null, pillar: opts.pillarId ?? null, keep, ...(skitsOnly ? { skitsOnly } : {}) }));
+  const format = asVideoFormat(opts.format);
+  const inputsHash = sha256(JSON.stringify({ s: strategy?.versionId ?? null, p: policy.id, n: perPillar, m: opts.monthId ?? null, pillar: opts.pillarId ?? null, keep, ...(skitsOnly ? { skitsOnly } : {}), ...(format ? { format } : {}) }));
   return {
-    clientId: e.clientId, policyId: policy.id, strategyVersionId: strategy?.versionId ?? null, perPillar, keep, skitsOnly,
+    clientId: e.clientId, policyId: policy.id, strategyVersionId: strategy?.versionId ?? null, perPillar, keep, skitsOnly, format,
     dedupeKey: `${opts.enrollmentId}:${opts.kind}:${inputsHash}`,
-    inputs: { strategyVersionId: strategy?.versionId ?? null, policyVersionId: policy.id, topicsPerPillar: perPillar, pillarId: opts.pillarId ?? null, keep, ...(skitsOnly ? { skitsOnly } : {}) },
+    inputs: { strategyVersionId: strategy?.versionId ?? null, policyVersionId: policy.id, topicsPerPillar: perPillar, pillarId: opts.pillarId ?? null, keep, ...(skitsOnly ? { skitsOnly } : {}), ...(format ? { format } : {}) },
   };
 }
 
@@ -783,17 +825,19 @@ export async function startTopicRefresh(opts: RefreshRequest & {
   const person = !opts.unattended;
   const active = await prisma.contentTopicRefreshRun.findFirst({ where: { dedupeKey, status: { in: ["QUEUED", "RUNNING"] } }, select: { id: true, status: true } });
   if (active && !(person && active.status === "QUEUED")) return { runId: active.id, joined: true };
-  const queuedWhole = person && !opts.pillarId && !keep && opts.kind !== "RECOMMENDATION"
+  // A whole-bank click claims a queued whole-bank run: no pillar and, since
+  // Oct 26 2026, no single format (a queued skit-only or one-format refill is
+  // not what the click asked for).
+  const queuedWhole = person && !opts.pillarId && !keep && !opts.format && !opts.skitsOnly && opts.kind !== "RECOMMENDATION"
     ? active ?? (await prisma.contentTopicRefreshRun.findMany({ where: { enrollmentId: opts.enrollmentId, status: "QUEUED", kind: { in: ["BANK", "REFRESH"] } }, orderBy: { createdAt: "asc" }, select: { id: true, inputsJson: true } }))
-        .find((r) => { try { return !(JSON.parse(r.inputsJson ?? "{}") as { pillarId?: string | null }).pillarId; } catch { return false; } }) ?? null
+        .find((r) => { const sc = refreshScopeOf(r.inputsJson); return !sc.pillarId && !sc.format; }) ?? null
     : active;
   if (queuedWhole && (await claimQueuedRun(queuedWhole.id, opts.requestedBy))) {
     // The queued row's own inputs, not this click's: it may be a pillar refill
     // with the same key, and its `keep` is part of what was asked for.
     const row = await prisma.contentTopicRefreshRun.findUnique({ where: { id: queuedWhole.id }, select: { inputsJson: true } });
-    let inputs: { pillarId?: string | null; keep?: number | null; skitsOnly?: boolean | null } = {};
-    try { inputs = JSON.parse(row?.inputsJson ?? "{}"); } catch { inputs = {}; }
-    const work = () => executeClaimedRefresh(queuedWhole.id, { unattended: false, pillarId: inputs.pillarId ?? null, keep: inputs.keep ?? null, skitsOnly: inputs.skitsOnly === true });
+    const sc = refreshScopeOf(row?.inputsJson);
+    const work = () => executeClaimedRefresh(queuedWhole.id, { unattended: false, pillarId: sc.pillarId, keep: sc.keep, skitsOnly: sc.skitsOnly, format: sc.skitsOnly ? null : sc.format });
     if (opts.background) opts.background(() => work().catch(() => {})); // the outcome is on the run row
     else await work();
     return { runId: queuedWhole.id, joined: false };
@@ -819,9 +863,9 @@ export async function startTopicRefresh(opts: RefreshRequest & {
   if (opts.kind === "RECOMMENDATION") {
     try { await executeRecommendationRun(runId); } catch (e) { await failRefreshRun(runId, e); throw e; }
   } else if (opts.background) {
-    opts.background(() => executeClaimedRefresh(runId, { unattended: opts.unattended ?? false, pillarId: opts.pillarId ?? null, keep, skitsOnly: plan.skitsOnly }).catch(() => {}));
+    opts.background(() => executeClaimedRefresh(runId, { unattended: opts.unattended ?? false, pillarId: opts.pillarId ?? null, keep, skitsOnly: plan.skitsOnly, format: plan.format }).catch(() => {}));
   } else {
-    await executeClaimedRefresh(runId, { unattended: opts.unattended ?? false, pillarId: opts.pillarId ?? null, keep, skitsOnly: plan.skitsOnly });
+    await executeClaimedRefresh(runId, { unattended: opts.unattended ?? false, pillarId: opts.pillarId ?? null, keep, skitsOnly: plan.skitsOnly, format: plan.format });
   }
   return { runId, joined: false };
 }
@@ -831,7 +875,7 @@ async function failRefreshRun(runId: string, e: unknown): Promise<void> {
 }
 
 /** Run a BANK/REFRESH row we hold the lease on. A failure is recorded and rethrown; the caller decides whether a closed switch is a pause. */
-async function executeClaimedRefresh(runId: string, o: { unattended: boolean; pillarId: string | null; keep: number | null; deadline?: number | null; skitsOnly?: boolean }): Promise<void> {
+async function executeClaimedRefresh(runId: string, o: { unattended: boolean; pillarId: string | null; keep: number | null; deadline?: number | null; skitsOnly?: boolean; format?: VideoFormat | null }): Promise<void> {
   const { executeTopicRefreshRun } = await import("@/lib/contentGeneration");
   try {
     await executeTopicRefreshRun(runId, o);
@@ -866,7 +910,7 @@ async function executeClaimedRefresh(runId: string, o: { unattended: boolean; pi
 // AI topic before a client can see it.
 
 /** Queue a BANK/REFRESH run for the unattended drain. Spends nothing. Joins an active run with the same inputs. */
-export async function queueTopicRefresh(opts: { enrollmentId: string; kind: "BANK" | "REFRESH"; requestedBy: string; pillarId?: string | null; keep?: number | null; skitsOnly?: boolean | null; reason: string }): Promise<{ runId: string; joined: boolean }> {
+export async function queueTopicRefresh(opts: { enrollmentId: string; kind: "BANK" | "REFRESH"; requestedBy: string; pillarId?: string | null; keep?: number | null; skitsOnly?: boolean | null; format?: VideoFormat | null; reason: string }): Promise<{ runId: string; joined: boolean }> {
   const plan = await refreshPlan(opts);
   await expireStaleRefreshLeases();
   const active = await prisma.contentTopicRefreshRun.findFirst({ where: { dedupeKey: plan.dedupeKey, status: { in: ["QUEUED", "RUNNING"] } }, select: { id: true } });
@@ -919,11 +963,10 @@ export async function drainTopicRefreshQueue(opts: { max?: number; budgetMs?: nu
     if (ran >= max || Date.now() - started > budgetMs || budgetMs - (Date.now() - started) < minStartMs) break;
     if (!(await claimQueuedRun(run.id, "topic-bank-cron"))) continue;
     ran++;
-    let inputs: { pillarId?: string | null; keep?: number | null; skitsOnly?: boolean | null } = {};
-    try { inputs = JSON.parse(run.inputsJson ?? "{}"); } catch { inputs = {}; }
+    const sc = refreshScopeOf(run.inputsJson);
     try {
       // Oct 21 2026 (audit H1): the call ends by the sweep's clock.
-      await executeClaimedRefresh(run.id, { unattended: true, pillarId: inputs.pillarId ?? null, keep: inputs.keep ?? null, deadline: started + budgetMs, skitsOnly: inputs.skitsOnly === true });
+      await executeClaimedRefresh(run.id, { unattended: true, pillarId: sc.pillarId, keep: sc.keep, deadline: started + budgetMs, skitsOnly: sc.skitsOnly, format: sc.skitsOnly ? null : sc.format });
       const done = await prisma.contentTopicRefreshRun.findUnique({ where: { id: run.id }, select: { status: true, generatedCount: true } });
       if (done?.status === "SUCCEEDED") {
         succeeded++;
@@ -958,24 +1001,50 @@ async function bellSuggestionsReady(runId: string, enrollmentId: string, n: numb
   } catch { /* the bell is best-effort; the suggestions are on the Video Topics tab either way */ }
 }
 
-export type PillarStock = { pillarId: string; pillarName: string; usable: number; pending: number; declined: number; target: number; need: number };
+/** One format's stock in one pillar, on an account that does skits (Oct 26 2026). */
+export type FormatStock = { format: VideoFormat; main: boolean; usable: number; pending: number; target: number; need: number };
 
-/** Usable topics per active pillar against the policy's target. Pending suggestions count — Jordan's backlog is stock he has not reviewed yet. */
+/**
+ * A pillar's stock. The top-level numbers are the pillar's MAIN format on an
+ * account that does skits (the whole pillar on a Direct account), and
+ * `formats` has both formats there, main first (null on a Direct account).
+ */
+export type PillarStock = { pillarId: string; pillarName: string; usable: number; pending: number; declined: number; target: number; need: number; formats: FormatStock[] | null };
+
+/**
+ * Usable topics per active pillar against the policy's target. Pending
+ * suggestions count — Jordan's backlog is stock he has not reviewed yet.
+ * Oct 26 2026: on an account that does skits each pillar is counted per
+ * format (a topic by its own format, else the account's; a pending idea by
+ * the format its run recorded, else the main one).
+ */
 export async function bankStock(enrollmentId: string): Promise<PillarStock[]> {
-  const [policy, pillars, topics, pending] = await Promise.all([
+  const [policy, pillars, topics, pending, enr] = await Promise.all([
     activePolicyVersion(),
     listPillars(enrollmentId),
-    prisma.contentTopic.findMany({ where: { enrollmentId, pillarId: { not: null } }, select: { pillarId: true, status: true, approvalState: true, source: true, proposedState: true, clientDeclinedAt: true } }),
-    prisma.contentTopicSuggestion.groupBy({ by: ["pillarId"], where: { enrollmentId, disposition: "PENDING", kind: "BANK" }, _count: { _all: true } }),
+    prisma.contentTopic.findMany({ where: { enrollmentId, pillarId: { not: null } }, select: { pillarId: true, status: true, approvalState: true, source: true, proposedState: true, clientDeclinedAt: true, scoresJson: true } }),
+    prisma.contentTopicSuggestion.findMany({ where: { enrollmentId, disposition: "PENDING", kind: "BANK" }, select: { id: true, pillarId: true, refreshRunId: true, dedupeHash: true } }),
+    prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true } }),
   ]);
+  const style = videoStyleFromOverrides(enr?.overridesJson ?? null);
+  const main = mainFormatFor(style);
+  const pendingFormat = skitsOn(style) ? await suggestionFormats(pending) : new Map<string, VideoFormat>();
   // The target is per pillar: the policy count for every pillar since Oct 20
   // 2026 (a LIGHT pillar was stocked to a third of it from Oct 13).
   return pillars.map((p) => {
     const target = topicsForEmphasis(policy.topicsPerPillar, p.emphasis);
     const mine = topics.filter((t) => t.pillarId === p.id);
-    const usable = mine.filter(isUsableStock).length;
-    const waiting = pending.find((g) => g.pillarId === p.id)?._count._all ?? 0;
-    return { pillarId: p.id, pillarName: p.name, usable, pending: waiting, declined: mine.filter((t) => t.clientDeclinedAt).length, target, need: Math.max(0, target - usable - waiting) };
+    const usableRows = mine.filter(isUsableStock);
+    const waitingRows = pending.filter((g) => g.pillarId === p.id);
+    const formats = pillarFormatTargets(style, target)?.map((ft): FormatStock => {
+      const usable = usableRows.filter((t) => resolvedTopicFormat(topicFormatOf(t.scoresJson), style) === ft.format).length;
+      const waiting = waitingRows.filter((g) => (pendingFormat.get(g.id) ?? main) === ft.format).length;
+      return { format: ft.format, main: ft.main, usable, pending: waiting, target: ft.target, need: Math.max(0, ft.target - usable - waiting) };
+    }) ?? null;
+    const top = formats?.find((f) => f.main);
+    const usable = top ? top.usable : usableRows.length;
+    const waiting = top ? top.pending : waitingRows.length;
+    return { pillarId: p.id, pillarName: p.name, usable, pending: waiting, declined: mine.filter((t) => t.clientDeclinedAt).length, target, need: Math.max(0, target - usable - waiting), formats };
   });
 }
 
@@ -1019,7 +1088,10 @@ async function skitRefreshBusy(enrollmentId: string, now: Date): Promise<boolean
   return runs.length > 0;
 }
 
-/** Queue the skit-only refresh a Mix account's shortfall calls for. Spends nothing (the drain runs it, behind `topic_refresh` and `ai_runs`). */
+/**
+ * Queue the skit-only refresh a Mix account's shortfall calls for. Spends nothing (the drain runs it, behind `topic_refresh` and `ai_runs`).
+ * Oct 26 2026: the sweep no longer calls this (each pillar's own skit stock, queuePillarRefills, replaced it); kept for the Oct 22 live script.
+ */
 export async function queueSkitRefreshIfShort(enrollmentId: string, opts: { requestedBy: string; now?: Date }): Promise<{ queued: boolean; shortfall: SkitShortfall | null; why: string; runId?: string }> {
   const now = opts.now ?? new Date();
   const shortfall = await skitShortfall(enrollmentId);
@@ -1030,12 +1102,66 @@ export async function queueSkitRefreshIfShort(enrollmentId: string, opts: { requ
   return { queued: !r.joined, shortfall, why: r.joined ? "joined the skit refresh already queued" : `queued: ${shortfall.need} skit idea(s) short`, runId: r.runId };
 }
 
+export type RefillPlan = { pillarId: string; pillarName: string; format: VideoFormat | null; need: number; reason: string; skip: string | null };
+
+/**
+ * THE REFILLS A BANK CALLS FOR (Oct 26 2026). One per pillar below target; on
+ * an account that does skits, one per pillar AND format below that format's
+ * target (the main format at the policy count, the other at 5). Spends
+ * nothing. Pending suggestions count as stock, so an unreviewed backlog stops
+ * new spend. A refill is skipped while a run that covers it is queued or
+ * running (a run for the whole bank covers everything; a run for one pillar or
+ * one format covers just that), and the weekly cooldown is per pillar and
+ * format, counting only that pillar's own refills of that format, whatever
+ * became of them (a pillar refill from before formats counts as its main
+ * format). `ignoreCooldown` is for a one-off Jordan asked for.
+ */
+export async function planPillarRefills(enrollmentId: string, opts: { now?: Date; ignoreCooldown?: boolean } = {}): Promise<{ wholeBankActive: boolean; plans: RefillPlan[] }> {
+  const now = opts.now ?? new Date();
+  const active = (await prisma.contentTopicRefreshRun.findMany({ where: { enrollmentId, kind: { in: ["BANK", "REFRESH"] }, status: { in: ["QUEUED", "RUNNING"] } }, select: { inputsJson: true } })).map((r) => refreshScopeOf(r.inputsJson));
+  // A whole-bank run still waiting covers every pillar and format.
+  if (active.some((a) => !a.pillarId && !a.format)) return { wholeBankActive: true, plans: [] };
+  const recent = opts.ignoreCooldown ? [] : (await prisma.contentTopicRefreshRun.findMany({ where: { enrollmentId, kind: "REFRESH", createdAt: { gte: new Date(now.getTime() - REFILL_COOLDOWN_MS) } }, select: { inputsJson: true } })).map((r) => refreshScopeOf(r.inputsJson));
+  const plans: RefillPlan[] = [];
+  for (const p of await bankStock(enrollmentId)) {
+    const main = p.formats?.find((f) => f.main)?.format ?? null;
+    const rows = p.formats ?? [{ format: null, main: true, usable: p.usable, pending: p.pending, target: p.target, need: p.need }];
+    for (const f of rows) {
+      if (f.need <= 0) continue;
+      const covers = (a: { pillarId: string | null; format: VideoFormat | null }) => (!a.pillarId || a.pillarId === p.pillarId) && (f.format ? !a.format || a.format === f.format : !a.format);
+      const cooled = recent.some((a) => a.pillarId === p.pillarId && (a.format ?? main) === (f.format ?? main));
+      const label = f.format ? `${p.pillarName} (${FORMAT_PLURAL[f.format]})` : p.pillarName;
+      plans.push({
+        pillarId: p.pillarId, pillarName: p.pillarName, format: f.format, need: f.need,
+        reason: `${label}: ${f.usable} usable + ${f.pending} pending of ${f.target}`,
+        skip: active.some(covers) ? "a refresh for it is queued or running" : cooled ? "refilled in the last 7 days" : null,
+      });
+    }
+  }
+  return { wholeBankActive: false, plans };
+}
+
+/** Queue the refills planPillarRefills calls for. Spends nothing: the drain runs them, behind `topic_refresh` and `ai_runs`. */
+export async function queuePillarRefills(enrollmentId: string, opts: { requestedBy: string; now?: Date; ignoreCooldown?: boolean }): Promise<{ queued: number; plans: (RefillPlan & { runId?: string; joined?: boolean })[] }> {
+  const { plans } = await planPillarRefills(enrollmentId, opts);
+  let queued = 0;
+  const out: (RefillPlan & { runId?: string; joined?: boolean })[] = [];
+  for (const plan of plans) {
+    if (plan.skip) { out.push(plan); continue; }
+    const r = await queueTopicRefresh({ enrollmentId, kind: "REFRESH", requestedBy: opts.requestedBy, pillarId: plan.pillarId, keep: plan.need, format: plan.format, reason: plan.reason });
+    if (!r.joined) queued++;
+    out.push({ ...plan, runId: r.runId, joined: r.joined });
+  }
+  return { queued, plans: out };
+}
+
 /**
  * EVERY 15 MINUTES (the AI work job, cron/topics — Oct 13 2026), behind
  * `topic_refresh`. For each ACTIVE enrollment with an approved
  * strategy and pillars: queue the initial bank if none has run since the
  * approval, else queue a targeted refill for each pillar below target (at most
- * once a week per pillar). Then drain. Nothing here reaches a client.
+ * once a week per pillar; per pillar and format on an account that does skits,
+ * Oct 26 2026). Then drain. Nothing here reaches a client.
  */
 export async function sweepTopicBanks(opts: { max?: number; budgetMs?: number; minStartMs?: number; now?: Date } = {}): Promise<{ skipped: string } | { queued: number; initial: number; refills: number; drained: Awaited<ReturnType<typeof drainTopicRefreshQueue>> }> {
   if (!(await isAutomationEnabled("topic_refresh"))) return { skipped: "topic_refresh is off" };
@@ -1063,23 +1189,12 @@ export async function sweepTopicBanks(opts: { max?: number; budgetMs?: number; m
         if (!r.joined) { queued++; initial++; }
         continue;
       }
-      const pillarOf = (r: { inputsJson: string | null }) => { try { return (JSON.parse(r.inputsJson ?? "{}") as { pillarId?: string | null }).pillarId ?? null; } catch { return null; } };
-      const active = await prisma.contentTopicRefreshRun.findMany({ where: { enrollmentId: e.id, kind: { in: ["BANK", "REFRESH"] }, status: { in: ["QUEUED", "RUNNING"] } }, select: { inputsJson: true } });
-      // A whole-bank run still waiting covers every pillar.
-      if (active.some((r) => !pillarOf(r))) continue;
-      // The weekly cooldown is per pillar and counts only that pillar's own
-      // refills, whatever became of them.
-      const recent = await prisma.contentTopicRefreshRun.findMany({ where: { enrollmentId: e.id, kind: "REFRESH", createdAt: { gte: new Date(now.getTime() - REFILL_COOLDOWN_MS) } }, select: { inputsJson: true } });
-      for (const p of await bankStock(e.id)) {
-        if (p.need <= 0) continue;
-        if (active.some((r) => pillarOf(r) === p.pillarId) || recent.some((r) => pillarOf(r) === p.pillarId)) continue;
-        const r = await queueTopicRefresh({ enrollmentId: e.id, kind: "REFRESH", requestedBy: "cron", pillarId: p.pillarId, keep: p.need, reason: `${p.pillarName}: ${p.usable} usable + ${p.pending} pending of ${p.target}` });
-        if (!r.joined) { queued++; refills++; }
-      }
-      // Oct 22 2026 (audit M3): a Mix account short of unscripted skit ideas
-      // gets a skit-only refresh, whatever its pillars' counts say.
-      const skits = await queueSkitRefreshIfShort(e.id, { requestedBy: "cron", now });
-      if (skits.queued) { queued++; refills++; }
+      // Oct 26 2026: per pillar, and per format on an account that does skits.
+      // The account-wide skit-only refresh (Oct 22, audit M3) is gone from
+      // here: each pillar's own skit stock replaced it, and running both would
+      // pay twice for the same skits.
+      const r = await queuePillarRefills(e.id, { requestedBy: "cron", now });
+      queued += r.queued; refills += r.queued;
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
     }

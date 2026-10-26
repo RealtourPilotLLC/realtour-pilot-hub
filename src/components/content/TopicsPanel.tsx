@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
-import { AlertTriangle, ArrowLeftRight, Ban, Check, ClipboardCopy, Drama, FileText, History, Lightbulb, Loader2, MessageSquare, PauseCircle, Pencil, Plus, RefreshCw, Sparkles, Star, Undo2, X } from "lucide-react";
+import { AlertTriangle, ArrowLeftRight, Ban, Check, ClipboardCopy, FileText, History, Lightbulb, Loader2, MessageSquare, PauseCircle, Pencil, Plus, RefreshCw, Sparkles, Star, Undo2, X } from "lucide-react";
 import type { PillarStock } from "@/lib/contentTopics";
 import type { QueueItemUi } from "@/lib/aiQueue";
 import { Section } from "@/components/ui/Section";
@@ -11,7 +11,8 @@ import { useToast } from "@/components/ui/Toast";
 import { TOPIC_STATUS_WORDS } from "@/lib/contentStatus";
 import { contentHref } from "@/lib/contentNav";
 import { topicSourceIsCall, topicSourceNeedsApproval } from "@/lib/contentPolicy/topicBank";
-import { VIDEO_FORMAT_LABEL, splitSkitSection, skitTargetFor, type VideoFormat, type VideoStyle } from "@/lib/contentPolicy/videoFormat";
+import { FORMAT_PLURAL, FORMAT_SWITCH_OPTIONS, VIDEO_FORMAT_LABEL, formatCounts, mainFormatFor, skitTargetFor, skitsOn, type VideoFormat, type VideoStyle } from "@/lib/contentPolicy/videoFormat";
+import { FormatSwitch } from "./FormatSwitch";
 import {
   addTopic, answerFollowUpLinkAction, carryNowAction, discussTopicAction, editTopic, queueScriptDraftAction, reconcileTopicSelection, runTopicRefresh, setTopicStatus, setTopicsPerPillarAction,
   setTopicAnswerRouteAction, setTopicFormatAction, suggestionAction, topicDecision, undeclineTopicAction,
@@ -48,9 +49,16 @@ import { useAiQueueWatch } from "./useAiQueueWatch";
 //
 // Oct 22 2026 (Bernadette Rabel's call): every topic card says "Skit" or
 // "Talking to camera", and that label is the one control that switches it.
-// When the bank holds both, or the account is Mix, its skits are listed
-// together under "Skits" above the pillars; a Mix month shows "1 of 2 skits
-// picked" beside its plan, never blocking anything.
+// A Mix month shows "1 of 2 skits picked" beside its plan, never blocking
+// anything.
+//
+// Oct 26 2026 (Jordan: "switch back and forth between direct to camera and
+// skits for each pillar"): the "Skits" section above the pillars is gone. On
+// an account that does skits every pillar holds both formats (the main one at
+// the policy count, the other at 5), its heading carries the "Talking to
+// camera | Skits" switch with both counts (FormatSwitch), each pillar opening
+// on the account's main format and keeping its own choice; the stock line
+// counts each pillar per format; a skit's concept reads "The skit: ...".
 // ---------------------------------------------------------------------------
 
 export type TopicUi = {
@@ -128,9 +136,14 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const toggle = (id: string) => setPicked((cur) => { const next = new Set(cur); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   const bulk = (action: "ACCEPT" | "HOLD" | "REGENERATE", ids: string[]) => run(async () => { const r = await suggestionBulkAction(ids, action); if (r.ok) setPicked(new Set()); return r; });
-  // Oct 22 2026: the bank's Skits section, and a Mix month's skit count.
-  const bank = splitSkitSection(groups, (t) => t.format, { always: videoStyle === "MIX" });
+  // Oct 22 2026: a Mix month's skit count.
   const skitCount = month ? skitTargetFor(monthTopics.map((t) => t.format), skitsPerMonth) : null;
+  // Oct 26 2026: each pillar's format switch, on an account that does skits.
+  const switchable = skitsOn(videoStyle);
+  const mainFormat = mainFormatFor(videoStyle);
+  const [pillarFormat, setPillarFormat] = useState<Record<string, VideoFormat>>({});
+  /** The stock line's word for a format. */
+  const formatWord = (f: VideoFormat) => (FORMAT_SWITCH_OPTIONS.find((o) => o.format === f)?.label ?? VIDEO_FORMAT_LABEL[f]).toLowerCase();
 
   return (
     <div className="space-y-5">
@@ -240,10 +253,17 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
           <div className="flex flex-wrap gap-x-4 gap-y-1 border-b border-border px-5 py-2 text-[11px] text-muted">
             <span className="text-muted-2">Usable per pillar (target {Math.max(...stock.map((p) => p.target))}):</span>
             {stock.map((p) => (
-              <span key={p.pillarId} className={p.need > 0 ? "text-warning" : undefined}>
-                {/* Oct 13 2026: a light pillar's smaller target is shown beside it. */}
-                {p.pillarName} {p.usable}{p.target < Math.max(...stock.map((x) => x.target)) ? ` of ${p.target} (light)` : ""}{p.pending ? ` + ${p.pending} to review` : ""}{p.declined ? ` · ${p.declined} set aside` : ""}{p.need > 0 ? ` · needs ${p.need}` : ""}
-              </span>
+              p.formats ? (
+                // Oct 26 2026: per format on an account that does skits.
+                <span key={p.pillarId} className={p.formats.some((f) => f.need > 0) ? "text-warning" : undefined}>
+                  {p.pillarName}: {p.formats.map((f) => `${formatWord(f.format)} ${f.usable} of ${f.target}${f.pending ? ` + ${f.pending} to review` : ""}${f.need > 0 ? ` (needs ${f.need})` : ""}`).join(", ")}{p.declined ? ` · ${p.declined} set aside` : ""}
+                </span>
+              ) : (
+                <span key={p.pillarId} className={p.need > 0 ? "text-warning" : undefined}>
+                  {/* Oct 13 2026: a light pillar's smaller target is shown beside it. */}
+                  {p.pillarName} {p.usable}{p.target < Math.max(...stock.map((x) => x.target)) ? ` of ${p.target} (light)` : ""}{p.pending ? ` + ${p.pending} to review` : ""}{p.declined ? ` · ${p.declined} set aside` : ""}{p.need > 0 ? ` · needs ${p.need}` : ""}
+                </span>
+              )
             ))}
           </div>
         )}
@@ -296,20 +316,25 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
       <Section icon={Lightbulb} title="Video Topics — the bank" count={groups.reduce((n2, g) => n2 + g.topics.length, 0)} flush
         action={<span className="text-[11px] text-muted-2">{archivedCount} rejected/archived (kept, never re-suggested)</span>}>
         <AddTopic enrollmentId={enrollmentId} pillars={pillars} busy={busy} run={run} />
-        {bank.show && (
-          <div>
-            <div className="flex items-center gap-1.5 border-y border-border bg-surface-2/50 px-5 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted"><Drama className="size-3" aria-hidden /> Skits · {bank.skits.length}</div>
-            {bank.skits.map((t, i) => <TopicRow key={t.id} t={t} idx={i + 1} busy={busy} month={month} pillars={pillars} history={histories[t.id] ?? []} interview={interviews[t.id] ?? null} run={run} showPillar />)}
-            {bank.skits.length === 0 && <p className="px-5 py-2 text-[12px] text-muted-2">No skit ideas yet. Mark a topic as a skit on its card, or refresh topics for skit concepts.</p>}
-          </div>
-        )}
-        {bank.groups.map((g) => (
-          <div key={g.pillarId ?? "none"}>
-            <div className="border-y border-border bg-surface-2/50 px-5 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">{g.pillarName} · {g.topics.length}</div>
-            {g.topics.map((t, i) => <TopicRow key={t.id} t={t} idx={i + 1} busy={busy} month={month} pillars={pillars} history={histories[t.id] ?? []} interview={interviews[t.id] ?? null} run={run} />)}
-            {g.topics.length === 0 && <p className="px-5 py-2 text-[12px] text-muted-2">nothing under this pillar yet</p>}
-          </div>
-        ))}
+        {groups.map((g) => {
+          // Oct 26 2026: a pillar on an account that does skits lists the format its switch is on.
+          const onFormat = switchable && g.pillarId ? pillarFormat[g.pillarId] ?? mainFormat : null;
+          const listed = onFormat ? g.topics.filter((t) => t.format === onFormat) : g.topics;
+          return (
+            <div key={g.pillarId ?? "none"}>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-y border-border bg-surface-2/50 px-5 py-1.5">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">{g.pillarName} · {g.topics.length}</span>
+                {onFormat && g.pillarId && (
+                  <FormatSwitch value={onFormat} counts={formatCounts(g.topics, (t) => t.format)} label={`${g.pillarName}: talking to camera or skits`}
+                    onChange={(f) => { const id = g.pillarId!; setPillarFormat((cur) => ({ ...cur, [id]: f })); }} />
+                )}
+              </div>
+              {listed.map((t, i) => <TopicRow key={t.id} t={t} idx={i + 1} busy={busy} month={month} pillars={pillars} history={histories[t.id] ?? []} interview={interviews[t.id] ?? null} run={run} />)}
+              {g.topics.length === 0 && <p className="px-5 py-2 text-[12px] text-muted-2">nothing under this pillar yet</p>}
+              {g.topics.length > 0 && onFormat && listed.length === 0 && <p className="px-5 py-2 text-[12px] text-muted-2">No {FORMAT_PLURAL[onFormat]} under this pillar yet. The automatic refill suggests them, or switch a topic&rsquo;s format on its card.</p>}
+            </div>
+          );
+        })}
         {groups.length === 0 && <p className="px-5 py-4 text-sm text-muted">The bank is empty — import a topic bank, refresh from the approved strategy, or add a topic.</p>}
       </Section>
     </div>
@@ -352,7 +377,7 @@ function DraftButton({ t, draft }: { t: TopicUi; draft: DraftCtl }) {
   return <button onClick={draft.onDraft} className={`${btn} inline-flex items-center bg-brand-action text-white`}><Sparkles className="mr-1 size-3" />Draft script</button>;
 }
 
-function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, run, draft, showPillar }: { t: TopicUi; idx?: number; busy: boolean; month: { id: string; short: string } | null; pillars: { id: string; name: string }[]; history: EventUi[]; interview: InterviewUi | null; inMonth?: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void; draft?: DraftCtl; /** In the Skits section: the pillar it belongs to. */ showPillar?: boolean }) {
+function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, run, draft }: { t: TopicUi; idx?: number; busy: boolean; month: { id: string; short: string } | null; pillars: { id: string; name: string }[]; history: EventUi[]; interview: InterviewUi | null; inMonth?: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void; draft?: DraftCtl }) {
   const [open, setOpen] = useState<"none" | "edit" | "history" | "discuss" | "interview">(interview && inMonth ? "interview" : "none");
   const [form, setForm] = useState({ title: t.title, concept: t.concept ?? "", pillarId: t.pillarId ?? "", audienceNeed: t.audienceNeed ?? "", businessGoal: t.businessGoal ?? "", intendedMessage: t.intendedMessage ?? "" });
   const [disc, setDisc] = useState("");
@@ -374,7 +399,6 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
             {idx != null && <span className="text-[12px] text-muted-2">{idx}.</span>}
             <span className="text-[15px] font-medium">{t.title}</span>
             <FormatChip t={t} busy={busy} run={run} />
-            {showPillar && pillars.find((p) => p.id === t.pillarId) && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{pillars.find((p) => p.id === t.pillarId)?.name}</span>}
             {!["SAVED", "RECOMMENDED", "IDEA"].includes(t.status) && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{TOPIC_STATUS_WORDS[t.status] ?? t.status.toLowerCase()}</span>}
             {t.approvalState === "APPROVED" && <span className="text-[11px] text-success">approved</span>}
             {t.proposedState && <span className="text-[11px] text-warning">{topicSourceIsCall(t.source) ? `declined on the call — ${t.proposedState === "REJECTED" ? "reject it to confirm" : "unconfirmed"}` : `import mark says ${t.proposedState.toLowerCase()} — unconfirmed`}</span>}
@@ -385,7 +409,7 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
             {/* Oct 23 2026: an old free-text label with no confirmed pillar close to it is just history; nothing asks to map it. */}
             {!t.pillarId && t.pillarLabel && <span className="text-[11px] text-muted-2">no pillar (was labelled “{t.pillarLabel}”)</span>}
           </div>
-          {t.concept && <p className="mt-0.5 text-[13px] leading-relaxed text-muted">{t.concept}</p>}
+          {t.concept && <p className="mt-0.5 text-[13px] leading-relaxed text-muted">{t.format === "SKIT" && <span className="font-semibold text-foreground/80">The skit: </span>}{t.concept}</p>}
           {(t.audienceNeed || t.businessGoal || t.intendedMessage) && (
             <p className="mt-0.5 text-[11px] text-muted-2">{[t.audienceNeed && `need: ${t.audienceNeed}`, t.businessGoal && `goal: ${t.businessGoal}`, t.intendedMessage && `message: ${t.intendedMessage}`].filter(Boolean).join(" · ")}</p>
           )}
@@ -481,7 +505,7 @@ function SuggestionRow({ s, busy, monthId, run }: { s: SuggestionUi; busy: boole
   return (
     <div className="px-5 py-3">
       <div className="flex flex-wrap items-center gap-2">{s.pillarName && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{s.pillarName}</span>}<span className="text-[15px] font-medium">{s.title}</span>{s.format && <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${s.format === "SKIT" ? "bg-brand-soft text-brand" : "bg-surface-2 text-muted"}`}>{VIDEO_FORMAT_LABEL[s.format]}</span>}</div>
-      {s.description && <p className="text-[13px] text-muted">{s.description}</p>}
+      {s.description && <p className="text-[13px] text-muted">{s.format === "SKIT" && <span className="font-semibold text-foreground/80">The skit: </span>}{s.description}</p>}
       <p className="text-[11px] text-muted-2">{[s.audienceNeed && `need: ${s.audienceNeed}`, s.businessGoal && `goal: ${s.businessGoal}`, s.intendedMessage && `message: ${s.intendedMessage}`, s.rationale].filter(Boolean).join(" · ")}</p>
       {edit && (
         <div className="mt-1.5 grid gap-1.5 sm:grid-cols-2">

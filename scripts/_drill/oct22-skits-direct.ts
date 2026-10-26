@@ -318,7 +318,7 @@ async function main() {
     c.ok("the month shows the count beside the plan, office and portal", /skitTargetFor\(/.test(tb) && /skitLine\.line/.test(tb) && /skitTargetFor\(/.test(tp) && /skitCount\.line/.test(tp));
 
     // ======================================================================
-    c.head("8 · the topic bank: Skits section, labels, Mix refresh");
+    c.head("8 · the topic bank: per-pillar formats (Oct 26), labels, Mix refresh");
     // The bank prompts, by account.
     const withStrategy = (ctx: typeof builtD.ctx) => ({ ...ctx, strategy: { version: "v1", document: strategyDoc(ctx.clientName) as unknown as import("@/lib/contentPolicy").StrategyDocument } });
     const builtM = await gen.buildClientContext(M.enrollmentId);
@@ -328,8 +328,9 @@ async function main() {
     // Oct 23 2026: the plain schema, with pillarName held to the client's confirmed pillars (withPillarNameEnum); no format field.
     const plainD = policy.withPillarNameEnum(policy.TOPIC_BANK_OUTPUT_SCHEMA, strategyDoc(builtD.ctx.clientName).contentPillars.pillars.map((p: { name: string }) => p.name));
     c.ok("DIRECT bank: no skit concepts, the plain schema", !/VIDEO STYLE: (SKITS|MIX)/.test(pD.system) && JSON.stringify(pD.outputSchema) === JSON.stringify(plainD) && !/"format"/.test(JSON.stringify(pD.outputSchema)));
-    c.ok("SKITS bank: every topic a skit concept (the Oct 13 rule), with the cast block", pS.system.includes(policy.SKIT_TOPIC_RULE) && /SKIT CAST/.test(pS.system));
-    c.ok("MIX bank: skit concepts beside direct topics, reusing the skit concept rules", pM.system.includes(policy.mixTopicRule(2)) && pM.system.includes(policy.SKIT_CONCEPT_RULES) && policy.SKIT_TOPIC_RULE.includes(policy.SKIT_CONCEPT_RULES) && /never fewer than 4 across the bank/.test(pM.system));
+    c.ok("SKITS bank: skit concepts are the main format (the Oct 13 rule), with the cast block", pS.system.includes(policy.SKIT_TOPIC_RULE) && /SKIT CAST/.test(pS.system) && /Skit concepts \(format "SKIT"\) are the main format/.test(policy.SKIT_TOPIC_RULE));
+    // Oct 26 2026: both formats under every pillar, the other one at OTHER_FORMAT_PER_PILLAR (5).
+    c.ok("MIX bank: skit concepts beside direct topics, 5 under every pillar, reusing the skit concept rules", pM.system.includes(policy.mixTopicRule(2)) && pM.system.includes(policy.SKIT_CONCEPT_RULES) && policy.SKIT_TOPIC_RULE.includes(policy.SKIT_CONCEPT_RULES) && /Skit concepts \(format "SKIT"\): 5 under each pillar/.test(pM.system) && !/never fewer than \d+ across the bank/.test(pM.system));
     const fmtSchema = JSON.stringify(pM.outputSchema);
     c.ok("…every topic in a Mix bank must say its format (DIRECT or SKIT)", /"format":\{"type":"string","enum":\["DIRECT","SKIT"\]/.test(fmtSchema) && /"required":\["title","description","audienceNeed","businessGoal","intendedMessage","sourceRef","format"\]/.test(fmtSchema));
     // A real Mix refresh, end to end.
@@ -352,19 +353,18 @@ async function main() {
     const accDirect = await ct.acceptSuggestion(directSugg[0].id, STAFF_EMAIL, { edits: { title: "An edited direct idea title" } });
     c.ok("an accepted skit idea becomes a SKIT topic", vf.topicFormatOf((await prisma.contentTopic.findUnique({ where: { id: accSkit.topicId } }))?.scoresJson) === "SKIT");
     c.ok("an accepted (edited) direct idea becomes a DIRECT topic", vf.topicFormatOf((await prisma.contentTopic.findUnique({ where: { id: accDirect.topicId } }))?.scoresJson) === "DIRECT");
-    // Sections.
+    // Oct 26 2026: the Skits section is gone; each pillar's switch counts both formats.
     const groupsOf = (b: typeof bankD) => b.groups.map((g) => ({ pillarId: g.pillarId, pillarName: g.pillarName, topics: g.topics.map((t) => ({ ...t, format: vf.resolvedTopicFormat(t.videoFormat, "DIRECT") })) }));
-    const splitD = vf.splitSkitSection(groupsOf(await ct.topicBankByPillar(D.enrollmentId)), (t) => t.format);
-    c.ok("a bank with both formats gets a Skits section holding the skits; pillars keep the rest", splitD.show && splitD.skits.every((t) => t.format === "SKIT") && splitD.skits.length === 2 && splitD.groups.every((g) => g.topics.every((t) => t.format === "DIRECT")), `${splitD.skits.length}`);
-    const one = [{ topics: [{ format: "DIRECT" as const }, { format: "DIRECT" as const }] }];
-    c.ok("a bank of one format keeps its pillars (no section), unless the account is Mix", !vf.splitSkitSection(one, (t) => t.format).show && vf.splitSkitSection(one, (t) => t.format, { always: true }).show);
-    c.ok("office: the Skits section, the label on every card, the one switch", /Skits · \{bank\.skits\.length\}/.test(tp) && /function FormatChip/.test(tp) && /setTopicFormatAction\(t\.id, other\)/.test(tp) && /VIDEO_FORMAT_LABEL\[t\.format\]/.test(tp));
-    c.ok("portal: a Skits category first, and the card label where skits are on", /pillarName: "Skits"/.test(tb) && /showFormat && <span/.test(tb) && /VIDEO_FORMAT_LABEL\[t\.format\]/.test(tb));
+    const countsD = groupsOf(await ct.topicBankByPillar(D.enrollmentId)).reduce((n, g) => { const k = vf.formatCounts(g.topics, (t) => t.format); return { DIRECT: n.DIRECT + k.DIRECT, SKIT: n.SKIT + k.SKIT }; }, { DIRECT: 0, SKIT: 0 });
+    c.ok("each pillar's topics count by format (2 skits on the Direct drill account)", countsD.SKIT === 2 && countsD.DIRECT > 0, JSON.stringify(countsD));
+    c.ok("no Skits section left: splitSkitSection is gone", !("splitSkitSection" in vf));
+    c.ok("office: a switch on each pillar, the label on every card, the one switch per card", /<FormatSwitch/.test(tp) && !/Skits · \{bank\.skits\.length\}/.test(tp) && /function FormatChip/.test(tp) && /setTopicFormatAction\(t\.id, other\)/.test(tp) && /VIDEO_FORMAT_LABEL\[t\.format\]/.test(tp));
+    c.ok("portal: a switch on each pillar, no Skits category, and the card label where skits are on", /<FormatSwitch/.test(tb) && !/pillarName: "Skits"/.test(tb) && /showFormat && <span/.test(tb) && /VIDEO_FORMAT_LABEL\[t\.format\]/.test(tb));
     const sp = fs.readFileSync(path.join(REPO, "src/components/content/ScriptsPanel.tsx"), "utf8");
     const shoot = fs.readFileSync(path.join(REPO, "src/app/shoot/[id]/page.tsx"), "utf8");
     const edit = fs.readFileSync(path.join(REPO, "src/app/edit/[id]/page.tsx"), "utf8");
     c.ok("the office script view, the shoot screen and the editor brief show the format", /VIDEO_FORMAT_LABEL\[cur\.format\]/.test(sp) && /"Skit" : "Talking to camera"/.test(shoot) && /"Skit" : "Talking to camera"/.test(edit));
-    c.ok("no em dash in any new label or hint", noDash((tp.match(/No skit ideas yet[^<]*/) ?? [""])[0]) && noDash((tb.match(/Short acted videos[^"]*/) ?? [""])[0]) && noDash((shoot.match(/A skit: an acted scene[^<]*/) ?? [""])[0]));
+    c.ok("no em dash in any new label or hint", noDash((tp.match(/under this pillar yet\. The automatic refill[^<]*/) ?? [""])[0]) && noDash((tb.match(/in this pillar yet\.[^<]*/) ?? [""])[0]) && noDash((shoot.match(/A skit: an acted scene[^<]*/) ?? [""])[0]));
 
     // ======================================================================
     c.head("9 · unformatted topics and older versions read as before");

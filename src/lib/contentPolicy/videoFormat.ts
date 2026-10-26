@@ -182,21 +182,64 @@ export function skitTargetFor(formats: readonly VideoFormat[], target: number | 
   return { picked, target, met: picked >= target, line: `${picked} of ${target} skit${target === 1 ? "" : "s"} picked` };
 }
 
-// ---- the topic bank's Skits section -------------------------------------------------
+// ---- both formats in every pillar (Oct 26 2026) -------------------------------------
 
 /**
- * THE "SKITS" SECTION (Jordan's action item from the call: "Organize a skits
- * category ... within the portal"). When a bank holds both formats, or the
- * account is Mix, its skits are listed together under "Skits" and the
- * talking-to-camera topics stay under their pillars. A bank of one format
- * keeps its pillars as they are, with each card's label.
+ * PER-PILLAR FORMATS (Oct 26 2026). Jordan: "anyone that does skits, needs
+ * skit concepts as video topics ... They should be able to switch back and
+ * forth between direct to camera and skits for each pillar." And: "the skits
+ * and topics need to be built around them and their content strategy and
+ * strategy calls that we have had."
+ *
+ * On an account that does skits (Skits or Mix) EVERY pillar holds both
+ * formats: the account's MAIN format at the policy's count per pillar (as
+ * before), and the OTHER format at OTHER_FORMAT_PER_PILLAR.
+ *   Skits: skit concepts are the main format; 5 talking-to-camera topics a pillar.
+ *   Mix:   talking to camera is the main format; 5 skit concepts a pillar.
+ * A Direct account has one format and is unchanged everywhere.
+ *
+ * This replaced the one "Skits" section above the pillars (Oct 22): each
+ * pillar heading now carries a two-option switch, "Talking to camera | Skits",
+ * with the count on each option, office and portal.
  */
-export function splitSkitSection<G extends { topics: unknown[] }>(groups: G[], formatOf: (t: G["topics"][number]) => VideoFormat, opts: { always?: boolean } = {}): { show: boolean; skits: G["topics"][number][]; groups: G[] } {
-  const all: G["topics"][number][] = groups.flatMap((g) => g.topics);
-  const skits = all.filter((t) => formatOf(t) === "SKIT");
-  const mixed = skits.length > 0 && skits.length < all.length;
-  if (!mixed && !opts.always) return { show: false, skits: [], groups };
-  return { show: true, skits, groups: groups.map((g) => ({ ...g, topics: g.topics.filter((t) => formatOf(t) !== "SKIT") })) };
+export const OTHER_FORMAT_PER_PILLAR = 5;
+
+/** The format most of an account's videos are in: a skit on a Skits account, talking to camera otherwise. */
+export function mainFormatFor(style: VideoStyle | null | undefined): VideoFormat {
+  return defaultFormatFor(style);
+}
+
+export function otherFormat(f: VideoFormat): VideoFormat {
+  return f === "SKIT" ? "DIRECT" : "SKIT";
+}
+
+export type PillarFormatTarget = { format: VideoFormat; main: boolean; target: number };
+
+/**
+ * What one pillar is stocked to, per format, on an account that does skits:
+ * the main format at the policy's count, the other at OTHER_FORMAT_PER_PILLAR
+ * (main first). Null on a Direct account: one format, the policy's count.
+ */
+export function pillarFormatTargets(style: VideoStyle | null | undefined, policyCount: number): PillarFormatTarget[] | null {
+  if (!skitsOn(style)) return null;
+  const main = mainFormatFor(style);
+  return [{ format: main, main: true, target: policyCount }, { format: otherFormat(main), main: false, target: OTHER_FORMAT_PER_PILLAR }];
+}
+
+/** The pillar switch's two options, always in this order. */
+export const FORMAT_SWITCH_OPTIONS: readonly { format: VideoFormat; label: string }[] = [
+  { format: "DIRECT", label: "Talking to camera" },
+  { format: "SKIT", label: "Skits" },
+];
+
+/** How a request or a count names the format in plain words: "skit concepts", "talking-to-camera topics". */
+export const FORMAT_PLURAL: Record<VideoFormat, string> = { DIRECT: "talking-to-camera topics", SKIT: "skit concepts" };
+
+/** How many of these topics are in each format. */
+export function formatCounts<T>(topics: readonly T[], formatOf: (t: T) => VideoFormat): Record<VideoFormat, number> {
+  const out: Record<VideoFormat, number> = { DIRECT: 0, SKIT: 0 };
+  for (const t of topics) out[formatOf(t)]++;
+  return out;
 }
 
 // ---- the cast -------------------------------------------------------------------------

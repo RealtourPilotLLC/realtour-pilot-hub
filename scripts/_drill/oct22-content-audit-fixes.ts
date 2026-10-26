@@ -363,7 +363,8 @@ async function main() {
       c.ok("the shortfall queues one REFRESH run, skits only, keeping 3", q1.queued && run?.kind === "REFRESH" && run.status === "QUEUED" && inputs.skitsOnly === true && inputs.keep === 3 && !inputs.pillarId, JSON.stringify({ q1, inputs }));
       const q2 = await ct.queueSkitRefreshIfShort(M.enrollmentId, { requestedBy: "cron" });
       c.ok("a second check while it waits queues nothing", !q2.queued && /queued, running, or was tried/.test(q2.why), q2.why);
-      c.ok("the bank sweep calls it for every account", /queueSkitRefreshIfShort\(e\.id, \{ requestedBy: "cron", now \}\)/.test(read("src/lib/contentTopics.ts")));
+      // Oct 26 2026: the sweep tops up each pillar per format instead (queuePillarRefills); the account-wide skit refresh stays for the old live script.
+      c.ok("the bank sweep now refills per pillar and format, not account-wide skits", /queuePillarRefills\(e\.id, \{ requestedBy: "cron", now \}\)/.test(read("src/lib/contentTopics.ts")) && !/queueSkitRefreshIfShort\(e\.id, \{ requestedBy: "cron"/.test(read("src/lib/contentTopics.ts")));
       // The run itself, with the stubbed model: skits only, three kept, the talking-to-camera idea dropped.
       modelCalls.length = 0;
       await prisma.contentTopicRefreshRun.update({ where: { id: q1.runId! }, data: { status: "RUNNING", leaseUntil: new Date(Date.now() + 600_000), leaseBy: "drill" } });

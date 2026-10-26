@@ -233,11 +233,14 @@ async function main() {
     const emph = { [BUYER]: "LIGHT", [SELLER]: "LEAD" };
     const bankSE = policy.buildTopicBankPrompt(withStrategy(builtS.ctx), { pillarEmphasis: emph });
     // Oct 20 2026: every pillar, LIGHT included, gets the full count; emphasis is still named.
-    c.ok("pillar emphasis still shapes a SKITS bank: 10 per pillar, LEAD and LIGHT named", /exactly 10 topics under EACH/.test(bankSE.system) && /LEAD pillars[^\n]*Seller Strategy/.test(bankSE.system) && /LIGHT pillars[^\n]*Buyer Education/.test(bankSE.system) && bankSE.system.includes(policy.SKIT_TOPIC_RULE));
+    // Oct 26 2026: a Skits account's pillars hold both formats: the policy count of skit concepts plus 5 talking-to-camera topics.
+    c.ok("pillar emphasis still shapes a SKITS bank: 10 skit concepts + 5 to camera per pillar, LEAD and LIGHT named", /exactly 10 skit concepts \(format "SKIT"\) and exactly 5 talking-to-camera topics \(format "DIRECT"\) under EACH/.test(bankSE.system) && /LEAD pillars[^\n]*Seller Strategy/.test(bankSE.system) && /LIGHT pillars[^\n]*Buyer Education/.test(bankSE.system) && bankSE.system.includes(policy.SKIT_TOPIC_RULE));
     const oldBankDE = oldPrompts.buildTopicBankPrompt(withStrategy(builtD.ctx), { pillarEmphasis: emph });
     const countLine = (sys: string) => (/^COUNT:.*$/m.exec(sys) ?? [""])[0] + (/^EMPHASIS:.*$/m.exec(sys) ?? [""])[0];
     const bankDE = policy.buildTopicBankPrompt(withStrategy(builtD.ctx), { pillarEmphasis: emph });
-    c.ok("…and a DIRECT bank with emphasis has the same count and emphasis lines as a SKITS one", countLine(bankDE.system) === countLine(bankSE.system) && countLine(bankDE.system).length > 20 && !bankDE.system.includes(policy.SKIT_TOPIC_RULE), `${countLine(oldBankDE.system).length}`);
+    // Oct 26 2026: the DIRECT count line is unchanged; the SKITS one adds the second format, the emphasis line is shared.
+    const emphLine = (sys: string) => (/^EMPHASIS:.*$/m.exec(sys) ?? [""])[0];
+    c.ok("…and a DIRECT bank with emphasis keeps its count line, with the same emphasis line as a SKITS one", /^COUNT: exactly 10 topics under EACH/m.test(bankDE.system) && emphLine(bankDE.system) === emphLine(bankSE.system) && countLine(bankDE.system).length > 20 && !bankDE.system.includes(policy.SKIT_TOPIC_RULE), `${countLine(oldBankDE.system).length}`);
 
     // ======================================================================
     c.head("4 · validation: a skit passes, dialogue only is counted; direct unchanged");

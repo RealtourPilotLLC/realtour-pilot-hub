@@ -21,9 +21,12 @@ import { creativeGuardFromOverrides, discontinuedHit } from "@/lib/creativeGuard
 import { scriptFormatOf } from "@/lib/contentPolicy/prompts";
 import {
   asVideoStyle, asVideoFormat, formatForWrite, scriptRoute, skitCastFromOverrides, skitsPerMonthFromOverrides, topicFormatOf, versionFormatOf, VERSION_FORMAT_KEY,
+  skitsOn, mainFormatFor, otherFormat, FORMAT_PLURAL, OTHER_FORMAT_PER_PILLAR,
   type ScriptRoute, type VideoFormat,
 } from "@/lib/contentPolicy/videoFormat";
 import { namesToScrub, namesRegex, speakerLabels, splitTurns } from "@/lib/scriptWriter/transcriptScrub";
+import { transcriptNotes } from "@/lib/scriptWriter/passages";
+import { CALL_NOTES_MAX_CALLS, CALL_NOTES_MAX_WORDS, capWords, tidyCallNotes, type StrategyCallNotes } from "@/lib/contentPolicy/callNotes";
 
 // ---------------------------------------------------------------------------
 // GENERATION — the only place the Content Program talks to the model, and it
@@ -181,7 +184,50 @@ async function voiceReferenceCandidates(enrollmentId: string, opts: { take: numb
   return out;
 }
 
-export async function buildClientContext(enrollmentId: string, opts: { monthId?: string | null; monthKey?: string | null; projectId?: string | null; priorScripts?: number; /** A revision does not read its own script as a voice reference. */ excludeScriptId?: string | null } = {}): Promise<BuiltContext> {
+/**
+ * THE CLIENT'S CALLS, FOR THE TOPIC BANK (Oct 26 2026; contentPolicy/callNotes.ts).
+ * Their completed strategy and discovery calls, newest first: for each, the
+ * newest transcript version (not superseded), and of it only the Gemini notes
+ * above the "Transcript" heading, tidied, run through the same scrub as every
+ * call that reaches a prompt (confidential marks, phrases and facts, other
+ * clients' names; staff and test clients are never "another client"), then
+ * capped. A call with no notes part is skipped. At most CALL_NOTES_MAX_CALLS.
+ */
+export async function strategyCallNotesFor(enrollmentId: string, clientId: string): Promise<{ calls: StrategyCallNotes[]; callIds: string[]; stripped: number }> {
+  const calls = await prisma.programCallRecord.findMany({
+    where: { OR: [{ enrollmentId }, { clientId }], status: "COMPLETED", callType: { in: ["MONTHLY_STRATEGY", "BRAND_DISCOVERY"] } },
+    orderBy: [{ scheduledStart: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
+    take: 12,
+    select: { id: true, callType: true, scheduledStart: true, createdAt: true },
+  });
+  if (!calls.length) return { calls: [], callIds: [], stripped: 0 };
+  const sources = await prisma.programTranscriptSource.findMany({
+    where: { callRecordId: { in: calls.map((c) => c.id) }, matchState: "CONFIRMED", text: { not: null } },
+    orderBy: [{ version: "desc" }, { createdAt: "desc" }],
+    select: { id: true, callRecordId: true, text: true, supersedesId: true },
+  });
+  const superseded = new Set(sources.map((s) => s.supersedesId).filter(Boolean));
+  const out: StrategyCallNotes[] = [];
+  const callIds: string[] = [];
+  let stripped = 0;
+  for (const c of calls) {
+    if (out.length >= CALL_NOTES_MAX_CALLS) break;
+    const tx = sources.find((s) => s.callRecordId === c.id && !superseded.has(s.id));
+    const raw = tx?.text ? transcriptNotes(tx.text) : null;
+    if (!raw) continue;
+    const tidy = tidyCallNotes(raw);
+    if (!tidy) continue;
+    const scrub = await scrubTranscriptForGeneration(clientId, tidy);
+    stripped += scrub.stripped;
+    const notes = capWords(scrub.text, CALL_NOTES_MAX_WORDS);
+    if (!notes) continue;
+    out.push({ dateISO: (c.scheduledStart ?? c.createdAt).toLocaleDateString("en-CA", { timeZone: "America/New_York" }), kind: c.callType === "BRAND_DISCOVERY" ? "discovery" : "strategy", notes });
+    callIds.push(c.id);
+  }
+  return { calls: out, callIds, stripped };
+}
+
+export async function buildClientContext(enrollmentId: string, opts: { monthId?: string | null; monthKey?: string | null; projectId?: string | null; priorScripts?: number; /** A revision does not read its own script as a voice reference. */ excludeScriptId?: string | null; /** Oct 26 2026: the topic bank reads the client's call notes (strategyCallNotesFor). */ strategyCalls?: boolean } = {}): Promise<BuiltContext> {
   const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true, overridesJson: true } });
   if (!e) throw new Error("Enrollment not found.");
   const take = opts.priorScripts ?? 3;
@@ -211,6 +257,7 @@ export async function buildClientContext(enrollmentId: string, opts: { monthId?:
   }
   // Oct 14 2026: this month's priorities (the call's, or typed by staff), scrubbed like the facts.
   const priorities = month ? (await scrubOtherClients(e.clientId, monthPriorities(month.prioritiesJson))).kept.filter((p) => !CONFIDENTIAL_RE.test(p)) : [];
+  const calls = opts.strategyCalls ? await strategyCallNotesFor(enrollmentId, e.clientId) : null;
   const ctx: ClientContext = {
     clientId: e.clientId, clientName: client?.name ?? "Client",
     strategy: strategy ? { version: strategy.label, document: strategy.document } : null,
@@ -229,10 +276,15 @@ export async function buildClientContext(enrollmentId: string, opts: { monthId?:
     monthPriorities: priorities,
     // Oct 15 2026: proven format, discontinued series, experiment limit (creativeGuardCore.ts).
     creativeGuard: creativeGuardFromOverrides(e.overridesJson),
+    // Oct 26 2026: the client's call notes, newest first (the topic bank only).
+    ...(calls ? { strategyCalls: calls.calls } : {}),
   };
   return {
     ctx, enrollmentId, clientId: e.clientId, strategyVersionId: strategy?.versionId ?? null, strategyLabel: strategy?.label ?? null, policyVersionId: policy.id,
-    inputRefs: { strategyVersionId: strategy?.versionId ?? null, factIds: facts.map((f) => f.id), priorScriptIds: prior.map((p) => p.id), voiceKinds: prior.map((p) => p.kind), strippedLines: expl.stripped + kn.stripped + strippedScripts, policyHash: policyStamp(null).policyHash },
+    inputRefs: {
+      strategyVersionId: strategy?.versionId ?? null, factIds: facts.map((f) => f.id), priorScriptIds: prior.map((p) => p.id), voiceKinds: prior.map((p) => p.kind), strippedLines: expl.stripped + kn.stripped + strippedScripts, policyHash: policyStamp(null).policyHash,
+      ...(calls ? { strategyCallIds: calls.callIds, strippedCallLines: calls.stripped } : {}),
+    },
   };
 }
 
@@ -807,20 +859,32 @@ export async function reviseScript(scriptId: string, instructions: string, reque
 type BankOut = { complete: boolean; pillars: { pillarName: string; topics: { title: string; description: string; audienceNeed: string; businessGoal: string; intendedMessage: string; sourceRef: string | null; /** Oct 22 2026: a Mix account's bank marks each topic DIRECT or SKIT. */ format?: string | null }[] }[]; gaps: Gap[] };
 
 /**
- * A new idea's format (Oct 22 2026): a Skits account's ideas are skit
- * concepts (SKIT_TOPIC_RULE), a Mix account's say which they are (DIRECT when
- * the model left it out), a Direct account's carry none (they follow the
- * account, as every topic before today does).
+ * A new idea's format (Oct 22 2026): an account that does skits marks each
+ * idea, and an unmarked one is the account's main format (a skit on a Skits
+ * account, talking to camera on a Mix one); a Direct account's ideas carry
+ * none (they follow the account, as every topic before Oct 22 does). Oct 26
+ * 2026: a Skits account's pillars hold talking-to-camera topics too, and
+ * those are stamped DIRECT explicitly (unmarked, they would read as skits).
  */
 function newIdeaFormat(style: ReturnType<typeof asVideoStyle>, said: unknown): VideoFormat | null {
-  return style === "SKITS" ? "SKIT" : style === "MIX" ? asVideoFormat(said) ?? "DIRECT" : null;
+  return style === "SKITS" ? asVideoFormat(said) ?? "SKIT" : style === "MIX" ? asVideoFormat(said) ?? "DIRECT" : null;
 }
 
+/** A format-only refill asks for this many more than it keeps, so a near-duplicate dropped on the way still leaves enough (Oct 26 2026). */
+export const FORMAT_REFILL_SPARE = 2;
+
 /** The AI half of a BANK / REFRESH run: prompt from the policy, validated, deduped against archived concepts, stored as PENDING suggestions. */
-export async function executeTopicRefreshRun(runId: string, opts: { unattended: boolean; pillarId?: string | null; count?: number | null; /** Keep only the top N new suggestions (single-suggestion regeneration = 1). */ keep?: number | null; /** Oct 21 2026 (audit H1): a sweep's clock (ms epoch); the model call ends by it. */ deadline?: number | null; /** Oct 22 2026 (audit M3): skit concepts only, `keep` of them in total (a Mix account's shortfall). */ skitsOnly?: boolean }): Promise<void> {
+export async function executeTopicRefreshRun(runId: string, opts: {
+  unattended: boolean; pillarId?: string | null; count?: number | null;
+  /** Keep only the top N new suggestions (single-suggestion regeneration = 1). */ keep?: number | null;
+  /** Oct 21 2026 (audit H1): a sweep's clock (ms epoch); the model call ends by it. */ deadline?: number | null;
+  /** Oct 22 2026 (audit M3): skit concepts only, `keep` of them in total (a Mix account's shortfall). A run queued before Oct 26 still carries it. */ skitsOnly?: boolean;
+  /** Oct 26 2026: one format only (with `pillarId`: that pillar's skit concepts or its talking-to-camera topics), `keep` of them kept. */ format?: VideoFormat | null;
+}): Promise<void> {
   const run = await prisma.contentTopicRefreshRun.findUnique({ where: { id: runId } });
   if (!run) throw new Error("Run not found.");
-  const built = await buildClientContext(run.enrollmentId);
+  // Oct 26 2026: every bank run reads the client's strategy and discovery call notes.
+  const built = await buildClientContext(run.enrollmentId, { strategyCalls: true });
   const pillars = await listPillars(run.enrollmentId);
   const docPillars = built.ctx.strategy?.document?.contentPillars.pillars ?? [];
   const missing: string[] = [];
@@ -869,12 +933,23 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   // the validator below holds it to that count, not the full one.
   const pillarEmphasis: Record<string, string> = {};
   for (const p of pillars) for (const name of [p.name, ...p.aliases]) pillarEmphasis[name] = p.emphasis;
-  // Oct 22 2026 (audit M3): a skit-only refresh asks for the shortfall in skit concepts, nothing else.
-  const skitsOnly = opts.skitsOnly === true ? Math.max(1, Math.min(opts.keep ?? 4, 12)) : null;
-  const bundle = buildTopicBankPrompt(ctx, { topicsPerPillar: Math.min(Math.max(perPillar, GENERATION_POLICY.topicsPerPillar.min), GENERATION_POLICY.topicsPerPillar.max), existingTopics: existing, refresh: run.kind === "REFRESH", pillarEmphasis, skitsOnly, pillarNames: askPillars.map((p) => p.name) });
+  // ONE FORMAT ONLY. Oct 22 2026 (audit M3): a skit-only refresh asked for the
+  // shortfall in skit concepts across the bank, nothing else, and a run queued
+  // before Oct 26 still does. Oct 26 2026: the refill of ONE pillar's skit
+  // concepts or talking-to-camera topics (the sweep's per-pillar, per-format
+  // stock), which asks for a couple more than it keeps.
+  const style = asVideoStyle(built.ctx.videoStyle);
+  const twoFormats = skitsOn(style);
+  const legacySkits = opts.skitsOnly === true && !opts.format;
+  const onlyFormat: VideoFormat | null = opts.format ?? (legacySkits ? "SKIT" : null);
+  const keepOnly = onlyFormat ? (legacySkits ? Math.max(1, Math.min(opts.keep ?? 4, 12)) : Math.max(1, Math.min(opts.keep ?? OTHER_FORMAT_PER_PILLAR, GENERATION_POLICY.topicsPerPillar.max))) : null;
+  const askOnly = keepOnly ? (legacySkits ? keepOnly : Math.min(keepOnly + FORMAT_REFILL_SPARE, GENERATION_POLICY.topicsPerPillar.max)) : null;
+  const bundle = buildTopicBankPrompt(ctx, { topicsPerPillar: Math.min(Math.max(perPillar, GENERATION_POLICY.topicsPerPillar.min), GENERATION_POLICY.topicsPerPillar.max), existingTopics: existing, refresh: run.kind === "REFRESH", pillarEmphasis, formatOnly: onlyFormat && askOnly ? { format: onlyFormat, count: askOnly } : null, pillarNames: askPillars.map((p) => p.name) });
+  // A whole bank in both formats is a third longer (each pillar's main count plus OTHER_FORMAT_PER_PILLAR).
+  const maxTokens = twoFormats && !onlyFormat ? 24_000 : 16_000;
   const runRes = await runAiJson<BankOut>({
-    kind: run.kind === "BANK" ? "topic_bank" : "topic_refresh", enrollmentId: run.enrollmentId, clientId: run.clientId, scope: { refreshRunId: runId, pillarId: opts.pillarId ?? null }, inputRefs: { ...built.inputRefs, existingTopics: existing.length },
-    promptKey: "topic-bank", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: run.requestedBy ?? "system", unattended: opts.unattended, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 16_000, timeoutMs: timeoutBefore(opts.deadline, 16_000),
+    kind: run.kind === "BANK" ? "topic_bank" : "topic_refresh", enrollmentId: run.enrollmentId, clientId: run.clientId, scope: { refreshRunId: runId, pillarId: opts.pillarId ?? null, ...(onlyFormat ? { format: onlyFormat } : {}) }, inputRefs: { ...built.inputRefs, existingTopics: existing.length },
+    promptKey: "topic-bank", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: run.requestedBy ?? "system", unattended: opts.unattended, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens, timeoutMs: timeoutBefore(opts.deadline, maxTokens),
   });
   const out = runRes.output;
   const [blocked, pendingHashes] = await Promise.all([blockedTopicHashes(run.enrollmentId), pendingSuggestionHashes(run.enrollmentId)]);
@@ -896,10 +971,9 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   const nearOnFile = (title: string, pillarId: string | null) => onFile.find((r) => { const sim = titleSimilarity(title, r.title); return sim >= NEAR_DUPLICATE_THRESHOLD || (!!pillarId && r.pillarId === pillarId && sim >= SAME_PILLAR_NEAR); });
   const bank: TopicBank = { clientId: run.clientId, clientName: built.ctx.clientName, intro: [], strategyVersion: built.strategyLabel, stamp: policyStamp(built.strategyLabel), pillars: [] };
   // Oct 22 2026: each new idea's format, by its title, kept on the run until the idea is accepted.
-  const style = asVideoStyle(built.ctx.videoStyle);
   const formatSaid = new Map<string, VideoFormat>();
-  // A skit-only refresh's ideas are skits (one the model marked DIRECT is dropped below).
-  for (const p of Array.isArray(out.pillars) ? out.pillars : []) for (const t of p.topics ?? []) { const f = skitsOnly ? (asVideoFormat(t.format) ?? "SKIT") : newIdeaFormat(style, t.format); if (f && t.title) formatSaid.set(topicDedupeHash(t.title), f); }
+  // A format-only refresh's ideas are in that format (one the model marked otherwise is dropped below).
+  for (const p of Array.isArray(out.pillars) ? out.pillars : []) for (const t of p.topics ?? []) { const f = onlyFormat ? (asVideoFormat(t.format) ?? onlyFormat) : newIdeaFormat(style, t.format); if (f && t.title) formatSaid.set(topicDedupeHash(t.title), f); }
   const formats: Record<string, VideoFormat> = {};
   // Each group's pillarName → the confirmed pillar it names (the schema allows
   // only those names; a model that strays anyway is matched by the one rule,
@@ -920,7 +994,15 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
     group.topics.push(...topics.map((t) => makeTopic({ title: t.title, pillarName: m.pillarName, description: t.description, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, source: "GENERATED", sourceRef: t.sourceRef, clientId: run.clientId, pillarRef: { pillarId: m.pillarId, pillarName: m.pillarName } })));
   }
   if (droppedGroups.length) console.warn(`[topic bank] run ${runId}: dropped ${droppedGroups.reduce((n, g) => n + g.topics, 0)} idea(s) under a pillar that is not one of the client's confirmed pillars: ${droppedGroups.map((g) => `“${g.label}” (${g.topics})`).join(", ").slice(0, 600)}`);
-  const validation = validateTopicBank(bank, { topicsPerPillar: perPillar, mode: "generated", strategyPillarNames: askPillars.map((p) => p.name), pillarEmphasis });
+  // Oct 26 2026: on an account that does skits the per-pillar count is the
+  // MAIN format's; the other format's OTHER_FORMAT_PER_PILLAR is checked here.
+  const mainF = mainFormatFor(style);
+  const fmtOfIdea = (title: string) => formatSaid.get(topicDedupeHash(title)) ?? mainF;
+  const countedBank: TopicBank = twoFormats && !onlyFormat ? { ...bank, pillars: bank.pillars.map((p) => ({ ...p, topics: p.topics.filter((t) => fmtOfIdea(t.title) === mainF) })) } : bank;
+  const validation = validateTopicBank(countedBank, { topicsPerPillar: perPillar, mode: "generated", strategyPillarNames: askPillars.map((p) => p.name), pillarEmphasis });
+  const otherGaps: Gap[] = twoFormats && !onlyFormat
+    ? bank.pillars.flatMap((p) => { const n = p.topics.filter((t) => fmtOfIdea(t.title) !== mainF).length; return n < OTHER_FORMAT_PER_PILLAR ? [{ kind: "insufficient-context" as const, field: `pillars.${p.name}`, text: `Only ${n} of ${OTHER_FORMAT_PER_PILLAR} ${FORMAT_PLURAL[otherFormat(mainF)]} could be supported for “${p.name}” at the quality bar.`, question: null }] : []; })
+    : [];
   let created = 0, resurfaced = 0, duplicates = 0, notKept = 0;
   const formulaic: string[] = [];
   // Oct 15 2026: an idea that names a series this client stopped never reaches the bank.
@@ -938,9 +1020,9 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
       if (shape) { formulaic.push(`${t.title} (${shape})`); continue; }
       if (existingHashes.has(hash)) { duplicates++; continue; }
       { const near = nearOnFile(t.title, p.pillarId); if (near) { if (near.gone) resurfaced++; else duplicates++; continue; } }
-      if (skitsOnly) {
-        // The shortfall is counted across the bank, and a talking-to-camera idea is not what was asked for.
-        if (formatSaid.get(hash) !== "SKIT" || created >= skitsOnly) { notKept++; continue; }
+      if (onlyFormat && keepOnly) {
+        // The shortfall is counted across the run, and an idea in the other format is not what was asked for.
+        if (formatSaid.get(hash) !== onlyFormat || created >= keepOnly) { notKept++; continue; }
       } else if (opts.keep && rank >= opts.keep) { notKept++; continue; } // "regenerate ONE": the replacement is the first fresh idea, the rest are not stored
       existingHashes.add(hash);
       // Audit, Oct 23 2026: the client reads these titles in their portal: no em or en dash (a title's takes a colon).
@@ -969,8 +1051,8 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   if (stopped.length) console.warn(`[topic bank] run ${runId}: dropped ${stopped.length} idea(s) naming a discontinued series: ${stopped.join(" | ").slice(0, 600)}`);
   await setRunOutputRef(runRes.runId, `ContentTopicRefreshRun:${runId}`);
   const droppedPillars = droppedGroups.map((g) => `${g.topics} idea${g.topics === 1 ? "" : "s"} under “${g.label}” dropped: not one of the client's confirmed pillars`);
-  // A skit-only refresh asks for a total, not a per-pillar count: the per-pillar count gaps do not apply to it.
-  const gaps = [...(Array.isArray(out.gaps) ? out.gaps : []), ...(skitsOnly ? [] : validation.gaps)];
+  // A format-only refresh asks for a total, not a per-pillar count: the per-pillar count gaps do not apply to it.
+  const gaps = [...(Array.isArray(out.gaps) ? out.gaps : []), ...(onlyFormat ? [] : [...validation.gaps, ...otherGaps])];
   const status = created === 0 ? "NEEDS_INPUT" : "SUCCEEDED";
   await finishRefreshRun(runId, {
     status, generatedCount: created, pillarCount: bank.pillars.length, aiRunId: runRes.runId,
@@ -979,10 +1061,22 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   });
 }
 
-/** ONE replacement suggestion for a pillar (the per-suggestion "regenerate"): the prompt runs at the policy's count, and exactly one fresh idea is kept — what the button promises. */
-export async function executeSingleSuggestionRegeneration(s: { enrollmentId: string; pillarId: string | null; refreshRunId: string }, by: string): Promise<{ runId: string }> {
-  const { startTopicRefresh } = await import("@/lib/contentTopics");
-  return { runId: (await startTopicRefresh({ enrollmentId: s.enrollmentId, kind: "REFRESH", requestedBy: by, pillarId: s.pillarId, keep: 1 })).runId };
+/**
+ * ONE replacement suggestion for a pillar (the per-suggestion "regenerate"): the prompt runs at the policy's count, and exactly one fresh idea is kept — what the button promises.
+ * Oct 26 2026: on an account that does skits the replacement is in the format of the idea it replaces (a skit concept for a skit concept), asked as a one-format refill of that pillar.
+ */
+export async function executeSingleSuggestionRegeneration(s: { enrollmentId: string; pillarId: string | null; refreshRunId: string; dedupeHash?: string | null; title?: string | null }, by: string): Promise<{ runId: string }> {
+  const { startTopicRefresh, suggestionFormatOf } = await import("@/lib/contentTopics");
+  let format: VideoFormat | null = null;
+  if (s.pillarId) {
+    const [enr, prev] = await Promise.all([
+      prisma.contentEnrollment.findUnique({ where: { id: s.enrollmentId }, select: { overridesJson: true } }),
+      prisma.contentTopicRefreshRun.findUnique({ where: { id: s.refreshRunId }, select: { inputsJson: true } }),
+    ]);
+    const style = asVideoStyle(videoStyleFromOverrides(enr?.overridesJson ?? null));
+    if (skitsOn(style)) format = suggestionFormatOf(prev?.inputsJson, s.dedupeHash ?? (s.title ? topicDedupeHash(s.title) : null)) ?? mainFormatFor(style);
+  }
+  return { runId: (await startTopicRefresh({ enrollmentId: s.enrollmentId, kind: "REFRESH", requestedBy: by, pillarId: s.pillarId, keep: 1, format })).runId };
 }
 
 // (The AI-phrased interview follow-up was removed Sep 17: the interview uses the
