@@ -119,6 +119,8 @@ const otherFields: NumberField[] = [
   { path: ["reviewWorkAfterBusinessDays"], label: "First cut reminder · business days after release", min: 0, max: 20 },
   { path: ["reviewFollowUpBusinessDays"], label: "Cut follow-up spacing · business days", min: 0, max: 20 },
   { path: ["reviewMaxAttempts"], label: "Cut review attempts · maximum", min: 0, max: 6 },
+  { path: ["sessionFollowUpBusinessDays"], label: "Filming booking follow-up · business days", min: 1, max: 30, hint: "1 = a nudge every weekday until the session is booked." },
+  { path: ["sessionMaxAttempts"], label: "Filming booking reminders · maximum", min: 0, max: 23, hint: "A backstop; the month ending stops them. Kyle hears after the planning maximum go unanswered." },
   { path: ["escalateWhenDeadlineWithinBusinessDays"], label: "Escalation lead · business days", min: 0, max: 30 },
   { path: ["sessionBookingDeadlineDayOfMonth"], label: "Filming escalation clock · day of month", min: 1, max: 28, hint: "Internal follow-up timing only. It does not block booking or forfeit filming." },
   { path: ["staleSchedulerSyncHours"], label: "Maximum scheduler sync age · hours", min: 1, max: 168 },

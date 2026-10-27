@@ -229,6 +229,12 @@ export type ReminderPolicy = {
   /** REVIEW lane spacing and cap, deliberately NOT the planning cadence. */
   reviewFollowUpBusinessDays: number;
   reviewMaxAttempts: number;
+  /** BOOK_SESSION spacing and cap (Oct 27 2026, Jordan: "I think we need to
+   *  send daily reminders to clients to schedule their content session").
+   *  A weekday apart, until the session is booked or the month is over; Kyle
+   *  is still told after maxAttemptsPerAction of them go unanswered. */
+  sessionFollowUpBusinessDays: number;
+  sessionMaxAttempts: number;
   /** §8: the missing-address reminder fires this many ELAPSED hours before
    *  filming (48), moved BACK to the Friday when it lands on a weekend. */
   addressReminderHoursBefore: number;
@@ -296,6 +302,10 @@ export const REMINDER_DEFAULTS: ReminderPolicy = {
   // one business day later is one before.
   reviewFollowUpBusinessDays: 1,
   reviewMaxAttempts: 2,
+  // Daily (every weekday) until the session is booked (Oct 27 2026). Twenty
+  // is a month of weekdays: the cap is a backstop, the month ending is the stop.
+  sessionFollowUpBusinessDays: 1,
+  sessionMaxAttempts: 20,
   addressReminderHoursBefore: 48,
   maxClientEmailsPerDay: 1,
   scriptApproval: { clientLeadHours: 48, deadlineHoursBefore: 24, deskTaskLeadHours: 24, ownerBellLeadHours: 72 },
@@ -355,6 +365,8 @@ export function validateReminderPolicy(input: unknown): PolicyValidation {
     errors.push("quotedPlanningDeadlineDayOfMonth must be a day of the month between 1 and 28, or null to quote no deadline to the client.");
   num("reviewFollowUpBusinessDays", 0, 20);
   num("reviewMaxAttempts", 0, 6);
+  num("sessionFollowUpBusinessDays", 1, 30);
+  num("sessionMaxAttempts", 0, 23);
   num("addressReminderHoursBefore", 1, 336);
   num("maxClientEmailsPerDay", 1, 5);
   {
@@ -1544,8 +1556,15 @@ async function evaluateMonth(
     quotedDeadlineAt = cal.quotedPlanningDeadlineAt;
   }
 
-  const maxAttempts = milestone === "MID_MONTH" ? 1 : lane === "REVIEW" ? p.reviewMaxAttempts : p.maxAttemptsPerAction;
-  const spacingBusinessDays = lane === "REVIEW" ? p.reviewFollowUpBusinessDays : p.followUpAfterBusinessDays;
+  // BOOKING IS CHASED DAILY (Oct 27 2026, Jordan: "I think we need to send
+  // daily reminders to clients to schedule their content session"): its own
+  // spacing and cap, every weekday until the session is booked. The office
+  // still hears after the planning cap's worth of them go unanswered, not
+  // after twenty.
+  const bookingLane = lane === "PRIMARY" && action === "BOOK_SESSION" && milestone !== "MID_MONTH";
+  const maxAttempts = milestone === "MID_MONTH" ? 1 : lane === "REVIEW" ? p.reviewMaxAttempts : bookingLane ? p.sessionMaxAttempts : p.maxAttemptsPerAction;
+  const spacingBusinessDays = lane === "REVIEW" ? p.reviewFollowUpBusinessDays : bookingLane ? p.sessionFollowUpBusinessDays : p.followUpAfterBusinessDays;
+  const escalateAfter = bookingLane ? Math.min(p.maxAttemptsPerAction, maxAttempts) : maxAttempts;
   const laneRows = milestone === "MID_MONTH" ? midRows : cadenceRows;
   const laneAttemptsMade = milestone === "MID_MONTH" ? midRows.filter(isCounted).length : attemptsMade;
 
@@ -1651,7 +1670,7 @@ async function evaluateMonth(
   const rowCeiling = maxAttempts + 5;
   const rowCeilingHit = !failedRetry && laneRows.length >= rowCeiling;
   const latePrefix = lateIn ? `${lateMonthName(month.monthKey, lateIn)}'s session is booking in ${lateMonthName(lateIn)} (approved late): ` : "";
-  const escalation = !escalated && (deadlineNear || laneAttemptsMade >= maxAttempts || rowCeilingHit)
+  const escalation = !escalated && (deadlineNear || laneAttemptsMade >= escalateAfter || rowCeilingHit)
     ? { due: true, reason: latePrefix + (rowCeilingHit ? `${laneRows.length} reminder rows exist for this month and action but only ${laneAttemptsMade} actually sent — the evaluator has stopped` : deadlineNear ? `deadline ${fmtDay(deadlineAt)} is within ${escalateWithin} business day(s)` : `${laneAttemptsMade} reminder(s) sent, no response`) }
     : null;
 
@@ -1932,6 +1951,9 @@ async function templateVarsFor(c: ReminderCandidate, e: EnrollmentRow, portalLin
       ? fmtWhenET(new Date(fresh.state.earliestSessionAt))
       : null,
     callUpcoming: fresh?.state.callUpcomingAt ? fmtWhenET(new Date(fresh.state.callUpcomingAt)) : null,
+    // Oct 27 2026: booking is chased daily, and a nudge after the first email
+    // is short (reminder.book_session.v3). The attempt picks its opening line.
+    ...(c.action === "BOOK_SESSION" ? { followUp: c.attempt > 1 && c.milestone !== "MID_MONTH", attempt: c.attempt } : {}),
     sessionOrdinalWord: (fresh?.state.sessionsRequired ?? c.state.sessionsRequired) > 1 && fresh?.state.nextSessionIndex
       ? (["first", "second", "third", "fourth"][fresh.state.nextSessionIndex - 1] ?? null)
       : null,

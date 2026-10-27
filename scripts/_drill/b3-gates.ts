@@ -400,8 +400,8 @@ async function main() {
     const remC = await primaryLane(Cm.monthId, NOW0);
     c.ok("OLD reminder evaluator: a booked call ENDED the evaluation ('booked — nothing to remind')", /if \(planningSuppression === "booked"\) return sup\("booked"/.test(show("src/lib/programReminders.ts")));
     c.ok("NEW: the reminder asks for filming now (BOOK_SESSION, not suppressed 'booked')", remC.candidate.action === "BOOK_SESSION" && remC.candidate.suppressionReason !== "booked", `${remC.candidate.action} ${remC.candidate.decision} ${remC.candidate.suppressionReason}`);
-    c.ok("…quoting the gate's own instant, with the time of day, and saying the call is still ahead (template v2, no em dash)",
-      remC.candidate.state.earliestSessionAt === cEarliest.toISOString() && remC.candidate.templateKey === "reminder.book_session.v2" &&
+    c.ok("…quoting the gate's own instant, with the time of day, and saying the call is still ahead (template v3, whose first ask is v2 word for word; no em dash)",
+      remC.candidate.state.earliestSessionAt === cEarliest.toISOString() && remC.candidate.templateKey === "reminder.book_session.v3" &&
       /booked for Friday, October 30 at 1:30 PM ET/.test(remC.body ?? "") && /The earliest we can film is Wednesday, November 4 at 2:00 PM ET/.test(remC.body ?? "") && !/—/.test(remC.body ?? ""),
       `${remC.candidate.decision} ${remC.candidate.suppressionReason} ${remC.candidate.templateKey} ${remC.body}`);
     c.ok("book_session.v1 is retired to v2 (its 'your content is planned' is false while the call is ahead)", templates.sendableTemplateId("reminder.book_session.v1") === "reminder.book_session.v2");

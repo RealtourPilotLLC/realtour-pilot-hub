@@ -109,8 +109,10 @@ export type TemplateVars = {
   topicTitle?: string | null;
   /** QUESTION_REQUEST: how many questions wait (three to five). */
   questionCount?: number | null;
-  /** QUESTION_REQUEST: a follow-up (they have not answered yet), not the first ask. */
+  /** QUESTION_REQUEST, BOOK_SESSION: a follow-up (they have not answered yet), not the first ask. */
   followUp?: boolean;
+  /** BOOK_SESSION v3: which send this is (1 = the first ask); picks the follow-up's opening line. */
+  attempt?: number;
 };
 
 export type ReminderTemplate = {
@@ -448,6 +450,37 @@ REMINDER_TEMPLATES["reminder.book_session.v2"] = {
   },
 };
 
+// v3 (Oct 27 2026). Jordan: "I think we need to send daily reminders to
+// clients to schedule their content session." The first ask is v2's email word
+// for word; every weekday after it until a time is picked, a short nudge whose
+// opening line turns over so a week of them doesn't read as one message
+// pasted five times. No em dashes (a client reads it).
+const BOOK_NUDGE_OPENERS = [
+  (which: string, month: string) => `A quick reminder: ${which} for ${month} isn't booked yet.`,
+  (which: string, month: string) => `Just checking in: we still need a time for ${which} for ${month}.`,
+  (which: string, month: string) => `${which.charAt(0).toUpperCase()}${which.slice(1)} for ${month} still needs a time on the calendar.`,
+];
+REMINDER_TEMPLATES["reminder.book_session.v3"] = {
+  id: "reminder.book_session.v3",
+  action: "BOOK_SESSION",
+  version: "3",
+  purpose: "Filming is open and no content session is booked or requested: the full ask first, then a short nudge every weekday until a time is picked.",
+  render: (v) => {
+    if (!v.followUp) return REMINDER_TEMPLATES["reminder.book_session.v2"].render(v);
+    const which = v.sessionOrdinalWord ? `your ${v.sessionOrdinalWord} filming session` : "your filming session";
+    const opener = BOOK_NUDGE_OPENERS[Math.max(0, (v.attempt ?? 2) - 2) % BOOK_NUDGE_OPENERS.length](which, v.month);
+    const call = v.callUpcoming ? ` You don't need to wait for your strategy call on ${v.callUpcoming}.` : "";
+    const earliest = v.earliestSession ? ` The earliest we can film is ${v.earliestSession}.` : "";
+    return [
+      `Hi ${v.firstName},`,
+      "",
+      `${opener}${call}${earliest} It takes a minute to pick one in your portal, and we'll confirm it: ${v.portalLink}`,
+      "",
+      SIGN_OFF,
+    ].join("\n");
+  },
+};
+
 // QUESTION_REQUEST (Oct 23 2026, Jordan): "the client gets an email with a
 // link and says we need them to answer a few questions on the topic so we can
 // finish scripting." Short and warm, one link straight to that topic's
@@ -477,7 +510,7 @@ export const DEFAULT_TEMPLATE_IDS: Record<Exclude<ReminderAction, "DIGEST" | "ES
   CHOOSE_PATH: "reminder.choose_path.v1",
   BOOK_CALL: "reminder.book_call.v1",
   COMPLETE_ANSWERS: "reminder.complete_answers.v1",
-  BOOK_SESSION: "reminder.book_session.v2",
+  BOOK_SESSION: "reminder.book_session.v3",
   REVIEW_WORK: "reminder.review_work.v2",
   SCRIPTS_READY: "scripts_ready.v1",
   STRATEGY_READY: "strategy_ready.v2",
