@@ -64,7 +64,7 @@ import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { photoTargetFor } from "@/lib/culling";
 import { PhotoTargetControl } from "@/components/project/PhotoTargetControl";
 import { formatMoney } from "@/lib/utils";
-import { canSeeMoney, isOffice } from "@/lib/auth/access";
+import { canSeeMoney, canSeePrices, isOffice } from "@/lib/auth/access";
 import { isOwnerPrivateTask } from "@/lib/ownerPrivateTasks";
 import { redactMoney } from "@/lib/hubTools";
 import { customerNote, creativeCustomerNote } from "@/lib/clientNotes";
@@ -147,6 +147,13 @@ export default async function ProjectPage({
   // A null viewer only survives the redirect above with enforcement off (local
   // dev, operated by Jordan alone), which is the same call isOwnerView() makes.
   const showMoney = viewer ? canSeeMoney(viewer.role) : !authEnforced();
+  // WHAT THE CLIENT IS CHARGED (Jordan, Oct 27 2026: "Admins can see prices of
+  // services and billing. I just dont want admin seeing what I pay other team
+  // members"): the order total and the Billing card (balance, invoice,
+  // payment link) follow canSeePrices, so Kyle sees them; James (creative
+  // manager) does not. Everything else on this page that is money (the free
+  // text scrub, owner-private tasks, rework cost) stays on showMoney above.
+  const showPrices = viewer ? canSeePrices(viewer.role) : !authEnforced();
   // Who gets the "Not required" control. The role test is already done above
   // (editors and photographers never reach this page), so what is left is the
   // preview: "view as" is read-only, requireAdmin refuses it, and a button
@@ -260,10 +267,10 @@ export default async function ProjectPage({
     project.zip,
   ].filter(Boolean);
 
-  // For a money-blind viewer the card is worth showing ONLY for the payment
-  // status — the figures and links inside it are all owner-gated below, so a
-  // job with a balance but no status would otherwise render an empty card.
-  const hasBilling = showMoney
+  // For a viewer without prices the card is worth showing ONLY for the payment
+  // status: the figures and links inside it are gated on showPrices below, so
+  // a job with a balance but no status would otherwise render an empty card.
+  const hasBilling = showPrices
     ? !!project.paymentStatus ||
       project.balanceAmount != null ||
       !!project.invoiceUrl ||
@@ -799,7 +806,7 @@ export default async function ProjectPage({
               }
             >
               <div className="flex flex-wrap items-center gap-x-8 gap-y-3 text-sm">
-                {showMoney ? (
+                {showPrices ? (
                   <>
                     {project.balanceAmount != null && (
                       <div>
@@ -826,7 +833,7 @@ export default async function ProjectPage({
                   </>
                 ) : (
                   <p className="text-xs text-muted">
-                    The balance, the invoice and the payment link are owner-only — ask Jordan for the figure.
+                    The balance, the invoice and the payment link are for Jordan and Kyle. Ask Kyle for the figure.
                   </p>
                 )}
               </div>
@@ -928,9 +935,10 @@ export default async function ProjectPage({
               {project.packageName && (
                 <Row label="Package" value={project.packageName} />
               )}
-              {/* The package NAME above is operational — an admin has to know a
-                  Premium Reel was ordered. The total is money and stops here. */}
-              {showMoney && project.price != null && (
+              {/* The package NAME above is operational: everyone on this page has
+                  to know a Premium Reel was ordered. The total is the client's
+                  price: the owner and admins see it (Oct 27 2026). */}
+              {showPrices && project.price != null && (
                 <Row label="Order total" value={formatMoney(project.price)} />
               )}
               {project.squareFeet && (

@@ -165,8 +165,9 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   // (scoped to their jobs), SOPs, and Ask the Hub (auto-gated to the CREATIVE
   // content tier — owner/admin-only knowledge + comms are filtered out for them).
   // They get NO ops/dashboard, schedule, map, clients, comms, billing, pipeline.
-  // "mypay" = their OWN pay for the current/next period (shoot pay + mileage,
-  // no invoices) with a flag-a-question loop to Jordan.
+  // "mypay" = their OWN pay (shoot pay + mileage, or since Sep 20 2026 the
+  // fixed yearly pay for Harrison and James; Oct 27 2026 they see it again),
+  // their KPI scorecard and bonus, with a flag-a-question loop to Jordan.
   // "review" was here for ONE page (Sep 17): /review/<job> when a tag on a cut
   // sent them there. Since Sep 18 it is the Room proper — Jordan: "I want to be
   // able to share the review room with the photographer who shot the video …
@@ -192,8 +193,8 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   //   still shoots premium work), the Content Program, Clients (brand,
   //   profile, notes; never billing), their own tasks, the reference shelf
   //   (resources, training, Ask the Hub at the ADMIN tier, the feedback
-  //   board), and My Performance ("mypay": pay stays hidden for everyone but
-  //   the owner, settings.payHiddenFor, so the page is the KPI scorecard).
+  //   board), and My Pay ("mypay": since Oct 27 2026 their OWN pay schedule,
+  //   amount and bonus beside the KPI scorecard, settings.payViewFor).
   //   "photos" (Jordan, Oct 22 2026: "give James a VIEW-ONLY Photos desk so
   //   he can check photo quality across all jobs in one place"): the queue
   //   and every photo job, READ ONLY. Approving, delivering, fixes, AutoHDR,
@@ -288,20 +289,41 @@ export function contentTier(role: string): "OWNER" | "ADMIN" | "CREATIVE" {
   return "CREATIVE";
 }
 
-// The money rule, stated once for the whole hub. Jordan, Sep 2 2026: "everyone
-// filtered by role but Kyle should not have access to any money related info."
-// Only OWNER sees dollars — revenue, P&L, margins, pay rates, client lifetime
-// spend, balances, invoice amounts. Everyone else gets the operations, never the
-// figures. Accepts an app role ("ADMIN") or a content tier ("CREATIVE") because
-// pages think in roles and Ask the Hub thinks in tiers; "OWNER" means the same
-// thing in both vocabularies, so one comparison covers both.
+// The money rule, stated once for the whole hub, in two parts since Oct 27 2026.
+//
+// canSeeMoney: the business's own money, OWNER only. Jordan, Sep 2 2026:
+// "everyone filtered by role but Kyle should not have access to any money
+// related info." Revenue, P&L, profit, margins, bank, the Finance dashboard,
+// Trends money, client lifetime spend, vendor and AI costs, team pay, payroll,
+// payouts and pay rates. Everyone else gets the operations, never the figures.
+// Accepts an app role ("ADMIN") or a content tier ("CREATIVE") because pages
+// think in roles and Ask the Hub thinks in tiers; "OWNER" means the same thing
+// in both vocabularies, so one comparison covers both.
+//
+// canSeePrices (below): what clients are charged, OWNER and ADMIN. Jordan, Oct
+// 27 2026: "Admins can see prices of services and billing. I just dont want
+// admin seeing what I pay other team members." So Kyle sees the Catalog and
+// Settings → Products prices, the order total and the balance, invoice and
+// payment link on a job, each order's price on a client, the Unpaid tab's
+// amounts and a program revision fee. Nothing else moves: team pay stays the
+// owner's (each person sees only their OWN, on My Pay: settings.payViewFor),
+// and every money ACTION (chasing, marking paid) stays the owner's.
 //
 // A PAGE GRANT IS NEVER A MONEY GRANT (Jordan, Oct 21 2026). canAccess() above
 // decides whether someone may OPEN a page, and a per-person override can open
 // Finance, Trends or the Catalog for a non-owner. What that page then prints
-// in dollars is this function's call, never canAccess's: pages pass the
+// in dollars is these functions' call, never canAccess's: pages pass the
 // viewer's role here (the previewed role under "view as") and render amounts
-// only when it says yes. Nothing about a permissions blob can make it say yes.
+// only when they say yes. Nothing about a permissions blob can make them say yes.
 export function canSeeMoney(roleOrTier: string | null | undefined): boolean {
   return roleOrTier === "OWNER";
+}
+
+/** Service prices and client billing amounts: OWNER and ADMIN (Jordan, Oct 27
+ *  2026). Takes an app ROLE only, never a content tier: the ADMIN tier also
+ *  holds the creative manager (contentTier above), who sees no prices. "View
+ *  as" previews pass the previewed role, so a preview as Kyle shows prices and
+ *  a preview as James does not. */
+export function canSeePrices(role: string | null | undefined): boolean {
+  return role === "OWNER" || role === "ADMIN";
 }

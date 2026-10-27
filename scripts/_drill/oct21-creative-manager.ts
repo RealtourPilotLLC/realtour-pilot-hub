@@ -117,7 +117,9 @@ async function main() {
     c.ok("…and never an owner-only page", !access.canAccess({ role: "CREATIVE_MANAGER", permissions: JSON.stringify({ day: true, connections: true }) }, "day") && !access.canAccess({ role: "CREATIVE_MANAGER", permissions: JSON.stringify({ connections: true }) }, "connections"));
     c.ok("home is the dashboard, which they can open", access.homeFor("CREATIVE_MANAGER") === "/" && access.canAccess(CM, "dashboard"));
     c.ok("content tier ADMIN (money-free), never OWNER", access.contentTier("CREATIVE_MANAGER") === "ADMIN");
-    c.ok("never a money viewer, never pay", !access.canSeeMoney("CREATIVE_MANAGER") && await payHiddenFor({ role: "CREATIVE_MANAGER", realRole: "CREATIVE_MANAGER" }));
+    // Oct 27 2026: James sees his OWN pay (by his roster row, drill
+    // oct27-pay-visibility); the role alone carries none, and no prices.
+    c.ok("never a money viewer, never a price viewer, no pay from the role alone", !access.canSeeMoney("CREATIVE_MANAGER") && !access.canSeePrices("CREATIVE_MANAGER") && await payHiddenFor({ role: "CREATIVE_MANAGER", realRole: "CREATIVE_MANAGER" }));
     c.ok("isCreativeLead yes, isOffice no; Kyle is both; an editor neither", access.isCreativeLead("CREATIVE_MANAGER") && !access.isOffice("CREATIVE_MANAGER") && access.isOffice("ADMIN") && access.isCreativeLead("ADMIN") && !access.isCreativeLead("EDITOR") && !access.isCreativeLead("PHOTOGRAPHER"));
     c.ok("the Kyle defaults did not move (ADMIN keeps the inbox, ops, settings; no money)", ["communications", "ops", "settings", "users"].every((k) => access.roleHasByDefault("ADMIN", k as never)) && !access.roleHasByDefault("ADMIN", "sales"));
     c.ok("the role guide is a creative one, never the owner's (money)", guide.guideForRole("CREATIVE_MANAGER") === "photographer" && !guide.canOpenGuide("CREATIVE_MANAGER", "owner") && guide.canOpenGuide("CREATIVE_MANAGER", "editor"));
@@ -138,7 +140,9 @@ async function main() {
     const all = hrefs(jamesMenu);
     c.ok("no client inbox, no Your list, no People, no Settings, no Finance, no Trends", !["/communications", "/ops/checklist", "/users", "/settings", "/sales", "/trends", "/day", "/connections", "/coaching", "/catalog"].some((h) => all.includes(h)), all.join(" "));
     c.ok("under More: Tasks, Clients, Client activity, My Shoots, Upload Portal, Team feedback, Training, Ask the Hub, Report a hub problem", ["/tasks", "/clients", "/content/activity", "/shoot", "/upload", "/quality", "/training", "/assistant", "/feedback"].every((h) => all.includes(h)), all.join(" "));
-    c.ok("My Pay reads My Performance (pay stays hidden)", jamesMenu.includes('href="/my-pay"') && jamesMenu.includes("My Performance") && !jamesMenu.includes(">My Pay<"));
+    // Oct 27 2026: the page behind the door now carries his own pay too
+    // (drill oct27-pay-visibility); the role menu's door keeps its name.
+    c.ok("the My Pay door is named My Performance on his role menu", jamesMenu.includes('href="/my-pay"') && jamesMenu.includes("My Performance") && !jamesMenu.includes(">My Pay<"));
     c.ok("an override shows its door (the inbox) and hides one (Videos)", hrefs(menu({ name: "J", email: "j@x", role: "CREATIVE_MANAGER", permissions: JSON.stringify({ communications: true }) })).includes("/communications") && !hrefs(menu({ name: "J", email: "j@x", role: "CREATIVE_MANAGER", permissions: JSON.stringify({ review: false }) })).includes("/review"));
     // Oct 22 2026: the Photos door is theirs now (view only); an ops override still opens no Your list.
     c.ok("…an ops override still shows no Your list (its page admits the office only)", !hrefs(menu({ name: "J", email: "j@x", role: "CREATIVE_MANAGER", permissions: JSON.stringify({ ops: true }) })).includes("/ops/checklist"));

@@ -13,7 +13,7 @@ import { crewProjectIds, photographerMemberId } from "@/lib/shoot";
 import { rawPhotoCounts } from "@/lib/dropboxFolders";
 import { photoTargetFor, rawOverageCeiling } from "@/lib/culling";
 import { DEBRIEF_PAY_GATE_FROM } from "@/lib/payroll";
-import { payHiddenFor } from "@/lib/settings";
+import { shootPayRidesOnSubmit } from "@/lib/settings";
 import { stageMeta, DELIVERABLE_META } from "@/lib/pipeline";
 import { DeliverableType } from "@prisma/client";
 import { etDateTime, etDaysAgo } from "@/lib/datetime";
@@ -73,9 +73,11 @@ export default async function UploadListPage() {
   //     submit and keeps its "Submit to add to payroll" chip. "Past uploads"
   //     below excludes exactly that set, so a job is never listed twice.
   const now = new Date();
-  // Oct 20 2026 (audit G): a viewer whose pay view is paused (Harrison,
-  // James) never reads "payroll" here; the chip still asks for the submit.
-  const payHidden = await payHiddenFor(user);
+  // Oct 20 2026 (audit G): "payroll" is said only to someone whose shoot pay
+  // rides on the submit (per-shoot pay, or the owner). Oct 27 2026: Harrison
+  // and James see their pay again, but it is fixed pay, so they still read
+  // "finish the job"; the chip still asks for the submit.
+  const payHidden = !(await shootPayRidesOnSubmit(user));
   const windowStart = uploadWindowStart(now);
   // Oct 21 2026: a shoot this photographer was second shooter on is listed too
   // (upload access only; it never becomes theirs for pay or KPIs).

@@ -17,7 +17,10 @@
 //   5. the new side: September from Sep 20 only (Oct 22 2026: the first
 //      fixed-pay period, paid Oct 9; it was Sep 25), regular pay as Payroll
 //      pays it (1/26 a period, a split period by its days), a
-//      weekend premium per appointment, commissions $0, the bonus at most;
+//      weekend premium per appointment, commissions $0, and (Oct 27 2026)
+//      the bonus the scorecard says (paid, else the band for the score so
+//      far, James's bands for James), spread over the period's days, never
+//      the period's maximum;
 //   6. savings: old minus new, both signs, running total, this month so far;
 //   7. the guard: only the owner, never Kyle, James, Harrison, an editor, a
 //      creative, or the owner previewing someone else; page and loader both.
@@ -244,16 +247,37 @@ async function main() {
     const reg = (annualPart: number, days: number) => r2((r2(annualPart / 26) * days) / 14);
     c.ok("James, September: regular pay = 11/14 of one payment ($2,776.92 + $300.00)", js.new.regular.serviceFee === reg(72200, 11) && js.new.regular.vehicle === reg(7800, 11) && js.new.regular.total === r2(reg(72200, 11) + reg(7800, 11)), JSON.stringify(js.new.regular));
     c.ok("…two Sunday appointments add $200 each (assumed approved)", js.new.premiums.count === 2 && js.new.premiums.total === 400 && js.new.premiums.appointments.every((a) => a.why === "Sunday"));
-    c.ok("…bonus at most = $1,500 ÷ 98 × 6: Sep 20 to 24 are before the first bonus period", js.new.bonusAtMost.total === r2((1500 / 98) * 6) && js.new.bonusAtMost.periodDays === 98 && js.new.bonusAtMost.max === 1500 && js.new.bonusAtMost.days === 6);
+    // Oct 27 2026 (Jordan: the scorecard bands are the real bonus, "but James
+    // has a different bonus amount"): the bonus here is the scorecard's figure.
+    const kpi = await import("@/lib/kpi");
+    const kq4 = kpi.periodFor("2026-10-01");
+    const jCard = await kpi.scorePeriod({ memberId: james.id, name: "James Livingston", period: kq4, now: NOW });
+    const hCard = await kpi.scorePeriod({ memberId: harrison.id, name: "Harrison Wells", period: kq4, now: NOW });
+    console.log(`\n  scorecards on Oct 21: James ${jCard.score ?? "no score"} → $${jCard.bonus} of $${jCard.possible}; Harrison ${hCard.score ?? "no score"} → $${hCard.bonus} of $${hCard.possible}\n`);
+    c.ok("the scorecard caps: James $1,500 on his own bands, Harrison $1,000", jCard.possible === 1500 && hCard.possible === 1000 && jCard.bonus === (kpi.bandFor(jCard.score, jCard.terms.bands)?.amount ?? 0) && jCard.terms.bands.map((b) => b.amount).join() === "1500,900,375,0" && hCard.terms.bands.map((b) => b.amount).join() === "1000,600,250,0");
+    c.ok("…James's bonus = the scorecard's figure ÷ 98 × 6: Sep 20 to 24 are before the first bonus period",
+      js.new.bonus.total === r2((jCard.bonus / 98) * 6) && js.new.bonus.amount === jCard.bonus && js.new.bonus.periodDays === 98 && js.new.bonus.max === 1500 && js.new.bonus.days === 6 && js.new.bonus.periodKey === kq4.key && js.new.bonus.source === (jCard.score == null ? "unscored" : "scorecard"),
+      JSON.stringify(js.new.bonus));
     c.ok("…commissions $0, not tracked", js.new.commissions.total === 0 && js.new.commissions.tracked === false);
     c.ok("October counts through today: 21 days, tomorrow's shoot not in", oct.days === 21 && oct.toKey === "2026-10-21" && J(oct).old.shoots === 4);
     c.ok("James, October: one Saturday appointment, $200", J(oct).new.premiums.count === 1 && J(oct).new.premiums.appointments[0]?.dayKey === "2026-10-10");
-    c.ok("Harrison, October: one Saturday appointment, $200; bonus at most $1,000 ÷ 98 × 21",
-      H(oct).new.premiums.count === 1 && H(oct).new.premiums.total === 200 && H(oct).new.bonusAtMost.total === r2((1000 / 98) * 21));
-    c.ok("Harrison, September: regular pay and the bonus ceiling with no shoots", H(sep).old.total === 0 && H(sep).new.total === r2(reg(58200, 11) + reg(7800, 11) + r2((1000 / 98) * 6)), String(H(sep).new.total));
+    c.ok("Harrison, October: one Saturday appointment, $200; his scorecard's bonus ÷ 98 × 21",
+      H(oct).new.premiums.count === 1 && H(oct).new.premiums.total === 200 && H(oct).new.bonus.total === r2((hCard.bonus / 98) * 21) && H(oct).new.bonus.max === 1000);
+    c.ok("Harrison, September: regular pay and his scorecard's bonus share with no shoots", H(sep).old.total === 0 && H(sep).new.total === r2(reg(58200, 11) + reg(7800, 11) + r2((hCard.bonus / 98) * 6)), String(H(sep).new.total));
+    {
+      // Once a period's bonus is paid, the payout line is the figure (and it is
+      // not counted a second time among the adjustments on neither side).
+      const line = await prisma.payoutAdjustment.create({ data: { teamMemberId: harrison.id, date: etAt("2026-10-15", 12), label: `Quarterly bonus ${kq4.key} (drill)`, amount: 600 } });
+      const s2 = await ps.computePaySavings({ now: NOW });
+      const h2 = s2.months.find((m) => m.monthKey === "2026-10")!.people.find((p) => p.key === "harrison")!;
+      c.ok("a paid bonus counts as paid: $600 ÷ 98 × 21 in October, and not again as an adjustment",
+        h2.new.bonus.source === "paid" && h2.new.bonus.amount === 600 && h2.new.bonus.total === r2((600 / 98) * 21) && h2.adjustments === H(oct).adjustments, JSON.stringify({ bonus: h2.new.bonus, adj: [h2.adjustments, H(oct).adjustments] }));
+      await prisma.payoutAdjustment.delete({ where: { id: line.id } });
+    }
+    c.ok("the page's source never spreads the period's maximum any more", !/bonusAtMost/.test(read("src/lib/paySavings.ts")) && !/bonusAtMost|Bonus at most/.test(read("src/components/finance/PayStructureTab.tsx")));
     const octReg = (annualPart: number) => r2(reg(annualPart, 3) + r2(annualPart / 26) + reg(annualPart, 4));
     c.ok("James, October: 3 days of the Sep 20 period + the whole Oct 4 period + 4 days of the Oct 18 period", J(oct).new.regular.serviceFee === octReg(72200) && J(oct).new.regular.vehicle === octReg(7800), JSON.stringify(J(oct).new.regular));
-    c.ok("no mileage on the new side: its parts are regular + premiums + commissions + bonus", s.months.every((m) => m.people.every((p) => near(p.new.total, p.new.regular.total + p.new.premiums.total + p.new.commissions.total + p.new.bonusAtMost.total))));
+    c.ok("no mileage on the new side: its parts are regular + premiums + commissions + bonus", s.months.every((m) => m.people.every((p) => near(p.new.total, p.new.regular.total + p.new.premiums.total + p.new.commissions.total + p.new.bonus.total))));
 
     // =======================================================================
     c.head("6 · savings");
@@ -311,8 +335,8 @@ async function main() {
     const text = textOf(ownerTree);
     c.ok("the owner sees the Pay structure tab, linked from the tab bar", typeName(isValidElement(el) ? el.type : null) === "PayStructureTab" && hrefs(ownerTree).includes("/sales?tab=paystructure") && /Pay structure/.test(text));
     c.ok("…the monthly table with both people and a total", /Month by month/.test(text) && /September 2026/.test(text) && /October 2026/.test(text) && /Total since Sep 20/.test(text) && /since the Sep 20 pay period, paid Oct 9/.test(text) && /James Livingston/.test(text) && /Harrison Wells/.test(text));
-    c.ok("…every part labelled: sessions at tier price, their rate / list price, assumed approved, commissions not tracked yet, bonus at most",
-      /Content sessions at tier price/.test(text) && /their rate/.test(text) && /list price/.test(text) && /assumed approved/.test(text) && /commissions not tracked yet/.test(text) && /Bonus at most/.test(text), "");
+    c.ok("…every part labelled: sessions at tier price, their rate / list price, assumed approved, commissions not tracked yet, the KPI bonus from the scorecard",
+      /Content sessions at tier price/.test(text) && /their rate/.test(text) && /list price/.test(text) && /assumed approved/.test(text) && /commissions not tracked yet/.test(text) && /KPI bonus, from the scorecard/.test(text), "");
     c.ok("…the mileage gap and Harrison's fallback rates are said on the page", /mileage not computed for 1 day/i.test(text) && /no longer has a percent, floor/.test(text), "");
     c.ok("no em dash anywhere on the tab or in its copy", !/—/.test(text) && !/—/.test(read("src/components/finance/PayStructureTab.tsx")) && !/["`'][^"`'\n]*—[^"`'\n]*["`']/.test(read("src/lib/paySavings.ts")));
     c.ok("no he/she copy", !/\b(he|she|his|her|him)\b/i.test(text));

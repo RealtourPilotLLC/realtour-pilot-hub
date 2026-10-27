@@ -716,9 +716,10 @@ export function UploadPortal({
   topicsUnavailable?: boolean;
   /** owner/admin — the reopen button reads "Edit this upload" for them */
   viewerIsOffice: boolean;
-  /** Oct 20 2026 (audit G): pay is hidden for this viewer (payHiddenFor: since
-   *  Oct 21 everyone but the owner), so the page never says "payroll" or "My
-   *  Pay" to them. Unset = hidden. */
+  /** Oct 20 2026 (audit G): this viewer's shoot pay does not ride on the
+   *  submit (settings.shootPayRidesOnSubmit: no pay to see, or fixed pay for
+   *  Harrison and James since Oct 27), so the page never says "payroll" or
+   *  "My Pay" to them. Unset = hidden. */
   payHidden?: boolean;
   /** DEBRIEF_PAY_GATE_FROM (lib/payroll is server-only, so the page passes
    *  the number): shoots from this instant on are done only on the SUBMIT */

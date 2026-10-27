@@ -34,8 +34,11 @@ export default async function RootLayout({
   const cu = await getCurrentUser();
   // Serializable subset for the client Shell/Sidebar.
   // Fail CLOSED (audit G, Oct 20 2026): the menu must never say "My Pay" to
-  // someone whose page then shows My Performance. Since Oct 21 2026 that is
-  // everyone but the owner (payHiddenFor), with no switch behind it.
+  // someone whose page then shows My Performance. Since Oct 27 2026 that is
+  // only a login with no pay structure (payHiddenFor). The flag renames the
+  // door on the grouped menu only; Harrison's and James's role menus
+  // (lib/sidebarNavigation) name it "My Performance" whatever it says, and
+  // the page behind it now carries their own pay too.
   const payHidden = cu ? await import("@/lib/settings").then((m) => m.payHiddenFor(cu)).catch(() => true) : true;
   const user = cu
     ? { name: cu.name, email: cu.email, role: cu.role, permissions: cu.permissions, impersonating: cu.impersonating, realName: cu.realName, payHidden }

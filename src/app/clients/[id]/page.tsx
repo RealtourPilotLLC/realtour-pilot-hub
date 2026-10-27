@@ -29,7 +29,7 @@ import { getClientDetail } from "@/lib/queries";
 import { autoTextRules } from "@/lib/settings";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced, requirePageAccess } from "@/lib/auth/guards";
-import { canSeeMoney, isCreativeLead } from "@/lib/auth/access";
+import { canSeeMoney, canSeePrices, isCreativeLead } from "@/lib/auth/access";
 import { isOwnerPrivateTask } from "@/lib/ownerPrivateTasks";
 import { redactMoney } from "@/lib/hubTools";
 import { stageMeta } from "@/lib/pipeline";
@@ -82,6 +82,11 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
   // effective role (so "view as Kyle" previews the money-blind page), and a null
   // viewer only grants when enforcement is off (local dev, Jordan alone).
   const showMoney = me ? canSeeMoney(me.role) : !authEnforced();
+  // Each order's price is what the client was charged, so it follows
+  // canSeePrices (Jordan, Oct 27 2026: "Admins can see prices of services and
+  // billing"): Kyle sees it. Lifetime spend and the free-text scrub stay on
+  // showMoney, the owner's.
+  const showPrices = me ? canSeePrices(me.role) : !authEnforced();
   // Free text on this page replays the client's own texts and emails, which is
   // where pricing turns up ("$50 per room"). redactMoney (src/lib/hubTools.ts)
   // is the hub's rule for that: keep the sentence, drop the FIGURE, and drop
@@ -245,10 +250,10 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
                         {p.orderedAt ? etDateYear(p.orderedAt) : ""}
                         {p.shootDate ? ` · shoot ${etMonthDay(p.shootDate)}` : ""}
                         {` · ${p.deliverables.length} item${p.deliverables.length === 1 ? "" : "s"}`}
-                        {/* Item COUNT and paid/unpaid stay — both are ops facts
-                            and neither is an amount. The per-order price is the
-                            money and stops at the owner. */}
-                        {showMoney && p.price ? ` · ${formatMoney(p.price)}` : ""}
+                        {/* Item COUNT and paid/unpaid stay: both are ops facts
+                            and neither is an amount. The per-order price shows
+                            to the owner and admins (Oct 27 2026). */}
+                        {showPrices && p.price ? ` · ${formatMoney(p.price)}` : ""}
                         {p.paymentStatus ? ` · ${p.paymentStatus.toLowerCase().replace(/_/g, " ")}` : ""}
                       </div>
                     </div>

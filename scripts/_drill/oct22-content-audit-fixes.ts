@@ -4,7 +4,8 @@
 //   H2  offline and test AI runs no longer count against a client's daily cap;
 //       the 15-minute check sweep skips a client at its cap and carries on.
 //   H3  billing terms leave the enrollment history for anyone but the owner;
-//       the office reads "a fee may apply", never the dollars.
+//       a revision fee's dollars show to the owner and, since Oct 27 2026
+//       ("Admins can see prices of services and billing"), to Kyle.
 //   H4  Joe Sutow's October: the hub's drafts step aside for an upload, the
 //       call's topics go back to the bank, the uploaded picks stop being
 //       extras and their filmed videos count.
@@ -164,7 +165,8 @@ async function main() {
       c.ok("the pure filter: billing* fields go, any other field stays", W.moneyFreeHistory([{ field: "billingRate" }, { field: "billingSomethingNew" }, { field: "overrides" }], false).map((r) => r.field).join(",") === "overrides");
       c.ok("the Settings tab passes the owner rule (canPreviewPortal is OWNER only, the money rule)", /loadSettingsTab\(ctx\.id, ctx\.ownerEyes\)/.test(read("src/app/content/[id]/tabs/SettingsTab.tsx")) && /me\.role === "OWNER"/.test(read("src/lib/contentNav.ts")));
 
-      // A revision round with a fee: the owner reads the dollars; Kyle reads "a fee may apply".
+      // A revision round with a fee: the owner reads the dollars, and since
+      // Oct 27 2026 so does Kyle (a service price; canSeePrices).
       const video = await prisma.contentVideo.create({ data: { enrollmentId: F.enrollmentId, clientId: F.clientId, monthId: F.monthId, monthKey: F.monthKey, kind: "PROGRAM", title: "Fee video", status: "CLIENT_REVIEW", projectId: F.projectId } });
       const win = await prisma.contentReviewWindow.create({ data: { submissionId: "sub-fee-1", videoKey: `${F.projectId}:1`, projectId: F.projectId!, enrollmentId: F.enrollmentId, clientId: F.clientId, round: 2, openedAt: at, deadlineAt: new Date(at.getTime() + 4 * 864e5), videoId: video.id } });
       await prisma.contentRevisionRound.create({ data: { videoKey: `${F.projectId}:1`, projectId: F.projectId!, enrollmentId: F.enrollmentId, clientId: F.clientId, submissionId: "sub-fee-1", windowId: win.id, decisionId: "decision-fee-1", ordinal: 3, includedRounds: 2, included: false, feeCents: 7500, feeDecision: "PENDING", videoId: video.id } });
@@ -176,7 +178,8 @@ async function main() {
       const rowKyle = asKyle.rows.find((r) => r.id === video.id);
       const rKyle = rowKyle?.revisionRounds?.[0];
       c.ok("the owner reads the fee in dollars", rOwner?.feeCents === 7500, JSON.stringify(rOwner));
-      c.ok("Kyle reads no dollars, only that a fee applies, and keeps the charge or waive controls", rKyle?.feeCents === null && rKyle?.feeApplies === true && rowKyle?.moneyEyes === true, JSON.stringify(rKyle));
+      c.ok("Kyle (admin) reads the fee in dollars too, and keeps the charge or waive controls (Oct 27 2026)", rKyle?.feeCents === 7500 && rKyle?.feeApplies === true && rowKyle?.moneyEyes === true, JSON.stringify(rKyle));
+      c.ok("the fee's dollars follow canSeePrices (owner and admin), not the owner-only money rule", /const dollarEyes = me \? canSeePrices\(me\.role\)/.test(read("src/app/content/[id]/workspaceData.ts")));
       c.ok("the panel prints \"a fee may apply\" when the amount is hidden", /r\.feeApplies \? " · a fee may apply"/.test(read("src/components/content/ContentLibraryPanel.tsx")));
       await establishSession(owner.id);
     }

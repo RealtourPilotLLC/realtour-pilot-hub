@@ -1,7 +1,7 @@
 import "server-only";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { canSeeMoney } from "@/lib/auth/access";
+import { canSeeMoney, canSeePrices } from "@/lib/auth/access";
 import { scrubMoney } from "@/lib/text";
 
 // ---------------------------------------------------------------------------
@@ -17,8 +17,15 @@ export type Scrub = (s: string) => string;
 
 const keep: Scrub = (s) => s;
 
-export async function viewerMoneyView(): Promise<{ seesMoney: boolean; clean: Scrub }> {
+// PRICES ARE A SEPARATE ANSWER (Oct 27 2026). Jordan: "Admins can see prices
+// of services and billing. I just dont want admin seeing what I pay other team
+// members." So an order's price beside a conversation follows seesPrices (the
+// owner and admins, canSeePrices). The scrub on client and team words stays
+// owner-only: a thread can carry anything, pay talk included, and nothing in
+// it is labelled as a price.
+export async function viewerMoneyView(): Promise<{ seesMoney: boolean; seesPrices: boolean; clean: Scrub }> {
   const me = await getCurrentUser().catch(() => null);
   const seesMoney = me ? canSeeMoney(me.role) : !authEnforced();
-  return { seesMoney, clean: seesMoney ? keep : scrubMoney };
+  const seesPrices = me ? canSeePrices(me.role) : !authEnforced();
+  return { seesMoney, seesPrices, clean: seesMoney ? keep : scrubMoney };
 }

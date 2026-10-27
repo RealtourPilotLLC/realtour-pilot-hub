@@ -539,7 +539,8 @@ export type ShootEarningsState =
   | "paid" // a real pay line — the figures below ARE this shoot's pay
   | "pending" // the debrief pay gate: earned, shown once the upload page is submitted
   | "removed" // the office took this shoot off their payroll
-  | "unavailable"; // no line and no reason we can name — say so, never invent a zero
+  | "unavailable" // no line and no reason we can name — say so, never invent a zero
+  | "fixed"; // Oct 27 2026: Harrison and James on fixed pay; the shoot is covered by their regular paycheck
 
 export type ShootEarnings = {
   state: ShootEarningsState;
@@ -620,6 +621,22 @@ export async function shootEarnings(projectId: string, memberId: string | null):
     mileageRate: 0,
     returnTrip: false,
   });
+
+  // FIXED PAY (Oct 27 2026, now that Harrison and James see their own pay
+  // again): a fixed-pay person's shoot in a fixed-pay period has no per-shoot
+  // figure and no gate (the engine pays it $0 and pays the person their
+  // regular paycheck, lib/payroll.ts). Answered first and only for a payee
+  // here, so the card says "covered by your regular pay" instead of "$0.00"
+  // or "goes on your payroll when you submit", and a colleague's shoot they
+  // merely open still says nothing.
+  {
+    const { fixedPayFor, isFixedPayDay } = await import("@/lib/payStructure");
+    const member = await prisma.teamMember.findUnique({ where: { id: memberId }, select: { name: true, active: true } });
+    const payee = proj.photographerManual
+      ? proj.photographerId === memberId
+      : proj.photographerId === memberId || proj.appointments.some((a) => a.assignedToId === memberId);
+    if (payee && fixedPayFor(member) && isFixedPayDay(etDayKey(payDate))) return noMoney("fixed");
+  }
 
   // THE DEBRIEF PAY GATE, mirrored from computePayroll (src/lib/payroll.ts): a
   // shoot from Sep 2 2026 on that has HAPPENED but whose upload page was never

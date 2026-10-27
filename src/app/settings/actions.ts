@@ -543,9 +543,9 @@ export async function loadTopazRules(): Promise<TopazSettings> {
 
 // ---- Pay view: retired Oct 21 2026 -----------------------------------------
 // savePayVisibility / loadPayVisibility served the "Team pay view" switch.
-// Jordan made "only the owner sees pay" permanent, so there is nothing left to
-// save: lib/settings payHiddenFor() is the rule, and the old `pay_visibility`
-// row is no longer read.
+// Who sees pay is a rule now, not a setting, so there is nothing to save:
+// lib/settings payViewFor() is the rule (Oct 27 2026: each person their own,
+// the owner everyone's), and the old `pay_visibility` row is no longer read.
 
 // ---------------------------------------------------------------------------
 // CLIENT EMAIL COPIES (Jordan, Oct 12 2026): "Anytime a client gets an email, I

@@ -41,15 +41,17 @@ export default async function ThreadPage({
     note = loaded.note;
   } else error = "Missing conversation details.";
 
-  const [members, ctx, { seesMoney, clean }] = await Promise.all([
+  const [members, ctx, { seesPrices, clean }] = await Promise.all([
     isGroup ? resolveParticipants(participants) : Promise.resolve([]),
     !isGroup && participants[0] ? getConversationContext(participants[0]) : Promise.resolve({ client: null, projects: [], activities: [] } as Awaited<ReturnType<typeof getConversationContext>>),
     viewerMoneyView(),
   ]);
   const title = name || ctx.client?.name || (participants[0] ? fmtPhone(participants[0]) : "Conversation");
   // Audit F7 (Oct 20 2026): the money rule, same as Messages · Waiting on us.
-  // Client words and the Activity tab are scrubbed for anyone but the owner,
-  // and an order's price never rides to the browser for them.
+  // Client words and the Activity tab are scrubbed for anyone but the owner.
+  // An order's price rides to the browser only for whoever may see prices
+  // (Oct 27 2026: the owner and admins, "Admins can see prices of services
+  // and billing").
 
   return (
     <div>
@@ -67,7 +69,7 @@ export default async function ThreadPage({
           note={note}
           client={ctx.client}
           members={isGroup ? members : undefined}
-          projects={ctx.projects.map((pr) => ({ ...pr, price: seesMoney ? pr.price : null, shootDate: pr.shootDate ? pr.shootDate.toISOString() : null }))}
+          projects={ctx.projects.map((pr) => ({ ...pr, price: seesPrices ? pr.price : null, shootDate: pr.shootDate ? pr.shootDate.toISOString() : null }))}
           activities={ctx.activities.map((a) => ({
             id: a.id, body: clean(a.body), type: a.type, createdAt: a.createdAt.toISOString(), projectTitle: a.project?.title ?? null,
           }))}

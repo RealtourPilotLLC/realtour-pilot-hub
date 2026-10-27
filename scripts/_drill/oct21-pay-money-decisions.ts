@@ -6,12 +6,17 @@
 //      and My Performance all show and pay the same figure. The retired
 //      lib/bonus.ts (a profit pool split by a different score) is run here
 //      from 1e33905, on the same fixture, so the before/after numbers print.
-//   2. Only Jordan sees pay: driven in oct14-pay-hidden.ts; here only the
-//      My Performance card's bonus figure, which item 1 needs.
+//   2. Who sees pay: driven in oct14-pay-hidden.ts and (Oct 27 2026, each
+//      person their own) oct27-pay-visibility.ts; here only the scorecard's
+//      bonus figure on the creative's own My Pay, which item 1 needs.
 //   3. A PAGE-ACCESS OVERRIDE NEVER GRANTS MONEY: an admin holding a `sales`
-//      grant sees Finance → Unpaid without a dollar figure or a chase button,
-//      and every AR action refuses them (the 1e33905 actions let them mark a
-//      job paid); the Catalog and Settings → Products show an admin no prices.
+//      grant reaches only Finance → Unpaid (never payroll, pay structure or
+//      the P&L) with no chase button, and every AR action refuses them (the
+//      1e33905 actions let them mark a job paid). Oct 27 2026 Jordan: "Admins
+//      can see prices of services and billing. I just dont want admin seeing
+//      what I pay other team members." So that admin now sees the billing
+//      amounts and invoice links on Unpaid, and the Catalog and Settings →
+//      Products show them prices (canSeePrices, by role, not by the grant).
 //   4. REMINDER HOURS TELL THE TRUTH: vercel.json's evening firings reach
 //      7 PM and 10 PM Eastern in every season and no other hour; Settings
 //      offers exactly those two, refuses anything else, and a stored odd hour
@@ -187,18 +192,20 @@ async function main() {
     c.ok("Finance → Bonus offers one Pay button: Harrison's, for the scorecard's $600 in 2026-Q3", payButtons.length === 1 && payButtons[0].memberId === harrison.id && payButtons[0].amount === 600 && payButtons[0].quarter === "2026-Q3", JSON.stringify(payButtons.map((b) => [b.memberId === harrison.id ? "H" : b.memberId, b.amount, b.quarter])));
     c.ok("…and it prints the bands and no profit pool", /\$1,000/.test(textOf(bonusTab)) && /\$600/.test(textOf(bonusTab)) && !/pool|profit/i.test(textOf(bonusTab)));
 
-    // My Performance: the same card, the same figure.
+    // His own My Pay: the same card, the same figure. (Oct 27 2026: a
+    // per-shoot creative's My Pay is their own pay page, scorecard included;
+    // drill oct27-pay-visibility pins who sees which page.)
     await signIn(harrisonLogin);
     const perfEl = await MyPayPage({ searchParams: Promise.resolve({}) });
-    const perf = isValidElement<Props>(perfEl) ? await (perfEl.type as (p: Props) => unknown)(perfEl.props) : null;
+    const perf = await expand(perfEl, new Set(["MyPerformance"]));
     const cards = elements(perf, "QuarterScoreCard");
     const lastQ = cards[0]?.previous as { key: string; bonus: number } | null | undefined;
     const prevPeriod = kpi.periodFor(undefined, 1);
     const lastQExpected = prevPeriod.legacy
       ? (await legacy.scoreQuarter({ memberId: harrison.id, quarter: legacy.quarterFromKey(prevPeriod.key) ?? undefined })).bonus
       : (await kpi.scorePeriod({ memberId: harrison.id, period: prevPeriod })).bonus;
-    c.ok("My Performance (not My Pay) shows Harrison the scorecard Finance pays from: last quarter's card is the same figure (Q3 2026: $600)",
-      typeName(isValidElement(perfEl) ? perfEl.type : null) === "MyPerformance" && lastQ != null && lastQ.bonus === lastQExpected && (lastQ.key !== "2026-Q3" || lastQ.bonus === 600),
+    c.ok("his own My Pay shows Harrison the scorecard Finance pays from, as himself: last quarter's card is the same figure (Q3 2026: $600)",
+      cards.length === 1 && cards[0].viewer === "self" && lastQ != null && lastQ.bonus === lastQExpected && (lastQ.key !== "2026-Q3" || lastQ.bonus === 600),
       lastQ ? `${lastQ.key} ${lastQ.bonus}` : "no previous card");
 
     // The Pay button's server-side recompute, and every refusal it keeps.
@@ -235,10 +242,19 @@ async function main() {
     await signIn(kyle);
     const kyleUnpaid = await finance({ tab: "unpaid" });
     const kyleText = textOf(kyleUnpaid);
-    c.ok("Kyle (sales grant) still reaches Finance → Unpaid and sees the unpaid jobs", /77 Owed Road/.test(kyleText) && /Unpaid for/.test(kyleText));
-    c.ok("…with no dollar figure anywhere on the tab", !DOLLARS.test(kyleText), (kyleText.match(/.{0,30}\$\s?\d.{0,20}/g) ?? []).slice(0, 3).join(" | "));
+    c.ok("Kyle (sales grant) still reaches Finance → Unpaid and sees the unpaid jobs, with what each still owes", /77 Owed Road/.test(kyleText) && /Outstanding/.test(kyleText) && !/Unpaid for/.test(kyleText));
+    // Oct 27 2026 (Jordan): "Admins can see prices of services and billing."
+    c.ok("…with what each job still owes (Oct 27 2026: admins see billing)", /\$87\.50/.test(kyleText), (kyleText.match(/.{0,30}\$\s?\d.{0,20}/g) ?? []).slice(0, 3).join(" | "));
     c.ok("…no chase, mark-paid, remove or restore button", ["NudgeActions", "RemoveFromAr", "RestoreToAr"].every((n) => elements(kyleUnpaid, n).length === 0));
-    c.ok("…and no invoice or payment link (both print the balance)", !hrefs(kyleUnpaid).some((h) => /example\.test\/(invoice|pay)/.test(h)));
+    c.ok("…and a line saying those are Jordan's", /Chasing a client and marking a job paid are Jordan/.test(kyleText));
+    c.ok("…the invoice and payment links (billing) are his to open", hrefs(kyleUnpaid).some((h) => /example\.test\/invoice/.test(h)) && hrefs(kyleUnpaid).some((h) => /example\.test\/pay/.test(h)));
+    {
+      const bounced: string[] = [];
+      for (const tab of ["payroll", "paystructure", "overview", "bonus", "people"]) {
+        try { await finance({ tab }); } catch (e) { if (e instanceof Redirect && e.href === "/sales?tab=unpaid") bounced.push(tab); }
+      }
+      c.ok("…but team pay never: payroll, pay structure, the P&L, bonus and people all send him back to Unpaid", bounced.join() === "payroll,paystructure,overview,bonus,people", bounced.join());
+    }
     await signIn(owner);
     const ownerUnpaid = await finance({ tab: "unpaid" });
     c.ok("the owner's Unpaid tab keeps every amount and button", /\$87\.50/.test(textOf(ownerUnpaid)) && elements(ownerUnpaid, "NudgeActions").length > 0 && elements(ownerUnpaid, "RestoreToAr").length > 0);
@@ -262,16 +278,26 @@ async function main() {
     await signIn(owner);
     c.ok("the owner still marks a job paid", (await billing.markArPaid(owed.id, "drill")).ok);
 
-    // The Catalog and Settings → Products: Kyle still works there, without prices.
+    // The Catalog and Settings → Products: Kyle works there, and (Oct 27 2026)
+    // sees the prices of services.
     await prisma.product.create({ data: { aryeoId: "oct21-prod-1", title: "Listing Photos Drill", type: "MAIN", tags: JSON.stringify(["Real Estate"]), minPrice: 19900, maxPrice: 29900, variants: JSON.stringify([{ title: "Under 2,500 sq ft", price_amount: 19900 }, { title: "2,500 sq ft and up", price_amount: 29900 }]) } });
     const { default: CatalogPage } = await import("@/app/catalog/page");
     const { default: ProductsPage } = await import("@/app/settings/products/page");
     const catalog = async () => expand(await CatalogPage(), new Set(["ProductCard"]));
     await signIn(kyle);
     const kyleCatalog = textOf(await catalog());
-    c.ok("Catalog, admin: the product and its tier names, no prices", /Listing Photos Drill/.test(kyleCatalog) && /Under 2,500 sq ft/.test(kyleCatalog) && !DOLLARS.test(kyleCatalog), (kyleCatalog.match(/.{0,20}\$\s?\d.{0,10}/g) ?? []).join(" | "));
+    c.ok("Catalog, admin: the product, its tier names and its prices", /Listing Photos Drill/.test(kyleCatalog) && /Under 2,500 sq ft/.test(kyleCatalog) && /\$199/.test(kyleCatalog) && /\$299/.test(kyleCatalog), (kyleCatalog.match(/.{0,20}\$\s?\d.{0,10}/g) ?? []).join(" | "));
     const kyleProducts = elements(await ProductsPage(), "ProductMappingCard").map((p) => p.card as { title: string; priceRange: string | null });
-    c.ok("Settings → Products, admin: every card still there to map, no price range sent to the browser", kyleProducts.some((p) => p.title === "Listing Photos Drill") && kyleProducts.every((p) => p.priceRange === null));
+    c.ok("Settings → Products, admin: every card there to map, with its price range", kyleProducts.some((p) => p.title === "Listing Photos Drill" && p.priceRange === "$199–$299"));
+    {
+      // A creative with the Catalog page granted still gets no prices: the
+      // grant opens the page, the role decides the figures.
+      const cm = await user("cm@oct21.drill.invalid", "James Drill", "CREATIVE_MANAGER", { teamMemberId: james.id, permissions: JSON.stringify({ catalog: true }) });
+      await signIn(cm);
+      let cmCatalog = "";
+      try { cmCatalog = textOf(await catalog()); } catch (e) { cmCatalog = e instanceof Redirect ? `redirect ${e.href}` : String(e); }
+      c.ok("Catalog, creative manager with a catalog grant: no prices", !DOLLARS.test(cmCatalog), cmCatalog.slice(0, 160));
+    }
     await signIn(owner);
     c.ok("Catalog, owner: prices shown", /\$199/.test(textOf(await catalog())) && /\$299/.test(textOf(await catalog())));
     c.ok("Settings → Products, owner: the price range shown", elements(await ProductsPage(), "ProductMappingCard").some((p) => (p.card as { priceRange: string | null }).priceRange === "$199–$299"));
