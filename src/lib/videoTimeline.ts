@@ -59,6 +59,8 @@ export function videoTimeline(input: {
   shotAt?: Date | string | null;
   /** the editor's first Start on it */
   startedAt?: Date | string | null;
+  /** being edited with no Start on record (an outside shop never presses Start) */
+  inEditing?: boolean;
   /** this video's versions, any order */
   rounds: TimelineRound[];
   /** when it reached the client */
@@ -73,7 +75,7 @@ export function videoTimeline(input: {
   const rounds = input.rounds
     .filter((r) => !NOT_A_ROUND.has(r.status))
     .sort((a, b) => a.round - b.round || (ms(a.createdAt) ?? 0) - (ms(b.createdAt) ?? 0));
-  const started = !!input.startedAt || rounds.length > 0;
+  const started = !!input.startedAt || rounds.length > 0 || !!input.inEditing;
   if ((shotMs !== null && shotMs <= now) || started) reached.push({ key: "shot", atISO: shotMs !== null && shotMs <= now ? iso(input.shotAt) : null });
   if (started) reached.push({ key: "editing", atISO: iso(input.startedAt) });
   let approved = false;

@@ -135,6 +135,9 @@ async function main() {
     c.ok("sent back: In revision is current, In review and Delivered ahead", back.map((s) => `${s.label}:${s.state}`).join(",") === "Shot:done,In editing:done,In review:done,In revision:current,In review:next,Delivered:next", back.map((s) => `${s.label}:${s.state}`).join(","));
     const reopened = videoTimeline({ shotAt: ago(96), startedAt: ago(80), rounds: [{ round: 1, status: "APPROVED", createdAt: ago(60), decidedAt: ago(50), clientRequestedAt: ago(5) }], now: new RealDate(SIM) });
     c.ok("approved, then the client asked again: back In revision", reopened.map((s) => `${s.label}:${s.state}`).join(",") === "Shot:done,In editing:done,Approved:done,In revision:current,In review:next,Delivered:next", reopened.map((s) => `${s.label}:${s.state}`).join(","));
+    // An outside shop (Luma, Cliffside) never presses Start: the office's In editing moves the strip on.
+    const shop = videoTimeline({ shotAt: ago(72), inEditing: true, rounds: [], now: new RealDate(SIM) });
+    c.ok("with an outside shop, no Start on record: In editing is current", shop.map((s) => `${s.label}:${s.state}`).join(",") === "Shot:done,In editing:current,In review:next,Delivered:next", shop.map((s) => `${s.label}:${s.state}`).join(","));
     const failedUpload = videoTimeline({ startedAt: ago(5), rounds: [{ round: 1, status: "UPLOAD_FAILED", createdAt: ago(2) }], now: new RealDate(SIM) });
     c.ok("a failed upload is not a round", !failedUpload.some((s) => s.key === "review" && s.state !== "next"), failedUpload.map((s) => `${s.label}:${s.state}`).join(","));
 

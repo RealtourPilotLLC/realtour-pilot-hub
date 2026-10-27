@@ -1468,6 +1468,7 @@ export default async function EditBriefPage({
     ? videoTimeline({
         shotAt: project.shootDate,
         startedAt: firstStart?.at ?? null,
+        inEditing: situation === "editing",
         rounds: submissions.filter((s) => !selectedKey || cutKeyOf(s) === selectedKey).map((s) => ({ round: s.round, status: s.status, createdAt: s.createdAt, decidedAt: s.decidedAt, clientRequestedAt: s.clientRequestedAt })),
         deliveredAt: selOutputRow?.deliveredAt ?? (videoTotal <= 1 ? project.deliveredAt : null),
         reopenedAt: reopenedHere && selectedKey ? askedAgain.get(selectedKey) ?? (revisionAtISO ? new Date(revisionAtISO) : null) : null,
