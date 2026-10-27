@@ -979,7 +979,8 @@ export default async function ProjectPage({
           </Section>
 
           {/* Team — editable assignments */}
-          <Section icon={Users} title="Team" flush>
+          {/* #team: the owner dashboard's Reassign and Assign editor land here (Oct 27 2026). */}
+          <Section id="team" icon={Users} title="Team" flush>
             <AssignmentPanel
               projectId={project.id}
               team={team.map((m) => ({ id: m.id, name: m.name, avatarColor: m.avatarColor }))}

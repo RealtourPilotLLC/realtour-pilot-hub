@@ -79,7 +79,8 @@ export function ReelScriptCard({
   const draftWaiting = !!current && current.draftVersion != null && current.draftVersion > (current.version ?? 0);
   const preparing = !!current && !draftWaiting && !!current.status && PREPARING.has(current.status) && !!current.script;
   return (
-    <section className="panel-shadow rounded-2xl border border-border bg-surface">
+    // #script: the owner dashboard's Review script lands here (Oct 27 2026).
+    <section id="script" className="panel-shadow scroll-mt-20 rounded-2xl border border-border bg-surface">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 border-b border-border px-4 py-2.5">
         <Clapperboard className="size-4 text-brand" />
         <h2 className="text-sm font-semibold">Reel script</h2>

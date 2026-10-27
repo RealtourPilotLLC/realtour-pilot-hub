@@ -1,10 +1,13 @@
 // What a side panel on Jordan's dashboard shows. Plain data only: the server
 // sections build these and the client shell renders them, so nothing here
 // may hold a function or a Date.
-import type { AssignSeed, ClientIssueRow, Tone } from "@/lib/ownerDashboard";
+import type { AssignSeed, ClientIssueRow, RowAction, Tone } from "@/lib/ownerDashboard";
 import type { DelegatedRow, EmailRow, MeetingRow } from "@/lib/ownerWork";
 
 export type RosterOption = { key: string; name: string };
+
+/** A row button the client shell runs itself (a task panel needs the server's read: rows carry `open` for that). */
+export type ShellAction = Exclude<RowAction, { kind: "task" }>;
 
 export type ListRow = {
   id: string;
@@ -13,6 +16,8 @@ export type ListRow = {
   tone?: Tone | null;
   href?: string | null;
   assign?: AssignSeed | null;
+  /** the row's own button (Oct 27 2026), shown instead of Assign */
+  action?: ShellAction | null;
   /** clicking the row opens this panel instead of following href */
   open?: PanelSpec | null;
 };

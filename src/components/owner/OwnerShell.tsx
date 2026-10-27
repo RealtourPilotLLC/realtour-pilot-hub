@@ -13,7 +13,7 @@ import { markCommsHandled, setSmartTaskStatus } from "@/app/actions";
 import { closeIssueSignalAction } from "@/app/clients/clientCareActions";
 import { ROUND_CAUSES } from "@/lib/issueSignalsCore";
 import type { AssignSeed, ClientIssueRow } from "@/lib/ownerDashboard";
-import type { PanelSpec, RosterOption } from "@/components/owner/panelTypes";
+import type { PanelSpec, RosterOption, ShellAction } from "@/components/owner/panelTypes";
 
 // ---------------------------------------------------------------------------
 // The side panel for Jordan's dashboard (Oct 23 2026): detail, assignment and
@@ -54,6 +54,41 @@ export function PanelButton({ spec, children, className, label }: { spec: PanelS
     <button type="button" aria-label={label} data-open-panel={spec.kind} onClick={() => open(spec)} className={className ?? QUIET}>
       {children}
     </button>
+  );
+}
+
+/**
+ * A row's own button (Oct 27 2026, Jordan: "make sure everything has an
+ * action that can resolve it, escalate it, respond, or delegate"). A link
+ * goes where it is done (#anchor); Assign opens the panel; the one-press
+ * kinds call an EXISTING action and say what happened in place:
+ *   ask    assignTaskAction with the row's seed (keyed to the record, so a
+ *          second press reads "Already with James", nothing new sent);
+ *   nudge  requestUpdateAction (at most hourly, the delegation rule);
+ *   done   setSmartTaskStatus COMPLETED on the row's own task.
+ * Every one of them needs the press: nothing here runs on render.
+ */
+export function RowActionButton({ a, primary = false, className }: { a: ShellAction; primary?: boolean; className?: string }) {
+  const { open, readOnly } = useContext(PanelCtx);
+  const { busy, msg, run } = useRun();
+  const cls = cn(primary ? PRIMARY : QUIET, className);
+  if (a.kind === "link") return <Link href={a.href} className={cls} data-row-action="link">{a.label}</Link>;
+  if (a.kind === "assign") {
+    return <button type="button" data-open-panel="assign" data-row-action="assign" onClick={() => open({ kind: "assign", seed: a.seed, heading: a.label })} className={cls}>{a.label}</button>;
+  }
+  if (msg?.ok) return <span role="status" className="inline-flex min-h-11 items-center text-[12px] font-medium text-success" data-row-done>{msg.message}</span>;
+  const press = () => run(() =>
+    a.kind === "ask"
+      ? assignTaskAction({
+          title: a.seed.title, outcome: a.seed.outcome ?? undefined, assigneeKey: a.seed.assigneeKey ?? "", dueAt: a.seed.dueAt ?? undefined, needsVerification: !!a.seed.needsVerification,
+          sourceTaskId: a.seed.sourceTaskId ?? undefined, sourceHref: a.seed.sourceHref ?? undefined, clientId: a.seed.clientId ?? undefined, projectId: a.seed.projectId ?? undefined,
+        })
+      : a.kind === "nudge" ? requestUpdateAction(a.taskId) : setSmartTaskStatus(a.taskId, "COMPLETED"));
+  return (
+    <span className="inline-flex flex-col gap-1">
+      <button type="button" disabled={busy || readOnly} onClick={press} className={cls} data-row-action={a.kind}>{busy && <Loader2 aria-hidden className="size-4 animate-spin" />}{a.label}</button>
+      {msg && <Said msg={msg} />}
+    </span>
   );
 }
 
@@ -281,7 +316,7 @@ function ListBody({ spec }: { spec: Extract<PanelSpec, { kind: "list" }> }) {
               </p>
               {r.sub && <p className="text-[13px] text-muted">{r.sub}</p>}
             </div>
-            {r.assign && !readOnly && <button type="button" onClick={() => open({ kind: "assign", seed: r.assign! })} className={QUIET}>Assign</button>}
+            {r.action ? <RowActionButton a={r.action} /> : r.assign && !readOnly && <button type="button" onClick={() => open({ kind: "assign", seed: r.assign! })} className={QUIET}>Assign</button>}
           </li>
         ))}
       </ul>
