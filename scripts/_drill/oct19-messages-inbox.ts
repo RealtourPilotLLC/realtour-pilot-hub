@@ -6,8 +6,15 @@
 //     texts and email together, oldest first, with Reply (the view on the same
 //     page that answers them) and Handled; the new leads; and the promises at
 //     risk that lived only on the Tasks page's Replies tab;
-//   · then Texts, Email, Team, Outbox, All, in that order, each number on its
-//     tab and nowhere else on the page; old tab names still land right;
+//   · then Email, Team, Outbox, All, in that order, each number on its tab and
+//     nowhere else on the page; old tab names still land right;
+//   · CHANGED Oct 27 2026 (Jordan: "One queue + Gmail draft"): the Texts tab is
+//     off the bar. Waiting on us is the one queue: the unsaved numbers' texts
+//     are on it (and in its number), the thank-yous and team texts folded
+//     under it; ?tab=texts&focus=<key> is one conversation's reply screen;
+//     ?tab=texts or ?tab=replies with no focus opens Waiting on us. Email has
+//     no number of its own (an email waiting on us counts once, on Waiting)
+//     and an open thread carries the reply box;
 //   · /ops/messages, /tasks?tab=comms (and /today through it) open Messages,
 //     keeping ?test=1; a login without Messages keeps the Tasks tab;
 //   · Handled (a waiting client) and Handled (a lead) refuse anyone but the
@@ -98,13 +105,18 @@ async function main() {
     // =====================================================================
     c.head("§1 · the tab rules");
     // =====================================================================
-    c.ok("six views, in Jordan's order: Waiting on us, Texts, Email, Team, Outbox, All", nav.MESSAGES_TABS.map((t) => t.key).join() === "waiting,texts,email,team,outbox,all" && nav.MESSAGES_TABS.map((t) => t.label).join() === "Waiting on us,Texts,Email,Team,Outbox,All");
+    // CHANGED Oct 27 2026 (Jordan: "One queue"): five tabs; Texts is off the bar.
+    c.ok("five tabs, in Jordan's order: Waiting on us, Email, Team, Outbox, All (no Texts tab: one queue)", nav.MESSAGES_TABS.map((t) => t.key).join() === "waiting,email,team,outbox,all" && nav.MESSAGES_TABS.map((t) => t.label).join() === "Waiting on us,Email,Team,Outbox,All");
     const tabOf = (sp: Record<string, string | string[]>) => nav.resolveMessagesTab(sp);
     c.ok("no tab = Waiting on us (the first view)", tabOf({}) === "waiting" && tabOf({ tab: "" }) === "waiting" && tabOf({ tab: "nonsense" }) === "waiting");
-    c.ok("every old tab name still lands on its work: replies → Texts, inbox → All; email, team, outbox unchanged", tabOf({ tab: "replies" }) === "texts" && tabOf({ tab: "inbox" }) === "all" && tabOf({ tab: "email" }) === "email" && tabOf({ tab: "team" }) === "team" && tabOf({ tab: "outbox" }) === "outbox" && tabOf({ tab: "OUTBOX" }) === "outbox");
+    // CHANGED Oct 27 2026: replies/texts with no conversation named open the one queue.
+    c.ok("every old tab name still lands on its work: replies or texts → Waiting on us (or that one conversation, with a focus), inbox → All; email, team, outbox unchanged", tabOf({ tab: "replies" }) === "waiting" && tabOf({ tab: "texts" }) === "waiting" && tabOf({ tab: "texts", focus: "c:1" }) === "texts" && tabOf({ tab: "replies", focus: "c:1" }) === "texts" && tabOf({ tab: "texts", focus: " " }) === "waiting" && tabOf({ tab: "inbox" }) === "all" && tabOf({ tab: "email" }) === "email" && tabOf({ tab: "team" }) === "team" && tabOf({ tab: "outbox" }) === "outbox" && tabOf({ tab: "OUTBOX" }) === "outbox");
+    c.ok("a text's reply screen sits under Waiting on us on the tab bar", nav.tabBarKey("texts") === "waiting" && nav.tabBarKey("email") === "email");
     c.ok("a delivery-text check (?incident=) opens on All, as it always did; a named tab still wins", tabOf({ incident: "x" }) === "all" && tabOf({ incident: "x", tab: "email" }) === "email");
     c.ok("links: Waiting on us is bare /communications; ?test=1 only where a view reads it", nav.messagesHref("waiting") === "/communications" && nav.messagesHref("waiting", { test: true }) === "/communications?test=1" && nav.messagesHref("email", { test: true }) === "/communications?tab=email&test=1" && nav.messagesHref("outbox", { test: true }) === "/communications?tab=outbox&test=1" && nav.messagesHref("texts", { test: true }) === "/communications?tab=texts&test=1" && nav.messagesHref("all", { test: true }) === "/communications?tab=all");
     c.ok("Reply on a text opens Texts at that conversation; on an email, Email at that thread (test view kept)", nav.waitingReplyHref("phone", "c1") === "/communications?tab=texts&focus=c1" && nav.waitingReplyHref("email", "floor plan::c2", true) === "/communications?tab=email&focus=floor+plan%3A%3Ac2&test=1");
+    // Oct 27 2026: a text's reply screen is the only place a test client's text is answered, so its Reply keeps the test view too.
+    c.ok("…a test client's text Reply keeps ?test=1", nav.waitingReplyHref("phone", "c1", true) === "/communications?tab=texts&focus=c1&test=1");
     // Oct 20 2026: Texts reads ?test=1 too (audit F24), so Home's scope reaches it.
     c.ok("Home's test scope reaches Messages (Waiting on us, Texts, Email, Outbox), not a delivery-text check or an old tab name", homeRecordHref("/communications", true) === "/communications?test=1" && homeRecordHref("/communications?tab=email", true) === "/communications?tab=email&test=1" && homeRecordHref("/communications?tab=texts&focus=c1", true) === "/communications?tab=texts&focus=c1&test=1" && homeRecordHref("/communications?tab=replies", true) === "/communications?tab=replies" && homeRecordHref("/communications?incident=x", true) === "/communications?incident=x" && homeRecordHref("/communications", false) === "/communications");
     c.ok("the page's browser title is Messages", (pageModule as unknown as { metadata?: { title?: string } }).metadata?.title === "Messages");
@@ -130,10 +142,11 @@ async function main() {
 
     // Clients waiting: a VIP's text for 30 hours (with a dollar figure in it),
     // an email for 2 hours, a test client's text; an unsaved number's text
-    // (Texts only: Waiting on us lists clients).
+    // (CHANGED Oct 27 2026, one queue: on Waiting on us too, in its own
+    // section, not among the clients).
     const log = (data: Record<string, unknown>) => prisma.commLog.create({ data: { source: "openphone", channel: "text", direction: "in", ...data } as never });
     await log({ clientId: vip.id, clientName: vip.name, contactName: vip.name, fromPhone: vip.phone, body: "Is the $750 credit applied for 12 Oak St?", occurredAt: ago(30 * H) });
-    await log({ clientId: broker.id, clientName: broker.name, contactName: broker.name, channel: "email", source: "gmail", subject: "Floor plan", body: "Can you check the floor plan for 4 Elm St? The kitchen is missing.", occurredAt: ago(2 * H) });
+    await log({ clientId: broker.id, clientName: broker.name, contactName: broker.name, channel: "email", source: "gmail", externalId: "gmail-info@oct19m.invalid:18f0aa01floor", subject: "Floor plan", body: "Can you check the floor plan for 4 Elm St? The kitchen is missing.", occurredAt: ago(2 * H) });
     await log({ clientId: fixture.id, clientName: fixture.name, contactName: fixture.name, fromPhone: fixture.phone, body: "Fixture question", occurredAt: ago(5 * H) });
     await log({ fromPhone: "2155550199", body: "Hi, do you shoot condos?", occurredAt: ago(3 * H) });
     // Leads: Kyle's (overdue), nobody's (call back today), James's.
@@ -163,7 +176,7 @@ async function main() {
     const keyOf = (b: MessagesBoard) => b.waiting.map((w) => `${w.family}:${w.group.groupKey}`).join();
     c.ok("the default view is Waiting on us, under the title Messages", elements(kTree, "MessagesTabs")[0]?.tab === "waiting" && elements(kTree, "PageHeader")[0]?.title === "Messages" && !!shown);
     c.ok("its clients are messagesBoard's waiting clients, in its order (longest wait first)", !!shown && keyOf(shown) === keyOf(kyleBoard) && kyleBoard.waiting.length === 2 && kyleBoard.waiting[0].group.clientId === vip.id && kyleBoard.waiting[1].family === "email", shown ? keyOf(shown) : "none");
-    c.ok("…texts and email together; the test client and the unsaved number are not on it", !!shown && shown.waiting.some((w) => w.family === "phone") && shown.waiting.some((w) => w.family === "email") && !shown.waiting.some((w) => w.group.clientId === fixture.id) && shown.waiting.every((w) => !!w.group.clientId));
+    c.ok("…texts and email together; the test client is not on it, and the unsaved number is not among the clients",!!shown && shown.waiting.some((w) => w.family === "phone") && shown.waiting.some((w) => w.family === "email") && !shown.waiting.some((w) => w.group.clientId === fixture.id) && shown.waiting.every((w) => !!w.group.clientId));
     c.ok("its leads are messagesBoard's: Kyle's and nobody's, not James's", !!shown && shown.leads.map((l) => l.id).join() === kyleBoard.leads.map((l) => l.id).join() && shown.leads.some((l) => l.id === leadKyle.id && l.behind) && shown.leads.some((l) => l.id === leadFree.id && l.dueToday) && !shown.leads.some((l) => l.id === leadJames.id));
     const kWaiting = await settle(kTree);
     const kHtml = ssr(kWaiting);
@@ -190,11 +203,14 @@ async function main() {
     // Waiting, Email and the Outbox do, unless ?test=1. The library list still
     // carries them; the page filters.
     const kTextsReal = kTexts.cards.filter((card) => card.clientId !== fixture.id);
-    // CHANGED Oct 21 2026 (audit F5): one "Waiting on us". Texts still lists every unanswered text,
-    // but its number counts only what Waiting does not show (unsaved and team numbers), never a waiting client twice.
-    const kTextsOnlyHere = kTextsReal.filter((card) => !card.clientId).length;
-    c.ok("the tab bar: six tabs in order, with counts (waiting clients + leads; texts from unsaved and team numbers; drafts in the Outbox)", tabsIn(kHtml) === "waiting,texts,email,team,outbox,all" && countOf(kHtml, "waiting") === String(kyleBoard.waiting.length + kyleBoard.leads.length) && countOf(kHtml, "texts") === String(kTextsOnlyHere) && kTextsOnlyHere >= 1 && countOf(kHtml, "outbox") === "1", `${countOf(kHtml, "waiting")}/${countOf(kHtml, "texts")}/${countOf(kHtml, "outbox")}`);
-    c.ok("…the Texts list still holds every unanswered text (the unsaved number and the waiting client too)", kTexts.cards.length === 3 && kTexts.cards.some((card) => !card.isClient) && kTexts.cards.some((card) => card.clientId === vip.id));
+    // CHANGED Oct 27 2026 (Jordan: "One queue"; was Oct 21, audit F5, a Texts number for the unsaved and team
+    // numbers): the unsaved numbers' texts are on Waiting on us and in ITS number; team texts and thank-yous are
+    // folded there, uncounted. No Texts tab, so no Texts number and nothing counted twice.
+    const kUnsaved = kTextsReal.filter((card) => !card.clientId);
+    c.ok("the tab bar: five tabs in order, with counts (waiting clients + leads + texts from unsaved numbers; drafts in the Outbox; no Email number)", tabsIn(kHtml) === "waiting,email,team,outbox,all" && countOf(kHtml, "waiting") === String(kyleBoard.waiting.length + kyleBoard.leads.length + kUnsaved.length) && kUnsaved.length === 1 && countOf(kHtml, "texts") === null && countOf(kHtml, "email") === null && countOf(kHtml, "outbox") === "1", `${countOf(kHtml, "waiting")}/${countOf(kHtml, "outbox")}`);
+    c.ok("…the text walk still holds every unanswered text (the unsaved number and the waiting client too)", kTexts.cards.length === 3 && kTexts.cards.some((card) => !card.isClient) && kTexts.cards.some((card) => card.clientId === vip.id));
+    const unsavedRows = elements(kWaiting, "TextRow");
+    c.ok("Waiting on us lists the unsaved number's text in its own section, with a Reply to that one conversation and a Dismiss", unsavedRows.length === 1 && (unsavedRows[0].card as { key: string }).key === kUnsaved[0].key && kHtml.includes(`data-waiting-text="${kUnsaved[0].key}"`) && kHtml.includes("Texts from numbers we have not saved") && kHtml.includes("do you shoot condos?") && kHtml.includes(`href="/communications?tab=texts&amp;focus=${encodeURIComponent(kUnsaved[0].key)}"`) && (kHtml.match(/data-waiting-text=/g) ?? []).length === 1, unsavedRows.map((r) => (r.card as { key: string }).key).join());
     c.ok("each number appears once: no count in the header or the section titles", !/\d/.test(h2s.join(" ")) && !sub.includes(`${kyleBoard.waiting.length} client`) && !sub.includes(`${kyleBoard.leads.length} new lead`) && sub.includes("1 client has waited over 24 hours"), `${h2s.join(" | ")} || ${sub}`);
     c.ok("the Outbox is a tab, not a second line on this view", !kHtml.includes("drafted and ready in the Outbox"));
 
@@ -213,7 +229,8 @@ async function main() {
     c.ok("?test=1 brings the test client's row back, and its Outbox draft into the count", tBoard.waiting.some((w) => w.group.clientId === fixture.id) && tBoard.waiting.length === kyleBoard.waiting.length + 1 && countOf(tHtml, "outbox") === "2");
     // The tab links, in order, by their data-tab marker (attribute order is React's).
     const tabHrefs = (html: string) => [...html.matchAll(/<a\b[^>]*>/g)].map((m) => m[0]).filter((a) => a.includes("data-tab=")).map((a) => (a.match(/href="([^"]+)"/)?.[1] ?? "").replace(/&amp;/g, "&"));
-    c.ok("…the test view rides along on Waiting on us, Texts, Email and Outbox only", tabHrefs(tHtml).join() === "/communications?test=1,/communications?tab=texts&test=1,/communications?tab=email&test=1,/communications?tab=team,/communications?tab=outbox&test=1,/communications?tab=all" && tabHrefs(kHtml).join() === "/communications,/communications?tab=texts,/communications?tab=email,/communications?tab=team,/communications?tab=outbox,/communications?tab=all", tabHrefs(tHtml).join());
+    // CHANGED Oct 27 2026 (one queue): no Texts tab link.
+    c.ok("…the test view rides along on Waiting on us, Email and Outbox only", tabHrefs(tHtml).join() === "/communications?test=1,/communications?tab=email&test=1,/communications?tab=team,/communications?tab=outbox&test=1,/communications?tab=all" && tabHrefs(kHtml).join() === "/communications,/communications?tab=email,/communications?tab=team,/communications?tab=outbox,/communications?tab=all", tabHrefs(tHtml).join());
     c.ok("only a scalar test=1 turns it on", !(elements(await messages({ searchParams: Promise.resolve({ test: ["1", "1"] as never }) }), "WaitingOnUs")[0]?.board as MessagesBoard).waiting.some((w) => w.group.clientId === fixture.id));
 
     // =====================================================================
@@ -223,24 +240,33 @@ async function main() {
       const tree = await messages({ searchParams: Promise.resolve(sp) });
       return { tree, tab: elements(tree, "MessagesTabs")[0]?.tab as string, title: elements(tree, "PageHeader")[0]?.title as string, html: ssr(await settle(tree)) };
     };
+    // CHANGED Oct 27 2026 (Jordan: "One queue"): the Texts list was a second to-do list of the same waiting
+    // texts. ?tab=texts with no conversation named, and the old ?tab=replies, open Waiting on us; a Reply opens
+    // that ONE conversation (no queue, no Draft all, no filter).
     const texts = await view({ tab: "texts" });
-    const rq = elements(texts.tree, "ReplyQueue")[0];
-    c.ok("Texts = the reply queue (every unanswered text, a reply ready to write; test clients hidden)", texts.tab === "texts" && texts.title === "Messages" && (rq?.cards as unknown[]).length === kTextsReal.length);
-    c.ok("…its header and the Everyone filter do not repeat the tab's number", !texts.html.includes("Everyone (") && !String(elements(texts.tree, "PageHeader")[0]?.subtitle).includes(`${kTextsReal.length} waiting`) && texts.html.includes(`Clients only (${kTextsReal.filter((card) => card.isClient).length})`));
-    const textsTest = await view({ tab: "texts", test: "1" });
-    // Oct 23 2026 (Jordan: "I don't need the show test records button anymore"): no toggle; a typed ?test=1 says what it shows.
-    c.ok("…and ?test=1 brings the test client's text back (audit F24), with no toggle either way", (elements(textsTest.tree, "ReplyQueue")[0]?.cards as unknown[]).length === kTexts.cards.length && textsTest.html.includes("Showing real and test records") && !/Show test records|Hide test records/.test(textsTest.html + texts.html));
+    c.ok("?tab=texts with no conversation named opens Waiting on us, not a second list", texts.tab === "waiting" && texts.title === "Messages" && elements(texts.tree, "WaitingOnUs").length === 1 && elements(texts.tree, "ReplyQueue").length === 0);
     const legacy = await view({ tab: "replies" });
-    c.ok("an old ?tab=replies link opens Texts", legacy.tab === "texts" && elements(legacy.tree, "ReplyQueue").length === 1);
+    c.ok("an old ?tab=replies link opens Waiting on us (the one queue)", legacy.tab === "waiting" && elements(legacy.tree, "WaitingOnUs").length === 1 && elements(legacy.tree, "ReplyQueue").length === 0);
     const focused = await view({ tab: "texts", focus: vipRow.group.groupKey });
     const fq = elements(focused.tree, "ReplyQueue")[0];
-    c.ok("Reply from Waiting on us: that client's conversation first, marked, open", (fq?.cards as { key: string }[])[0]?.key === `c:${vip.id}` && fq?.focusKey === `c:${vip.id}` && focused.html.includes(`data-reply-card="c:${vip.id}" aria-current="true"`) && focused.html.includes("Answering Real Agent"));
+    c.ok("Reply from Waiting on us: that client's conversation alone, marked, open", focused.tab === "texts" && (fq?.cards as { key: string }[]).length === 1 && (fq?.cards as { key: string }[])[0]?.key === `c:${vip.id}` && fq?.focusKey === `c:${vip.id}` && focused.html.includes(`data-reply-card="c:${vip.id}" aria-current="true"`) && focused.html.includes("Answering Real Agent") && !focused.html.includes("Draft all"));
+    c.ok("…under Waiting on us on the tab bar, with a way back", /<a\b[^>]*aria-current="page"[^>]*data-tab="waiting"|<a\b[^>]*data-tab="waiting"[^>]*aria-current="page"/.test(focused.html) && focused.html.includes("Back to Waiting on us"));
+    c.ok("…Kyle never sees the dollar figure on it either", !focused.html.includes("$750") && focused.html.includes("[amount] credit applied"));
+    const unsavedOne = await view({ tab: "texts", focus: kUnsaved[0].key });
+    c.ok("an unsaved number's Reply opens its conversation", (elements(unsavedOne.tree, "ReplyQueue")[0]?.cards as { key: string }[])?.[0]?.key === kUnsaved[0].key && unsavedOne.html.includes("do you shoot condos?"));
     const gone = await view({ tab: "texts", focus: "no-such-client" });
-    c.ok("…a conversation answered meanwhile says so and still shows the queue", gone.html.includes("not waiting on a text reply any more") && elements(gone.tree, "ReplyQueue")[0]?.focusKey === null);
+    c.ok("…a conversation answered meanwhile says so, points back to Waiting on us, and shows no queue", gone.html.includes("not waiting on a text reply any more") && gone.html.includes("Back to Waiting on us") && elements(gone.tree, "ReplyQueue").length === 0);
+    // Oct 23 2026 (Jordan: "I don't need the show test records button anymore"): no toggle; a typed ?test=1 says what it shows.
+    const fixtureHidden = await view({ tab: "texts", focus: `c:${fixture.id}` });
+    const fixtureShown = await view({ tab: "texts", focus: `c:${fixture.id}`, test: "1" });
+    c.ok("…a test client's text stays hidden unless ?test=1 (audit F24), with no toggle either way", elements(fixtureHidden.tree, "ReplyQueue").length === 0 && (elements(fixtureShown.tree, "ReplyQueue")[0]?.cards as { key: string }[])?.[0]?.key === `c:${fixture.id}` && fixtureShown.html.includes("Showing real and test records") && !/Show test records|Hide test records/.test(fixtureShown.html + fixtureHidden.html));
     const email = await view({ tab: "email", focus: emailFocusKey(brokerRow) });
     const el = elements(email.tree, "EmailThreadList")[0];
     c.ok("Email: Reply opens the client's thread first and unfolded, with Open in Gmail", email.tab === "email" && email.title === "Messages" && (el?.threads as { key: string }[])[0]?.key === `floor plan::${broker.id}` && el?.focusKey === `floor plan::${broker.id}` && email.html.includes("The kitchen is missing.") && email.html.includes("Open in Gmail"));
-    c.ok("…Email's number (client wrote last, in two days) is on its tab", countOf(email.html, "email") === "1");
+    // Oct 27 2026 (Jordan: "I want to be able to respond to emails in the hub"): the open thread has the reply box.
+    c.ok("…and its reply box, open, sending nothing until Send is pressed", (email.html.match(/data-email-reply(?!-)/g) ?? []).length === 1 && email.html.includes('aria-label="Your reply"') && email.html.includes("Nothing goes until you press Send") && !email.html.includes("data-email-reply-sent"));
+    // CHANGED Oct 27 2026 (one queue): an email waiting on us is counted once, on Waiting on us.
+    c.ok("…Email has no number of its own on the tab bar", countOf(email.html, "email") === null && countOf(email.html, "waiting") !== null);
     // A request the hub wrote down with no subject (an obligation-ledger row)
     // still opens that client's newest thread; an unknown one says where to look.
     const noSubject = await view({ tab: "email", focus: `(no subject)::${broker.id}` });
@@ -252,11 +278,11 @@ async function main() {
     const outbox = await view({ tab: "outbox" });
     c.ok("Outbox: the drafts and Send all, under the same tab bar", outbox.tab === "outbox" && outbox.title === "Messages" && elements(outbox.tree, "ClientTextsPanel").length === 1 && elements(outbox.tree, "SendAllTexts")[0]?.count === 1);
     const all = await view({ tab: "all" });
-    c.ok("All: every OpenPhone conversation (not connected here, so it says so, with the tabs)", all.tab === "all" && all.title === "Messages" && all.html.includes("Connect OpenPhone") && tabsIn(all.html) === "waiting,texts,email,team,outbox,all");
+    c.ok("All: every OpenPhone conversation (not connected here, so it says so, with the tabs)", all.tab === "all" && all.title === "Messages" && all.html.includes("Connect OpenPhone") && tabsIn(all.html) === "waiting,email,team,outbox,all");
     const incident = await view({ incident: "unknown-outbox-id" });
     c.ok("a delivery-text check (?incident=) still opens the live list", incident.tab === "all");
     c.ok("the old Inbox name opens All", (await view({ tab: "inbox" })).tab === "all");
-    for (const v of [texts, email, outbox, all]) c.ok(`${v.tab} renders with no link inside a link`, !v.html.startsWith("RENDER FAILED") && !nestedLink(v.html), v.html.slice(0, 160));
+    for (const [name, v] of [["a text's reply screen", focused], ["a gone conversation", gone], ["email", email], ["outbox", outbox], ["all", all]] as const) c.ok(`${name} renders with no link inside a link`, !v.html.startsWith("RENDER FAILED") && !nestedLink(v.html), v.html.slice(0, 160));
     c.ok("Waiting on us renders with no link inside a link, and thumb-sized buttons", !kHtml.startsWith("RENDER FAILED") && !nestedLink(kHtml) && (kHtml.match(/min-h-11/g) ?? []).length >= 10, kHtml.slice(0, 160));
 
     // =====================================================================
@@ -301,7 +327,8 @@ async function main() {
     const after2 = await messagesBoard({ now: new Date(), excludeClientIds: [fixture.id], viewer: { key: "kyle", role: "ADMIN", teamMemberId: kyleTm.id } });
     c.ok("Kyle: Handled on a lead closes it and takes it off the list", r2.ok && await leadState(leadFree.id) === "COMPLETED" && !after2.leads.some((l) => l.id === leadFree.id));
     const reTree = await messages({ searchParams: Promise.resolve({}) });
-    c.ok("…and the page's own number follows", countOf(ssr(await settle(reTree)), "waiting") === String(after2.waiting.length + after2.leads.length) && after2.waiting.length + after2.leads.length === kyleBoard.waiting.length + kyleBoard.leads.length - 2);
+    // CHANGED Oct 27 2026 (one queue): the number also carries the unsaved number's text, untouched here.
+    c.ok("…and the page's own number follows", countOf(ssr(await settle(reTree)), "waiting") === String(after2.waiting.length + after2.leads.length + kUnsaved.length) && after2.waiting.length + after2.leads.length === kyleBoard.waiting.length + kyleBoard.leads.length - 2);
 
     c.ok("nothing left the box; no message was queued or sent", fence.blocked.length === 0 && fence.faked.length === 0 && await prisma.outboxMessage.count() === 0, fence.blocked.join(", "));
     c.summary();

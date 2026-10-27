@@ -30,7 +30,7 @@ import { holdingReplyDueAt, isHoldingReply, type HoldingLine } from "@/lib/holdi
 // read "done" without the thing having happened. So there is now ONE walk over
 // the comms log, `unansweredComms()`, and every surface is a thin slice of it:
 //
-//   /communications?tab=replies + the Dashboard chip → replyQueue() /
+//   Messages · Waiting on us + a text reply screen → replyQueue() /
 //        replyWaitingSummary()      (phone, every sender, drafts + send)
 //   /ops pill + preview            → findUnansweredInbound()  (commsSla.ts)
 //   /tasks?tab=comms Phone | Email → unansweredCommsBoard()   (commsBoard.ts)
@@ -252,7 +252,7 @@ export function commsMuteKey(phone: string): string {
   return `comms-mute:${phone}`;
 }
 
-/** Mute one number as spam and cut its conversation (the Texts tab's Spam, and
+/** Mute one number as spam and cut its conversation (a text reply's Spam, and
  *  a lead disregarded as spam). NEVER one of our own people: Harrison's
  *  "Photos uploaded" is a status text, not spam, and a muted photographer is a
  *  silent field. */
@@ -2650,18 +2650,19 @@ async function viewerRoles(): Promise<string[]> {
 }
 
 // ---------------------------------------------------------------------------
-// The Replies tab (/communications?tab=replies) — the TEXT console: every
-// conversation still owed an answer that we can actually answer from here, each
-// with a draft ready to read.
+// The TEXT console: every conversation still owed an answer that we can
+// actually answer from here, each with a draft ready to read. Since Oct 27
+// 2026 (Jordan: "One queue") Messages · Waiting on us lists these (the unsaved
+// numbers, and the thank-yous and team folded) and a Reply opens one card on
+// /communications?tab=texts&focus=<key>; the old Replies/Texts list is gone.
 //
 // Jordan: "a generate response engine for Kyle so he can have responses
 // generated to all inbound text messages, and then give him the ability to
 // explain what he wants to say to be able to tailor the message."
 //
-// Phone family only — email is read-only in this hub (no gmail.send scope), so
-// an email card here would be a Send button that can't send. Unanswered email
-// is counted and listed on Ops Day and on /tasks?tab=comms&via=email, both of
-// which read the SAME walk.
+// Phone family only. Email is answered on Messages · Email, in its Gmail
+// thread (app/emailActions.sendEmailThreadReply, Oct 27 2026); unanswered
+// email is counted on Waiting on us from the SAME walk.
 // ---------------------------------------------------------------------------
 
 export type ReplyCard = {

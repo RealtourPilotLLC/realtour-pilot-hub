@@ -10,9 +10,12 @@ import { mailboxOfExternalId } from "@/lib/replyQueue";
 // Email tab data for the Communications hub.
 //
 // Client/lead email already syncs into CommLog (channel "email", source
-// "gmail") — Gmail itself stays the send surface (no gmail.send scope), so this
-// is a READ-ONLY view: recent mail grouped into threads, with an "Open in
-// Gmail" jump-out per thread for anyone who needs to reply.
+// "gmail"): recent mail grouped into threads, with an "Open in Gmail" jump-out
+// per thread. REPLY IN THE HUB (Jordan, Oct 27 2026: "I want to be able to
+// respond to emails in the hub"): each thread also names the message a reply
+// answers (`replyRef`, the newest email they sent us that the Gmail sync
+// logged), and app/emailActions.sendEmailThreadReply sends into that Gmail
+// thread when a person presses Send. Messages are newest first (emailOrder.ts).
 // ---------------------------------------------------------------------------
 
 export type EmailMessage = {
@@ -21,6 +24,7 @@ export type EmailMessage = {
   sender: string; // who wrote it (contact/client name, or us)
   body: string;
   atLabel: string; // absolute ET timestamp (ET-everywhere date rule)
+  atISO: string; // for the seven-day fold (emailOrder.ts)
   ago: string;
 };
 
@@ -35,14 +39,34 @@ export type EmailThread = {
   lastAgo: string;
   lastDirection: "in" | "out";
   fresh: boolean; // latest is inbound within 48h — "probably needs eyes"
-  messages: EmailMessage[]; // oldest first, for natural reading order
+  messages: EmailMessage[]; // NEWEST first (Jordan, Oct 27 2026)
+  /** The CommLog row a hub reply answers: the newest email from them that the
+   *  Gmail sync logged with its mailbox and Gmail id. Null = answer in Gmail. */
+  replyRef: string | null;
+  /** The mailbox that email arrived in (the reply goes out from it). */
+  replyMailbox: string | null;
 };
+
+/** `gmail-<mailbox>:<gmailMessageId>`, the inbound row's externalId the Gmail
+ *  sync writes, as its two parts. Anything else (our own sends, a backfill)
+ *  is not something a reply can be threaded onto. */
+export function gmailMessageOfExternalId(externalId: string | null | undefined): { mailbox: string; messageId: string } | null {
+  const m = /^gmail-([^:\s]+@[^:\s]+):([A-Za-z0-9_-]+)$/.exec(externalId ?? "");
+  return m ? { mailbox: m[1].toLowerCase(), messageId: m[2] } : null;
+}
 
 // Same role tiers as every other CommLog reader (see hubTools.ts search_comms):
 // a viewer only sees rows at or below their tier. ADMIN sees ADMIN+CREATIVE
 // mail but NOT owner-only rows (unknown-sender leads on Jordan's personal
 // inbox are logged minRole OWNER); OWNER sees everything.
 const ROLE_RANK: Record<string, number> = { CREATIVE: 1, ADMIN: 2, OWNER: 3 };
+
+/** The CommLog minRole values an app role may read (the reply actions hold a
+ *  row to the same rule as this view). */
+export function visibleEmailRoles(role: string): string[] {
+  const tier = contentTier(role);
+  return Object.keys(ROLE_RANK).filter((r) => ROLE_RANK[r] <= ROLE_RANK[tier]);
+}
 
 // "Re: Re: Fwd: 12 Main St" and "12 Main St" are the same conversation — strip
 // any run of reply/forward prefixes (incl. "RE[2]:" counters some clients use)
@@ -82,7 +106,16 @@ export function gmailSearchHref(query: string, mailbox: string | null): string {
     : `https://mail.google.com/mail/u/0/#search/${q}`;
 }
 
-const WINDOW_DAYS = 60;
+/** A logged email's thread on this view: its normalized subject and the
+ *  person (the client record, else the name). The reply drafter reads a
+ *  thread back by the same key (app/emailActions). */
+export function emailThreadKey(r: { subject: string | null; clientId: string | null; clientName: string | null; contactName: string | null }): string {
+  const who = r.clientId ?? (r.clientName ?? r.contactName ?? "").trim().toLowerCase();
+  return `${normalizeSubject(r.subject)}::${who || "unknown"}`;
+}
+
+export const EMAIL_WINDOW_DAYS = 60;
+const WINDOW_DAYS = EMAIL_WINDOW_DAYS;
 const THREAD_CAP = 50;
 const FRESH_MS = 48 * 3600_000;
 
@@ -91,8 +124,7 @@ export async function getEmailThreads(opts: { excludeClientIds?: string[] } = {}
   // dashboard (src/app/page.tsx). contentTier folds app roles (EDITOR,
   // PHOTOGRAPHER, …) onto the CREATIVE/ADMIN/OWNER sensitivity ladder.
   const me = await getCurrentUser().catch(() => null);
-  const tier = contentTier(me?.role ?? "OWNER");
-  const allowed = Object.keys(ROLE_RANK).filter((r) => ROLE_RANK[r] <= ROLE_RANK[tier]);
+  const allowed = visibleEmailRoles(me?.role ?? "OWNER");
 
   const excludedProjectIds = opts.excludeClientIds?.length
     ? (await prisma.project.findMany({ where: { clientId: { in: opts.excludeClientIds } }, select: { id: true } })).map((p) => p.id)
@@ -130,8 +162,7 @@ export async function getEmailThreads(opts: { excludeClientIds?: string[] } = {}
   // titled mail ("Photos ready!") into one thread.
   const buckets = new Map<string, typeof rows>();
   for (const r of rows) {
-    const who = r.clientId ?? (r.clientName ?? r.contactName ?? "").trim().toLowerCase();
-    const key = `${normalizeSubject(r.subject)}::${who || "unknown"}`;
+    const key = emailThreadKey(r);
     const b = buckets.get(key);
     if (b) b.push(r);
     else buckets.set(key, [r]);
@@ -156,13 +187,15 @@ export async function getEmailThreads(opts: { excludeClientIds?: string[] } = {}
     });
     const latest = msgs[0];
     const counterpart = latest.clientName || latest.contactName || "Unknown sender";
+    // What a hub reply answers: their newest email the sync logged by Gmail id.
+    const answerable = msgs.find((m) => m.direction !== "out" && gmailMessageOfExternalId(m.externalId));
     threads.push({
       key,
       counterpart,
       isClient: Boolean(latest.clientId),
       subject: (latest.subject ?? "").trim() || "(no subject)",
-      // No gmail.send scope is connected, so replies happen in Gmail itself —
-      // a subject search is the most reliable deep link we can build without
+      // Gmail itself, for anything the hub's reply box can't do: a subject
+      // search is the most reliable deep link we can build without
       // the Gmail thread id. Oct 20 2026 (audit F13): in the mailbox the email
       // actually landed in (`authuser`), not whichever Google account is
       // first in this browser (/u/0/), so Kyle searches the right inbox.
@@ -172,14 +205,19 @@ export async function getEmailThreads(opts: { excludeClientIds?: string[] } = {}
       lastAgo: formatDistanceToNow(latest.occurredAt, { addSuffix: true }),
       lastDirection: latest.direction === "out" ? "out" : "in",
       fresh: latest.direction !== "out" && now - latest.occurredAt.getTime() <= FRESH_MS,
-      messages: [...msgs].reverse().map((m) => ({
+      // Rows arrive newest first, and that is the order shown (Jordan, Oct 27
+      // 2026: "newest emails should be at the top").
+      messages: msgs.map((m) => ({
         id: m.id,
         direction: m.direction === "out" ? "out" : "in",
         sender: m.direction === "out" ? m.contactName || "Realtour Pilot" : m.contactName || m.clientName || "Unknown sender",
         body: decodeEntities(m.body),
         atLabel: etDateTime(m.occurredAt),
+        atISO: m.occurredAt.toISOString(),
         ago: formatDistanceToNow(m.occurredAt, { addSuffix: true }),
       })),
+      replyRef: answerable?.id ?? null,
+      replyMailbox: answerable ? gmailMessageOfExternalId(answerable.externalId)?.mailbox ?? null : null,
     });
   }
 

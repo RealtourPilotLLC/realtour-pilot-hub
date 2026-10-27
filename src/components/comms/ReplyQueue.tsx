@@ -1,24 +1,25 @@
 "use client";
 
 import { etMonthDayTime } from "@/lib/datetime";
-import { useMemo, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import Link from "next/link";
 import {
   Sparkles, Loader2, Send, Copy, Check, MessageSquare, ChevronDown, ChevronUp,
-  AlertTriangle, Wand2, User, Camera, Clock, Inbox,
+  AlertTriangle, Wand2, User, Camera, Clock,
 } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { SegmentBadge } from "@/components/clients/SegmentBadge";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { cn } from "@/lib/utils";
-import { generateReply, generateAllReplies, sendReply } from "@/app/communications/replyActions";
+import { generateReply, sendReply } from "@/app/communications/replyActions";
 import { listMutedNumbers, unmuteCommsNumber } from "@/app/actions";
 import { CommsDismissButton } from "@/components/tasks/ChecklistButtons";
 import type { ReplyCard } from "@/lib/replyQueue";
 
-// THE REPLY QUEUE, as Kyle sees it. Every inbound text still owed an answer,
-// each with a reply already written, plus a box where he can say what he
-// actually wants to say and have it written properly.
+// A TEXT REPLY, as Kyle sees it: what they sent, a reply already written, and
+// a box where he can say what he actually wants to say and have it written
+// properly. Since Oct 27 2026 (Jordan: "One queue") it is one conversation at
+// a time, opened from its row on Messages · Waiting on us.
 //
 // Nothing here sends on its own. A human reads every message and clicks Send —
 // the same rule every client-facing message in the hub follows.
@@ -313,24 +314,24 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focu
   );
 }
 
+// ONE CONVERSATION'S REPLY SCREEN (Jordan, Oct 27 2026: "One queue"). The
+// queue itself is Messages · Waiting on us; a text's Reply there opens this
+// with that one conversation, its messages open and a reply ready to write.
+// The list this used to be (Draft all, the Everyone / Clients only filter,
+// the thank-yous fold) was the second queue, and is gone with it. The card
+// stays put after a send or a dismiss so its "Sent" can be read.
 export function ReplyQueue({
   cards: initial,
-  handled: initialHandled = [],
   focusKey = null,
 }: {
   cards: ReplyCard[];
-  handled?: ReplyCard[];
-  /** the conversation a Reply on Messages · Waiting on us opened: the page
-   *  puts it first; here it is marked and its conversation starts open */
+  /** the conversation a Reply on Messages · Waiting on us opened: marked,
+   *  its conversation open */
   focusKey?: string | null;
 }) {
-  const [cards, setCards] = useState(initial);
-  const [handled, setHandled] = useState(initialHandled);
+  const [cards] = useState(initial);
   const [state, setState] = useState<Record<string, CardState>>(() => (focusKey ? { [focusKey]: { ...blank(), showThread: true } } : {}));
-  const [filter, setFilter] = useState<"all" | "clients">("all");
-  const [showHandled, setShowHandled] = useState(false);
-  const [bulk, startBulk] = useTransition();
-  const [bulkNote, setBulkNote] = useState<string | null>(null);
+  const [, startWork] = useTransition();
 
   const get = (k: string) => state[k] ?? blank();
   // New words are a new message: a changed draft drops the old send identity.
@@ -341,31 +342,9 @@ export function ReplyQueue({
       return { ...s, [k]: { ...prev, ...p, ...fresh } };
     });
 
-  const visible = useMemo(
-    () => (filter === "clients" ? cards.filter((c) => c.isClient) : cards),
-    [cards, filter],
-  );
-
-  // Generate every visible draft at once. This is what turns the page from a
-  // list of chores into a stack of decisions.
-  const draftAll = () => {
-    const todo = visible.filter((c) => !get(c.key).draft && get(c.key).status !== "sent").map((c) => c.key);
-    if (todo.length === 0) return;
-    todo.forEach((k) => patch(k, { status: "drafting", error: null }));
-    setBulkNote(`Writing ${todo.length} replies…`);
-    startBulk(async () => {
-      const r = await generateAllReplies(todo);
-      todo.forEach((k) => {
-        const d = r.drafts[k];
-        patch(k, d ? { draft: d, status: "idle" } : { status: "idle", error: "Couldn't draft this one — try it on its own." });
-      });
-      setBulkNote(r.message);
-    });
-  };
-
   const draftOne = (card: ReplyCard, instruction?: string) => {
     patch(card.key, { status: "drafting", error: null, note: null });
-    startBulk(async () => {
+    startWork(async () => {
       const r = await generateReply(card.key, instruction ?? null);
       if (r.ok && r.draft) patch(card.key, { draft: r.draft, status: "idle", note: r.message, instruction: "" });
       else patch(card.key, { status: "idle", error: r.message });
@@ -380,15 +359,10 @@ export function ReplyQueue({
     // unanswered and is pressed again collides instead of sending twice.
     const intentId = s.intentId ?? mintIntentId();
     patch(card.key, { status: "drafting", error: null, intentId });
-    startBulk(async () => {
+    startWork(async () => {
       const r = await sendReply(card.key, s.draft, intentId).catch(() => ({ ok: false as const, pending: false, message: "Couldn't reach the hub. Press Send again: the same reply can't go twice." }));
       if (r.ok) {
         patch(card.key, { status: "sent", note: r.message, error: null });
-        // Drop it after a beat so Kyle sees the confirmation land.
-        setTimeout(() => {
-          setCards((cs) => cs.filter((c) => c.key !== card.key));
-          setHandled((cs) => cs.filter((c) => c.key !== card.key));
-        }, 1400);
       } else if (r.pending) {
         // A03: the provider did not answer, so this is neither sent nor failed.
         // The card STAYS (somebody has to look), but it is not reset to "idle"
@@ -404,109 +378,20 @@ export function ReplyQueue({
     });
   };
 
-  const drop = (key: string) => {
-    setCards((cs) => cs.filter((c) => c.key !== key));
-    setHandled((cs) => cs.filter((c) => c.key !== key));
-  };
-
-  const cardProps = (card: ReplyCard): CardProps => ({
-    card,
-    state: get(card.key),
-    patch: (p) => patch(card.key, p),
-    onDraft: (instruction) => draftOne(card, instruction),
-    onSend: () => send(card),
-    // Dismissing leaves the confirmation on screen for a beat, same as a send,
-    // so nothing blinks out from under the click; longer when the server
-    // explained something (audit F6), so it can actually be read.
-    onDismiss: (message) => setTimeout(() => drop(card.key), message ? 6000 : 1400),
-    focused: !!focusKey && card.key === focusKey,
-  });
-
-  if (cards.length === 0 && handled.length === 0) {
-    return (
-      <div>
-        <div className="rounded-2xl border border-border bg-surface p-10 text-center">
-          <Inbox className="mx-auto mb-3 size-8 text-success" />
-          <p className="text-base font-semibold">Everyone has been answered.</p>
-          <p className="mt-1 text-sm text-muted">
-            Nothing inbound is waiting on a reply. New messages land here automatically.
-          </p>
-        </div>
-        {/* The un-mute list has to be reachable from the empty state too, or a
-            number muted by mistake is a client we never hear from again. */}
-        <MutedNumbers />
-      </div>
-    );
-  }
-
-  const pendingDraftable = visible.filter((c) => !get(c.key).draft && get(c.key).status !== "sent").length;
-
   return (
     <div className="space-y-3">
-      {/* Controls */}
-      {cards.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={draftAll}
-            disabled={bulk || pendingDraftable === 0}
-            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
-          >
-            {bulk ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-            {pendingDraftable === 0 ? "All drafted" : `Draft all ${pendingDraftable}`}
-          </button>
-          <div className="flex items-center gap-1 rounded-lg border border-border p-0.5">
-            {(["all", "clients"] as const).map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={cn(
-                  "inline-flex min-h-10 items-center rounded-md px-2.5 py-1 text-xs font-medium transition",
-                  filter === f ? "bg-surface-2 text-foreground" : "text-muted hover:text-foreground",
-                )}
-              >
-                {/* "Everyone" carries no number: the Texts tab already shows it. */}
-                {f === "all" ? "Everyone" : `Clients only (${cards.filter((c) => c.isClient).length})`}
-              </button>
-            ))}
-          </div>
-          {bulkNote && <span className="text-xs text-muted">{bulkNote}</span>}
-        </div>
-      )}
-
-      {cards.length === 0 ? (
-        <div className="rounded-2xl border border-success/40 bg-surface p-6 text-center">
-          <Check className="mx-auto mb-2 size-6 text-success" />
-          <p className="text-sm font-semibold">Nothing needs an answer.</p>
-          <p className="mt-1 text-sm text-muted">The only unanswered messages are thank-yous.</p>
-        </div>
-      ) : (
-        visible.map((card) => <ReplyCardView key={card.key} {...cardProps(card)} />)
-      )}
-
-      {/* Courtesy closers and OUR OWN TEAM — technically unanswered, not a
-          client sitting on a reply. Kept visible (Kyle may well want to answer
-          a photographer, and every card here can be dismissed) but out of the
-          count, which is what made the Replies badge disagree with the Comms
-          tab and the home pill until Sep 16. */}
-      {handled.length > 0 && (
-        <div className="pt-2">
-          <button
-            onClick={() => setShowHandled(!showHandled)}
-            className="inline-flex min-h-11 items-center gap-1.5 text-left text-sm font-medium text-muted hover:text-foreground"
-          >
-            {showHandled ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
-            {handled.length} more that probably need nothing
-            <span className="text-xs text-muted-2">(thank-yous, confirmations, and our own team)</span>
-          </button>
-          {showHandled && (
-            <div className="mt-3 space-y-3">
-              {handled.map((card) => <ReplyCardView key={card.key} {...cardProps(card)} />)}
-            </div>
-          )}
-        </div>
-      )}
-
-      <MutedNumbers />
+      {cards.map((card) => (
+        <ReplyCardView
+          key={card.key}
+          card={card}
+          state={get(card.key)}
+          patch={(p) => patch(card.key, p)}
+          onDraft={(instruction) => draftOne(card, instruction)}
+          onSend={() => send(card)}
+          onDismiss={() => {}}
+          focused={!!focusKey && card.key === focusKey}
+        />
+      ))}
     </div>
   );
 }
@@ -517,8 +402,9 @@ export function ReplyQueue({
 // lives right here, one click away, and un-muting brings the conversation
 // straight back (nothing was ever deleted). Loaded on demand: the page costs
 // nothing when nobody has muted anything, which is the normal case.
+// Oct 27 2026: also at the foot of Messages · Waiting on us, the one queue.
 // ---------------------------------------------------------------------------
-function MutedNumbers() {
+export function MutedNumbers() {
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<{ phone: string; since: string; reason: string | null }[] | null>(null);
   // F18 (Oct 20 2026): a refused or failed read/un-mute says so, rather than

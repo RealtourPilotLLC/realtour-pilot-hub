@@ -158,11 +158,14 @@ function bccHeader(bcc: string | null, to: string): string | null {
 // draft behind the task "Send email" button. Loads the thread, replies to the
 // latest message that isn't ours (proper In-Reply-To/References + Re: subject,
 // same threadId) so it lands inside the conversation in everyone's inbox.
+// Oct 27 2026: `References` carries the message's own References chain plus its
+// Message-ID (RFC 5322), not the Message-ID alone, so Outlook and Apple Mail
+// thread the reply as well as Gmail does.
 async function gmailReplyTarget(
   mailbox: string,
   threadId: string,
 ): Promise<
-  | { ok: true; token: string; acctEmail: string; to: string; subject: string; msgId: string }
+  | { ok: true; token: string; acctEmail: string; to: string; subject: string; msgId: string; references: string }
   | { ok: false; error: string; needsReconnect?: boolean }
 > {
   const accounts = await gmailAccounts();
@@ -177,7 +180,7 @@ async function gmailReplyTarget(
   let thread: GmailThread;
   try {
     thread = await gmail<GmailThread>(
-      `/threads/${threadId}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Message-ID&metadataHeaders=Reply-To`,
+      `/threads/${encodeURIComponent(threadId)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Message-ID&metadataHeaders=Reply-To&metadataHeaders=References`,
       token,
     );
   } catch {
@@ -194,16 +197,19 @@ async function gmailReplyTarget(
   if (!to) return { ok: false, error: "Couldn't work out who to reply to." };
   const origSubject = header(target, "Subject");
   const subject = /^re:/i.test(origSubject) ? origSubject : `Re: ${origSubject}`;
-  return { ok: true, token, acctEmail: acct.email, to, subject, msgId: header(target, "Message-ID") };
+  const msgId = header(target, "Message-ID").replace(/[\r\n]+/g, " ").trim();
+  const prior = header(target, "References").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+  const references = msgId ? (prior.split(" ").includes(msgId) ? prior : `${prior} ${msgId}`.trim()) : prior;
+  return { ok: true, token, acctEmail: acct.email, to, subject, msgId, references };
 }
 
 // Who a reply to this thread would go to — the UI shows it before Send.
 export async function resolveGmailReplyTarget(
   mailbox: string,
   threadId: string,
-): Promise<{ ok: true; to: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; to: string; subject: string; from: string } | { ok: false; error: string; needsReconnect?: boolean }> {
   const t = await gmailReplyTarget(mailbox, threadId);
-  return t.ok ? { ok: true, to: t.to } : { ok: false, error: t.error };
+  return t.ok ? { ok: true, to: t.to, subject: t.subject, from: t.acctEmail } : { ok: false, error: t.error, needsReconnect: t.needsReconnect };
 }
 
 export async function sendGmailReply(opts: {
@@ -216,10 +222,16 @@ export async function sendGmailReply(opts: {
    *  a blind copy on this very message, or, if it carries a one-use sign-in
    *  link, a separate redacted copy once this one was accepted. */
   clientCopy?: boolean;
-}): Promise<{ ok: true; to: string; subject: string; copy?: ClientEmailCopyMode } | { ok: false; error: string; needsReconnect?: boolean }> {
+}): Promise<
+  // Oct 27 2026: also Gmail's own id for the sent message (null when its answer
+  // can't be read), so the hub's log row is the one the Sent-folder reader
+  // would write (`gmail-sent-<threadId>-<id>`) and never doubles it.
+  | { ok: true; to: string; subject: string; copy?: ClientEmailCopyMode; id: string | null; mailbox: string }
+  | { ok: false; error: string; needsReconnect?: boolean }
+> {
   const t = await gmailReplyTarget(opts.mailbox, opts.threadId);
   if (!t.ok) return t;
-  const { token, acctEmail, to, subject, msgId } = t;
+  const { token, acctEmail, to, subject, msgId, references } = t;
   if (opts.expectedTo && opts.expectedTo.toLowerCase() !== to.toLowerCase()) {
     return { ok: false, error: `The thread changed — the reply would now go to ${to}, not ${opts.expectedTo}. Re-open and confirm.` };
   }
@@ -235,7 +247,8 @@ export async function sendGmailReply(opts: {
     `From: ${acctEmail}`,
     // RFC 2047-encode so names/subjects with non-ASCII survive.
     `Subject: =?UTF-8?B?${Buffer.from(subject).toString("base64")}?=`,
-    ...(msgId ? [`In-Reply-To: ${msgId}`, `References: ${msgId}`] : []),
+    ...(msgId ? [`In-Reply-To: ${msgId}`] : []),
+    ...(references ? [`References: ${references}`] : []),
     "Content-Type: text/plain; charset=UTF-8",
     "MIME-Version: 1.0",
     "",
@@ -251,9 +264,52 @@ export async function sendGmailReply(opts: {
     return { ok: false, error: "Gmail can read but not send yet — reconnect Google in Connections to grant sending.", needsReconnect: true };
   }
   if (!res.ok) return { ok: false, error: `Gmail send failed (${res.status}).` };
+  const id = await res
+    .json()
+    .then((j: unknown) => (typeof (j as { id?: unknown })?.id === "string" ? (j as { id: string }).id : null))
+    .catch(() => null);
   // The client has it. Only now the separate, redacted copy (sign-in links).
   const copied = monitor && plan?.mode === "copy" ? await monitor.sendClientEmailCopy(plan, { subject, mailbox: acctEmail }) : false;
-  return { ok: true, to, subject, copy: !plan || plan.mode === "none" ? "none" : plan.mode === "copy" ? (copied ? "copy" : "copy_failed") : bcc ? "bcc" : "none" };
+  return { ok: true, to, subject, id, mailbox: acctEmail, copy: !plan || plan.mode === "none" ? "none" : plan.mode === "copy" ? (copied ? "copy" : "copy_failed") : bcc ? "bcc" : "none" };
+}
+
+/** The Gmail thread a message belongs to, read from the mailbox it is in
+ *  (Oct 27 2026: the hub's email threads are grouped from the comms log, which
+ *  keeps each message's Gmail id but not its thread). One metadata read. */
+export async function gmailThreadOfMessage(
+  mailbox: string,
+  messageId: string,
+): Promise<{ ok: true; threadId: string } | { ok: false; error: string; needsReconnect?: boolean }> {
+  const acct = (await gmailAccounts()).find((a) => a.email.toLowerCase() === mailbox.toLowerCase());
+  if (!acct) return { ok: false, error: `The ${mailbox} mailbox isn't connected.`, needsReconnect: true };
+  let token: string;
+  try {
+    token = await accessTokenFor(acct.refreshToken);
+  } catch {
+    return { ok: false, error: "Google token expired. Reconnect Gmail in Connections.", needsReconnect: true };
+  }
+  try {
+    const msg = await gmail<GmailMsg>(`/messages/${encodeURIComponent(messageId)}?format=minimal`, token);
+    return msg.threadId ? { ok: true, threadId: msg.threadId } : { ok: false, error: "Gmail didn't say which thread that email is in." };
+  } catch {
+    return { ok: false, error: "Couldn't find that email in Gmail any more." };
+  }
+}
+
+/** Can this one mailbox SEND? The live token's granted scopes (tokeninfo, as
+ *  gmailSendHealth). null = couldn't check, distinct from "no". */
+export async function gmailCanSend(mailbox: string): Promise<boolean | null> {
+  const acct = (await gmailAccounts()).find((a) => a.email.toLowerCase() === mailbox.toLowerCase());
+  if (!acct) return false;
+  try {
+    const token = await accessTokenFor(acct.refreshToken);
+    const res = await fetchWithTimeout(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`, { cache: "no-store" });
+    if (!res.ok) return null;
+    const info = (await res.json().catch(() => ({}))) as { scope?: string };
+    return typeof info.scope === "string" ? info.scope.includes("gmail.send") : null;
+  } catch {
+    return null;
+  }
 }
 
 // Send a NEW email (not a reply into an existing thread). Client feedback
@@ -803,7 +859,8 @@ async function logSentReply(opts: {
 
 // ---------------------------------------------------------------------------
 // Reading email threads (for the "see the conversation" view on a client page).
-// Read-only; we only ever display, never send.
+// These readers only read. A reply goes out through sendGmailReply, and only
+// when a person presses Send (app/emailActions, Oct 27 2026).
 // ---------------------------------------------------------------------------
 
 export type GmailEmail = {

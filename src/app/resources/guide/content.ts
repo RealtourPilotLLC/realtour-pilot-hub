@@ -674,8 +674,9 @@ The same loops appear on the dashboard, eight at a time, with the same buttons.`
       title: "Client communication",
       body: `Three sweeps a day — 10:30, 2:00, 5:00 — all showing the same list: clients who wrote to us and have not had an answer, with how long they have waited. Over 24 hours goes red.
 
-- **Reply** on a row opens Messages · Texts, where every unanswered inbound text already has a draft you can edit or replace. An email opens Messages · Email at that thread.
-- **Messages · Waiting on us** is the one list of every client waiting on a reply, texts and email together, oldest first.
+- **Messages · Waiting on us** is the one list of everything waiting on a reply: clients (texts and email together, oldest first), texts from numbers we have not saved, and new leads.
+- **Reply** on a text opens that conversation with a draft one press away, to edit or replace. **Reply** on an email opens Messages · Email at that thread, with a reply box: write it (or press **Draft a reply**), check who it goes to, and press **Send**. It goes into the same Gmail thread. Nothing sends until you press Send.
+- Email threads read newest first. Anything older than a week folds under **Show older emails**.
 
 ### Texts that send themselves
 Two kinds go out without you: **shoot confirmations** about 48 hours before the shoot, and **delivery texts** once Aryeo shows everything on the order is live. They only send inside the window set in Settings → Automated texts — **9am to 4pm ET** today. Nothing goes out in the evening; it waits for the next morning. A client with several listings gets at most one automatic text per pass.
@@ -683,7 +684,7 @@ Two kinds go out without you: **shoot confirmations** about 48 hours before the 
 Everything else waits for a human. The comms **Outbox** holds drafted texts ready to send, and the dashboard's **texts to send** chip counts exactly that list.
 
 ### Getting rid of something you have already dealt with
-Every conversation on **Messages · Texts** has a **Dismiss** button — a client, a number we have never saved, one of our own photographers, a blast from a stranger. Say why: *answered elsewhere*, *no reply needed*, or *spam*. The row goes; the messages stay in Messages · All, and nothing is deleted. It is a line drawn under what has been said so far, so if that person writes again afterwards they come straight back. **Spam** also mutes that number until you un-mute it — the list of muted numbers sits at the bottom of the same page, and one of our own team's numbers can never be muted.
+Every row on **Messages · Waiting on us** has a **Dismiss** button — a client, a number we have never saved, one of our own photographers, a blast from a stranger. Say why: *answered elsewhere*, *no reply needed*, or *spam*. The row goes; the messages stay in Messages · All, and nothing is deleted. It is a line drawn under what has been said so far, so if that person writes again afterwards they come straight back. **Spam** also mutes that number until you un-mute it — the list of muted numbers sits at the bottom of the same page, and one of our own team's numbers can never be muted.
 
 Our own photographers and editors texting the office no longer count as "waiting on a reply" anywhere. They still show, folded in under the thank-yous, so you can answer or dismiss them — they are simply not a client sitting on an unanswered message, and the counts on Messages and Home agree on that.
 
@@ -695,7 +696,7 @@ Our own photographers and editors texting the office no longer count as "waiting
 If nobody is waiting on a reply and there are Slack asks open, **Tasks** opens on the Slack asks list rather than an empty Comms tab. Click any tab and it stays where you put it.`,
       links: [
         { href: "/communications", label: "Messages · Waiting on us" },
-        { href: "/communications?tab=texts", label: "Messages · Texts" },
+        { href: "/communications?tab=email", label: "Messages · Email" },
         { href: "/tasks?tab=slack", label: "Tasks · Slack asks" },
         { href: "/communications?tab=outbox", label: "Outbox" },
       ],

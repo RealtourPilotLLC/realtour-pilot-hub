@@ -43,18 +43,23 @@ function fmtPhone(p: string) {
 // Tasks page's Replies tab (/tasks?tab=comms). The last two now open here.
 //
 // The views, in order (components/comms/messagesNav.ts):
-//   Waiting on us  every client waiting on a reply, texts and email together,
-//                  oldest first, with Reply and Dismiss (the Texts tab's own
-//                  control, Oct 21 2026: the one place a waiting client is
-//                  cleared); new leads; promises at risk. The same read as
-//                  the Home summary box.
-//   Texts          every unanswered text, each with a reply ready to write
-//                  (was "Replies"; ?tab=replies still opens it). Its number
-//                  counts only the unsaved and team numbers Waiting leaves out.
-//   Email          client email threads from Gmail (read here, reply in Gmail)
+//   Waiting on us  THE ONE QUEUE (Jordan, Oct 27 2026: "One queue"): every
+//                  client waiting on a reply, texts and email together,
+//                  oldest first, with Reply and Dismiss (Oct 21 2026: the
+//                  one place a waiting client is cleared); texts from
+//                  numbers we have not saved; new leads; promises at risk;
+//                  folded, the texts that probably need nothing. Its clients
+//                  and leads are the same read as the Home summary box.
+//   Email          client email threads from Gmail, newest first, each with
+//                  a reply box that sends into the same Gmail thread (Oct 27
+//                  2026: "I want to be able to respond to emails in the hub")
 //   Team           internal messages by property
 //   Outbox         today's drafted confirmation and delivery texts
 //   All            every OpenPhone conversation (was the page's "Inbox")
+// The Texts tab (every unanswered text, a second list of the same waiting
+// clients) is gone from the bar. ?tab=texts&focus=<key> is now the screen a
+// text's Reply opens: that one conversation with a reply ready to write.
+// ?tab=texts or ?tab=replies with no focus opens Waiting on us.
 // Each view's number is on its tab and nowhere else on the page. Every view
 // is shareable by ?tab= and loads only its own list; the counts on the tabs
 // come from the two reads below, which every view shares.
@@ -96,15 +101,19 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
   // THE MONEY RULE ON CLIENT WORDS (audit F7): owner only, on every view,
   // the same scrub Waiting on us already ran.
   const clean = isOwner ? (t: string) => t : scrubMoney;
-  // ONE "WAITING ON US" (Jordan, Oct 21 2026; audit F5). A client waiting on
-  // a text is counted and cleared on Waiting on us; the Texts tab's number is
-  // only what Waiting does not show, the numbers we have not saved and our own
-  // team, so the tab bar never counts one waiting client twice. Texts still
-  // lists every unanswered text, to write the reply.
-  const textsOnlyHere = texts.cards.filter((c) => !c.clientId).length;
+  // Display copies only: the send and draft actions re-read each card on the
+  // server by its key, so scrubbing what the browser shows changes nothing
+  // that is sent or drafted.
+  const shown = (c: (typeof texts.cards)[number]) =>
+    isOwner ? c : { ...c, lastInbound: clean(c.lastInbound), turns: c.turns.map((t) => ({ ...t, text: clean(t.text) })) };
+  // ONE QUEUE (Jordan, Oct 21 2026, audit F5; Oct 27 2026: "One queue").
+  // Waiting on us counts and clears every waiting client, text and email. The
+  // texts it did not list, from numbers we have not saved, were only on the
+  // Texts tab; they are on Waiting on us now, in its number, so one tab counts
+  // everything waiting on us and nothing twice.
+  const unsavedTexts = texts.cards.filter((c) => !c.clientId).map(shown);
   const counts: Partial<Record<MessagesTab, TabCount>> = {
-    waiting: { n: board.waiting.length + board.leads.length, tone: board.counts.behind > 0 ? "danger" : "brand" },
-    texts: { n: textsOnlyHere, tone: "danger" },
+    waiting: { n: board.waiting.length + board.leads.length + unsavedTexts.length, tone: board.counts.behind > 0 || unsavedTexts.some((c) => c.hoursWaiting >= MESSAGE_BEHIND_HOURS) ? "danger" : "brand" },
     outbox: { n: board.outbox },
   };
   const tabBar = (extra: Partial<Record<MessagesTab, TabCount>> = {}) => <MessagesTabs tab={tab} counts={{ ...counts, ...extra }} test={includeTest} />;
@@ -119,7 +128,7 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
       <div>
         <PageHeader
           title="Messages"
-          subtitle={`Clients waiting on a reply (texts and email, oldest first) and new leads.${behind ? ` ${behind} ${behind === 1 ? "client has" : "clients have"} waited over ${MESSAGE_BEHIND_HOURS} hours.` : ""}`}
+          subtitle={`Everyone waiting on a reply: clients (texts and email, oldest first), numbers we have not saved, and new leads.${behind ? ` ${behind} ${behind === 1 ? "client has" : "clients have"} waited over ${MESSAGE_BEHIND_HOURS} hours.` : ""}`}
         />
         <div className="mx-auto max-w-3xl p-4 pb-16 sm:p-6">
           {tabBar()}
@@ -130,55 +139,42 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
             includeTest={includeTest}
             excludeClientIds={excludeClientIds}
             showFollowupsLink={!isOwner}
+            texts={{ unsaved: unsavedTexts, aside: texts.handled.map(shown) }}
           />
         </div>
       </div>
     );
   }
 
-  // TEXTS: every inbound text still waiting on an answer, each with a draft
-  // ready to read. Jordan: "a generate response engine for Kyle so he can have
-  // responses generated to all inbound text messages, and then give him the
-  // ability to explain what he wants to say to be able to tailor the message."
+  // A TEXT'S REPLY SCREEN (?tab=texts&focus=<key>): the Reply on a Waiting on
+  // us row. That one conversation, its messages open, a draft ready to read.
+  // Jordan: "a generate response engine for Kyle so he can have responses
+  // generated to all inbound text messages, and then give him the ability to
+  // explain what he wants to say to be able to tailor the message."
   //
   // The 30-day comms review found the two habits that cost us: messages that go
   // unanswered, and answers with no real time in them ("should be" was the most
-  // used phrase). This view attacks both: the queue can't hide a message, and
-  // every draft is written under a rule that bans vague timing.
-  //
-  // ?focus= is a Reply pressed on Waiting on us: that conversation goes first,
-  // marked, with its messages open.
+  // used phrase). Every draft here is written under a rule that bans vague
+  // timing; the queue that can't hide a message is Waiting on us (Oct 27 2026,
+  // one queue: this was a second list of the same texts).
   if (tab === "texts") {
     const all = [...texts.cards, ...texts.handled];
     const match = focus ? all.find((c) => c.key === focus || c.key.slice(2) === focus) ?? null : null;
-    // Display copies only: the send and draft actions re-read each card on
-    // the server by its key, so scrubbing what the browser shows changes
-    // nothing that is sent or drafted.
-    const shown = (c: (typeof all)[number]) =>
-      isOwner ? c : { ...c, lastInbound: clean(c.lastInbound), turns: c.turns.map((t) => ({ ...t, text: clean(t.text) })) };
-    const cards = (match ? [match, ...texts.cards.filter((c) => c !== match)] : texts.cards).map(shown);
-    const handled = (match ? texts.handled.filter((c) => c !== match) : texts.handled).map(shown);
-    const oldestDays = Math.floor(texts.oldestHours / 24);
     return (
       <div>
         <PageHeader
           title="Messages"
-          subtitle={`Every unanswered text, with a reply ready to write.${oldestDays >= 1 ? ` The oldest has waited ${oldestDays} day${oldestDays === 1 ? "" : "s"}.` : ""}`}
+          subtitle={match ? `Reply to ${match.displayName}. A draft is one press away; nothing sends until you press Send.` : "Waiting on us has everything still waiting on a reply."}
         />
         <div className="mx-auto max-w-3xl p-4 pb-16 sm:p-6">
           {tabBar()}
-          {focus && (
-            <p className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
-              <span>{match ? `Answering ${match.displayName}. Their conversation is first.` : "That conversation is not waiting on a text reply any more."}</span>
-              <Link href={messagesHref("waiting", { test: includeTest })} className="inline-flex min-h-11 items-center font-medium text-brand underline">Back to Waiting on us</Link>
-            </p>
-          )}
+          <p className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
+            <span>{match ? `Answering ${match.displayName}.` : "That conversation is not waiting on a text reply any more."}</span>
+            <Link href={messagesHref("waiting", { test: includeTest })} className="inline-flex min-h-11 items-center font-medium text-brand underline">Back to Waiting on us</Link>
+          </p>
           {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden. */}
           {includeTest && <p className="mb-3 text-xs text-muted">Showing real and test records</p>}
-          <p className="mb-3 text-[13px] text-muted">
-            Clients waiting on a reply are counted on <Link href={messagesHref("waiting", { test: includeTest })} className="font-medium text-brand underline">Waiting on us</Link>. This tab&rsquo;s number is texts from numbers we have not saved and from our own team.
-          </p>
-          <ReplyQueue key={`${match?.key ?? "all"}:${includeTest ? "test" : "real"}`} cards={cards} handled={handled} focusKey={match?.key ?? null} />
+          {match && <ReplyQueue key={`${match.key}:${includeTest ? "test" : "real"}`} cards={[shown(match)]} focusKey={match.key} />}
         </div>
       </div>
     );
@@ -207,12 +203,15 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
     );
   }
 
-  // Email: read-only client/lead threads from the Gmail sync (CommLog rows),
-  // no OpenPhone involved. Replies happen in Gmail (no send scope connected).
-  // ?focus= is a Reply pressed on Waiting on us: that thread goes first, open.
+  // Email: client/lead threads from the Gmail sync (CommLog rows), no
+  // OpenPhone involved. Each thread's messages are newest first, a week open
+  // and the rest folded, with a reply box that sends into the same Gmail
+  // thread (Jordan, Oct 27 2026). ?focus= is a Reply pressed on Waiting on us:
+  // that thread goes first, open, its reply box ready.
+  // No number on this tab (Oct 27 2026, one queue): an email waiting on us is
+  // counted once, on Waiting on us.
   if (tab === "email") {
     const read = await getEmailThreads({ excludeClientIds });
-    const fresh = read.fresh;
     // The money rule on client email (audit F7): owner only.
     const threads = isOwner
       ? read.threads
@@ -236,17 +235,15 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
       <div>
         <PageHeader
           title="Messages"
-          subtitle="Client email from the last 60 days, grouped into threads. Reply from Gmail."
+          subtitle="Client email from the last 60 days, grouped into threads, newest first. Open a thread to reply."
           actions={<Badge soft="var(--surface-2)">Synced from Gmail</Badge>}
         />
         <div className="p-4 sm:p-6">
-          {/* "Unread-ish": threads where the client wrote last, in the past 48h.
-              Computed by this view's own query, so it shows here only. */}
-          {tabBar({ email: { n: fresh, tone: "brand" } })}
+          {tabBar()}
           {focus && (
             <p className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
               {match ? (
-                <span>{exact ? "Their thread is first and open." : "Their latest thread is first and open."} Use Open in Gmail to answer.</span>
+                <span>{exact ? "Their thread is first and open." : "Their latest thread is first and open."} Write your reply in it, or use Open in Gmail.</span>
               ) : (
                 <span>
                   That email is not in the last 60 days shown here.{" "}
@@ -260,7 +257,7 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
           )}
           {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden. */}
           {includeTest && <p className="mb-3 text-xs text-muted">Showing real and test records</p>}
-          <EmailThreadList key={match?.key ?? "all"} threads={ordered} focusKey={match?.key ?? null} />
+          <EmailThreadList key={match?.key ?? "all"} threads={ordered} focusKey={match?.key ?? null} nowMs={now.getTime()} />
         </div>
       </div>
     );

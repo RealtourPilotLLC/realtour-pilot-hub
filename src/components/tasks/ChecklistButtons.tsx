@@ -255,7 +255,7 @@ const COMMS_REASONS: { key: string; label: string; title: string }[] = [
 
 // ONE DISMISS FOR BOTH TABS (Jordan, Oct 21 2026; audit F5): Messages · Waiting
 // on us clears a waiting client with this same control, and the same reasons,
-// as the Texts tab. `groupKey` scopes an email row to its sender group (the
+// as a text reply screen. `groupKey` scopes an email row to its sender group (the
 // email ack the old Handled tick wrote), so clearing one sender never clears
 // another's thread under the same client record.
 export function CommsDismissButton({

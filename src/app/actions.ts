@@ -434,7 +434,7 @@ export async function unmuteCommsNumber(phone: string): Promise<{ ok: boolean; m
   return { ok: true };
 }
 
-/** The muted list, for the Texts tab's fold. Read on demand (a click), so
+/** The muted list, for the fold at the foot of Waiting on us. Read on demand (a click), so
  *  the page costs nothing when nobody has muted anything.
  *  Oct 20 2026 (audit F18): a refusal is an error, not an empty list. It
  *  used to answer [] and the screen said "Nothing is muted". */
@@ -472,7 +472,7 @@ export async function listMutedNumbers(): Promise<
 //
 // A LEAD's Disregard (Kyle, Oct 26 2026: "can we have an option to disregard
 // these? a lot are spam") is this same dismissal with its own two reasons.
-// "spam" on a phone lead also mutes the number, as the Texts tab's Spam does,
+// "spam" on a phone lead also mutes the number, as a text reply's Spam does,
 // so it opens no lead, no Slack ping and no Texts row again until someone
 // un-mutes it (the mute is the one switch, so un-muting brings its leads
 // back); an email lead closed as spam never reopens (google.ts), until someone
@@ -586,7 +586,7 @@ export async function dismissTask(
   return { ok: true, message: `Dismissed — ${why}.` };
 }
 
-/** What a lead's Disregard did, after muting a spam number (office only, as on the Texts tab). */
+/** What a lead's Disregard did, after muting a spam number (office only, as on a text reply). */
 async function leadDismissedMessage(dedupeKey: string | null, reason: string): Promise<string> {
   if (reason === "not a lead") return "Disregarded: not a lead. If they write again, it comes back.";
   if (reason !== "spam") return `Disregarded: ${reason}.`;
