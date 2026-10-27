@@ -626,6 +626,9 @@ export async function rebalanceRemaining(planId: string, actor: BulkActor, opts:
 export async function carryForwardAfterFilming(projectId: string): Promise<{ carried: number; sessionNo: number | null }> {
   const at = await sessionOfProject(projectId);
   if (!at) return { carried: 0, sessionNo: null };
+  // The session's videos now exist: date them by batch at once (Oct 27 2026,
+  // lib/bulkBatches), not at the next hourly pass.
+  await import("@/lib/bulkBatches").then((m) => m.stampBulkBatches({ monthId: at.plan.monthId })).catch(() => null);
   const board = await bulkBoardForMonth(at.plan.monthId);
   if (!board) return { carried: 0, sessionNo: at.sessionNo };
   const session = board.sessions.find((s) => s.no === at.sessionNo);

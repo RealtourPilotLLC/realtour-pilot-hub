@@ -208,6 +208,15 @@ export async function GET(req: NextRequest) {
     const { sweepOutputUnits } = await import("@/lib/deliverableOutputs");
     return sweepOutputUnits({ max: 40, budgetMs: 20_000 });
   }, { maxMs: 25_000 });
+  // BULK PLANS' BATCH DATES (Oct 27 2026, lib/bulkBatches): every video on an
+  // active bulk plan carries its batch's date (Jordan: "8 videos done every
+  // 7 - 10 business days"). Re-read every pass, because a session's videos
+  // arrive when its upload is submitted. Only rows that changed are written.
+  await step("bulkBatches", async () => {
+    const { stampBulkBatches } = await import("@/lib/bulkBatches");
+    const r = await stampBulkBatches();
+    return { plans: r.plans, videos: r.videos, changed: r.changed, keptOtherRule: r.keptOtherRule };
+  }, { maxMs: 15_000 });
   // WAITING ON A SECOND SHOOT (Oct 22 2026, lib/secondShoot): a video the
   // office held for another appointment is released, with its own clock from
   // that shoot, once the later visit's video footage is in (the upload page

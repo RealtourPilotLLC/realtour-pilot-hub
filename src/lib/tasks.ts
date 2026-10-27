@@ -3297,7 +3297,10 @@ export async function mintEditTask(projectId: string): Promise<void> {
   // The due, then the aim in words (never a second due date).
   const { etWhen } = await import("@/lib/editorDue");
   const dueWords = oneDue?.at
-    ? `Due ${etWhen(oneDue.at)}${oneDue.source === "office" ? " (set by the office)" : oneDue.source === "reopened" ? " (the reopened work)" : ""}.${oneDue.aimAt ? ` Aim to hand it in by ${etWhen(oneDue.aimAt)} so review has time.` : ""}`
+    ? oneDue.source === "batch"
+      // A bulk plan's batch (Oct 27 2026): the next 8 videos, never all of them.
+      ? `The next batch of 8 videos is due ${etWhen(oneDue.at)}.${oneDue.aimAt ? ` Aim to have them in by ${etWhen(oneDue.aimAt)}.` : ""} Each video's own date is on the brief.`
+      : `Due ${etWhen(oneDue.at)}${oneDue.source === "office" ? " (set by the office)" : oneDue.source === "reopened" ? " (the reopened work)" : ""}.${oneDue.aimAt ? ` Aim to hand it in by ${etWhen(oneDue.aimAt)} so review has time.` : ""}`
     : "No due date yet.";
 
   // TWO OR MORE VIDEOS ON A LISTING JOB (audit H4a, Oct 22 2026): the card

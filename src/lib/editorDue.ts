@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getVideoSlaStatus, videoTier } from "@/lib/projectStatus";
 import { pinnedPromise, type PromiseRules } from "@/lib/turnaround";
 import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
+import { BULK_BATCH_SOURCE } from "@/lib/bulkBatchCore";
 
 // ---------------------------------------------------------------------------
 // THE EDIT'S DUE DATE IN EVERY "YOU HAVE WORK" MESSAGE (Oct 22 2026). Jordan:
@@ -52,7 +53,7 @@ export type VideoDueInput = {
   client?: { socialClient?: boolean | null } | null;
 };
 
-export type VideoDueSource = "reopened" | "office" | "promise" | "sla";
+export type VideoDueSource = "reopened" | "office" | "batch" | "promise" | "sla";
 export type VideoDue = {
   /** When the video is due (late after this). Null: no video owed, or nothing dates it. */
   at: Date | null;
@@ -79,8 +80,11 @@ export const VIDEO_DUE_SELECT = {
  * THE video due, pure. In the order the hub trusts dates:
  *   1. a reopened job's clock (when the caller passes one: `reopened`),
  *   2. the office's date (dueOverrideAt),
- *   3. the promise the job was sold under (pinnedPromise),
- *   4. the SLA engine off the video deliverable rows (getVideoSlaStatus: the
+ *   3. a bulk plan's current batch (`batch`: the earliest open video's batch
+ *      date, lib/bulkBatches; Jordan, Oct 27 2026: "8 videos done every 7 - 10
+ *      business days"), with its aim of 7 business days,
+ *   4. the promise the job was sold under (pinnedPromise),
+ *   5. the SLA engine off the video deliverable rows (getVideoSlaStatus: the
  *      office's tier, else the hub's reading of the rows; the clock from the
  *      last visit that has happened).
  * A job that owes no video has no date (the photos are not the edit's clock).
@@ -90,7 +94,7 @@ export const VIDEO_DUE_SELECT = {
  */
 export function videoDueOf(
   p: VideoDueInput,
-  opts: { now?: Date; rules?: PromiseRules | null; reopened?: { at: Date | null } | null } = {},
+  opts: { now?: Date; rules?: PromiseRules | null; reopened?: { at: Date | null } | null; batch?: { at: Date; aimAt: Date | null } | null } = {},
 ): VideoDue {
   if (!videoTier(p.deliverables)) return NONE;
   const aim = (at: Date) => new Date(at.getTime() - EDIT_AIM_HOURS * HOUR);
@@ -101,9 +105,10 @@ export function videoDueOf(
         { shootDate: p.shootDate, status: p.status ?? null, deliverables: p.deliverables, client: p.client ?? null, appointments: p.appointments ?? [], tierOverride: p.tierOverride ?? null, packageName: p.packageName ?? null },
         { now: (opts.now ?? new Date()).getTime(), ...(opts.rules ? { rules: opts.rules } : {}) },
       );
-  const computedAt = pin ?? sla?.due ?? null;
+  const computedAt = opts.batch?.at ?? pin ?? sla?.due ?? null;
   if (opts.reopened) return { at: opts.reopened.at, source: opts.reopened.at ? "reopened" : null, aimAt: null, computedAt };
   if (p.dueOverrideAt) return { at: p.dueOverrideAt, source: "office", aimAt: null, computedAt };
+  if (opts.batch) return { at: opts.batch.at, source: "batch", aimAt: opts.batch.aimAt, computedAt };
   if (pin) return { at: pin, source: "promise", aimAt: aim(pin), computedAt };
   return sla ? { at: sla.due, source: "sla", aimAt: aim(sla.due), computedAt } : NONE;
 }
@@ -117,16 +122,27 @@ async function promiseRules(): Promise<PromiseRules | undefined> {
  * The video due for many jobs in one read (the board, the desk; one id for the
  * ping and the edit card). A job delivered once and owed again reads its
  * REOPEN clock (A52), by the delivery board's own test and reader
- * (isReopenedJob, reopenedDueFor), never the promise it already kept. Jobs not
+ * (isReopenedJob, reopenedDueFor), never the promise it already kept. A job on
+ * a bulk plan reads its current batch: the earliest batch date among its videos
+ * not yet approved (DeliverableOutput, promiseSource "bulk-batch"). Jobs not
  * found are absent.
  */
 export async function videoDuesFor(projectIds: string[], opts: { now?: Date } = {}): Promise<Map<string, VideoDue>> {
   const ids = [...new Set(projectIds)];
   if (!ids.length) return new Map();
-  const [rows, rules] = await Promise.all([
+  const [rows, rules, batchRows] = await Promise.all([
     prisma.project.findMany({ where: { id: { in: ids } }, select: { id: true, ...VIDEO_DUE_SELECT } }),
     promiseRules(),
+    prisma.deliverableOutput.findMany({
+      where: { projectId: { in: ids }, promiseSource: BULK_BATCH_SOURCE, promisedAt: { not: null }, approvedAt: null, deliveredAt: null, waivedAt: null, removedFromOrderAt: null },
+      select: { projectId: true, promisedAt: true, targetAt: true },
+    }).catch(() => [] as { projectId: string; promisedAt: Date | null; targetAt: Date | null }[]),
   ]);
+  const batch = new Map<string, { at: Date; aimAt: Date | null }>();
+  for (const o of batchRows) {
+    const was = batch.get(o.projectId);
+    if (!was || o.promisedAt! < was.at) batch.set(o.projectId, { at: o.promisedAt!, aimAt: o.targetAt });
+  }
   const deliveredOnce = rows.filter((p) => !!p.deliveredAt);
   const board = deliveredOnce.length ? await import("@/lib/deliveryBoard") : null;
   const [clocks, dueSet] = board
@@ -139,7 +155,7 @@ export async function videoDuesFor(projectIds: string[], opts: { now?: Date } = 
     rows.map((p) => {
       const clock = clocks.get(p.id) ?? null;
       const reopened = board && board.isReopenedJob(p, clock) ? board.reopenedDueFor({ ...p, dueSetAt: dueSet.get(p.id) ?? null }, clock) : null;
-      return [p.id, videoDueOf(p, { now: opts.now, rules, reopened: reopened ? { at: reopened.at } : null })];
+      return [p.id, videoDueOf(p, { now: opts.now, rules, reopened: reopened ? { at: reopened.at } : null, batch: batch.get(p.id) ?? null })];
     }),
   );
 }
