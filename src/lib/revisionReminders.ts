@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { buildEditorQueue, STATUS_LABEL } from "@/lib/editorQueue";
-import { editorMeta, TEAM_MEMBER_EDITOR_KEYS } from "@/lib/editors";
+import { editorMeta, isOutsideEditor, TEAM_MEMBER_EDITOR_KEYS } from "@/lib/editors";
 import { appBase } from "@/lib/appUrl";
 import { etDayKey, etMinutesOfDay, etMonthDay } from "@/lib/datetime";
 import { firstName } from "@/lib/reviewAttribution";
@@ -85,7 +85,7 @@ export type OpenRevision = RevisionAsk & {
 export function laneFor(key: string | null | undefined): RevisionLane {
   const meta = editorMeta(key);
   if (!key || !meta || meta.departed) return "unassigned";
-  if (meta.kind === "external" && (key === "external_agency" || key === "luma")) return "agency";
+  if (meta.kind === "external" && (isOutsideEditor(key) || key === "luma")) return "agency";
   return (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(key) ? "editor" : "unassigned";
 }
 
@@ -188,7 +188,7 @@ export async function sweepRevisionReminders(opts: { now?: Date } = {}): Promise
         else run.editor.already++;
       } else {
         const agency = r.lane === "agency";
-        const who = agency ? editorMeta("external_agency")?.name ?? "the agency" : null;
+        const who = agency ? editorMeta(r.editorKey === "luma" ? "external_agency" : r.editorKey)?.name ?? "the agency" : null;
         const href = agency ? r.href : CHANGES_STAGE_HREF;
         const res = await noticeForKyle({
           kind: "revision_waiting_office",

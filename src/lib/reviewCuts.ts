@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { dbx, DropboxError } from "@/lib/integrations/dropbox";
 import { actualFolderPaths, type FolderProject } from "@/lib/dropboxFolders";
 import { videoStyleFor } from "@/lib/videoStyles";
-import { editorMeta, VIDEO_LANE_KEYS } from "@/lib/editors";
+import { editorMeta, isOutsideEditor, VIDEO_LANE_KEYS } from "@/lib/editors";
 import { effectiveSlotCounts } from "@/lib/editOverrides";
 import { SECOND_SHOOT_MARK, isWaitingHold, readSecondShoot, type SecondShootHold } from "@/lib/secondShootCore";
 import { backupSourceStamp, completeDropboxBackup, digest, proveOriginalBackup } from "@/lib/finalDropbox";
@@ -2783,6 +2783,8 @@ function editingDetail(
   if (w?.paused.length) return `Paused — ${names(w.paused)}${o.done}`;
   const who = o.editor ? ` — ${prettyKey(o.editor)}` : "";
   if (o.uploaded > 0) return `${o.uploaded} of ${o.owed} handed in${o.approved ? ` · ${o.approved} approved` : ""}${who}`;
+  // An outside shop never presses Start: the office's In editing stands (Oct 27 2026).
+  if (o.legacy && isOutsideEditor(o.editor)) return `In editing${who}${o.done}`;
   return o.legacy ? `In editing — not confirmed${who}${o.done}` : `Ready for editing${who}${o.done}`;
 }
 

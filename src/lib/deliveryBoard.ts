@@ -24,6 +24,7 @@ import { turnaroundRules } from "@/lib/settings";
 // Who is ACTUALLY editing a job right now — the editor's own Start/Pause (§7.1).
 // Light: prisma, the roster and the date helpers.
 import { workLabel, workStateFor, type ProjectWork } from "@/lib/editorWork";
+import { isOutsideEditor } from "@/lib/editors";
 import { overrideLineSetsDue } from "@/lib/editOverrides";
 import { syntheticClientIds } from "@/lib/syntheticClients";
 
@@ -1025,7 +1026,7 @@ export function outstandingPromise(
  * thing that needs doing.
  */
 function blockerFor(
-  p: { status: string; shootDate: Date | null; deliveredAt: Date | null; revisionRequestedAt: Date | null; handoffBlockedReason?: string | null; statusEvidence?: string | null },
+  p: { status: string; shootDate: Date | null; deliveredAt: Date | null; revisionRequestedAt: Date | null; handoffBlockedReason?: string | null; statusEvidence?: string | null; editorManual?: boolean | null; editorVendorKey?: string | null },
   deliverables: { type: string; status: string; uploadedAt: Date | null }[],
   /** the status engine's own answer — categories ordered but not live on
    *  Aryeo. Null when the job has no evidence yet (then the rows decide). */
@@ -1167,7 +1168,7 @@ function blockerFor(
   //   files in, nobody       → "Ready for editing" (Jordan, Sep 10)
   const w = work && (work.active.length || work.paused.length) ? work : null;
   if (p.status === "EDITING" || w) {
-    const { label, chip } = workLabel(p.status === "EDITING" ? "EDITING" : "SHOT", w);
+    const { label, chip } = workLabel(p.status === "EDITING" ? "EDITING" : "SHOT", w, { outside: !!p.editorManual && isOutsideEditor(p.editorVendorKey) });
     if (label === "Ready for editing") return { kind: "ready_to_edit", label };
     const who = chip ? chip.replace(/^Paused — /, "") : null;
     return { kind: "editing", label: who ? `${label} — ${who}` : label };
@@ -1232,6 +1233,8 @@ export async function deliveryBoard(opts: { includeTest?: boolean; excludeClient
       // Stamped by the handoff engine when it mints the edit card, so the board
       // READS the blocker rather than deciding it a second time (audit WF-06).
       handoffBlockedReason: true,
+      // Handed to an outside shop (Oct 27 2026): its In editing needs no Start.
+      editorManual: true, editorVendorKey: true,
       // The outstanding ask (RTP-04): a reopened job is live work, and the
       // card says when it was reopened rather than showing a green delivery.
       revisionRequestedAt: true,

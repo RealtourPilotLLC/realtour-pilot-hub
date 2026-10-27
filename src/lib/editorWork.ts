@@ -1450,16 +1450,18 @@ const names = (xs: WorkPerson[]) => xs.map((x) => x.name).join(", ");
  *   SHOT + nobody                  → "Ready for editing"
  *   EDITING + nobody               → "In editing — not confirmed" (a legacy
  *                                    claim, an office pin, a board move)
+ *   EDITING + an outside shop      → "In editing" (`outside`: they have no
+ *                                    login, so nobody will ever press Start)
  *   anything else                  → its own word, plus a chip naming who is on
  *                                    it or who paused it
  *
  * "In editing" never appears without somebody ACTIVE, except in the explicit
- * "not confirmed" words.
+ * "not confirmed" words and on an outside shop's job.
  */
 export function workLabel(
   lifecycle: string,
   work: ProjectWork | null | undefined,
-  opts: { baseLabel?: string; now?: Date } = {},
+  opts: { baseLabel?: string; now?: Date; outside?: boolean } = {},
 ): { label: string; chip: string | null } {
   const active = work?.active ?? [];
   const paused = work?.paused ?? [];
@@ -1470,6 +1472,9 @@ export function workLabel(
   if (lifecycle === "SHOT" || lifecycle === "EDITING") {
     if (active.length) return { label: "In editing", chip: `${names(active)}${since(active)}` };
     if (paused.length) return { label: "Paused", chip: pausedChip };
+    // A job with an outside shop: the office set In editing, and that is all
+    // there is to confirm (Oct 27 2026, Jordan).
+    if (lifecycle === "EDITING" && opts.outside) return { label: "In editing", chip: null };
     return lifecycle === "SHOT" ? { label: "Ready for editing", chip: null } : { label: "In editing — not confirmed", chip: null };
   }
   return { label: opts.baseLabel ?? lifecycle, chip: activeChip ?? pausedChip };

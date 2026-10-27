@@ -42,14 +42,17 @@ import {
 // nothing) and lucide — never Prisma, settings or the task engine.
 
 // The queue's assignable video editors — same options as the row's Editor
-// select (Unassigned / John Mark / Kim / External agency), same key words the
+// select (Unassigned / John Mark / Kim / the outside shops), same key words the
 // server's setEditVideoEditor takes.
 const VIDEO_EDITORS = [
   { key: "john", name: "John Mark" },
   { key: "kim", name: "Kim" },
 ] as const;
 const UNASSIGN = "";
-const EXTERNAL = "external_agency";
+const OUTSIDE_EDITORS = [
+  { key: "external_agency", name: "Luma Visuals" },
+  { key: "cliffside_cuts", name: "Cliffside Cuts" },
+] as const;
 
 const TIER_LABEL: Record<EditTier, string> = { standard: "Standard", premium: "Premium", branding: "Personal Branding" };
 
@@ -419,7 +422,7 @@ function OverridesDialog({
 
   const { computed, overrides } = job;
   const statusKnown = isStatusLabel(d.status);
-  const knownEditor = d.editorKey === EXTERNAL || VIDEO_EDITORS.some((e) => e.key === d.editorKey);
+  const knownEditor = [...VIDEO_EDITORS, ...OUTSIDE_EDITORS].some((e) => e.key === d.editorKey);
   const hubEditor = job.editorAuto
     ? `the routing rules put it with ${job.editorName ?? "an editor"}`
     : job.editorName
@@ -530,7 +533,7 @@ function OverridesDialog({
                 {VIDEO_EDITORS.map((o) => <option key={o.key} value={o.key}>{o.name}</option>)}
               </optgroup>
               <optgroup label="Outside">
-                <option value={EXTERNAL}>External agency</option>
+                {OUTSIDE_EDITORS.map((o) => <option key={o.key} value={o.key}>{o.name}</option>)}
               </optgroup>
             </select>
           </Field>}

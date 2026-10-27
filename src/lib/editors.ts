@@ -17,7 +17,7 @@
 // virtual/digital STAGING direction — is the ADMIN's (Kyle), even "for the video".
 // ---------------------------------------------------------------------------
 
-export type EditorKey = "kyle" | "jordan" | "creative_director" | "kim" | "john" | "remar" | "luma" | "autohdr" | "cubicasa" | "external_agency";
+export type EditorKey = "kyle" | "jordan" | "creative_director" | "kim" | "john" | "remar" | "luma" | "autohdr" | "cubicasa" | "external_agency" | "cliffside_cuts";
 
 export type EditorMeta = {
   key: EditorKey;
@@ -89,7 +89,21 @@ export const EDITORS: Record<EditorKey, EditorMeta> = {
   // send and Luma's acknowledgement (lib/editorPacket — nothing is sent to
   // Luma automatically), so a job handed to it leaves John's and Kim's queues.
   external_agency: { key: "external_agency", name: "Luma Visuals", kind: "external", does: "overflow video editing (outside agency, handed over by the office)" },
+  // A second outside shop (Oct 27 2026, Jordan: "Add Cliffside Cuts as an
+  // external editor"). Handed over exactly like Luma Visuals: no login, no
+  // bell, off John's and Kim's boards.
+  cliffside_cuts: { key: "cliffside_cuts", name: "Cliffside Cuts", kind: "external", does: "video editing (outside shop, handed over by the office)" },
 };
+
+/**
+ * The outside shops a video job can be handed to by hand. Picking one pins the
+ * job away from our editors (Project.editorVendorKey keeps the shop). Oct 27
+ * 2026, Jordan: "If I assign it to Luma and change it to in editing, then that
+ * should be all we need" — no packet to record, no acknowledgement to wait on,
+ * and an EDITING job with a shop reads "In editing" (they never press Start).
+ */
+export const OUTSIDE_EDITOR_KEYS: EditorKey[] = ["external_agency", "cliffside_cuts"];
+export const isOutsideEditor = (key: string | null | undefined): key is EditorKey => !!key && (OUTSIDE_EDITOR_KEYS as string[]).includes(key);
 
 // The keys the VIDEO lane is narrated from — the Editing Room row's status,
 // its editor name, and its revision-ask chip all read only these. A photo
@@ -118,7 +132,7 @@ export function pinnedEditorFor(p: {
   return { pinned: true, key: vendor && vendor in EDITORS ? vendor : null };
 }
 
-export const VIDEO_LANE_KEYS: EditorKey[] = ["kim", "john", "remar", "luma", "external_agency"];
+export const VIDEO_LANE_KEYS: EditorKey[] = ["kim", "john", "remar", "luma", "external_agency", "cliffside_cuts"];
 
 // The editor keys that map to an actual person we persist on Project.editorId
 // (an in-house TeamMember). Externals (Luma) and vendors stay Kyle-dispatch and
@@ -164,7 +178,7 @@ export const OPERATOR_KEYS: EditorKey[] = ["kyle", "jordan"];
 // The ones you delegate editing work to (everyone except the operators). Order =
 // how they list. No `luma`: that retired key would list beside "Luma Visuals"
 // (external_agency) in the fallback pickers, and setTaskAssignee refuses it.
-export const DELEGATE_KEYS: EditorKey[] = ["creative_director", "kim", "john", "autohdr", "cubicasa", "external_agency"];
+export const DELEGATE_KEYS: EditorKey[] = ["creative_director", "kim", "john", "autohdr", "cubicasa", "external_agency", "cliffside_cuts"];
 
 export function editorMeta(key: string | null | undefined): EditorMeta | null {
   return key && key in EDITORS ? EDITORS[key as EditorKey] : null;

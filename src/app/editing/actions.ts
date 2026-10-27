@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, requireCreativeLead, requireRole, requireShootAccess } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
-import { EDITORS, editorTeamMemberId, type EditorKey } from "@/lib/editors";
+import { EDITORS, OUTSIDE_EDITOR_KEYS, editorTeamMemberId, isOutsideEditor, type EditorKey } from "@/lib/editors";
 import { deliveryStamp, neverMadeOnly, outstandingForDelivery, outstandingMessage } from "@/lib/delivery";
 import { owedPhrase } from "@/lib/statusEvidence";
 import { officeQueueReason } from "@/lib/reviewAttribution";
@@ -57,11 +57,12 @@ async function signedAs(me: import("@/lib/actorName").NamedLogin | null | undefi
 //     null) — that PAIR is what stops every engine, and the queue's own
 //     routing prediction, from putting John or Kim straight back on the row.
 //     The job lands in "Needs assigning" on /tasks, where a human picks it up.
-//   · "external_agency" = the outside shop — Luma Visuals (Jordan, Sep 25).
-//     Same pin, plus the key on the task so the row still says who has it. It
-//     has no login and no bell, so the dispatch ping goes to the ADMIN (Kyle)
-//     who actually hands the files over — and records that he did, with
-//     recordEditorPacketSent below: the bell is a reminder, never evidence.
+//   · an outside shop — "external_agency" = Luma Visuals (Jordan, Sep 25),
+//     "cliffside_cuts" = Cliffside Cuts (Oct 27). Same pin, plus the key on the
+//     task so the row still says who has it. No login and no bell, so the
+//     heads-up goes to the ADMIN (Kyle). Nothing to record after that (Oct 27
+//     2026, Jordan: "If I assign it to Luma and change it to in editing, then
+//     that should be all we need").
 export async function setEditVideoEditor(projectId: string, editorKey: string): Promise<{ ok: boolean; message: string }> {
   try {
     await requireCreativeLead();
@@ -69,9 +70,9 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
     return { ok: false, message: (e as Error).message };
   }
   const unassign = editorKey === "";
-  const external = editorKey === EXTERNAL_EDITOR_KEY;
+  const external = isOutsideEditor(editorKey);
   if (!unassign && !external && !(VIDEO_EDITOR_KEYS as string[]).includes(editorKey)) {
-    return { ok: false, message: `Pick a video editor (Kim or John Mark), ${EXTERNAL_NAME()}, or Unassigned.` };
+    return { ok: false, message: `Pick a video editor (Kim or John Mark), ${OUTSIDE_EDITOR_KEYS.map((k) => EDITORS[k].name).join(", ")}, or Unassigned.` };
   }
   const key = unassign ? null : (editorKey as EditorKey);
   const { editorMeta } = await import("@/lib/editors");
@@ -120,7 +121,7 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
     // agency has no TeamMember, so editorId cannot carry it.
     await withEditorAssignmentChange(projectId, (tx) => tx.project.update({
       where: { id: projectId },
-      data: { editorId: null, editorManual: true, editorVendorKey: key === EXTERNAL_EDITOR_KEY ? EXTERNAL_EDITOR_KEY : null },
+      data: { editorId: null, editorManual: true, editorVendorKey: external ? key : null },
     }));
   } else if (moved.count === 0) {
     return { ok: false, message: `Couldn't link ${editorName} — their Team row is missing. Add them on the People page first.` };
@@ -162,12 +163,11 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
       await notifyInApp(
         external
           ? {
-              // The agency has no hub login, so this is Kyle's cue to send the
-              // files out. The bell proves nothing was sent — the packet card
-              // on the job page records the send and the acknowledgement.
+              // The shop has no hub login, so Kyle hears it instead. Nothing
+              // to record afterwards (Oct 27 2026).
               kind: "edit_assigned",
-              title: `Dispatch to ${EXTERNAL_NAME()} — ${street}`,
-              body: `This edit was handed to ${EXTERNAL_NAME()} — send them the packet from the job page and record the send there.`,
+              title: `Handed to ${editorName} — ${street}`,
+              body: `This edit is with ${editorName} now. Nothing else to do in the hub.`,
               href: `/edit/${projectId}`,
               targets: [{ roles: ["ADMIN"] }],
             }
@@ -180,13 +180,14 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
               targets: [{ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${projectId}` }],
             },
       );
-      // Oct 5 2026: Kyle hands the files over, so HE hears it on Slack, not
-      // only as an ADMIN bell — never about his own click, after the response.
+      // Oct 5 2026: Kyle hears it on Slack, not only as an ADMIN bell — never
+      // about his own click, after the response. No packet, nothing to record
+      // (Oct 27 2026).
       if (external) {
         const { inBackground, pingKyle } = await import("@/lib/notify");
         const { appBase } = await import("@/lib/appUrl");
         const me = await getCurrentUser().catch(() => null);
-        await inBackground(() => pingKyle(`📦 Hand to ${EXTERNAL_NAME()} — ${street}: send them the packet from the job page and record the send there. ${appBase()}/edit/${projectId}`, "luma_dispatch", { exceptTeamMemberId: me?.teamMemberId ?? null }));
+        await inBackground(() => pingKyle(`📦 ${editorName} has this edit — ${street}. ${appBase()}/edit/${projectId}`, "luma_dispatch", { exceptTeamMemberId: me?.teamMemberId ?? null }));
       }
     } catch { /* bell is best-effort */ }
   }
@@ -202,8 +203,8 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
           // so all we can truthfully record is "not one of ours". Say that
           // rather than claim a hand-off the row won't show.
           moved.count > 0
-          ? `Handed to ${EXTERNAL_NAME()} — it's off our editors' queues.`
-          : `Taken off our editors — there's no edit task on this job yet, so name ${EXTERNAL_NAME()} again once the raws land.`
+          ? `Handed to ${editorName} — it's off our editors' queues.`
+          : `Taken off our editors — there's no edit task on this job yet, so name ${editorName} again once the raws land.`
         : `Assigned to ${editorName}.`,
   };
 }
@@ -234,10 +235,9 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
 
 const QUEUE_STATUSES = ["SHOT", "EDITING", "REVIEW", "REVISION"];
 const VIDEO_EDITOR_KEYS: EditorKey[] = ["kim", "john"];
-// The outside shop. Not in VIDEO_EDITOR_KEYS: work never AUTO-routes there, a
-// human hands it over (Jordan, Sep 7). Named in editors.ts — Luma Visuals.
-const EXTERNAL_EDITOR_KEY: EditorKey = "external_agency";
-const EXTERNAL_NAME = () => EDITORS[EXTERNAL_EDITOR_KEY].name;
+// The outside shops (editors.ts OUTSIDE_EDITOR_KEYS) are not in
+// VIDEO_EDITOR_KEYS: work never AUTO-routes there, a human hands it over
+// (Jordan, Sep 7).
 
 export type QueueCandidate = {
   id: string;
@@ -1588,7 +1588,7 @@ const OVERRIDE_STATUS_LABEL: Record<string, string> = {
   ON_HOLD: "On hold",
   CANCELLED: "Cancelled",
 };
-const EDITOR_SELECT_KEYS = new Set<string>(["", "kim", "john", "external_agency"]);
+const EDITOR_SELECT_KEYS = new Set<string>(["", "kim", "john", ...OUTSIDE_EDITOR_KEYS]);
 
 /** §10 rush (Sep 26): what the approver saw and why, sent with a save that
  *  moves a job ahead of others. `seen` = the displaced project ids the dialog
@@ -1642,7 +1642,7 @@ export async function saveEditOverrides(
   if (note && note.length > 300) return { ok: false, message: "Keep the note under 300 characters." };
   const wantsEditor = input.editorKey != null;
   if (wantsEditor && !EDITOR_SELECT_KEYS.has(input.editorKey as string)) {
-    return { ok: false, message: `Pick a video editor (Kim or John Mark), ${EXTERNAL_NAME()}, or Unassigned.` };
+    return { ok: false, message: `Pick a video editor (Kim or John Mark), ${OUTSIDE_EDITOR_KEYS.map((k) => EDITORS[k].name).join(", ")}, or Unassigned.` };
   }
 
   const proj = await prisma.project.findUnique({
@@ -2012,7 +2012,8 @@ export async function saveEditOverrides(
       }
       // An override to In editing is the office pinning the STAGE (§7.1): it
       // does not say any editor started, so no work row is written and the
-      // row reads "In editing — not confirmed" until the editor presses Start.
+      // row reads "In editing — not confirmed" until the editor presses Start
+      // (an outside shop's job reads plain "In editing": they never press it).
       if (targetStatus === "EDITING") {
         await prisma.smartTask.updateMany({ where: { dedupeKey: EDIT_KEY, status: "OPEN" }, data: { status: "IN_PROGRESS" } }).catch(() => {});
       } else {

@@ -56,7 +56,7 @@ export type EditComputedView = {
     null = CLEAR that override (back to the hub's value).
     · status given = force that status NOW and pin it (the hub's sweeps stop
       moving it); pinStatus:false alone = unpin without changing the status.
-    · editorKey: "" = unassign, "external_agency" = the outside shop, else an
+    · editorKey: "" = unassign, "external_agency" / "cliffside_cuts" = an outside shop, else an
       editor key — the same words setEditVideoEditor takes.
     · dueAt is an ISO instant (the dialog converts the ET wall-clock input).
     · fromLabel = the status label the row/page SHOWED when the dialog opened

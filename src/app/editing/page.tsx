@@ -8,7 +8,7 @@ import { AddToQueue } from "@/components/editing/AddToQueue";
 import { FloatingStyleGuide } from "@/components/editing/FloatingStyleGuide";
 import { SimpleQueue, type QueueRow } from "@/components/editing/SimpleQueue";
 import { EditorQualityCard } from "@/components/editing/EditorQualityCard";
-import { buildEditorQueue, unreadThreadCount, WAITING_ON_INSTRUCTIONS } from "@/lib/editorQueue";
+import { buildEditorQueue, unreadThreadCount, WAITING_ON_FOOTAGE, WAITING_ON_INSTRUCTIONS } from "@/lib/editorQueue";
 import { editingWorkload, type WorkloadRow } from "@/lib/editorWorkload";
 import { WorkloadPanel } from "@/components/editing/WorkloadPanel";
 import { RecentlyRemoved } from "@/components/editing/RemoveFromQueue";
@@ -251,14 +251,17 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
   // REMIND PHOTOGRAPHER (Oct 23 2026, lib/remindPhotographer): which open rows
   // are missing their video instructions, and their last reminder. Read only
   // for the people who may press it (the office and the creative manager); a
-  // failed read leaves the button off, never the page.
+  // failed read leaves the button off, never the page. A row still "Waiting"
+  // (no upload in yet) gets neither (Oct 27 2026, Jordan: "We dont need the
+  // instructions missing until the upload has been submitted or it says ready
+  // for editing").
   const canRemind = !me || isCreativeLead(me.role);
   const [unread, wn, act, workload, removedRows, reminders] = await Promise.all([
     unreadThreadCount(me?.id ?? null, [...notDone, ...upcomingRows, ...done].map((r) => r.id)),
     workingNow({ now, excludeProjectIds }), editorActivityToday({ now, excludeProjectIds }),
     editingWorkload(workloadRows([...notDone, ...upcomingRows])),
     recentlyRemovedFromQueue(),
-    canRemind ? remindViewsFor(notDone.map((r) => r.id), now).catch(() => new Map<string, RemindView>()) : new Map<string, RemindView>(),
+    canRemind ? remindViewsFor(notDone.filter((r) => r.status !== WAITING_ON_FOOTAGE).map((r) => r.id), now).catch(() => new Map<string, RemindView>()) : new Map<string, RemindView>(),
   ]);
   const today = editorLines(wn, act, now);
   const capacityNow = Object.values(workload.capacity ?? {}).flatMap((windows) => windows.now);

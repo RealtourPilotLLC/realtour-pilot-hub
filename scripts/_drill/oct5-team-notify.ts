@@ -364,13 +364,13 @@ async function main() {
     const r = await editing.setEditVideoEditor(job.id, "external_agency");
     c.ok("Jordan hands the job to Luma Visuals", r.ok, r.message);
     const kd = dms(S.kyle, s0);
-    c.ok("Kyle gets ONE Slack DM: hand it to Luma Visuals, with the job link", kd.length === 1 && /Hand to Luma Visuals — 50 Agency Ave/.test(kd[0].text) && kd[0].text.includes(`/edit/${job.id}`), kd.map((m) => m.text).join(" | "));
+    c.ok("Kyle gets ONE Slack DM: Luma Visuals has it, with the job link (no packet, Oct 27 2026)", kd.length === 1 && /Luma Visuals has this edit — 50 Agency Ave/.test(kd[0].text) && !/packet|record/i.test(kd[0].text) && kd[0].text.includes(`/edit/${job.id}`), kd.map((m) => m.text).join(" | "));
     const job2 = await mkJob("51 Agency Ave", { status: "EDITING" });
     await prisma.smartTask.create({ data: { title: "Edit the video — 51 Agency Ave", taskType: "edit_video", status: "OPEN", projectId: job2.id, assignedKey: "john", source: "system" } });
     const s1 = slack.length;
     viewer = as(uKyle, kyle, "ADMIN");
     const r2 = await editing.setEditVideoEditor(job2.id, "external_agency");
-    c.ok("Kyle doing it himself: no DM about his own click (the ADMIN bell still stands)", r2.ok && dms(S.kyle, s1).length === 0 && (await prisma.notification.count({ where: { title: { contains: "Dispatch to Luma Visuals — 51 Agency Ave" } } })) === 1, r2.message);
+    c.ok("Kyle doing it himself: no DM about his own click (the ADMIN bell still stands)", r2.ok && dms(S.kyle, s1).length === 0 && (await prisma.notification.count({ where: { title: { contains: "Handed to Luma Visuals — 51 Agency Ave" } } })) === 1, r2.message);
     viewer = null;
 
     const ready = { ready: true, blockedReason: null } as unknown as NonNullable<Parameters<typeof tasks.notifyRawsLanded>[1]>["readiness"];
@@ -378,7 +378,7 @@ async function main() {
     const s2 = slack.length;
     await tasks.notifyRawsLanded(lumaJob.id, { readiness: ready, videoFound: true });
     const kd2 = dms(S.kyle, s2);
-    c.ok("ready for editing on a Luma job: Kyle by name — 'this one goes to Luma Visuals'", kd2.some((m) => /Ready for editing — 52 Agency Ave: this one goes to Luma Visuals — send them the packet/.test(m.text)), kd2.map((m) => m.text).join(" | "));
+    c.ok("ready for editing on a Luma job: Kyle by name — 'this one is with Luma Visuals', no packet", kd2.some((m) => /Ready for editing — 52 Agency Ave: this one is with Luma Visuals\./.test(m.text) && !/packet/i.test(m.text)), kd2.map((m) => m.text).join(" | "));
     const line = await prisma.activity.findFirst({ where: { projectId: lumaJob.id, body: { startsWith: "Raws in for 52 Agency Ave" } }, select: { body: true } });
     c.ok("…and the job's timeline says Kyle was pinged by Slack DM", /Kyle pinged by Slack DM/.test(line?.body ?? ""), line?.body);
     const nobody = await mkJob("53 Branding Blvd", { status: "SHOT", editorManual: true });

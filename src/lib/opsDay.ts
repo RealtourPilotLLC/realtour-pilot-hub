@@ -18,6 +18,7 @@ import { readyToSend, type ReadyBoard } from "@/lib/readyToSend";
 import { syntheticClientIds } from "@/lib/syntheticClients";
 import { taskClientScopeWhere, type TaskClientScope } from "@/lib/taskClientScope";
 import { etAddDays, etDayBoundsUtc, etDayKey } from "@/lib/datetime";
+import { isOutsideEditor } from "@/lib/editors";
 
 // ---------------------------------------------------------------------------
 // Kyle's Ops Day (Jordan's "Daily Operations & Client Experience Structure",
@@ -659,6 +660,7 @@ export async function buildOpsDay(opts: { includeTest?: boolean; excludeClientId
           client: { select: { name: true, avatarUrl: true } },
           deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true } },
           editor: { select: { name: true } },
+          editorManual: true, editorVendorKey: true, // an outside shop's In editing needs no Start (Oct 27 2026)
           revisionBriefs: { orderBy: { createdAt: "desc" }, take: 1, select: { headline: true, itemsJson: true } },
         },
         orderBy: { updatedAt: "asc" },
@@ -846,7 +848,7 @@ export async function buildOpsDay(opts: { includeTest?: boolean; excludeClientId
   // same reader as the pill, the queue and the Working-now panel.
   const pipelineRows: PipelineRow[] = pipelineProjects.map((p) => {
     const { ev, qc: e } = parseEvidence(p.statusEvidence);
-    const w = p.status === "EDITING" ? workLabel("EDITING", pipelineWork.get(p.id), { now }) : null;
+    const w = p.status === "EDITING" ? workLabel("EDITING", pipelineWork.get(p.id), { now, outside: p.editorManual && isOutsideEditor(p.editorVendorKey) }) : null;
     const brief = p.revisionBriefs[0] ?? null;
     let items: string[] = [];
     if (p.status === "REVISION" && brief?.itemsJson) {

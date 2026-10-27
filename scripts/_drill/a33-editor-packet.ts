@@ -158,12 +158,15 @@ async function main() {
   const bellsBefore = await prisma.notification.count();
   const handed = await actions.setEditVideoEditor(J, "external_agency");
   c.ok("the office hands the job to Luma Visuals", handed.ok && /Luma Visuals/.test(handed.message), handed.message);
-  const bell = await prisma.notification.findFirst({ where: { title: { startsWith: "Dispatch to Luma Visuals" } }, select: { title: true } });
-  c.ok("…which rings Kyle's bell (the reminder it always was)", !!bell && (await prisma.notification.count()) > bellsBefore, bell?.title);
+  // Oct 27 2026: a heads-up, not a dispatch order (no packet to record).
+  const bell = await prisma.notification.findFirst({ where: { title: { startsWith: "Handed to Luma Visuals" } }, select: { title: true } });
+  c.ok("…which rings Kyle's bell (a heads-up)", !!bell && (await prisma.notification.count()) > bellsBefore, bell?.title);
   const st1 = await pk.editorDispatchState(J);
   c.ok("the bell, a raw file in Dropbox and the task's label are NOT a send: no record, 'Not sent'", (await prisma.editorDispatch.count()) === 0 && st1.handedOver && st1.status === "not_sent" && st1.line.startsWith("Not sent to Luma Visuals yet"), st1.line);
   const row1 = await rowOf(J);
-  c.ok("the Editing Room row says so too, and names the agency", row1?.blocker?.startsWith("Not sent to Luma Visuals yet") === true && row1.editor === "Luma Visuals", `${row1?.editor} · ${row1?.blocker}`);
+  // Oct 27 2026, Jordan: "I dont need to submit a packet or confirm it." The
+  // row names the agency and nothing more.
+  c.ok("the Editing Room row names the agency and asks for no packet", row1?.blocker == null && row1?.editor === "Luma Visuals", `${row1?.editor} · ${row1?.blocker}`);
 
   // =========================================================================
   c.head("2 · the packet: built from what the hub holds, with what is missing said plainly");
@@ -240,7 +243,7 @@ async function main() {
   c.ok("a double click, or three tabs at once, is ONE record", dup.ok && dup.duplicate === true && tabs.every((t) => t.ok && t.version === 1) && (await prisma.editorDispatch.count({ where: { projectId: J } })) === 1, JSON.stringify(tabs.map((t) => t.version)));
   const st3 = await pk.editorDispatchState(J);
   c.ok("the card now reads 'v1 sent … not acknowledged yet', stamped on the app's clock", st3.status === "sent" && /^v1 sent to sarah@lumavisuals\.example Wed, Sep 23, 10:0\d AM by Kyle Drill: not acknowledged yet\.$/.test(st3.line), st3.line);
-  c.ok("…and so does the Editing Room row", (await rowOf(J))?.blocker === st3.line);
+  c.ok("…and the Editing Room row still carries no packet line (Oct 27 2026)", (await rowOf(J))?.blocker == null);
   c.ok("recording a send rang nobody and sent nothing", (await prisma.notification.count()) === bellsAtSend && fence.blocked.length === 0);
 
   // =========================================================================

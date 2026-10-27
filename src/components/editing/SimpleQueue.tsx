@@ -212,7 +212,11 @@ const VIDEO_EDITORS = [
 // string because that's what an unset <select> already carries.
 const UNASSIGN = "";
 const SUGGESTED = "__routing_suggestion__";
-const EXTERNAL = "external_agency";
+// The outside shops (editors.ts OUTSIDE_EDITOR_KEYS; Cliffside Cuts added Oct 27 2026).
+const OUTSIDE_EDITORS = [
+  { key: "external_agency", name: "Luma Visuals" },
+  { key: "cliffside_cuts", name: "Cliffside Cuts" },
+] as const;
 
 /** The row's name: the street, or for a pin-only Aryeo order ("[No address
  *  provided], 40.0,-75.5") the client's name, which is how the team knows
@@ -425,7 +429,7 @@ function EditorSelect({ row }: { row: QueueRow }) {
 
   const currentName = key === SUGGESTED || !key ? "Unassigned"
     : VIDEO_EDITORS.find((editor) => editor.key === key)?.name
-      ?? (key === EXTERNAL ? (key === row.savedEditorKey ? row.editor ?? "External agency" : "External agency") : row.editor ?? key);
+      ?? OUTSIDE_EDITORS.find((shop) => shop.key === key)?.name ?? row.editor ?? key;
   return <div className="min-w-0">
     <ActionMenu
       label={`Change editor for ${row.street}: ${currentName}`}
@@ -436,7 +440,7 @@ function EditorSelect({ row }: { row: QueueRow }) {
       items={[
         { id: "unassigned", text: "Unassigned", label: "Unassigned", checked: key === UNASSIGN, onSelect: () => pick(UNASSIGN) },
         ...VIDEO_EDITORS.map((editor) => ({ id: editor.key, text: editor.name, label: editor.name, checked: key === editor.key, onSelect: () => pick(editor.key) })),
-        { id: "external", text: "External agency", label: "External agency", checked: key === EXTERNAL, onSelect: () => pick(EXTERNAL) },
+        ...OUTSIDE_EDITORS.map((shop) => ({ id: shop.key, text: shop.name, label: shop.name, checked: key === shop.key, onSelect: () => pick(shop.key) })),
       ]}
     ><span className="min-w-0 truncate font-medium">{currentName}</span><ChevronDown aria-hidden="true" className="size-3 shrink-0 text-muted" /></ActionMenu>
     {key === SUGGESTED && <p className="mt-0.5 whitespace-normal text-xs leading-4 text-muted">Suggested: {row.editor}</p>}

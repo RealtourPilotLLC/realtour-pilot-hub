@@ -44,7 +44,7 @@ import { CutUploader } from "@/components/editing/CutUploader";
 import { canReplaceApprovedCut, cutUploadRefusal } from "@/app/review/actions";
 // §7.5 / §7.7: the per-video brief and the Luma Visuals packet record, posted
 // from plain server-rendered forms on this page.
-import { recordEditorPacketAckForm, recordEditorPacketSentForm, saveVideoBriefForm } from "@/app/editing/actions";
+import { saveVideoBriefForm } from "@/app/editing/actions";
 // §7.6: a limitation on one video's brief becomes missing work in one press.
 import { raiseGapFromBriefForm } from "@/app/editing/gapActions";
 import { etDate, etDateTime } from "@/lib/datetime";
@@ -68,7 +68,7 @@ import { EditOverridesButton, RushButton } from "@/components/editing/EditOverri
 import { AssetDependencyCard } from "@/components/editing/AssetDependencyCard";
 import { computedView, computedVideosOwed, effectiveDue, effectiveTypeDetail, overrideView } from "@/lib/editOverrides";
 import { STATUS_LABEL } from "@/lib/editorQueue";
-import { DEFAULT_EDITOR_TZ, editorKeyForTeamName, editorMeta } from "@/lib/editors";
+import { DEFAULT_EDITOR_TZ, editorKeyForTeamName, editorMeta, isOutsideEditor } from "@/lib/editors";
 import { barWords, openSlotKeys as openSlotKeysFor, yourClock } from "@/lib/editorDesk";
 // Oct 15 2026: the job bar's upload buttons open the one upload row's picker,
 // and office links land on the office's tools.
@@ -233,7 +233,7 @@ export default async function EditBriefPage({
   // A form of theirs that comes back with a notice (a brief saved, a packet
   // recorded, a due date moved) turns it on, so its answer is on screen.
   const officeSwitch = isOwnerAdmin;
-  const officeOn = officeSwitch && (officeParam === "1" || (!!notice && /^(brief-|gap-|packet-|ack-|due-)/.test(notice)));
+  const officeOn = officeSwitch && (officeParam === "1" || (!!notice && /^(brief-|gap-|due-)/.test(notice)));
   // Who may rewrite the customer/shoot notes (saveJobNotes enforces this
   // server-side too). realRole, so a "view as" preview can't write; editors
   // read the brief, they don't rewrite what the customer or photographer said.
@@ -666,18 +666,9 @@ export default async function EditBriefPage({
           .catch(() => [])
       ).filter((g) => g.outputId && (g.state === "OPEN" || g.state === "PLANNED"))
     : [];
-  // §7.7 / A33: the Luma Visuals packet card — the office's, and only on a job
-  // handed to the agency or one with a send already on record.
-  const agencyMod = await import("@/lib/editorPacket");
-  const agency = canSeeRaw
-    ? await (async () => {
-        const relevant = (await agencyMod.isHandedToAgency(project.id)) || (await prisma.editorDispatch.count({ where: { projectId: project.id } })) > 0;
-        return relevant ? agencyMod.editorDispatchState(project.id) : null;
-      })().catch(() => null)
-    : null;
-  // What the last brief/packet form did (a code from editing/actions — never
+  // What the last brief form did (a code from editing/actions — never
   // the words typed, which can carry a name).
-  const PAGE_NOTICES: Record<string, { where: "brief" | "packet"; ok: boolean; text: string }> = {
+  const PAGE_NOTICES: Record<string, { where: "brief"; ok: boolean; text: string }> = {
     "brief-saved": { where: "brief", ok: true, text: "Brief saved as a new version." },
     "brief-unchanged": { where: "brief", ok: true, text: "Nothing changed, so no new version was made." },
     "brief-conflict": { where: "brief", ok: false, text: "Someone else saved that brief while you were editing, so yours was not saved. What you see now is the newest version." },
@@ -687,11 +678,6 @@ export default async function EditBriefPage({
     "gap-raised": { where: "brief", ok: true, text: "Raised as missing work. It is on the delivery board until the office plans the recovery." },
     "gap-exists": { where: "brief", ok: true, text: "Already raised as missing work, so nothing new was added." },
     "gap-error": { where: "brief", ok: false, text: "Not raised. The brief needs a limitation written down, and the video must still be owed." },
-    "packet-sent": { where: "packet", ok: true, text: "The send is recorded, with the packet exactly as it went." },
-    "packet-duplicate": { where: "packet", ok: true, text: "Already recorded: that exact packet went to that recipient, so no new version was made." },
-    "packet-error": { where: "packet", ok: false, text: "Not recorded. Say who it went to and how, and check the job is handed to the agency." },
-    "ack-saved": { where: "packet", ok: true, text: "Their acknowledgement is recorded." },
-    "ack-error": { where: "packet", ok: false, text: "Not recorded. Say who acknowledged it and how (it may already be acknowledged)." },
   };
   const pageNotice = notice ? PAGE_NOTICES[notice] ?? null : null;
   const rawAsks = videoRevisionTasks
@@ -1299,6 +1285,9 @@ export default async function EditBriefPage({
     (selStatus === "CHANGES_REQUESTED" || reopenedHere || openHere(selectedIssues).length > 0 || openHere(unassignedIssues).length > 0 || asksHere || heldItems.length > 0 || activeNotes.some((n) => n.status === "OPEN"));
   const bar = showTracker ? workBar : null;
   const editorBar = bar?.mode === "editor" ? bar : null;
+  // An outside shop (Luma Visuals, Cliffside Cuts) never presses Start: the
+  // office's In editing is the whole answer (Oct 27 2026, Jordan).
+  const withShop = isOutsideEditor(editorKey) && project.status === "EDITING";
   type Situation = "none" | "not_started" | "editing" | "check" | "review" | "back" | "done" | "blocked";
   const situation: Situation =
     !isVideoJob ? "none"
@@ -1307,7 +1296,7 @@ export default async function EditBriefPage({
     : selStatus === "APPROVED" && !reopenedHere ? "done"
     : cameBack ? "back"
     : editorBar ? (editorBar.mine.state === "ACTIVE" ? "editing" : !editorBar.canStart ? "blocked" : "not_started")
-    : bar?.people.active.length ? "editing" : "not_started";
+    : bar?.people.active.length || withShop ? "editing" : "not_started";
   // Everything waiting is with the creative reviewer: nothing to upload yet.
   const heldOnly = situation === "back" && heldItems.length > 0 && concreteAsks === 0 && selStatus !== "CHANGES_REQUESTED" && openHere(selectedIssues).length === 0 && openHere(unassignedIssues).length === 0;
   const versionSent = situation === "check" || situation === "review" || situation === "back" || situation === "done";
@@ -1340,6 +1329,7 @@ export default async function EditBriefPage({
           const which = mineOn && mineOn.outputId !== selectedOutputId && several ? `video ${navigation.get(mineOn.key)?.number ?? mineOn.index}` : "this job";
           return `You're on ${which}${since ? ` since ${since}` : ""}. Upload it when it's ready.`;
         }
+        if (withShop && !bar?.people.active.length) return `In editing with ${editorName}.`;
         return bar ? barWords(bar, ET, now).state + "." : "Being edited.";
       case "check":
         return isEditorView
@@ -2432,75 +2422,6 @@ export default async function EditBriefPage({
                   <EditFeedback notes={feedback} canFix={false} />
                 </div>
               </details>
-            )}
-            {/* §7.7 / A33 — THE LUMA VISUALS PACKET. The hub sends nothing. */}
-            {agency && (
-              <div id="agency-packet">
-                <Section icon={ExternalLink} title={`${agency.vendorName} packet`} tone={agency.status === "not_sent" || agency.status === "out_of_date" ? "warning" : "default"} bodyClassName="space-y-3">
-                  {pageNotice?.where === "packet" && (
-                    <p className={`rounded-lg px-3 py-2 text-xs font-medium ${pageNotice.ok ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>{pageNotice.text}</p>
-                  )}
-                  <p className="text-sm font-medium">{agency.line}</p>
-                  {!agency.handedOver && (
-                    <p className="text-xs text-muted">This job is not handed to {agency.vendorName} right now. The sends below are its history.</p>
-                  )}
-                  {agency.packet && agency.packet.missing.length > 0 && (
-                    <div className="rounded-xl border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
-                      <p className="font-medium">Missing from the packet right now:</p>
-                      <ul className="mt-1 list-disc space-y-0.5 pl-4">
-                        {agency.packet.missing.map((m) => <li key={m.key}>{m.label} ({m.owner})</li>)}
-                      </ul>
-                    </div>
-                  )}
-                  <p className="text-xs">
-                    <a href={`/api/projects/${project.id}/editor-packet/preview`} className="font-medium text-brand hover:underline">Preview the packet as it would go now</a>
-                    <span className="text-muted"> · nothing is sent from the hub</span>
-                  </p>
-                  {agency.history.length > 0 && (
-                    <ul className="space-y-1.5 text-xs">
-                      {agency.history.map((d) => (
-                        <li key={d.id} className="rounded-lg border border-border bg-surface-2/40 px-3 py-2">
-                          <span className="font-medium">v{d.version}</span> sent to {d.recipient} ({d.channelLabel}) by {d.dispatchedBy},{" "}
-                          {new Date(d.dispatchedAtISO).toLocaleString("en-US", { timeZone: ET, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} ET
-                          {d.acknowledgedAtISO ? ` · acknowledged by ${d.acknowledgedBy ?? "someone"}` : " · not acknowledged"}
-                          {d.superseded ? " · replaced by a later version" : ""}
-                          {d.missing.length > 0 ? ` · ${d.missing.length} missing when sent` : ""}{" "}
-                          <a href={`/api/projects/${project.id}/editor-packet/${d.version}`} className="font-medium text-brand hover:underline">Download v{d.version}</a>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  {agency.handedOver && !viewer?.impersonating && (
-                    <form action={recordEditorPacketSentForm} className="space-y-2 rounded-xl border border-border p-3">
-                      <p className="text-xs font-semibold">Record a send</p>
-                      <input type="hidden" name="projectId" value={project.id} />
-                      <input name="recipient" required minLength={2} maxLength={200} placeholder={`Who at ${agency.vendorName} it went to (email or name)`} className="w-full rounded-lg border bg-surface px-2 py-1.5 text-xs" />
-                      <select name="channel" required defaultValue="" className="w-full rounded-lg border bg-surface px-2 py-1.5 text-xs">
-                        <option value="" disabled>How it was sent</option>
-                        {agencyMod.DISPATCH_CHANNELS.map((c) => <option key={c} value={c}>{agencyMod.DISPATCH_CHANNEL_LABEL[c]}</option>)}
-                      </select>
-                      <input name="note" maxLength={500} placeholder="Note (optional)" className="w-full rounded-lg border bg-surface px-2 py-1.5 text-xs" />
-                      <button type="submit" className="rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
-                        Record packet v{(agency.latest?.version ?? 0) + 1} as sent
-                      </button>
-                    </form>
-                  )}
-                  {agency.latest && !agency.latest.acknowledgedAtISO && !viewer?.impersonating && (
-                    <form action={recordEditorPacketAckForm} className="space-y-2 rounded-xl border border-border p-3">
-                      <p className="text-xs font-semibold">Record that {agency.vendorName} has v{agency.latest.version}</p>
-                      <input type="hidden" name="projectId" value={project.id} />
-                      <input type="hidden" name="dispatchId" value={agency.latest.id} />
-                      <input name="by" required maxLength={120} placeholder="Who acknowledged it" className="w-full rounded-lg border bg-surface px-2 py-1.5 text-xs" />
-                      <select name="source" required defaultValue="" className="w-full rounded-lg border bg-surface px-2 py-1.5 text-xs">
-                        <option value="" disabled>How they said so</option>
-                        {agencyMod.ACK_SOURCES.map((c) => <option key={c} value={c}>{agencyMod.ACK_SOURCE_LABEL[c]}</option>)}
-                      </select>
-                      <input name="note" maxLength={500} placeholder="Note (optional)" className="w-full rounded-lg border bg-surface px-2 py-1.5 text-xs" />
-                      <button type="submit" className="rounded-lg border border-brand px-3 py-1.5 text-xs font-semibold text-brand hover:bg-brand-soft/40">Record acknowledgement</button>
-                    </form>
-                  )}
-                </Section>
-              </div>
             )}
           </div>
         )}

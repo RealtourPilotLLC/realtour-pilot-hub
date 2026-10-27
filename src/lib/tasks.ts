@@ -11,7 +11,7 @@ import { slugForName } from "@/lib/assignees";
 import { BRACKET_RATIO, photoTargetFor } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { clip } from "@/lib/text";
-import { TEAM_MEMBER_EDITOR_KEYS, VIDEO_LANE_KEYS, editorKeyForTeamName, editorTeamMemberId, pinnedEditorFor } from "@/lib/editors";
+import { TEAM_MEMBER_EDITOR_KEYS, VIDEO_LANE_KEYS, editorKeyForTeamName, editorTeamMemberId, isOutsideEditor, pinnedEditorFor } from "@/lib/editors";
 import { effectiveTier } from "@/lib/editOverrides";
 import type { Prisma } from "@prisma/client";
 
@@ -3136,16 +3136,18 @@ async function announceReady(
     dedupeKey: since ? `ready-${projectId}-h${since.getTime()}` : `ready-${projectId}`,
   });
   const slack = posted ? "ops Slack" : "ops Slack not reached";
-  // Oct 5 2026: nobody in-house to DM — Luma Visuals' job, or no editor picked
-  // yet — makes it Kyle's move, so he hears it by name on Slack (pingKyle).
-  if (!routedKey && (key === "external_agency" || key === null)) {
+  // Oct 5 2026: nobody in-house to DM — an outside shop's job (Luma Visuals,
+  // Cliffside Cuts), or no editor picked yet — makes it Kyle's move, so he
+  // hears it by name on Slack (pingKyle). No packet to record (Oct 27 2026).
+  if (!routedKey && (isOutsideEditor(key) || key === null)) {
     const { pingKyle } = await import("@/lib/notify");
-    // RawsProject carries no editorVendorKey, so a job pinned to the agency reads key null here.
-    const luma = key === "external_agency" || (pin.pinned && (await prisma.project.findUnique({ where: { id: projectId }, select: { editorVendorKey: true } }).catch(() => null))?.editorVendorKey === "external_agency");
+    // RawsProject carries no editorVendorKey, so a job pinned to a shop reads key null here.
+    const vendorKey = (pin.pinned && (await prisma.project.findUnique({ where: { id: projectId }, select: { editorVendorKey: true } }).catch(() => null))?.editorVendorKey) || null;
+    const shop = isOutsideEditor(key) ? key : isOutsideEditor(vendorKey) ? vendorKey : null;
     const r = await pingKyle(
-      luma ? `📦 Ready for editing — ${street}: this one goes to ${editorMeta("external_agency")?.name ?? "the agency"} — send them the packet from the job page and record the send. ${appBase()}/edit/${projectId}`
+      shop ? `📦 Ready for editing — ${street}: this one is with ${editorMeta(shop)?.name ?? "the outside editor"}. ${appBase()}/edit/${projectId}`
         : `🎬 Ready for editing — ${street}: no editor is assigned — pick one in the Editing Room. ${appBase()}/editing`,
-      luma ? "luma_dispatch" : "edit_unrouted",
+      shop ? "luma_dispatch" : "edit_unrouted",
     );
     const how = Array.isArray(r) ? r[0]?.outcome : r;
     return `— posted to the editor bench (bell); ${slack}; ${how === "slack" || how === "sent" ? "Kyle pinged by Slack DM" : how === "held" ? "Kyle's ping held until his quiet time ends" : how === "ops" ? "Kyle's ping went to ops Slack" : "Kyle not reached directly"}.`;
@@ -3568,7 +3570,7 @@ export async function reassignVideoCard(
       await tx.project.update({ where: { id: projectId }, data: { editorId: tmId, editorManual: true, editorVendorKey: null } });
       pin = "editor";
     } else if (follows) {
-      await tx.project.update({ where: { id: projectId }, data: { editorId: null, editorManual: true, editorVendorKey: key === "external_agency" ? key : null } });
+      await tx.project.update({ where: { id: projectId }, data: { editorId: null, editorManual: true, editorVendorKey: isOutsideEditor(key) ? key : null } });
       pin = "nobody";
     }
     return { projectId, title: cur.title, fromKey, changed: true, pin };

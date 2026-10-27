@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { editorRouting } from "@/lib/settings";
-import { VIDEO_LANE_KEYS } from "@/lib/editors";
+import { VIDEO_LANE_KEYS, isOutsideEditor } from "@/lib/editors";
 import { resolveEditorAssignment } from "@/lib/editorAssignment";
 import { appBase } from "@/lib/appUrl";
 import { cutKeyOf, videoStatesFor } from "@/lib/reviewCuts";
@@ -567,18 +567,6 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
   const owedSlotsByProject = new Map([...videoStates].map(([id, state]) => [id, state.owed]));
   // …and when the office's own due was saved (A52 review): overrideAt moves on
   // any override save, so it cannot say whether the date was set for THIS reopen.
-  // ---- HANDED TO LUMA VISUALS (§7.7 / A33, Sep 25) -------------------------
-  // A job handed to the outside agency leaves our editors' boards, and its row
-  // said nothing about whether the files ever went. It now carries the office's
-  // own record of the send ("Not sent to Luma Visuals yet", "v2 sent … not
-  // acknowledged") from lib/editorPacket — one query for the whole board. A
-  // photographer's missing handoff still wins the line (O01).
-  const agencyIds = inflight
-    .filter((p) => (p.editorManual && p.editorVendorKey === "external_agency") || taskEditor.get(p.id) === "external_agency")
-    .map((p) => p.id);
-  const agencyLine = agencyIds.length
-    ? await import("@/lib/editorPacket").then((m) => m.dispatchLinesFor(agencyIds)).catch(() => new Map<string, string>())
-    : new Map<string, string>();
   const toRow = (p: P, upcoming = false): EditorQueueRow => {
     const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     const monthly = isMonthlyContentJob(p.deliverables);
@@ -688,7 +676,9 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
     // wears a chip naming who is on it. A pinned EDITING is still only the
     // lifecycle — the office can pin a stage, not a person's afternoon.
     const w = upcoming || p.status === "DELIVERED" ? undefined : work.get(p.id);
-    const wl = workLabel(effectiveStatus, w, { baseLabel: STATUS_LABEL[effectiveStatus] ?? effectiveStatus, now });
+    // An outside shop (Luma Visuals, Cliffside Cuts) never presses Start: the
+    // office's "In editing" is the whole answer (Oct 27 2026, Jordan).
+    const wl = workLabel(effectiveStatus, w, { baseLabel: STATUS_LABEL[effectiveStatus] ?? effectiveStatus, now, outside: isOutsideEditor(routeKey) });
     // WAITING ON INSTRUCTIONS (O01/A32). Files in, handoff incomplete, nobody
     // on it: the row says so instead of "Ready for editing". Somebody who has
     // pressed Start keeps their words (they chose to begin; the blocker still
@@ -797,7 +787,7 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
       workChip: upcoming || reopened ? null : wl.chip,
       // The handoff engine's sentence for what the photographer still owes
       // (O01) — the same words the edit card and the delivery board print.
-      blocker: reopened ? null : blockedBy ?? (upcoming ? null : agencyLine.get(p.id) ?? null),
+      blocker: reopened ? null : blockedBy,
       // The office is holding this job in Waiting (Sep 11): the pill on the
       // editor's queue greys every option on such a row — only the office or
       // the photographer's upload-page submit moves it on. A marker on a job
