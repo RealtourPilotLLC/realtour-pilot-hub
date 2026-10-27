@@ -354,7 +354,9 @@ async function main() {
     c.ok("#3 …and never his to approve: no approve or send-back control anywhere on his desk", everyItem(d).every((x) => x.actions.every((a) => !/approve-cut|send-back|request-changes/.test(a.kind))) && asset(i, "video:")?.note?.includes("You send it") === true);
     c.ok("an upload-only video reads 'On Aryeo, not sent yet' with Send now", video(d, pOnly.id)?.line.startsWith("On Aryeo, not sent yet") === true && video(d, pOnly.id)?.primary?.label === "Send now");
     c.ok("a video still in the Topaz pass is not an action: a quiet line only", !video(d, pFin.id) && sec(d, "deliver").quiet.some((q) => q.text === "1 video finishing the Topaz pass"));
-    c.ok("#3 a cut still in review is the creative manager's, a late edit the editor's: both in Requests & Follow-Ups, neither a delivery", !video(d, pInReview.id) && !video(d, pEditLate.id) && find(d, "edit:v-review")?.state === "waiting" && find(d, "edit:v-review")?.who === "James" && find(d, "edit:v-late")?.state === "now");
+    // Oct 27 2026: late editing recovery is the creative manager's job (James), not Kyle's, so a cut
+    // in review and a late edit left Kyle's desk altogether (no "Late with <editor> · Follow up").
+    c.ok("#3 a cut still in review and a late edit are not Kyle's: no delivery row, no follow-up row", !video(d, pInReview.id) && !video(d, pEditLate.id) && !find(d, "edit:v-review") && !find(d, "edit:v-late") && !everyItem(d).some((x) => x.line.startsWith("Late with ")));
 
     // ---- #4 ----
     i = video(d, pNotice.id);

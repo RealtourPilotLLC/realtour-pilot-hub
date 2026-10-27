@@ -10,8 +10,7 @@ import { unansweredCommsBoards } from "@/lib/commsBoard";
 import { isCourtesyMessage } from "@/lib/replyQueue";
 import { schedulingBoard, specialRequestsBoard } from "@/lib/clientAsks";
 import { checklistTasks, checklistTasksClosedToday, personTaskWhere, WEEK_OLD_DAYS, type ChecklistPerson, type ClosedTask, type OldItem } from "@/lib/taskAging";
-import { jobsBoard, type JobsBoard } from "@/lib/jobsBoard";
-import { chipPerson, kylePerson, MESSAGE_BEHIND_HOURS, waitingClientReplyHref, lateWords } from "@/lib/opsHome";
+import { kylePerson, MESSAGE_BEHIND_HOURS, waitingClientReplyHref, lateWords } from "@/lib/opsHome";
 import { remindViewsFor, REMIND_GAP_MS, type RemindView } from "@/lib/remindPhotographer";
 import { parseAccessBrief, type AccessInfo } from "@/lib/opsDay";
 import { parseEvidence } from "@/lib/statusEvidence";
@@ -44,7 +43,8 @@ import { etAt, etDate, etDateTime, etDayBoundsUtc, etDayKey, etDayStartUtc, etFu
 //     "Resend" only when one did; an unknown state asks Kyle to verify.
 //   · Requests & Follow-Ups: client revisions (where each stands), special
 //     requests, tasks from Jordan, production follow-ups (missing uploads,
-//     late edits), Kyle's own tasks due; waiting items collapsed until due.
+//     photos late at AutoHDR; late video edits are the creative manager's
+//     since Oct 27 2026), Kyle's own tasks due; waiting items collapsed until due.
 // Above them: the Daily checks (Morning, Midday, End-of-day review; system
 // evidence ticks what it can, a manual tick only for a real review, a tick
 // never closes the work), and only a verified, time-sensitive interruption.
@@ -491,9 +491,6 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
  *  and "Done it by hand?" are (Oct 23 2026 audit). It read "Open in Videos"
  *  and opened the cut's own page, which has none of them. */
 const ROOM_LINK: DeskAction = { kind: "link", label: `Open in ${VIDEO_DELIVERY_LABEL}`, href: "/review#ready-to-send" };
-/** A video still with the editor or in review: the cut's page when there is a cut. */
-const videoLink = (reviewHref: string | null | undefined): DeskAction =>
-  reviewHref ? { kind: "link", label: "Open the video", href: reviewHref } : { kind: "link", label: `Open in ${VIDEO_DELIVERY_LABEL}`, href: "/review" };
 const streetOf = (title: string | null | undefined) => (title ?? "").split(",")[0].trim() || "a job";
 const short = (s: string, n = 110) => {
   const t = s.replace(/\s+/g, " ").trim();
@@ -733,7 +730,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   const kyleTask = [...(opts.person.key ? [{ assignedKey: opts.person.key }] : []), ...(opts.person.teamMemberId ? [{ assignedKey: null, ownerId: opts.person.teamMemberId }] : [])];
   const clientScope = ex.length ? { AND: [{ OR: [{ clientId: null }, { clientId: { notIn: ex } }] }] } : {};
 
-  const [queue, board, notTold, incidents, comms, tasks, laterTasks, revisions, photoAsks, visits, jobs, cron, closeRec, waitingRecs, creative, owner, leads, programTasks, sched, special] = await Promise.all([
+  const [queue, board, notTold, incidents, comms, tasks, laterTasks, revisions, photoAsks, visits, cron, closeRec, waitingRecs, creative, owner, leads, programTasks, sched, special] = await Promise.all([
     loadQueue({ now }).catch(warn("photo queue")) as Promise<QueueData | null>,
     videoDeliveryBoard(current ? {} : { now }).catch(warn("video board")) as Promise<VideoDeliveryBoard | null>,
     clientNotToldYet({ excludeClientIds: ex }).catch(warn("client not told")) as Promise<NotTold[] | null>,
@@ -765,7 +762,6 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       take: 120,
     }).catch(warn("photo asks")),
     prepRows(days, ex).catch(warn("shoot prep")),
-    jobsBoard(now, { includeTest: !!opts.includeTest }).catch(warn("shoots board")) as Promise<JobsBoard | null>,
     syncHealth(now).catch(warn("sync health")),
     prisma.appSetting.findUnique({ where: { key: closeoutSettingKey(dayKey) } }).catch(warn("daily checks")),
     prisma.appSetting.findMany({ where: { key: { startsWith: WAITING_PREFIX } }, take: 300 }).catch(warn("waiting notes")),
@@ -1698,31 +1694,11 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       sinceISO: null, thumb: c.hero ?? null,
     });
   }
-  // Video edits and reviews not yet approved: the editor's or the creative
-  // manager's move, followed up by Kyle once the promise is near or past.
-  const jobRows = jobs?.rows ?? [];
-  for (const r of [...(board?.lanes.late ?? []), ...(board?.lanes.today ?? [])]) {
-    if (excludedProjects.has(r.projectId) || revisionProjects.has(r.projectId)) continue;
-    const inReview = r.cutStatus === "PENDING";
-    const editor = chipPerson(jobRows.find((j) => j.projectId === r.projectId)?.video?.label) ?? "the editor";
-    const who = inReview ? creativeName : editor;
-    const street = clean(r.street);
-    const late = r.late;
-    push({
-      id: `edit:${r.key}`, section: "followups", tag: "production", state: late ? "now" : "waiting",
-      title: `${street} · ${clean(r.label)}`,
-      line: late ? `Late with ${who} · Follow up` : `${inReview ? `In review with ${creativeName}` : `With ${editor}`} · Due ${r.promiseISO ? etTime(r.promiseISO) : "today"}`,
-      client: r.clientName ? clean(r.clientName) : null,
-      reason: `${inReview ? `Waiting on ${creativeName}'s review` : `Waiting on ${editor}`}: ${clean(r.stage)}`,
-      who, dueISO: r.promiseISO, dueWords: late && r.lateHours != null ? `Late by ${lateWords(r.lateHours)}` : dueWordsFor(r.promiseISO, now), late,
-      rank: late ? RANK.overdue : RANK.today,
-      primary: late ? { label: "Follow up", action: videoLink(r.reviewHref) } : null,
-      actions: [videoLink(r.reviewHref)],
-      href: r.reviewHref ?? "/review",
-      panel: { kind: "task", lines: [{ label: "Video", value: `${street} · ${clean(r.label)}` }, { label: "Where it stands", value: clean(r.stage) }, { label: "Waiting on", value: who }, ...(r.promiseISO ? [{ label: "Promised", value: etDateTime(r.promiseISO) }] : [])] },
-      sinceISO: null,
-    });
-  }
+  // Video edits and reviews not yet approved are NOT Kyle's (Oct 27 2026: the
+  // "Late with <editor> · Follow up" rows left his desk). Late editing recovery
+  // is the creative manager's job: the routing build sends those tasks to
+  // James, and his own desk follows the editors. An approved video still
+  // reaches Kyle, on Review & Deliver, to send.
   // Missing upload details and editing instructions after a shoot (the 10 AM nudge's own read).
   const recentShoots = await prisma.project.findMany({
     where: { shootDate: { gte: new Date(nowMs - 4 * DAY), lt: now }, status: { notIn: ["CANCELLED", "ON_HOLD", "DELIVERED"] }, ...(ex.length ? { clientId: { notIn: ex } } : {}) },
