@@ -3993,7 +3993,7 @@ export function UploadPortal({
                       onClick={() => toggle(d.id)}
                       className="mt-1 flex min-h-11 w-full items-center gap-2.5 text-left text-sm"
                     >
-                      <span aria-hidden className={cn("flex size-5 shrink-0 items-center justify-center rounded border", on ? "border-success bg-success text-brand-fg" : "border-border-strong")}>
+                      <span aria-hidden className={cn("flex size-5 shrink-0 items-center justify-center rounded border", on ? "border-success-action bg-success-action text-white" : "border-border-strong")}>
                         {on && <Check className="size-3.5" />}
                       </span>
                       <span className="font-medium">{uploadTickLabel(d.type)}</span>
