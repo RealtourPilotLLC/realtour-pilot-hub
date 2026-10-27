@@ -23,10 +23,10 @@
 //      dispute, remove;
 //   5. James: computed on Harrison's categories with his own bands; weights
 //      and bands change only from a period that has not started;
-//   6. pages: My Performance shows the creative their scorecard, Dispute
-//      buttons and their own PTO, never a pay amount; the creative manager
-//      sees the dispute waiting on them; Finance → Bonus shows the owner's
-//      tools;
+//   6. pages: My Pay shows Harrison and James their scorecard, Dispute
+//      buttons, their own PTO and (Oct 27 2026) their OWN pay, never anyone
+//      else's; the creative manager sees the dispute waiting on them;
+//      Finance → Bonus shows the owner's tools;
 //   7. PTO: 10-day bank per agreement year, Mon to Fri, holidays skipped,
 //      partial days, overlaps and weekends refused, owner only;
 //   8. paying: refused while running or before check-ins, then paid once.
@@ -88,6 +88,9 @@ const textOf = (tree: unknown) => rawText(tree).replace(/\s+/g, " ");
 // looks FOR a component's props reads the tree expanded only down to it.
 const OUTER_PARTS = ["MyPerformance"];
 const CARD_PARTS = ["MyPerformance", "QuarterScoreCard", "CategoryBlock", "EntryRow", "Bar", "DisputeQueue", "PtoCard"];
+// Oct 27 2026: their own pay on the same page (Jordan: "Harrison and James
+// should see their own pay schedule and amount and bonuses").
+const PAY_PARTS = ["MyPerformance", "FixedPayPanel", "BonusesPaid"];
 const FINANCE_OUTER = ["ContractPeriod", "LegacyPeriod", "ManualEntries", "PersonCard", "TermsPanel", "PtoSection"];
 const FINANCE_PARTS = [...FINANCE_OUTER, ...CARD_PARTS];
 
@@ -287,6 +290,10 @@ async function main() {
     c.ok("James (creative manager) sees Harrison's dispute waiting on him", queue.some((q) => q.entryId === `late-photos:${B}` && q.memberId === harrison.id), JSON.stringify(queue.map((q) => q.entryId)));
     const jText = textOf(jTree);
     c.ok("…and his own card: Harrison's categories, his $1,500 maximum", /Client experience/.test(jText) && /Growth and ownership/.test(jText) && /\$1,500/.test(jText));
+    const jPayText = textOf(await expand(jPage, new Set(PAY_PARTS)));
+    c.ok("…and his OWN pay (Oct 27 2026): $3,076.92 each paycheck, $80,000 a year, $7,800 vehicle, bonus up to $1,500",
+      /Each paycheck \$3,076\.92/.test(jPayText) && /A year \$80,000/.test(jPayText) && /Vehicle \$7,800 a year/.test(jPayText) && /up to \$1,500 a period/.test(jPayText) && /Next payday|Payday is TODAY/.test(jPayText), jPayText.slice(0, 300));
+    c.ok("…never Harrison's figures", !/2,538|66,000|58,200/.test(jPayText));
     const rm = await actions.resolveKpiEntry(harrison.id, p1.key, `late-photos:${B}`, "removed", "Agreed by text with Jordan: photos the next morning.");
     h = await card();
     c.ok("James removes it: it stops counting and the score goes up", rm.ok && byId(`late-photos:${B}`)?.status === "removed" && (h.score ?? 0) > (s0 ?? 0), `${rm.message} ${s0} → ${h.score}`);
@@ -399,7 +406,7 @@ async function main() {
     // Harrison's My Performance.
     await signIn(hLogin);
     const hPage = await MyPayPage({ searchParams: Promise.resolve({}) });
-    c.ok("Harrison gets My Performance, not My Pay", isValidElement(hPage) && typeName(hPage.type) === "MyPerformance");
+    c.ok("Harrison gets his own page with his pay (Oct 27 2026), on his own member id", isValidElement(hPage) && typeName(hPage.type) === "MyPerformance" && (hPage.props as Props).showPay === true && (hPage.props as Props).memberId === harrison.id);
     const hTree = await expand(hPage, new Set(CARD_PARTS));
     const hOuter = await expand(hPage, new Set(OUTER_PARTS));
     const hCards = elements(hOuter, "QuarterScoreCard");
@@ -408,7 +415,13 @@ async function main() {
     const hText = textOf(hTree);
     c.ok("…every category with weight, target, measured and evidence", ["Client experience", "Reliability and communication", "Quality and QC", "Professionalism", "Growth and ownership"].every((l) => hText.includes(l)) && /weight 35/.test(hText) && /Target/.test(hText) && /Evidence/.test(hText) && /Monthly check-in/.test(hText));
     c.ok("…his bonus (earned and possible) and his own time off", /of \$1,000 possible/.test(hText) && /Paid time off/.test(hText) && /5 of 10 days left/.test(hText) && elements(hOuter, "PtoCard").length === 1 && elements(hOuter, "PtoCard").every((x) => x.viewer === "self"), hText.slice(0, 200));
-    c.ok("…and no pay: no service fee, vehicle, payment or mileage figure", !/service fee|vehicle|mileage|2,538|2,238|58,200|7,800/i.test(hText) && elements(hTree, "PtoForm").length === 0);
+    c.ok("…no PTO form (that is the owner's)", elements(hTree, "PtoForm").length === 0);
+    const hPayText = textOf(await expand(hPage, new Set(PAY_PARTS)));
+    c.ok("…his OWN pay: $2,538.46 each paycheck (service fee $2,238.46 + vehicle $300), $66,000 a year, bonus up to $1,000",
+      /Each paycheck \$2,538\.46/.test(hPayText) && /service fee \$2,238\.46 \+ vehicle \$300\.00/.test(hPayText) && /A year \$66,000/.test(hPayText) && /Service fee \$58,200 a year/.test(hPayText) && /up to \$1,000 a period/.test(hPayText), hPayText.slice(0, 300));
+    c.ok("…every two weeks, his paychecks since Sep 20, no mileage on top, no bonus paid yet",
+      /Paid every two weeks/.test(hPayText) && /since the Sep 20 2026 pay period/.test(hPayText) && /no mileage on top/.test(hPayText) && /No bonus paid yet/.test(hPayText));
+    c.ok("…never James's figures, no per-shoot pay or old-vs-new comparison", !/3,076|80,000|72,200|Old pay|New pay|per shoot/i.test(hPayText));
 
     // =======================================================================
     c.head("8 · paying the bonus");
@@ -437,6 +450,10 @@ async function main() {
     c.ok("paying writes the scorecard's figure as his payout line", paid.ok && line?.amount === h.bonus && line.label === "Quarterly bonus 2026-Q4 (Sep 25 to Dec 31 2026)", `${paid.message} ${line?.label}`);
     c.ok("a second press is refused", /Already paid/.test((await actions.payQuarterlyBonus(harrison.id, p1.key, h.bonus)).message));
     await signIn(hLogin);
+    {
+      const paidText = textOf(await expand(await MyPayPage({ searchParams: Promise.resolve({}) }), new Set(PAY_PARTS)));
+      c.ok("Harrison's My Pay lists the bonus he was paid, with its amount", /Bonus for 2026-Q4/.test(paidText) && paidText.includes(`$${h.bonus.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`) && !/No bonus paid yet/.test(paidText), paidText.slice(paidText.indexOf("Bonuses paid"), paidText.indexOf("Bonuses paid") + 200));
+    }
     c.ok("a paid period is closed to disputes", /is paid/.test((await actions.disputeKpiEntry(p1.key, `late-video:${L}`, "late")).message));
     await signIn(owner);
     const jc = await kpi.scorePeriod({ memberId: james.id, period: p1 });

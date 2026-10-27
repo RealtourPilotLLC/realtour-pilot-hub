@@ -8,7 +8,8 @@ import { PtoCard } from "@/components/mypay/PtoCard";
 import { prisma } from "@/lib/prisma";
 import { openDisputesFor, periodFor, scoreLegacyQuarter, scorePeriod } from "@/lib/kpi";
 import { ptoBalance } from "@/lib/pto";
-import { usd } from "@/lib/money";
+import { usd, usd0 } from "@/lib/money";
+import type { OwnFixedPay } from "@/lib/ownPay";
 import { payPeriodFor, periodBounds, shiftPeriod } from "@/lib/payroll";
 import { payHistoryFor } from "@/lib/payHistory";
 import { pendingWrapUpShoots } from "@/lib/shoot";
@@ -22,10 +23,15 @@ export const dynamic = "force-dynamic";
 // platform default does to a page that touches this engine.
 export const maxDuration = 60;
 
-// Since Oct 14 2026 (permanent Oct 21) this full pay view is the OWNER's
-// alone: Jordan's own shoot pay, or one person's via ?as=. Everyone else is shown
-// MyPerformance at the bottom of this file. The notes below date from when a
-// photographer saw this page, and still describe what it shows.
+// WHO SEES WHAT HERE (Jordan, Oct 27 2026: "Only I see old pay and new pay -
+// Harrison and James should see their own pay schedule and amount and
+// bonuses"; settings.payViewFor):
+//   · the owner: this per-shoot page for Jordan's own pay, or anyone's via ?as=;
+//   · Harrison and James (fixed pay): MyPerformance below with their pay on
+//     top (schedule, amount, paychecks, bonuses paid), then the scorecard;
+//   · anyone else on per-shoot pay: this page, their own pay only;
+//   · everyone else: MyPerformance, the scorecard and nothing about pay.
+// From Oct 14 to Oct 27 2026 every login but the owner got the scorecard only.
 //
 // A photographer's OWN pay — nothing else. Shoot pay + mileage per job with
 // period totals; no other people, no client pricing. The invoice shown per job
@@ -70,26 +76,36 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
   // treats an unknown viewer as hidden (audit G6), and a signed-out visitor
   // belongs on the login page, not on a blank scorecard.
   if (!me && authEnforced()) redirect("/login?next=/my-pay");
-  // ONLY THE OWNER SEES PAY (Jordan, Oct 14 2026, permanent since Oct 21: the
-  // "Team pay view" switch is retired). Everyone else, Harrison and James
-  // included, gets My Performance: the quarterly scorecard and the bonus it is
-  // tracking toward. Payroll still runs, KPIs still score and bonuses still
-  // accrue behind it. Asked FIRST, before any of the work below, so the page
-  // never spends six seconds in the OSRM router for someone it won't show pay
-  // to. A "view as" preview follows the previewed person (payHiddenFor reads
-  // the previewed role), so previewing Harrison shows Harrison's page.
-  const { payHiddenFor } = await import("@/lib/settings");
-  if (await payHiddenFor(me)) return <MyPerformance memberId={me?.teamMemberId ?? null} preview={!!me?.impersonating} reviewer={me?.role === "CREATIVE_MANAGER"} />;
+  // EACH PERSON SEES THEIR OWN PAY, ONLY THE OWNER ANYONE ELSE'S (Jordan, Oct
+  // 27 2026; settings.payViewFor). Asked FIRST, before any of the work below,
+  // so the page never spends six seconds in the OSRM router for someone it
+  // won't show per-shoot pay to. A "view as" preview follows the previewed
+  // person (payViewFor reads the previewed role and roster row), so
+  // previewing Harrison shows Harrison's page.
+  const { payViewFor } = await import("@/lib/settings");
+  const view = await payViewFor(me);
+  const reviewer = me?.role === "CREATIVE_MANAGER";
+  if (view === "none") return <MyPerformance memberId={me?.teamMemberId ?? null} preview={!!me?.impersonating} reviewer={reviewer} showPay={false} />;
+  // Harrison and James: their own fixed pay, bonus and scorecard. The login's
+  // own roster row, never a query string.
+  if (view === "fixed") return <MyPerformance memberId={me?.teamMemberId ?? null} preview={!!me?.impersonating} reviewer={reviewer} showPay />;
 
-  // Past the gate the viewer IS the owner. Jordan shoots too (on a pay rate), so
-  // My Pay is Jordan's own pay; the whole-team payroll stays on Finance → Payroll, and
-  // an owner without a shoot rate belongs there. ?as=<memberId> is the
-  // owner's explicit preview of one person's pay (read-only: the flag action
-  // refuses for unlinked callers). Only the owner sees other people's money
-  // (audit G6/C8).
+  // Past here: the owner, or someone on per-shoot pay looking at their own.
+  // Jordan shoots too (on a pay rate), so My Pay is Jordan's own pay; the
+  // whole-team payroll stays on Finance → Payroll, and an owner without a
+  // shoot rate belongs there. ?as=<memberId> is the owner's explicit preview
+  // of one person's pay (read-only: the flag action refuses for unlinked
+  // callers). Only the owner sees other people's money (audit G6/C8).
+  const isOwner = view === "owner";
   let memberId: string | null;
-  if (sp.as && me?.realRole === "OWNER") {
+  if (sp.as && me?.realRole === "OWNER" && isOwner) {
     memberId = sp.as;
+    // A fixed-pay person's page is their fixed pay, as they see it.
+    const { fixedPayFor } = await import("@/lib/payStructure");
+    const asMember = await prisma.teamMember.findUnique({ where: { id: sp.as }, select: { name: true, active: true } });
+    if (fixedPayFor(asMember)) return <MyPerformance memberId={sp.as} preview reviewer={false} showPay />;
+  } else if (!isOwner) {
+    memberId = me?.teamMemberId ?? null;
   } else {
     const tm = me?.teamMemberId
       ? await prisma.teamMember.findUnique({ where: { id: me.teamMemberId }, select: { payPercent: true } })
@@ -168,9 +184,12 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
         title="My Pay"
         subtitle={`${member?.name ? member.name.split(" ")[0] + "'s" : "Your"} shoot pay + mileage — flag anything that looks off`}
         actions={
-          <Link href="/sales?tab=payroll" className="inline-flex items-center gap-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2">
-            Team payroll <ChevronRight className="size-3.5" />
-          </Link>
+          // The team's payroll is the owner's page; nobody else is pointed at it.
+          isOwner ? (
+            <Link href="/sales?tab=payroll" className="inline-flex items-center gap-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2">
+              Team payroll <ChevronRight className="size-3.5" />
+            </Link>
+          ) : undefined
         }
       />
       <div className="mx-auto max-w-3xl space-y-4 p-4 sm:p-6">
@@ -204,7 +223,7 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
             Sits under the year total because it is the OTHER money question a
             photographer has, and above the period detail because it is about
             the quarter, not this fortnight. */}
-        {kpi && <QuarterScoreCard card={kpi} previous={kpiPrev} viewer="preview" />}
+        {kpi && <QuarterScoreCard card={kpi} previous={kpiPrev} viewer={isOwner || me?.impersonating ? "preview" : "self"} />}
 
         {/* Period switch: the payout awaiting its payday (when there is one),
             the accruing period, and a peek at next. */}
@@ -427,17 +446,22 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
 }
 
 // ---------------------------------------------------------------------------
-// MY PERFORMANCE (Oct 14 2026). Jordan: "shut down the my pay for both
-// Harrison and James. They should not be seeing their pay anymore on the
-// shoot page or on the my pay page. It should just be their performance
-// tracking page. And tracking their bonus." For every login but the owner
-// (permanent since Oct 21 2026) this page is the KPI scorecard from the
-// compensation terms (lib/kpi, the same card Finance → Bonus pays from, Oct
-// 22 2026): every category, weight, target, the evidence entries with a
-// Dispute button on each, the monthly check-in, and the bonus it is tracking
-// (earned and possible), this period and the last one. Nothing about shoot
-// pay, mileage or the service fee. The creative manager also gets the
-// disputes on a creative specialist's card that are theirs to decide.
+// MY PERFORMANCE (Oct 14 2026), WITH THEIR OWN PAY ON TOP (Oct 27 2026).
+// The KPI scorecard from the compensation terms (lib/kpi, the same card
+// Finance → Bonus pays from, Oct 22 2026): every category, weight, target,
+// the evidence entries with a Dispute button on each, the monthly check-in,
+// and the bonus it is tracking (score, band, dollars), this period and the
+// last one. The creative manager also gets the disputes on a creative
+// specialist's card that are theirs to decide.
+//
+// showPay (Harrison and James, Jordan, Oct 27 2026: "Harrison and James
+// should see their own pay schedule and amount and bonuses"): their pay comes
+// first (FixedPayPanel: when they are paid, how much per paycheck and a year,
+// each paycheck since Sep 20 with anything added to it) and the bonuses
+// already paid sit under the scorecard. Their own figures only, from their
+// own terms and adjustment rows (lib/ownPay); never the old per-shoot model,
+// never anyone else's. Without showPay (no pay structure) the page is the
+// scorecard alone, as it was for everyone from Oct 14 to Oct 27.
 // ---------------------------------------------------------------------------
 
 /** The previous bonus period in one line: the old scorecard when it predates the terms. */
@@ -455,7 +479,7 @@ async function previousSummary(memberId: string): Promise<PeriodSummary | null> 
   }
 }
 
-async function MyPerformance({ memberId, preview, reviewer }: { memberId: string | null; preview: boolean; reviewer: boolean }) {
+async function MyPerformance({ memberId, preview, reviewer, showPay }: { memberId: string | null; preview: boolean; reviewer: boolean; showPay: boolean }) {
   if (!memberId) {
     return (
       <div>
@@ -477,13 +501,31 @@ async function MyPerformance({ memberId, preview, reviewer }: { memberId: string
   ]);
   // Paid time off: their own bank and days, for the people on the terms only (lib/pto).
   const { fixedPayFor } = await import("@/lib/payStructure");
-  const pto = member && fixedPayFor(member) ? await ptoBalance(memberId, member.name, todayKey).catch(() => null) : null;
+  const terms = member ? fixedPayFor(member) : null;
+  const pto = terms ? await ptoBalance(memberId, member!.name, todayKey).catch(() => null) : null;
+  // Their own pay, for the people on fixed pay only. A failed read drops the
+  // pay block and says so; the scorecard still shows.
+  const { ownFixedPayFor } = await import("@/lib/ownPay");
+  const pay = showPay && terms ? await ownFixedPayFor(memberId, terms).catch(() => null) : null;
   const first = member?.name?.split(" ")[0];
   return (
     <div>
-      <PageHeader eyebrow="Eastern time" title="My Performance" subtitle={`${first ? `${first}'s` : "Your"} KPI scorecard and the bonus it is tracking toward`} />
+      <PageHeader
+        eyebrow="Eastern time"
+        title={showPay && terms ? "My Pay" : "My Performance"}
+        subtitle={showPay && terms
+          ? `${first ? `${first}'s` : "Your"} pay, bonus and KPI scorecard`
+          : `${first ? `${first}'s` : "Your"} KPI scorecard and the bonus it is tracking toward`}
+      />
       <div className="mx-auto max-w-3xl space-y-4 p-4 sm:p-6">
         <DisputeQueue items={disputes} />
+        {showPay && terms && (pay ? (
+          <FixedPayPanel pay={pay} todayKey={todayKey} />
+        ) : (
+          <p className="rounded-2xl border border-dashed border-border bg-surface px-4 py-6 text-center text-sm text-muted">
+            Your pay couldn&apos;t be loaded just now. Try again in a minute.
+          </p>
+        ))}
         {kpi ? (
           <QuarterScoreCard card={kpi} previous={kpiPrev} viewer={preview ? "preview" : "self"} />
         ) : (
@@ -491,8 +533,114 @@ async function MyPerformance({ memberId, preview, reviewer }: { memberId: string
             Your scorecard couldn&apos;t be loaded just now. Try again in a minute.
           </p>
         )}
+        {pay && <BonusesPaid pay={pay} />}
         {pto && <PtoCard bal={pto} viewer="self" todayKey={todayKey} />}
+        {pay && !preview && (
+          <div className="panel-shadow rounded-2xl border border-border bg-surface p-4">
+            <p className="mb-2 flex items-center gap-2 text-sm font-semibold"><Wallet className="size-4 text-brand" /> Something not adding up?</p>
+            <p className="mb-3 text-xs text-muted">Ask about your pay here. It goes straight to Jordan.</p>
+            <PayFlag periodStartKey={pay.paychecks[0]?.startKey ?? pay.nextPayday.startKey} general />
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+const PAYCHECK_STATE: Record<"paid" | "today" | "upcoming" | "accruing", (payoutKey: string) => string> = {
+  paid: (k) => `paid ${fmtKey(k)}`,
+  today: () => "pays today",
+  upcoming: (k) => `pays ${fmtKey(k, { weekday: "short", month: "short", day: "numeric" })}`,
+  accruing: (k) => `this period, pays ${fmtKey(k)}`,
+};
+
+/** A fixed-pay person's own pay: schedule, amount, and each paycheck since Sep 20 2026. */
+function FixedPayPanel({ pay, todayKey }: { pay: OwnFixedPay; todayKey: string }) {
+  const next = pay.nextPayday;
+  const paysToday = next.payoutKey === todayKey;
+  return (
+    <div className="panel-shadow rounded-2xl border border-brand/30 bg-brand/[0.04]">
+      <div className="flex flex-wrap items-end justify-between gap-3 p-4">
+        <div>
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
+            <Wallet className="size-3.5 text-brand" /> Each paycheck
+          </div>
+          <div className="mt-0.5 text-3xl font-bold tabular-nums text-brand">{usd(pay.perPaycheck.total)}</div>
+          <div className="mt-0.5 text-[11px] text-muted-2">
+            service fee {usd(pay.perPaycheck.serviceFee)} + vehicle {usd(pay.perPaycheck.vehicle)}
+          </div>
+        </div>
+        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${paysToday ? "bg-success-action text-white" : "bg-success/10 font-medium text-success"}`}>
+          {paysToday ? "Payday is TODAY" : `Next payday ${fmtKey(next.payoutKey, { weekday: "short", month: "short", day: "numeric" })}`}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-2 border-t border-border/60 px-4 py-3">
+        <Chip icon={<TrendingUp className="size-3.5" />} label="A year" value={usd0(pay.annual.total)} />
+        <Chip icon={<Receipt className="size-3.5" />} label="Service fee" value={`${usd0(pay.annual.serviceFee)} a year`} />
+        <Chip icon={<Car className="size-3.5" />} label="Vehicle" value={`${usd0(pay.annual.vehicle)} a year`} />
+        <Chip icon={<TrendingUp className="size-3.5" />} label="KPI bonus" value={`up to ${usd0(pay.bonusMax)} a period`} />
+      </div>
+      <p className="border-t border-border/60 px-4 py-2.5 text-[11px] leading-relaxed text-muted">
+        Paid every two weeks: each pay period runs {pay.periodDays} days, Sunday to Saturday, and is paid the Friday after it closes. The next
+        paycheck covers {fmtKey(next.startKey)} to {fmtKey(next.endKey)}. Your yearly pay is split into 26 equal paychecks. The vehicle
+        amount covers your driving, so there is no mileage on top. Bonuses, weekend and holiday premiums and anything else added show on the
+        paycheck they are paid on.
+      </p>
+      {pay.paychecks.length > 0 && (
+        <div className="border-t border-border/60 bg-surface">
+          <div className="flex items-center gap-2 px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-muted">
+            <History className="size-3.5" /> Your paychecks
+            <span className="ml-auto text-[11px] font-normal normal-case text-muted-2">since the Sep 20 2026 pay period</span>
+          </div>
+          <div className="divide-y divide-border/60">
+            {pay.paychecks.map((p) => (
+              <div key={p.startKey} className="px-4 py-2.5">
+                <div className="flex items-center gap-3 text-sm">
+                  <span className="min-w-0 truncate">{fmtKey(p.startKey)} to {fmtKey(p.endKey)}</span>
+                  <span className={`shrink-0 text-[10px] ${p.state === "paid" ? "text-muted-2" : "rounded-full bg-success/15 px-1.5 py-0.5 font-medium text-success"}`}>
+                    {PAYCHECK_STATE[p.state](p.payoutKey)}
+                  </span>
+                  <span className="ml-auto w-24 shrink-0 text-right font-semibold tabular-nums">{usd(p.total)}</span>
+                </div>
+                {p.adjustments.length > 0 && (
+                  <div className="mt-0.5 space-y-0.5 text-[11px] text-muted-2">
+                    <div>regular pay {usd(p.regular)}</div>
+                    {p.adjustments.map((a) => (
+                      <div key={a.id} className={a.amount < 0 ? "text-danger" : ""}>{a.label} {usd(a.amount)}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Every KPI bonus already paid to them, newest first. */
+function BonusesPaid({ pay }: { pay: OwnFixedPay }) {
+  return (
+    <div className="panel-shadow rounded-2xl border border-border bg-surface">
+      <div className="flex items-center gap-2 border-b border-border px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-muted">
+        <TrendingUp className="size-3.5" /> Bonuses paid
+      </div>
+      {pay.bonusesPaid.length === 0 ? (
+        <p className="px-4 py-3 text-sm text-muted">
+          No bonus paid yet. Each bonus period is paid once it closes, within 30 days, on the next paycheck.
+        </p>
+      ) : (
+        <div className="divide-y divide-border/60">
+          {pay.bonusesPaid.map((b) => (
+            <div key={b.id} className="flex items-center justify-between gap-3 px-4 py-2 text-sm">
+              <span className="min-w-0 truncate text-muted">{b.label.replace(/^Quarterly bonus /, "Bonus for ")}</span>
+              <span className="shrink-0 text-[11px] text-muted-2">on the {fmtKey(b.payoutKey)} paycheck</span>
+              <span className="w-20 shrink-0 text-right font-semibold tabular-nums text-success">{usd(b.amount)}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -39,7 +39,7 @@ import { creativeCustomerNote } from "@/lib/clientNotes";
 import { videoTier } from "@/lib/projectStatus";
 import { submissionTrail, UPLOAD_COMPLETED_BODY, UPLOAD_EDITED_BY_PREFIX, UPLOAD_SUBMITTED_BY_PREFIX } from "@/lib/uploadSummary";
 import { DEBRIEF_PAY_GATE_FROM } from "@/lib/payroll";
-import { payHiddenFor } from "@/lib/settings";
+import { shootPayRidesOnSubmit } from "@/lib/settings";
 import { memberVisits, type Contribution, type SharedNote } from "@/lib/sharedShootCore";
 import type { AgentRequestItem } from "@/lib/agentRequestsCore";
 import type { AddedVideoRecord } from "@/lib/addedOnSite";
@@ -193,8 +193,9 @@ export default async function UploadProjectPage({
   // viewer never gets this far (audit C2).
   // The creative manager plans recoveries and edits the record too (Oct 21 2026).
   const viewerIsOffice = (!viewer && !authEnforced()) || viewer?.role === "OWNER" || viewer?.role === "ADMIN" || viewer?.role === "CREATIVE_MANAGER";
-  // Oct 20 2026 (audit G): a paused pay view (Harrison, James) reads no payroll copy.
-  const payHidden = await payHiddenFor(viewer);
+  // Oct 20 2026 (audit G): payroll copy only where shoot pay rides on the
+  // submit (per-shoot pay, or the owner); fixed pay and no pay read none.
+  const payHidden = !(await shootPayRidesOnSubmit(viewer));
 
   const street = streetOf(project.title);
   const addOns: ShootAddOn[] = addOnTasks.map((t) => ({

@@ -22,9 +22,11 @@ import {
 //  though they say $0 in aryeo, those are tracked on the old payroll at the
 //  prices that clients are currently paying for the 3 different tiers."
 //
-// OWNER ONLY. Harrison and James never see pay and Kyle never sees a dollar:
-// the page is Finance (owner tabs), and ownerPaySavings() below refuses any
-// other viewer on its own, so the figures cannot be fetched around the page.
+// OWNER ONLY (Jordan, Oct 27 2026: "Only I see old pay and new pay").
+// Harrison and James see their own pay on My Pay, never this comparison, and
+// Kyle never sees team pay: the page is Finance (owner tabs), and
+// ownerPaySavings() below refuses any other viewer on its own, so the figures
+// cannot be fetched around the page.
 //
 // Both sides start with the first fixed-pay period, Sep 20 2026 (paid Oct 9;
 // Jordan, Oct 22 2026: "Oct 9 pay was the new pay structure").
@@ -42,9 +44,10 @@ import {
 // period, a period cut by the month's edge counted by its days out of 14),
 // $200 for each weekend or company-holiday appointment (assumed approved: there
 // is no approval record yet), commissions (not tracked in the hub yet, so $0)
-// and the KPI bonus at its MAXIMUM spread over the bonus period's days (the
-// first bonus period starts Sep 25), because the payout formula is not set:
-// savings are never overstated by the bonus.
+// and the KPI bonus the scorecard gives (lib/kpi bands; paid, or the band the
+// score is in now) spread over the bonus period's days (the first bonus
+// period starts Sep 25). Until Oct 27 2026 this was the bonus MAXIMUM, a
+// second bonus figure Jordan asked to remove.
 //
 // This computes; it pays nobody and changes nothing /payouts does.
 // ---------------------------------------------------------------------------
@@ -284,10 +287,28 @@ export type NewSide = {
   regular: { serviceFee: number; vehicle: number; total: number; periodsLabel: string };
   premiums: { count: number; each: number; total: number; appointments: PremiumLine[] };
   commissions: { total: number; tracked: boolean };
-  /** `days` = the days of this month inside a bonus period (none before Sep 25) */
-  bonusAtMost: { total: number; max: number; periodLabel: string; periodDays: number; days: number };
+  /** The KPI bonus this month carries: the scorecard's band amount for the
+   *  bonus period (`periodAmount`; what was paid, once paid) spread over the
+   *  period's days, `days` of them in this month (none before Sep 25). */
+  bonus: PeriodBonusShare;
   total: number;
 };
+
+/** One person's KPI bonus for one bonus period, as the scorecard has it (lib/kpi). */
+export type PeriodBonus = {
+  periodKey: string;
+  /** dollars for the whole period: what was paid, else the band the score is in now */
+  amount: number;
+  /** paid = a payout line exists; scorecard = the running or unpaid period's band now; unscored = no score yet, or it could not be read */
+  source: "paid" | "scorecard" | "unscored";
+  score: number | null;
+  /** "80 to 89", or null with no score */
+  band: string | null;
+  /** the most the period could pay (the person's cap) */
+  max: number;
+};
+
+export type PeriodBonusShare = PeriodBonus & { total: number; periodLabel: string; periodDays: number; days: number };
 
 export type PersonMonth = {
   key: PersonKey;
@@ -492,6 +513,40 @@ export async function computePaySavings(opts: { now?: Date } = {}): Promise<PayS
     });
   }
 
+  // THE BONUS IS THE SCORECARD'S (Jordan, Oct 27 2026, asked which of two
+  // bonus figures is real: the bands, "but James has a different bonus
+  // amount"). This page used to carry each period's MAXIMUM spread over its
+  // days, a second bonus figure next to the one Finance → Bonus pays. Now each
+  // bonus period counts what lib/kpi says: the amount paid, once a payout line
+  // exists, else the band the score is in today (James $1,500 / $900 / $375,
+  // Harrison $1,000 / $600 / $250 at 90+, 80 to 89, 70 to 79; nothing under
+  // 70 or with no score yet). One read per person per period, sequential (the
+  // shared Neon pool; see kpi.ts).
+  const kpi = await import("@/lib/kpi");
+  const bonusMemo = new Map<string, PeriodBonus>();
+  const periodBonus = async (k: PersonKey, memberId: string, name: string, dayKey: string): Promise<PeriodBonus> => {
+    const period = kpi.periodFor(dayKey);
+    const memo = `${k}|${period.key}`;
+    const hit = bonusMemo.get(memo);
+    if (hit) return hit;
+    const paid = await prisma.payoutAdjustment.findMany({ where: { teamMemberId: memberId, label: { startsWith: `Quarterly bonus ${period.key}` } }, select: { amount: true } });
+    const card = await kpi.scorePeriod({ memberId, name, period, now }).catch(() => null);
+    const out: PeriodBonus = {
+      periodKey: period.key,
+      amount: paid.length ? r2(paid.reduce((n, x) => n + x.amount, 0)) : r2(card?.bonus ?? 0),
+      source: paid.length ? "paid" : card?.score != null ? "scorecard" : "unscored",
+      score: card?.score ?? null,
+      band: card?.band?.label ?? null,
+      max: card?.possible ?? FIXED_PAY[k].bonusMax,
+    };
+    bonusMemo.set(memo, out);
+    return out;
+  };
+  const isContractBonusLine = (label: string) => {
+    const m = /^Quarterly bonus (\d{4}-Q[1-4])/.exec(label);
+    return !!m && kpi.periodFromKey(m[1])?.legacy === false;
+  };
+
   let running = 0;
   for (const mk of monthKeys) {
     const fromKey = `${mk}-01` < effectiveKey ? effectiveKey : `${mk}-01`;
@@ -560,13 +615,17 @@ export async function computePaySavings(opts: { now?: Date } = {}): Promise<PayS
         const why = premiumReason(j.dayKey);
         if (why) premiumLines.push({ projectId: j.projectId, title: j.title, dayKey: j.dayKey, why });
       }
-      // The bonus ceiling counts only the month's days inside a bonus period:
-      // the first one starts Sep 25, so Sep 20 to 24 carry none.
+      // The bonus counts only the month's days inside a bonus period: the
+      // first one starts Sep 25, so Sep 20 to 24 carry none. The amount is
+      // the scorecard's (see periodBonus above), spread over the period's days.
       const bp = bonusPeriodFor(fromKey);
       const bonusFrom = fromKey > bp.startKey ? fromKey : bp.startKey;
       const bonusTo = toKey < bp.endKey ? toKey : bp.endKey;
       const bonusDays = bonusFrom <= bonusTo ? daysBetween(bonusFrom, bonusTo) : 0;
-      const bonus = r2((t.bonusMax / bp.days) * bonusDays);
+      const pb: PeriodBonus = bonusDays > 0
+        ? await periodBonus(k, people.get(k)!.id, s.name, bonusFrom)
+        : { periodKey: "", amount: 0, source: "unscored", score: null, band: null, max: t.bonusMax };
+      const bonus = r2((pb.amount / bp.days) * bonusDays);
       const premiums = r2(premiumLines.length * WEEKEND_HOLIDAY_PREMIUM);
       const commissions = 0; // no sales attribution in the hub yet
       const next: NewSide = {
@@ -574,11 +633,15 @@ export async function computePaySavings(opts: { now?: Date } = {}): Promise<PayS
         regular: { serviceFee: regular.serviceFee, vehicle: regular.vehicle, total: regular.total, periodsLabel: regular.periodsLabel },
         premiums: { count: premiumLines.length, each: WEEKEND_HOLIDAY_PREMIUM, total: premiums, appointments: premiumLines },
         commissions: { total: commissions, tracked: false },
-        bonusAtMost: { total: bonus, max: t.bonusMax, periodLabel: bp.label, periodDays: bp.days, days: bonusDays },
+        bonus: { ...pb, total: bonus, periodLabel: bp.label, periodDays: bp.days, days: bonusDays },
         total: r2(regular.total + premiums + commissions + bonus),
       };
 
-      const adjustments = r2((run?.adjustments ?? []).filter((a) => inMonth(etDayKey(new Date(a.dateISO)))).reduce((sum, a) => sum + a.amount, 0));
+      // A contract period's bonus payout line is already on the new side
+      // (above), so it is left out of the "counted on neither side" figure.
+      const adjustments = r2((run?.adjustments ?? [])
+        .filter((a) => inMonth(etDayKey(new Date(a.dateISO))) && !isContractBonusLine(a.label))
+        .reduce((sum, a) => sum + a.amount, 0));
       const pm: PersonMonth = { key: k, name: s.name, old, new: next, savings: r2(old.total - next.total), adjustments };
       row.people.push(pm);
       row.old = r2(row.old + old.total);

@@ -222,11 +222,13 @@ export async function loadContentTab(enrollmentId: string, clientId: string, mon
   const { authEnforced } = await import("@/lib/auth/guards");
   const me = await getCurrentUser().catch(() => null);
   const moneyEyes = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
-  // Oct 22 2026 (audit H3): the controls stay the office's (OWNER/ADMIN), but
-  // the DOLLARS are the owner's alone (canSeeMoney). Kyle reads "a fee may
-  // apply" and decides charge or waive; he never reads the amount.
-  const { canSeeMoney } = await import("@/lib/auth/access");
-  const dollarEyes = me ? canSeeMoney(me.role) : !authEnforced();
+  // Oct 22 2026 (audit H3): the controls stay the office's (OWNER/ADMIN). The
+  // fee is the price of a service to the client, so since Oct 27 2026 its
+  // DOLLARS follow canSeePrices (Jordan: "Admins can see prices of services
+  // and billing"): Kyle reads the amount when he decides charge or waive; the
+  // creative manager, granted this tab, still reads "a fee may apply".
+  const { canSeePrices } = await import("@/lib/auth/access");
+  const dollarEyes = me ? canSeePrices(me.role) : !authEnforced();
   const [cuts, decisions, pillars, sources, windows, rounds] = await Promise.all([
     prisma.reviewSubmission.findMany({
       where: { OR: [{ videoId: { in: ids } }, { projectId: { in: videos.map((v) => v.projectId).filter((x): x is string => !!x) } }] },

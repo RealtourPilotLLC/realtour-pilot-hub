@@ -2,7 +2,7 @@ import { BadgeDollarSign, CheckCircle2, FolderOpen, Scissors, Route, Eraser, Cla
 import type { LucideIcon } from "lucide-react";
 import { AgreeButton } from "@/components/upload/AgreeButton";
 import { getCurrentUser } from "@/lib/auth/user";
-import { payHiddenFor } from "@/lib/settings";
+import { shootPayRidesOnSubmit } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
 
@@ -17,9 +17,11 @@ export default async function UploadWelcomePage({
   const { next } = await searchParams;
   // Only ever bounce back inside the upload portal — no open redirects.
   const dest = next && next.startsWith("/upload") ? next : "/upload";
-  // Oct 20 2026 (audit G): a viewer whose pay view is paused (Harrison,
-  // James) never reads about payroll or My Pay; the submit rule stays.
-  const payHidden = await payHiddenFor(await getCurrentUser().catch(() => null));
+  // Oct 20 2026 (audit G): payroll and My Pay are mentioned only to someone
+  // whose shoot pay rides on the submit (per-shoot pay, or the owner); fixed
+  // pay (Harrison, James, Oct 27 2026) and no pay read the job rule. The
+  // submit rule stays for everyone.
+  const payHidden = !(await shootPayRidesOnSubmit(await getCurrentUser().catch(() => null)));
   return (
     <div className="mx-auto max-w-2xl p-4 pb-16 sm:p-6">
       <p className="text-xs font-bold uppercase tracking-widest text-brand">New for every shoot</p>

@@ -3,7 +3,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { Section } from "@/components/ui/Section";
 import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
-import { ownerPaySavings, TIER_LIST_PRICE, WEEKEND_HOLIDAY_PREMIUM, type MonthRow, type PersonMonth, type PaySavings } from "@/lib/paySavings";
+import { ownerPaySavings, TIER_LIST_PRICE, WEEKEND_HOLIDAY_PREMIUM, type MonthRow, type PersonMonth, type PaySavings, type PeriodBonusShare } from "@/lib/paySavings";
 import { FIXED_PAY } from "@/lib/payStructure";
 import { usd, usd0 } from "@/lib/money";
 
@@ -46,7 +46,7 @@ export async function PayStructureTab({ show }: { show: FinanceTab[] }) {
           <Stat icon={<PiggyBank className="size-4 text-success" />} label="Saved since Sep 20" value={signed(data.totals.savings)} tone={savedTone(data.totals.savings)} />
           <Stat icon={<CalendarRange className="size-4 text-brand" />} label={mtd ? `${mtd.label.split(" ")[0]} so far` : "This month so far"} value={mtd ? signed(mtd.savings) : "$0"} tone={mtd ? savedTone(mtd.savings) : "text-muted"} />
           <Stat icon={<TrendingUp className="size-4 text-muted" />} label="Old pay would have been" value={usd0(data.totals.old)} />
-          <Stat icon={<TrendingDown className="size-4 text-muted" />} label="New pay, bonus at most" value={usd0(data.totals.new)} />
+          <Stat icon={<TrendingDown className="size-4 text-muted" />} label="New pay" value={usd0(data.totals.new)} />
         </div>
 
         <Section icon={ArrowLeftRight} title="Month by month" count={data.months.length || null} flush>
@@ -177,9 +177,9 @@ function PersonCard({ p }: { p: PersonMonth }) {
         />
         <Line label="Commissions" value={n.commissions.total} note={n.commissions.tracked ? undefined : "commissions not tracked yet"} />
         <Line
-          label="Bonus at most"
-          value={n.bonusAtMost.total}
-          note={`${usd0(n.bonusAtMost.max)} for ${n.bonusAtMost.periodLabel} spread over its ${n.bonusAtMost.periodDays} days, ${n.bonusAtMost.days} of them this month`}
+          label="KPI bonus, from the scorecard"
+          value={n.bonus.total}
+          note={bonusNote(n.bonus)}
         />
         <Line label="New total" value={n.total} strong />
       </div>
@@ -191,6 +191,16 @@ function PersonCard({ p }: { p: PersonMonth }) {
       )}
     </div>
   );
+}
+
+/** What the month's bonus share is made of, in one line (Oct 27 2026: the scorecard's figure, never the maximum). */
+function bonusNote(b: PeriodBonusShare): string {
+  const whole = b.source === "paid"
+    ? `${usd0(b.amount)} paid for ${b.periodLabel}`
+    : b.score != null
+      ? `scorecard so far ${Math.round(b.score)} (${b.band ?? "no band"}): ${usd0(b.amount)} of ${usd0(b.max)} for ${b.periodLabel}`
+      : `no score yet for ${b.periodLabel}, so nothing so far`;
+  return b.days > 0 ? `${whole}, spread over its ${b.periodDays} days, ${b.days} of them this month` : "no bonus period this month";
 }
 
 function Line({ label, value, note, strong }: { label: string; value: number; note?: string; strong?: boolean }) {
@@ -231,7 +241,7 @@ function Assumptions({ data }: { data: PaySavings }) {
     "New regular pay (service fee plus vehicle) is what Payroll pays: one twenty-sixth of the yearly amount for each pay period, from the Sep 20 period. A pay period split by the month's edge counts its days out of 14 in each month. The vehicle amount replaces mileage, so the new side has no mileage.",
     `Weekend and company-holiday appointments are assumed approved at ${usd0(WEEKEND_HOLIDAY_PREMIUM)} each, one per appointment even when a holiday falls on a weekend (there is no approval record yet). Holidays: New Year's Day, Memorial Day, Independence Day, Labor Day, Thanksgiving and Christmas, on the day itself.`,
     "Commissions are not tracked in the hub yet, so they count $0.",
-    `The bonus formula is not set yet, so the new side carries the most each bonus period could pay (James ${usd0(FIXED_PAY.james.bonusMax)}, Harrison ${usd0(FIXED_PAY.harrison.bonusMax)}; Sep 25 to Dec 31 2026, then calendar quarters), spread evenly over the period's days. Sep 20 to 24 are before the first bonus period and carry none. Savings are never overstated by the bonus.`,
+    `The KPI bonus is the scorecard's, the same figure Finance → Bonus pays: the band each person's score is in (90 and above, 80 to 89, 70 to 79; nothing under 70 or with no score yet), up to ${usd0(FIXED_PAY.james.bonusMax)} a period for James and ${usd0(FIXED_PAY.harrison.bonusMax)} for Harrison. A paid period counts what was paid; a period not paid yet counts the band the score is in today, so it moves with the score. Each period's amount is spread evenly over its days (Sep 25 to Dec 31 2026, then calendar quarters). Sep 20 to 24 are before the first bonus period and carry none. The bonus payout line on Payroll is counted here, not again as an adjustment.`,
     "This month counts through today on both sides. Payout adjustments entered on Payroll count on neither side.",
   ];
   return (

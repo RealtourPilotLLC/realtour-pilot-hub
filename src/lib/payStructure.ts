@@ -16,9 +16,13 @@ import "server-only";
 //   · KPI bonuses, the $200 weekend/holiday premium and commissions are paid
 //     on their own (today as payroll adjustments, PayoutAdjustment).
 //
-// OWNER ONLY. Pay is hidden from everyone but the owner (settings.payHiddenFor).
-// "server-only" keeps these figures out of any browser bundle: a client
-// component gets the computed block from the server, never this table.
+// WHO SEES THESE FIGURES (Jordan, Oct 27 2026: "Only I see old pay and new
+// pay - Harrison and James should see their own pay schedule and amount and
+// bonuses"). Each of them sees their OWN terms on My Pay (lib/ownPay,
+// settings.payViewFor); only the owner sees anyone else's, and the old-vs-new
+// comparison (lib/paySavings) is the owner's alone. "server-only" keeps this
+// table out of any browser bundle: a page gets one person's computed block
+// from the server, never the table.
 //
 // Who is on fixed pay is decided HERE, by exact roster name (case-insensitive)
 // on an ACTIVE TeamMember row. Their old percent and floor stay on the row

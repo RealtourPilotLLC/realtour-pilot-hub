@@ -637,8 +637,9 @@ export async function computePayroll(
 
   const outMemberIds = new Set<string>([...linesByMember.keys(), ...adjByMember.keys(), ...removedByMember.keys()]);
   // A fixed-pay person with no shoots this range is still paid: they get a card
-  // whenever the range holds a fixed-pay period. Owner passes only (creative
-  // surfaces never carry fixed amounts; pay is hidden from them anyway).
+  // whenever the range holds a fixed-pay period. Owner passes only: creative
+  // surfaces never carry fixed amounts from here (since Oct 27 2026 a person's
+  // own fixed pay reaches My Pay from lib/ownPay, which reads only their row).
   const fixedByMember = new Map<string, PayrollFixed>();
   if (!opts?.forCreativeEyes) {
     const fromKey = etDayKey(start);
@@ -911,10 +912,10 @@ export async function paydayPings(now: Date = new Date()): Promise<{ pinged: num
     // and it must match the deposit even if an upload page is still pending
     // (the concealment is a during-the-period nudge, never a payday lie).
     const people = await computePayroll(start, end);
-    // Only someone who may see pay gets a pay figure (Oct 21 2026). Pay is
-    // hidden from every login but the owner's (settings.payHiddenFor), and
-    // Harrison and James have been on fixed pay since the Sep 20 period (paid
-    // Oct 9): the Oct 9 text told them an old-model amount. A team member
+    // The payday text goes to owner logins only (Oct 21 2026: the Oct 9 text
+    // told Harrison and James an old-model amount). Oct 27 2026 let them SEE
+    // their own pay on My Pay again; turning a text on for the team is a
+    // separate call for Jordan, so who is texted is unchanged. A team member
     // with no owner login is skipped.
     const owners = new Set(
       (await prisma.appUser.findMany({ where: { role: "OWNER", status: "ACTIVE", teamMemberId: { not: null } }, select: { teamMemberId: true } })).map((u) => u.teamMemberId),

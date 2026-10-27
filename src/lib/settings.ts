@@ -225,35 +225,69 @@ export const DEFAULT_AUTO_TEXTS: ResolvedAutoTextRules = {
 };
 
 // ---------------------------------------------------------------------------
-// ONLY JORDAN SEES PAY, PERMANENTLY (Jordan, Oct 21 2026).
+// EACH PERSON SEES THEIR OWN PAY; ONLY JORDAN SEES ANYONE ELSE'S (Jordan, Oct
+// 27 2026: "Only I see old pay and new pay - Harrison and James should see
+// their own pay schedule and amount and bonuses.").
 //
-// This used to be a switch: "Team pay view" in Settings → Financial, saved as
-// the `pay_visibility` AppSetting (Sep 18 2026: "I want to be able to pause the
-// page"; widened Oct 14 to every login but the owner: "shut down the my pay
-// for both Harrison and James ... It should just be their performance tracking
-// page. And tracking their bonus"). A switch can be flipped, and a settings
-// read that fails had to be made to fail closed (audit G6). Jordan made it the
-// rule instead: the switch, its card and its save action are gone, and the
-// `pay_visibility` row is simply no longer read (it is left in the database
-// untouched).
+// History: a Settings switch ("Team pay view", the `pay_visibility` row, Sep
+// 18) hid pay from photographers; Oct 14 it hid it from every login but the
+// owner ("shut down the my pay for both Harrison and James"), and Oct 21 the
+// switch was retired so the hiding could never be flipped by accident. Oct 27
+// reverses the hiding itself: a person with a pay structure sees their OWN pay
+// again. There is still no switch, and the `pay_visibility` row is still never
+// read (it is left in the database untouched).
 //
-// WHAT IT HIDES AND WHAT IT DOES NOT. A view rule and nothing else: payroll
-// still computes, KPIs still score, bonuses still accrue, Finance → Payroll is
-// untouched. Everyone but the owner gets My Performance on /my-pay (their
-// quarterly scorecard and the bonus it is tracking toward, never shoot pay or
-// mileage), and the per-shoot pay card stays off their shoot screens.
+// WHAT EACH VIEWER GETS (payViewFor):
+//   · "owner": every pay surface, anyone's pay (?as= on My Pay), payroll and
+//     the old-vs-new comparison (Finance → Pay structure, owner only).
+//   · "fixed": Harrison and James (lib/payStructure FIXED_PAY, an active
+//     roster row by exact name). My Pay shows their pay schedule, the amount
+//     per paycheck and a year, their paychecks since Sep 20 with any bonus or
+//     premium added, their bonus (score, band, dollars) and bonuses paid,
+//     beside the KPI scorecard. Never the old per-shoot model or anyone else.
+//   · "per_shoot": a linked roster row with a pay percent: their own per-shoot
+//     pay page and shoot pay cards, as before Oct 14.
+//   · "none": no linked roster row with a pay structure (Kyle, editors, a
+//     login nobody linked): My Performance, no pay anywhere.
+// A view rule and nothing else: payroll still computes, KPIs still score, and
+// the payday text still goes to owner logins only (lib/payroll paydayPings).
 // ---------------------------------------------------------------------------
 
-/** Is pay hidden from THIS viewer? The gate every pay surface asks, so a new
- *  surface cannot forget the rule. True for everyone but the owner.
+export type PayView = "owner" | "fixed" | "per_shoot" | "none";
+
+/** Which pay this viewer may see: the gate every pay surface asks, so a new
+ *  surface cannot forget the rule.
  *
  *  "View as" follows the person being previewed: an owner previewing Harrison
- *  is shown what Harrison sees (`role` is the previewed role, `realRole` the
- *  owner's), so a preview never puts dollars on a screen its subject would not
- *  get. An unknown viewer is hidden. Async only because every caller already
- *  awaits it. */
-export async function payHiddenFor(user: { realRole?: string; role?: string } | null): Promise<boolean> {
-  return (user?.role ?? "").toUpperCase() !== "OWNER";
+ *  is shown what Harrison sees (`role` and `teamMemberId` are the previewed
+ *  person's), never the owner's view. An unknown viewer, an unlinked login, an
+ *  inactive row and a failed read are all "none" (fails closed). */
+export async function payViewFor(user: { realRole?: string; role?: string; teamMemberId?: string | null } | null): Promise<PayView> {
+  if ((user?.role ?? "").toUpperCase() === "OWNER") return "owner";
+  const memberId = user?.teamMemberId ?? null;
+  if (!memberId) return "none";
+  const tm = await prisma.teamMember
+    .findUnique({ where: { id: memberId }, select: { name: true, active: true, payPercent: true } })
+    .catch(() => null);
+  if (!tm || tm.active !== true) return "none";
+  const { fixedPayFor } = await import("@/lib/payStructure");
+  if (fixedPayFor(tm)) return "fixed";
+  return tm.payPercent != null ? "per_shoot" : "none";
+}
+
+/** Is ALL pay hidden from this viewer? True only for "none": the owner sees
+ *  pay, and anyone with a pay structure sees their own. */
+export async function payHiddenFor(user: { realRole?: string; role?: string; teamMemberId?: string | null } | null): Promise<boolean> {
+  return (await payViewFor(user)) === "none";
+}
+
+/** Does submitting the upload page put this viewer's shoot on their pay? Only
+ *  per-shoot pay (and the owner's view) works that way: fixed pay is the same
+ *  every paycheck, so the upload pages never say "added to your payroll" to
+ *  Harrison or James. */
+export async function shootPayRidesOnSubmit(user: { realRole?: string; role?: string; teamMemberId?: string | null } | null): Promise<boolean> {
+  const v = await payViewFor(user);
+  return v === "owner" || v === "per_shoot";
 }
 
 // ---- Review Room ------------------------------------------------------------

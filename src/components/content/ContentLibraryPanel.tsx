@@ -39,9 +39,9 @@ export type LibraryWindowUi = {
   expiryOutcome: string | null; closedReason: string | null; evidence: string | null; decidedBy: string | null;
 };
 /** One revision round on the per-video ledger. `feeCents` is null unless the
- *  viewer is the owner (canSeeMoney, Oct 22 2026): the dollars never reach
- *  anyone else's screen. `feeApplies` says a fee is on the round without the
- *  amount, for the office's charge or waive decision. */
+ *  viewer may see prices (canSeePrices: the owner and, since Oct 27 2026, an
+ *  admin): the dollars never reach anyone else's screen. `feeApplies` says a
+ *  fee is on the round without the amount, for anyone else granted the tab. */
 export type LibraryRoundUi = {
   id: string; ordinal: number; included: boolean; includedRounds: number; state: string; requestedBy: string | null; createdAtISO: string;
   feeAckBy: string | null; feeAckAtISO: string | null; feeDecision: string | null; feeDecidedBy: string | null; feeCents: number | null; feeApplies?: boolean;

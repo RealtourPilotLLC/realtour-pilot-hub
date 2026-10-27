@@ -16,18 +16,37 @@ import { usd2 as usd } from "@/lib/money";
 // "Your pay for this shoot" reads to the person who did the work as "that was
 // worth nothing" (readiness audit, Sep 2).
 export async function ShootPayCard({ projectId, memberId }: { projectId: string; memberId: string }) {
-  // THE SAME DOLLARS, ON A DIFFERENT SCREEN (Jordan, Sep 18). Hiding /my-pay
-  // and leaving this card up would hide nothing — the per-shoot figure is the
-  // number the page adds up. Since Oct 21 2026 the rule is permanent: only the
-  // owner sees pay (payHiddenFor; a "view as" preview follows the previewed
-  // person). It goes quiet rather than erroring: a failure card on every shoot
-  // in the list reads as the app falling apart.
+  // THE SAME DOLLARS, ON A DIFFERENT SCREEN (Jordan, Sep 18). This card and
+  // /my-pay answer to one gate (payHiddenFor; a "view as" preview follows the
+  // previewed person). Since Oct 27 2026 a person with a pay structure sees
+  // their own pay again (Jordan: "Harrison and James should see their own pay
+  // schedule and amount and bonuses"); the shoot page only ever passes the
+  // viewer's own memberId unless the viewer is the owner. It goes quiet rather
+  // than erroring: a failure card on every shoot in the list reads as the app
+  // falling apart.
   const { payHiddenFor } = await import("@/lib/settings");
   const { getCurrentUser } = await import("@/lib/auth/user");
   if (await payHiddenFor(await getCurrentUser().catch(() => null))) return null;
 
   const earnings = await shootEarnings(projectId, memberId);
   if (!earnings) return null;
+
+  // Fixed pay (Harrison and James, from the Sep 20 2026 pay period): no
+  // per-shoot figure exists, so the card says where the pay is instead.
+  if (earnings.state === "fixed") {
+    return (
+      <Section icon={DollarSign} title="Your pay for this shoot">
+        <p className="text-sm font-semibold">Covered by your regular paycheck</p>
+        <p className="mt-1 text-sm text-muted">
+          You&rsquo;re on yearly pay, so this shoot has no separate shoot pay or mileage. Your paychecks, your bonus and anything
+          added for a weekend or holiday shoot are on My Pay.
+        </p>
+        <Link href="/my-pay" className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-brand hover:underline">
+          Open My Pay <ChevronRight className="size-4" />
+        </Link>
+      </Section>
+    );
+  }
 
   // Held by the debrief pay gate. The one state with something to DO about it,
   // so it gets the amber treatment and the same button the shoot screen uses.

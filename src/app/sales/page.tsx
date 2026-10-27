@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/user";
-import { canAccess, canSeeMoney } from "@/lib/auth/access";
+import { canAccess, canSeeMoney, canSeePrices } from "@/lib/auth/access";
 import { authEnforced } from "@/lib/auth/guards";
 import { UnpaidTab } from "@/components/finance/UnpaidTab";
 import { PayrollTab } from "@/components/finance/PayrollTab";
@@ -58,9 +58,13 @@ export default async function FinancePage({
   // account, so in prod `!me` must NOT grant the owner-only Revenue/Payroll
   // tabs to a revoked session still holding a valid 7-day JWT.
   const isOwner = me ? me.role === "OWNER" : !authEnforced();
-  // Dollars follow canSeeMoney (the hub's one money rule), never the page
-  // grant. The previewed role under "view as", so a preview shows the truth.
+  // Dollars follow the hub's money rule, never the page grant. The previewed
+  // role under "view as", so a preview shows the truth. Two parts since Oct 27
+  // 2026: client billing amounts follow canSeePrices (Jordan: "Admins can see
+  // prices of services and billing"), and the money ACTIONS on Unpaid (chase,
+  // mark paid, remove, restore) stay canSeeMoney, the owner's.
   const money = me ? canSeeMoney(me.role) : !authEnforced();
+  const prices = me ? canSeePrices(me.role) : !authEnforced();
 
   const sp = await searchParams;
   const requested = sp.tab;
@@ -98,7 +102,7 @@ export default async function FinancePage({
     redirect("/sales?tab=unpaid");
   }
 
-  if (tab === "unpaid") return <UnpaidTab show={show} money={money} />;
+  if (tab === "unpaid") return <UnpaidTab show={show} amounts={prices} actions={money} />;
   if (tab === "payroll") return <PayrollTab show={show} start={sp.start} />;
   // Old vs new pay (Oct 21 2026). Owner-only like every tab but Unpaid; the
   // tab's loader (lib/paySavings.ts ownerPaySavings) refuses anyone else too.

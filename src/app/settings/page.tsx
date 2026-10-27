@@ -336,9 +336,10 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           : <p className="text-sm text-muted">The coaching rules could not be read just now — reload to try again. Nobody has been added or removed, and nothing has been sent.</p>}
       </Section>, "coaching"),
 
-    // "Team pay view" (the pay_visibility switch) retired Oct 21 2026: only
-    // the owner sees pay, permanently (lib/settings payHiddenFor). The
-    // Financial group keeps its payroll and bank-feed links below.
+    // "Team pay view" (the pay_visibility switch) retired Oct 21 2026 and
+    // stays retired: who sees pay is a rule with no switch (lib/settings
+    // payViewFor; Oct 27 2026: each person sees their own, only the owner sees
+    // anyone else's). The Financial group keeps its payroll and bank-feed links.
 
     "review-room": card("review-room",
       <Section icon={Clapperboard} title="Video Review Room">

@@ -1,6 +1,6 @@
 import { requirePageAccess, authEnforced } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
-import { canSeeMoney } from "@/lib/auth/access";
+import { canSeePrices } from "@/lib/auth/access";
 import { Package, Sun, Plus, Camera, Home, Building2 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
@@ -52,10 +52,11 @@ function variantsOf(p: Product): Variant[] {
   }
 }
 
-// PRICES ARE MONEY (Jordan, Oct 21 2026: admins don't see prices in the
-// Catalog). Kyle opens this page by default as an ADMIN and still sees every
-// product, its tiers and its badges; the dollar figures render only for a
-// viewer canSeeMoney allows (the owner).
+// PRICES SHOW TO THE OWNER AND ADMINS (Jordan, Oct 27 2026: "Admins can see
+// prices of services and billing", reversing Oct 21's "no prices in the
+// Catalog" for admins). The dollar figures render for a viewer canSeePrices
+// allows (OWNER, ADMIN); anyone else a page grant lets in sees the products,
+// tiers and badges without them.
 function ProductCard({ p, money }: { p: Product; money: boolean }) {
   const variants = variantsOf(p);
   const from = money && p.minPrice != null ? formatMoney(p.minPrice / 100) : null;
@@ -117,8 +118,8 @@ export default async function CatalogPage() {
   ]);
   // Connections is owner-only, so only the owner is pointed at it (audit G18).
   const canSync = me ? me.role === "OWNER" : true;
-  // The previewed role under "view as", so a preview as Kyle shows no prices.
-  const money = me ? canSeeMoney(me.role) : !authEnforced();
+  // The previewed role under "view as", so a preview shows what that person sees.
+  const money = me ? canSeePrices(me.role) : !authEnforced();
 
   // Build the four fixed groups.
   const grouped = new Map<string, Product[]>(SECTIONS.map((s) => [s.key, []]));

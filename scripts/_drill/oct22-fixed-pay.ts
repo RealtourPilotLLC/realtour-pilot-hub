@@ -19,7 +19,8 @@
 //   4. the statement: service fee, vehicle, shoots without amounts;
 //   5. job profit spreads the fixed pay evenly over their jobs;
 //   6. the savings view starts Sep 20 and its old side ignores fixed pay;
-//   7. pay stays hidden from everyone but the owner.
+//   7. who sees it (Oct 27 2026): the owner everything; Harrison and James
+//      their OWN fixed pay; the old-vs-new comparison stays the owner's.
 //
 // ISOLATION: PGlite on 127.0.0.1:7655 (DRILL_PORT overrides); production is
 // never opened; every outbound call is fenced (must be 0). Pages and server
@@ -266,13 +267,20 @@ async function main() {
     c.ok("the page says where it starts", /since the Sep 20 pay period, paid Oct 9/.test(read("src/components/finance/PayStructureTab.tsx")));
 
     // =======================================================================
-    c.head("7 · pay stays hidden");
+    c.head("7 · who sees it (Oct 27 2026)");
     // =======================================================================
-    const { payHiddenFor } = await import("@/lib/settings");
-    c.ok("pay is hidden from a photographer (Harrison), a creative manager and an admin (James), shown to the owner",
-      (await payHiddenFor({ role: "PHOTOGRAPHER" })) && (await payHiddenFor({ role: "CREATIVE_MANAGER" })) && (await payHiddenFor({ role: "ADMIN" })) && !(await payHiddenFor({ role: "OWNER", realRole: "OWNER" })));
-    c.ok("the creative surfaces are unchanged: My Pay and the shoot pay card still ask the gate first",
-      /if \(await payHiddenFor\(me\)\) return <MyPerformance/.test(read("src/app/my-pay/page.tsx")) && /if \(await payHiddenFor\(await getCurrentUser\(\)/.test(read("src/components/shoot/ShootPayCard.tsx")));
+    // Jordan, Oct 27 2026: "Only I see old pay and new pay - Harrison and James
+    // should see their own pay schedule and amount and bonuses."
+    const { payViewFor, payHiddenFor } = await import("@/lib/settings");
+    c.ok("Harrison and James see their own fixed pay; the owner everything; a login with nobody linked nothing",
+      (await payViewFor({ role: "PHOTOGRAPHER", teamMemberId: harrison.id })) === "fixed"
+      && (await payViewFor({ role: "CREATIVE_MANAGER", teamMemberId: james.id })) === "fixed"
+      && (await payViewFor({ role: "OWNER", realRole: "OWNER" })) === "owner"
+      && (await payHiddenFor({ role: "CREATIVE_MANAGER" })) && (await payHiddenFor({ role: "ADMIN" })));
+    c.ok("the deactivated duplicate Harrison row sees none", (await payViewFor({ role: "PHOTOGRAPHER", teamMemberId: oldHarrison.id })) === "none");
+    c.ok("the creative surfaces ask the gate first: My Pay, and the shoot pay card",
+      /const view = await payViewFor\(me\)/.test(read("src/app/my-pay/page.tsx")) && /if \(await payHiddenFor\(await getCurrentUser\(\)/.test(read("src/components/shoot/ShootPayCard.tsx")));
+    c.ok("the old-vs-new comparison (Pay structure tab) stays the owner's", /export async function canSeePaySavings[\s\S]{0,200}me\.realRole === "OWNER" && canSeeMoney\(me\.role\)/.test(read("src/lib/paySavings.ts")) && /if \(!\(await canSeePaySavings\(\)\)\) throw/.test(read("src/lib/paySavings.ts")));
     c.ok("the statement action is owner-only", /export async function creativeStatementHtml[\s\S]{0,200}await requireOwner\(\)/.test(read("src/app/payouts/actions.ts")));
 
     c.ok("provider fence stayed closed", fence.blocked.length === 0, fence.blocked.join(", "));
