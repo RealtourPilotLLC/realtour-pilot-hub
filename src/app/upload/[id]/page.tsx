@@ -312,6 +312,7 @@ export default async function UploadProjectPage({
             folder: folder ? { label: folder.label, url: folder.url } : null,
             sessionNo: t.sessionNo ?? null,
             laterSession: !!t.laterSession,
+            planNo: t.planNo,
           };
         }),
         pending: session.pendingReport

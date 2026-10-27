@@ -39,6 +39,7 @@ import {
   markDeliverableUploaded, markDeliverableNotCompleted, flagIssue, finalizeUpload, submitUploadFeedback, setProjectSquareFeet,
   checkUploadRawFiles, readUploadAttempt, readUploadSquareFeet,
   reportMissedShot, planGapRecovery, closeProductionGap, recordFieldPreference, decideFieldReport,
+  makeAddedTopicFolders,
 } from "@/app/upload/actions";
 import { saveUploadDraft, discardUploadDraft } from "@/app/upload/draftActions";
 import {
@@ -700,6 +701,8 @@ export function UploadPortal({
       /** Oct 15 2026, bulk plans: the session it is planned for, and whether that is a later one than this shoot. */
       sessionNo?: number | null;
       laterSession?: boolean;
+      /** Oct 27 2026: its number on the month's whole list (a bulk plan's script number, "#31"). */
+      planNo?: number;
     }[];
     /** CP-09: this job's last report, when it has not landed yet — what it said, so a reopened page shows it */
     pending: { state: string; topicIds: string[]; extras: { title: string; note: string }[] } | null;
@@ -1075,6 +1078,24 @@ export function UploadPortal({
   const toggleTopic = (id: string) => {
     if (sessionTopics?.topics.some((t) => t.topicId === id && (confirmedElsewhere(t) || recordedHere(t)))) return;
     setFilmedTopicIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
+  };
+  // Oct 27 2026 (Jordan): on a bulk plan, videos from LATER sessions are added
+  // from a drop-down under this session's list ("if they end up getting more
+  // videos done"). Adding one ticks it, and its raw folder is made at once so
+  // the clips have a home before the submit.
+  const [addedFolders, setAddedFolders] = useState<Record<string, { label: string; url: string }>>({});
+  const [addFolderNote, setAddFolderNote] = useState<string | null>(null);
+  const addLaterTopics = (ids: string[]) => {
+    const ok = ids.filter((id) => sessionTopics?.topics.some((t) => t.topicId === id && !confirmedElsewhere(t)));
+    if (!ok.length) return;
+    setFilmedTopicIds((cur) => [...cur, ...ok.filter((id) => !cur.includes(id))]);
+    setAddFolderNote(null);
+    makeAddedTopicFolders(project.id, ok)
+      .then((r) => {
+        setAddedFolders((f) => ({ ...f, ...r.folders }));
+        if (!r.ok) setAddFolderNote(r.message ?? "Couldn't make the Dropbox folders just now. They're made when you submit.");
+      })
+      .catch(() => setAddFolderNote("Couldn't make the Dropbox folders just now. They're made when you submit."));
   };
   // CP-09: a note to the editor per topic (collapsed until asked for), and the
   // topics filmed on site that were not on the list. Both ride the same report
@@ -2112,12 +2133,14 @@ export function UploadPortal({
                   {hasTopics && <span className="basis-full text-xs text-muted">Tick each one you filmed, then name its clips in the box that opens.</span>}
                 </div>
                 {hasTopics && (() => {
-                  // Oct 15 2026, bulk plans: this session's scripts first; every
-                  // later session's folded underneath, for the one filmed early.
+                  // Oct 15 2026, bulk plans: this session's scripts first. Oct 27:
+                  // a later session's video is ADDED from the drop-down below and
+                  // then listed here like the rest (Jordan).
                   const item = (t: (typeof sessionTopics.topics)[number]) => {
                       const on = filmedTopicIds.includes(t.topicId);
                       const elsewhere = confirmedElsewhere(t);
                       const recorded = recordedHere(t);
+                      const folder = t.folder ?? addedFolders[t.topicId] ?? null;
                       return (
                         <li key={t.topicId}>
                           <button
@@ -2132,8 +2155,12 @@ export function UploadPortal({
                               {on ? <Check className="size-3" /> : null}
                             </span>
                             <span className="min-w-0">
-                              <span className="block text-sm font-medium">{t.title}</span>
+                              <span className="block text-sm font-medium">
+                                {sessionTopics.bulk && t.planNo ? <span className="tabular-nums text-muted">#{t.planNo} </span> : null}
+                                {t.title}
+                              </span>
                               <span className="block text-[11px] text-muted">
+                                {t.laterSession && t.sessionNo && !recorded ? `from Session ${t.sessionNo} · ` : ""}
                                 {t.pillarName ? `${t.pillarName} · ` : ""}
                                 {t.scriptTitle ? (t.clientApproved ? "script signed off by the client" : "script written") : "no script yet"}
                                 {t.overflow ? " · beyond this month's plan" : ""}
@@ -2147,7 +2174,7 @@ export function UploadPortal({
                               </span>
                             </span>
                           </button>
-                          {!elsewhere && (on || t.folder) && (
+                          {!elsewhere && (on || folder) && (
                             <div className="ml-7 mt-1 space-y-1">
                               {/* THE PER-TOPIC NOTE LEADS (Oct 5): open as soon
                                   as the topic is ticked, and it asks for the
@@ -2164,15 +2191,15 @@ export function UploadPortal({
                                   className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
                                 />
                               )}
-                              {t.folder && (
+                              {folder && (
                                 <a
-                                  href={t.folder.url}
+                                  href={folder.url}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   className="flex items-center gap-1 text-[11px] text-muted hover:text-foreground"
                                 >
                                   <FolderOpen className="size-3 shrink-0" />
-                                  <span className="truncate">Its clips go in 02-RAW-Video/{t.folder.label}</span>
+                                  <span className="truncate">Its clips go in 02-RAW-Video/{folder.label}</span>
                                 </a>
                               )}
                             </div>
@@ -2182,34 +2209,60 @@ export function UploadPortal({
                   };
                   const nowTopics = sessionTopics.topics.filter((t) => !t.laterSession);
                   const laterTopics = sessionTopics.topics.filter((t) => t.laterSession);
-                  const laterTicked = laterTopics.filter((t) => filmedTopicIds.includes(t.topicId)).length;
-                  const bySession = new Map<number, typeof laterTopics>();
-                  for (const t of laterTopics) {
+                  // Added = ticked (a draft or a reopened page brings them back
+                  // added); the drop-down offers the rest, by session.
+                  const addedTopics = laterTopics.filter((t) => filmedTopicIds.includes(t.topicId) || recordedHere(t));
+                  const addable = laterTopics.filter((t) => !addedTopics.includes(t) && !confirmedElsewhere(t));
+                  const bySession = new Map<number, typeof addable>();
+                  for (const t of addable) {
                     const k = t.sessionNo ?? 0;
                     bySession.set(k, [...(bySession.get(k) ?? []), t]);
                   }
+                  const groupName = (no: number) => (no ? `Session ${no}` : "Not in a session yet");
                   return (
                     <>
                       {sessionTopics.bulk && (
                         <p className="mt-1 text-xs font-medium text-foreground">
                           Session {sessionTopics.bulk.sessionNo} of {Math.max(sessionTopics.bulk.sessions, sessionTopics.bulk.sessionNo)} · {nowTopics.length} planned for today
+                          {addedTopics.length ? ` · ${addedTopics.length} added` : ""}
                         </p>
                       )}
                       <ul className="mt-1.5 space-y-1.5">{nowTopics.map(item)}</ul>
-                      {laterTopics.length > 0 && (
-                        <details className="mt-2 rounded-lg border border-border bg-surface-2/40" open={laterTicked > 0}>
-                          <summary className="flex min-h-11 cursor-pointer items-center px-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">
-                            Filmed one from a later session? {laterTopics.length} more{laterTicked ? ` · ${laterTicked} ticked` : ""}
-                          </summary>
-                          <div className="space-y-3 px-3 pb-3">
+                      {addedTopics.length > 0 && (
+                        <>
+                          <p className="mt-3 text-xs font-semibold text-muted">Added from later sessions · tap one to take it off</p>
+                          <ul className="mt-1 space-y-1.5">{addedTopics.map(item)}</ul>
+                        </>
+                      )}
+                      {addable.length > 0 && (
+                        <div className="mt-3">
+                          <label htmlFor={`add-later-${project.id}`} className="text-[13px] font-medium text-foreground">
+                            Got more videos done? Add them from later sessions
+                          </label>
+                          <select
+                            id={`add-later-${project.id}`}
+                            value=""
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              if (!v) return;
+                              addLaterTopics(v.startsWith("session:") ? (bySession.get(Number(v.slice(8))) ?? []).map((t) => t.topicId) : [v]);
+                            }}
+                            className="mt-1 block min-h-11 w-full rounded-lg border border-border bg-surface-2 px-3 text-sm outline-none focus:border-brand"
+                          >
+                            <option value="">Choose a video to add ({addable.length} left)</option>
                             {[...bySession.entries()].map(([no, list]) => (
-                              <div key={no}>
-                                <p className="text-xs font-semibold text-muted">{no ? `Session ${no}` : "Not in a session yet"}</p>
-                                <ul className="mt-1 space-y-1.5">{list.map(item)}</ul>
-                              </div>
+                              <optgroup key={no} label={groupName(no)}>
+                                {list.length > 1 && <option value={`session:${no}`}>All {list.length} from {groupName(no)}</option>}
+                                {list.map((t) => (
+                                  <option key={t.topicId} value={t.topicId}>
+                                    {t.planNo ? `#${t.planNo} ` : ""}{t.title}
+                                  </option>
+                                ))}
+                              </optgroup>
                             ))}
-                          </div>
-                        </details>
+                          </select>
+                          {addFolderNote && <p role="status" className="mt-1 text-xs text-warning">{addFolderNote}</p>}
+                        </div>
                       )}
                     </>
                   );

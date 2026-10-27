@@ -134,6 +134,13 @@ export type SessionTopic = {
    */
   sessionNo?: number | null;
   laterSession?: boolean;
+  /**
+   * Oct 27 2026: the topic's number on the month's WHOLE list, for its raw
+   * folder and the upload page. On a bulk plan it is the script's plan number
+   * (the selection's rank — "video 31" to the people filming it), so it never
+   * shifts as earlier videos are filmed at other sessions.
+   */
+  planNo?: number;
 };
 
 /** A filming report on this project that has not landed yet — the page says so rather than pretending. */
@@ -245,6 +252,7 @@ export async function topicsForSession(projectId: string, opts: { strictVerdicts
   const bulkAt = bulkPlan && bulkPlan.status !== "CANCELLED" ? await sessionOfProject(projectId) : null;
   const bulk = bulkAt ? { sessionNo: bulkAt.sessionNo, perSession: bulkAt.plan.perSession, sessions: bulkAt.plan.sessionsPlanned } : null;
   const sessionOfSel = new Map(allSelectionsRaw.map((s) => [s.id, s.sessionNo]));
+  const rankOfSel = new Map(allSelectionsRaw.map((s) => [s.id, s.rank]));
   const base = { monthId: month.id, monthKey: month.monthKey, enrollmentId: month.enrollmentId, clientId: month.clientId, owed: month.videosOwed + (host?.videosOwed ?? 0), pendingReport, bulk };
   if (!order.length) return { ...base, topics: [] };
 
@@ -308,7 +316,7 @@ export async function topicsForSession(projectId: string, opts: { strictVerdicts
     }
   }
 
-  const mapped = order.map((sel): SessionTopic => {
+  const mapped = order.map((sel, i): SessionTopic => {
       const sc = scripts.find((x) => x.topicId === sel.topicId && x.monthId === sel.monthId) ?? null;
       // The CONFIRMED row wins when a topic has more than one live video.
       const mine = videos.filter((x) => x.topicId === sel.topicId && x.monthId === sel.monthId);
@@ -334,6 +342,7 @@ export async function topicsForSession(projectId: string, opts: { strictVerdicts
         monthKey: keyOf.get(sel.monthId) ?? month.monthKey,
         sessionNo: sel.selectionId ? sessionOfSel.get(sel.selectionId) ?? null : null,
         laterSession: false,
+        planNo: (bulk && sel.selectionId ? rankOfSel.get(sel.selectionId) : null) ?? i + 1,
       };
     });
   if (!bulk) return { ...base, topics: mapped };

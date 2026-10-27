@@ -227,7 +227,7 @@ async function main() {
       draft: fs.readFileSync(require.resolve("../../src/lib/contentDrafting.ts"), "utf8"),
       topics: fs.readFileSync(require.resolve("../../src/lib/contentTopics.ts"), "utf8"),
     }));
-    c.ok("reminders: a bulk month runs only its address and review lanes", /if \(bulkMonth && lane === "PRIMARY"\) continue;/.test(src.rem) && /const scripts = bulkMonth \? \[\]/.test(src.rem));
+    c.ok("reminders: a bulk month runs only its address and review lanes", /if \(\(?bulkMonth( \|\| opts\.reviewOnly\))?\)? && lane === "PRIMARY"\) continue;/.test(src.rem) && /const scripts = bulkMonth( \|\| opts\.reviewOnly)? \? \[\]/.test(src.rem));
     const NOT_BULK = /OR: \[\{ programKind: null \}, \{ programKind: \{ not: "BULK" \} \}\]/g;
     c.ok("no script-approval chase, no AI drafting/questions, no topic-bank refresh for BULK clients", (src.desk.match(NOT_BULK) ?? []).length === 1 && (src.draft.match(NOT_BULK) ?? []).length === 2 && (src.topics.match(NOT_BULK) ?? []).length >= 3);
     // THE NULL TRAP: Prisma's NOT on a nullable column also drops NULL rows, so

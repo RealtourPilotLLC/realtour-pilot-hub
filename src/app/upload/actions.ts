@@ -53,6 +53,37 @@ export async function checkUploadRawFiles(projectId: string, scope?: "photos" | 
 }
 
 /**
+ * Oct 27 2026 (Jordan): a video added to a bulk session from a LATER session
+ * ("we got more done") gets its raw folder now, so its clips have a home before
+ * the submit — Rick's first session ended up in hand-made "video 9" folders.
+ * Only a topic on this session's own list can get one (ensureTopicFolders
+ * reads the list); the filming report makes up any it could not.
+ */
+export async function makeAddedTopicFolders(
+  projectId: string,
+  topicIds: string[],
+): Promise<{ ok: boolean; folders: Record<string, { label: string; url: string }>; message?: string }> {
+  await requireUploadAccess(projectId);
+  const ids = [...new Set((Array.isArray(topicIds) ? topicIds : []).filter((x): x is string => typeof x === "string" && /^[a-z0-9]{10,40}$/i.test(x)))].slice(0, 60);
+  if (!ids.length) return { ok: true, folders: {} };
+  const { ensureTopicFolders, topicFolderLinksFor } = await import("@/lib/dropboxFolders");
+  let message: string | undefined;
+  try {
+    const r = await ensureTopicFolders(projectId, { alsoTopicIds: ids });
+    if (r.failed.length) message = "Some folders couldn't be made just now. They're made when you submit.";
+  } catch {
+    message = "Couldn't make the Dropbox folders just now. They're made when you submit.";
+  }
+  const links = await topicFolderLinksFor(projectId);
+  const folders: Record<string, { label: string; url: string }> = {};
+  for (const id of ids) {
+    const l = links.get(id);
+    if (l) folders[id] = { label: l.label, url: l.url };
+  }
+  return { ok: !message, folders, ...(message ? { message } : {}) };
+}
+
+/**
  * Tick a deliverable off the upload checklist. Photographers upload to Dropbox
  * directly (no in-app files), so this is the accountability signal that the raw
  * files for this item are in. Also nudges the deliverable status to UPLOADED so

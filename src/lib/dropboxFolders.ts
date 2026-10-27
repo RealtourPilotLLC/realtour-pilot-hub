@@ -564,7 +564,7 @@ export type TopicFolderResult = {
  * that loses a race finds the folder and adopts it, and the record is
  * createMany + skipDuplicates on (projectId, topicId).
  */
-export async function ensureTopicFolders(projectId: string): Promise<TopicFolderResult> {
+export async function ensureTopicFolders(projectId: string, opts: { alsoTopicIds?: string[] } = {}): Promise<TopicFolderResult> {
   const out: TopicFolderResult = { state: "skipped", reason: null, created: 0, adopted: 0, kept: 0, failed: [] };
   // The switch FIRST — before the project is read, and long before Dropbox.
   if (!(await isAutomationEnabled("topic_folders"))) return { ...out, state: "off", reason: "topic_folders is off" };
@@ -576,13 +576,17 @@ export async function ensureTopicFolders(projectId: string): Promise<TopicFolder
 
   const { topicsForSession } = await import("@/lib/filmedTopics");
   const session = await topicsForSession(projectId);
-  // The rank is the topic's place on the month's WHOLE list, so the numbers on
-  // two sessions' folders agree with each other and with the portal.
+  // The rank is the topic's place on the month's WHOLE list (planNo), so the
+  // numbers on two sessions' folders agree with each other and with the portal.
+  // Oct 27 2026: it was this session's list position, which on a bulk plan
+  // shifted as videos were filmed elsewhere (Rick's "video 31" became "01").
   // Oct 15 2026, bulk plans: only THIS session's topics get folders (a later
-  // session's script gets one once it is ticked here — the filming report
-  // re-runs this); a 48-script plan would otherwise make 48 folders per shoot.
+  // session's script gets one once it is added here — see `alsoTopicIds`, and
+  // the filming report re-runs this); a 48-script plan would otherwise make 48
+  // folders per shoot.
+  const also = new Set(opts.alsoTopicIds ?? []);
   const wanted = (session?.topics ?? [])
-    .map((t, i) => ({ topicId: t.topicId, title: t.title, rank: i + 1, elsewhere: !!t.confirmedOnProjectId && t.confirmedOnProjectId !== projectId, later: !!t.laterSession && t.confirmedOnProjectId !== projectId }))
+    .map((t, i) => ({ topicId: t.topicId, title: t.title, rank: t.planNo ?? i + 1, elsewhere: !!t.confirmedOnProjectId && t.confirmedOnProjectId !== projectId, later: !!t.laterSession && t.confirmedOnProjectId !== projectId && !also.has(t.topicId) }))
     .filter((t) => !t.elsewhere && !t.later);
   if (!wanted.length) return { ...out, reason: "no topics on this session" };
 
