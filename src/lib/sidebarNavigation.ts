@@ -107,7 +107,7 @@ export const CREATIVE_MENU: readonly MenuDoor[] = [
   { href: "/ops/photo-delivery", label: PHOTO_DELIVERY_LABEL },
   { href: "/upload", label: "Uploads" },
   { href: "/jobs", label: "Shoots" },
-  { href: "/my-pay", label: "My Performance" },
+  { href: "/my-pay", label: "My Pay" },
 ];
 
 /** Harrison and every photographer: the field day. The Editing Room is not a
@@ -117,7 +117,7 @@ export const FIELD_MENU: readonly MenuDoor[] = [
   { href: "/shoot", label: "My Shoots" },
   { href: "/upload", label: "Upload" },
   { href: "/review", label: "My Videos" },
-  { href: "/my-pay", label: "My Performance" },
+  { href: "/my-pay", label: "My Pay" },
   { href: "/resources", label: "Help" },
 ];
 

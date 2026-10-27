@@ -538,8 +538,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     ],
     integrations: [],
     financial: [
-      { label: "Who sees pay", value: "Only you" },
-      { label: "Everyone else sees", value: "My Performance" },
+      { label: "Who sees everyone's pay", value: "Only you" },
+      { label: "Everyone else sees", value: "Their own pay, on My Pay" },
     ],
   };
   const factsFor = (id: SettingsGroupId, layout: "rows" | "grid") =>

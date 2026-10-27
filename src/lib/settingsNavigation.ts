@@ -82,7 +82,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDef[] = [
     title: "Financial",
     short: "Financial",
     blurb: "Payroll and bank feeds. Only you see this.",
-    summary: "Where payroll and bank feeds are managed. Pay itself is yours alone: everyone else sees My Performance. Only you see this group.",
+    summary: "Where payroll and bank feeds are managed. Everyone else sees only their own pay, on My Pay. Only you see this group.",
     ownerOnly: true,
   },
 ];

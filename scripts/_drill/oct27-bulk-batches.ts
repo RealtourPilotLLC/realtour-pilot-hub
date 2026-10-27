@@ -52,12 +52,13 @@ async function main() {
     c.ok("video 9: batch 2, due Tue Nov 17, aim Mon Nov 9",
       st.get("a9")!.batchNo === 2 && iso(st.get("a9")!.dueAt) === "2026-11-17T22:00:00.000Z" && iso(st.get("a9")!.aimAt) === "2026-11-09T22:00:00.000Z",
       `${iso(st.get("a9")!.dueAt)} aim ${iso(st.get("a9")!.aimAt)}`);
-    c.ok("the second session's first video is #32: batch 4, due Tue Dec 15", st.get("b1")!.batchNo === 4 && iso(st.get("b1")!.dueAt) === "2026-12-15T22:00:00.000Z", iso(st.get("b1")!.dueAt) ?? "");
-    c.ok("video 48: batch 6, due Tue Jan 12 2027", st.get("b17")!.batchNo === 6 && iso(st.get("b17")!.dueAt) === "2027-01-12T22:00:00.000Z", iso(st.get("b17")!.dueAt) ?? "");
+    c.ok("the second session's first video is #32: batch 4, due Wed Dec 16 (Thanksgiving skipped), aim Mon Nov 30", st.get("b1")!.batchNo === 4 && iso(st.get("b1")!.dueAt) === "2026-12-16T22:00:00.000Z" && iso(st.get("b1")!.aimAt) === "2026-11-30T22:00:00.000Z", `${iso(st.get("b1")!.dueAt)} aim ${iso(st.get("b1")!.aimAt)}`);
+    c.ok("the six holidays, observed on a weekday", core.batchHolidayKeys(2026).join(" ") === "2026-01-01 2026-05-25 2026-07-03 2026-09-07 2026-11-26 2026-12-25" && core.batchHolidayKeys(2028)[0] === "2027-12-31", core.batchHolidayKeys(2026).join(" "));
+    c.ok("video 48: batch 6, due Fri Jan 15 2027 (Thanksgiving, Christmas, New Year's skipped)", st.get("b17")!.batchNo === 6 && iso(st.get("b17")!.dueAt) === "2027-01-15T22:00:00.000Z", iso(st.get("b17")!.dueAt) ?? "");
     c.ok("batch 1's window starts at the shoot; batch 2's at batch 1's due", iso(st.get("a1")!.anchorAt) === iso(S1) && iso(st.get("a9")!.anchorAt) === "2026-11-03T22:00:00.000Z");
     const late = core.batchStamps([{ key: "x", sessionNo: 3, slot: 1, shootAt: new Date("2026-12-28T15:00:00Z") }, ...videos.slice(0, 16).map((v) => ({ ...v }))], S1);
     const x = late.find((s) => s.key === "x")!;
-    c.ok("a video filmed after its batch's date is due 10 business days after its own shoot", x.batchNo === 3 && iso(x.dueAt) === "2027-01-11T22:00:00.000Z", iso(x.dueAt) ?? "");
+    c.ok("a video filmed after its batch's date is due 10 business days after its own shoot", x.batchNo === 3 && iso(x.dueAt) === "2027-01-12T22:00:00.000Z", iso(x.dueAt) ?? "");
 
     c.head("2 · the stamp");
     const client = await prisma.client.create({ data: { name: "Rick Drill" } });
@@ -95,7 +96,7 @@ async function main() {
     let dues = await videoDuesFor([one.p.id, two.p.id, other.id], { now: NOW });
     const d1 = dues.get(one.p.id)!;
     c.ok("session 1: due Nov 3 (batch 1), aim Oct 29, source batch", d1.source === "batch" && iso(d1.at) === "2026-11-03T22:00:00.000Z" && iso(d1.aimAt) === "2026-10-29T21:00:00.000Z", `${d1.source} ${iso(d1.at)}`);
-    c.ok("session 2: due Dec 15 (its first video is #32)", dues.get(two.p.id)!.source === "batch" && iso(dues.get(two.p.id)!.at) === "2026-12-15T22:00:00.000Z", iso(dues.get(two.p.id)!.at) ?? "");
+    c.ok("session 2: due Dec 16 (its first video is #32)", dues.get(two.p.id)!.source === "batch" && iso(dues.get(two.p.id)!.at) === "2026-12-16T22:00:00.000Z", iso(dues.get(two.p.id)!.at) ?? "");
     c.ok("the ordinary job still reads its own clock", dues.get(other.id)!.source !== "batch" && !!dues.get(other.id)!.at, dues.get(other.id)!.source ?? "null");
     await prisma.deliverableOutput.updateMany({ where: { projectId: one.p.id, slot: { lte: 7 } }, data: { approvedAt: NOW } });
     dues = await videoDuesFor([one.p.id], { now: NOW });
@@ -130,7 +131,7 @@ async function main() {
     const more = await stampBulkBatches({ monthId });
     c.ok("only the 13 new videos are dated", more.changed === 13 && more.changes.every((ch) => ch.projectId === two.p.id && ch.slot >= 5), `${more.changed}`);
     const last = await prisma.deliverableOutput.findFirst({ where: { projectId: two.p.id, slot: 17 } });
-    c.ok("video 48 is due Jan 12 2027", iso(last?.promisedAt) === "2027-01-12T22:00:00.000Z", iso(last?.promisedAt) ?? "");
+    c.ok("video 48 is due Jan 15 2027", iso(last?.promisedAt) === "2027-01-15T22:00:00.000Z", iso(last?.promisedAt) ?? "");
 
     c.head("isolation");
     c.ok("nothing left the hub", fence.blocked.length === 0, fence.blocked.join(", "));

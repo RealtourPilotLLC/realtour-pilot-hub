@@ -136,13 +136,13 @@ async function main() {
     // the same day: drill oct22-photos-view-only).
     // Oct 23 2026 (Jordan): the two delivery doors read Video Delivery and Photo Delivery.
     const doorLabels = (h: string) => [...h.matchAll(/<span class="flex-1">([^<]+)<\/span>/g)].map((m) => m[1]).join();
-    c.ok("his doors: Dashboard, Video Delivery, Editing Room, Monthly Content, Photo Delivery, Uploads, Shoots, My Performance", hrefs(section(jamesMenu, "work")).join() === "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay" && doorLabels(section(jamesMenu, "work")) === "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Uploads,Shoots,My Performance", `${hrefs(section(jamesMenu, "work")).join()} / ${doorLabels(section(jamesMenu, "work"))}`);
+    c.ok("his doors: Dashboard, Video Delivery, Editing Room, Monthly Content, Photo Delivery, Uploads, Shoots, My Pay", hrefs(section(jamesMenu, "work")).join() === "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay" && doorLabels(section(jamesMenu, "work")) === "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Uploads,Shoots,My Pay", `${hrefs(section(jamesMenu, "work")).join()} / ${doorLabels(section(jamesMenu, "work"))}`);
     const all = hrefs(jamesMenu);
     c.ok("no client inbox, no Your list, no People, no Settings, no Finance, no Trends", !["/communications", "/ops/checklist", "/users", "/settings", "/sales", "/trends", "/day", "/connections", "/coaching", "/catalog"].some((h) => all.includes(h)), all.join(" "));
     c.ok("under More: Tasks, Clients, Client activity, My Shoots, Upload Portal, Team feedback, Training, Ask the Hub, Report a hub problem", ["/tasks", "/clients", "/content/activity", "/shoot", "/upload", "/quality", "/training", "/assistant", "/feedback"].every((h) => all.includes(h)), all.join(" "));
     // Oct 27 2026: the page behind the door now carries his own pay too
     // (drill oct27-pay-visibility); the role menu's door keeps its name.
-    c.ok("the My Pay door is named My Performance on his role menu", jamesMenu.includes('href="/my-pay"') && jamesMenu.includes("My Performance") && !jamesMenu.includes(">My Pay<"));
+    c.ok("the My Pay door is named My Pay on his role menu (Oct 27: he sees his own pay)", jamesMenu.includes('href="/my-pay"') && jamesMenu.includes("My Pay") && !jamesMenu.includes("My Performance"));
     c.ok("an override shows its door (the inbox) and hides one (Videos)", hrefs(menu({ name: "J", email: "j@x", role: "CREATIVE_MANAGER", permissions: JSON.stringify({ communications: true }) })).includes("/communications") && !hrefs(menu({ name: "J", email: "j@x", role: "CREATIVE_MANAGER", permissions: JSON.stringify({ review: false }) })).includes("/review"));
     // Oct 22 2026: the Photos door is theirs now (view only); an ops override still opens no Your list.
     c.ok("…an ops override still shows no Your list (its page admits the office only)", !hrefs(menu({ name: "J", email: "j@x", role: "CREATIVE_MANAGER", permissions: JSON.stringify({ ops: true }) })).includes("/ops/checklist"));

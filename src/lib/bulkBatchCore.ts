@@ -1,4 +1,4 @@
-import { endOfBusinessDaysET } from "@/lib/datetime";
+import { etAt, etDayKey } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // BULK PLANS ARE EDITED IN BATCHES OF 8 (Jordan, Oct 27 2026: "We should have
@@ -11,8 +11,10 @@ import { endOfBusinessDaysET } from "@/lib/datetime";
 // session's videos by slot); video n is in batch ceil(n / 8). Batch k is due
 // 10k business days after the plan's first session (the latest), with an aim
 // of 7k business days (the target), at 5 PM ET. A video is never due sooner
-// than 10 business days after the session that filmed it. Weekends are not
-// business days; holidays are not modelled (the rest of the hub's clocks).
+// than 10 business days after the session that filmed it. Weekends and six US
+// holidays (below) are not business days (Jordan, Oct 27 2026, "OK" to the
+// batch clock skipping holidays). Only this clock skips them: the rest of the
+// hub's clocks still count weekdays (datetime.ts keeps no holiday calendar).
 //
 // Pure: lib/bulkBatches stamps these on each video's row
 // (DeliverableOutput.promisedAt / targetAt, promiseSource "bulk-batch"), and
@@ -30,11 +32,65 @@ export const BATCH_TIER_LABEL = "batch of 8";
 export type BatchVideo = { key: string; sessionNo: number; slot: number; shootAt: Date | null };
 export type BatchStamp = { key: string; index: number; batchNo: number; dueAt: Date; aimAt: Date; anchorAt: Date };
 
+const key = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d, 12)).toISOString().slice(0, 10);
+const dowOf = (k: string) => new Date(`${k}T12:00:00Z`).getUTCDay();
+/** The nth (1-based) `dow` of a month, or the last one when n is -1. */
+function nthWeekday(y: number, m: number, dow: number, n: number): string {
+  if (n > 0) {
+    const first = dowOf(key(y, m, 1));
+    return key(y, m, 1 + ((dow - first + 7) % 7) + 7 * (n - 1));
+  }
+  const lastDay = new Date(Date.UTC(y, m, 0, 12)).getUTCDate();
+  const last = dowOf(key(y, m, lastDay));
+  return key(y, m, lastDay - ((last - dow + 7) % 7));
+}
+/** A fixed-date holiday on a weekend is taken on the Friday before or the Monday after. */
+function observed(k: string): string {
+  const d = dowOf(k);
+  if (d === 6) return new Date(Date.parse(`${k}T12:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+  if (d === 0) return new Date(Date.parse(`${k}T12:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+  return k;
+}
+
+/** The days the batch clock skips in `year`: New Year's Day, Memorial Day, July 4, Labor Day, Thanksgiving and Christmas (as observed). Pure. */
+export function batchHolidayKeys(year: number): string[] {
+  return [
+    observed(key(year, 1, 1)),
+    nthWeekday(year, 5, 1, -1),
+    observed(key(year, 7, 4)),
+    nthWeekday(year, 9, 1, 1),
+    nthWeekday(year, 11, 4, 4),
+    observed(key(year, 12, 25)),
+  ];
+}
+
+const holidayCache = new Map<number, Set<string>>();
+function isHoliday(k: string): boolean {
+  const y = Number(k.slice(0, 4));
+  let set = holidayCache.get(y);
+  // New Year's Day on a Saturday is taken on Dec 31 of the year before.
+  if (!set) holidayCache.set(y, (set = new Set([...batchHolidayKeys(y), ...batchHolidayKeys(y + 1)])));
+  return set.has(k);
+}
+
+/** `days` batch-clock business days after `from` (weekends and holidays skipped), at `hour` ET. Pure. */
+export function endOfBatchDaysET(from: Date, days: number, hour = 17): Date {
+  let k = etDayKey(from);
+  let left = Math.max(0, Math.floor(days));
+  while (left > 0) {
+    const [y, m, d] = k.split("-").map(Number);
+    k = key(y, m, d + 1);
+    const dow = dowOf(k);
+    if (dow !== 0 && dow !== 6 && !isHoliday(k)) left--;
+  }
+  return etAt(k, hour);
+}
+
 /** The batch dates for batch `k` counted from `startAt` (the plan's first session). Pure. */
 export function batchDates(startAt: Date, k: number): { dueAt: Date; aimAt: Date } {
   return {
-    dueAt: endOfBusinessDaysET(startAt, BULK_BATCH.dueBusinessDays * k),
-    aimAt: endOfBusinessDaysET(startAt, BULK_BATCH.aimBusinessDays * k),
+    dueAt: endOfBatchDaysET(startAt, BULK_BATCH.dueBusinessDays * k),
+    aimAt: endOfBatchDaysET(startAt, BULK_BATCH.aimBusinessDays * k),
   };
 }
 
@@ -52,8 +108,8 @@ export function batchStamps(videos: BatchVideo[], startAt: Date): BatchStamp[] {
     const batchNo = Math.ceil(index / BULK_BATCH.size);
     const { dueAt, aimAt } = batchDates(startAt, batchNo);
     const shoot = v.shootAt ?? startAt;
-    const floorDue = endOfBusinessDaysET(shoot, BULK_BATCH.dueBusinessDays);
-    const floorAim = endOfBusinessDaysET(shoot, BULK_BATCH.aimBusinessDays);
+    const floorDue = endOfBatchDaysET(shoot, BULK_BATCH.dueBusinessDays);
+    const floorAim = endOfBatchDaysET(shoot, BULK_BATCH.aimBusinessDays);
     const windowStart = batchNo > 1 ? batchDates(startAt, batchNo - 1).dueAt : startAt;
     return { key: v.key, index, batchNo, dueAt: later(dueAt, floorDue), aimAt: later(aimAt, floorAim), anchorAt: later(windowStart, shoot) };
   });
