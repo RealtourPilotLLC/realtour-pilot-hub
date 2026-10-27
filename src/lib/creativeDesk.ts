@@ -309,8 +309,8 @@ const STUDIO_WORDS: Record<string, string> = {
   awaiting_intake: "waiting on the agent's intake",
   hooks_proposed: "being written",
   generating: "being written",
-  awaiting_review: "waiting on Jordan's review",
-  approved: "approved by Jordan",
+  awaiting_review: "waiting on your review",
+  approved: "approved",
   sent_to_client: "sent to the agent",
   client_approved: "approved by the agent",
   client_revision_requested: "the agent asked for changes",
@@ -713,7 +713,9 @@ async function readPrep(ctx: Ctx, people: { jordan: string; me: string }): Promi
   const clientScope = ex.length ? { clientId: { notIn: ex } } : {};
 
   // LISTING: his upcoming listing shoots with an agent script in Script
-  // Studio. Jordan writes and approves there; James films it (mode 1).
+  // Studio. Script Studio writes it, James approves it there and films it
+  // (Jordan, Oct 27 2026 Loom: "I don't need to approve the scripts, James can
+  // approve them").
   if (tmId) {
     const listing = await prisma.appointment.findMany({
       where: { status: "SCHEDULED", startAt: { gte: dayStart, lt: horizon }, OR: [{ assignedToId: tmId }, { assignedToId: null, project: { photographerId: tmId } }], project: { scriptingId: { not: null }, status: { notIn: ["CANCELLED", "ON_HOLD", "DELIVERED"] }, ...clientScope } },
@@ -735,11 +737,11 @@ async function readPrep(ctx: Ctx, people: { jordan: string; me: string }): Promi
         detail: [deadlineWords, status].filter(Boolean).join(" · "),
         title: `Listing script · ${streetOf(a.project.title)}`,
         clientName: a.project.client ? clean(a.project.client.name, 80) : null,
-        mode: "JORDAN_OWNS",
-        writer: people.jordan,
-        approver: people.jordan,
-        role: "You film it: production input and on-site direction",
-        source: "Script Studio (listing scripts are written and approved there)",
+        mode: "JAMES_OWNS",
+        writer: "Script Studio",
+        approver: people.me,
+        role: "You approve it and film it",
+        source: "Script Studio (listing scripts are written there; you approve them)",
         deadlineISO: a.startAt?.toISOString() ?? null,
         deadlineWords,
         status,

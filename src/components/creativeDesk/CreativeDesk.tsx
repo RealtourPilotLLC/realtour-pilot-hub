@@ -676,12 +676,15 @@ function PrepLine({ p, href, readOnly }: { p: PrepRow; href: (h: string) => stri
   const name = listing ? p.title.replace(/^Listing script · /, "") : p.clientName ?? p.title;
   const sub = listing ? p.clientName : null;
   const script = p.links[0];
-  // The button: a listing script is Jordan's, so James adds production input
-  // on the job chat; a monthly draft of his opens, one he owns is reviewed;
+  // The button: a listing script is his to approve (Oct 27 2026), so it opens
+  // the script; a monthly draft of his opens, one he owns is reviewed;
   // Jordan's monthly takes his input on the session's job.
-  const button = listing || (p.mode === "JORDAN_OWNS" && p.projectId)
-    ? (p.projectId ? <AskOnJob projectId={p.projectId} to="jordan" label="Add input" variant="primary" placeholder="Production input for the script: shots, location, on-camera notes" readOnly={readOnly} /> : null)
-    : <PrepLink l={script} href={href} label={p.mode === "JAMES_DRAFTS" ? "Open draft" : p.mode === "JAMES_OWNS" ? "Review" : "Open scripts"} primary={p.mode !== "JORDAN_OWNS"} />;
+  const jordans = !listing && p.mode === "JORDAN_OWNS" && !!p.projectId;
+  const button = listing
+    ? <PrepLink l={script} href={href} label={/your review/.test(p.status ?? "") ? "Review script" : "Open script"} primary />
+    : jordans
+      ? <AskOnJob projectId={p.projectId!} to="jordan" label="Add input" variant="primary" placeholder="Production input for the script: shots, location, on-camera notes" readOnly={readOnly} />
+      : <PrepLink l={script} href={href} label={p.mode === "JAMES_DRAFTS" ? "Open draft" : p.mode === "JAMES_OWNS" ? "Review" : "Open scripts"} primary={p.mode !== "JORDAN_OWNS"} />;
   return (
     <li data-prep={p.key} data-mode={p.mode} className="py-2.5">
       <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
@@ -695,8 +698,8 @@ function PrepLine({ p, href, readOnly }: { p: PrepRow; href: (h: string) => stri
           {button}
         </div>
       </div>
-      {(listing || (p.mode === "JORDAN_OWNS" && p.projectId)) && script && (
-        <p className="mt-0.5 pl-12"><PrepLink l={script} href={href} label={listing ? "Open script" : "Open scripts"} /></p>
+      {jordans && script && (
+        <p className="mt-0.5 pl-12"><PrepLink l={script} href={href} label="Open scripts" /></p>
       )}
     </li>
   );

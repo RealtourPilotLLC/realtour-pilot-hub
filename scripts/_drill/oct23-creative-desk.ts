@@ -156,7 +156,7 @@ async function main() {
     // brief to read - why does that matter?"): the daily brief is said only when there is something to
     // do (Mark brief read) or done (Brief confirmed); switched off, nothing. No "Shoot brief to read".
     c.ok("…access from the order; the daily brief switched off says nothing; no 'Shoot brief to read' chase", chip("access")?.label === "Access noted" && !chip("brief") && !chip("read") && !s1?.briefAck && !s1?.missing.some((m) => /brief/i.test(m)), JSON.stringify(s1?.chips));
-    c.ok("…the agent script from Script Studio, in words (waiting on Jordan's review: missing prep)", chip("direction")?.label === "Agent script waiting on Jordan's review" && chip("direction")?.tone === "todo");
+    c.ok("…the agent script from Script Studio, in words (waiting on his review: missing prep)", chip("direction")?.label === "Agent script waiting on your review" && chip("direction")?.tone === "todo");
     // Oct 26 2026: a special request is in the shoot brief, so reading the brief reviews it.
     c.ok("…the special request, said as in the brief (not a separate thing to prepare)", s1?.requests.includes("Pool at dusk") === true && chip("requests")?.label === "1 special request in the brief" && chip("requests")?.tone === "info" && !s1?.missing.some((m) => /special request|brief to read/i.test(m)), JSON.stringify(s1?.chips));
     c.ok("…actions open the existing pages: Open brief (/shoot/<id>), the daily brief, Script Studio", s1?.links[0]?.href === `/shoot/${p1.id}` && s1?.links.some((l) => l.href === `/shoot/brief/${tomorrowKey}`) === true);
@@ -398,7 +398,7 @@ async function main() {
     c.ok("James owns: the program owners name him for this client", pc?.mode === "JAMES_OWNS" && pc.approver === "James" && /assigned to you/.test(pc.source), JSON.stringify(pc));
     c.ok("a client he has no part in is not listed (nothing moves to him in bulk)", !d.prep.items.some((p) => p.clientName === "Dana Elsewhere") && !!Dn);
     const listing = d.prep.items.find((p) => p.key === `listing:${p1.id}`);
-    c.ok("a listing script (Script Studio) is Jordan's, James contributes production input, deadline the shoot", listing?.mode === "JORDAN_OWNS" && /film it/.test(listing.role) && /^Shoot /.test(listing.deadlineWords ?? "") && /waiting on Jordan's review/.test(listing.status));
+    c.ok("a listing script (Script Studio) is James's to approve (Oct 27 2026), deadline the shoot", listing?.mode === "JAMES_OWNS" && listing.approver === "James" && /approve it and film it/.test(listing.role) && /^Shoot /.test(listing.deadlineWords ?? "") && /waiting on your review/.test(listing.status), JSON.stringify(listing));
     c.ok("links go to discovery and strategy, preferences, prior scripts", !!pa && ["Scripts", "Discovery and strategy", "Preferences"].every((l) => pa.links.some((x) => x.label === l && x.href.startsWith(`/content/${A.e.id}`))));
     c.ok("reading ownership wrote nothing (no default rows minted)", (await prisma.programOwnerAssignment.count()) === 3);
 

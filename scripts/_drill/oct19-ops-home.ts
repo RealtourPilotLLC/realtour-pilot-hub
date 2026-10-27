@@ -588,7 +588,8 @@ async function main() {
     issuesOverride = null;
     const jordanHtml = renderToStaticMarkup(jordanTree as Parameters<typeof renderToStaticMarkup>[0]);
     c.ok("his dashboard reads the Shoots board without test records by default", jobsCalls.length >= 1 && jobsCalls.every((o) => o.includeTest === false));
-    c.ok("shoot issues (owner only): the open one is a bottleneck for him to decide; what keeps happening by client (2+) is a client-issue pattern", jordanHtml.includes("1 Elm St: Lockbox code didn") && jordanHtml.includes("Decide, or hand it on") && jordanHtml.includes("Real Agent · Shoot issues keep coming up") && !jordanHtml.includes("Other · Shoot issues keep coming up"));
+    // Oct 27 2026 Loom: bottlenecks show as topics; the flag itself opens in the topic's panel.
+    c.ok("shoot issues (owner only): the open one is a bottleneck topic for him to decide; what keeps happening by client (2+) is a client-issue pattern", /data-topic="shoot-flags" data-topic-count="1"/.test(jordanHtml) && jordanHtml.includes("Shoot issues flagged to you") && jordanHtml.includes("Real Agent · Shoot issues keep coming up") && !jordanHtml.includes("Other · Shoot issues keep coming up"), JSON.stringify({ topic: /data-topic="shoot-flags"[^>]*/.exec(jordanHtml)?.[0], pattern: jordanHtml.includes("Real Agent · Shoot issues keep coming up") }));
     const weekTiles = [...jordanHtml.matchAll(/data-measure="([a-z]+)"/g)].map((m) => m[1]);
     c.ok("this week (owner only) is Weekly performance: photos and listing videos on time apart, revisions, replies, shoots covered", ["photos", "videos", "revisions", "replies", "shoots"].every((k) => weekTiles.includes(k)), weekTiles.join(","));
     if (weekOk) {
