@@ -20,7 +20,7 @@ import { monthStarted } from "@/lib/forfeit";
 import { strategyGatesFor, type StrategyGate } from "@/lib/strategyGate";
 import { topicIsFilmed } from "@/lib/scriptFilmed";
 import {
-  templateForAction, renderReminder, monthName, firstNameOf, reminderTemplate, DEFAULT_TEMPLATE_IDS, SIGN_OFF_FIRST_LINE,
+  templateForAction, renderReminder, monthName, firstNameOf, reminderTemplate, reviewReadyText, DEFAULT_TEMPLATE_IDS, SIGN_OFF_FIRST_LINE,
   type ReminderAction, type TemplateVars,
 } from "@/lib/reminderTemplates";
 
@@ -175,7 +175,8 @@ export type ReminderPolicy = {
   includePastMonths: boolean;
   /** Booking-type reminders need an enabled Calendly mapping synced within this many hours. */
   staleSchedulerSyncHours: number;
-  /** Shared cuts must have waited this many business days before a review reminder. */
+  /** Business days between a cut reaching the portal and the first review
+   *  email. 0 (the default since Oct 27 2026) = the next send window. */
   reviewWorkAfterBusinessDays: number;
   /**
    * BOOK_SESSION deadline: this day of the program month, 5 pm ET.
@@ -288,7 +289,10 @@ export const REMINDER_DEFAULTS: ReminderPolicy = {
   staffFollowUpsForRealClients: false,
   includePastMonths: false,
   staleSchedulerSyncHours: 6,
-  reviewWorkAfterBusinessDays: 2,
+  // Oct 27 2026, Jordan: "tell every client as soon as the video hits their
+  // portal. They should get a text too." The first review email goes at the
+  // next send window after release, with a text (textNewVideos).
+  reviewWorkAfterBusinessDays: 0,
   sessionBookingDeadlineDayOfMonth: 20,
   scriptShareBatchMinutes: 15,
   maxSendsPerRun: 20,
@@ -297,11 +301,12 @@ export const REMINDER_DEFAULTS: ReminderPolicy = {
   planningDeadlineDayOfMonth: 15, // retired — see the type
   // No date is quoted to a client until Jordan sets one (F20 review, Sep 21 2026).
   quotedPlanningDeadlineDayOfMonth: null,
-  // §8: four business days to review, with reminders two and one business days
-  // before the deadline. Release + 2 business days is two before; the follow-up
-  // one business day later is one before.
-  reviewFollowUpBusinessDays: 1,
-  reviewMaxAttempts: 2,
+  // §8: four business days to review. Since Oct 27 2026 the client is told the
+  // day the video lands, then reminded two business days later (one or two
+  // before the deadline), and once more if the window is still open two
+  // business days after that.
+  reviewFollowUpBusinessDays: 2,
+  reviewMaxAttempts: 3,
   // Daily (every weekday) until the session is booked (Oct 27 2026). Twenty
   // is a month of weekdays: the cap is a backstop, the month ending is the stop.
   sessionFollowUpBusinessDays: 1,
@@ -1636,7 +1641,9 @@ async function evaluateMonth(
   if (now < opensAt) {
     return out({
       ...withMid, action, decision: "wait", noCallEligible, digestSession, answersStarted,
-      reason: milestone === "MONTH_OPEN" ? `this month's planning email goes out ${fmtDay(opensAt)}` : `follow-up due ${fmtDay(opensAt)} (${lane === "PRIMARY" ? `${spacingBusinessDays * 24} weekday hours` : `${spacingBusinessDays} weekdays`} after the last one actually sent)`,
+      reason: milestone === "MONTH_OPEN" ? `this month's planning email goes out ${fmtDay(opensAt)}`
+        : laneAttemptsMade === 0 ? `first email due ${fmtDay(opensAt)}`
+        : `follow-up due ${fmtDay(opensAt)} (${lane === "PRIMARY" ? `${spacingBusinessDays * 24} weekday hours` : `${spacingBusinessDays} weekdays`} after the last one actually sent)`,
       nextEligibleAt: opensAt,
     });
   }
@@ -1715,9 +1722,13 @@ async function evaluateMonth(
   // landing together is a normal month (a planning follow-up on the day the
   // review clock opens), and two emails an hour apart reads as a system with no
   // one steering it (§12).
+  //
+  // A NEW VIDEO IS NEWS, NOT A NAG (Oct 27 2026): the first email about a cut
+  // that just reached the portal goes the day it lands, whatever else went out.
+  const newVideoNotice = lane === "REVIEW" && laneAttemptsMade === 0;
   const dayFrom = etAt(etDayKey(now), 0);
   const dayTo = etAt(shiftKey(etDayKey(now), 1), 0);
-  const sentToday = await prisma.programReminder.count({
+  const sentToday = newVideoNotice ? 0 : await prisma.programReminder.count({
     where: {
       enrollmentId: e.id, channel: { in: ["email", "copy"] },
       // The weekly brand-kit nudge never holds back a planning or review email (Oct 20 2026).
@@ -1889,7 +1900,62 @@ async function dispatch(c: ReminderCandidate, e: EnrollmentRow, p: ReminderPolic
   // an automatic approval needs.
   if (c.lane === "REVIEW" && result.outcome === "sent") {
     const { markReviewWindowsNotified } = await import("@/lib/reviewWindows");
-    await markReviewWindowsNotified(c.monthId, now).catch(() => 0);
+    const told = await markReviewWindowsNotified(c.monthId, now).catch(() => 0);
+    // A video they had not been told about gets a text with it (Oct 27 2026).
+    if (told > 0) {
+      await textNewVideos(c, e, reminderId, reviewReadyText(vars), leaseBy, now, opts)
+        .catch((err) => console.error(`[reminders] new-video text for ${c.clientName} failed: ${err instanceof Error ? err.message : String(err)}`));
+    }
+  }
+  return result;
+}
+
+/**
+ * THE NEW-VIDEO TEXT (Oct 27 2026). Jordan: "tell every client as soon as the
+ * video hits their portal. They should get a text too." It goes with the review
+ * email that first told the client about a cut (the one that stamped a
+ * window's clientNotifiedAt), to the client's phone, with the email's link.
+ *
+ * Its own ledger row (REVIEW_TEXT, channel sms), keyed on the email's row, so
+ * the review cadence never counts it as an email and the one-email-a-day rule
+ * never sees it. The outbox gate re-checks the switch, the rollout and the TEST
+ * floor exactly as for the email. Nothing retries a failed text (the email
+ * went): it is left with no retry time, so the reconcile pass puts it in front
+ * of a person.
+ */
+async function textNewVideos(c: ReminderCandidate, e: EnrollmentRow, emailReminderId: string, body: string, leaseBy: string, now: Date, opts: { requestedBy: string; manual: boolean }): Promise<DispatchOutcome> {
+  const client = await prisma.client.findUnique({ where: { id: c.clientId }, select: { name: true, phone: true } });
+  const { phoneKey } = await import("@/lib/phoneKey");
+  const to = phoneKey(client?.phone ?? "");
+  let textId: string;
+  try {
+    const row = await prisma.programReminder.create({
+      data: {
+        enrollmentId: e.id, clientId: c.clientId, monthId: c.monthId, monthKey: c.monthKey, action: "REVIEW_TEXT", templateKey: "review_ready_text.v1", templateVersion: "1",
+        channel: "sms", attempt: 1, manual: opts.manual, requestedBy: opts.requestedBy, dedupeKey: `${e.id}:${c.monthKey}:REVIEW_TEXT:${emailReminderId}`,
+        ...(to.length === 10 ? { state: "QUEUED", toRef: to, leaseUntil: new Date(now.getTime() + 5 * 60_000), leaseBy } : { state: "SUPPRESSED", suppressionReason: "no_recipient", lastError: "no mobile number on the client record" }),
+      },
+      select: { id: true },
+    });
+    textId = row.id;
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") return { reminderId: null, outcome: "duplicate", detail: "this email's text already exists" };
+    throw err;
+  }
+  if (to.length !== 10) return { reminderId: textId, outcome: "suppressed", detail: "no_recipient" };
+  const g = await sendGuarded(textId, { channel: "sms", toRef: to, body, dedupeKey: programReminderKey("REVIEW_TEXT", textId, c.monthKey), clientId: c.clientId, requestedBy: opts.requestedBy }, leaseBy, now);
+  if (g.kind === "refused") return g.outcome;
+  const result = await recordSendResult(textId, g.r, now);
+  if (result.outcome === "failed") await prisma.programReminder.update({ where: { id: textId }, data: { nextAttemptAt: null } });
+  if (result.outcome === "sent") {
+    // The client's text thread shows it; `auto-*` tells the receiver it is the
+    // hub's own words, so its echo answers nobody and closes nothing.
+    const { logComm } = await import("@/lib/commLog");
+    await logComm({
+      channel: "text", direction: "out", minRole: "ADMIN", clientId: c.clientId, clientName: client?.name ?? c.clientName,
+      contactName: client?.name ?? c.clientName, fromPhone: to, body, source: "auto-video-ready",
+      externalId: g.r.outcome === "accepted" && g.r.providerId ? `op-${g.r.providerId}` : `video-ready-${textId}`,
+    }).catch(() => false);
   }
   return result;
 }
@@ -2048,6 +2114,10 @@ export type EvaluateOpts = {
   /** Who is running it — "reminders-cron" or a staff email for send-now. */
   requestedBy?: string;
   byAppUserId?: string | null;
+  /** Only the video-review lane (Oct 27 2026): a cut just reached the portal,
+   *  so its client is told now rather than at the next hourly run. Every other
+   *  lane, and the scheduler-health task, waits for the hour as before. */
+  reviewOnly?: boolean;
 };
 
 export type EvaluateResult = {
@@ -2154,7 +2224,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     // ADDRESS FIRST (CP-05). A session starting in two days with no street on
     // file is the one message that cannot wait for tomorrow, so it takes the
     // one-email-a-day slot and the planning cadence waits a day behind it.
-    const address = await evaluateAddressLane(e, m, now, policy, feeds, clientWindowOpen, { dryRun: opts.dryRun }, rollout);
+    const address = opts.reviewOnly ? [] : await evaluateAddressLane(e, m, now, policy, feeds, clientWindowOpen, { dryRun: opts.dryRun }, rollout);
     addressLane.push(...address);
     if (!opts.dryRun) {
       for (const a of address) {
@@ -2168,7 +2238,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     // SCRIPTS SECOND (6.5): an approval deadline a day away beats the planning
     // cadence to the one-email-a-day slot, and loses it only to a missing address.
     const bulkMonth = bulkMonths.has(m.id);
-    const scripts = bulkMonth ? [] : await evaluateScriptApprovalLane(e, m, now, policy, clientWindowOpen, {}, rollout);
+    const scripts = bulkMonth || opts.reviewOnly ? [] : await evaluateScriptApprovalLane(e, m, now, policy, clientWindowOpen, {}, rollout);
     scriptApprovalLane.push(...scripts);
     if (!opts.dryRun) {
       for (const a of scripts) {
@@ -2180,7 +2250,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
       }
     }
     for (const lane of ["PRIMARY", "REVIEW"] as const) {
-      if (bulkMonth && lane === "PRIMARY") continue;
+      if ((bulkMonth || opts.reviewOnly) && lane === "PRIMARY") continue;
       if (!started) continue;
       const c = await evaluateMonth(e, m, now, policy, feeds, clientWindowOpen, lane, null, rollout);
       // A forfeited month's internal chasing stops with it (Oct 8 2026).
@@ -2206,7 +2276,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     // QUESTION REQUESTS (Oct 23 2026): a held press, a retry, or the next
     // follow-up for an open request on this month. Not gated on the month
     // having started: the office asked about this month's topic on purpose.
-    const qr = await evaluateQuestionRequestLane(e, m, now, policy, clientWindowOpen, { dryRun: opts.dryRun }, rollout).catch(() => [] as QuestionRequestPreview[]);
+    const qr = opts.reviewOnly ? [] : await evaluateQuestionRequestLane(e, m, now, policy, clientWindowOpen, { dryRun: opts.dryRun }, rollout).catch(() => [] as QuestionRequestPreview[]);
     questionRequestLane.push(...qr);
     if (!opts.dryRun) {
       for (const a of qr) {
@@ -2219,7 +2289,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     }
     // THE BRAND KIT LAST (Oct 20 2026): once per client per pass, on its first
     // month in view, and only into a day nothing more urgent took.
-    if (started && !brandKitDone.has(e.id)) {
+    if (started && !opts.reviewOnly && !brandKitDone.has(e.id)) {
       brandKitDone.add(e.id);
       const b = await evaluateBrandKitLane(e, m, now, policy, clientWindowOpen, {}, rollout).catch(() => null);
       if (b) {
@@ -2251,7 +2321,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     ? `${stale.length} month(s) got no booking reminder because the booking state is not trustworthy (${staleDetail}). Nothing was sent for them — this is a suppression, not a decision about the client.`
     : null;
   const healthError = [staleError, scopeError].filter(Boolean).join(" ") || null;
-  if (!opts.dryRun && staleError) await raiseSchedulerStaleTask(stale, { fresh: false, detail: staleDetail }, now, staleError);
+  if (!opts.dryRun && !opts.reviewOnly && staleError) await raiseSchedulerStaleTask(stale, { fresh: false, detail: staleDetail }, now, staleError);
   return {
     enabled, policySource: source, evaluated: candidates.length, candidates, sent, escalations, kyleFollowUps, addressLane, scriptApprovalLane, brandKitLane, questionRequestLane, healthError,
     note: opts.dryRun ? `dry run: ${wouldSend} would send, ${candidates.filter((c) => c.decision === "suppressed").length} suppressed, ${candidates.filter((c) => c.decision === "wait").length} waiting` : `${sends} sent`,

@@ -521,6 +521,18 @@ export const DEFAULT_TEMPLATE_IDS: Record<Exclude<ReminderAction, "DIGEST" | "ES
   QUESTION_REQUEST: "question_request.v1",
 };
 
+/**
+ * THE NEW-VIDEO TEXT (Oct 27 2026). Jordan: "tell every client as soon as the
+ * video hits their portal. They should get a text too." It goes with the
+ * review email that first tells the client about a video, with that email's
+ * own link (minting another sign-in link would void the one just emailed).
+ * No em dashes: a client reads it.
+ */
+export function reviewReadyText(v: Pick<TemplateVars, "firstName" | "itemCount" | "portalLink" | "reviewDeadline">): string {
+  const n = Math.max(1, v.itemCount);
+  return `Hi ${v.firstName}! ${n === 1 ? "Your new video is" : `${n} new videos are`} ready to review in your portal. Approve ${n === 1 ? "it" : "them"} or tell us what to change${v.reviewDeadline ? ` by ${v.reviewDeadline}` : ""}: ${v.portalLink}`;
+}
+
 /** Resolve a template by id, refusing an id nobody has (a typo in the policy
  *  JSON must fail the validation, never send a blank email). */
 export function reminderTemplate(id: string): ReminderTemplate {

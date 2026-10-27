@@ -1153,7 +1153,27 @@ export async function publishApprovedCutToLibrary(submissionId: string): Promise
   // Kyle's delivery card names the last reason a portal publication did not
   // land, so "needs attention" always comes with the why (Oct 5 2026).
   if (!r.skipped) await recordPublicationOutcome(submissionId, r.published ? null : r.why ?? "Publication did not finish.").catch(() => {});
+  if (r.published) await tellClientNow(submissionId);
   return { published: r.published, ...(r.why ? { why: r.why } : {}) };
+}
+
+/**
+ * THE CLIENT HEARS NOW (Oct 27 2026). Jordan: "tell every client as soon as the
+ * video hits their portal. They should get a text too." The review lane alone,
+ * for this client, through the same evaluator and gates as the hourly run (the
+ * switch, the rollout, the send window, the ledger), so a publication in the
+ * evening is told at the next morning's run and a repeat publication sends
+ * nothing twice. Never fails the publication.
+ */
+async function tellClientNow(submissionId: string): Promise<void> {
+  try {
+    const enrollment = await enrollmentOfCut(submissionId);
+    if (!enrollment) return;
+    const { evaluateReminders } = await import("@/lib/programReminders");
+    await evaluateReminders({ dryRun: false, enrollmentIds: [enrollment.id], reviewOnly: true, requestedBy: "portal-publication" });
+  } catch (e) {
+    console.error(`[portal publication] telling the client about ${submissionId} failed; the hourly run will: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /** The AppSetting key holding one cut's last failed portal publication. */

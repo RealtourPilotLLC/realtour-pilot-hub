@@ -917,8 +917,9 @@ export async function reviewLaneFacts(projectIds: string[]): Promise<ReviewLaneF
  * WHICH WINDOW THE REVIEW CADENCE IS CHASING, and how many reminders it has
  * had. Pure. Every review reminder counts every window open when it went
  * (markReviewWindowsNotified stamps them all), so a window's attempts are the
- * lane's sends at or after its release. The cadence chases the OLDEST open
- * window that still has attempts left, or — all spent — the oldest one.
+ * lane's sends at or after its release. A window with none yet is told first;
+ * otherwise the cadence chases the OLDEST open window that still has attempts
+ * left, or — all spent — the oldest one.
  *
  * It used to be keyed on the earliest open window's release DAY: approving
  * Monday's videos restarted the count at 1 for a Tuesday video already
@@ -929,7 +930,10 @@ export function reviewCadenceTarget(windows: ReviewLaneWindow[], sends: Date[], 
   if (!windows.length) return null;
   const sorted = [...windows].sort((a, b) => a.openedAt.getTime() - b.openedAt.getTime());
   const attemptsOf = (w: ReviewLaneWindow) => sends.filter((t) => t.getTime() >= w.openedAt.getTime()).length;
-  const window = sorted.find((w) => attemptsOf(w) < maxAttempts) ?? sorted[0];
+  // A RELEASE NOBODY HAS EMAILED ABOUT GOES FIRST (Oct 27 2026): the client
+  // hears about a new video the day it lands, not when an older one's
+  // follow-up comes round.
+  const window = (maxAttempts > 0 ? sorted.find((w) => attemptsOf(w) === 0) : undefined) ?? sorted.find((w) => attemptsOf(w) < maxAttempts) ?? sorted[0];
   return { window, attempts: attemptsOf(window), tag: reviewTagOf(window.openedAt) };
 }
 

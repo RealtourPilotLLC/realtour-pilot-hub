@@ -116,7 +116,7 @@ const cadenceFields: NumberField[] = [
 ];
 const otherFields: NumberField[] = [
   { path: ["firstReminderDelayBusinessDays"], label: "First reminder delay · business days", min: 0, max: 20 },
-  { path: ["reviewWorkAfterBusinessDays"], label: "First cut reminder · business days after release", min: 0, max: 20 },
+  { path: ["reviewWorkAfterBusinessDays"], label: "First cut email · business days after release", min: 0, max: 20, hint: "0 = the day the video reaches the portal (in the send window), with a text to the client." },
   { path: ["reviewFollowUpBusinessDays"], label: "Cut follow-up spacing · business days", min: 0, max: 20 },
   { path: ["reviewMaxAttempts"], label: "Cut review attempts · maximum", min: 0, max: 6 },
   { path: ["sessionFollowUpBusinessDays"], label: "Filming booking follow-up · business days", min: 1, max: 30, hint: "1 = a nudge every weekday until the session is booked." },

@@ -526,7 +526,10 @@ async function main() {
     c.ok("REVIEW lane: action REVIEW_WORK", c1?.action === "REVIEW_WORK", `${c1?.action}/${c1?.decision}`);
     c.ok("state.reviewDeadlineAt === the window's deadlineAt (same instant)", c1?.state.reviewDeadlineAt === mw.deadlineAt.toISOString(), c1?.state.reviewDeadlineAt ?? "null");
     c.ok("  …and the internal deadline IS that instant (no recompute)", c1?.deadlineAt?.getTime() === mw.deadlineAt.getTime());
-    c.ok("first reminder waits until openedAt + 2 business days", c1?.decision === "wait" && c1.nextEligibleAt?.getTime() === addBusinessDaysET(mw.openedAt, 2).getTime(), c1?.nextEligibleAt?.toISOString());
+    // Oct 27 2026: the first email goes the day the cut is released (Jordan:
+    // "tell every client as soon as the video hits their portal"); only the
+    // send window can hold it. It used to wait openedAt + 2 business days.
+    c.ok("first email is due at the release (only the send window holds it)", c1?.decision === "send" || (c1?.decision === "wait" && /outside the send window/.test(c1.reason)), `${c1?.decision} ${c1?.nextEligibleAt?.toISOString()} ${c1?.reason}`);
     const tag = `r${etDayKey(mw.openedAt).replace(/-/g, "")}`;
     const at3 = etAt(addBusinessDayKeysET(mw.openedAt, 3), 11);
     const c2 = await run(at3);
@@ -662,7 +665,9 @@ async function main() {
     const tueTagRows = await prisma.programReminder.count({ where: { enrollmentId: Q.f.enrollmentId, action: "REVIEW_WORK", dedupeKey: { contains: `:${tagOf(TUE)}:` } } });
     c.ok("BEFORE: keyed on the earliest open window's day (now Tuesday's), the old cadence saw 0 reminders — 'reminder 1' again, and a second escalation", tueTagRows === 0);
     const qa = await evalAt(Q, "2026-10-12");
-    c.ok("NEW: the Tuesday video has had its 2 of 2 — nothing is sent", qa?.attempt === 2 && qa.decision !== "send" && !qa.dedupeKey?.includes(`${tagOf(TUE)}:1`), `${qa?.decision} ${qa?.attempt} ${qa?.reason}`);
+    // Three per video since Oct 27 2026 (the release-day email, then two): the
+    // count carries on at 3, it does not start again at 1.
+    c.ok("NEW: the Tuesday video has had 2 of its 3 — the next is attempt 3, not 1", qa?.attempt === 3 && qa.decision === "send", `${qa?.decision} ${qa?.attempt} ${qa?.reason}`);
     c.ok("NEW: …and the escalation that already covered it is not filed again", qa?.escalation === null, JSON.stringify(qa?.escalation));
 
     // (B) Monday's one video stays undecided after its 2 reminders and the
