@@ -273,7 +273,8 @@ async function main() {
     const src = (rel: string) => read(rel);
     const creativeEmitters: [string, RegExp][] = [
       ["src/lib/scriptDecisions.ts", /kind: "script_change_request"[\s\S]{0,800}"CREATIVE_MANAGER"/],
-      ["src/lib/scriptEdits.ts", /kind: "script_edited"[\s\S]{0,800}"CREATIVE_MANAGER"/],
+      // 1200: the Oct 26 undo wording lengthened the same call's title and body.
+      ["src/lib/scriptEdits.ts", /kind: "script_edited"[\s\S]{0,1200}"CREATIVE_MANAGER"/],
       ["src/lib/comms.ts", /const targets: NotifyTarget\[\] = \[\{ roles: \["OWNER", "ADMIN", "CREATIVE_MANAGER"\] \}\];[\s\S]{0,1600}revision_raised/],
       ["src/lib/cutReopen.ts", /kind: "cut_uploaded"[\s\S]{0,400}"CREATIVE_MANAGER"/],
       ["src/lib/behindAlert.ts", /kind === "video"[\s\S]{0,600}"CREATIVE_MANAGER"/],
