@@ -56,7 +56,7 @@ export function RevenueMonthPanel({ r }: { r: RevenueMonth | null }) {
                   <th scope="row" className="py-1.5 text-left font-medium">
                     <span className="inline-flex items-center gap-2"><span aria-hidden className={cn("size-2 shrink-0 rounded-full", RAIL_SWATCH[x.key])} />{x.label}</span>
                     {x.through && <span className="ml-1 text-[11px] font-normal text-muted">({x.through})</span>}
-                    {x.missing && <span className="mt-0.5 block text-[11px] font-normal leading-snug text-warning" data-rail-missing>{x.missing}</span>}
+                    {x.included && <span className="mt-0.5 block text-[11px] font-normal leading-snug text-muted" data-rail-included>{x.included}</span>}
                   </th>
                   <td className="py-1.5 text-right tabular-nums">{money(x.gross)}</td>
                   <td className="py-1.5 pl-3 text-right tabular-nums">{money(x.net)}</td>

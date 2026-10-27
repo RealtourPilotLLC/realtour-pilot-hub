@@ -75,3 +75,64 @@ export function unrecordedDeposits<B extends { amount: number; date: Date }>(
     return !hit(0, want, 0);
   });
 }
+
+/**
+ * How much of each unrecorded deposit QuickBooks has NOT counted (Oct 26
+ * 2026). Jordan, of the Oct 3 deposit: "Include this the amount from this in
+ * my QuickBooks revenue." A deposit unrecordedDeposits flags can still hold a
+ * payment QuickBooks did record, batched by Intuit with charges QuickBooks
+ * never saw. So the recorded payments the other deposits account for are set
+ * aside first (one of the same amount, else two to four that add up), and any
+ * recorded payment left over, dated on or before the flagged deposit and
+ * within the window, is taken to be inside it and comes off: the deposit is
+ * counted, that payment is not counted twice. October 2026: $4,297 arrived
+ * Oct 3 and $1,499 Oct 6; QuickBooks recorded two $1,499 payments; one is the
+ * Oct 6 deposit, the other sits in the $4,297, so $2,798 is new.
+ */
+export function uncountedDepositParts<B extends { amount: number; date: Date }>(
+  bank: B[],
+  qbo: { amount: number; txnDate: Date; type: string }[],
+  windowDays = 7,
+): { deposit: B; uncounted: number; alreadyRecorded: number }[] {
+  const W = windowDays * 86_400_000;
+  const cents = (n: number) => Math.round(n * 100);
+  const missing = new Set(unrecordedDeposits(bank, qbo, windowDays));
+  const pool = qbo
+    .filter((q) => q.type !== "Deposit" && q.amount > 0)
+    .sort((a, b) => a.txnDate.getTime() - b.txnDate.getTime());
+  const used = new Set<number>();
+  const open = (b: B, before = false) =>
+    pool.map((q, i) => ({ q, i })).filter(({ q, i }) =>
+      !used.has(i) && Math.abs(q.txnDate.getTime() - b.date.getTime()) <= W && (!before || q.txnDate.getTime() <= b.date.getTime() + 86_400_000));
+  const byDate = [...bank].sort((a, b) => a.date.getTime() - b.date.getTime());
+  for (const b of byDate) {
+    if (missing.has(b)) continue;
+    const want = cents(-b.amount);
+    const near = open(b).slice(0, 24);
+    const one = near.find(({ q }) => cents(q.amount) === want);
+    if (one) { used.add(one.i); continue; }
+    const pick: number[] = [];
+    const hit = (from: number, left: number): boolean => {
+      if (left === 0) return pick.length >= 2;
+      if (pick.length === 4) return false;
+      for (let k = from; k < near.length; k++) {
+        const c = cents(near[k].q.amount);
+        if (c > left) continue;
+        pick.push(near[k].i);
+        if (hit(k + 1, left - c)) return true;
+        pick.pop();
+      }
+      return false;
+    };
+    if (hit(0, want)) for (const i of pick) used.add(i);
+  }
+  return byDate.filter((b) => missing.has(b)).map((b) => {
+    const want = cents(-b.amount);
+    let left = want;
+    for (const { q, i } of open(b, true)) {
+      const c = cents(q.amount);
+      if (c <= left) { used.add(i); left -= c; }
+    }
+    return { deposit: b, uncounted: left / 100, alreadyRecorded: (want - left) / 100 };
+  });
+}

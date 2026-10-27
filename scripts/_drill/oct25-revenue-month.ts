@@ -6,10 +6,14 @@
 //      − fees, a fee record that didn't load makes net unknown, never $0
 //   §2 QuickBooks deposits the books don't have (financeAuditCore): a single
 //      payment or a 2–4 payment batch records it; a lone deposit doesn't;
-//      verification pennies and payments outside the week don't count
+//      verification pennies and payments outside the week don't count; and
+//      (Oct 26 2026) the part of one QuickBooks hasn't counted, a recorded
+//      payment inside it taken off (October's real $4,297 → $2,798)
 //   §3 the dashboard's Financial Position on a seeded month: three rails,
-//      each rail's fees from the ledger, the unrecorded deposit said beside
-//      QuickBooks and kept out of gross, profit from the same revenue
+//      each rail's fees from the ledger, the unrecorded deposit COUNTED in
+//      QuickBooks' gross and said beside it (Jordan, Oct 26: "Include this
+//      the amount from this in my QuickBooks revenue"), profit from the same
+//      revenue
 //   §4 the panels, server-rendered: Revenue this month and the inset Stripe
 // Disposable PGlite; Stripe isn't connected here, so nothing leaves.
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
@@ -28,7 +32,7 @@ async function main() {
   const c = makeChecker();
   try {
     const core = await import("@/lib/revenueMonthCore");
-    const { unrecordedDeposits } = await import("@/lib/financeAuditCore");
+    const { unrecordedDeposits, uncountedDepositParts } = await import("@/lib/financeAuditCore");
 
     c.head("§1 · gross and net, rail by rail");
     const m = core.revenueMonth("October", {
@@ -72,6 +76,21 @@ async function main() {
     c.ok("a payment more than a week away doesn't count", miss.includes("late-payment"));
     c.ok("one payment can't stand in for a bigger deposit", unrecordedDeposits([{ amount: -2000, date: D("2026-10-10") }], [{ type: "Payment", txnDate: D("2026-10-09"), amount: 1000 }]).length === 1);
     c.ok("without the batch's second payment the deposit is unrecorded", unrecordedDeposits([bank[0]], [qbo[0]]).length === 1);
+    // October 2026 as it really stands: two $1,499 payments recorded, one
+    // $1,499 deposit, and a $4,297 instant deposit nothing adds up to.
+    const oct = uncountedDepositParts(
+      [{ amount: -4297, date: D("2026-10-03") }, { amount: -1499, date: D("2026-10-06") }],
+      [{ type: "SalesReceipt", txnDate: D("2026-10-01"), amount: 1499 }, { type: "Payment", txnDate: D("2026-10-03"), amount: 1499 }, { type: "Deposit", txnDate: D("2026-10-04"), amount: 1499 }, { type: "Deposit", txnDate: D("2026-10-03"), amount: 310.04 }],
+    );
+    c.ok("October: only the $4,297 is unrecorded, and $2,798 of it is new (the other recorded $1,499 is inside it)", oct.length === 1 && oct[0].deposit.amount === -4297 && oct[0].uncounted === 2798 && oct[0].alreadyRecorded === 1499, JSON.stringify(oct.map((o) => [o.uncounted, o.alreadyRecorded])));
+    const lone = uncountedDepositParts([bank[3]], qbo);
+    c.ok("a recorded payment no deposit claims ($500, two days before) comes off the deposit it must be in", lone.length === 1 && lone[0].uncounted === 497 && lone[0].alreadyRecorded === 500, JSON.stringify(lone.map((o) => [o.uncounted, o.alreadyRecorded])));
+    const bare = uncountedDepositParts([bank[3]], []);
+    c.ok("a deposit with no recorded payment near it counts whole", bare.length === 1 && bare[0].uncounted === 997, JSON.stringify(bare.map((o) => o.uncounted)));
+    const after = uncountedDepositParts([{ amount: -2000, date: D("2026-10-10") }], [{ type: "Payment", txnDate: D("2026-10-12"), amount: 500 }]);
+    c.ok("a payment made after the deposit isn't taken off it", after[0]?.uncounted === 2000, JSON.stringify(after.map((o) => o.uncounted)));
+    const claimed = uncountedDepositParts([{ amount: -4297, date: D("2026-10-03") }, { amount: -1499, date: D("2026-10-06") }], [{ type: "Payment", txnDate: D("2026-10-03"), amount: 1499 }]);
+    c.ok("a payment another deposit accounts for isn't taken off as well", claimed.length === 1 && claimed[0].uncounted === 4297, JSON.stringify(claimed.map((o) => o.uncounted)));
 
     c.head("§3 · the dashboard's Financial Position on a seeded month");
     const { prisma } = await import("@/lib/prisma");
@@ -107,15 +126,18 @@ async function main() {
     const r = f.revenue!;
     const rail = (k: string) => r.rails.find((x) => x.key === k)!;
     c.ok("the revenue panel loaded", !!r);
-    c.ok("QuickBooks gross = what QuickBooks recorded (the unrecorded deposit stays out)", rail("quickbooks").gross === 2099, String(rail("quickbooks").gross));
-    c.ok("QuickBooks net takes off its fee from the ledger", rail("quickbooks").net === 2034.5, String(rail("quickbooks").net));
-    c.ok("the unrecorded $2,400 is said beside QuickBooks", /\$2,400 landed in the bank .* doesn't match the payments QuickBooks recorded, so some or all of it isn't counted yet/.test(rail("quickbooks").missing ?? ""), rail("quickbooks").missing ?? "none");
-    c.ok("…and in the card's notes, pointing at the task", f.limitations.some((l) => l.startsWith("QuickBooks Payments: $2,400") && l.includes("task list")));
+    // The $600 sales receipt is dated today: on the 1st or 2nd it sits inside
+    // the unrecorded deposit's day and comes off it.
+    const added = today.getTime() <= day1.getTime() + 86_400_000 ? 1800 : 2400;
+    c.ok("QuickBooks gross = what QuickBooks recorded + the unrecorded deposit", rail("quickbooks").gross === 2099 + added, String(rail("quickbooks").gross));
+    c.ok("QuickBooks net takes off its fee from the ledger", rail("quickbooks").net === 2034.5 + added, String(rail("quickbooks").net));
+    c.ok("the counted deposit is said beside QuickBooks", /^Includes \$[\d,]+ (of the \$2,400 )?Intuit deposited .+ that QuickBooks hasn't recorded yet/.test(rail("quickbooks").included ?? ""), rail("quickbooks").included ?? "none");
+    c.ok("…and in the card's notes, pointing at the task", f.limitations.some((l) => l.startsWith("QuickBooks Payments: Includes") && l.includes("task list")));
     c.ok("Stripe without a live read: sales before refunds, the refund apart, fees from the ledger", rail("stripe").gross === 1500 && rail("stripe").refunds === 100 && rail("stripe").fees === 44.1 && rail("stripe").net === 1355.9, JSON.stringify(rail("stripe")));
     c.ok("Venmo: client money from the statements, less the instant-transfer fee", rail("venmo").gross === 550 && rail("venmo").net === 540.38, JSON.stringify(rail("venmo")));
-    c.ok("all revenue gross and net add the rails", r.gross === 4149 && r.net === 3930.78, `${r.gross} / ${r.net}`);
+    c.ok("all revenue gross and net add the rails", r.gross === 4149 + added && r.net === Math.round((3930.78 + added) * 100) / 100, `${r.gross} / ${r.net}`);
     const profit = f.figures.find((x) => x.key === "profit")!;
-    c.ok("profit uses the same revenue (after refunds) less business spend", profit.sub.startsWith("Revenue $4,049 − business spend") && profit.sub.endsWith("(fees included)"), profit.sub);
+    c.ok("profit uses the same revenue (after refunds) less business spend", profit.sub.startsWith(`Revenue $${(4049 + added).toLocaleString("en-US")} − business spend`) && profit.sub.endsWith("(fees included)"), profit.sub);
     c.ok("Stripe unread: the card says so instead of a $0 balance", f.stripe === null && f.limitations.some((l) => l.startsWith("Stripe's balance and payouts on their way aren't shown")));
 
     c.head("§4 · the panels");
@@ -123,10 +145,10 @@ async function main() {
     const { StripeCard } = await import("@/components/finance/StripeCard");
     const html = ssr(createElement(RevenueMonthPanel, { r }));
     const t = text(html);
-    c.ok("Revenue this month: gross and net headline", t.includes("Revenue this month") && /gross \$4,149/.test(t) && /net \$3,931/.test(t), t.slice(0, 200));
+    c.ok("Revenue this month: gross and net headline", t.includes("Revenue this month") && t.includes(`gross $${(4149 + added).toLocaleString("en-US")}`) && t.includes(`net $${Math.round(3930.78 + added).toLocaleString("en-US")}`), t.slice(0, 200));
     c.ok("the fee and refund words under net", t.includes("After $118 of processing fees and $100 refunded"));
     c.ok("a row per rail with gross and net", html.includes('data-rail="quickbooks"') && html.includes('data-rail="stripe"') && html.includes('data-rail="venmo"') && /Venmo[^$]*\$550 \$540/.test(t));
-    c.ok("the unrecorded deposit shows under QuickBooks in the warning color", /data-rail-missing[^>]*>\$2,400 landed/.test(html.replace(/class="[^"]*"/g, "")) && html.includes("text-warning"));
+    c.ok("the counted deposit is said under QuickBooks, quietly (it's in the figure)", /data-rail-included[^>]*>Includes \$/.test(html.replace(/class="[^"]*"/g, "")) && !html.includes("data-rail-missing"));
     c.ok("revenue that didn't load is never $0", text(ssr(createElement(RevenueMonthPanel, { r: null }))).includes("This is not $0"));
     const snap = { asOf: now.toISOString(), source: "live" as const, balance: 120.5, incoming: 13994.93, inTransit: 0, monthLabel: "October", mtd: { gross: 1500, refunds: 100, fees: 44.1, net: 1355.9, charges: 2, capitalWithheld: 300, billingFees: 10, paidOut: 900 } };
     const inset = ssr(createElement(StripeCard, { s: snap, inset: true }));

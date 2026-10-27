@@ -23,7 +23,7 @@ import { revenueByProcessor } from "@/lib/bookkeeping";
 import { categoryBreakdown, railFreshness } from "@/lib/financeCategories";
 import { stripeSnapshot, type StripeSnapshot } from "@/lib/integrations/stripe";
 import { feeFrom, RAIL_FEE_CATEGORY, revenueMonth, type RevenueMonth } from "@/lib/revenueMonthCore";
-import { unrecordedDeposits } from "@/lib/financeAuditCore";
+import { uncountedDepositParts } from "@/lib/financeAuditCore";
 import { getBillingRows } from "@/lib/queries";
 
 // ---------------------------------------------------------------------------
@@ -101,14 +101,19 @@ export type FinancialPosition = {
   stripe: StripeSnapshot | null;
 };
 
-/** This month's QuickBooks Payments deposits in the bank that QuickBooks has no payment for (the books audit's rule). */
-async function unrecordedQbpThisMonth(monthStartKey: string): Promise<{ amount: number; date: Date }[]> {
+/** This month's QuickBooks Payments deposits in the bank that QuickBooks has no payment for (the books audit's rule), each with the part
+ *  QuickBooks hasn't counted (uncountedDepositParts). The bank is read from ten days before the month too, so a recorded payment that
+ *  went out in a late-September deposit is set aside and never taken off an October one. */
+async function unrecordedQbpThisMonth(monthStartKey: string): Promise<{ amount: number; date: Date; uncounted: number }[]> {
   const from = new Date(`${monthStartKey}T00:00:00Z`);
+  const lead = new Date(from.getTime() - 10 * DAY);
   const [bank, qbo] = await Promise.all([
-    prisma.plaidTransaction.findMany({ where: { date: { gte: from }, financeCategory: "QuickBooks Payments (revenue)" }, select: { amount: true, date: true } }),
-    prisma.qboTransaction.findMany({ where: { txnDate: { gte: new Date(from.getTime() - 10 * DAY) }, type: { in: ["Payment", "SalesReceipt", "Deposit"] }, duplicateOf: null }, select: { type: true, txnDate: true, amount: true } }),
+    prisma.plaidTransaction.findMany({ where: { date: { gte: lead }, financeCategory: "QuickBooks Payments (revenue)" }, select: { amount: true, date: true } }),
+    prisma.qboTransaction.findMany({ where: { txnDate: { gte: new Date(lead.getTime() - 10 * DAY) }, type: { in: ["Payment", "SalesReceipt", "Deposit"] }, duplicateOf: null }, select: { type: true, txnDate: true, amount: true } }),
   ]);
-  return unrecordedDeposits(bank, qbo).map((b) => ({ amount: -b.amount, date: b.date }));
+  return uncountedDepositParts(bank, qbo)
+    .filter((p) => p.deposit.date >= from)
+    .map((p) => ({ amount: -p.deposit.amount, date: p.deposit.date, uncounted: p.uncounted }));
 }
 
 /** Paydays in [fromKey, toKey] with the fixed team pay due on each (payStructure's terms). */
@@ -169,16 +174,23 @@ export async function financialPosition(opts: { now?: Date; excludeClientIds?: s
   // agree to the cent); QuickBooks Payments and Venmo from the books' engine,
   // each rail's fees from the categorized ledger.
   const monthLabel = new Date(`${monthStartKey.slice(0, 7)}-15T12:00:00Z`).toLocaleString("en-US", { month: "long", timeZone: "UTC" });
-  // Revenue is counted where QuickBooks records it, never from bank deposits,
-  // so a deposit QuickBooks hasn't recorded stays out of gross and is said
-  // beside the rail (the books audit has the task to record it).
-  const qbpMissingSum = Math.round((qbpMissing ?? []).reduce((s, b) => s + b.amount, 0) * 100) / 100;
-  const qbpMissingWords = qbpMissing?.length
-    ? `${qbpMissing.length === 1 ? `${usd0Signed(qbpMissingSum)} landed in the bank ${etMonthDay(qbpMissing[0].date)}` : `${usd0Signed(qbpMissingSum)} landed in the bank (${qbpMissing.map((b) => `${usd0Signed(b.amount)} ${etMonthDay(b.date)}`).join(", ")})`} that doesn't match the payments QuickBooks recorded, so some or all of it isn't counted yet`
+  // QuickBooks Payments is counted where QuickBooks records it, PLUS the part
+  // of an Intuit deposit QuickBooks hasn't recorded yet (Oct 26 2026, Jordan
+  // of the Oct 3 deposit: "Include this the amount from this in my
+  // QuickBooks revenue"). Only the part that isn't already a recorded payment
+  // (uncountedDepositParts), so nothing is counted twice; once QuickBooks
+  // records it the deposit matches and drops out of here on its own. The
+  // books audit keeps its task to record it in QuickBooks itself.
+  const qbpNew = (qbpMissing ?? []).filter((b) => b.uncounted > 0);
+  const qbpAdded = Math.round(qbpNew.reduce((s, b) => s + b.uncounted, 0) * 100) / 100;
+  const depositWords = (b: { amount: number; date: Date; uncounted: number }) =>
+    b.uncounted < b.amount ? `${usd0Signed(b.uncounted)} of the ${usd0Signed(b.amount)} Intuit deposited ${etMonthDay(b.date)}` : `${usd0Signed(b.amount)} Intuit deposited ${etMonthDay(b.date)}`;
+  const qbpAddedWords = qbpNew.length
+    ? `Includes ${qbpNew.length === 1 ? depositWords(qbpNew[0]) : `${usd0Signed(qbpAdded)} Intuit deposited (${qbpNew.map(depositWords).join("; ")})`} that QuickBooks hasn't recorded yet${qbpNew.some((b) => b.uncounted < b.amount) ? "; the rest is a payment it already has" : ""}`
     : null;
   const month: RevenueMonth | null = revenue
     ? revenueMonth(monthLabel, {
-        quickbooks: { gross: revenue.quickbooks, fees: feeFrom(spend?.business, RAIL_FEE_CATEGORY.quickbooks), missing: qbpMissingWords, through: revenue.quickbooksNote && revenue.quickbooksCoverageThrough ? `through ${etMonthDay(new Date(`${revenue.quickbooksCoverageThrough}T12:00:00Z`))}` : null },
+        quickbooks: { gross: revenue.quickbooks + qbpAdded, fees: feeFrom(spend?.business, RAIL_FEE_CATEGORY.quickbooks), included: qbpAddedWords, through: revenue.quickbooksNote && revenue.quickbooksCoverageThrough ? `through ${etMonthDay(new Date(`${revenue.quickbooksCoverageThrough}T12:00:00Z`))}` : null },
         stripe: stripe
           ? { gross: stripe.mtd.gross, refunds: stripe.mtd.refunds, fees: stripe.mtd.fees, through: stripe.source === "live" ? null : `as of ${etDateTime(stripe.asOf)}` }
           : { gross: revenue.stripe + revenue.stripeRefunds, refunds: revenue.stripeRefunds, fees: revenue.stripeFees, through: fresh?.stripe ? `as of ${etDateTime(fresh.stripe)}` : null },
@@ -260,7 +272,7 @@ export async function financialPosition(opts: { now?: Date; excludeClientIds?: s
       tag: "provisional", tone: value < 0 ? "bad" : "ok", href: "/sales",
     };
     if (revenue.quickbooksNote) limitations.push(revenue.quickbooksNote);
-    if (qbpMissingWords) limitations.push(`QuickBooks Payments: ${qbpMissingWords}. Receive the payment in QuickBooks and it's counted on the next pull (it's on your task list from the books audit).`);
+    if (qbpAddedWords) limitations.push(`QuickBooks Payments: ${qbpAddedWords}. Receive the payment in QuickBooks so the books match too (it's on your task list from the books audit); the figure won't change.`);
     if (revenue.venmoNote) limitations.push(revenue.venmoNote);
     if (spend.reviewTotal > 0) limitations.push(`${usd0Signed(spend.reviewTotal)} of this month's spending isn't classified yet, so profit may read high.`);
   }

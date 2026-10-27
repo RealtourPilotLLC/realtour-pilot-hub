@@ -25,8 +25,8 @@ export type RevenueRail = {
   net: number | null;
   /** where the rail's figure stops short of today, in words; null = current */
   through: string | null;
-  /** money the bank shows arriving on this rail that its records don't have yet, NOT in gross (a sentence) */
-  missing: string | null;
+  /** money the bank shows arriving on this rail that its records don't have yet, counted IN gross (a sentence; Oct 26 2026) */
+  included: string | null;
 };
 export type RevenueMonth = {
   monthLabel: string;
@@ -57,14 +57,14 @@ export const RAIL_FEE_CATEGORY = { quickbooks: "QuickBooks Payments fees", venmo
 const RAIL_LABEL: Record<RailKey, string> = { quickbooks: "QuickBooks Payments", stripe: "Stripe", venmo: "Venmo" };
 const c2 = (n: number) => Math.round(n * 100) / 100;
 
-type RailIn = { gross: number; refunds?: number; fees: number | null; through?: string | null; missing?: string | null };
+type RailIn = { gross: number; refunds?: number; fees: number | null; through?: string | null; included?: string | null };
 
 export function revenueMonth(monthLabel: string, rails: Record<RailKey, RailIn>): RevenueMonth {
   const out: RevenueRail[] = (Object.keys(RAIL_LABEL) as RailKey[]).map((key) => {
     const r = rails[key];
     const refunds = c2(r.refunds ?? 0);
     const fees = r.fees == null ? null : c2(r.fees);
-    return { key, label: RAIL_LABEL[key], gross: c2(r.gross), refunds, fees, net: fees == null ? null : c2(r.gross - refunds - fees), through: r.through ?? null, missing: r.missing ?? null };
+    return { key, label: RAIL_LABEL[key], gross: c2(r.gross), refunds, fees, net: fees == null ? null : c2(r.gross - refunds - fees), through: r.through ?? null, included: r.included ?? null };
   });
   const sum = (f: (r: RevenueRail) => number) => c2(out.reduce((s, r) => s + f(r), 0));
   const feesKnown = out.every((r) => r.fees != null);
