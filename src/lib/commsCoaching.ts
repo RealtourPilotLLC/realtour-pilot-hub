@@ -935,7 +935,10 @@ async function sendNote(
   // below, through the same flusher as every other held DM.
 
   // Clip first, escape second: escaping then slicing can cut an "&amp;" in half.
-  const slackDm = escapeSlack(clip(note, 2800));
+  // The Got it link (Oct 27 2026): Kyle's menu has no Coaching door, so the DM
+  // carries the way back to the note, where he says Got it and Jordan sees it.
+  const { appBase } = await import("@/lib/appUrl");
+  const slackDm = `${escapeSlack(clip(note, 2800))}\n\n<${appBase()}${COMMS_COACHING_HREF}|Open it in the hub and tap Got it>`;
   await notifyInApp({
     kind: COMMS_COACHING_KIND,
     title: `Your comms note for ${etDate(new Date(`${dayKey}T12:00:00Z`))}`,
