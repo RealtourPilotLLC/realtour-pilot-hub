@@ -7,10 +7,10 @@ import { videoDeliveryBoard, type VideoDeliveryBoard } from "@/lib/videoDelivery
 import { clientNotToldYet, type NotTold } from "@/lib/readyToSend";
 import { deliveryNoticeIncidents, type DeliveryNoticeIncident } from "@/lib/deliveryNoticeIncidents";
 import { unansweredCommsBoards } from "@/lib/commsBoard";
+import { isCourtesyMessage } from "@/lib/replyQueue";
 import { schedulingBoard, specialRequestsBoard } from "@/lib/clientAsks";
 import { checklistTasks, checklistTasksClosedToday, personTaskWhere, WEEK_OLD_DAYS, type ChecklistPerson, type ClosedTask, type OldItem } from "@/lib/taskAging";
-import { jobsBoard, type JobsBoard } from "@/lib/jobsBoard";
-import { chipPerson, kylePerson, MESSAGE_BEHIND_HOURS, waitingClientReplyHref, lateWords } from "@/lib/opsHome";
+import { kylePerson, MESSAGE_BEHIND_HOURS, waitingClientReplyHref, lateWords } from "@/lib/opsHome";
 import { remindViewsFor, REMIND_GAP_MS, type RemindView } from "@/lib/remindPhotographer";
 import { parseAccessBrief, type AccessInfo } from "@/lib/opsDay";
 import { parseEvidence } from "@/lib/statusEvidence";
@@ -43,7 +43,8 @@ import { etAt, etDate, etDateTime, etDayBoundsUtc, etDayKey, etDayStartUtc, etFu
 //     "Resend" only when one did; an unknown state asks Kyle to verify.
 //   · Requests & Follow-Ups: client revisions (where each stands), special
 //     requests, tasks from Jordan, production follow-ups (missing uploads,
-//     late edits), Kyle's own tasks due; waiting items collapsed until due.
+//     photos late at AutoHDR; late video edits are the creative manager's
+//     since Oct 27 2026), Kyle's own tasks due; waiting items collapsed until due.
 // Above them: the Daily checks (Morning, Midday, End-of-day review; system
 // evidence ticks what it can, a manual tick only for a real review, a tick
 // never closes the work), and only a verified, time-sensitive interruption.
@@ -74,6 +75,21 @@ import { etAt, etDate, etDateTime, etDayBoundsUtc, etDayKey, etDayStartUtc, etFu
 // with the reply engine's own draft (texts, email and Content Program
 // messages), "Fixes done" on a photo job, and the tasks assigned to Kyle
 // through delegation (Accept or Update until accepted).
+//
+// REVISION 4 (Oct 27 2026, Jordan: "Make the dashboard look more like what the
+// example shows ... Clicking Chase Cubicasa or Check floorplan ... should open
+// up the quick action menu on the right side with more info, and then allow
+// Kyle to close the task"). Every row's button resolves it, escalates it,
+// answers it or hands it on:
+//   · a floor plan or 3D tour: Mark delivered (records who and when, closes
+//     the vendor chase), the vendor's email, the job's floor plan section;
+//   · a client's photo change request: the client's own words, and Kyle's
+//     decision with a note (photo editor, himself, no change, ask the client);
+//   · a thank-you or a closer: not counted, Mark handled in a fold;
+//   · an email: answered in the side panel (the comms-log row Messages answers);
+//   · every shoot today stays on the card once it has started, with one action;
+//   · a task: Mark done with a note, Not needed, a new date, Waiting on,
+//     Delegate, Escalate to Jordan.
 // ---------------------------------------------------------------------------
 
 const HOUR = 3_600_000;
@@ -86,6 +102,9 @@ export const DESK_SECTIONS = [
   { key: "followups", title: "Requests & Follow-Ups", empty: "Nothing due today" },
 ] as const;
 export type DeskSectionKey = (typeof DESK_SECTIONS)[number]["key"];
+/** Review & Deliver's full view (Jordan, Oct 27 2026: "Clicking Review and Deliver should open a
+ *  full job status page like the shoots page"): the Shoots page's Review & deliver filter. */
+export const DELIVER_HREF = "/jobs?f=deliver";
 
 /** The order of the work (the spec): shoot blockers and urgent client issues,
  *  then overdue commitments, upcoming deadlines, routine work, housekeeping. */
@@ -143,7 +162,13 @@ export type DeskAction =
   | { kind: "video-push"; submissionId: string; canDeliverNow: boolean; canRelease: boolean; uploadedOnly: boolean }
   | { kind: "video-notice"; row: NotTold }
   /** the reply engine: a draft on open (texts: generateReply; email: the Gmail task's draft), sent through its own send */
-  | { kind: "reply"; threadKey: string; family: "phone" | "email"; clientId: string | null; groupKey: string; phone: string | null; href: string; taskId: string | null }
+  | { kind: "reply"; threadKey: string; family: "phone" | "email"; clientId: string | null; groupKey: string; phone: string | null; href: string; taskId: string | null; commLogId: string | null }
+  /** "Mark handled" (Oct 27 2026): the conversation closes with no reply (Messages' own markCommsHandled) */
+  | { kind: "handled"; threadKey: string; family: "phone" | "email"; clientId: string | null; groupKey: string }
+  /** "Mark floor plan delivered" (Oct 27 2026): a floor plan or 3D tour Kyle checked by hand; closes its vendor chase */
+  | { kind: "mark-delivered"; projectId: string; category: "Floor plan" | "3D tour"; street: string; maker: string; label: string; why: string; history: string[]; anchor: string }
+  /** A client's photo change request (Oct 27 2026): Kyle decides the fix and notes it (the revision actions Photo Delivery already uses) */
+  | { kind: "revision-decide"; jobId: string; projectId: string; clientId: string | null; street: string; asks: { id: string; text: string; askedAtISO: string }[]; taskNote: string | null; decided: RevisionDecision | null }
   /** a Content Program message: drafted from the program conversation, posted with the program's own reply */
   | { kind: "program-reply"; enrollmentId: string; href: string }
   /** a task assigned to Kyle through delegation: Accept until accepted, then Update (and the rest of its actions) */
@@ -159,6 +184,25 @@ export type DeskAction =
   /** "Run Topaz again" (Oct 23 2026): a finished Topaz file not sent yet (readyToSend's offer) */
   | { kind: "topaz-rerun"; jobId: string; street: string; video: string; credits: number | null; limit: number | null }
   | { kind: "link"; label: string; href: string };
+
+/** Kyle's decision on a client's photo change request (Oct 27 2026), kept until the revision closes. */
+export type RevisionChoice = "editor" | "self" | "none" | "ask";
+export type RevisionDecision = { choice: RevisionChoice; note: string; by: string; at: string };
+export const REVISION_CHOICE_WORDS: Record<RevisionChoice, string> = {
+  editor: "Send to the photo editor (AutoHDR fix)",
+  self: "Fix it myself",
+  none: "No change needed",
+  ask: "Ask the client",
+};
+/** The row's button once decided: the next step of that decision. */
+export const DECIDED_LABEL: Record<RevisionChoice, string> = { editor: "Send the fix", self: "Deliver again", none: "Close it", ask: "Follow up" };
+/** The AppSetting row holding that decision. */
+export const revisionDecisionKey = (jobId: string) => `office_revision:${jobId}`;
+/** The AppSetting row recording a floor plan or 3D tour marked delivered by hand
+ *  (Oct 27 2026). The hourly status read puts a deliverable back to PENDING
+ *  while Aryeo shows no plan, so the hand-mark is its own record, with who and when. */
+export const deliveredMarkKey = (projectId: string, category: "Floor plan" | "3D tour") => `office_delivered:${projectId}:${category === "Floor plan" ? "floorplan" : "tour"}`;
+export type DeliveredMark = { by: string; at: string; note: string | null };
 
 export type AssetLine = {
   id: string;
@@ -190,6 +234,8 @@ export type PrepVisit = {
   over: boolean;
   photographer: string | null;
   photographerId: string | null;
+  /** for "Text <photographer>" in the side panel */
+  photographerPhone: string | null;
   confirmation: { state: "sent" | "other" | "open" | "scheduled" | "none" | "na"; words: string; taskId: string | null };
   access: { lockbox: string | null; access: string | null; presence: string | null; contactName: string | null; contactPhone: string | null };
   /** the services THIS visit covers (the appointment's own order items) */
@@ -241,7 +287,8 @@ export type DeskItem = {
   dueWords: string | null;
   late: boolean;
   rank: number;
-  /** the one primary action (null on an "ok" item) */
+  /** the one primary action (null on a row whose move is someone else's; a shoot that is ready
+   *  still has "Open the shoot", a thank-you "Mark handled") */
   primary: { label: string; action: DeskAction } | null;
   /** every control the side panel offers, the primary first */
   actions: DeskAction[];
@@ -318,8 +365,12 @@ export type OfficeDesk = {
   dayKey: string;
   dateWords: string;
   person: string;
-  /** who a creative question and a business question go to (first names) */
-  people: { creative: string; owner: string };
+  /** who a creative question and a business question go to (first names, and their assignment keys) */
+  people: { creative: string; owner: string; creativeKey: string | null; ownerKey: string | null };
+  /** who Kyle can hand a row to (Delegate): the team, never a vendor, never himself */
+  delegates: { key: string; name: string }[];
+  /** Review & Deliver's full view (the Shoots page, filtered to review and delivery) */
+  deliverHref: string;
   readOnly: boolean;
   freshness: Freshness[];
   unavailable: string[];
@@ -440,9 +491,6 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
  *  and "Done it by hand?" are (Oct 23 2026 audit). It read "Open in Videos"
  *  and opened the cut's own page, which has none of them. */
 const ROOM_LINK: DeskAction = { kind: "link", label: `Open in ${VIDEO_DELIVERY_LABEL}`, href: "/review#ready-to-send" };
-/** A video still with the editor or in review: the cut's page when there is a cut. */
-const videoLink = (reviewHref: string | null | undefined): DeskAction =>
-  reviewHref ? { kind: "link", label: "Open the video", href: reviewHref } : { kind: "link", label: `Open in ${VIDEO_DELIVERY_LABEL}`, href: "/review" };
 const streetOf = (title: string | null | undefined) => (title ?? "").split(",")[0].trim() || "a job";
 const short = (s: string, n = 110) => {
   const t = s.replace(/\s+/g, " ").trim();
@@ -494,6 +542,51 @@ export function briefOffer(o: { state: BriefState | "unknown"; sent: boolean; st
   const urgent = !!o.why && /First shoot|not acknowledged/i.test(o.why);
   if (urgent) return { problem: o.state === "changed" ? "Instructions changed and no new Got it yet" : "No Got it from the photographer yet", waiting: false, send: "resend" };
   return { problem: null, waiting: true, send: null };
+}
+
+// ---- a message that needs nothing back ---------------------------------------------------
+
+/** The words a client actually wrote: an email's signature, quoted thread
+ *  and "Sent from my iPhone" cut off (Kimberly Mazzenga's "Thank you so much!
+ *  Kimberly Mazzenga Director…" is a thank-you, not a 120-character message). */
+export function ownWords(text: string, sender: string | null): string {
+  let t = (text ?? "").replace(/\r/g, "");
+  t = t.split(/\n?\s*On [^\n]{3,120}wrote:/)[0];
+  t = t.split(/\n\s*>/)[0];
+  t = t.split(/\n--\s*\n|\bSent from my \w+/i)[0];
+  t = t.replace(/\s+/g, " ").trim();
+  const name = (sender ?? "").replace(/[^A-Za-z' -]/g, " ").replace(/\s+/g, " ").trim();
+  if (name.length >= 3) {
+    // The full name where a signature starts, else the first name signed off after a sentence ("Thanks! Kim").
+    const at = t.toLowerCase().indexOf(name.toLowerCase());
+    if (at > 0) t = t.slice(0, at).trim();
+    const firstName = name.split(" ")[0];
+    if (firstName.length >= 2) {
+      const m = new RegExp(`([.!])\\s+[-~]?\\s*${firstName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b.*$`, "i").exec(t);
+      if (m) t = t.slice(0, m.index + 1).trim();
+    }
+  }
+  return t;
+}
+
+/** "It went well", "That looks great": a short closer with nothing asked
+ *  (no question mark, no number). Deliberately narrow, beside the reply
+ *  queue's own classifier (isCourtesyMessage), which it never replaces. */
+const SHORT_CLOSER = /^(it|that|this|everything|all|they|the (shoot|photos?|pics|pictures|video|tour|session))\s+(went|was|were|is|are|looks?|look|turned out)\s+(so\s+|really\s+|very\s+|super\s+)?(well|great|good|fine|perfect|amazing|awesome|beautiful|fantastic|wonderful)[.!\s]*$/i;
+
+/** True when every message still waiting in a conversation is a thank-you or
+ *  a closer (Jordan, Oct 27 2026: "If someone says thank you - no reply is
+ *  needed"). Such a thread is not counted as needing a reply; it waits in a
+ *  fold with Mark handled. Anything with a question, a number or a real ask
+ *  in it still needs a reply. */
+export function needsNoReply(messages: { text: string }[], sender: string | null): boolean {
+  if (!messages.length) return false;
+  return messages.every((m) => {
+    const t = ownWords(m.text, sender);
+    if (!t) return false;
+    if (t.includes("?") || /\d/.test(t)) return false;
+    return isCourtesyMessage(t) || (t.length <= 60 && SHORT_CLOSER.test(t));
+  });
 }
 
 // ---- the reads ---------------------------------------------------------------------------
@@ -637,7 +730,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   const kyleTask = [...(opts.person.key ? [{ assignedKey: opts.person.key }] : []), ...(opts.person.teamMemberId ? [{ assignedKey: null, ownerId: opts.person.teamMemberId }] : [])];
   const clientScope = ex.length ? { AND: [{ OR: [{ clientId: null }, { clientId: { notIn: ex } }] }] } : {};
 
-  const [queue, board, notTold, incidents, comms, tasks, laterTasks, revisions, photoAsks, visits, jobs, cron, closeRec, waitingRecs, creative, owner, leads, programTasks, sched, special] = await Promise.all([
+  const [queue, board, notTold, incidents, comms, tasks, laterTasks, revisions, photoAsks, visits, cron, closeRec, waitingRecs, creative, owner, leads, programTasks, sched, special] = await Promise.all([
     loadQueue({ now }).catch(warn("photo queue")) as Promise<QueueData | null>,
     videoDeliveryBoard(current ? {} : { now }).catch(warn("video board")) as Promise<VideoDeliveryBoard | null>,
     clientNotToldYet({ excludeClientIds: ex }).catch(warn("client not told")) as Promise<NotTold[] | null>,
@@ -657,7 +750,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     prisma.smartTask.findMany({
       where: { taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] }, ...clientScope },
       select: {
-        id: true, title: true, assignedKey: true, dueAt: true, followUpAt: true, createdAt: true, dedupeKey: true, projectId: true, clientId: true,
+        id: true, title: true, description: true, assignedKey: true, dueAt: true, followUpAt: true, createdAt: true, dedupeKey: true, projectId: true, clientId: true,
         project: { select: { title: true, promisedDueAt: true, deliveryDue: true, client: { select: { name: true } } } },
       },
       orderBy: { createdAt: "asc" },
@@ -669,7 +762,6 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       take: 120,
     }).catch(warn("photo asks")),
     prepRows(days, ex).catch(warn("shoot prep")),
-    jobsBoard(now, { includeTest: !!opts.includeTest }).catch(warn("shoots board")) as Promise<JobsBoard | null>,
     syncHealth(now).catch(warn("sync health")),
     prisma.appSetting.findUnique({ where: { key: closeoutSettingKey(dayKey) } }).catch(warn("daily checks")),
     prisma.appSetting.findMany({ where: { key: { startsWith: WAITING_PREFIX } }, take: 300 }).catch(warn("waiting notes")),
@@ -697,6 +789,11 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   const assigned: DelegatedTask[] | null = await tasksAssignedTo(opts.person.key ?? "kyle").catch(warn("assigned tasks"));
   const creativeName = first(creative?.name) || "James";
   const ownerName = first(owner?.name) || "Jordan";
+  // Delegate and Escalate (Oct 27 2026): the team by assignment key, never a vendor or Kyle himself.
+  const roster = opts.roster ?? [];
+  const ownerKey = roster.find((a) => a.kind === "owner")?.key ?? null;
+  const creativeKey = (creative?.id ? roster.find((a) => a.teamMemberId === creative.id)?.key : null) ?? null;
+  const delegates = roster.filter((a) => a.kind !== "vendor" && a.key !== opts.person.key).map((a) => ({ key: a.key, name: clean(a.name) }));
   const excludedProjects = new Set(
     ex.length ? (await prisma.project.findMany({ where: { clientId: { in: ex } }, select: { id: true } }).catch(() => [])).map((p) => p.id) : [],
   );
@@ -731,7 +828,10 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   const findingsFor = new Map<string, string[]>();
   const reviewJobs = photoCards.filter((x) => x.col === "decision" || x.col === "ready").map((x) => x.c.id);
   const mismatchJobs = photoCards.filter((x) => x.c.stage === "DELIVERY_MISMATCH" || x.col === "delivered").map((x) => x.c.id);
-  const [findingRows, checkRows] = await Promise.all([
+  const revisionJobs = photoCards.filter((x) => x.c.stage === "REVISION_REQUESTED").map((x) => x.c.id);
+  /** jobs whose photos the client reopened: decided on their Review & Deliver row (never a second row in Follow-Ups) */
+  const decidingProjects = new Set(photoCards.filter((x) => x.c.stage === "REVISION_REQUESTED").map((x) => x.c.projectId));
+  const [findingRows, checkRows, decisionRows] = await Promise.all([
     reviewJobs.length
       ? prisma.photoQcFinding.findMany({ where: { jobId: { in: reviewJobs.slice(0, 60) }, status: "OPEN" }, select: { jobId: true, specificIssue: true, severity: true }, orderBy: { severity: "asc" }, take: 400 }).catch(() => [])
       : Promise.resolve([]),
@@ -740,7 +840,25 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     mismatchJobs.length
       ? prisma.photoJob.findMany({ where: { id: { in: mismatchJobs.slice(0, 120) } }, select: { id: true, deliveryCheckNote: true, deliveryDiffJson: true } }).catch(() => [])
       : Promise.resolve([]),
+    // Kyle's decision on a client's change request, once he has made it (Oct 27 2026).
+    revisionJobs.length
+      ? prisma.appSetting.findMany({ where: { key: { in: revisionJobs.slice(0, 60).map(revisionDecisionKey) } }, select: { key: true, value: true } }).catch(() => [])
+      : Promise.resolve([] as { key: string; value: string }[]),
   ]);
+  const decisions = new Map<string, RevisionDecision>();
+  for (const r of decisionRows) {
+    try { decisions.set(r.key.slice("office_revision:".length), JSON.parse(r.value) as RevisionDecision); } catch { /* unreadable: undecided */ }
+  }
+  // The client's own words for a change asked after the photos went out, by job (newest last).
+  const revisionAsksFor = (projectId: string, since: string | null) =>
+    (photoAsks ?? [])
+      .filter((a) => a.projectId === projectId && (!since || a.askedAt.getTime() > Date.parse(since)))
+      .sort((a, b) => a.askedAt.getTime() - b.askedAt.getTime())
+      .map((a) => ({ id: a.id, text: clean(a.text?.trim() || a.summary || ""), askedAtISO: a.askedAt.toISOString() }));
+  const revisionTaskNote = (projectId: string) => {
+    const t = (revisions ?? []).find((r) => r.projectId === projectId && ((r.dedupeKey ?? "").includes("photo") || /^photo\b/i.test(r.title.trim())));
+    return t ? clean(short(t.description?.trim() || t.title, 400)) : null;
+  };
   for (const r of findingRows) {
     const list = findingsFor.get(r.jobId) ?? [];
     if (list.length < 4) list.push(`${r.severity.toLowerCase()}: ${clean(r.specificIssue)}`);
@@ -783,7 +901,23 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
         Object.assign(a, { tone: "waiting", status: "Corrections running in AutoHDR", who: "AutoHDR" });
         break;
       case "decision":
-        Object.assign(a, { tone: "now", status: c.stage === "REVISION_REQUESTED" ? "Client asked for changes: decide the fix" : "Free check found issues to decide", note: found, action: open("Decide") });
+        if (c.stage === "REVISION_REQUESTED") {
+          // THE CLIENT'S CHANGE REQUEST (Jordan, Oct 27 2026: "When a client asks for changes, that
+          // quick menu should show what the change request is and allow action items for it. He
+          // should then decide and note the fix."). The side panel quotes the client and offers the
+          // revision actions Photo Delivery already has; the decision and its note are kept.
+          const asks = revisionAsksFor(c.projectId, c.deliveredAt);
+          // A decision older than the client's newest ask is about an earlier change: undecided again.
+          const kept = decisions.get(c.id) ?? null;
+          const d = kept && !(asks.length && Date.parse(asks[asks.length - 1].askedAtISO) > Date.parse(kept.at)) ? kept : null;
+          const decide: DeskAction = { kind: "revision-decide", jobId: c.id, projectId: c.projectId, clientId: c.clientId, street: clean(c.street), asks, taskNote: revisionTaskNote(c.projectId), decided: d };
+          Object.assign(a, {
+            tone: "now",
+            status: d ? `Decided: ${REVISION_CHOICE_WORDS[d.choice].toLowerCase()}${d.note ? ` (${clean(short(d.note, 60))})` : ""}` : asks.length ? `Client asked for changes: "${short(asks[asks.length - 1].text, 60)}"` : "Client asked for changes: decide the fix",
+            note: d ? `Decided by ${first(d.by)} ${etDateTime(d.at)}` : found,
+            action: decide,
+          });
+        } else Object.assign(a, { tone: "now", status: "Free check found issues to decide", note: found, action: open("Decide") });
         break;
       case "hold":
         Object.assign(a, { tone: "now", status: held.length ? `Held by the client's request: "${held[0].summary}"` : `On hold: ${(c.holdReason && HOLD_REASON_LABEL[c.holdReason]) || "held"}`, action: held.length ? { kind: "ask", askId: held[0].id, askKind: "SPECIAL_REQUEST" } : open("Open photos") });
@@ -816,17 +950,31 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   const mediaProjects = [...groups.values()].filter((g) => g.group === "media").map((g) => g.projectId);
   let plansOnTheirWay = 0;
   if (mediaProjects.length) {
-    const projs = await prisma.project.findMany({
-      where: { id: { in: mediaProjects } },
-      select: { id: true, statusEvidence: true, promisedDueAt: true, deliveryDue: true, deliverables: { where: { ...OWED_DELIVERABLE_WHERE, type: { in: ["FLOORPLAN", "MATTERPORT_3D", "ZILLOW_3D"] } }, select: { type: true, status: true } } },
-    }).catch(() => []);
+    const ids = mediaProjects.slice(0, 120);
+    const [projs, marks, chases] = await Promise.all([
+      prisma.project.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, shootDate: true, statusEvidence: true, promisedDueAt: true, deliveryDue: true, deliverables: { where: { ...OWED_DELIVERABLE_WHERE, type: { in: ["FLOORPLAN", "MATTERPORT_3D", "ZILLOW_3D"] } }, select: { type: true, status: true } } },
+      }).catch(() => []),
+      // A floor plan or tour Kyle marked delivered by hand (Oct 27 2026): outranks the hourly reset.
+      prisma.appSetting.findMany({ where: { key: { in: ids.flatMap((id) => [deliveredMarkKey(id, "Floor plan"), deliveredMarkKey(id, "3D tour")]) } }, select: { key: true, value: true } }).catch(() => [] as { key: string; value: string }[]),
+      // The vendor chase each one has had, for the side panel's history.
+      prisma.smartTask.findMany({ where: { dedupeKey: { in: ids.map((id) => `vendor-chase-${id}-floorplan`) } }, select: { dedupeKey: true, title: true, status: true, createdAt: true, completedAt: true, assignedKey: true } }).catch(() => []),
+    ]);
+    const markOf = new Map<string, DeliveredMark>();
+    for (const m of marks) {
+      try { markOf.set(m.key, JSON.parse(m.value) as DeliveredMark); } catch { /* unreadable: not marked */ }
+    }
     for (const p of projs) {
       const g = groups.get(`media:${p.id}`)!;
       const ev = parseEvidence(p.statusEvidence)?.aryeo ?? null;
       const photosOut = g.assets.some((a) => a.kind === "photos" && a.tone === "done");
+      const photosAt = g.assets.find((a) => a.kind === "photos" && a.tone === "done")?.status ?? null;
       for (const d of p.deliverables) {
         const plan = d.type === "FLOORPLAN";
+        const category = plan ? "Floor plan" as const : "3D tour" as const;
         const maker = plan ? "CubiCasa" : d.type === "ZILLOW_3D" ? "Zillow" : "Matterport";
+        const mark = markOf.get(deliveredMarkKey(p.id, category)) ?? null;
         // The photo check's own read of the listing outranks a stale order line (floorPlanMissing).
         // Oct 23 2026: but that read is taken once, at delivery (30 Caedman Dr's plan comes from
         // CubiCasa later), so a plan the hourly status read now sees on the listing is on it.
@@ -834,13 +982,28 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
         const onListing = !missingNow && (plan ? (ev?.floorPlans ?? 0) > 0 : (ev?.interactive ?? 0) > 0);
         const promise = (p.promisedDueAt ?? p.deliveryDue)?.toISOString() ?? g.assets.find((x) => x.kind === "photos")?.dueISO ?? null;
         const lateNow = !!promise && Date.parse(promise) < nowMs;
-        const base: AssetLine = { id: `${plan ? "floorplan" : "tour"}:${p.id}`, kind: plan ? "floorplan" : "tour", label: plan ? "Floor plan" : "3D tour", status: "", tone: "waiting", late: false, dueISO: promise, who: maker, note: null, action: null };
-        const check: DeskAction = { kind: "link", label: plan ? "Check floor plan" : "Check tour", href: `/projects/${p.id}` };
-        if ((d.status === "DONE" && !missingNow) || onListing) Object.assign(base, { tone: "done", status: onListing ? "On the Aryeo listing" : "Done", who: null });
-        else if (d.status === "FLAGGED") Object.assign(base, { tone: "now", status: `${base.label} flagged: check it before it goes out`, who: null, action: check, late: lateNow });
-        else if (d.status === "UPLOADED" || d.status === "IN_PROGRESS") Object.assign(base, { tone: "now", status: plan ? "Floor plan ready to check" : "3D tour ready to verify", who: null, action: check, late: lateNow });
-        else if (lateNow && photosOut) Object.assign(base, { tone: "now", late: true, status: `${base.label} missing: not on the Aryeo listing yet (${maker})`, action: { kind: "link", label: `Chase ${maker}`, href: `/projects/${p.id}` } });
-        else { plansOnTheirWay++; Object.assign(base, { status: missingNow ? "Not on the Aryeo listing yet" : "On its way", late: lateNow }); }
+        const base: AssetLine = { id: `${plan ? "floorplan" : "tour"}:${p.id}`, kind: plan ? "floorplan" : "tour", label: category, status: "", tone: "waiting", late: false, dueISO: promise, who: maker, note: null, action: null };
+        // THE QUICK ACTION (Jordan, Oct 27 2026: "Clicking Chase Cubicasa or Check floorplan ... should
+        // open up the quick action menu on the right side with more info, and then allow Kyle to close
+        // the task, like mark floorplan delivered"): what is missing and why, the chase's history, and
+        // Mark delivered, which closes the vendor chase and records who and when.
+        const chase = plan ? chases.find((t) => t.dedupeKey === `vendor-chase-${p.id}-floorplan`) ?? null : null;
+        const history = [
+          ...(p.shootDate ? [`Shot ${etDateTime(p.shootDate)}`] : []),
+          ...(photosAt ? [`Photos: ${photosAt.charAt(0).toLowerCase()}${photosAt.slice(1)}`] : []),
+          ...(promise ? [`Promised ${etDateTime(promise)}`] : []),
+          ...(chase ? [`${clean(chase.title)}: opened ${etDateTime(chase.createdAt)}${chase.status === "COMPLETED" ? `, closed ${chase.completedAt ? etDateTime(chase.completedAt) : ""}`.trimEnd() : chase.status === "CANCELLED" ? ", cancelled" : ", still open"}`] : []),
+        ];
+        const quick = (label: string, why: string): DeskAction => ({ kind: "mark-delivered", projectId: p.id, category, street: g.street, maker, label, why, history, anchor: `deliverable-${d.type.toLowerCase()}` });
+        if (mark) Object.assign(base, { tone: "done", status: `Marked delivered by ${first(mark.by)} ${etDateTime(mark.at)}${mark.note ? ` (${clean(short(mark.note, 60))})` : ""}`, who: null });
+        else if ((d.status === "DONE" && !missingNow) || onListing) Object.assign(base, { tone: "done", status: onListing ? "On the Aryeo listing" : "Done", who: null });
+        else if (d.status === "FLAGGED") Object.assign(base, { tone: "now", status: `${base.label} flagged: check it before it goes out`, who: null, action: quick(plan ? "Check floor plan" : "Check tour", `The ${category.toLowerCase()} was flagged on the job. Check it before it goes out.`), late: lateNow });
+        else if (d.status === "UPLOADED" || d.status === "IN_PROGRESS") Object.assign(base, { tone: "now", status: plan ? "Floor plan ready to check" : "3D tour ready to verify", who: null, action: quick(plan ? "Check floor plan" : "Check tour", `${maker} has it ready. Check it is on the listing and right, then mark it delivered.`), late: lateNow });
+        else if (lateNow && photosOut) Object.assign(base, { tone: "now", late: true, status: `${base.label} missing: not on the Aryeo listing yet (${maker})`, action: quick(`Chase ${maker}`, `The photos went out, but the ${category.toLowerCase()} is not on the Aryeo listing yet${promise ? ` and was promised ${etDateTime(promise)}` : ""}. Ask ${maker} for it, or mark it delivered if it is already on the listing.`) });
+        else {
+          plansOnTheirWay++;
+          Object.assign(base, { status: missingNow ? "Not on the Aryeo listing yet" : "On its way", late: lateNow, action: quick("Mark delivered", `${maker} has not delivered it yet. Mark it delivered when it is on the listing.`) });
+        }
         g.assets.push(base);
       }
     }
@@ -930,7 +1093,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
         title: g.street, line: waits.map((a) => `${a.label}: ${a.status.charAt(0).toLowerCase()}${a.status.slice(1)}`).join(" · "),
         reason: g.assets.map((a) => `${a.label}: ${a.status}`).join(" · "), client: g.client, who: waits.map((a) => a.who).find((w) => !!w) ?? null,
         dueISO: dueW, dueWords: dueW ? dueWordsFor(dueW, now) : null, late: false, rank: RANK.routine,
-        primary: null, actions: [], href: g.photoJobId ? `/ops/photo-delivery/${g.photoJobId}` : `/projects/${g.projectId}`,
+        // Nothing to press until the files come, but a plan Kyle knows is on the listing can still be marked delivered.
+        primary: null, actions: waits.flatMap((a) => (a.action ? [a.action] : [])), href: g.photoJobId ? `/ops/photo-delivery/${g.photoJobId}` : `/projects/${g.projectId}`,
         panel: { kind: "job", projectId: g.projectId, street: g.street, client: g.client, assets: g.assets, findings: [], aryeoUrl: g.aryeoUrl },
         sinceISO: null, thumb: g.thumb,
       });
@@ -975,17 +1139,55 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   const phones = new Map(
     clientIds.length ? (await prisma.client.findMany({ where: { id: { in: clientIds } }, select: { id: true, phone: true } }).catch(() => [])).map((c) => [c.id, c.phone] as const) : [],
   );
+  // REPLY IN THE HUB (batch C, Oct 27 2026): an email thread is answered from the
+  // side panel by the comms-log row of the newest email they sent (the row
+  // Messages' own reply box answers). None found: Reply opens it in Messages.
+  const emailClients = [...new Set((comms?.email ?? []).map((g) => g.clientId).filter(Boolean))];
+  const emailRows = emailClients.length
+    ? await prisma.commLog.findMany({
+        where: { channel: "email", direction: "in", clientId: { in: emailClients }, externalId: { startsWith: "gmail-" }, minRole: { in: ["CREATIVE", "ADMIN"] }, occurredAt: { gte: new Date(nowMs - 45 * DAY) } },
+        select: { id: true, clientId: true, occurredAt: true },
+        orderBy: { occurredAt: "desc" },
+        take: 300,
+      }).catch(() => [])
+    : [];
+  const replyRefOf = (clientId: string, atISO: string | undefined) => {
+    const mine = emailRows.filter((r) => r.clientId === clientId);
+    const at = atISO ? Date.parse(atISO) : null;
+    return (at != null ? mine.find((r) => Math.abs(r.occurredAt.getTime() - at) < 2 * 60_000) : null)?.id ?? mine[0]?.id ?? null;
+  };
   const replyClients = new Set<string>();
   for (const [family, g] of replyGroups) {
     if (g.clientId) replyClients.add(g.clientId);
     const latest = g.items[g.items.length - 1];
+    const handled: DeskAction = { kind: "handled", threadKey: g.key, family, clientId: g.clientId || null, groupKey: g.groupKey };
+    // THANK-YOUS NEED NOTHING (Jordan, Oct 27 2026: "If someone says thank you - no reply is
+    // needed. He should also be able to mark it as handled."). A conversation whose waiting
+    // messages are all thank-yous or closers is not counted; it waits in a fold with Mark handled.
+    // A promised answer (a holding line) or a booking ask always needs a reply.
+    if (!g.holding && !g.fromAsk && needsNoReply(g.items.map((m) => ({ text: m.body?.trim() || m.snippet })), g.clientName)) {
+      const said = latest ? clean(ownWords(latest.body?.trim() || latest.snippet, g.clientName)) : "";
+      push({
+        id: `reply:${family}:${g.groupKey}`, section: "comms", tag: "reply", state: "ok",
+        title: clean(g.clientName), line: said ? `"${short(said, 60)}" · no reply needed` : "No reply needed", client: clean(g.clientName),
+        reason: "A thank-you or a closer: nothing to answer. Mark it handled to clear it, or reply if you want to.",
+        who: null, dueISO: null, dueWords: null, late: false, rank: RANK.housekeeping,
+        primary: { label: "Mark handled", action: handled },
+        actions: [handled, { kind: "reply", threadKey: g.key, family, clientId: g.clientId || null, groupKey: g.groupKey, phone: null, href: waitingClientReplyHref({ family, group: g, behind: false }), taskId: g.openTaskId ?? null, commLogId: family === "email" && g.clientId ? replyRefOf(g.clientId, latest?.atISO) : null }],
+        href: waitingClientReplyHref({ family, group: g, behind: false }),
+        panel: { kind: "thread", client: clean(g.clientName), family, messages: g.items.map((m) => ({ atISO: m.atISO, text: clean(m.subject ? `${m.subject}: ${m.snippet}` : m.snippet) })), holding: null, revisionNote: null, alsoAsked: [] },
+        sinceISO: g.items[0]?.atISO ?? null,
+        initials: initialsOf(g.clientName), channel: family === "email" ? "Email" : "Text", elapsed: g.items[0] ? businessElapsedWords(g.items[0].atISO, now) : undefined,
+      });
+      continue;
+    }
     const behind = g.holding ? g.holding.overdue : g.oldestHours >= MESSAGE_BEHIND_HOURS;
     const firstAt = g.items[0]?.atISO ?? new Date(nowMs - g.oldestHours * HOUR).toISOString();
     const dueISO = g.holding?.dueISO ?? new Date(Date.parse(firstAt) + MESSAGE_BEHIND_HOURS * HOUR).toISOString();
     const href = waitingClientReplyHref({ family, group: g, behind });
     const phone = family === "phone" ? (g.clientId ? phones.get(g.clientId) ?? null : null) ?? (/^\+?\d{10,11}$/.test(g.groupKey) ? g.groupKey : null) : null;
     const said = latest ? clean(latest.subject ? `${latest.subject}: ${latest.snippet}` : latest.snippet) : "";
-    const reply: DeskAction = { kind: "reply", threadKey: g.key, family, clientId: g.clientId || null, groupKey: g.groupKey, phone, href, taskId: g.openTaskId ?? null };
+    const reply: DeskAction = { kind: "reply", threadKey: g.key, family, clientId: g.clientId || null, groupKey: g.groupKey, phone, href, taskId: g.openTaskId ?? null, commLogId: family === "email" && g.clientId ? replyRefOf(g.clientId, latest?.atISO) : null };
     // A row that is here only for an open booking ask says so (one row: the ask is not listed again).
     const booking = g.fromAsk ? g.schedulingAsks[0] ?? null : null;
     push({
@@ -995,7 +1197,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       who: "You", dueISO, dueWords: dueWordsFor(dueISO, now), late: behind,
       rank: behind ? RANK.blocker : RANK.today,
       primary: { label: "Reply", action: reply },
-      actions: [reply, { kind: "follow-up", clientId: g.clientId || null, projectId: null, title: `Follow up with ${clean(g.clientName)}` }],
+      actions: [reply, { kind: "follow-up", clientId: g.clientId || null, projectId: null, title: `Follow up with ${clean(g.clientName)}` }, handled],
       href,
       panel: {
         kind: "thread", client: clean(g.clientName), family,
@@ -1080,11 +1282,15 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   // TODAY'S SHOOTS: today and the next business day, one row per VISIT.
   // =====================================================================
   const prep = visits ?? [];
-  const [briefs, timeOff] = await Promise.all([
+  const shooterIds = [...new Set(prep.map((v) => v.assignedToId ?? v.project.photographerId).filter((x): x is string => !!x))];
+  const [briefs, timeOff, shooterPhones] = await Promise.all([
     briefStatusForAppointments(prep.map((v) => v.apptId).filter((x): x is string => !!x)).catch(() => null),
     // Who is off on these days (audit, Oct 25 2026: Harrison's week off read "Ready").
     prep.length ? timeOffBetween(days[0], nextDay).catch(warn("time off")) : Promise.resolve([] as TimeOffSpan[]),
+    // "Text the photographer" from a shoot's side panel (Oct 27 2026).
+    shooterIds.length ? prisma.teamMember.findMany({ where: { id: { in: shooterIds } }, select: { id: true, phone: true } }).catch(() => []) : Promise.resolve([] as { id: string; phone: string | null }[]),
   ]);
+  const phoneOfShooter = new Map(shooterPhones.map((t) => [t.id, t.phone] as const));
   const photoDelivered = new Map<string, Date>();
   const askProjects = [...new Set([...prep.map((v) => v.project.id), ...(photoAsks ?? []).map((a) => a.projectId!).filter(Boolean)])];
   if (askProjects.length) {
@@ -1176,6 +1382,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     const visit: PrepVisit = {
       apptId: v.apptId, projectId: p.id, street, client: p.client ? clean(p.client.name) : null, dayKey: visitDay,
       timeISO: start?.toISOString() ?? null, endISO: v.endAt?.toISOString() ?? null, over: started, photographer: photographer ? clean(photographer) : null, photographerId,
+      photographerPhone: photographerId ? phoneOfShooter.get(photographerId) ?? null : null,
       confirmation,
       access: { lockbox: acc.lockbox ? clean(acc.lockbox) : null, access: acc.access ? clean(acc.access) : null, presence: acc.presence ? clean(acc.presence) : null, contactName: acc.name, contactPhone: acc.phone },
       services, servicesFrom,
@@ -1200,6 +1407,14 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       : openJob;
     const waitingAck = !problems.length && !started && offer.waiting;
     const ackBy = start ? new Date(start.getTime() - 2 * HOUR) : null;
+    // EVERY SHOOT ROW HAS ONE ACTION (Oct 27 2026): Confirm, Send the brief, Follow up on the brief
+    // (sent, no Got it yet: resend it or text the photographer), else Open the shoot (its panel:
+    // the visit's instructions, the photographer's number, the job). A shoot under way or done
+    // keeps its row (Jordan: "Today's shoots, even if they started, should not be collapsed").
+    const briefFollow: DeskAction | null = waitingAck && photographerId ? { kind: "brief-send", teamMemberId: photographerId, day: visitDay, name: photographer ? first(clean(photographer)) : "the photographer", resend: true } : null;
+    const rowPrimary: { label: string; action: DeskAction } = primary ? { label: actionLabel(primary), action: primary }
+      : briefFollow ? { label: "Follow up on brief", action: briefFollow }
+      : { label: "Open the shoot", action: openJob };
     const chip: DeskItem["chip"] = started ? { label: over ? "Shot" : "On site", tone: "muted" }
       : away ? { label: away.fraction >= 1 ? "Photographer off" : "Photographer off part of the day", tone: away.fraction >= 1 ? "bad" : "warn" }
       : unconfirmed ? { label: "Needs confirmation", tone: "warn" }
@@ -1225,8 +1440,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       late: false,
       // Reassigning a shoot takes the most lead time of anything here, so an off-day clash is a blocker whatever the day.
       rank: problems.length ? ((!!offGap && !!away && away.fraction >= 1) || visitDay === dayKey || (!!start && start.getTime() - nowMs < DAY) ? RANK.blocker : RANK.routine) : RANK.housekeeping,
-      primary: primary ? { label: actionLabel(primary), action: primary } : null,
-      actions: [...(confirmAction ? [confirmAction] : []), ...(briefSend ? [briefSend] : []), ...forThis.filter((n) => n.askId).map((n): DeskAction => ({ kind: "ask", askId: n.askId!, askKind: "SPECIAL_REQUEST" })), openJob],
+      primary: rowPrimary,
+      actions: [...(confirmAction ? [confirmAction] : []), ...(briefSend ? [briefSend] : []), ...(briefFollow ? [briefFollow] : []), ...forThis.filter((n) => n.askId).map((n): DeskAction => ({ kind: "ask", askId: n.askId!, askKind: "SPECIAL_REQUEST" })), openJob],
       href: `/projects/${p.id}`,
       panel: { kind: "visit", visit },
       sinceISO: null, chip,
@@ -1243,9 +1458,24 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   const taskLines = (t: { title: string; kind?: string; projectTitle?: string | null }, w?: WaitingRecord | null) => [
     { label: "Task", value: clean(t.title) }, ...(t.kind ? [{ label: "Kind", value: t.kind }] : []), ...(t.projectTitle ? [{ label: "Job", value: clean(t.projectTitle) }] : []), ...(w ? [{ label: "Waiting on", value: waitingWords(w) }] : []),
   ];
-  const kyleRaw = new Map<string, { source: string | null; reasonCreated: string | null }>();
+  const kyleRaw = new Map<string, { source: string | null; reasonCreated: string | null; dedupeKey: string | null }>();
   const dueIds = [...(tasks?.earlier ?? []), ...(tasks?.dueToday ?? [])].map((t) => t.id);
-  if (dueIds.length) for (const r of await prisma.smartTask.findMany({ where: { id: { in: dueIds } }, select: { id: true, source: true, reasonCreated: true } }).catch(() => [])) kyleRaw.set(r.id, r);
+  if (dueIds.length) for (const r of await prisma.smartTask.findMany({ where: { id: { in: dueIds } }, select: { id: true, source: true, reasonCreated: true, dedupeKey: true } }).catch(() => [])) kyleRaw.set(r.id, r);
+  // EVERY ROW SAYS WHAT ITS BUTTON DOES (Oct 27 2026: several rows read a bare "Handle"). A chase
+  // for a missing floor plan opens the floor plan's own quick action (Mark floor plan delivered
+  // closes it); a brand confirmation closes on the editors' Got it, so it opens the edit brief;
+  // anything else is Mark done (with a note), Not needed, a new date, Delegate or Escalate.
+  const taskPrimary = (t: OldItem, back: boolean): { label: string; action: DeskAction; extra: DeskAction[] } => {
+    const key = kyleRaw.get(t.id)?.dedupeKey ?? "";
+    const plan = /^vendor-chase-(.+)-floorplan$/.exec(key);
+    if (plan) {
+      const street = clean(streetOf(t.projectTitle));
+      const md: DeskAction = { kind: "mark-delivered", projectId: plan[1], category: "Floor plan", street, maker: "CubiCasa", label: "Chase CubiCasa", why: "The floor plan is not on the Aryeo listing yet. Ask CubiCasa for it, or mark it delivered if it is already on the listing.", history: [`Task opened: ${clean(t.title)}`, ...(t.dueISO ? [`Due ${etDateTime(t.dueISO)}`] : [])], anchor: "deliverable-floorplan" };
+      return { label: "Chase CubiCasa", action: md, extra: [taskAction(t.id)] };
+    }
+    if (key.startsWith("brand-ack:")) return { label: "Open the brief", action: { kind: "link", label: "Open the edit brief", href: t.href }, extra: [taskAction(t.id)] };
+    return { label: back ? "Follow up" : "Mark done", action: taskAction(t.id), extra: [] };
+  };
   const dueTaskItem = (t: OldItem, earlier: boolean) => {
     if (NOT_A_FOLLOW_UP.has(t.taskType)) return;
     const w = waitingNotes.get(t.id);
@@ -1265,6 +1495,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       return;
     }
     const back = !!w && Date.parse(w.followUpAt) <= nowMs;
+    const tp = taskPrimary(t, back);
     push({
       id: `task:${t.id}`, section: "followups", tag: jordan ? "jordan" : "task", state: "now",
       title: clean(t.title),
@@ -1273,8 +1504,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       reason: back ? `You were waiting on ${waitingWords(w!)} until ${etDateTime(w!.followUpAt)}${w!.note ? `: ${clean(w!.note)}` : ""}` : [jordan ? "From Jordan" : t.kind, earlier ? `${plural(t.daysPast, "day")} past its date` : "due today", t.pushes ? `pushed ${plural(t.pushes, "time")}` : null].filter(Boolean).join(" · "),
       who: back ? w!.who : "You", dueISO: t.chaseISO, dueWords: dueWordsFor(t.chaseISO, now), late: earlier || Date.parse(t.chaseISO) < nowMs,
       rank: back || earlier ? RANK.overdue : RANK.today,
-      primary: { label: back ? "Follow up" : "Handle", action: taskAction(t.id) },
-      actions: [taskAction(t.id)], href: t.href,
+      primary: { label: tp.label, action: tp.action },
+      actions: [tp.action, ...tp.extra], href: t.href,
       panel: { kind: "task", lines: taskLines(t, w) },
       sinceISO: null,
     });
@@ -1353,6 +1584,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     const titled = /\s[—–-]\s(.+)$/.exec(r.title)?.[1] ?? null;
     const street = clean(streetOf(r.project?.title ?? titled));
     const photoLane = (r.dedupeKey ?? "").includes("photo") || /^photo\b/i.test(r.title.trim());
+    // The photos are reopened and waiting on Kyle's decision: that is the Review & Deliver row (Oct 27 2026).
+    if (photoLane && r.projectId && decidingProjects.has(r.projectId)) { revisionProjects.add(r.projectId); continue; }
     const latest = cuts.find((c) => c.projectId === r.projectId && c.createdAt > r.createdAt) ?? null;
     const pj = photoJobsRev.find((j) => j.projectId === r.projectId) ?? null;
     const promise = r.project?.promisedDueAt ?? r.project?.deliveryDue ?? null;
@@ -1377,7 +1610,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       [state, line, reason, who, due, primary] = ["waiting", `Waiting on ${editor}`, `Assigned to ${editor}, not done yet.`, editor, follow ?? promise, null];
     } else if (photoLane) {
       // A photo correction is the office's own (request owners: photo → Kyle), never an editor's.
-      [state, line, reason, who, due, primary, label] = ["now", "Yours to fix · Open the photos", "A photo correction is the office's: make the fix (Photo Delivery or the job's photos), confirm with the client, then close.", "You", null, r.projectId ? { kind: "link", label: "Open photos", href: `/projects/${r.projectId}` } : taskAction(r.id), r.projectId ? "Open photos" : "Handle"];
+      [state, line, reason, who, due, primary, label] = ["now", "Yours to fix · Open the photos", "A photo correction is the office's: make the fix (Photo Delivery or the job's photos), confirm with the client, then close.", "You", null, r.projectId ? { kind: "link", label: "Open photos", href: `/projects/${r.projectId}` } : taskAction(r.id), r.projectId ? "Open photos" : "Mark done"];
     } else {
       [state, line, reason, who, due, primary, label] = ["now", "Nobody has it yet · Give it to the editor", "Nobody has this change yet. Give it to the editor, then set when to check back.", "You", null, { kind: "link", label: "Open the job", href: base.href ?? "/review" }, "Route it"];
     }
@@ -1401,10 +1634,15 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   const afterIds = [...new Set((photoAsks ?? []).map((a) => a.projectId!).filter(Boolean))];
   if (afterIds.length) for (const p of await prisma.project.findMany({ where: { id: { in: afterIds } }, select: { id: true, title: true } }).catch(() => [])) afterTitles.set(p.id, p.title);
   const afterDeliveryAsks = new Set<string>();
+  // ONE ROW PER CHANGE (Oct 27 2026: 913 Lakeview Ct showed twice, "Client asked for changes:
+  // decide the fix" under Review & Deliver and "Photo correction · Asked after delivery" here).
+  // A change on photos reopened for the client is decided on the Review & Deliver row, whose
+  // side panel quotes it.
   for (const a of photoAsks ?? []) {
     const delivered = photoDelivered.get(a.projectId!);
     if (!delivered || a.askedAt <= delivered) continue;
     afterDeliveryAsks.add(a.id);
+    if (decidingProjects.has(a.projectId!)) continue;
     const street = clean(streetOf(afterTitles.get(a.projectId!)));
     const dueISO = new Date(a.askedAt.getTime() + DAY).toISOString();
     const late = Date.parse(dueISO) < nowMs;
@@ -1456,31 +1694,11 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       sinceISO: null, thumb: c.hero ?? null,
     });
   }
-  // Video edits and reviews not yet approved: the editor's or the creative
-  // manager's move, followed up by Kyle once the promise is near or past.
-  const jobRows = jobs?.rows ?? [];
-  for (const r of [...(board?.lanes.late ?? []), ...(board?.lanes.today ?? [])]) {
-    if (excludedProjects.has(r.projectId) || revisionProjects.has(r.projectId)) continue;
-    const inReview = r.cutStatus === "PENDING";
-    const editor = chipPerson(jobRows.find((j) => j.projectId === r.projectId)?.video?.label) ?? "the editor";
-    const who = inReview ? creativeName : editor;
-    const street = clean(r.street);
-    const late = r.late;
-    push({
-      id: `edit:${r.key}`, section: "followups", tag: "production", state: late ? "now" : "waiting",
-      title: `${street} · ${clean(r.label)}`,
-      line: late ? `Late with ${who} · Follow up` : `${inReview ? `In review with ${creativeName}` : `With ${editor}`} · Due ${r.promiseISO ? etTime(r.promiseISO) : "today"}`,
-      client: r.clientName ? clean(r.clientName) : null,
-      reason: `${inReview ? `Waiting on ${creativeName}'s review` : `Waiting on ${editor}`}: ${clean(r.stage)}`,
-      who, dueISO: r.promiseISO, dueWords: late && r.lateHours != null ? `Late by ${lateWords(r.lateHours)}` : dueWordsFor(r.promiseISO, now), late,
-      rank: late ? RANK.overdue : RANK.today,
-      primary: late ? { label: "Follow up", action: videoLink(r.reviewHref) } : null,
-      actions: [videoLink(r.reviewHref)],
-      href: r.reviewHref ?? "/review",
-      panel: { kind: "task", lines: [{ label: "Video", value: `${street} · ${clean(r.label)}` }, { label: "Where it stands", value: clean(r.stage) }, { label: "Waiting on", value: who }, ...(r.promiseISO ? [{ label: "Promised", value: etDateTime(r.promiseISO) }] : [])] },
-      sinceISO: null,
-    });
-  }
+  // Video edits and reviews not yet approved are NOT Kyle's (Oct 27 2026: the
+  // "Late with <editor> · Follow up" rows left his desk). Late editing recovery
+  // is the creative manager's job: the routing build sends those tasks to
+  // James, and his own desk follows the editors. An approved video still
+  // reaches Kyle, on Review & Deliver, to send.
   // Missing upload details and editing instructions after a shoot (the 10 AM nudge's own read).
   const recentShoots = await prisma.project.findMany({
     where: { shootDate: { gte: new Date(nowMs - 4 * DAY), lt: now }, status: { notIn: ["CANCELLED", "ON_HOLD", "DELIVERED"] }, ...(ex.length ? { clientId: { notIn: ex } } : {}) },
@@ -1572,7 +1790,9 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       record = { ticks: parsed.ticks ?? {}, finished: parsed.finished ?? null };
     }
   } catch { /* unreadable: no ticks */ }
-  const todayVisits = [...sec("shoots").now, ...sec("shoots").ok, ...sec("shoots").waiting].filter((i) => i.day === "today" && i.panel.kind === "visit" && !i.panel.visit.over);
+  // Every shoot today, the ones under way or done included (Oct 27 2026: the card read 0 while 3 shoots were on).
+  const todayVisits = [...sec("shoots").now, ...sec("shoots").ok, ...sec("shoots").waiting].filter((i) => i.day === "today" && i.panel.kind === "visit");
+  const underWay = todayVisits.filter((i) => i.panel.kind === "visit" && i.panel.visit.over).length;
   const todayOpen = sec("shoots").now.filter((i) => i.day === "today");
   const nextAll = [...sec("shoots").now, ...sec("shoots").ok, ...sec("shoots").waiting].filter((i) => i.day === "next");
   const nextOpen = sec("shoots").now.filter((i) => i.day === "next");
@@ -1582,7 +1802,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   const comms0 = sec("comms").count;
   const derived: Record<CheckKey, { auto: boolean | null; words: string }> = {
     am_messages: comms0 == null ? { auto: null, words: "Messages couldn't be read" } : comms0 === 0 ? { auto: true, words: "Nobody is waiting on a reply" } : { auto: false, words: `${plural(comms0, "conversation")} waiting on you` },
-    am_shoots: sec("shoots").count == null ? { auto: null, words: "The calendar couldn't be read" } : todayOpen.length === 0 ? { auto: true, words: todayVisits.length ? `${plural(todayVisits.length, "shoot")} ready` : "No shoots left today" } : { auto: false, words: `${plural(todayOpen.length, "shoot")} not ready` },
+    am_shoots: sec("shoots").count == null ? { auto: null, words: "The calendar couldn't be read" } : todayOpen.length === 0 ? { auto: true, words: todayVisits.length ? `${plural(todayVisits.length, "shoot")} today${underWay ? `, ${underWay} under way or done` : ""}, all ready` : "No shoots today" } : { auto: false, words: `${plural(todayOpen.length, "shoot")} not ready` },
     am_deliveries: sec("deliver").count == null ? { auto: null, words: "Deliveries couldn't be read" } : sec("deliver").count === 0 ? { auto: true, words: "Nothing waiting on you to deliver" } : { auto: false, words: `${plural(sec("deliver").count!, "delivery", "deliveries")} waiting on you` },
     md_new: { auto: null, words: "Your review" },
     eod_messages: comms0 == null ? { auto: null, words: "Messages couldn't be read" } : comms0 === 0 ? { auto: true, words: "Nobody is waiting on a reply" } : { auto: false, words: `${plural(comms0, "conversation")} still waiting: answer, or note why not` },
@@ -1695,7 +1915,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   const gmailFresh = freshness.find((f) => f.key === "gmail")?.state === "ok";
 
   return {
-    nowISO: now.toISOString(), dayKey, dateWords: etFullDate(now), person: opts.person.name, people: { creative: creativeName, owner: ownerName }, readOnly: !!opts.readOnly,
+    nowISO: now.toISOString(), dayKey, dateWords: etFullDate(now), person: opts.person.name, people: { creative: creativeName, owner: ownerName, creativeKey, ownerKey }, readOnly: !!opts.readOnly,
+    delegates, deliverHref: DELIVER_HREF,
     freshness, unavailable, urgent, sections,
     checks: { dayKey, groups: groupsOut, finished, newSinceFinish, summary },
     backlog: { count: backlog, href: "/ops/checklist#earlier" },
@@ -1736,10 +1957,13 @@ export function actionLabel(a: DeskAction): string {
     case "video-push": return a.uploadedOnly ? "Send now" : a.canDeliverNow ? "Deliver now" : "Release";
     case "video-notice": return "Tell the client";
     case "reply": return "Reply";
+    case "handled": return "Mark handled";
+    case "mark-delivered": return a.label;
+    case "revision-decide": return a.decided ? DECIDED_LABEL[a.decided.choice] : "Decide";
     case "program-reply": return "Reply";
     case "delegation": return a.state === "ASSIGNED" ? "Accept" : "Update";
     case "follow-up": return "Create follow-up";
-    case "task": return "Handle";
+    case "task": return "Mark done";
     case "ask": return a.askKind === "SCHEDULING" ? "Answer" : "Check request";
     case "remind": return "Remind";
     case "confirm": return "Confirm";

@@ -354,7 +354,9 @@ async function main() {
     c.ok("#3 …and never his to approve: no approve or send-back control anywhere on his desk", everyItem(d).every((x) => x.actions.every((a) => !/approve-cut|send-back|request-changes/.test(a.kind))) && asset(i, "video:")?.note?.includes("You send it") === true);
     c.ok("an upload-only video reads 'On Aryeo, not sent yet' with Send now", video(d, pOnly.id)?.line.startsWith("On Aryeo, not sent yet") === true && video(d, pOnly.id)?.primary?.label === "Send now");
     c.ok("a video still in the Topaz pass is not an action: a quiet line only", !video(d, pFin.id) && sec(d, "deliver").quiet.some((q) => q.text === "1 video finishing the Topaz pass"));
-    c.ok("#3 a cut still in review is the creative manager's, a late edit the editor's: both in Requests & Follow-Ups, neither a delivery", !video(d, pInReview.id) && !video(d, pEditLate.id) && find(d, "edit:v-review")?.state === "waiting" && find(d, "edit:v-review")?.who === "James" && find(d, "edit:v-late")?.state === "now");
+    // Oct 27 2026: late editing recovery is the creative manager's job (James), not Kyle's, so a cut
+    // in review and a late edit left Kyle's desk altogether (no "Late with <editor> · Follow up").
+    c.ok("#3 a cut still in review and a late edit are not Kyle's: no delivery row, no follow-up row", !video(d, pInReview.id) && !video(d, pEditLate.id) && !find(d, "edit:v-review") && !find(d, "edit:v-late") && !everyItem(d).some((x) => x.line.startsWith("Late with ")));
 
     // ---- #4 ----
     i = video(d, pNotice.id);
@@ -428,13 +430,15 @@ async function main() {
     // ---- Today's Shoots, #9 by build, the brief rules ----
     const visit = (x: OfficeDesk, apptId: string) => find(x, `visit:${apptId}`);
     const vv = (x: DeskItem | undefined) => (x?.panel.kind === "visit" ? x.panel.visit : null);
-    c.ok("a shoot all set today is Ready: 'Confirmed', chip Ready, no button", visit(d, apToday.id)?.state === "ok" && visit(d, apToday.id)?.day === "today" && visit(d, apToday.id)?.chip?.label === "Ready" && !visit(d, apToday.id)?.primary && vv(visit(d, apToday.id))?.access.lockbox === "1111", visit(d, apToday.id)?.reason);
+    // Oct 27 2026: every shoot row has one action; a ready one opens the shoot's panel (not counted).
+    c.ok("a shoot all set today is Ready: 'Confirmed', chip Ready, one 'Open the shoot' button, not counted", visit(d, apToday.id)?.state === "ok" && visit(d, apToday.id)?.day === "today" && visit(d, apToday.id)?.chip?.label === "Ready" && visit(d, apToday.id)?.primary?.label === "Open the shoot" && vv(visit(d, apToday.id))?.access.lockbox === "1111", visit(d, apToday.id)?.reason);
     const nx = visit(d, apNext.id);
     c.ok("the next business day's shoot: unconfirmed and missing access, Needs confirmation, Confirm (the template text)", nx?.state === "now" && nx.day === "next" && nx.chip?.label === "Needs confirmation" && vv(nx)?.gaps.some((g) => g.startsWith("No access")) === true && nx.primary?.label === "Confirm" && (nx.primary.action as { taskId: string }).taskId === confNext.id);
     c.ok("a monthly content session with nothing on file asks for no access details (no lockbox, no on-site phone)", !!visit(d, apSession.id) && !vv(visit(d, apSession.id))?.gaps.some((g) => /access|lockbox|on-site|phone/i.test(g)), JSON.stringify(vv(visit(d, apSession.id))?.gaps));
     c.ok("conflicting instructions are flagged (drone on the visit, the client said no drone)", visit(d, apDrone.id)?.state === "now" && vv(visit(d, apDrone.id))?.conflicts.some((x) => x.startsWith("Drone is on this visit")) === true);
     c.ok("the photographer's brief state comes from the briefing build (switched off by default: said, not a problem)", vv(visit(d, apToday.id))?.brief.state === "off" && vv(visit(d, apToday.id))?.brief.words === "Brief switched off");
-    c.ok("a shoot already under way is collapsed with the past, with no brief offered", vv(visit(d, apStarted.id))?.over === true && visit(d, apStarted.id)?.state === "ok" && visit(d, apStarted.id)?.chip?.label === "On site" && !visit(d, apStarted.id)?.actions.some((a) => a.kind === "brief-send"));
+    // Oct 27 2026 (Jordan: "Today's shoots, even if they started, should not be collapsed"): it stays on the card.
+    c.ok("a shoot already under way stays on today's card ('On site', Open the shoot), with no brief offered", vv(visit(d, apStarted.id))?.over === true && visit(d, apStarted.id)?.day === "today" && visit(d, apStarted.id)?.state === "ok" && visit(d, apStarted.id)?.chip?.label === "On site" && visit(d, apStarted.id)?.primary?.label === "Open the shoot" && !visit(d, apStarted.id)?.actions.some((a) => a.kind === "brief-send"));
     c.ok("the brief rules: never after the appointment's time; Send when none went, Resend only when one did; unknown asks Kyle to verify",
       desk.briefOffer({ state: "failed", sent: false, started: true, why: "Not sent: no phone" }).send === null
       && desk.briefOffer({ state: "failed", sent: false, started: false, why: "Not sent: no phone number on file for Harrison" }).send === "send"

@@ -13,11 +13,13 @@ import { SendVideo } from "@/components/videoDelivery/SendVideo";
 import { PushControls } from "@/components/videoDelivery/PushControls";
 import { NotTold } from "@/components/ops/NotTold";
 import { RerunTopaz } from "@/components/ops/RerunTopaz";
-import { CommsDismissButton } from "@/components/tasks/ChecklistButtons";
-import { OldItemActions } from "@/components/home/OldItemActions";
 import { AskQuickActions } from "@/components/home/AskQuickActions";
 import { RemindPhotographerButton } from "@/components/editing/RemindPhotographer";
-import { BriefSend, CloseoutTick, ConfirmControls, DelegationControls, DraftReply, FinishDay, FollowUpCreate, PhotoApprove, PRIMARY, QUIET, ReplyBox, WaitOn } from "@/components/desk/DeskControls";
+import { EmailReplyBox } from "@/components/comms/EmailReplyBox";
+import { draftEmailThreadReply } from "@/app/emailActions";
+import {
+  BriefSend, CloseoutTick, ConfirmControls, DelegationControls, DraftReply, FinishDay, FollowUpCreate, HandOn, MarkDelivered, MarkHandled, PhotoApprove, PRIMARY, QUIET, ReplyBox, RevisionDecide, TaskResolve, WaitOn,
+} from "@/components/desk/DeskControls";
 
 // ---------------------------------------------------------------------------
 // KYLE'S DESK, THE SCREEN, revision 3 (Oct 23 2026, evening: Jordan's updated
@@ -31,6 +33,15 @@ import { BriefSend, CloseoutTick, ConfirmControls, DelegationControls, DraftRepl
 // engine's draft), so the page never changes under Kyle; after an action it
 // refreshes in place and the counts recompute. Every number arrives computed
 // (lib/officeDesk). No checklists inside review.
+//
+// Oct 27 2026 (Jordan: "Make the dashboard look more like what the example
+// shows"): the cards are equal height in each pair, three rows each, then
+// "View all" or a fold ("2 awaiting files", "4 waiting on others", the
+// thank-yous that need nothing). Review & Deliver's chevron and "View all
+// deliveries" open the Shoots page's Review & deliver view. Today's Shoots
+// keeps every shoot of the day in time order, started or not. The side panel
+// (full screen on a phone) is the quick action menu: each row's button there
+// resolves it, answers it, or hands it on (Delegate, Escalate to Jordan).
 // ---------------------------------------------------------------------------
 
 const CHIP_TONE = { ok: "bg-success/15 text-success", warn: "bg-warning/15 text-warning", bad: "bg-danger/15 text-danger", muted: "bg-surface-2 text-muted" } as const;
@@ -53,10 +64,11 @@ const TAG: Record<DeskTag, { label: string; cls: string }> = {
   booking: { label: "Booking", cls: "bg-surface-2 text-muted" },
   lead: { label: "Lead", cls: "bg-surface-2 text-muted" },
 };
-/** Rows a section shows before "View all" (the rest are one press away). */
-const ROWS_SHOWN = 4;
+/** Rows a section shows before "View all" (the mockup: two or three a card; the rest are one press away). */
+const ROWS_SHOWN = 3;
 const ACTIVITY_SHOWN = 5;
-const SOLID = new Set<DeskAction["kind"]>(["photo-approve", "video-send", "video-push", "reply", "program-reply", "confirm"]);
+const SOLID = new Set<DeskAction["kind"]>(["photo-approve", "video-send", "video-push", "reply", "program-reply", "confirm", "revision-decide"]);
+type Focus = "follow-up" | "handled" | null;
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 /** The side panel's own views that are not one row: the briefs, Prepare <Day>, Review & finish day. */
 type Special = "special:briefs" | "special:prepare" | "special:finish";
@@ -74,9 +86,9 @@ export function OfficeDesk({ desk, includeTest = false, initialOpen = null, init
 }) {
   const all = new Map(desk.sections.flatMap((s) => [...s.now, ...s.waiting, ...s.ok]).map((i) => [i.id, i]));
   const [open, setOpen] = useState<string | null>(initialOpen);
-  const [focus, setFocus] = useState<"follow-up" | null>(null);
+  const [focus, setFocus] = useState<Focus>(null);
   const [openedTitle, setOpenedTitle] = useState<string | null>(initialOpen ? all.get(initialOpen)?.title ?? null : null);
-  const show = (i: DeskItem, f: "follow-up" | null = null) => { setOpen(i.id); setFocus(f); setOpenedTitle(i.title); };
+  const show = (i: DeskItem, f: Focus = null) => { setOpen(i.id); setFocus(f); setOpenedTitle(i.title); };
   const showId = (id: string) => { const i = all.get(id); if (i) show(i); };
   const special = (s: Special) => { setOpen(s); setFocus(null); setOpenedTitle(null); };
   const item = open && !open.startsWith("special:") ? all.get(open) ?? null : null;
@@ -122,8 +134,9 @@ export function OfficeDesk({ desk, includeTest = false, initialOpen = null, init
 
       <DailyChecksBar desk={desk} initial={initialChecks} />
 
-      <div className="grid items-start gap-4 lg:grid-cols-2" data-desk-grid>
-        <ReviewDeliver s={sec("deliver")} onOpen={show} readOnly={desk.readOnly} />
+      {/* Equal-height cards in each pair (the mockup); one column on a phone. */}
+      <div className="grid items-stretch gap-4 lg:grid-cols-2" data-desk-grid>
+        <ReviewDeliver s={sec("deliver")} onOpen={show} readOnly={desk.readOnly} href={desk.deliverHref} />
         <Communications s={sec("comms")} onOpen={show} fresh={desk.commsFresh} />
         <Shoots s={sec("shoots")} onOpen={show} initialDay={initialDay} includeTest={includeTest} briefs={desk.briefsPending} onBriefs={() => special("special:briefs")} />
         <FollowUps s={sec("followups")} onOpen={show} backlog={desk.backlog} includeTest={includeTest} />
@@ -279,7 +292,7 @@ function Thumb({ i, icon }: { i: DeskItem; icon: "photo" | "video" | "shoot" }) 
   );
 }
 
-function ReviewDeliver({ s, onOpen, readOnly }: { s: DeskSection; onOpen: (i: DeskItem, f?: "follow-up" | null) => void; readOnly: boolean }) {
+function ReviewDeliver({ s, onOpen, readOnly, href }: { s: DeskSection; onOpen: (i: DeskItem, f?: Focus) => void; readOnly: boolean; href: string }) {
   const [all, setAll] = useState(false);
   const rows = all ? s.now : s.now.slice(0, ROWS_SHOWN);
   const media = rows.filter((i) => i.group === "media");
@@ -304,20 +317,21 @@ function ReviewDeliver({ s, onOpen, readOnly }: { s: DeskSection; onOpen: (i: De
     </li>
   );
   return (
-    <Card s={s} href="/ops/photo-delivery" subtitle={s.count == null ? "Couldn't count" : s.count === 0 ? "Nothing waiting on you" : `${plural(s.count, "job")} ready for your attention`}
+    <Card s={s} href={href} subtitle={s.count == null ? "Couldn't count" : s.count === 0 ? "Nothing waiting on you" : `${plural(s.count, "job")} ready for your attention`}
       footer={
         <div className="space-y-1.5">
-          <div className="flex flex-wrap items-center gap-3">
-            <Link href="/ops/photo-delivery" className="inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline">View all deliveries <ArrowRight aria-hidden className="size-3.5" /></Link>
+          <div className="flex flex-wrap items-start gap-3">
+            {/* The full status page: every job in review and delivery, each piece's state and what is missing. */}
+            <Link href={href} data-view-deliveries className="inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline">View all deliveries <ArrowRight aria-hidden className="size-3.5" /></Link>
             {s.waiting.length > 0 && (
-              <details className="group ml-auto min-w-0" data-awaiting>
+              <details className="group ml-auto min-w-0 basis-full sm:basis-auto" data-awaiting>
                 <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-1 text-sm text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
                   {s.waiting.length} awaiting files <ChevronDown aria-hidden className="size-4 transition-transform group-open:rotate-180" />
                 </summary>
                 <ul className="mt-1 space-y-1.5 text-[13px]">
                   {s.waiting.map((i) => (
                     <li key={i.id} data-desk-item={i.id} data-state="waiting">
-                      <button type="button" onClick={() => onOpen(i)} className="text-left hover:underline">
+                      <button type="button" onClick={() => onOpen(i)} className="min-h-9 text-left hover:underline">
                         <span className="font-medium">{i.title}</span> <span className="text-muted">· {i.line}{i.dueWords ? ` · ${i.dueWords}` : ""}</span>
                       </button>
                     </li>
@@ -346,10 +360,30 @@ function GroupHead({ children }: { children: ReactNode }) {
   return <h3 className="mt-1 text-[12px] font-semibold uppercase tracking-wide text-muted">{children}</h3>;
 }
 
-function Communications({ s, onOpen, fresh }: { s: DeskSection; onOpen: (i: DeskItem, f?: "follow-up" | null) => void; fresh: boolean }) {
+function Communications({ s, onOpen, fresh }: { s: DeskSection; onOpen: (i: DeskItem, f?: Focus) => void; fresh: boolean }) {
   const [all, setAll] = useState(false);
   const rows = all ? s.now : s.now.slice(0, ROWS_SHOWN);
   const upToDate = fresh && s.count != null && <p className="flex items-center gap-2 rounded-lg bg-success/10 px-3 py-2.5 text-sm" data-up-to-date><CheckCircle2 aria-hidden className="size-5 text-success" /> Other conversations are up to date.</p>;
+  // Thank-yous and closers (Jordan, Oct 27 2026: "If someone says thank you - no reply is needed"):
+  // never counted, folded with Mark handled so they can be cleared.
+  const thanks = s.ok.length > 0 && (
+    <details className="group mt-2 rounded-lg bg-surface-2/50 px-3" data-no-reply-needed={s.ok.length}>
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1 text-sm text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
+        <span className="flex-1">{plural(s.ok.length, "thank-you")} or closers: no reply needed</span> <ChevronDown aria-hidden className="size-4 transition-transform group-open:rotate-180" />
+      </summary>
+      <ul className="divide-y divide-border">
+        {s.ok.map((i) => (
+          <li key={i.id} data-desk-item={i.id} data-state="ok" className="flex items-center gap-3 py-2">
+            <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 text-left">
+              <span className="block text-sm font-medium">{i.title}</span>
+              <span className="block text-[13px] text-muted [overflow-wrap:anywhere]">{[i.channel, i.line].filter(Boolean).join(" · ")}</span>
+            </button>
+            <button type="button" onClick={() => onOpen(i, "handled")} data-open-panel={i.id} className={cn(QUIET, "shrink-0")}>Mark handled</button>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
   return (
     <Card s={s} href="/communications" subtitle={s.count == null ? "Couldn't count" : s.count === 0 ? "Everyone has an answer" : `${plural(s.count, "client")} ${s.count === 1 ? "needs" : "need"} a reply`}>
       {s.now.length === 0 ? (s.count === 0 && fresh ? <Empty words={s.empty} /> : s.count === 0 ? <p className="py-2 text-sm text-muted" data-empty>No client replies found; the mail sync is not fresh, so check Messages too.</p> : null) : (
@@ -368,6 +402,9 @@ function Communications({ s, onOpen, fresh }: { s: DeskSection; onOpen: (i: Desk
                   {i.actions.some((a) => a.kind === "follow-up") && (
                     <button type="button" onClick={() => onOpen(i, "follow-up")} data-create-follow-up={i.id} className="min-h-9 text-[13px] font-medium text-brand underline-offset-2 hover:underline">Create follow-up</button>
                   )}
+                  {i.actions.some((a) => a.kind === "handled") && (
+                    <button type="button" onClick={() => onOpen(i, "handled")} data-mark-handled-row={i.id} className="min-h-9 text-[13px] text-muted underline-offset-2 hover:text-foreground hover:underline">Mark handled</button>
+                  )}
                 </span>
               </li>
             ))}
@@ -375,25 +412,27 @@ function Communications({ s, onOpen, fresh }: { s: DeskSection; onOpen: (i: Desk
           <ViewAll shown={rows.length} total={s.now.length} onClick={() => setAll(true)} />
         </>
       )}
+      {thanks}
       {s.now.length > 0 && <div className="mt-3">{upToDate}</div>}
     </Card>
   );
 }
 
-function Shoots({ s, onOpen, initialDay, includeTest, briefs, onBriefs }: { s: DeskSection; onOpen: (i: DeskItem, f?: "follow-up" | null) => void; initialDay: "today" | "next"; includeTest: boolean; briefs: Desk["briefsPending"]; onBriefs: () => void }) {
+function Shoots({ s, onOpen, initialDay, includeTest, briefs, onBriefs }: { s: DeskSection; onOpen: (i: DeskItem, f?: Focus) => void; initialDay: "today" | "next"; includeTest: boolean; briefs: Desk["briefsPending"]; onBriefs: () => void }) {
   const [day, setDay] = useState<"today" | "next">(initialDay);
   const everyone = [...s.now, ...s.waiting, ...s.ok];
+  // EVERY SHOOT OF THE DAY, IN TIME ORDER (Jordan, Oct 27 2026: "Today's shoots, even if they
+  // started, should not be collapsed. They should still show."). One under way or done keeps
+  // its row, its chip saying so ("On site", "Shot").
   const ofDay = everyone.filter((i) => i.day === day).sort((a, b) => (timeOf(a) ?? "9999").localeCompare(timeOf(b) ?? "9999"));
   const over = (i: DeskItem) => i.panel.kind === "visit" && i.panel.visit.over;
-  const upcoming = ofDay.filter((i) => !over(i));
-  const past = ofDay.filter(over);
   const needs = (d: "today" | "next") => s.now.filter((i) => i.day === d).length;
   const count = (d: "today" | "next") => everyone.filter((i) => i.day === d).length;
   const pending = briefs.filter((b) => b.day === day);
   const row = (i: DeskItem) => {
     const v = i.panel.kind === "visit" ? i.panel.visit : null;
     return (
-      <li key={i.id} data-desk-item={i.id} data-state={i.state} className="flex flex-wrap items-center gap-3 py-2.5 sm:flex-nowrap">
+      <li key={i.id} data-desk-item={i.id} data-state={i.state} data-started={over(i) ? "true" : undefined} className="flex flex-wrap items-center gap-3 py-2.5 sm:flex-nowrap">
         <span className="w-16 shrink-0 text-sm font-semibold tabular-nums">{v?.timeISO ? `${day === "next" ? `${etDate(v.timeISO).split(",")[0]} ` : ""}${etTime(v.timeISO)}` : "No time"}</span>
         <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 text-left">
           <span className="block font-semibold leading-snug [overflow-wrap:anywhere]">{i.title}</span>
@@ -419,7 +458,7 @@ function Shoots({ s, onOpen, initialDay, includeTest, briefs, onBriefs }: { s: D
       </div>
       {ofDay.length === 0 ? <Empty words={day === "today" ? "No shoots today" : "No shoots on the next business day"} /> : (
         <>
-          {upcoming.length > 0 ? <ul className="divide-y divide-border">{upcoming.map(row)}</ul> : <p className="py-2 text-sm text-muted">Every shoot today has started.</p>}
+          <ul className="divide-y divide-border">{ofDay.map(row)}</ul>
           {pending.length > 0 && (
             <div className="mt-2 flex flex-wrap items-center gap-3 rounded-lg bg-surface-2/60 px-3 py-2.5" data-briefs-pending={pending.length}>
               <FileText aria-hidden className="size-5 shrink-0 text-muted" />
@@ -430,15 +469,6 @@ function Shoots({ s, onOpen, initialDay, includeTest, briefs, onBriefs }: { s: D
               <button type="button" onClick={onBriefs} data-open-panel="special:briefs" className={QUIET}>Follow up</button>
             </div>
           )}
-          {past.length > 0 && (
-            <details className="group mt-1 rounded-lg border border-border" data-past>
-              <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-sm font-medium [&::-webkit-details-marker]:hidden">
-                <ChevronDown aria-hidden className="size-4 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
-                Earlier today ({past.length})
-              </summary>
-              <ul className="divide-y divide-border border-t border-border px-2">{past.map(row)}</ul>
-            </details>
-          )}
         </>
       )}
     </Card>
@@ -447,7 +477,7 @@ function Shoots({ s, onOpen, initialDay, includeTest, briefs, onBriefs }: { s: D
 
 const timeOf = (i: DeskItem) => (i.panel.kind === "visit" ? i.panel.visit.timeISO : i.dueISO);
 
-function FollowUps({ s, onOpen, backlog, includeTest }: { s: DeskSection; onOpen: (i: DeskItem, f?: "follow-up" | null) => void; backlog: Desk["backlog"]; includeTest: boolean }) {
+function FollowUps({ s, onOpen, backlog, includeTest }: { s: DeskSection; onOpen: (i: DeskItem, f?: Focus) => void; backlog: Desk["backlog"]; includeTest: boolean }) {
   const [all, setAll] = useState(false);
   const overdue = s.now.filter((i) => i.late).length;
   const rows = all ? s.now : s.now.slice(0, ROWS_SHOWN);
@@ -473,7 +503,7 @@ function FollowUps({ s, onOpen, backlog, includeTest }: { s: DeskSection; onOpen
       {s.waiting.length > 0 && (
         <details className="group mt-2 rounded-lg bg-surface-2/50 px-3" data-waiting>
           <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1 text-sm text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
-            <span className="flex-1">{plural(s.waiting.length, "item")} waiting on others</span> <ChevronDown aria-hidden className="size-4 transition-transform group-open:rotate-180" />
+            <span className="flex-1">{s.waiting.length} waiting on others</span> <ChevronDown aria-hidden className="size-4 transition-transform group-open:rotate-180" />
           </summary>
           <ul className="divide-y divide-border">{s.waiting.map(row)}</ul>
         </details>
@@ -560,13 +590,25 @@ function CompletedToday({ desk }: { desk: Desk }) {
 
 // ---- the side panel ----------------------------------------------------------------------
 
+/** The SmartTask a row stands for, when it is one (Delegate and Escalate move that task itself). */
+function taskIdOf(item: DeskItem): string | null {
+  const m = /^(?:task|rev|lead):([a-z0-9]{10,40})$/i.exec(item.id);
+  if (m) return m[1];
+  const a = item.actions.find((x) => x.kind === "task");
+  return a?.kind === "task" ? a.taskId : null;
+}
+
 function SidePanel({ item, special, focus, fallbackTitle, desk, includeTest, drafts, onOpenItem, onClose }: {
-  item: DeskItem | null; special: Special | null; focus: "follow-up" | null; fallbackTitle: string | null; desk: Desk; includeTest: boolean;
+  item: DeskItem | null; special: Special | null; focus: Focus; fallbackTitle: string | null; desk: Desk; includeTest: boolean;
   drafts: Record<string, string> | null; onOpenItem: (id: string) => void; onClose: () => void;
 }) {
   const title = special === "special:briefs" ? "Photographer briefs" : special === "special:prepare" ? `Prepare ${desk.nextDay.dayName}` : special === "special:finish" ? "Review & finish day" : item?.title ?? fallbackTitle ?? "Done";
   const actions = item ? item.actions.filter((a) => !(item.panel.kind === "visit" && a.kind === "ask")) : [];
-  const ordered = focus === "follow-up" ? [...actions.filter((a) => a.kind === "follow-up"), ...actions.filter((a) => a.kind !== "follow-up")] : actions;
+  const first = focus === "follow-up" ? "follow-up" : focus === "handled" ? "handled" : null;
+  const ordered = first ? [...actions.filter((a) => a.kind === first), ...actions.filter((a) => a.kind !== first)] : actions;
+  const visit = item?.panel.kind === "visit" ? item.panel.visit : null;
+  // Every row can be handed on: Delegate, or Escalate to Jordan (a delegated task has its own Escalate).
+  const handOn = !!item && !desk.readOnly && !item.actions.some((a) => a.kind === "delegation") && desk.delegates.length > 0;
   return (
     <div className="fixed inset-0 z-50 flex justify-end" data-side-panel={special ?? item?.id ?? "gone"}>
       <button type="button" aria-label="Close the panel" onClick={onClose} className="absolute inset-0 bg-black/30" />
@@ -593,7 +635,22 @@ function SidePanel({ item, special, focus, fallbackTitle, desk, includeTest, dra
                 ) : (
                   <div className="space-y-3" data-panel-actions>
                     {ordered.map((a, n) => <ActionControl key={`${a.kind}:${n}`} a={a} item={item} desk={desk} draft={drafts?.[item.id] ?? null} />)}
+                    {visit?.photographerPhone && visit.photographer && (
+                      <ReplyBox phone={visit.photographerPhone} clientId={null} label={`Text ${visit.photographer.split(" ")[0]}`} />
+                    )}
                   </div>
+                )}
+                {handOn && (
+                  <HandOn
+                    taskId={taskIdOf(item)}
+                    title={`${item.title}: ${item.line}`.slice(0, 140)}
+                    href={item.href}
+                    projectId={item.panel.kind === "job" ? item.panel.projectId : item.panel.kind === "visit" ? item.panel.visit.projectId : null}
+                    clientId={null}
+                    delegates={desk.delegates}
+                    ownerKey={desk.people.ownerKey}
+                    ownerName={desk.people.owner}
+                  />
                 )}
                 {item.href && (
                   <Link href={homeRecordHref(item.href, includeTest)} className="inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline">
@@ -820,19 +877,28 @@ function ActionControl({ a, item, desk, draft }: { a: DeskAction; item: DeskItem
     case "video-notice":
       return <NotTold rows={[a.row]} />;
     case "reply":
+      // The reply box ready (Oct 27 2026): a text with the reply engine's draft; an email in the
+      // hub's own email reply box (the thread's newest email, Messages' send), else the reply task's draft.
       return (
         <div className="space-y-3">
           {a.family === "phone"
             ? <DraftReply mode="text" threadKey={a.threadKey} initialDraft={draft} autoDraft={!draft} />
-            : a.taskId
-              ? <DraftReply mode="email" taskId={a.taskId} initialDraft={draft} autoDraft={!draft} />
-              : <p className="text-[12px] text-muted">This email has no reply task to send from here: answer it in Messages. It stays here until the answer is logged.</p>}
+            : a.commLogId
+              ? <div data-control="email-reply"><EmailReplyBox target={{ kind: "log", commLogId: a.commLogId }} draft={() => draftEmailThreadReply({ kind: "log", commLogId: a.commLogId! })} startOpen /></div>
+              : a.taskId
+                ? <DraftReply mode="email" taskId={a.taskId} initialDraft={draft} autoDraft={!draft} />
+                : <p className="text-[12px] text-muted">This email can only be answered in Messages. It stays here until the answer is logged.</p>}
           <div className="flex flex-wrap items-center gap-2">
             <Link href={a.href} className={QUIET}>Open in Messages</Link>
-            <CommsDismissButton threadKey={a.threadKey} family={a.family} clientId={a.clientId} groupKey={a.groupKey} />
           </div>
         </div>
       );
+    case "handled":
+      return <MarkHandled threadKey={a.threadKey} family={a.family} clientId={a.clientId} groupKey={a.groupKey} />;
+    case "mark-delivered":
+      return <MarkDelivered a={a} />;
+    case "revision-decide":
+      return <RevisionDecide a={a} />;
     case "program-reply":
       return (
         <div className="space-y-3">
@@ -847,7 +913,7 @@ function ActionControl({ a, item, desk, draft }: { a: DeskAction; item: DeskItem
     case "task":
       return (
         <div className="space-y-3">
-          <OldItemActions taskId={a.taskId} allowNewDate={a.allowNewDate} />
+          <TaskResolve taskId={a.taskId} nextDay={desk.nextDay.dayKey} allowNewDate={a.allowNewDate} />
           {a.canWait && <WaitOn taskId={a.taskId} creative={desk.people.creative} owner={desk.people.owner} />}
         </div>
       );

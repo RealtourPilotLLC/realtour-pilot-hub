@@ -159,6 +159,9 @@ JSON.stringify(out);`;
       "src/components/review/VerdictReceipts.tsx": "inside a useEffect (the fade timers)",
       "src/components/review/verdictReceiptStore.ts": "written from event handlers; the server snapshot is always empty",
       "src/lib/datetime.ts": "helpers that take an explicit date from their callers; the today/year defaults are not used by these client trees",
+      // Oct 27 2026: Kyle's desk now opens an email in the hub's own reply box (Jordan: "Same for client
+      // communications and messages"), which brings it under Home.
+      "src/components/comms/EmailReplyBox.tsx": "mintIntentId() runs only from a Send press (the reply's one-press identity), never while rendering",
     };
     // Oct 19 2026 (evening): the old daily checklist's blocks left Home, and
     // with them its Ready-to-send card and the delivery board. The card is
