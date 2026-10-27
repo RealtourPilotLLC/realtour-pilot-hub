@@ -22,7 +22,9 @@ const TYPES: { type: ActivityType; label: string; hint: string; icon: typeof Sta
     label: "Request — the photographer and the editor see it",
     hint: "A Request lands on the photographer's shoot screen and upload page, in the editor's brief, and pings them both — text or Slack, whatever their settings say. It also goes on the job's request list and holds that delivery until someone presses Checked.",
     icon: Star,
-    color: "#d97706",
+    // The chosen chip is white text on this fill: the amber -action shade
+    // (Jordan, Oct 27 2026: darker shades for text badges; #d97706 was 3.2:1).
+    color: "var(--warning-action)",
   },
   {
     type: ActivityType.NOTE,

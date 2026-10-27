@@ -439,7 +439,8 @@ function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: (sent?: boole
           <PortalNextStep submissionId={v.submissionId} street={v.street} clientName={v.clientName} step={v.portalStep} dropboxUrl={v.file.dropboxUrl} />
           {/* A branding video can go to Aryeo instead (Oct 21 2026, Jordan:
               "possibly sometimes"): the press only switches its destination;
-              it then waits in Ready to send for a person's press. */}
+              it then waits in Ready to send for a person's press. Folded
+              under "Send via Aryeo instead" (Oct 27 2026). */}
           {v.canChooseAryeo && v.destinationFingerprint && <ChooseAryeoDelivery submissionId={v.submissionId} fingerprint={v.destinationFingerprint} />}
         </>
         : !usesPortal(v) && v.listingMissing

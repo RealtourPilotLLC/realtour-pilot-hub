@@ -77,7 +77,8 @@ export async function currentApproved(cut: Cut, db: Prisma.TransactionClient = p
 // Mark as sent rests on the upload receipt (lib/deliveryUploads), the hub's
 // own Aryeo send checks the listing itself (lib/videoAryeoPush), and monthly
 // videos publish to the portal on the checked 1080p file (lib/monthlyFinal).
-// Old FinalRenditionCheck rows stay as history; readyToSend still reads them.
+// Old FinalRenditionCheck rows stay in the database as history; nothing in
+// the hub reads them any more (readyToSend's read went the same day).
 
 // ---------------------------------------------------------------------------
 // THE FINISHED FILE'S SOUND, FROM ITS HEADER (Oct 16 2026).
