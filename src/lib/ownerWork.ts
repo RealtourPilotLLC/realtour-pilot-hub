@@ -1,9 +1,9 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etDateTime, etMonthDay, etTime, endOfBusinessDaysET } from "@/lib/datetime";
+import { etDateTime, etMonthDay, etMonthKey, etTime, endOfBusinessDaysET } from "@/lib/datetime";
 import { firstName } from "@/lib/assignees";
 import { delegationFor, resurfaceOf, tasksDelegatedByAny, STATE_WORDS, type DelegatedTaskView, type Resurface } from "@/lib/delegation";
-import type { AssignSeed, Tone } from "@/lib/ownerDashboard";
+import type { AssignSeed, RowAction, Tone } from "@/lib/ownerDashboard";
 import { resolveVideoSpec } from "@/lib/pipeline";
 import { videoTier } from "@/lib/projectStatus";
 
@@ -166,10 +166,92 @@ export type CreativeRow = {
   href: string;
   tone: Tone;
   assign: AssignSeed;
+  /** the open task behind the row (a Script Studio nudge), when there is one */
+  taskId: string | null;
+  /** The buttons (Oct 27 2026): the first is the primary. */
+  actions: RowAction[];
 };
 export type CreativeDecisions = { rows: CreativeRow[]; jordanOwns: number; othersDraft: number; unavailable: string[] };
 
 const CREATIVE_ITEMS = new Set(["topics", "write", "approve", "changes", "suggestions", "strategy", "proposals", "ideas"]);
+const prevMonthKey = (k: string) => {
+  const [y, m] = k.split("-").map(Number);
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
+};
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * LISTING SCRIPTS THAT WAIT ON JORDAN: a premium reel or premium cinematic
+ * video shooting by `until` with no script, a draft waiting on his review, or
+ * the client's changes. One rule for the Scripts card and the Bottlenecks row.
+ */
+type ListingScript = { projectId: string; clientId: string; client: string; street: string; shootISO: string | null; what: string; next: string; hasScript: boolean };
+async function listingScriptsWaiting(now: Date, until: Date, exclude: string[]): Promise<ListingScript[] | null> {
+  const listing = await prisma.project.findMany({
+    where: {
+      status: { in: ["BOOKED", "SCHEDULED"] },
+      shootDate: { gte: now, lte: until },
+      contentMonthId: null,
+      ...(exclude.length ? { clientId: { notIn: exclude } } : {}),
+      deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] }, removedFromOrderAt: null } },
+    },
+    orderBy: { shootDate: "asc" },
+    take: 40,
+    select: {
+      id: true, title: true, shootDate: true, clientId: true, client: { select: { name: true } }, reelScript: true, scriptingId: true, scriptingStatus: true, scriptingDraftVersion: true, scriptingVersion: true,
+      packageName: true,
+      deliverables: { select: { type: true, label: true, productTitle: true, videoStyle: true, notCompletedReason: true, waivedAt: true, removedFromOrderAt: true } },
+      orderItems: { where: { isCanceled: false }, select: { title: true } },
+    },
+  }).catch(warn("listing scripts"));
+  if (!listing) return null;
+  const out: ListingScript[] = [];
+  for (const p of listing) {
+    // Only a job whose video takes a script (Oct 26 2026, Jordan: "I think some
+    // of these dont get listing scripts?"). The video step's own rule: premium
+    // reels and premium cinematic videos need one; a standard reel, an
+    // agent-intro reel (the agent's intro lines go on the upload page) or a
+    // standard cinematic video never do. A job Script Studio already holds
+    // stays, whatever it was ordered as.
+    if (!p.scriptingId) {
+      const live = p.deliverables.filter((d) => !d.notCompletedReason && !d.waivedAt && !d.removedFromOrderAt);
+      const { spec } = resolveVideoSpec({ deliverables: p.deliverables, orderItems: p.orderItems, packageName: p.packageName, isPremium: videoTier(live) === "premium" });
+      if (!spec.requireScript) continue;
+    }
+    const st = (p.scriptingStatus ?? "").toLowerCase();
+    let what: string | null = null;
+    let next = "";
+    if (!p.reelScript && !p.scriptingId) { what = "No script yet"; next = "Generate or write the script"; }
+    else if (p.scriptingDraftVersion != null || st === "awaiting_review" || st === "hooks_proposed") { what = `Draft${p.scriptingDraftVersion ? ` v${p.scriptingDraftVersion}` : ""} waiting on your review`; next = "Review the script"; }
+    else if (st === "client_revision_requested") { what = "The client asked for changes"; next = "Revise the script"; }
+    if (!what) continue;
+    out.push({ projectId: p.id, clientId: p.clientId, client: p.client?.name ?? "A client", street: p.title.split(",")[0], shootISO: p.shootDate?.toISOString() ?? null, what, next, hasScript: !!(p.reelScript || p.scriptingId) });
+  }
+  return out;
+}
+
+/**
+ * The Bottlenecks row for scripts (Oct 27 2026, his mockup: "Two shoots lack
+ * approved scripts · Jordan · Review today · Review scripts"): a listing
+ * script missing or unapproved for a shoot by the end of the next business
+ * day. One row, however many; its button goes to the script (one job) or to
+ * the Scripts card (several).
+ */
+export async function scriptsBottleneck(opts: { now: Date; excludeClientIds: string[]; ownerName: string }): Promise<{ issue: string; owner: string; nextStep: string; href: string; projectId: string | null; tone: Tone; firstShootISO: string | null } | null> {
+  const waiting = await listingScriptsWaiting(opts.now, endOfBusinessDaysET(opts.now, 1, 23), opts.excludeClientIds);
+  if (!waiting?.length) return null;
+  const one = waiting.length === 1 ? waiting[0] : null;
+  const first = waiting[0];
+  return {
+    issue: one ? `${one.street}: ${one.what.toLowerCase()}, shoot ${etDateTime(one.shootISO)}` : `${plural(waiting.length, "shoot")} lack approved scripts (first ${first.street}, ${etDateTime(first.shootISO)})`,
+    owner: opts.ownerName,
+    nextStep: "Review today",
+    href: one ? `/projects/${one.projectId}${one.hasScript ? "#script" : ""}` : "#creative",
+    projectId: one?.projectId ?? null,
+    tone: first.shootISO && Date.parse(first.shootISO) - opts.now.getTime() < DAY ? "bad" : "warn",
+    firstShootISO: first.shootISO,
+  };
+}
 
 export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: string[]; ownerEmail?: string | null; ownerEmails?: string[] } = {}): Promise<CreativeDecisions> {
   const now = opts.now ?? new Date();
@@ -182,10 +264,21 @@ export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: s
   const rows: CreativeRow[] = [];
 
   // ---- monthly content: the month rows that wait on Jordan ---------------------
-  const [{ monthlyContentActions }, { ownersForMany, pairKey }] = await Promise.all([import("@/lib/contentActions"), import("@/lib/programOwners")]);
+  const [{ monthlyContentActions }, { ownersForMany, pairKey }, { readScriptsFilmed }] = await Promise.all([import("@/lib/contentActions"), import("@/lib/programOwners"), import("@/lib/scriptFilmed")]);
   const content = await monthlyContentActions({ now, excludeClientIds: exclude }).catch(warn("monthly content"));
   if (!content) unavailable.push("monthly content");
-  const creative = (content?.rows ?? []).map((r) => ({ ...r, items: r.items.filter((i) => CREATIVE_ITEMS.has(i.key)) })).filter((r) => r.items.length);
+  // STALE MONTHS (Oct 27 2026: Rick Schultz's August read "4 scripts to
+  // approve" in late October). The shared card reaches six months back for
+  // waiting approvals; on Jordan's list a month before last is past (a missed
+  // month is forfeited, catch-ups are approved by staff), and a script already
+  // filmed is not a decision any more. So: this month, next month, and last
+  // month's waiting scripts that are not filmed yet (a late session).
+  const thisMonth = etMonthKey(now);
+  const lastMonth = prevMonthKey(thisMonth);
+  const creative = (content?.rows ?? [])
+    .filter((r) => r.monthKey >= lastMonth)
+    .map((r) => ({ ...r, items: r.items.filter((i) => CREATIVE_ITEMS.has(i.key)) }))
+    .filter((r) => r.items.length);
   if (creative.length) {
     const pairs = creative.map((r) => ({ enrollmentId: r.key.split(":")[0], monthKey: r.key.split(":")[1] }));
     const months = await prisma.contentMonth.findMany({ where: { OR: pairs.map((p) => ({ enrollmentId: p.enrollmentId, monthKey: p.monthKey })) }, select: { id: true, enrollmentId: true, monthKey: true } }).catch(() => []);
@@ -193,11 +286,14 @@ export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: s
     const owners = await ownersForMany(pairs.map((p) => ({ enrollmentId: p.enrollmentId, monthId: monthId(p.enrollmentId, p.monthKey) }))).catch(warn("script owners"));
     // Who drafted the scripts waiting for approval (the current version's author).
     const scripts = months.length
-      ? await prisma.contentScript.findMany({ where: { monthId: { in: months.map((m) => m.id) }, currentVersionId: { not: null }, historical: false }, select: { monthId: true, currentVersionId: true } }).catch(() => [])
+      ? await prisma.contentScript.findMany({ where: { monthId: { in: months.map((m) => m.id) }, currentVersionId: { not: null }, historical: false }, select: { id: true, topicId: true, monthId: true, currentVersionId: true } }).catch(() => [])
       : [];
     const versions = scripts.length
       ? await prisma.contentScriptVersion.findMany({ where: { id: { in: scripts.map((s) => s.currentVersionId!) }, status: { in: ["DRAFT", "INTERNAL_REVIEW"] } }, select: { id: true, createdBy: true } }).catch(() => [])
       : [];
+    const waitingIds = new Set(versions.map((v) => v.id));
+    const waitingScripts = scripts.filter((s) => waitingIds.has(s.currentVersionId!));
+    const filmed = waitingScripts.length ? await readScriptsFilmed(waitingScripts).catch(() => new Map()) : new Map();
     // createdBy is an email, often with a note ("info@… (via Claude: v2.4 restart)"),
     // or a word for the system ("ai", "import", "migration", "cron").
     const emailIn = (v: string | null) => (/[^\s@()]+@[^\s@()]+\.[a-z]{2,}/i.exec(v ?? "")?.[0] ?? null)?.toLowerCase() ?? null;
@@ -217,8 +313,19 @@ export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: s
       const o = owners?.get(pairKey(enrollmentId, mid));
       const scriptOwner = o?.SCRIPTS;
       const strategyOwner = o?.STRATEGY;
-      const scriptItems = r.items.filter((i) => ["write", "approve", "changes", "suggestions", "topics", "ideas"].includes(i.key));
-      const strategyItems = r.items.filter((i) => i.key === "strategy" || i.key === "proposals");
+      // Waiting scripts already filmed drop out; none left, the approval drops.
+      const waitingHere = waitingScripts.filter((s) => s.monthId === mid);
+      const unfilmed = waitingHere.filter((s) => !filmed.has(s.id)).length;
+      const lastMonthRow = monthKey < thisMonth;
+      const scriptItems = r.items
+        .filter((i) => ["write", "approve", "changes", "suggestions", "topics", "ideas"].includes(i.key))
+        .filter((i) => !lastMonthRow || i.key === "approve" || i.key === "changes")
+        .flatMap((i) => {
+          if (i.key !== "approve" || !waitingHere.length) return [i];
+          if (!unfilmed) return [];
+          return [unfilmed === waitingHere.length ? i : { ...i, words: `${plural(unfilmed, "script")} to approve` }];
+        });
+      const strategyItems = lastMonthRow ? [] : r.items.filter((i) => i.key === "strategy" || i.key === "proposals");
       const mineScripts = isOwnerEmail(scriptOwner?.email);
       const mineStrategy = isOwnerEmail(strategyOwner?.email);
       const items = [...(mineScripts ? scriptItems : []), ...(mineStrategy ? strategyItems : [])];
@@ -236,6 +343,8 @@ export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: s
       const ownerFirst = firstName(scriptOwner?.label ?? "Jordan");
       const drafted = writers.some((w) => w !== ownerFirst && w !== "AI draft" && w !== "Imported" && w !== "The hub");
       const monthLabel = new Date(`${monthKey}-15T12:00:00Z`).toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+      const assign: AssignSeed = { title: `${r.clientName} ${monthLabel}: ${items[0].words}`, outcome: "Scripts drafted for Jordan's approval", sourceHref: items[0].href, sourceTaskId: null };
+      const primary = items[0].key === "write" ? "Write scripts" : items[0].key === "strategy" || items[0].key === "proposals" ? "Open strategy" : items[0].key === "topics" || items[0].key === "ideas" ? "Open topics" : "Review";
       rows.push({
         id: `month:${r.key}`,
         kind: "monthly",
@@ -249,66 +358,82 @@ export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: s
         nextAction: items[0].words,
         href: items[0].href,
         tone: items.some((i) => i.tone === "warn") ? "warn" : "ok",
-        assign: { title: `${r.clientName} ${monthLabel}: ${items[0].words}`, outcome: "Scripts drafted for Jordan's approval", sourceHref: items[0].href, sourceTaskId: null },
+        assign,
+        taskId: null,
+        actions: [{ kind: "link", label: primary, href: items[0].href }, { kind: "assign", label: "Delegate", seed: assign }],
       });
     }
   }
 
   // ---- listing scripts for shoots in the next 7 days ---------------------------
-  const soon = new Date(now.getTime() + 7 * DAY);
-  const listing = await prisma.project.findMany({
-    where: {
-      status: { in: ["BOOKED", "SCHEDULED"] },
-      shootDate: { gte: now, lte: soon },
-      contentMonthId: null,
-      ...(exclude.length ? { clientId: { notIn: exclude } } : {}),
-      deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] }, removedFromOrderAt: null } },
-    },
-    orderBy: { shootDate: "asc" },
-    take: 40,
-    select: {
-      id: true, title: true, shootDate: true, clientId: true, client: { select: { name: true } }, reelScript: true, scriptingId: true, scriptingStatus: true, scriptingDraftVersion: true, scriptingVersion: true,
-      packageName: true,
-      deliverables: { select: { type: true, label: true, productTitle: true, videoStyle: true, notCompletedReason: true, waivedAt: true, removedFromOrderAt: true } },
-      orderItems: { where: { isCanceled: false }, select: { title: true } },
-    },
-  }).catch(warn("listing scripts"));
+  const listing = await listingScriptsWaiting(now, new Date(now.getTime() + 7 * DAY), exclude);
   if (!listing) unavailable.push("listing scripts");
-  for (const p of listing ?? []) {
-    // Only a job whose video takes a script (Oct 26 2026, Jordan: "I think some
-    // of these dont get listing scripts?"). The video step's own rule: premium
-    // reels and premium cinematic videos need one; a standard reel, an
-    // agent-intro reel (the agent's intro lines go on the upload page) or a
-    // standard cinematic video never do. A job Script Studio already holds
-    // stays, whatever it was ordered as.
-    if (!p.scriptingId) {
-      const live = p.deliverables.filter((d) => !d.notCompletedReason && !d.waivedAt && !d.removedFromOrderAt);
-      const { spec } = resolveVideoSpec({ deliverables: p.deliverables, orderItems: p.orderItems, packageName: p.packageName, isPremium: videoTier(live) === "premium" });
-      if (!spec.requireScript) continue;
-    }
-    const st = (p.scriptingStatus ?? "").toLowerCase();
-    let what: string | null = null;
-    let next = "";
-    if (!p.reelScript && !p.scriptingId) { what = "No script yet"; next = "Generate or write the script"; }
-    else if (p.scriptingDraftVersion != null || st === "awaiting_review" || st === "hooks_proposed") { what = `Draft${p.scriptingDraftVersion ? ` v${p.scriptingDraftVersion}` : ""} waiting on your review`; next = "Review the script"; }
-    else if (st === "client_revision_requested") { what = "The client asked for changes"; next = "Revise the script"; }
-    if (!what) continue;
-    const street = p.title.split(",")[0];
-    rows.push({
-      id: `listing:${p.id}`,
+  // SCRIPT STUDIO'S OWN NUDGES (Oct 27 2026: the package it generated, and the
+  // client's reply on it, are routed to the listing-scripts owner, Jordan).
+  // One per job, keyed by the webhook ("scripting-script-<job>",
+  // "scripting-client-<job>"); Done closes it, and the Studio reopens it on
+  // its next event.
+  const studio = await prisma.smartTask.findMany({
+    where: {
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      AND: [
+        { OR: [{ dedupeKey: { startsWith: "scripting-script-" } }, { dedupeKey: { startsWith: "scripting-client-" } }] },
+        ...(exclude.length ? [{ OR: [{ clientId: null }, { clientId: { notIn: exclude } }] }] : []),
+      ],
+    },
+    orderBy: { createdAt: "asc" },
+    take: 30,
+    select: { id: true, title: true, dedupeKey: true, projectId: true, clientId: true, dueAt: true, project: { select: { title: true, shootDate: true, status: true, client: { select: { name: true } } } } },
+  }).catch(warn("Script Studio tasks"));
+  if (!studio) unavailable.push("Script Studio tasks");
+  const studioByProject = new Map<string, NonNullable<typeof studio>[number]>();
+  for (const t of studio ?? []) {
+    if (!t.projectId || t.project?.status === "CANCELLED") continue;
+    // The client's reply outranks the "script ready" nudge on the same job.
+    const had = studioByProject.get(t.projectId);
+    if (!had || t.dedupeKey?.startsWith("scripting-client-")) studioByProject.set(t.projectId, t);
+  }
+  const listingRow = (p: { projectId: string; clientId: string | null; client: string; street: string; shootISO: string | null; what: string; next: string; hasScript: boolean }, taskId: string | null): CreativeRow => {
+    const assign: AssignSeed = { title: `Listing script: ${p.street}`, outcome: "An approved script before the shoot", sourceHref: `/projects/${p.projectId}#script`, projectId: p.projectId, clientId: p.clientId, dueAt: p.shootISO ? new Date(Date.parse(p.shootISO) - DAY).toISOString() : null };
+    return {
+      id: `listing:${p.projectId}`,
       kind: "listing",
-      client: p.client?.name ?? "A client",
-      what: `${street}: ${what}`,
+      client: p.client,
+      what: `${p.street}: ${p.what}`,
       writer: "Jordan (Script Studio)",
       approver: "Jordan",
       mode: "jordan",
-      dueISO: p.shootDate?.toISOString() ?? null,
-      related: p.shootDate ? `Shoot ${etDateTime(p.shootDate)}` : null,
-      nextAction: next,
-      href: `/projects/${p.id}`,
-      tone: p.shootDate && p.shootDate.getTime() - now.getTime() < 2 * DAY ? "bad" : "warn",
-      assign: { title: `Listing script: ${street}`, outcome: "An approved script before the shoot", sourceHref: `/projects/${p.id}#script`, projectId: p.id, clientId: p.clientId, dueAt: p.shootDate ? new Date(p.shootDate.getTime() - DAY).toISOString() : null },
-    });
+      dueISO: p.shootISO,
+      related: p.shootISO ? `Shoot ${etDateTime(p.shootISO)}` : null,
+      nextAction: p.next,
+      href: `/projects/${p.projectId}${p.hasScript ? "#script" : ""}`,
+      tone: p.shootISO && Date.parse(p.shootISO) - now.getTime() < 2 * DAY ? "bad" : "warn",
+      assign,
+      taskId,
+      actions: [
+        { kind: "link", label: p.hasScript ? "Review script" : "Write script", href: `/projects/${p.projectId}${p.hasScript ? "#script" : ""}` },
+        taskId ? { kind: "done", label: "Done", taskId } : { kind: "assign", label: "Delegate", seed: assign },
+      ],
+    };
+  };
+  for (const p of listing ?? []) {
+    rows.push(listingRow(p, studioByProject.get(p.projectId)?.id ?? null));
+    studioByProject.delete(p.projectId);
+  }
+  // A Studio nudge on a job the 7-day list doesn't hold (shooting later, or the script is in but the client replied).
+  for (const [pid, t] of studioByProject) {
+    const client = t.dedupeKey?.startsWith("scripting-client-");
+    const changes = /changes/i.test(t.title);
+    rows.push(listingRow({
+      projectId: pid,
+      clientId: t.clientId,
+      client: t.project?.client?.name ?? "A client",
+      street: t.project?.title ? t.project.title.split(",")[0] : t.title.split(/\s[\u2014-]\s/).pop() || "A job",
+      shootISO: t.project?.shootDate?.toISOString() ?? null,
+      what: client ? (changes ? "The client asked for changes in Script Studio" : "The client replied on the script in Script Studio") : "Script Studio's package is ready to review",
+      next: client ? (changes ? "Revise the script" : "Check the client's reply") : "Review and lock the script",
+      hasScript: true,
+    }, t.id));
   }
   rows.sort((a, b) => Number(b.tone === "bad") - Number(a.tone === "bad") || (a.dueISO ?? "9999").localeCompare(b.dueISO ?? "9999"));
   return { rows, jordanOwns: rows.filter((r) => r.mode === "jordan").length, othersDraft: rows.filter((r) => r.mode === "drafted").length, unavailable };

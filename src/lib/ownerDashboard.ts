@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { cashBalanceOf, postedBesideCash } from "@/lib/bankBalance";
 import { usd0Signed } from "@/lib/money";
 import { noDashes } from "@/lib/text";
-import { endOfBusinessDaysET, etDate, etDateTime, etDayKey, etMonthDay, etTime } from "@/lib/datetime";
+import { endOfBusinessDaysET, etDate, etDateTime, etDayKey, etMinutesOfDay, etMonthDay, etTime } from "@/lib/datetime";
 import { listAssignees, firstName, type Assignee } from "@/lib/assignees";
 import { syntheticClientIds } from "@/lib/syntheticClients";
 import { openDelegations, resurfaceOf, type DelegatedTaskView } from "@/lib/delegation";
@@ -69,6 +69,28 @@ export type AssignSeed = {
   projectId?: string | null;
   needsVerification?: boolean;
 };
+
+/**
+ * A row's button (Oct 27 2026, Jordan: "make sure everything has an action
+ * that can resolve it, escalate it, respond, or delegate"). Plain data, so a
+ * server section can hand it to the client shell:
+ *   ask     one press hands the work to the named person through delegation
+ *           (Request update, Remind photographer). Keyed to the record, so a
+ *           second press is the same task ("Already with James").
+ *   nudge   one press asks whoever has the delegated task for an update
+ *           (delegation's requestUpdate: at most hourly).
+ *   task    opens the delegated task (decide, reassign, its history).
+ *   assign  opens the Assign panel with the row's context filled in.
+ *   link    goes to where it is done, scrolled to the part (#anchor).
+ *   done    closes the row's own open task (it is his, and it is handled).
+ */
+export type RowAction =
+  | { kind: "ask"; label: string; seed: AssignSeed }
+  | { kind: "nudge"; label: string; taskId: string }
+  | { kind: "task"; label: string; taskId: string }
+  | { kind: "assign"; label: string; seed: AssignSeed }
+  | { kind: "link"; label: string; href: string }
+  | { kind: "done"; label: string; taskId: string };
 
 // =====================================================================================
 // A. FINANCIAL POSITION
@@ -323,6 +345,10 @@ export type StageItem = {
   waitingSinceISO: string | null;
   /** whose move it is */
   owner: string;
+  /** the owner's roster key when they are a person on the roster (who a one-press ask goes to) */
+  ownerKey?: string | null;
+  /** the office holds it because nobody is named on the job */
+  ownerIsOffice?: boolean;
   href: string;
   projectId: string | null;
 };
@@ -356,6 +382,9 @@ export type Bottleneck = {
   assign: AssignSeed;
   /** a delegated task's id: Request update targets it */
   taskId: string | null;
+  /** The buttons, the right one for the issue (Oct 27 2026: every row read
+   *  "Assign"). The first is the primary; at most two. */
+  actions: RowAction[];
 };
 
 export type ProductionHealth = {
@@ -401,7 +430,8 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
   const exclude = opts.excludeClientIds ?? (opts.includeTest ? [] : await syntheticClientIds());
   const current = Math.abs(now.getTime() - Date.now()) < 60_000;
 
-  const [jobs, video, review, photos, exceptions, visits, kyle, flags, off] = await Promise.all([
+  const ownerName = firstName(roster.find((a) => a.kind === "owner")?.name ?? "Jordan");
+  const [jobs, video, review, photos, exceptions, visits, kyle, flags, off, cm, scripts] = await Promise.all([
     jobsBoard(now, { includeTest: !!opts.includeTest }).catch(warn("shoots board")),
     videoDeliveryBoard(current ? {} : { now }).catch(warn("video board")),
     getReviewQueue({ includeTest: !!opts.includeTest }).catch(warn("review queue")),
@@ -419,8 +449,16 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
     kylePerson(roster).catch(() => null),
     ownerShootIssues(now).catch(warn("shoot issues")),
     timeOffBetween(etDayKey(now), etDayKey(soonEnd)).catch(warn("time off")),
+    // The creative manager: late editing recovery and cut review are his (Jordan, Oct 27 2026: "James is the creative manager").
+    prisma.teamMember.findFirst({ where: { active: true, creativeManager: true }, orderBy: { createdAt: "asc" }, select: { id: true, name: true } }).catch(() => null),
+    // Listing scripts missing or unapproved for a shoot by the end of the next business day (his mockup's third row).
+    import("@/lib/ownerWork").then((m) => m.scriptsBottleneck({ now, excludeClientIds: exclude, ownerName })).catch(warn("listing scripts")),
   ]);
   const officeName = kyle?.name ?? "Kyle";
+  const officeKey = kyle?.key ?? roster.find((a) => a.key === "kyle")?.key ?? null;
+  const keyOfTm = (id: string | null | undefined) => (id ? roster.find((a) => a.teamMemberId === id)?.key ?? null : null);
+  const cmName = cm?.name ? firstName(cm.name) : null;
+  const cmKey = keyOfTm(cm?.id);
   const excluded = new Set(exclude);
   const unavailable: string[] = [];
 
@@ -442,6 +480,7 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
       blocked: !v.assignedToId ? "No photographer assigned" : offAll ? offWords(v.assignedTo?.name, away) : null,
       waitingSinceISO: null,
       owner: offAll ? officeName : v.assignedTo?.name ? firstName(v.assignedTo.name) : officeName,
+      ownerKey: offAll || !v.assignedToId ? officeKey : keyOfTm(v.assignedToId),
       href: v.project ? `/projects/${v.project.id}` : "/schedule",
       projectId: v.project?.id ?? null,
     };
@@ -452,23 +491,30 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
   // ---- capture & upload: the shoot happened, the raws are not in -------------
   const notUploaded = (jobs?.rows ?? []).filter((r) => r.photos?.label === "Not uploaded");
   const shooters = notUploaded.length
-    ? await prisma.project.findMany({ where: { id: { in: notUploaded.map((r) => r.projectId) } }, select: { id: true, shootDate: true, photographer: { select: { name: true } } } }).catch(() => [])
+    ? await prisma.project.findMany({ where: { id: { in: notUploaded.map((r) => r.projectId) } }, select: { id: true, shootDate: true, photographerId: true, photographer: { select: { name: true } } } }).catch(() => [])
     : [];
   const shooterOf = new Map(shooters.map((s) => [s.id, s]));
-  const capture: StageItem[] = notUploaded.map((r) => ({
-    id: `capture:${r.projectId}`,
-    street: r.street,
-    client: r.client,
-    what: "Photos not uploaded",
-    dueISO: r.dueISO,
-    late: r.late,
-    dueSoon: r.dueToday || isSoon(r.dueISO),
-    blocked: null,
-    waitingSinceISO: shooterOf.get(r.projectId)?.shootDate?.toISOString() ?? null,
-    owner: shooterOf.get(r.projectId)?.photographer?.name ? firstName(shooterOf.get(r.projectId)!.photographer!.name) : "The photographer",
-    href: r.href,
-    projectId: r.projectId,
-  }));
+  // The owner is the real person (Oct 27 2026): a job with no photographer on
+  // it is the office's to sort out, never "The photographer".
+  const capture: StageItem[] = notUploaded.map((r) => {
+    const s = shooterOf.get(r.projectId);
+    return {
+      id: `capture:${r.projectId}`,
+      street: r.street,
+      client: r.client,
+      what: "Photos not uploaded",
+      dueISO: r.dueISO,
+      late: r.late,
+      dueSoon: r.dueToday || isSoon(r.dueISO),
+      blocked: null,
+      waitingSinceISO: s?.shootDate?.toISOString() ?? null,
+      owner: s?.photographer?.name ? firstName(s.photographer.name) : officeName,
+      ownerKey: s?.photographerId ? keyOfTm(s.photographerId) : officeKey,
+      ownerIsOffice: !s?.photographerId,
+      href: r.href,
+      projectId: r.projectId,
+    };
+  });
   if (!jobs) unavailable.push("the Shoots board");
 
   // ---- editing, review, delivery -------------------------------------------
@@ -478,6 +524,22 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
   const reviewItems: StageItem[] = [];
   const delivery: StageItem[] = [];
   const videoRows = video && !video.unavailable ? (["late", "today", "upcoming", "review", "sending", "held", "finishing"] as const).flatMap((l) => video.lanes[l]) : [];
+  // THE EDITOR BY NAME (Oct 27 2026: the bottleneck read "Owner: The editor").
+  // The Shoots board's chip names whoever holds the video when it can
+  // ("Changes · John"); when it can't (not cut yet, an outside shop), the
+  // job's open edit card names them, the board's own source (jobsBoard).
+  const unnamed = [...new Set(videoRows.map((r) => r.projectId).filter((id) => !editorOf.get(id)))];
+  const editCards = unnamed.length
+    ? await prisma.smartTask.findMany({ where: { projectId: { in: unnamed }, taskType: "edit_video", assignedKey: { not: null }, status: { notIn: ["COMPLETED", "CANCELLED"] } }, orderBy: { createdAt: "desc" }, select: { projectId: true, assignedKey: true } }).catch(() => [])
+    : [];
+  const { editorMeta } = await import("@/lib/editors");
+  const editorName = (key: string) => {
+    const meta = editorMeta(key);
+    // An outside shop keeps its whole name ("Luma Visuals"); a person goes by their first.
+    return meta ? (meta.kind === "external" ? meta.name : firstName(meta.name)) : firstName(roster.find((a) => a.key === key)?.name ?? key);
+  };
+  const cardEditor = new Map<string, string>();
+  for (const t of editCards) if (t.projectId && t.assignedKey && !cardEditor.has(t.projectId)) cardEditor.set(t.projectId, editorName(t.assignedKey));
   const seenVideo = new Set<string>();
   for (const r of videoRows) {
     if (seenVideo.has(r.key)) continue;
@@ -485,25 +547,29 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
     const phase = phaseOfVideoRow(r);
     const base = { street: r.street, client: r.clientName || null, dueISO: r.promiseISO, late: r.late, dueSoon: r.dueToday || isSoon(r.promiseISO), projectId: r.projectId };
     if (phase === "editing" || phase === "changes" || phase === "not_cut") {
-      const ed = editorOf.get(r.projectId) ?? null;
+      const ed = editorOf.get(r.projectId) ?? cardEditor.get(r.projectId) ?? null;
       const noEditor = unassignedIds.has(r.projectId);
-      editing.push({ ...base, id: `video:${r.key}`, what: `${r.label}${r.round ? ` v${r.round}` : ""}: ${phase === "changes" ? "changes asked" : phase === "not_cut" ? "not cut yet" : "editing"}`, blocked: noEditor ? "No editor assigned" : null, waitingSinceISO: r.sinceISO, owner: noEditor ? officeName : ed ?? "The editor", href: `/projects/${r.projectId}` });
+      // Nobody named on it at all: the creative manager answers for late editing (the office when there is none).
+      editing.push({ ...base, id: `video:${r.key}`, what: `${r.label}${r.round ? ` v${r.round}` : ""}: ${phase === "changes" ? "changes asked" : phase === "not_cut" ? "not cut yet" : "editing"}`, blocked: noEditor ? "No editor assigned" : null, waitingSinceISO: r.sinceISO, owner: noEditor ? officeName : ed ?? cmName ?? officeName, ownerKey: noEditor ? officeKey : ed ? null : cmKey ?? officeKey, href: `/projects/${r.projectId}` });
     } else if (phase === "review") {
       // the cut itself is listed from the review queue below (it names the reviewer)
     } else if (phase === "ready" || phase === "held" || phase === "finishing") {
-      delivery.push({ ...base, id: `video:${r.key}`, what: `${r.label}: ${phase === "held" ? "held" : phase === "finishing" ? "with Topaz" : "approved, ready to send"}`, blocked: phase === "held" ? r.heldWhy ?? "Held" : null, waitingSinceISO: r.waitingSinceISO ?? r.approvedAtISO, owner: phase === "finishing" ? "Topaz" : officeName, href: r.reviewHref ?? `/review/${r.projectId}` });
+      delivery.push({ ...base, id: `video:${r.key}`, what: `${r.label}: ${phase === "held" ? "held" : phase === "finishing" ? "with Topaz" : "approved, ready to send"}`, blocked: phase === "held" ? r.heldWhy ?? "Held" : null, waitingSinceISO: r.waitingSinceISO ?? r.approvedAtISO, owner: phase === "finishing" ? "Topaz" : officeName, ownerKey: officeKey, href: r.reviewHref ?? `/review/${r.projectId}` });
     }
   }
   // Unassigned edit jobs the video board did not list (monthly content and the like).
   for (const row of exceptions && !exceptions.unavailable ? exceptions.rows.filter((r) => r.kind === "unassigned") : []) {
     const pid = (row.href.match(/\/projects\/([^/?#]+)/) ?? [])[1] ?? null;
     if (pid && editing.some((e) => e.projectId === pid)) continue;
-    editing.push({ id: `unassigned:${row.id}`, street: row.title, client: null, what: row.why, dueISO: null, late: row.severity === "high", dueSoon: false, blocked: "No editor assigned", waitingSinceISO: new Date(now.getTime() - row.ageDays * DAY).toISOString(), owner: officeName, href: row.href, projectId: pid });
+    editing.push({ id: `unassigned:${row.id}`, street: row.title, client: null, what: row.why, dueISO: null, late: row.severity === "high", dueSoon: false, blocked: "No editor assigned", waitingSinceISO: new Date(now.getTime() - row.ageDays * DAY).toISOString(), owner: officeName, ownerKey: officeKey, href: row.href, projectId: pid });
   }
   const promiseOf = new Map(videoRows.map((r) => [r.projectId, r]));
   for (const c of review?.pending ?? []) {
     const v = promiseOf.get(c.projectId);
-    reviewItems.push({ id: `cut:${c.id}`, street: c.street, client: c.clientName || null, what: `${c.fileName ?? "Video"} v${c.round} from ${c.editorName ?? "the editor"}`, dueISO: v?.promiseISO ?? null, late: !!v?.late, dueSoon: !!v && (v.dueToday || isSoon(v.promiseISO)), blocked: null, waitingSinceISO: c.createdAt, owner: c.reviewer?.name ? firstName(c.reviewer.name) : "Nobody (the office)", href: `/review/${c.projectId}?cut=${c.id}`, projectId: c.projectId });
+    // A cut nobody holds is the creative manager's to review (the review seat), never "Nobody (the office)".
+    const reviewer = c.reviewer?.name ? firstName(c.reviewer.name) : cmName ?? officeName;
+    const reviewerKey = c.reviewer ? keyOfTm(c.reviewer.id) ?? roster.find((a) => a.name === reviewer)?.key ?? null : cmKey ?? officeKey;
+    reviewItems.push({ id: `cut:${c.id}`, street: c.street, client: c.clientName || null, what: `${c.fileName ?? "Video"} v${c.round} from ${c.editorName ?? "the editor"}`, dueISO: v?.promiseISO ?? null, late: !!v?.late, dueSoon: !!v && (v.dueToday || isSoon(v.promiseISO)), blocked: null, waitingSinceISO: c.createdAt, owner: reviewer, ownerKey: reviewerKey, href: `/review/${c.projectId}?cut=${c.id}`, projectId: c.projectId });
   }
   if (!video || video.unavailable) unavailable.push("the video board");
   if (!review) unavailable.push("the review queue");
@@ -513,7 +579,8 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
   for (const col of photos?.columns ?? []) {
     for (const card of col.cards) {
       if (card.clientId && excluded.has(card.clientId)) continue;
-      const base = { id: `photos:${card.id}`, street: street(card.street), client: card.clientName, dueISO: card.slaDueAt, late: isLate(card.slaDueAt), dueSoon: isSoon(card.slaDueAt), waitingSinceISO: card.shootDate, href: `/ops/photo-delivery/${card.id}`, projectId: card.projectId };
+      // The office chases AutoHDR and the photo fixes, so a one-press ask about a photo set goes to the office.
+      const base = { id: `photos:${card.id}`, street: street(card.street), client: card.clientName, dueISO: card.slaDueAt, late: isLate(card.slaDueAt), dueSoon: isSoon(card.slaDueAt), waitingSinceISO: card.shootDate, href: `/ops/photo-delivery/${card.id}`, projectId: card.projectId, ownerKey: officeKey };
       if (col.key === "editing" || col.key === "fixing") editing.push({ ...base, what: `Photos: ${card.stageLabel}`, blocked: card.lastError ? `Edit problem: ${card.lastError}`.slice(0, 120) : null, owner: col.key === "editing" ? "AutoHDR" : "Photo fixes" });
       else if (col.key === "qc" || col.key === "decision" || col.key === "hold" || col.key === "ready") reviewItems.push({ ...base, what: `Photos: ${card.stageLabel}`, blocked: col.key === "hold" ? card.holdReason ?? "On hold" : null, owner: officeName });
       else if (col.key === "delivering") delivery.push({ ...base, what: "Photos: delivering", blocked: card.lastError ? "Delivery problem" : null, owner: officeName });
@@ -531,7 +598,7 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
   ];
 
   // ---- bottlenecks requiring action -----------------------------------------
-  const bottlenecks = await bottlenecksFrom({ now, stages, roster, officeName, ownerEmail: opts.ownerEmail ?? null, flags: flags?.open ?? [] });
+  const bottlenecks = await bottlenecksFrom({ now, stages, roster, officeName, officeKey, cmKey, ownerEmail: opts.ownerEmail ?? null, flags: flags?.open ?? [], scripts: scripts ?? null });
   if (!flags) unavailable.push("shoot issues");
 
   return {
@@ -542,10 +609,15 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
   };
 }
 
-async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee[]; officeName: string; ownerEmail: string | null; flags: { id: string; client: string; street: string | null; text: string; by: string | null; atISO: string; href: string }[] }): Promise<Bottleneck[]> {
+type From = "work" | "flag" | "deleg" | "scripts";
+
+/** Owners that are a tool or a vendor, not a person: the office chases them. */
+const NOT_A_PERSON = new Set(["AutoHDR", "Photo fixes", "Topaz"]);
+
+async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee[]; officeName: string; officeKey: string | null; cmKey: string | null; ownerEmail: string | null; flags: { id: string; client: string; street: string | null; text: string; by: string | null; atISO: string; href: string }[]; scripts?: Awaited<ReturnType<typeof import("@/lib/ownerWork").scriptsBottleneck>> }): Promise<Bottleneck[]> {
   const { now, stages, roster } = o;
   const keyOfName = (name: string) => roster.find((a) => a.name.toLowerCase() === name.toLowerCase())?.key ?? null;
-  type Cand = Bottleneck & { rank: number };
+  type Cand = Bottleneck & { rank: number; from: From; stage: StageKey | null; item: StageItem | null };
   const cand: Cand[] = [];
   const all = stages.flatMap((s) => s.items.map((i) => ({ s, i })));
   // Late work, blocked work: one row per record.
@@ -559,26 +631,41 @@ async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee
       ? `${i.street}: ${offDay ? `${i.what}, but ${i.blocked}` : i.blocked.toLowerCase()}`
       : `${i.street}: ${i.what.toLowerCase()}${lateH ? `, ${lateH >= 24 ? `${Math.round(lateH / 24)}d` : `${lateH}h`} late` : ""}`;
     const noOwner = /^nobody|^no /i.test(i.owner) || !!i.blocked?.startsWith("No ") || offDay;
+    // A tool or a vendor holding it (AutoHDR, Topaz) is the office's to chase: the row names the person.
+    const vendor = NOT_A_PERSON.has(i.owner);
+    const isPhotos = i.id.startsWith("photos:");
+    const late = i.late && !i.blocked;
     cand.push({
       id: `${s.key}:${i.id}`,
       issue,
       client: i.client,
       commitment: i.dueISO ? `${s.key === "pre" ? "Shoot" : "Promised"} ${etDateTime(i.dueISO)}` : null,
-      owner: i.owner,
+      owner: vendor ? o.officeName : i.owner,
       handledBy: null,
-      nextStep: i.blocked?.startsWith("No photographer") ? "Assign a photographer" : offDay ? "Reassign the shoot, or move it" : i.blocked?.startsWith("No editor") ? "Assign an editor" : i.late ? "Recovery plan and new ETA" : `Clear: ${i.blocked}`,
+      nextStep: i.blocked?.startsWith("No photographer") ? "Assign a photographer" : offDay ? "Reassign the shoot, or move it" : i.blocked?.startsWith("No editor") ? "Assign an editor"
+        : !late ? `Clear: ${i.blocked}`
+          : s.key === "capture" ? "Upload the photos"
+            : s.key === "editing" && isPhotos ? `Chase ${i.owner} for the edit`
+              : s.key === "review" && !isPhotos ? "Review the cut"
+                : s.key === "review" ? "Finish the check and deliver"
+                  : s.key === "delivery" ? (vendor ? `Chase ${i.owner}, then send` : "Send it")
+                    : "Recovery plan and new ETA",
       clientUpdate: i.late && i.projectId ? "pending" : null,
       tone: i.late || noOwner ? "bad" : "warn",
       href: i.href,
       assign: {
         title: i.late ? `Recovery plan: ${i.street} (${i.what})` : offDay ? `Reassign the shoot: ${i.street} (${i.blocked})` : `Unblock: ${i.street} (${i.blocked})`,
         outcome: i.late ? "A recovery plan with a new ETA, and the client told" : offDay ? "Another photographer on it, or the shoot moved with the client's OK" : `Cleared: ${i.blocked}`,
-        assigneeKey: keyOfName(i.owner),
+        assigneeKey: vendor ? o.officeKey : keyOfName(i.owner),
         sourceHref,
         projectId: i.projectId,
       },
       taskId: null,
+      actions: [],
       rank: (noOwner ? 0 : 10) + (i.late ? 0 : 5),
+      from: "work",
+      stage: s.key,
+      item: i,
     });
   }
   // Shoot issues a creative flagged for the owner (his own loop task, one per job).
@@ -596,7 +683,34 @@ async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee
       href: f.href,
       assign: { title: `Shoot issue: ${f.street ?? f.client}`, outcome: "Resolved, and the cause recorded", sourceTaskId: f.id },
       taskId: null,
+      actions: [],
       rank: 3,
+      from: "flag",
+      stage: null,
+      item: null,
+    });
+  }
+  // Listing scripts his shoots wait on: his own move, one row however many.
+  if (o.scripts) {
+    const sc = o.scripts;
+    cand.push({
+      id: "scripts:listing",
+      issue: sc.issue,
+      client: null,
+      commitment: sc.firstShootISO ? `Shoot ${etDateTime(sc.firstShootISO)}` : null,
+      owner: sc.owner,
+      handledBy: null,
+      nextStep: sc.nextStep,
+      clientUpdate: null,
+      tone: sc.tone,
+      href: sc.href,
+      assign: { title: sc.projectId ? `Listing script: ${sc.issue.split(":")[0]}` : "Listing scripts for the next shoots", outcome: "An approved script before each shoot", projectId: sc.projectId },
+      taskId: null,
+      actions: [],
+      rank: 6, // after work nobody holds, before late work someone holds
+      from: "scripts",
+      stage: null,
+      item: null,
     });
   }
   // Escalations and recommendations that wait on the owner.
@@ -617,7 +731,11 @@ async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee
       href: d.sourceHref ?? "/",
       assign: { title: d.title, sourceTaskId: d.taskId, assigneeKey: null },
       taskId: d.taskId,
+      actions: [],
       rank: -1,
+      from: "deleg",
+      stage: null,
+      item: null,
     });
   }
   // Who already handles each record: its canonical delegated task (dedupeKey "deleg:<href>").
@@ -650,10 +768,65 @@ async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee
       const dueISO = all.find((x) => `${x.s.key}:${x.i.id}` === c.id)?.i.dueISO ?? null;
       c.clientUpdate = last && dueISO && last.occurredAt.getTime() >= Date.parse(dueISO) ? `Client updated ${etDateTime(last.occurredAt)}` : "Client update due";
     }
+    c.actions = bottleneckActions(c, { officeKey: o.officeKey, cmKey: o.cmKey, ownerKey: roster.find((a) => a.kind === "owner")?.key ?? null, now });
   }
   return cand
     .sort((a, b) => a.rank - b.rank || Number(b.tone === "bad") - Number(a.tone === "bad"))
-    .map(({ rank, ...b }) => (void rank, b));
+    .map(({ rank, from, stage, item, ...b }) => (void rank, void from, void stage, void item, b));
+}
+
+/**
+ * THE RIGHT BUTTON FOR THE ISSUE (Oct 27 2026; every bottleneck read
+ * "Assign"). Whoever answers for the work is asked through the one
+ * delegation path (lib/delegation), keyed to the record, so the next read
+ * shows "<name> has it" and a second press is the same task:
+ *   · a late edit: Request update asks the creative manager for a recovery
+ *     plan (late editing recovery is his, with the editors), and Reassign
+ *     goes to the job's Team section, where the editor is changed;
+ *   · photos not uploaded: Remind photographer hands the upload to them;
+ *   · a cut late for review: Request update asks the reviewer;
+ *   · late photos, late or held sending: Request update asks the office;
+ *   · no photographer, someone off that day: Assign or Reassign, to the office
+ *     (Aryeo holds the booking);
+ *   · no editor: Assign editor on the job's Team section;
+ *   · already given to someone: Request update to them, Reassign in its panel;
+ *   · a creative's shoot flag: Decide on the job; an escalation: Decide.
+ * Nothing goes to anyone without a press.
+ */
+function bottleneckActions(c: Bottleneck & { from: From; stage: StageKey | null; item: StageItem | null }, k: { officeKey: string | null; cmKey: string | null; ownerKey: string | null; now: Date }): RowAction[] {
+  if (c.from === "deleg") return [{ kind: "task", label: "Decide", taskId: c.taskId! }];
+  if (c.from === "scripts") return [{ kind: "link", label: "Review scripts", href: c.href }];
+  if (c.from === "flag") return [{ kind: "link", label: "Decide", href: c.href }, { kind: "assign", label: "Delegate", seed: c.assign }];
+  if (c.handledBy && c.taskId) return [{ kind: "nudge", label: "Request update", taskId: c.taskId }, { kind: "task", label: "Reassign", taskId: c.taskId }];
+  const i = c.item!;
+  const team = i.projectId ? `/projects/${i.projectId}#team` : i.href;
+  // By the end of today (5 PM ET), or the next business day once it's past 5.
+  const due = endOfBusinessDaysET(k.now, etMinutesOfDay(k.now) < 17 * 60 ? 0 : 1).toISOString();
+  const ask = (label: string, to: string | null | undefined, title: string, outcome: string): RowAction =>
+    to && to !== k.ownerKey
+      ? { kind: "ask", label, seed: { ...c.assign, title, outcome, assigneeKey: to, dueAt: due } }
+      : { kind: "assign", label: "Assign", seed: { ...c.assign, title, outcome } };
+  const open = (label: string): RowAction => ({ kind: "link", label, href: i.href });
+  const what = `${i.street} (${i.what})`;
+  switch (c.stage) {
+    case "pre":
+      if (/ is off that day /.test(i.blocked ?? "")) return [{ kind: "assign", label: "Reassign", seed: { ...c.assign, assigneeKey: k.officeKey } }];
+      return [{ kind: "assign", label: "Assign", seed: { ...c.assign, title: i.blocked?.startsWith("No photographer") ? `Book a photographer: ${what}` : c.assign.title, assigneeKey: k.officeKey } }];
+    case "capture":
+      // No photographer on the job: the office finds out who has the photos.
+      return [ask(i.ownerIsOffice ? "Request update" : "Remind photographer", i.ownerKey, `Upload the photos: ${i.street}`, "The photos are uploaded, so editing can start")];
+    case "editing":
+      if (i.blocked?.startsWith("No editor")) return [{ kind: "link", label: "Assign editor", href: team }, { kind: "assign", label: "Delegate", seed: { ...c.assign, assigneeKey: k.officeKey } }];
+      if (i.id.startsWith("photos:")) return [ask("Request update", k.officeKey, `Chase the photo edit: ${what}`, "The photos back from editing, with a new ETA if they're late"), open("Open")];
+      return [ask("Request update", k.cmKey ?? k.officeKey, `Recovery plan: ${what}`, `A new ETA from ${c.owner}, and the client told`), { kind: "link", label: "Reassign", href: team }];
+    case "review":
+      if (i.id.startsWith("photos:")) return [ask("Request update", k.officeKey, `Finish the photo check: ${what}`, "Checked and delivered, or the hold cleared"), open("Open")];
+      return [ask("Request update", i.ownerKey ?? k.cmKey, `Review the cut: ${what}`, "Reviewed: approved or sent back with notes"), open("Open review")];
+    case "delivery":
+      return [ask("Request update", k.officeKey, `Send: ${what}`, "Delivered to the client, or the hold cleared and a new date given"), open("Open")];
+    default:
+      return [{ kind: "assign", label: "Assign", seed: c.assign }];
+  }
 }
 
 // =====================================================================================
@@ -919,6 +1092,9 @@ export type CoverageRow = {
   open: number;
   overdue: number;
   awaiting: number;
+  /** The row's button (Oct 27 2026: every row has an action). A row with a
+   *  problem gets the move that clears it; a covered row hands that person work. */
+  action: RowAction;
 };
 export type TeamCoverage = {
   rows: CoverageRow[];
@@ -970,20 +1146,29 @@ export async function teamCoverage(opts: { now?: Date; includeTest?: boolean; ro
   const awaiting = list.filter((d) => d.state === "ASSIGNED");
   const overdue = list.filter((d) => d.dueAt && Date.parse(d.dueAt) < nowMs && d.state !== "READY_FOR_VERIFICATION");
   const keyOfTm = (id: string | null | undefined) => (id ? roster.find((a) => a.teamMemberId === id)?.key ?? null : null);
+  const cmKeyOf = () => keyOfTm(rules?.creativeApproverTeamMemberId ?? managers[0]?.id ?? null) ?? kyle?.key ?? null;
   const offOf = (tmId: string | null | undefined) => (tmId ? (off ?? []).filter((o) => o.teamMemberId === tmId).map((o) => o.words).join(", ") || null : null);
 
   const production = opts.production ?? null;
   const stage = (k: StageKey) => production?.stages.find((s) => s.key === k) ?? null;
   const rows: CoverageRow[] = [];
-  const push = (r: Omit<CoverageRow, "open" | "overdue" | "awaiting" | "timeOff"> & { tmId?: string | null }) => {
+  // A team-level ask is keyed to the page it is about, so a second press is the same task.
+  const due = endOfBusinessDaysET(now, etMinutesOfDay(now) < 17 * 60 ? 0 : 1).toISOString();
+  const askTo = (label: string, key: string | null | undefined, title: string, outcome: string, sourceHref: string): RowAction =>
+    key ? { kind: "ask", label, seed: { title, outcome, assigneeKey: key, dueAt: due, sourceHref } } : { kind: "assign", label: "Assign", seed: { title, outcome, sourceHref } };
+  const giveTo = (key: string | null | undefined): RowAction => ({ kind: "assign", label: "Assign", seed: { title: "", assigneeKey: key ?? null } });
+  const push = (r: Omit<CoverageRow, "open" | "overdue" | "awaiting" | "timeOff" | "action"> & { tmId?: string | null; action?: RowAction | null }) => {
     const mine = r.personKey ? byPerson[r.personKey] ?? [] : [];
     const od = mine.filter((d) => d.dueAt && Date.parse(d.dueAt) < nowMs && d.state !== "READY_FOR_VERIFICATION").length;
     const aw = mine.filter((d) => d.state === "ASSIGNED").length;
     const timeOff = offOf(r.tmId ?? null);
     const extra = [od ? `${plural(od, "overdue assignment")}` : null, aw ? `${aw} awaiting acceptance` : null, timeOff].filter(Boolean);
-    const { tmId, ...rest } = r;
+    const { tmId, action, ...rest } = r;
     void tmId;
-    rows.push({ ...rest, status: [r.status, ...extra].filter(Boolean).join(" · "), tone: od || r.tone === "bad" ? "bad" : aw || timeOff || r.tone === "warn" ? "warn" : "ok", timeOff, open: mine.length, overdue: od, awaiting: aw });
+    // Overdue assignments and nothing more pressing: follow up on the oldest one.
+    const oldestLate = mine.filter((d) => d.dueAt && Date.parse(d.dueAt) < nowMs && d.state !== "READY_FOR_VERIFICATION").sort((a, b) => Date.parse(a.dueAt!) - Date.parse(b.dueAt!))[0];
+    const act: RowAction = action ?? (oldestLate ? { kind: "nudge", label: "Follow up", taskId: oldestLate.taskId } : giveTo(r.personKey));
+    rows.push({ ...rest, status: [r.status, ...extra].filter(Boolean).join(" · "), tone: od || r.tone === "bad" ? "bad" : aw || timeOff || r.tone === "warn" ? "warn" : "ok", timeOff, open: mine.length, overdue: od, awaiting: aw, action: act });
   };
 
   // Client care & delivery: the office lead.
@@ -991,23 +1176,43 @@ export async function teamCoverage(opts: { now?: Date; includeTest?: boolean; ro
     const delivery = stage("delivery");
     const pre = stage("pre");
     const noShooter = pre?.items.filter((i) => i.blocked === "No photographer assigned").length ?? 0;
-    push({ key: "office", person: kyle.name, personKey: kyle.key, tmId: kyle.teamMemberId, area: "Client care & delivery", status: [delivery ? (delivery.counts.overdue ? `${delivery.counts.overdue} late to send` : "Covered") : "Delivery couldn't load", noShooter ? `${noShooter} shoot${noShooter === 1 ? "" : "s"} with no photographer` : null].filter(Boolean).join(" · "), tone: delivery?.counts.overdue || noShooter ? "bad" : delivery ? "ok" : "warn" });
+    const lateSends = delivery?.counts.overdue ?? 0;
+    push({
+      key: "office", person: kyle.name, personKey: kyle.key, tmId: kyle.teamMemberId, area: "Client care & delivery",
+      status: [delivery ? (lateSends ? `${lateSends} late to send` : "Covered") : "Delivery couldn't load", noShooter ? `${noShooter} shoot${noShooter === 1 ? "" : "s"} with no photographer` : null].filter(Boolean).join(" · "),
+      tone: lateSends || noShooter ? "bad" : delivery ? "ok" : "warn",
+      action: lateSends
+        ? askTo("Request update", kyle.key, `Send the ${plural(lateSends, "late delivery", "late deliveries")}`, "Delivered, or each client told the new date", "/jobs")
+        : noShooter ? askTo("Request update", kyle.key, `Book a photographer on ${plural(noShooter, "shoot")}`, "A photographer on every shoot, or the shoot moved with the client's OK", "/schedule") : null,
+    });
   }
   // Creative management & review: the creative manager / the review seat.
   const approverId = rules?.creativeApproverTeamMemberId ?? managers[0]?.id ?? null;
   const approver = approverId ? roster.find((a) => a.teamMemberId === approverId) : null;
   if (approver) {
     const review = stage("review");
-    const mineToReview = review?.items.filter((i) => i.id.startsWith("cut:") && i.owner === approver.name) ?? [];
+    // By roster key first (two people can share a first name).
+    const mineToReview = review?.items.filter((i) => i.id.startsWith("cut:") && (i.ownerKey === approver.key || i.owner === firstName(approver.name))) ?? [];
     const oldest = mineToReview.reduce<number | null>((m, i) => (i.waitingSinceISO ? Math.max(m ?? 0, (nowMs - Date.parse(i.waitingSinceISO)) / HOUR) : m), null);
-    push({ key: "creative", person: approver.name, personKey: approver.key, tmId: approver.teamMemberId, area: "Creative management & review", status: review ? (mineToReview.length ? `${plural(mineToReview.length, "cut")} to review${oldest != null ? `, oldest ${Math.round(oldest)}h` : ""}` : "Covered") : "Review couldn't load", tone: mineToReview.some((i) => i.late) ? "bad" : mineToReview.length ? "warn" : "ok" });
+    push({
+      key: "creative", person: approver.name, personKey: approver.key, tmId: approver.teamMemberId, area: "Creative management & review",
+      status: review ? (mineToReview.length ? `${plural(mineToReview.length, "cut")} to review${oldest != null ? `, oldest ${Math.round(oldest)}h` : ""}` : "Covered") : "Review couldn't load",
+      tone: mineToReview.some((i) => i.late) ? "bad" : mineToReview.length ? "warn" : "ok",
+      action: mineToReview.some((i) => i.late) ? askTo("Request update", approver.key, `Review the ${plural(mineToReview.length, "waiting cut")}`, "Each cut approved or sent back with notes", "/review") : null,
+    });
   }
   // Post-production: the editors on the routing rules.
   const editorKeys = routing ? [...new Set([routing.standardVideo, routing.premiumVideo, routing.personalBranding].filter((k): k is NonNullable<typeof k> => !!k).map(String))] : [];
   const editing = stage("editing");
   const unassignedEdits = editing?.items.filter((i) => i.blocked === "No editor assigned").length ?? 0;
+  const firstUnassigned = editing?.items.find((i) => i.blocked === "No editor assigned");
+  const lateEdits = editing?.items.filter((i) => i.late && i.id.startsWith("video:")).length ?? 0;
   push({
     key: "editors",
+    // One job with no editor: straight to its Team section; more: the Editing page.
+    action: unassignedEdits
+      ? { kind: "link", label: "Assign editor", href: unassignedEdits === 1 && firstUnassigned?.projectId ? `/projects/${firstUnassigned.projectId}#team` : "/editing" }
+      : lateEdits ? askTo("Request update", cmKeyOf(), `Recovery plan for ${plural(lateEdits, "late edit")}`, "A new ETA on each, and the clients told", "/editing") : { kind: "link", label: "Open", href: "/editing" },
     person: editorKeys.length ? editorKeys.map((k) => roster.find((a) => a.key === k)?.name ?? firstName(k)).join(", ") : "Editors",
     personKey: null,
     area: "Post-production",
@@ -1022,7 +1227,11 @@ export async function teamCoverage(opts: { now?: Date; includeTest?: boolean; ro
   if (capture || field.length || offShoots.length) {
     const owed = capture?.items.length ?? 0;
     const clash = offShoots.length ? `${plural(offShoots.length, "shoot")} this week booked on ${offNames.join(" and ")} while off` : null;
-    push({ key: "field", person: field.map((f) => f.name).filter((n) => !/^jordan$/i.test(n)).join(", ") || "Photographers", personKey: null, area: "Field shoots & uploads", status: [clash, capture ? (owed ? `${plural(owed, "upload")} owed` : clash ? null : "Covered") : "Uploads couldn't load"].filter(Boolean).join(" · "), tone: clash || capture?.counts.overdue ? "bad" : owed ? "warn" : capture ? "ok" : "warn" });
+    push({
+      key: "field", person: field.map((f) => f.name).filter((n) => !/^jordan$/i.test(n)).join(", ") || "Photographers", personKey: null, area: "Field shoots & uploads",
+      // A shoot on someone who is off is the office's to move; uploads owed open the Shoots board.
+      action: clash ? askTo("Reassign", kyle?.key, `Reassign ${plural(offShoots.length, "shoot")} booked on ${offNames.join(" and ")} while off`, "Another photographer on each, or the shoot moved with the client's OK", "/schedule") : { kind: "link", label: owed ? "Review" : "Open", href: "/jobs" },
+      status: [clash, capture ? (owed ? `${plural(owed, "upload")} owed` : clash ? null : "Covered") : "Uploads couldn't load"].filter(Boolean).join(" · "), tone: clash || capture?.counts.overdue ? "bad" : owed ? "warn" : capture ? "ok" : "warn" });
   }
   // The owner's own areas (the content program's default duties).
   const ownerDuties = owners.filter((o) => o.duty === "STRATEGY" || o.duty === "SCRIPTS" || o.duty === "ESCALATION");
@@ -1063,6 +1272,33 @@ export async function teamCoverage(opts: { now?: Date; includeTest?: boolean; ro
 // =====================================================================================
 
 export type Measure = { key: string; label: string; value: string; detail: string; period: string; source: string; tone: Tone | null };
+
+/** Fewer than this many to judge reads "Not enough data", never a percent
+ *  (Jordan, Oct 19: one late job of two read as "50% on time"). */
+const NOT_ENOUGH = "Not enough data";
+
+/**
+ * REVISION RATE (Oct 27 2026; the tile read "7 / 2 (350%)": seven asks this
+ * week over two videos delivered this week, two counts that don't measure
+ * the same jobs). Now one plain share: of the jobs whose video was delivered
+ * in the last 30 days, how many had a client revision ask on record (one
+ * RevisionBrief per ask; the office's own notes and system rows are not asks).
+ */
+async function revisionRate(now: Date, exclude: string[]): Promise<{ jobs: number; revised: number }> {
+  const since = new Date(now.getTime() - 30 * DAY);
+  const outs = await prisma.deliverableOutput.findMany({
+    where: { deliveredAt: { gte: since, lt: now }, category: "VIDEO", ...(exclude.length ? { project: { clientId: { notIn: exclude } } } : {}) },
+    select: { projectId: true },
+  });
+  const jobs = [...new Set(outs.map((o) => o.projectId))];
+  if (!jobs.length) return { jobs: 0, revised: 0 };
+  const asks = await prisma.revisionBrief.findMany({
+    where: { projectId: { in: jobs }, OR: [{ requestedByKind: null }, { requestedByKind: { notIn: ["OFFICE", "SYSTEM"] } }] },
+    select: { projectId: true },
+    distinct: ["projectId"],
+  });
+  return { jobs: jobs.length, revised: asks.length };
+}
 export type WeeklyPerformance = { measures: Measure[]; updatedISO: string };
 
 export async function weeklyPerformance(opts: { now?: Date; excludeClientIds?: string[] } = {}): Promise<WeeklyPerformance> {
@@ -1070,11 +1306,12 @@ export async function weeklyPerformance(opts: { now?: Date; excludeClientIds?: s
   const weekStart = etWeekStart(now);
   const exclude = opts.excludeClientIds ?? [];
   const in7 = new Date(now.getTime() + 7 * DAY);
-  const [week, upcoming, quality, off] = await Promise.all([
+  const [week, upcoming, quality, off, rate] = await Promise.all([
     ownerWeek(now, { excludeClientIds: exclude }).catch(warn("week")),
     prisma.appointment.findMany({ where: { startAt: { gte: now, lte: in7 }, OR: [{ status: null }, { status: { not: "CANCELED" } }], project: { status: { not: "CANCELLED" }, ...(exclude.length ? { clientId: { notIn: exclude } } : {}) } }, select: { assignedToId: true, startAt: true } }).catch(warn("upcoming shoots")),
     import("@/lib/revisionQuality").then((m) => m.revisionQuality(30, { includeTest: false, now })).catch(warn("revision causes")),
     timeOffBetween(etDayKey(now), etDayKey(in7)).catch(warn("time off")),
+    revisionRate(now, exclude).catch(warn("revision rate")),
   ]);
   const period = `This week, ${etMonthDay(weekStart)} to now`;
   const pctOf = (ok: number, n: number) => (n ? Math.round((ok / n) * 100) : null);
@@ -1084,16 +1321,26 @@ export async function weeklyPerformance(opts: { now?: Date; excludeClientIds?: s
     const onTime = (label: string, key: string, s: { judged: number; onTime: number; onTimePct: number | null }, last: { onTimePct: number | null; judged: number }, source: string) => {
       const enough = s.judged >= ON_TIME_MIN_JOBS && s.onTimePct != null;
       measures.push({
-        key, label, value: enough ? `${s.onTimePct}%` : s.judged ? "Too few" : "None yet",
+        key, label, value: enough ? `${s.onTimePct}%` : s.judged ? NOT_ENOUGH : "None yet",
         detail: `${s.onTime} of ${s.judged} on time${last.judged >= ON_TIME_MIN_JOBS && last.onTimePct != null ? ` · last week ${last.onTimePct}%` : ""}`,
         period, source, tone: !enough ? null : (s.onTimePct ?? 0) >= 90 ? "ok" : (s.onTimePct ?? 0) >= 75 ? "warn" : "bad",
       });
     };
     onTime("On-time photos", "photos", t.photos, l.photos, "Photo jobs delivered this week with a promise (photo delivery queue)");
     onTime("On-time listing videos", "videos", t.listingVideos, l.listingVideos, "Listing videos delivered this week with a promise (video outputs); monthly content apart");
-    const delivered = t.listingVideos.delivered + t.monthlyVideos;
-    measures.push({ key: "revisions", label: "Revision asks", value: delivered ? `${t.revisions} / ${delivered}` : `${t.revisions}`, detail: delivered ? `Client revision asks per video delivered${pctOf(t.revisions, delivered) != null ? ` (${pctOf(t.revisions, delivered)}%)` : ""} · last week ${l.revisions}` : `No videos delivered yet this week · last week ${l.revisions}`, period, source: "Client revision requests (one per ask), against videos delivered", tone: null });
-    measures.push({ key: "replies", label: "Texts answered in 1 hour", value: t.replies.inbound ? `${t.replies.fastPct}%` : "None yet", detail: `${t.replies.fast} of ${t.replies.inbound} client texts${l.replies.fastPct != null ? ` · last week ${l.replies.fastPct}%` : ""}`, period, source: "Client texts and our next reply (OpenPhone); email isn't timed here", tone: t.replies.inbound ? ((t.replies.fastPct ?? 0) >= 90 ? "ok" : (t.replies.fastPct ?? 0) >= 70 ? "warn" : "bad") : null });
+    const asksWeek = `${plural(t.revisions, "client revision ask")} this week · last week ${l.revisions}`;
+    if (rate) {
+      const enough = rate.jobs >= ON_TIME_MIN_JOBS;
+      measures.push({
+        key: "revisions", label: "Revision rate", value: enough ? `${pctOf(rate.revised, rate.jobs)}%` : rate.jobs ? NOT_ENOUGH : "None yet",
+        detail: rate.jobs ? `${rate.revised} of ${plural(rate.jobs, "job")} with a video delivered had a client revision ask · ${asksWeek}` : `No videos delivered in the last 30 days · ${asksWeek}`,
+        period: "Last 30 days", source: "Jobs with a video delivered (video outputs), and whether the client asked for a revision on that job (one record per ask; office notes not counted)", tone: null,
+      });
+    } else {
+      measures.push({ key: "revisions", label: "Revision rate", value: "Couldn't load", detail: asksWeek, period: "Last 30 days", source: "Video outputs and client revision asks", tone: "warn" });
+    }
+    const repliesEnough = t.replies.inbound >= ON_TIME_MIN_JOBS && t.replies.fastPct != null;
+    measures.push({ key: "replies", label: "Client replies within 1 hour", value: repliesEnough ? `${t.replies.fastPct}%` : t.replies.inbound ? NOT_ENOUGH : "None yet", detail: `${t.replies.fast} of ${t.replies.inbound} client texts answered within an hour${l.replies.fastPct != null ? ` · last week ${l.replies.fastPct}%` : ""}`, period, source: "Client texts and our next reply (OpenPhone); email isn't timed here", tone: repliesEnough ? ((t.replies.fastPct ?? 0) >= 90 ? "ok" : (t.replies.fastPct ?? 0) >= 70 ? "warn" : "bad") : null });
   } else {
     measures.push({ key: "week", label: "This week", value: "Couldn't load", detail: "The week's delivery and reply figures didn't load", period, source: "", tone: "warn" });
   }

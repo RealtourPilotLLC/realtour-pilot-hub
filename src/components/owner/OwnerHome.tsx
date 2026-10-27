@@ -13,16 +13,16 @@ import { prisma } from "@/lib/prisma";
 import { syntheticClientIds } from "@/lib/syntheticClients";
 import {
   clientIssuesSection, financialPosition, productionHealth, teamCoverage, weeklyPerformance,
-  type ClientIssues, type FinancialPosition, type ProductionHealth, type StageKey, type TeamCoverage, type Tone, type WeeklyPerformance,
+  type ClientIssues, type FinancialPosition, type Measure, type ProductionHealth, type RowAction, type StageKey, type TeamCoverage, type Tone, type WeeklyPerformance,
 } from "@/lib/ownerDashboard";
 import {
   creativeDecisions, delegatedByMe, emailNeedingReply, meetingsSection, EMAIL_CLASS_WORDS,
   type CreativeDecisions, type DelegatedByMe, type EmailSection, type Meetings,
 } from "@/lib/ownerWork";
-import { OwnerShell, PanelButton, PRIMARY, QUIET } from "@/components/owner/OwnerShell";
+import { OwnerShell, PanelButton, RowActionButton, PRIMARY, QUIET } from "@/components/owner/OwnerShell";
 import { RevenueMonthPanel } from "@/components/finance/RevenueMonthPanel";
 import { StripeCard } from "@/components/finance/StripeCard";
-import type { ListRow, PanelSpec, RosterOption } from "@/components/owner/panelTypes";
+import type { ListRow, PanelSpec, RosterOption, ShellAction } from "@/components/owner/panelTypes";
 
 // ---------------------------------------------------------------------------
 // JORDAN'S DASHBOARD (Oct 23 2026, his spec §4 and his mockup): "/" for the
@@ -35,14 +35,16 @@ import type { ListRow, PanelSpec, RosterOption } from "@/components/owner/panelT
 // ---------------------------------------------------------------------------
 
 const CARD = "panel-shadow rounded-2xl border border-border bg-surface";
-const SHOWN = 4;
+const SHOWN = 3;
 const TONE_DOT: Record<Tone, string> = { ok: "bg-success", warn: "bg-warning", bad: "bg-danger" };
 const TONE_TILE: Record<Tone, string> = { ok: "bg-success/10", warn: "bg-warning/10", bad: "bg-danger/10" };
 const TONE_TEXT: Record<Tone, string> = { ok: "text-success", warn: "text-warning", bad: "text-danger" };
 
+// Paired cards stretch to the taller one (Oct 27 2026: "cards fit a two-column
+// equal-height grid"); each card's footer sits on its bottom edge (mt-auto).
 function Card({ title, id, right, children, className }: { title: string; id: string; right?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <section id={id} aria-labelledby={`${id}-title`} className={cn(CARD, "min-w-0 p-4 sm:p-5", className)} data-section={id}>
+    <section id={id} aria-labelledby={`${id}-title`} className={cn(CARD, "flex min-w-0 scroll-mt-20 flex-col p-4 sm:p-5", className)} data-section={id}>
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <h3 id={`${id}-title`} className="mr-auto text-lg font-semibold tracking-tight">{title}</h3>
         {right}
@@ -71,6 +73,18 @@ function ViewAll({ spec, n }: { spec: PanelSpec; n: number }) {
 
 const hoursWords = (h: number | null) => (h == null ? null : h >= 48 ? `${Math.round(h / 24)}d` : `${Math.round(h)}h`);
 
+/**
+ * A row's button (Oct 27 2026). A plain function, not a component: a task's
+ * panel needs the server's read (TaskOpen, streamed), every other kind runs
+ * in the client shell (RowActionButton).
+ */
+function act(a: RowAction, i = 0, className?: string): ReactNode {
+  if (a.kind === "task") return <TaskOpen key={`${a.kind}:${a.taskId}:${i}`} taskId={a.taskId} label={a.label} className={className ?? ""} />;
+  return <RowActionButton key={`${a.kind}:${a.label}:${i}`} a={a} className={className} />;
+}
+/** The first button a list panel can run on its own. */
+const shellAction = (actions: RowAction[]): ShellAction | null => (actions.find((a) => a.kind !== "task") as ShellAction | undefined) ?? null;
+
 // =====================================================================================
 // A. FINANCIAL POSITION
 // =====================================================================================
@@ -85,33 +99,41 @@ async function FinanceSection({ p }: { p: Promise<FinancialPosition | null> }) {
         <Unavailable what={["the financial position"]} />
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5 lg:gap-0 lg:divide-x lg:divide-border">
+          {/* THE STRIP (Oct 27 2026, his mockup): five figures in one row, each
+              opening where it comes from. The rail table, Stripe and the gaps
+              fold under Details, closed. */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 lg:gap-0 lg:divide-x lg:divide-border" data-finance-strip>
             {f.figures.map((x) => {
               const Icon = FIGURE_ICON[x.key];
               return (
-                <Link key={x.key} href={x.href} data-figure={x.key} data-value={x.value == null ? "unknown" : String(x.value)} className="group flex min-w-0 gap-2.5 rounded-xl p-1 hover:bg-surface-2/60 lg:px-4">
-                  <Icon aria-hidden className="mt-0.5 size-5 shrink-0 text-brand" />
+                <Link key={x.key} href={x.href} title={x.sub} data-figure={x.key} data-value={x.value == null ? "unknown" : String(x.value)} className="group flex min-h-11 min-w-0 items-start gap-2.5 rounded-xl p-1 hover:bg-surface-2/60 lg:px-4">
+                  <span aria-hidden className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-brand/10"><Icon className="size-4 text-brand" /></span>
                   <div className="min-w-0">
-                    <p className="flex flex-wrap items-center gap-1.5 text-[13px] text-muted">{x.label}{x.tag && <span className="rounded-full bg-surface-2 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-muted">{x.tag}</span>}</p>
-                    <p className={cn("text-xl font-bold tabular-nums sm:text-2xl", x.value == null && "text-base font-semibold text-muted sm:text-lg", x.tone && TONE_TEXT[x.tone])}>{x.display}</p>
-                    <p className="mt-0.5 text-[11px] leading-snug text-muted">{x.sub}</p>
+                    <p className="flex flex-wrap items-center gap-1.5 text-[12px] text-muted">{x.label}{x.tag && <span className="rounded-full bg-surface-2 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-muted">{x.tag}</span>}</p>
+                    <p className={cn("text-xl font-bold tabular-nums", x.value == null && "text-base font-semibold text-muted", x.tone && TONE_TEXT[x.tone])}>{x.display}</p>
+                    <p className="line-clamp-2 text-[11px] leading-snug text-muted">{x.sub}</p>
                   </div>
                 </Link>
               );
             })}
           </div>
-          <div className="mt-4 grid items-stretch gap-4 lg:grid-cols-2">
-            <RevenueMonthPanel r={f.revenue} />
-            <StripeCard s={f.stripe} inset />
-          </div>
-          <p className="mt-3 text-[11px] text-muted">{f.period} · {f.sources}</p>
-          <p className="text-[11px] text-muted" data-freshness>Freshness: {f.freshness}</p>
-          {f.limitations.length > 0 && (
-            <details className="mt-1 text-[12px] text-muted">
-              <summary className="min-h-8 cursor-pointer py-1 font-medium">What these figures leave out ({f.limitations.length})</summary>
-              <ul className="list-disc space-y-1 pl-5">{f.limitations.map((l) => <li key={l}>{l}</li>)}</ul>
-            </details>
-          )}
+          <p className="mt-2 text-[11px] text-muted" data-freshness>{f.period} · Freshness: {f.freshness}</p>
+          <details className="group/details mt-1" data-finance-details>
+            <summary className="inline-flex min-h-11 cursor-pointer items-center gap-1 text-sm font-semibold text-brand">Details: revenue by rail, Stripe, sources{f.limitations.length ? `, what's left out (${f.limitations.length})` : ""}</summary>
+            <div className="mt-2 space-y-3">
+              <div className="grid items-stretch gap-4 lg:grid-cols-2">
+                <RevenueMonthPanel r={f.revenue} />
+                <StripeCard s={f.stripe} inset />
+              </div>
+              <p className="text-[11px] text-muted">{f.period} · {f.sources}</p>
+              {f.limitations.length > 0 && (
+                <details className="text-[12px] text-muted">
+                  <summary className="min-h-8 cursor-pointer py-1 font-medium">What these figures leave out ({f.limitations.length})</summary>
+                  <ul className="list-disc space-y-1 pl-5">{f.limitations.map((l) => <li key={l}>{l}</li>)}</ul>
+                </details>
+              )}
+            </div>
+          </details>
         </>
       )}
     </Card>
@@ -128,7 +150,7 @@ async function ProductionSection({ p }: { p: Promise<ProductionHealth | null> })
   const h = await p;
   if (!h) return <Card title="Production health" id="production"><Unavailable what={["production"]} /></Card>;
   const shown = h.bottlenecks.slice(0, 5);
-  const bottleneckRows: ListRow[] = h.bottlenecks.map((b) => ({ id: b.id, title: b.issue, sub: [b.owner, b.handledBy?.words, b.nextStep, b.clientUpdate].filter(Boolean).join(" · "), tone: b.tone, href: b.href, assign: b.taskId ? null : b.assign }));
+  const bottleneckRows: ListRow[] = h.bottlenecks.map((b) => ({ id: b.id, title: b.issue, sub: [b.owner, b.handledBy?.words, b.nextStep, b.clientUpdate].filter(Boolean).join(" · "), tone: b.tone, href: b.href, assign: b.taskId ? null : b.assign, action: shellAction(b.actions) }));
   return (
     <Card title="Production health" id="production">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -168,24 +190,20 @@ async function ProductionSection({ p }: { p: Promise<ProductionHealth | null> })
         !h.unavailable.length && <p className="mt-2 text-sm text-muted" data-empty="bottlenecks">No late, blocked or unowned work right now.</p>
       ) : (
         <div className="mt-2 overflow-hidden rounded-xl border border-border" data-bottlenecks={h.bottlenecks.length}>
-          <div className="hidden grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_minmax(0,1.4fr)_auto] gap-3 bg-surface-2/60 px-3 py-2 text-[12px] font-medium text-muted md:grid">
-            <span>Issue</span><span>Owner</span><span>Next step</span><span className="w-32">Action</span>
+          <div className="hidden grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_minmax(0,1.4fr)_minmax(9rem,auto)] gap-3 bg-surface-2/60 px-3 py-2 text-[12px] font-medium text-muted md:grid">
+            <span>Issue</span><span>Owner</span><span>Next step</span><span>Action</span>
           </div>
           <ul className="divide-y divide-border">
             {shown.map((b) => (
-              <li key={b.id} className="grid gap-x-3 gap-y-1 px-3 py-2.5 md:grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_minmax(0,1.4fr)_auto] md:items-center" data-bottleneck={b.id}>
+              <li key={b.id} className="grid gap-x-3 gap-y-1 px-3 py-2.5 md:grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_minmax(0,1.4fr)_minmax(9rem,auto)] md:items-center" data-bottleneck={b.id} data-actions={b.actions.map((a) => a.label).join("|")}>
                 <div className="min-w-0">
                   <p className="flex items-center gap-1.5 text-sm font-medium"><span className={cn("size-2 shrink-0 rounded-full", TONE_DOT[b.tone])} aria-hidden /><Link href={b.href} className="[overflow-wrap:anywhere] hover:underline">{b.issue}</Link></p>
                   <p className="text-[12px] text-muted">{[b.client, b.commitment, b.clientUpdate].filter(Boolean).join(" · ")}</p>
                 </div>
                 <p className="text-sm"><span className="md:hidden text-muted">Owner: </span>{b.owner}{b.handledBy && <span className="block text-[12px] text-muted">{b.handledBy.words}</span>}</p>
                 <p className="text-sm"><span className="md:hidden text-muted">Next: </span>{b.nextStep}</p>
-                <div className="md:w-32">
-                  {b.taskId ? (
-                    <TaskOpen taskId={b.taskId} label={b.handledBy?.words.startsWith("Escalated") || b.handledBy?.words.startsWith("Recommended") ? "Decide" : "Request update"} />
-                  ) : (
-                    <PanelButton spec={{ kind: "assign", seed: b.assign, heading: "Assign" }} className={cn(QUIET, "w-full")}>Assign</PanelButton>
-                  )}
+                <div className="flex flex-wrap gap-1.5 md:justify-end">
+                  {b.actions.map((a, i) => act(a, i))}
                 </div>
               </li>
             ))}
@@ -264,18 +282,19 @@ async function TeamSection({ p, nowMs }: { p: Promise<TeamCoverage | null>; nowM
     <Card title="Team coverage" id="team" right={<ViewAll n={0} spec={{ kind: "list", title: "Team workload", subtitle: t.note, rows: workload, empty: "No open assignments, unassigned work or time off on record." }} />}>
       <Unavailable what={t.unavailable} />
       <div className="overflow-hidden rounded-xl border border-border">
-        <div className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.3fr)_minmax(0,1.4fr)] gap-2 bg-surface-2/60 px-3 py-2 text-[12px] font-medium text-muted"><span>Person</span><span>Area</span><span>Status</span></div>
+        <div className="hidden grid-cols-[minmax(0,0.9fr)_minmax(0,1.2fr)_minmax(0,1.3fr)_auto] gap-2 bg-surface-2/60 px-3 py-2 text-[12px] font-medium text-muted sm:grid"><span>Person</span><span>Area</span><span>Status</span><span className="w-28">Action</span></div>
         <ul className="divide-y divide-border" data-coverage={t.rows.length}>
           {t.rows.map((r) => (
-            <li key={r.key} className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.3fr)_minmax(0,1.4fr)] items-center gap-2 px-3 py-2.5 text-sm">
-              <span className="font-medium [overflow-wrap:anywhere]">{r.person}</span>
-              <span className="[overflow-wrap:anywhere]">{r.area}</span>
-              <span className={cn("flex items-start gap-1.5", TONE_TEXT[r.tone])}><span aria-hidden className={cn("mt-1.5 size-2 shrink-0 rounded-full", TONE_DOT[r.tone])} /><span className="[overflow-wrap:anywhere]">{r.status}</span></span>
+            <li key={r.key} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-0.5 px-3 py-2.5 text-sm sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1.2fr)_minmax(0,1.3fr)_auto]" data-coverage-row={r.key}>
+              <span className="font-medium [overflow-wrap:anywhere]">{r.person}<span className="block text-[12px] font-normal text-muted sm:hidden">{r.area}</span></span>
+              <span className="hidden [overflow-wrap:anywhere] sm:block">{r.area}</span>
+              <span className={cn("col-start-1 flex items-start gap-1.5 sm:col-start-auto", TONE_TEXT[r.tone])}><span aria-hidden className={cn("mt-1.5 size-2 shrink-0 rounded-full", TONE_DOT[r.tone])} /><span className="[overflow-wrap:anywhere]">{r.status}</span></span>
+              <span className="col-start-2 row-span-2 row-start-1 sm:col-start-auto sm:row-span-1 sm:row-start-auto sm:w-28">{act(r.action, 0, "w-full")}</span>
             </li>
           ))}
         </ul>
       </div>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      <div className="mt-auto flex flex-wrap items-center gap-2 pt-3">
         <p className="mr-auto flex items-center gap-1.5 text-sm text-muted" data-awaiting={t.awaitingAcceptance.length}><Users aria-hidden className="size-4" /> {t.awaitingAcceptance.length} assignment{t.awaitingAcceptance.length === 1 ? "" : "s"} awaiting acceptance{t.overdue.length ? ` · ${t.overdue.length} overdue` : ""}</p>
         <PanelButton spec={{ kind: "list", title: "Team workload", subtitle: t.note, rows: workload, empty: "No open assignments, unassigned work or time off on record." }}>Review workload</PanelButton>
       </div>
@@ -329,7 +348,7 @@ async function MeetingsSection({ p }: { p: Promise<Meetings | null> }) {
 async function CreativeSection({ p }: { p: Promise<CreativeDecisions | null> }) {
   const c = await p;
   const rows = c?.rows ?? [];
-  const all: ListRow[] = rows.map((r) => ({ id: r.id, title: `${r.kind === "listing" ? "Listing script" : "Monthly content"}: ${r.client}, ${r.what}`, sub: `Writing: ${r.writer} · Approval: ${r.approver}${r.related ? ` · ${r.related}` : ""}`, tone: r.tone, href: r.href, assign: r.assign }));
+  const all: ListRow[] = rows.map((r) => ({ id: r.id, title: `${r.kind === "listing" ? "Listing script" : "Monthly content"}: ${r.client}, ${r.what}`, sub: `Writing: ${r.writer} · Approval: ${r.approver}${r.related ? ` · ${r.related}` : ""}`, tone: r.tone, href: r.href, assign: r.assign, action: shellAction(r.actions) }));
   return (
     <Card title="Scripts & creative decisions" id="creative" right={c ? <span className="flex flex-wrap gap-1.5 text-[11px] font-semibold"><span className="rounded-md bg-warning/15 px-2 py-1 text-warning">Jordan owns {c.jordanOwns}</span><span className="rounded-md bg-waiting-soft px-2 py-1 text-waiting">Others draft {c.othersDraft}</span>{rows.length > SHOWN && <ViewAll n={rows.length} spec={{ kind: "list", title: "Scripts & creative decisions", rows: all }} />}</span> : undefined}>
       {!c ? <Unavailable what={["scripts"]} /> : <Unavailable what={c.unavailable} />}
@@ -343,9 +362,8 @@ async function CreativeSection({ p }: { p: Promise<CreativeDecisions | null> }) 
               <p className="text-[13px] [overflow-wrap:anywhere]">{r.what}</p>
               <p className="text-[12px] text-muted">Writing: {r.writer} · Approval: {r.approver}{r.related ? ` · ${r.related}` : ""}</p>
             </div>
-            <div className="flex gap-2">
-              <Link href={r.href} className={QUIET}>Review</Link>
-              <PanelButton spec={{ kind: "assign", seed: r.assign, heading: "Delegate" }}>Delegate</PanelButton>
+            <div className="flex flex-wrap gap-2" data-creative-actions={r.actions.map((a) => a.label).join("|")}>
+              {r.actions.map((a, i) => act(a, i))}
             </div>
           </li>
         ))}
@@ -412,26 +430,33 @@ async function DelegatedSection({ p }: { p: Promise<DelegatedByMe | null> }) {
       {d && rows.length === 0 && !d.unavailable.length && <p className="text-sm text-muted" data-empty="delegated">Nothing delegated yet. Use Assign task, or Assign beside any row.</p>}
       {rows.length > 0 && (
         <div className="overflow-hidden rounded-xl border border-border">
-          <div className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.8fr)_minmax(0,1.2fr)_minmax(0,0.9fr)] gap-2 bg-surface-2/60 px-3 py-2 text-[12px] font-medium text-muted"><span>Task</span><span>Owner</span><span>Status</span><span>Deadline</span></div>
+          <div className="hidden grid-cols-[minmax(0,1.5fr)_minmax(0,0.8fr)_minmax(0,1.1fr)_minmax(0,0.9fr)_auto] gap-2 bg-surface-2/60 px-3 py-2 text-[12px] font-medium text-muted sm:grid"><span>Task</span><span>Owner</span><span>Status</span><span>Deadline</span><span className="w-24">Action</span></div>
           <ul className="divide-y divide-border" data-delegated={d?.open ?? 0} data-flagged={d?.flagged ?? 0}>
-            {rows.slice(0, 5).map((r) => (
-              <li key={r.taskId} data-delegated-row={r.taskId} data-state={r.state}>
-                <PanelButton spec={{ kind: "task", task: r }} label={`Open ${r.title}`} className="grid min-h-11 w-full grid-cols-[minmax(0,1.6fr)_minmax(0,0.8fr)_minmax(0,1.2fr)_minmax(0,0.9fr)] items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface-2/60">
-                  <span className="min-w-0 [overflow-wrap:anywhere]">{r.resurface && <AlertTriangle aria-label="Needs your follow-up" className="mr-1 inline size-3.5 text-danger" />}{r.title}</span>
-                  <span className="[overflow-wrap:anywhere]">{r.assigneeName ?? "Nobody"}</span>
-                  <span className="flex items-center gap-1.5"><span aria-hidden className={cn("size-2 shrink-0 rounded-full", STATE_DOT[r.state])} />{STATE_WORD[r.state]}</span>
-                  <span className={cn("tabular-nums", r.resurface?.kind === "overdue" && "font-semibold text-danger")}>{r.dueAt ? etDateTime(r.dueAt) : "None"}</span>
+            {rows.slice(0, 4).map((r) => (
+              <li key={r.taskId} data-delegated-row={r.taskId} data-state={r.state} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 px-3 py-1.5 text-sm sm:grid-cols-[minmax(0,1.5fr)_minmax(0,0.8fr)_minmax(0,1.1fr)_minmax(0,0.9fr)_auto]">
+                <PanelButton spec={{ kind: "task", task: r }} label={`Open ${r.title}`} className="min-h-11 min-w-0 text-left hover:underline">
+                  <span className="[overflow-wrap:anywhere]">{r.resurface && <AlertTriangle aria-label="Needs your follow-up" className="mr-1 inline size-3.5 text-danger" />}{r.title}</span>
+                  <span className="block text-[12px] text-muted sm:hidden">{r.assigneeName ?? "Nobody"} · {STATE_WORD[r.state]} · {r.dueAt ? etDateTime(r.dueAt) : "no deadline"}</span>
                 </PanelButton>
+                <span className="hidden [overflow-wrap:anywhere] sm:block">{r.assigneeName ?? "Nobody"}</span>
+                <span className="hidden items-center gap-1.5 sm:flex"><span aria-hidden className={cn("size-2 shrink-0 rounded-full", STATE_DOT[r.state])} />{STATE_WORD[r.state]}</span>
+                <span className={cn("hidden tabular-nums sm:block", r.resurface?.kind === "overdue" && "font-semibold text-danger")}>{r.dueAt ? etDateTime(r.dueAt) : "None"}</span>
+                <span className="sm:w-24">
+                  {/* Open work: one press asks them for an update (the delegation rule: at most hourly).
+                      Waiting on him (to verify, or to decide): opens the task. Closed: opens it. */}
+                  {r.state === "COMPLETED" || r.state === "CANCELLED"
+                    ? <PanelButton spec={{ kind: "task", task: r }} className={cn(QUIET, "w-full")}>Open</PanelButton>
+                    : r.state === "READY_FOR_VERIFICATION" || r.resurface?.kind === "escalated" || r.resurface?.kind === "recommended"
+                      ? <PanelButton spec={{ kind: "task", task: r }} className={cn(PRIMARY, "w-full")}>{r.state === "READY_FOR_VERIFICATION" ? "Verify" : "Decide"}</PanelButton>
+                      : <RowActionButton a={{ kind: "nudge", label: "Follow up", taskId: r.taskId }} primary={!!r.resurface} className="w-full" />}
+                </span>
               </li>
             ))}
           </ul>
         </div>
       )}
       {flagged && (
-        <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-          <p className="mr-auto text-[13px] text-danger">{flagged.resurface!.words}: {flagged.title}</p>
-          <PanelButton spec={{ kind: "task", task: flagged }} className={PRIMARY}>Follow up</PanelButton>
-        </div>
+        <p className="mt-auto pt-3 text-[13px] text-danger" data-delegated-flag>{flagged.resurface!.words}: {flagged.title}</p>
       )}
     </Card>
   );
@@ -441,7 +466,29 @@ async function DelegatedSection({ p }: { p: Promise<DelegatedByMe | null> }) {
 // I. WEEKLY PERFORMANCE
 // =====================================================================================
 
-const MEASURE_ICON: Record<string, typeof Clock> = { photos: Camera, videos: Clock, revisions: RefreshCw, replies: MessageSquare, shoots: CalendarCheck, quality: ClipboardList, week: Upload };
+const MEASURE_ICON: Record<string, typeof Clock> = { ontime: Clock, photos: Camera, videos: Clock, revisions: RefreshCw, replies: MessageSquare, shoots: CalendarCheck, quality: ClipboardList, week: Upload };
+
+/** One headline tile. On-time delivery holds photos and listing videos side by side: two services, never one average. */
+function MeasureTile({ icon, label, parts }: { icon: string; label: string; parts: Measure[] }) {
+  const Icon = MEASURE_ICON[icon] ?? Clock;
+  const tone = parts.find((m) => m.tone === "bad")?.tone ?? parts.find((m) => m.tone === "warn")?.tone ?? parts[0]?.tone ?? null;
+  return (
+    <div className="flex min-w-0 gap-2.5 rounded-xl border border-border p-3" data-tile={icon}>
+      <span aria-hidden className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-surface-2"><Icon className={cn("size-4", tone ? TONE_TEXT[tone] : "text-muted")} /></span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[12px] text-muted">{label}</p>
+        <div className={cn(parts.length > 1 && "grid grid-cols-2 gap-2")}>
+          {parts.map((m) => (
+            <div key={m.key} className="min-w-0" data-measure={m.key}>
+              <p className={cn("font-bold tabular-nums", m.value.length > 8 ? "text-sm leading-6" : "text-xl", m.tone && TONE_TEXT[m.tone])}>{m.value}{parts.length > 1 && <span className="ml-1 text-[11px] font-medium text-muted">{m.key === "photos" ? "photos" : "videos"}</span>}</p>
+              <p className="text-[11px] leading-snug text-muted">{m.detail}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 async function WeeklySection({ p }: { p: Promise<WeeklyPerformance | null> }) {
   const w = await p;
@@ -449,21 +496,25 @@ async function WeeklySection({ p }: { p: Promise<WeeklyPerformance | null> }) {
     <Card title="Weekly performance" id="weekly" right={w ? <PanelButton spec={{ kind: "info", title: "Metric definitions", lines: w.measures.map((m) => ({ label: m.label, value: `${m.detail}. Period: ${m.period}. Source: ${m.source || "n/a"}.` })) }} className="inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-brand hover:underline">View metric definitions <ArrowRight aria-hidden className="size-4" /></PanelButton> : undefined}>
       {!w ? <Unavailable what={["this week's figures"]} /> : (
         <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            {w.measures.map((m) => {
-              const Icon = MEASURE_ICON[m.key] ?? Clock;
-              return (
-                <div key={m.key} className="flex min-w-0 gap-2.5 rounded-xl border border-border p-3" data-measure={m.key}>
-                  <Icon aria-hidden className={cn("mt-0.5 size-5 shrink-0", m.tone ? TONE_TEXT[m.tone] : "text-muted")} />
-                  <div className="min-w-0">
-                    <p className="text-[12px] text-muted">{m.label}</p>
-                    <p className="text-lg font-bold tabular-nums">{m.value}</p>
-                    <p className="text-[11px] leading-snug text-muted">{m.detail}</p>
-                  </div>
-                </div>
-              );
-            })}
+          {/* FOUR HEADLINES (Oct 27 2026, his mockup): on-time delivery, revision
+              rate, client replies, upcoming shoots covered. Too few to judge reads
+              "Not enough data", never a percent of two. */}
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" data-weekly-tiles>
+            {(() => {
+              const by = (k: string) => w.measures.filter((m) => m.key === k);
+              const tiles: { icon: string; label: string; parts: Measure[] }[] = [
+                { icon: "ontime", label: "On-time delivery", parts: [...by("photos"), ...by("videos")] },
+                { icon: "revisions", label: "Revision rate", parts: by("revisions") },
+                { icon: "replies", label: "Client replies within 1 hour", parts: by("replies") },
+                { icon: "shoots", label: "Upcoming shoots covered", parts: by("shoots") },
+                { icon: "week", label: "This week", parts: by("week") },
+              ].filter((t) => t.parts.length);
+              return tiles.map((t) => <MeasureTile key={t.icon} {...t} />);
+            })()}
           </div>
+          {w.measures.filter((m) => m.key === "quality").map((m) => (
+            <p key={m.key} className="mt-2 text-[12px] text-muted" data-measure={m.key}>{m.label} ({m.period.toLowerCase()}): <b className="font-semibold text-foreground">{m.value}</b> · {m.detail}</p>
+          ))}
           <p className="mt-2 text-[11px] text-muted">Each measure&rsquo;s period and source are under View metric definitions. Services are never averaged together. Updated {etTime(w.updatedISO)} ET.</p>
         </>
       )}
@@ -521,17 +572,17 @@ export async function OwnerHome({ me, includeTest = false, now: at }: {
 
         <h2 className="pt-2 text-xl font-bold tracking-tight">Business oversight</h2>
         <Suspense fallback={<Loading label="Reading production…" />}><ProductionSection p={productionP} /></Suspense>
-        <div className="grid items-start gap-5 lg:grid-cols-2">
+        <div className="grid items-stretch gap-5 lg:grid-cols-2">
           <Suspense fallback={<Loading label="Reading client issues…" />}><ClientIssuesSection p={issuesP} /></Suspense>
           <Suspense fallback={<Loading label="Reading team coverage…" />}><TeamSection p={teamP} nowMs={now.getTime()} /></Suspense>
         </div>
 
         <h2 className="flex items-center gap-3 pt-2 text-xl font-bold tracking-tight">My work<span aria-hidden className="h-px flex-1 bg-border" /></h2>
-        <div className="grid items-start gap-5 lg:grid-cols-2">
+        <div className="grid items-stretch gap-5 lg:grid-cols-2">
           <Suspense fallback={<Loading label="Reading meetings…" />}><MeetingsSection p={meetingsP} /></Suspense>
           <Suspense fallback={<Loading label="Reading scripts…" />}><CreativeSection p={creativeP} /></Suspense>
         </div>
-        <div className="grid items-start gap-5 lg:grid-cols-2">
+        <div className="grid items-stretch gap-5 lg:grid-cols-2">
           <Suspense fallback={<Loading label="Reading email…" />}><EmailSectionView p={emailP} /></Suspense>
           <Suspense fallback={<Loading label="Reading your assignments…" />}><DelegatedSection p={delegatedP} /></Suspense>
         </div>

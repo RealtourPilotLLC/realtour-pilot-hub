@@ -11,6 +11,7 @@ import type { LucideIcon } from "lucide-react";
 // Use `flush` when the body owns its own padding (e.g. a `divide-y` list whose
 // rows are `px-5 py-3`), and `tone="warning"` for the amber highlight variant.
 export function Section({
+  id,
   icon: Icon,
   title,
   count,
@@ -21,6 +22,8 @@ export function Section({
   className,
   children,
 }: {
+  /** an anchor other pages link to ("/projects/<id>#team"); scrolls clear of the header */
+  id?: string;
   icon?: LucideIcon;
   title: string;
   count?: number | string | null;
@@ -34,7 +37,9 @@ export function Section({
   const warning = tone === "warning";
   return (
     <section
+      id={id}
       className={cn(
+        id && "scroll-mt-20",
         "panel-shadow overflow-hidden rounded-2xl border bg-surface",
         warning && "border-warning/30 bg-warning-soft/40",
         className,

@@ -593,7 +593,7 @@ async function main() {
     c.ok("this week (owner only) is Weekly performance: photos and listing videos on time apart, revisions, replies, shoots covered", ["photos", "videos", "revisions", "replies", "shoots"].every((k) => weekTiles.includes(k)), weekTiles.join(","));
     if (weekOk) {
       const vid = jordanHtml.slice(jordanHtml.indexOf('data-measure="videos"'), jordanHtml.indexOf('data-measure="videos"') + 900);
-      c.ok("…with 2 listing videos the measure says 'Too few', never '50%' (1 of 2 on time)", vid.includes("Too few") && vid.includes("1 of 2 on time") && !vid.includes(">50%<"), vid.replace(/<[^>]+>/g, " ").slice(0, 200));
+      c.ok("…with 2 listing videos the measure says 'Not enough data' (Oct 27 2026), never '50%' (1 of 2 on time)", vid.includes("Not enough data") && vid.includes("1 of 2 on time") && !vid.includes(">50%<"), vid.replace(/<[^>]+>/g, " ").slice(0, 200));
     } else {
       c.ok("(Monday just after midnight: the week's fixtures are skipped)", true);
     }
