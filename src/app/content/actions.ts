@@ -1013,24 +1013,17 @@ export async function approveStrategy(versionId: string): Promise<Result> {
     // says why it is not in their portal. An already-released version is not
     // released again (no second notice).
     //
-    // ONLY JORDAN'S APPROVAL RELEASES (Jordan, Oct 21 2026; audit D20). The
-    // Release button is owner-only while approving is open to an admin who
-    // holds the strategy duty, so an admin's approval used to put the strategy
-    // in the client's portal without Jordan. Now the release on approve passes
-    // the Release button's own gate (requireOwner): the owner's approval
-    // releases at once, as before; an admin's is approved only, waits for
-    // Jordan's Release, and rings his bell.
-    const ownerPress = await requireOwner().then(() => true, () => false);
+    // ANYONE'S APPROVAL RELEASES (Jordan, Oct 27 2026: "Always release on
+    // approve"). This replaces Oct 21's owner-only release (audit D20): an
+    // admin holding the strategy duty approves and releases in one press, the
+    // same as Jordan, and nothing waits for his Release any more.
     let releaseNote = "";
     try {
-      const now = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { status: true, releasedAt: true, versionNo: true } });
-      if (now?.status === "APPROVED" && !now.releasedAt && ownerPress) {
+      const now = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { status: true, releasedAt: true } });
+      if (now?.status === "APPROVED" && !now.releasedAt) {
         const { releaseStrategyToPortal } = await import("@/lib/programOnboarding");
         const rel = await releaseStrategyToPortal(versionId, me.email);
         releaseNote = ` ${rel.message}`;
-      } else if (now?.status === "APPROVED" && !now.releasedAt) {
-        releaseNote = " Approved, waiting for Jordan to release it to their portal.";
-        if (!r.alreadyApproved) await bellOwnerToRelease(v.enrollmentId, versionId, now.versionNo, me.name || me.email);
       } else if (now?.releasedAt) {
         releaseNote = " It is already in their portal.";
       }
@@ -1041,23 +1034,6 @@ export async function approveStrategy(versionId: string): Promise<Result> {
     if (r.alreadyApproved) return { ok: true, message: (r.pillarsCreated ? `Already approved · ${r.pillarsCreated} pillar${r.pillarsCreated === 1 ? "" : "s"} created from the document.` : releaseNote ? "Already approved; its pillars exist." : "Already approved — its pillars exist; nothing changed.") + releaseNote + bankNote };
     return { ok: true, message: `Approved under your name${r.pillarsCreated ? ` · ${r.pillarsCreated} pillar${r.pillarsCreated === 1 ? "" : "s"} created from the document` : ""}.${releaseNote}${bankNote}` };
   } catch (e) { return fail(e); }
-}
-
-/** Oct 21 2026: an admin approved a strategy; Jordan's bell says it waits for his Release. Best effort, once per version. */
-async function bellOwnerToRelease(enrollmentId: string, versionId: string, versionNo: number, who: string): Promise<void> {
-  try {
-    const [{ notifyInApp }, { contentHref }] = await Promise.all([import("@/lib/notify"), import("@/lib/contentNav")]);
-    const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true } });
-    const client = e ? await prisma.client.findUnique({ where: { id: e.clientId }, select: { name: true } }) : null;
-    await notifyInApp({
-      kind: "strategy_release_waiting",
-      title: `Strategy approved, waiting for you to release: ${client?.name ?? "client"}`.slice(0, 90),
-      body: `${who} approved v${versionNo}. It reaches their portal when you press Release.`,
-      href: contentHref(enrollmentId, { tab: "plan", view: "strategy" }),
-      targets: [{ roles: ["OWNER"] }],
-      dedupeKey: `strategy-release-waiting:${versionId}`,
-    });
-  } catch { /* the approval stands; the Strategy tab shows it waiting */ }
 }
 
 /** Oct 14 2026: "Rebuild" on the Strategy tab's Creative identity card: one AI call from the approved strategy, auto-approved. */
@@ -1094,13 +1070,18 @@ export async function createPillarsFromStrategy(versionId: string): Promise<Resu
  * (off → nothing queued, and the message says so; the drain also holds real
  * clients while testClientsOnly is on). It used to call the bare release, so
  * the notice could never be queued from the product at all.
+ *
+ * Oct 27 2026 ("Always release on approve"): whoever may approve may release,
+ * so the button is the approval's own gate (the strategy duty), not owner-only.
+ * It is only needed now when an approval's release failed or was refused.
  */
 export async function releaseStrategy(versionId: string): Promise<Result> {
-  try { await requireOwner(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const v = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { enrollmentId: true } });
     if (!v) return { ok: false, message: "Version not found." };
     const me = await actor();
+    await assertDutyOwner("STRATEGY", v.enrollmentId, null, me);
     const { releaseStrategyToPortal } = await import("@/lib/programOnboarding");
     const r = await releaseStrategyToPortal(versionId, me.email);
     path(v.enrollmentId);

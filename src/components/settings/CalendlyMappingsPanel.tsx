@@ -6,7 +6,7 @@ import { Loader2, RefreshCw, Check, AlertTriangle, ExternalLink, ShieldCheck, Ci
 import { cn } from "@/lib/utils";
 import {
   saveCalendlyMapping, removeCalendlyMapping, revalidateCalendlyMappings, runCallSyncNow, saveCallRules,
-  confirmCallClient, ignoreCall, retargetCall, confirmTranscript, rejectTranscript, verifyAlias, dismissAlias, rerunTranscriptJob, setTranscriptBacklogAction,
+  rerunTranscriptJob, setTranscriptBacklogAction,
   type CalendlyPanelState,
 } from "@/app/settings/calendlyActions";
 import { CallTranscriptItem } from "@/components/content/CallTranscripts";
@@ -17,8 +17,8 @@ import { CallTranscriptItem } from "@/components/content/CallTranscripts";
 //   2. the two configuration exceptions that matter ("no monthly type
 //      enabled", "no brand-discovery type exists yet — create one in Calendly
 //      and it will appear here");
-//   3. the review queue — bookings nobody could match, transcripts waiting
-//      for a person, alias proposals;
+//   3. how many calls, alias proposals and transcripts wait for a person,
+//      with a link to the one queue on Content › Strategy calls (Oct 27 2026);
 //   4. recent call records with booking link, type, client, source event,
 //      transcript link, analysis state and last error (§26's last test);
 //   5. the switches (read-only here; they stay off) and the job lane — with
@@ -215,43 +215,20 @@ export function CalendlyMappingsPanel({ state, canOpenOperations = false }: { st
         </div>
       )}
 
-      {/* Operational matching belongs in the existing queue. Keep the prior
-          owner-action surface only when a page-access override blocks it. */}
-      {canOpenOperations ? (
-        <div className="rounded-xl border p-4">
-          <h3 className="flex items-center gap-2 font-medium"><ListChecks className="size-4 text-muted" /> Calls and transcripts needing review</h3>
-          <p className="mt-2 text-sm text-muted">Loaded for review: {state.reviewRecords.length} calls · {state.queue.aliases.length} email proposals · {state.queue.unlinkedTranscripts.length} transcripts without a confirmed call.</p>
-          <p className="mt-1 text-sm text-muted">Identify clients, confirm transcript ownership, and resolve matching questions in program operations.</p>
-          <Link href="/content/calls#review" className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Open call review queue <ExternalLink className="size-4" /></Link>
-        </div>
-      ) : <div className="rounded-xl border">
-        <p className="px-3 pt-3 text-sm text-muted">Call recovery stays here because this account cannot open program operations.</p>
-        <div className="flex items-center gap-2 border-b px-3 py-2 font-medium"><ListChecks className="size-4 text-muted" /> Needs a person <Chip tone={state.reviewRecords.length + state.queue.aliases.length ? "warn" : "muted"}>{state.reviewRecords.length + state.queue.aliases.length}</Chip></div>
-        <div className="divide-y">
-          {state.reviewRecords.map((r) => <ReviewRow key={r.id} r={r} clients={state.enrolledClients} busy={pending} run={run} />)}
-          {state.queue.aliases.map((a) => (
-            <div key={a.id} className="flex flex-wrap items-center gap-2 px-3 py-2 text-xs">
-              <Chip tone="warn">alias proposal</Chip>
-              <span><strong>{a.email}</strong> → {a.clientName} <span className="text-muted">({a.source}, {fmt(a.createdAt)})</span></span>
-              <span className="ml-auto flex gap-2">
-                <Btn busy={pending} tone="brand" onClick={() => run(() => verifyAlias(a.id))}>Verify</Btn>
-                <Btn busy={pending} onClick={() => run(() => dismissAlias(a.id))}>Dismiss</Btn>
-              </span>
-            </div>
-          ))}
-          {state.reviewRecords.length === 0 && state.queue.aliases.length === 0 && state.queue.unlinkedTranscripts.length === 0 && <p className="px-3 py-3 text-xs text-muted">Nothing waiting.</p>}
-        </div>
-        {state.queue.unlinkedTranscripts.length > 0 && (
-          <div className="border-t px-3 py-2 text-xs">
-            <div className="mb-1 flex items-center gap-1 font-medium"><FileText className="size-3.5 text-muted" /> Unlinked Gemini notes (import queue) — {state.queue.unlinkedTranscripts.length}</div>
-            <ul className="space-y-0.5 text-muted">
-              {state.queue.unlinkedTranscripts.slice(0, 12).map((t) => (
-                <li key={t.id}>{fmt(t.recordedAt)} · {t.sourceUrl ? <a className="underline" href={t.sourceUrl} target="_blank" rel="noreferrer">{t.title ?? t.id}</a> : (t.title ?? t.id)}{t.legacyMonthId && " · already on a month (legacy)"}{t.candidates.length > 0 && ` · ${t.candidates.length} candidate call(s)`}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </div>}
+      {/* ONE CALL QUEUE (Jordan, Oct 27 2026: "One of each"). Matching is
+          answered on Strategy calls only. The copy of the queue this panel
+          kept for an account that cannot open the Content Program is gone: its
+          buttons were owner-only, and the owner can always open Strategy calls. */}
+      <div className="rounded-xl border p-4">
+        <h3 className="flex items-center gap-2 font-medium"><ListChecks className="size-4 text-muted" /> Calls and transcripts needing review</h3>
+        <p className="mt-2 text-sm text-muted">Loaded for review: {state.reviewRecords.length} calls · {state.queue.aliases.length} email proposals · {state.queue.unlinkedTranscripts.length} transcripts without a confirmed call.</p>
+        {canOpenOperations ? (
+          <>
+            <p className="mt-1 text-sm text-muted">Identify clients, confirm transcript ownership, and resolve matching questions in program operations.</p>
+            <Link href="/content/calls#review" className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Open call review queue <ExternalLink className="size-4" /></Link>
+          </>
+        ) : <p className="mt-1 text-sm text-muted">They are answered on Content Program › Strategy calls, which this account cannot open. Ask Jordan.</p>}
+      </div>
 
       {/* Recent records */}
       <div className="overflow-x-auto rounded-xl border">
@@ -349,55 +326,6 @@ function QueueBatch({ batch, busy, run }: { batch: NonNullable<CalendlyPanelStat
         {including && <Btn busy={busy} onClick={() => run(() => setTranscriptBacklogAction("skip"))}>Skip jobs queued before the first switch-on{first ? ` (${fmt(first)})` : ""} again</Btn>}
         <span className="text-[11px] text-muted">It works through every client&rsquo;s calls (the rollout only limits what reaches clients). Drafts still wait for your approval; nothing is released to a client. The Analyze, Draft strategy now, Draft owed scripts and Re-analyse buttons run straight away and do not use this queue.</span>
       </div>
-    </div>
-  );
-}
-
-function ReviewRow({ r, clients, busy, run }: { r: CalendlyPanelState["reviewRecords"][number]; clients: { id: string; name: string }[]; busy: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void }) {
-  const [clientId, setClientId] = useState(r.candidates[0]?.clientId ?? "");
-  const [verify, setVerify] = useState(true);
-  const [monthKey, setMonthKey] = useState(r.targetMonthKey ?? "");
-  const identityOpen = ["UNMATCHED_INVITEE", "AMBIGUOUS_CLIENT", "AMBIGUOUS_MONTH", "UNMAPPED_TYPE"].includes(r.matchState);
-  const candidates = r.transcripts.filter((t) => t.matchState === "CANDIDATE");
-  return (
-    <div className="space-y-2 px-3 py-2 text-xs">
-      <div className="flex flex-wrap items-center gap-2">
-        <Chip tone="warn">{identityOpen ? r.matchState.toLowerCase().replace(/_/g, " ") : r.transcriptState.toLowerCase().replace(/_/g, " ")}</Chip>
-        <strong>{r.eventTypeName ?? r.callType}</strong> · {fmt(r.scheduledStart)} · {r.client?.name ?? r.inviteeName ?? "?"} {r.inviteeEmail && <span className="text-muted">&lt;{r.inviteeEmail}&gt;</span>}
-        {r.lastError && <span className="text-danger">· {r.lastError}</span>}
-      </div>
-      {r.matchNote && <div className="text-muted">{r.matchNote}</div>}
-      {identityOpen && (
-        <div className="flex flex-wrap items-center gap-2">
-          <select aria-label="Client on this call" disabled={busy} value={clientId} onChange={(e) => setClientId(e.target.value)} className="min-h-11 max-w-full rounded-lg border border-border bg-surface-2 px-3 py-2">
-            <option value="">Pick the client…</option>
-            {r.candidates.map((c) => <option key={c.clientId} value={c.clientId}>{c.name} (candidate: {c.reason})</option>)}
-            {clients.filter((c) => !r.candidates.some((x) => x.clientId === c.id)).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-          <label className="flex min-h-11 items-center gap-2"><input type="checkbox" disabled={busy} checked={verify} onChange={(e) => setVerify(e.target.checked)} /> verify {r.inviteeEmail ?? "this address"} as their alias</label>
-          <Btn busy={busy} tone="brand" onClick={() => clientId && run(() => confirmCallClient(r.id, clientId, verify))}>Confirm client</Btn>
-          <Btn busy={busy} tone="danger" onClick={() => run(() => ignoreCall(r.id))}>Not a program call</Btn>
-        </div>
-      )}
-      {!identityOpen && r.callType === "MONTHLY_STRATEGY" && (
-        <div className="flex items-center gap-2">
-          <span className="text-muted">plans</span>
-          <input aria-label="Month this call planned" disabled={busy} value={monthKey} onChange={(e) => setMonthKey(e.target.value)} placeholder="2026-10" className="min-h-11 w-28 rounded-lg border border-border bg-surface-2 px-3 py-2" />
-          <Btn busy={busy} onClick={() => run(() => retargetCall(r.id, monthKey))}>Retarget</Btn>
-        </div>
-      )}
-      {candidates.length > 0 && (
-        <ul className="space-y-1">
-          {candidates.map((t) => (
-            <li key={t.id} className="flex flex-wrap items-center gap-2">
-              <FileText className="size-3 text-muted" />
-              {t.sourceUrl ? <a className="underline" href={t.sourceUrl} target="_blank" rel="noreferrer">{t.title ?? t.id}</a> : (t.title ?? t.id)} <span className="text-muted">{fmt(t.recordedAt)}</span>
-              <Btn busy={busy} tone="brand" onClick={() => run(() => confirmTranscript(t.id, r.id))}>This one</Btn>
-              <Btn busy={busy} onClick={() => run(() => rejectTranscript(t.id))}>Not this</Btn>
-            </li>
-          ))}
-        </ul>
-      )}
     </div>
   );
 }

@@ -200,7 +200,10 @@ async function main() {
     const contentSrc = read("src/app/content/actions.ts");
     const guardOf = (fn: string) => contentSrc.slice(contentSrc.indexOf(`export async function ${fn}(`)).match(/require(Admin|CreativeLead|Owner)\(\)/)?.[1] ?? "?";
     c.ok("content program: scripts, topics, strategy edits, script requests are creative writes", ["approveScript", "saveScriptText", "addTopic", "editStrategySection", "replyToScriptRequestAction", "applyEditedScriptRequest", "generateMonthScripts"].every((f) => guardOf(f) === "CreativeLead"));
-    c.ok("content program: package, status, fees, catch-ups, late sessions stay the office's; strategy release stays the owner's", ["staffChangePackageAction", "staffSetEnrollmentStatusAction", "decideRevisionFeeAction", "catchUpMonthAction", "lateSessionAction", "holdReviewWindowAction"].every((f) => guardOf(f) === "Admin") && guardOf("releaseStrategy") === "Owner");
+    c.ok("content program: package, status, fees, catch-ups, late sessions stay the office's", ["staffChangePackageAction", "staffSetEnrollmentStatusAction", "decideRevisionFeeAction", "catchUpMonthAction", "lateSessionAction", "holdReviewWindowAction"].every((f) => guardOf(f) === "Admin"));
+    // Oct 27 2026 (Jordan: "Always release on approve"): Release takes the approval's own gate, the strategy duty, not owner-only.
+    const releaseSrc = contentSrc.slice(contentSrc.indexOf("export async function releaseStrategy("), contentSrc.indexOf("export async function releaseStrategy(") + 700);
+    c.ok("strategy release: the approval's gate (creative lead AND the strategy duty), like approveStrategy", guardOf("releaseStrategy") === "CreativeLead" && /assertDutyOwner\("STRATEGY"/.test(releaseSrc) && guardOf("approveStrategy") === "CreativeLead");
     // The edit desk: James keeps the rush desk Jordan gave him (rushAuthority's PRIMARY seat).
     const { rushAuthority } = await import("@/lib/editorWorkload");
     const ra = await rushAuthority(me, { authEnforced: true });

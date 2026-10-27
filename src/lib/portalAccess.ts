@@ -7,7 +7,7 @@ import { isSyntheticClientRow, isStaffControlledEmail, isVerifiedTestDestination
 import { liveMemberships, type PortalRole, type PortalViewer } from "@/lib/portal";
 import { programReach, programReachMany } from "@/lib/programRollout";
 import type { ReachDecision } from "@/lib/programRolloutCore";
-import { OFFICE_LINE } from "@/lib/portalWords";
+import { OFFICE_LINE, LINK_VIEW_ONLY_LINE } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // PORTAL ACCESS — who may do what on a client's portal, and the staff-side
@@ -90,6 +90,26 @@ export const PERMISSIONS: Record<PortalRole, Record<PortalPermission, boolean>> 
 const LEGACY_TOKEN: Record<PortalPermission, boolean> = { ...ALL, approveEdits: false, connectPublishing: false, manageTeam: false };
 
 /**
+ * THE SHARED LINK GOES VIEW-ONLY ONCE THE CLIENT CAN SIGN IN (Jordan, Oct 27
+ * 2026: "Off once every client has a sign-in; link-only programs need it until
+ * then"). Per program, not all at once: true when someone holds a live seat on
+ * this program (not revoked, their sign-in not disabled) AND email sign-in
+ * really works for this client (portalLoginEmailEnabledFor: the switch, the
+ * rollout, a TEST client's verified inbox; and the rollout's portal_sign_in,
+ * which liveMemberships needs). Then the link only looks: no comments, change
+ * requests, suggestions, bookings or messages; the person signs in for those.
+ * A program nobody can sign in to keeps the link exactly as it was.
+ */
+export async function sharedLinkViewOnly(enrollmentId: string, clientId: string): Promise<boolean> {
+  const seats = await prisma.clientMembership.findMany({ where: { enrollmentId, clientId, revokedAt: null }, select: { clientUserId: true } });
+  if (!seats.length) return false;
+  const people = await prisma.clientUser.count({ where: { id: { in: seats.map((s) => s.clientUserId) }, status: { not: "DISABLED" } } });
+  if (!people) return false;
+  if (!(await portalLoginEmailEnabledFor(clientId))) return false;
+  return (await programReach("portal_sign_in", clientId)).ok;
+}
+
+/**
  * May this viewer do this? READ_ONLY (paused/ended) and NONE refuse
  * everything: released content stays visible, no new activity. Staff acting
  * through the owner iframe carry the hub's own authority (OWNER/ADMIN), never
@@ -98,7 +118,8 @@ const LEGACY_TOKEN: Record<PortalPermission, boolean> = { ...ALL, approveEdits: 
 export function can(viewer: PortalViewer, permission: PortalPermission): boolean {
   if (viewer.access !== "FULL") return false;
   const a = viewer.actor;
-  if (a.kind === "TOKEN") return LEGACY_TOKEN[permission];
+  // Oct 27 2026: a view-only link (sharedLinkViewOnly) may do nothing.
+  if (a.kind === "TOKEN") return a.viewOnly ? false : LEGACY_TOKEN[permission];
   if (a.kind === "STAFF") return a.staffRole === "OWNER" || a.staffRole === "ADMIN" || a.staffRole === "CREATIVE_MANAGER";
   return PERMISSIONS[a.membershipRole]?.[permission] === true;
 }
@@ -139,6 +160,7 @@ export function refusalMessage(viewer: PortalViewer, permission: PortalPermissio
       ? `Your program is paused, so this is view-only for now. Call or text ${OFFICE_LINE.name} at ${OFFICE_LINE.display} and we'll pick it back up.`
       : "Your program has ended, so this is view-only. Your finished content stays here for you.";
   }
+  if (viewer.actor.kind === "TOKEN" && viewer.actor.viewOnly) return `This shared link is view-only. ${LINK_VIEW_ONLY_LINE}`;
   if (viewer.actor.kind === "CLIENT" && viewer.actor.membershipRole === "VIEWER") return "Your access is view-only. Ask the program owner if you need to make changes.";
   if (permission === "approveEdits") return "Only the program owner can approve.";
   if (permission === "editBrandProfile") return "Only the program owner can change the brand profile.";

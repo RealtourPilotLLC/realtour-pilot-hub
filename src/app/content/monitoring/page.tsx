@@ -116,9 +116,10 @@ export default async function ContentMonitoringPage() {
           </div>
         </Section>
 
-        {/* LINK-ONLY CLIENTS (Oct 21 2026, display only): when this reaches
-            0, the shared link's comment and change-request rights can be
-            switched off (audit E2b). */}
+        {/* LINK-ONLY CLIENTS (Oct 21 2026, display only; audit E2b). Since
+            Oct 27 2026 (Jordan: "Off once every client has a sign-in") each
+            client's shared link turns view-only on its own once they can
+            sign in (portalAccess.sharedLinkViewOnly); these still need it. */}
         <Section icon={KeyRound} title="Client portal sign-ins" count={linkOnly ? linkOnly.linkOnly.length : null} flush>
           <div className="px-5 py-3 text-[13px]">
             {!linkOnly ? (
@@ -131,8 +132,8 @@ export default async function ContentMonitoringPage() {
                 </p>
                 <p className="mt-1 text-muted">
                   {linkOnly.linkOnly.length === 0
-                    ? "Every active client can sign in, so the shared link's commenting and change requests can be switched off."
-                    : "The shared link can still comment and ask for changes. Once this reaches 0, that can be switched off."}
+                    ? "Every active client has a sign-in. A client's shared link is view-only once they can sign in, so comments and change requests come from signed-in people."
+                    : "Their shared link can still comment and ask for changes. A client's link turns view-only on its own once they can sign in."}
                 </p>
                 {linkOnly.linkOnly.length > 0 && (
                   <details className="mt-1.5">

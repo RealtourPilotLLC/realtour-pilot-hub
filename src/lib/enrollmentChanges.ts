@@ -310,8 +310,12 @@ export async function setWorkflowFlags(enrollmentId: string, flags: { clientSupp
  * `preparationWindowDays` key was a dead control (nothing read it); it is now
  * READ as days × 24 (programMonths.enrollmentWindowOverrideHours) and kept
  * editable only so an owner can clear a legacy value. Hours win when both exist.
+ *
+ * Oct 27 2026 (Jordan: one call-mode control, Program style's): the
+ * `requireCallForMonths` key is retired. Nothing read it, so it was a second
+ * call-requirement control that did nothing; a stored value is left untouched.
  */
-export const OVERRIDE_KEYS = ["preparationWindowHours", "preparationWindowDays", "extraSessionsAllowed", "requireCallForMonths"] as const;
+export const OVERRIDE_KEYS = ["preparationWindowHours", "preparationWindowDays", "extraSessionsAllowed"] as const;
 export type OverrideKey = (typeof OVERRIDE_KEYS)[number];
 export function readOverrides(json: string | null | undefined): Record<string, unknown> {
   try { const v = json ? JSON.parse(json) : {}; return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {}; } catch { return {}; }

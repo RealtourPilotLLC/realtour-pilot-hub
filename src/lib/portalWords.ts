@@ -142,6 +142,9 @@ export const OFFICE_LINE = { name: "Kyle", display: "(215) 645-4889", e164: "+12
 export const TEXT_KYLE = `text ${OFFICE_LINE.name} at ${OFFICE_LINE.display}`;
 export const TEXT_KYLE_START = `Text ${OFFICE_LINE.name} at ${OFFICE_LINE.display}`;
 
+/** Oct 27 2026: what a view-only shared link says (portalAccess.sharedLinkViewOnly), on the page and on a refused action. */
+export const LINK_VIEW_ONLY_LINE = "Sign in to leave comments or ask for changes.";
+
 const COUNT_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 /**
  * The preparation window in the client's words (Oct 13 2026: "72 weekday

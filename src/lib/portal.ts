@@ -66,7 +66,8 @@ export type PortalEnrollment = {
 export type PortalRole = "OWNER" | "COLLABORATOR" | "VIEWER";
 
 export type PortalActor =
-  | { kind: "TOKEN" }
+  /** viewOnly (Oct 27 2026): the program has a working sign-in, so the shared link only looks (portalAccess.sharedLinkViewOnly). */
+  | { kind: "TOKEN"; viewOnly?: boolean }
   | { kind: "CLIENT"; clientUserId: string; email: string; name: string | null; membershipId: string; membershipRole: PortalRole }
   | { kind: "STAFF"; staffUserId: string; staffName: string | null; staffRole: string };
 
@@ -184,7 +185,13 @@ export async function resolvePortalViewer(input: {
     // they were given until someone revokes it. A link that has been
     // forwarded too widely is closed by Expire/Rotate on the owner's card —
     // a human's decision, recorded — not by the status flipping.
-    return { ok: true, viewer: { enrollment: await enrollmentWithName(e), actor: { kind: "TOKEN" }, access: accessFor(e.status), via: "TOKEN" } };
+    //
+    // VIEW-ONLY ONCE THEY CAN SIGN IN (Jordan, Oct 27 2026: "Off once every
+    // client has a sign-in; link-only programs need it until then"). Decided
+    // per program on every visit. A read that fails keeps the link as it was.
+    const { sharedLinkViewOnly } = await import("@/lib/portalAccess");
+    const viewOnly = await sharedLinkViewOnly(e.id, e.clientId).catch(() => false);
+    return { ok: true, viewer: { enrollment: await enrollmentWithName(e), actor: { kind: "TOKEN", viewOnly }, access: accessFor(e.status), via: "TOKEN" } };
   }
 
   const session = await verifyClientSession(await cookieValue(input.cookies, CLIENT_COOKIE));

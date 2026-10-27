@@ -80,9 +80,26 @@ export function MoreTab({ d }: { d: MoreTabData }) {
 }
 
 /** The terms, split the way v1 splits them: blank lines separate blocks, "## " starts a heading, "- " lines are a list. */
-export function TermsCard({ blocks }: { blocks: string[] }) {
+/**
+ * Oct 27 2026 (Jordan: "I want them to be able to text kyle"): the office
+ * number in the Terms is a tappable sms: link wherever it is printed (the
+ * billing line, the 24-hour session line), in the default text or an
+ * owner-edited one that names the same number.
+ */
+function withPhoneLinks(text: string, phones: readonly { display: string; e164: string }[]): React.ReactNode {
+  const known = phones.filter((p, i) => p.display && /^\+\d{8,15}$/.test(p.e164) && phones.findIndex((q) => q.display === p.display) === i);
+  if (!known.length) return text;
+  const re = new RegExp(`(${known.map((p) => p.display.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`);
+  return text.split(re).map((part, i) => {
+    const p = known.find((x) => x.display === part);
+    return p ? <a key={i} href={`sms:${p.e164}`} className="font-semibold text-brand underline-offset-2 hover:underline">{part}</a> : part;
+  });
+}
+
+export function TermsCard({ blocks, phones = [] }: { blocks: string[]; phones?: readonly { display: string; e164: string }[] }) {
+  const linked = (text: string) => withPhoneLinks(text, phones);
   const list = (lines: string[]) => (
-    <ul className="space-y-1 pl-1">{lines.filter((l) => l.trim().startsWith("- ")).map((l, j) => <li key={j} className="flex gap-2 text-sm leading-relaxed text-foreground/85"><span className="text-brand" aria-hidden>·</span><span>{l.trim().replace(/^- /, "")}</span></li>)}</ul>
+    <ul className="space-y-1 pl-1">{lines.filter((l) => l.trim().startsWith("- ")).map((l, j) => <li key={j} className="flex gap-2 text-sm leading-relaxed text-foreground/85"><span className="text-brand" aria-hidden>·</span><span>{linked(l.trim().replace(/^- /, ""))}</span></li>)}</ul>
   );
   return (
     <div className="mt-6 space-y-4">
@@ -96,13 +113,13 @@ export function TermsCard({ blocks }: { blocks: string[] }) {
               return (
                 <div key={i}>
                   <h2 className="pt-2 text-sm font-bold text-foreground">{head.replace(/^## /, "")}</h2>
-                  {body && (rest.every((l) => !l.trim() || l.trim().startsWith("- ")) ? <div className="mt-2">{list(rest)}</div> : <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-foreground/85">{body}</p>)}
+                  {body && (rest.every((l) => !l.trim() || l.trim().startsWith("- ")) ? <div className="mt-2">{list(rest)}</div> : <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-foreground/85">{linked(body)}</p>)}
                 </div>
               );
             }
             const lines = block.split("\n");
             if (lines.every((l) => l.trim().startsWith("- "))) return <div key={i}>{list(lines)}</div>;
-            return <p key={i} className="whitespace-pre-line text-sm leading-relaxed text-foreground/85">{block}</p>;
+            return <p key={i} className="whitespace-pre-line text-sm leading-relaxed text-foreground/85">{linked(block)}</p>;
           })}
         </div>
       </Card>

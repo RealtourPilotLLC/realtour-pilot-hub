@@ -81,7 +81,8 @@ const SECTION_LABEL: Record<string, string> = {
   brand: "Brand Profile", messages: "Messages", resources: "Resources", team: "Settings & Team", terms: "Terms",
 };
 
-/** A recorded path that is an ACTION (a download, a posted mark), not a page view. */
+/** A recorded path that is an ACTION (a download, a posted mark), not a page view.
+ *  "Mark as posted" itself is gone (deleted Oct 27 2026); its old rows still read as history. */
 export function pathAction(path: string): { kind: "DOWNLOAD" | "POSTED" | "UNPOSTED"; videoId: string } | null {
   const m = /^\/portal\/(download|posted)\/([a-z0-9]{10,40})(\?.*)?$/i.exec(path);
   if (!m) return null;

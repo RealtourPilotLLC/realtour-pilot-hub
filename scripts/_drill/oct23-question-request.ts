@@ -52,6 +52,18 @@ installNextStubs();
 const navigation = createRequire(__filename)("next/navigation") as { useRouter: () => unknown };
 navigation.useRouter = () => ({ refresh() {}, push() {}, replace() {} });
 interceptModule((r) => r === "next/server", (loaded) => ({ ...(loaded as Record<string, unknown>), after: () => {} }));
+// Oct 27 2026: the client answers SIGNED IN (her shared link is view-only once
+// she can sign in). resolvePortalViewer reads its cookie through a dynamic
+// import("next/headers") the harness cannot stub, so the actions get this jar
+// whenever the caller passes none (the cp06-brand-setup pattern).
+const clientJar = new Map<string, string>();
+interceptModule(
+  (r) => r === "@/lib/portal" || /[\\/]src[\\/]lib[\\/]portal$/.test(r),
+  (loaded) => {
+    const m = loaded as { resolvePortalViewer: (i: { token?: string | null; enrollmentId?: string | null; cookies?: unknown }) => Promise<unknown> };
+    return { ...m, resolvePortalViewer: (i: Parameters<typeof m.resolvePortalViewer>[0]) => m.resolvePortalViewer({ ...i, cookies: i.cookies ?? { get: (n: string) => clientJar.get(n) } }) };
+  },
+);
 
 // ---- the email: Gmail, faked at the fence -------------------------------------
 const mails: { to: string; text: string }[] = [];
@@ -413,7 +425,13 @@ async function main() {
     c.head("6 · answering drafts a new script from the answers (the old writer)");
     const sent2 = await qr.sendQuestionRequest(s1.scriptId, staff, { now: at(fri, 0, 3.5) });
     const iv2 = await prisma.contentInterview.findUnique({ where: { id: sent2.interviewId } });
-    const auth = { token: M.portalToken! };
+    // CHANGED Oct 27 2026 (Jordan: "Off once every client has a sign-in"): Marcee
+    // holds a seat and email sign-in is on, so her shared link only looks now.
+    // She answers signed in (her own seat), and the link is refused in her words.
+    const { signClientSession, CLIENT_COOKIE } = await import("@/lib/auth/clientSession");
+    const { LINK_VIEW_ONLY_LINE } = await import("@/lib/portalWords");
+    const viaLink = await portalActions.portalSaveTopicAnswer({ token: M.portalToken! }, tMal, M.monthId, "audienceProblem", "From the shared link");
+    c.ok("her shared link is view-only now that she can sign in: an answer from it is refused, in plain words", !viaLink.ok && viaLink.message.includes(LINK_VIEW_ONLY_LINE), viaLink.message);
     const ANSWERS: Record<string, string> = {
       audienceProblem: "Buyers moving from the city think Malvern shuts down at six and only suits empty nesters.",
       pointOfView: "Malvern gives you a walkable downtown on the Main Line for less, and young families are finding it.",
@@ -423,9 +441,11 @@ async function main() {
       story: "A before and after of a Saturday morning on King Street.",
     };
     const FOLLOW = "For example, a client last year did exactly this and loved it. Another thing: buyers compare everything. Also: spring is when it matters most.";
-    /** The client answers the request's questions under the topic, then any follow-up the guided questions ask, then sends. */
-    const answerAll = async (token: string, topicId: string, monthId: string, interviewId: string, keys: string[], swap: (t: string) => string = (t) => t) => {
-      const au = { token };
+    /** The client, signed in to her own seat, answers the request's questions under the topic, then any follow-up the guided questions ask, then sends. */
+    const answerAll = async (who: { enrollmentId: string; clientUserId: string | null }, topicId: string, monthId: string, interviewId: string, keys: string[], swap: (t: string) => string = (t) => t) => {
+      const person = await prisma.clientUser.findUniqueOrThrow({ where: { id: who.clientUserId! }, select: { id: true, email: true } });
+      clientJar.set(CLIENT_COOKIE, await signClientSession({ cu: person.id, email: person.email }));
+      const au = { enrollmentId: who.enrollmentId };
       for (const k of keys) {
         const r = await portalActions.portalSaveTopicAnswer(au, topicId, monthId, k, swap(ANSWERS[k]));
         if (!r.ok) console.log("  save refused:", k, r.message);
@@ -437,9 +457,10 @@ async function main() {
         await portalActions.portalAnswerInterview(au, interviewId, st.nextKey, FOLLOW, "TYPED");
         r = await portalActions.portalSendTopicAnswers(au, topicId, monthId);
       }
+      clientJar.delete(CLIENT_COOKIE);
       return r;
     };
-    const sentAns = await answerAll(auth.token, tMal, M.monthId, sent2.interviewId, sent2.questions.map((q) => q.key));
+    const sentAns = await answerAll(M, tMal, M.monthId, sent2.interviewId, sent2.questions.map((q) => q.key));
     c.ok("the client answers the questions in the portal and sends them", sentAns.ok && sentAns.status === "SUBMITTED", sentAns.message);
     const work2 = await scriptWorkForMonth(M.monthId);
     c.ok("…the topic is ready from her answers (FROM_ANSWERS)", work2.find((x) => x.topicId === tMal)?.readiness === "FROM_ANSWERS", work2.find((x) => x.topicId === tMal)?.why);
@@ -470,7 +491,7 @@ async function main() {
     c.ok("the creative manager sends Bernadette's questions", bSent.ok && !!bSent.requestId, bSent.message);
     const bReq = await prisma.contentScriptRelease.findUnique({ where: { id: bSent.requestId! } });
     const bLedger = qr.readQuestionRequestLedger(bReq?.note)!;
-    const bAns = await answerAll(B.portalToken!, B.topicIds[0], B.monthId, bLedger.interviewId, bLedger.questions.map((q) => q.key), (t) => t.replace(/Malvern/g, "Emmaus"));
+    const bAns = await answerAll(B, B.topicIds[0], B.monthId, bLedger.interviewId, bLedger.questions.map((q) => q.key), (t) => t.replace(/Malvern/g, "Emmaus"));
     const bDr = await draftOwedScriptsForMonth(B.monthId, { requestedBy: "drill", unattended: false });
     const bFresh = await prisma.contentScript.findFirst({ where: { topicId: B.topicIds[0], monthId: B.monthId, historical: false } });
     const bV = bFresh ? await prisma.contentScriptVersion.findFirst({ where: { scriptId: bFresh.id } }) : null;

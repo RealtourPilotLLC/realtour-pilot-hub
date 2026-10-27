@@ -146,7 +146,8 @@ export function SettingsPanel({
               </div>
             )}
             <Override label="Extra sessions allowed without approval" k="extraSessionsAllowed" v={s.overrides.extraSessionsAllowed} s={s} busy={busy} start={start} say={say} boolean />
-            <Override label="Require a call for the next N months" k="requireCallForMonths" v={s.overrides.requireCallForMonths} s={s} busy={busy} start={start} say={say} />
+            {/* ONE CALL-MODE CONTROL (Jordan, Oct 27 2026: "One of each"): "Require a call for the
+                next N months" is gone. Nothing ever read it; Program style's Strategy calls row is the control. */}
           </div>
         )}
       </Section>

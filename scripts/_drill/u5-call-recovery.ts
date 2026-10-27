@@ -96,7 +96,8 @@ async function main() {
     }
     await as(settingsOnly);
     const settings = await html(await SettingsPage({ searchParams: Promise.resolve({}) }));
-    c.ok("settings-only override retains its existing owner-action recovery surface", settings.includes("Call recovery stays here") && settings.includes(">Confirm client</button>") && !settings.includes("Open call review queue"));
+    // Oct 27 2026 (Jordan: "One of each"): no second queue on Settings even for an account that cannot open Strategy calls.
+    c.ok("settings-only override: the counts and where the one queue is, no second copy of it", settings.includes("Calls and transcripts needing review") && settings.includes("which this account cannot open") && !settings.includes("Call recovery stays here") && !settings.includes(">Confirm client</button>") && !settings.includes("Open call review queue"));
     // requirePageAccess imports next/navigation itself, so its redirect is the
     // real one (a NEXT_REDIRECT error whose digest carries the target), not the
     // patched stub above. Both shapes read as "REDIRECT <target>".
@@ -109,7 +110,7 @@ async function main() {
     c.ok("settings-only override cannot open the call queue via its deep link", denied.includes("REDIRECT /"), denied);
     const state = await loadCalendlyPanelState();
     const unlinkedOnly = renderToStaticMarkup(createElement(CalendlyMappingsPanel, { state: { ...state, reviewRecords: [], queue: { ...state.queue, aliases: [] } }, canOpenOperations: false }));
-    c.ok("fallback cannot say nothing is waiting while legacy notes need review", unlinkedOnly.includes("already on a month (legacy)") && !unlinkedOnly.includes("Nothing waiting."));
+    c.ok("the summary cannot say nothing is waiting while legacy notes need review", /1<!-- --> transcripts without a confirmed call|1 transcripts without a confirmed call/.test(unlinkedOnly) && !unlinkedOnly.includes("Nothing waiting."), unlinkedOnly.match(/Loaded for review:[^<]*(<!-- -->[^<]*)*/)?.[0]);
     await as(editor);
     denied = "";
     try { await CallsPage(); } catch (error) { denied = redirectOf(error); }

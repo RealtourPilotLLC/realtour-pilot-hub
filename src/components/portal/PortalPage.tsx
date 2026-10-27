@@ -23,7 +23,7 @@ import { resolvePortalRoute, portalHref, v2HrefFor, baseQueryPairs, portalNav, f
 import { portalMonthHref, portalMonthKey, portalSessionIndex, selectedPortalMonth } from "@/lib/portalScheduling";
 import { libraryRows, reviewDeadlines } from "@/lib/portalLayout";
 import { homeActions, planModel, libraryView, type HomeAction } from "@/lib/portalHome";
-import { isLibraryFilter, TEXT_KYLE_START } from "@/lib/portalWords";
+import { isLibraryFilter, OFFICE_LINE, TEXT_KYLE_START } from "@/lib/portalWords";
 import Link from "next/link";
 import { PortalShell } from "@/components/portal/PortalShell";
 import { PORTAL_MIGRATION_NOTICE, PORTAL_FEEDBACK_QUERY } from "@/lib/portalNotice";
@@ -82,7 +82,9 @@ export type PortalQuery = { tab?: string; v?: string; iv?: string; year?: string
 //
 // Oct 21 2026 (Jordan: "Billing questions can go to Kyle. It should say Text
 // Kyle."): the billing line names Kyle and the office number (OFFICE_LINE),
-// not Jordan with no number.
+// not Jordan with no number. Oct 27 2026 (Jordan: "I want them to be able to
+// text kyle. Kyle can delegate to me if needed."): the number is a tappable
+// sms: link (TermsCard's phones); the 24-hour rule is unchanged.
 const defaultTerms = (contact: { name: string; display: string }) => `## The program
 Your Content Program includes the monthly videos, filming sessions, scripting, editing and delivery described in your package. Each month we plan your videos with you, film them at your session, and deliver the finished videos here in your portal.
 
@@ -593,6 +595,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
         readOnly: readOnly ? readOnlyNotice(enrollment.status) : null,
         staff: actor.kind === "STAFF" ? { who: who ?? "Staff", clientName: client?.name ?? "" } : null,
         offerSignIn,
+        // Oct 27 2026: the shared link of a program someone can sign in to only looks; it says so, with Sign in.
+        linkViewOnly: actor.kind === "TOKEN" && !!actor.viewOnly && !readOnly,
         viewOnlySeat: actor.kind === "CLIENT" && actor.membershipRole === "VIEWER" && !readOnly,
         // Oct 6 2026: "we're still moving things over" — every viewer, every page, until retired in lib/portalNotice.ts.
         migrating: PORTAL_MIGRATION_NOTICE.on ? { tellUsHref: feedbackHref } : null,
@@ -646,7 +650,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       {route.dest === "messages" && <MessagesTab d={messagesRes?.ok ? messagesRes.data : null} failed={!!messagesRes && !messagesRes.ok} />}
       {route.dest === "resources" && <ResourcesTab groups={resourcesRes?.ok ? resourcesRes.data : null} failed={!!resourcesRes && !resourcesRes.ok} open={query.r} contact={contact} messagesHref={canMessage ? tabHref("messages") : null} />}
       {route.dest === "team" && settings && <SettingsTab d={settings} />}
-      {route.dest === "terms" && <TermsCard blocks={terms} />}
+      {route.dest === "terms" && <TermsCard blocks={terms} phones={[contact, OFFICE_LINE]} />}
     </PortalShell>
   );
 }

@@ -18,8 +18,11 @@ import { TEXT_KYLE, TEXT_KYLE_START } from "@/lib/portalWords";
 // one, which version, and whether the bytes still match the approval), an
 // editable caption draft, the cover asset when one exists, the script and the
 // transcript it could be drafted from — and the CLIENT-RECORDED facts,
-// "Download started" / "Saved" and "Marked as posted by me", that are never a
-// verified publication (that is §12's job and it is disabled).
+// "Download started" / "Download finished", that are never a verified
+// publication (that is §12's job and it is disabled). ("Marked as posted by
+// me" was retired Oct 21 and deleted Oct 27 2026; Jordan: "Delete them - but
+// add a status that shows it was downloaded", so the Library now says
+// "Downloaded" from these same rows: contentVideos.clientDownloadsFor.)
 //
 // Caption drafting: a client's "Draft a caption" runs only when
 // `caption_assistant` is ON (a missing row is OFF, programAutomation.ts) and
