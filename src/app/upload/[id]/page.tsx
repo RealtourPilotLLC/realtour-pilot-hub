@@ -484,6 +484,16 @@ export default async function UploadProjectPage({
     waiting: r.waiting ? `Waiting on a second shoot${r.waitingNote ? `: ${r.waitingNote.replace(/[.\s]+$/, "")}` : ""}` : null,
   });
   const videos = perVideo.length > 1 ? { first: portalVideo(perVideo[0]), later: perVideo.slice(1).map(portalVideo) } : null;
+  // "Video half shot: needs a second appointment" (Oct 27 2026, Jordan's
+  // Loom): the listing job's videos, numbered as the page numbers them, each
+  // with its hold (lib/secondShoot). A video with an approved cut or a send
+  // cannot wait any more. A read that fails offers no tick.
+  const finishedKeys = perVideo.length
+    ? await import("@/lib/secondShoot").then((m) => m.secondShootControlRows(project.id)).then((rows) => new Set(rows.filter((r) => r.finished).map((r) => r.key))).catch(() => null)
+    : null;
+  const halfShot = finishedKeys
+    ? perVideo.map((r) => ({ key: r.key, number: r.number, label: r.label, waiting: !!r.waiting, finished: finishedKeys.has(r.key) }))
+    : null;
 
   // Who else was on this shoot (Oct 21 2026): a second shooter, and for the
   // office the active photographers who could be added.
@@ -688,6 +698,7 @@ export default async function UploadProjectPage({
         rawBudget={photosOrdered ? { budget: rawBudgetFor(photoTarget), overage: rawOverageCeiling(photoTarget) } : null}
         existingSongs={existingSongs}
         viewerName={viewerName ?? meOnRoster?.name ?? null}
+        halfShot={halfShot}
         slots={{
           // Who was on the shoot; the office adds a second shooter here (Oct 21 2026).
           crew: crew.length || (viewerIsOffice && !viewer?.impersonating) ? (

@@ -54,7 +54,49 @@ export type AgentRequestItem = {
   link: { href: string; label: string } | null;
   /** closed words ("Confirmed by Kyle Smith, …") for history rows */
   closedWords?: string | null;
+  /** Oct 27 2026: the photographer said they couldn't fulfill it, and why (the job's "Not done on site" line). */
+  notDone?: NotDoneView | null;
 };
+
+// ---------------------------------------------------------------------------
+// "I COULDN'T FULFILL THIS" (Jordan, Oct 27 2026: "there needs to be an option
+// for them to say I wasn't able to fulfill this request, and then just explain
+// why"). The answer is ONE line on the job (Activity SPECIAL_REQUEST), the
+// kind the editor's brief already prints under the special requests, so the
+// editor knows not to look for it; and one task on Kyle's Follow-Ups so the
+// client hears about it (lib/agentRequests requestNotFulfilled). The line is
+// read back onto the request it is about by its words (sameRequestWords).
+//   Not done on site (Harrison Wells): "Open the reel on the deck view" Why: it rained all afternoon
+// ---------------------------------------------------------------------------
+
+export type NotDoneView = { why: string; by: string | null; lineId: string | null };
+
+export const NOT_DONE_PREFIX = "Not done on site";
+export const NOT_DONE_REQUEST_CAP = 240;
+export const NOT_DONE_WHY_CAP = 500;
+
+const oneLine = (s: string, max: number) => {
+  const t = (s ?? "").replace(/\s+/g, " ").trim();
+  return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
+};
+
+/** The job's line for a request not done on site. */
+export function notDoneLine(by: string, request: string, why: string): string {
+  return `${NOT_DONE_PREFIX} (${oneLine(by, 80) || "the photographer"}): "${oneLine(request, NOT_DONE_REQUEST_CAP)}" Why: ${oneLine(why, NOT_DONE_WHY_CAP)}`;
+}
+
+/** A "Not done on site" line read back (null = some other line). */
+export function parseNotDoneLine(body: string | null | undefined): { by: string; request: string; why: string } | null {
+  const m = /^Not done on site \(([^)]*)\): "([\s\S]*)" Why: ([\s\S]*)$/.exec((body ?? "").trim());
+  if (!m) return null;
+  return { by: m[1].trim(), request: m[2].trim(), why: m[3].trim() };
+}
+
+/** Does a "Not done on site" line belong to this request? */
+export function notDoneMatches(item: Pick<AgentRequestItem, "text" | "original">, request: string): boolean {
+  const r = request.replace(/…$/, "");
+  return sameRequestWords(item.original, r) || sameRequestWords(item.text, r);
+}
 
 const norm = (s: string) => (s ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 

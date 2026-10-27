@@ -1,7 +1,10 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { clip, scrubMoney } from "@/lib/text";
-import { mergeAgentRequests, sameRequestWords, type AgentRequestItem } from "@/lib/agentRequestsCore";
+import {
+  mergeAgentRequests, sameRequestWords, notDoneLine, notDoneMatches, parseNotDoneLine, NOT_DONE_PREFIX, NOT_DONE_WHY_CAP,
+  type AgentRequestItem,
+} from "@/lib/agentRequestsCore";
 
 // ---------------------------------------------------------------------------
 // THE AGENT'S REQUESTS FOR ONE JOB, as the upload page shows them (Oct 23
@@ -135,9 +138,14 @@ export async function agentRequestsFor(
 
   // ---- what the office typed on the job ----
   const { isAccessNote, stripRequestLabel } = await import("@/lib/specialRequests");
+  // Oct 27 2026: a request the photographer couldn't fulfill is a line of its
+  // own; it is read back onto the request it is about, never shown as a new one.
+  const notDone: { lineId: string; by: string; request: string; why: string }[] = [];
   for (const a of p.activities) {
     const body = (a.body ?? "").trim();
     if (!body) continue;
+    const nd = parseNotDoneLine(body);
+    if (nd) { notDone.push({ lineId: a.id, ...nd }); continue; }
     // Getting in (a code, a lockbox) is not a request: kept for reference,
     // folded with the history (the shoot screen is where it is used).
     if (isAccessNote(body)) {
@@ -227,7 +235,121 @@ export async function agentRequestsFor(
     }
   } catch { /* the shoot screen shows it */ }
 
-  return mergeAgentRequests(items);
+  const merged = mergeAgentRequests(items);
+  // The latest answer wins (the lines are oldest first). One the list no
+  // longer shows (the ask was closed and aged off) stays visible as history.
+  for (const nd of notDone) {
+    const view = { why: say(nd.why), by: nd.by || null, lineId: nd.lineId };
+    const hit = merged.find((r) => notDoneMatches(r, nd.request));
+    if (hit) { hit.notDone = view; continue; }
+    merged.push({
+      id: `notdone:${nd.lineId}`, text: say(nd.request), original: say(nd.request), source: "on_site",
+      sourceWords: `Marked not done on site by ${nd.by || "the photographer"}`, atISO: null, group: "history", medium: null, link: null,
+      closedWords: `Couldn't be done: ${say(nd.why)}`, notDone: view,
+    });
+  }
+  return merged;
+}
+
+// ---------------------------------------------------------------------------
+// "I COULDN'T FULFILL THIS" (Jordan, Oct 27 2026, agentRequestsCore). One
+// request, one answer: the job's "Not done on site" line (the editor's brief
+// prints it with the special requests) and one task on Kyle's Follow-Ups, so
+// the client hears it from the office. A second answer for the same request
+// replaces the first; Undo takes both back while Kyle hasn't closed the task.
+// ---------------------------------------------------------------------------
+
+/** Short, stable key for one request on one job (the task's dedupe key). */
+function requestKey(projectId: string, requestId: string): string {
+  let h = 5381;
+  for (const ch of requestId) h = ((h * 33) ^ ch.charCodeAt(0)) >>> 0;
+  return `request-not-done:${projectId}:${h.toString(36)}`;
+}
+
+export async function requestNotFulfilled(input: {
+  projectId: string;
+  requestId: string;
+  why: string;
+  by: { name: string };
+  office: boolean;
+  money?: boolean;
+}): Promise<AddRequestResult> {
+  const why = (input.why ?? "").replace(/\r\n/g, "\n").trim();
+  if (why.length < 3) return { ok: false, message: "Say why it couldn't be done." };
+  if (why.length > NOT_DONE_WHY_CAP) return { ok: false, message: `Keep the reason under ${NOT_DONE_WHY_CAP} characters.` };
+  const p = await prisma.project.findUnique({ where: { id: input.projectId }, select: { title: true } });
+  if (!p) return { ok: false, message: "Couldn't find that shoot." };
+  // The words come from the server's own list (the office's copy, with the
+  // amounts), never from the page: the page holds a money-scrubbed copy.
+  const all = await agentRequestsFor(input.projectId, { office: true, money: true });
+  const req = all.find((r) => r.id === input.requestId);
+  if (!req || req.id.startsWith("notdone:")) return { ok: false, message: "That request isn't on this shoot any more. Reload the page." };
+  const name = (input.by.name || "the photographer").trim().slice(0, 80);
+  const body = notDoneLine(name, req.original, why);
+  // One answer per request: an earlier line for it is replaced.
+  const earlier = (await prisma.activity.findMany({ where: { projectId: input.projectId, type: "SPECIAL_REQUEST", body: { startsWith: NOT_DONE_PREFIX } }, select: { id: true, body: true } }))
+    .filter((a) => { const nd = parseNotDoneLine(a.body); return !!nd && notDoneMatches(req, nd.request); });
+  if (!earlier.some((a) => a.body === body)) {
+    await prisma.activity.create({ data: { projectId: input.projectId, type: "SPECIAL_REQUEST", body } });
+    if (earlier.length) await prisma.activity.deleteMany({ where: { id: { in: earlier.map((a) => a.id) } } });
+  }
+  // Kyle's task (his Follow-Ups; the drawer's Mark done closes it).
+  const street = (p.title || "the shoot").split(",")[0].trim();
+  const dedupeKey = requestKey(input.projectId, input.requestId);
+  const summary = `${name} couldn't do the agent's request on ${street}: "${clip(req.original.replace(/\s+/g, " "), 200)}". Why: ${clip(why.replace(/\s+/g, " "), 300)}. Let the client know, or plan how to make it right.`;
+  try {
+    const kyle = await import("@/lib/kyleNotice").then((m) => m.kyleDesk()).catch(() => null);
+    const existing = await prisma.smartTask.findUnique({ where: { dedupeKey }, select: { id: true, status: true } });
+    if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") {
+      await prisma.smartTask.update({ where: { id: existing.id }, data: { summary: summary.slice(0, 500), description: why } });
+    } else if (existing) {
+      await prisma.smartTask.update({ where: { id: existing.id }, data: { status: "OPEN", completedAt: null, summary: summary.slice(0, 500), description: why, dueAt: new Date(Date.now() + 24 * 3600_000) } });
+    } else {
+      await prisma.smartTask.create({
+        data: {
+          taskType: "internal_instruction",
+          title: `Agent request not done on site: ${street}`.slice(0, 120),
+          summary: summary.slice(0, 500),
+          description: why,
+          reasonCreated: "The photographer marked an agent request they couldn't fulfill on the upload page.",
+          source: "manual",
+          priority: "HIGH",
+          // Telling the client is a next-morning job, like the add-ons logged on site.
+          dueAt: new Date(Date.now() + 24 * 3600_000),
+          assignedKey: kyle?.key ?? "kyle",
+          ownerId: kyle?.id ?? null,
+          projectId: input.projectId,
+          propertyAddress: p.title,
+          // clientId stays null: a client's next message must never merge into
+          // (and retitle) this task (the add-on task's rule, upload/actions.ts).
+          contactName: name,
+          dedupeKey,
+        },
+      });
+    }
+  } catch (e) {
+    // The line above is saved either way; the hourly pass does not recreate this task, so say so.
+    console.warn("[agent-requests] the office task was not filed", input.projectId, (e as Error)?.message);
+    return { ok: true, message: "Saved on the editor's brief, but the office task didn't go through. Tell Kyle.", items: await agentRequestsFor(input.projectId, { office: input.office, money: input.money ?? false }) };
+  }
+  return {
+    ok: true,
+    message: "Saved. Kyle has it on his follow-ups, and the editor's brief says it wasn't done.",
+    items: await agentRequestsFor(input.projectId, { office: input.office, money: input.money ?? false }),
+  };
+}
+
+/** Undo "I couldn't fulfill this": the line goes, and Kyle's task with it unless he already closed it. */
+export async function withdrawNotFulfilled(input: { projectId: string; requestId: string; office: boolean; money?: boolean }): Promise<AddRequestResult> {
+  const all = await agentRequestsFor(input.projectId, { office: true, money: true });
+  const req = all.find((r) => r.id === input.requestId);
+  if (!req?.notDone) return { ok: true, message: "Nothing to undo.", items: await agentRequestsFor(input.projectId, { office: input.office, money: input.money ?? false }) };
+  const lines = (await prisma.activity.findMany({ where: { projectId: input.projectId, type: "SPECIAL_REQUEST", body: { startsWith: NOT_DONE_PREFIX } }, select: { id: true, body: true } }))
+    .filter((a) => { const nd = parseNotDoneLine(a.body); return !!nd && (a.id === req.notDone!.lineId || notDoneMatches(req, nd.request)); });
+  if (lines.length) await prisma.activity.deleteMany({ where: { id: { in: lines.map((a) => a.id) } } });
+  const dedupeKey = requestKey(input.projectId, input.requestId);
+  await prisma.smartTask.updateMany({ where: { dedupeKey, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { status: "CANCELLED" } }).catch(() => null);
+  return { ok: true, message: "Taken back.", items: await agentRequestsFor(input.projectId, { office: input.office, money: input.money ?? false }) };
 }
 
 export type AddRequestResult = { ok: boolean; duplicate?: boolean; message: string; items?: AgentRequestItem[] };

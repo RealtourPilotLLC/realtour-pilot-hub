@@ -15,6 +15,7 @@ import { captureShape } from "@/lib/videoStyles";
 import { resolveVideoSpec } from "@/lib/pipeline";
 import { videoTier } from "@/lib/projectStatus";
 import type { SessionBrief, OutputBrief, ScriptDirection } from "@/lib/deliverableOutputs";
+import { shootThumbCandidates } from "@/lib/shootThumb";
 
 // Data layer for the guided photographer experience (/shoot). Assembles one
 // clean, serializable view model per shoot — appointment access brief, customer
@@ -950,29 +951,13 @@ export type MyShootRow = {
   // Project.coverImageUrl fresh). null = no key configured + no photos yet.
   thumbUrl: string | null;
   thumbKind: "aryeo" | "street" | null;
+  /** Oct 27 2026: the frames to try next when thumbUrl misses (shootThumbCandidates) */
+  thumbFallbacks?: { url: string; kind: "aryeo" | "street" }[];
   /** Oct 14 2026: the shoot films scripts the office approved (open it to read, edit, download or text them). */
   hasScripts?: boolean;
 };
 
-// Street View Static frame of the property — the "what am I walking into?"
-// look for a shoot that hasn't been photographed yet. Needs GOOGLE_MAPS_API_KEY
-// (Jordan adds it in Vercel; never in source). Without it we render no
-// thumbnail, and the card upgrades itself the moment the key exists or the
-// photos land on Aryeo.
-// Location: COORDS FIRST (radius=250) — Google finds the nearest outdoor pano
-// within 250m and auto-aims the camera at the point, i.e. at the house.
-// Verified against the live pipeline: coords resolved 6/6 upcoming shoots
-// (full-address lookups failed on unit/suite-style addresses). Address is the
-// fallback for unmapped listings. outdoor-only skips inside-the-business
-// panos; return_error_code turns a genuine miss into a 404 the <img> hides,
-// instead of a grey "no imagery" placeholder.
-function streetViewSrc(lat: number | null, lng: number | null, fullAddress: string | null): string | null {
-  const key = process.env.GOOGLE_MAPS_API_KEY;
-  if (!key) return null;
-  const location = lat != null && lng != null ? `${lat},${lng}` : fullAddress;
-  if (!location) return null;
-  return `https://maps.googleapis.com/maps/api/streetview?size=320x200&location=${encodeURIComponent(location)}&fov=75&radius=250&source=outdoor&return_error_code=true&key=${key}`;
-}
+// (The card's picture: lib/shootThumb shootThumbCandidates, Oct 27 2026.)
 
 // A photographer's shoots (or all, for owner/admin previews): recent + upcoming,
 // soonest-relevant first. `memberId = null` = no scoping (owner/admin view).
@@ -1016,8 +1001,9 @@ export async function listMyShoots(memberId: string | null): Promise<MyShootRow[
     // as its photographer, every visit assigned to someone else, still lists.
     const mine = memberId ? p.appointments.filter((a) => a.assignedToId === memberId || (!a.assignedToId && p.photographerId === memberId)) : [];
     const visits: (typeof p.appointments[number] | null)[] = mine.length ? mine : p.appointments.length ? p.appointments : [null];
-    // Photos live on Aryeo → the real cover shot; until then, Street View.
-    const sv = p.coverImageUrl ? null : streetViewSrc(p.lat, p.lng, p.title);
+    // Photos live on Aryeo → the real cover shot; until then, Street View
+    // (and the next frame to try on a miss: shootThumbCandidates).
+    const thumbs = shootThumbCandidates(p);
     // C20 (Oct 20 2026): the upload page hands the shoot to the editor; a shoot
     // that happened with the page still unsubmitted says so on its row.
     const happened = p.appointments.some((a) => a.completedAt != null || (a.startAt != null && a.startAt.getTime() <= nowMs)) || (!p.appointments.length && !!p.shootDate && p.shootDate.getTime() <= nowMs);
@@ -1030,8 +1016,9 @@ export async function listMyShoots(memberId: string | null): Promise<MyShootRow[
         key: appt?.id ?? p.id,
         title: p.title,
         street: streetOf(p.title) || p.title,
-        thumbUrl: p.coverImageUrl ?? sv,
-        thumbKind: p.coverImageUrl ? ("aryeo" as const) : sv ? ("street" as const) : null,
+        thumbUrl: thumbs[0]?.url ?? null,
+        thumbKind: thumbs[0]?.kind ?? null,
+        thumbFallbacks: thumbs.slice(1),
         hasScripts: !!p.contentMonthId && scripted.has(p.contentMonthId),
         whenISO: when?.toISOString() ?? null,
         status: p.status,

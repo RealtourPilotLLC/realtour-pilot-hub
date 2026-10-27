@@ -9,6 +9,7 @@ import { isSyntheticClientRow } from "@/lib/testClients";
 import { hasConfirmedIssueCause } from "@/lib/issueCauses";
 import { readDeadlineOverrides, readInstructionsAsks, type KpiDeadlineOverride } from "@/lib/kpiStore";
 import type { KpiEntryBase, ShootFact } from "@/lib/kpi";
+import { LIGHT_WORDS, lightInstructions, ownWords } from "@/lib/instructionsLight";
 
 // ---------------------------------------------------------------------------
 // KPI EVIDENCE: THE HUB'S OWN RECORDS, AS ENTRIES (Oct 22 2026).
@@ -43,10 +44,16 @@ import type { KpiEntryBase, ShootFact } from "@/lib/kpi";
 //   · INCOMPLETE: the handoff engine's own gaps that are the photographer's
 //     (handoffReadinessOf: the flow and vision, the premium script, the
 //     agent's intro script, the video count) are still open;
-//   · THIN: fewer than THIN_WORDS words of their own in the video
-//     instructions (section headings, the STYLE and COLOR PROFILE lines and
-//     placeholder answers like "n/a" or "standard" do not count), with no
-//     instructions file in Dropbox.
+//   · LIGHT (Jordan, Oct 27 2026: "weak instructions hurts their KPI as
+//     well"; it was THIN, under 12 words, until then): the one rule the
+//     upload page's "These instructions are light" hint reads too
+//     (lib/instructionsLight): fewer than LIGHT_WORDS words of their own
+//     (section headings, the STYLE, COLOR PROFILE and SONG lines and
+//     placeholder answers like "n/a" or "standard" do not count), or on a
+//     premium brief neither a vision nor a style. An instructions file in
+//     Dropbox said on an older page still answers it (the page no longer
+//     offers one). A video waiting on a second shoot is not judged until it
+//     is released.
 // One entry per shoot either way. A video half that was not in by its
 // deadline is a late upload instead (the morning-after ask for the missing
 // instructions is shown on that entry), never both for the same miss. A
@@ -85,27 +92,10 @@ import type { KpiEntryBase, ShootFact } from "@/lib/kpi";
 const DAY = 86_400_000;
 /** The video half is due at this ET hour the morning after the shoot day (the terms). */
 export const VIDEO_DUE_HOUR = 9;
-/** Fewer of the photographer's own words than this in the video instructions reads as thin. */
-export const THIN_WORDS = 12;
-
-const HEADINGS = new Set([
-  "VISION FOR THE EDIT", "SUMMARY", "SHOTS THAT MUST BE SHOWN", "AREAS TO AVOID", "THINGS TO AVOID",
-  "REALTOR REQUESTS", "ADDITIONAL NOTES", "INTRO SCRIPT", "EDITING NOTES",
-  "SCRIPT FOR THIS VIDEO", "SONG OR MUSIC",
-]);
-const PLACEHOLDER = /^(n\/?a|na|none|nothing|no|nope|same|same as usual|as usual|standard|normal|usual|ok|okay|good|fine|tbd|see above|-+|\.+)$/i;
-
-/** How many of the photographer's OWN words a video brief holds (pure). */
-export function ownWords(text: string | null | undefined): number {
-  return (text ?? "")
-    .split("\n")
-    .map((l) => l.trim())
-    // Oct 23 2026: song request lines (lib/songRequest) are not instructions, so they never count as the photographer's words.
-    .filter((t) => t && !/^STYLE:/i.test(t) && !/^COLOR PROFILE:/i.test(t) && !/^SONG (?:REQUEST|TITLE|LINK|START):/i.test(t) && !HEADINGS.has(t.toUpperCase()) && !PLACEHOLDER.test(t))
-    .join(" ")
-    .split(/\s+/)
-    .filter((w) => /[a-z0-9]/i.test(w)).length;
-}
+/** The light-instructions word floor (lib/instructionsLight; the old name is kept for its readers). */
+export const THIN_WORDS = LIGHT_WORDS;
+/** How many of the photographer's OWN words a video brief holds (lib/instructionsLight, re-exported for its older readers). */
+export { ownWords };
 
 const COVER_NOUN = /\b(photos?|pictures?|pics?|shots?|images?|angles?|views?|rooms?|bed ?rooms?|bath ?rooms?|kitchen|basement|garage|back ?yard|yard|patio|deck|pool|exterior|front|drone|aerials?|twilight|closet|office|dining|living|laundry|porch|attic|loft|den|foyer|staircase|stairs)\b/i;
 const MISS_STRONG = /\b(missed|forgot|forgotten|never (got|took|shot|captured)|did ?n[o']?t (get|take|shoot|capture|photograph)|was ?n[o']?t (photographed|shot|captured)|were ?n[o']?t (photographed|shot|captured)|not (photographed|captured)|no (photos?|pictures?|pics|shots?|images?) of)\b/i;
@@ -397,12 +387,20 @@ export async function loadEvidence(
           : [];
         const excused = new Set(later.filter((v) => v.createdAt && v.createdAt.getTime() > handedIn.getTime()).map((v) => laterVideoGap(v, { instructionsInDropbox: !!r.instructionsDropboxPath }) ?? ""));
         const gaps = readiness.gaps.filter((g) => g.owedBy === "photographer" && g.key !== "debrief" && !excused.has(g.label));
-        const words = ownWords(r.videoInstructions ?? r.editorBrief);
+        // LIGHT INSTRUCTIONS (Oct 27 2026, lib/instructionsLight): the same
+        // rule the upload page's hint reads. A first video waiting on a second
+        // shoot ("Video half shot" on the upload page) is not judged until it
+        // is released, like the later videos below.
+        const verdict = lightInstructions(r.videoInstructions ?? r.editorBrief, { full: readiness.mode === "premium-script" });
+        const firstWaiting = verdict.light
+          ? await import("@/lib/deliverableOutputs").then((m) => m.videoInstructionsFor(r.id)).then((rows) => rows.some((v) => v.number === 1 && v.waiting)).catch(() => false)
+          : false;
         const thinLater = r.instructionsDropboxPath ? [] : later
           // A video waiting on a second shoot is not judged until it is released (Oct 22 2026).
-          .filter((v) => !v.waiting && v.shape === "full" && v.own && !(v.createdAt && v.createdAt.getTime() > handedIn.getTime()) && ownWords(v.own) < THIN_WORDS)
-          .map((v) => `${ownWords(v.own)} word${ownWords(v.own) === 1 ? "" : "s"} of your own for video ${v.number} (${v.label}); the rule is at least ${THIN_WORDS}.`);
-        const thin = !r.instructionsDropboxPath && words < THIN_WORDS;
+          .filter((v) => !v.waiting && v.shape === "full" && v.own && !(v.createdAt && v.createdAt.getTime() > handedIn.getTime()) && lightInstructions(v.own, { full: true }).light)
+          .map((v) => `Video ${v.number} (${v.label}): ${lightInstructions(v.own, { full: true }).why}. Light instructions count against the KPI.`);
+        const words = verdict.words;
+        const thin = !r.instructionsDropboxPath && !firstWaiting && verdict.light;
         if (gaps.length || thin || thinLater.length) {
           entries.push({
             id: `instructions:${r.id}`,
@@ -414,7 +412,11 @@ export async function loadEvidence(
             detail: [
               `Video half submitted ${etDateTime(handedIn)}.`,
               ...(gaps.length ? [`Still missing: ${gaps.map((g) => g.label).join("; ")}.`] : []),
-              ...(thin ? [`${words} word${words === 1 ? "" : "s"} of your own in the video instructions; the rule is at least ${THIN_WORDS} (headings, the style and color lines and answers like "n/a" or "standard" do not count) or an instructions file in Dropbox.`] : []),
+              ...(thin
+                ? [words < LIGHT_WORDS
+                    ? `${words} word${words === 1 ? "" : "s"} of your own in the video instructions; light instructions count against the KPI, and the rule is at least ${LIGHT_WORDS} (headings, the style, color and song lines and answers like "n/a" or "standard" do not count).`
+                    : "No vision for the edit and no style in the video instructions; light instructions count against the KPI."]
+                : []),
               ...thinLater,
             ],
             projectId: r.id,

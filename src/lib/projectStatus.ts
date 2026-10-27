@@ -910,7 +910,11 @@ function mediaSignalOf(l: AryeoListing): AryeoMediaSignal {
     floorPlans: l.floor_plans?.length ?? 0,
     interactive: l.interactive_content?.length ?? 0,
     delivery: l.delivery_status ?? null,
-    cover: l.thumbnail_url ?? first?.thumbnail_url ?? first?.large_url ?? null,
+    // Oct 27 2026 (Jordan: the cover photo replaces Street View once photos
+    // are uploaded): only a listing WITH photos has a cover. Aryeo can carry a
+    // listing thumbnail before any image is on it, and that used to take the
+    // My Shoots card's Street View away (lib/shoot listMyShoots).
+    cover: (l.images?.length ?? 0) > 0 ? l.thumbnail_url ?? first?.thumbnail_url ?? first?.large_url ?? null : null,
     at: new Date().toISOString(),
     videoList: videoFactsOf(l.videos),
   };

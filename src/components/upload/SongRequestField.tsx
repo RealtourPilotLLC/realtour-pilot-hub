@@ -6,10 +6,12 @@ import { songProblem, SONG_LIMITS, type SongRequest } from "@/lib/songRequest";
 
 // ---------------------------------------------------------------------------
 // One video's song request (Oct 23 2026, lib/songRequest). "No request" is a
-// full answer; a requested song needs a title (artist welcome) or a link, not
-// both; the start time or section is optional. A song already on file for the
-// video (the client asked for one by text, the office picked a track) is shown
-// above, so nobody asks for it twice.
+// full answer; a requested song needs its link (Jordan, Oct 27 2026: "We
+// don't need the title and artist. Just the song link"); the start time or
+// section is optional. A title saved before Oct 27 is shown read-only and
+// kept. A song already on file for the video (the client asked for one by
+// text, the office picked a track) is shown above, so nobody asks for it
+// twice.
 // ---------------------------------------------------------------------------
 
 export function SongRequestField({
@@ -28,6 +30,7 @@ export function SongRequestField({
 }) {
   const requested = value.mode === "requested";
   const problem = songProblem(value, videoName);
+  const savedTitle = value.title.trim();
   const input = "mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-base outline-none focus:border-brand sm:text-sm";
   return (
     <div data-song-request={id} className="rounded-xl border border-border bg-surface-2/30 p-3">
@@ -58,20 +61,19 @@ export function SongRequestField({
       </div>
       {requested && (
         <div className="mt-2.5 grid gap-2.5 sm:grid-cols-2">
-          <div>
-            <label htmlFor={`${id}-title`} className="text-[13px] font-medium text-muted">Title and artist</label>
-            <input id={`${id}-title`} value={value.title} maxLength={SONG_LIMITS.title} onChange={(e) => onChange({ ...value, title: e.target.value })} placeholder="e.g. Good Days by LAKEY INSPIRED" className={input} />
-          </div>
+          {savedTitle && (
+            <p data-song-saved-title className="text-xs text-muted sm:col-span-2">Song named earlier: {savedTitle}</p>
+          )}
           <div>
             <label htmlFor={`${id}-link`} className="text-[13px] font-medium text-muted">Song link</label>
             <input id={`${id}-link`} value={value.link} maxLength={SONG_LIMITS.link} inputMode="url" onChange={(e) => onChange({ ...value, link: e.target.value })} placeholder="Spotify, YouTube or Apple Music link" className={input} />
           </div>
-          <div className="sm:col-span-2">
+          <div>
             <label htmlFor={`${id}-start`} className="text-[13px] font-medium text-muted">Start time or section <span className="font-normal">(optional)</span></label>
             <input id={`${id}-start`} value={value.start} maxLength={SONG_LIMITS.start} onChange={(e) => onChange({ ...value, start: e.target.value })} placeholder="e.g. 0:30, or start at the chorus" className={input} />
           </div>
           <p className={cn("text-xs sm:col-span-2", problem ? "text-warning" : "text-muted")}>
-            {problem ? `Add ${problem}.` : "A title or a link is enough to find it."}
+            {problem ? `Add ${problem}.` : "The link is all the editor needs to find it."}
           </p>
         </div>
       )}

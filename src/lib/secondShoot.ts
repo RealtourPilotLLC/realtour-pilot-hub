@@ -174,6 +174,37 @@ const ROW = {
 } as const;
 
 /**
+ * Take a hold back before it was released (Oct 27 2026: the upload page's
+ * "Video half shot: needs a second appointment" unticked by the person who
+ * ticked it). The video goes straight back to the editors' queue on the job's
+ * own clock (marking it never moved its dates). A released hold is history and
+ * stays. The caller owns the permission check.
+ */
+export async function clearVideoWaitingOnShoot(input: {
+  projectId: string;
+  outputId?: string | null;
+  key?: string | null;
+  actor: string;
+  kick?: boolean;
+}): Promise<SecondShootResult> {
+  const actor = (input.actor || "the office").trim().slice(0, 120);
+  const [deliverableId, slotRaw] = (input.key ?? "").split(":");
+  const row = input.outputId
+    ? await prisma.deliverableOutput.findUnique({ where: { id: input.outputId }, select: ROW })
+    : deliverableId && Number(slotRaw) > 0
+      ? await prisma.deliverableOutput.findUnique({ where: { deliverableId_slot: { deliverableId, slot: Number(slotRaw) } }, select: ROW })
+      : null;
+  if (!row || row.projectId !== input.projectId) return { ok: false, message: "That video is not on this job." };
+  const name = await videoName(row.projectId, row.deliverableId, row.slot);
+  if (!isWaitingHold(readSecondShoot(row.briefJson))) return { ok: true, outputId: row.id, message: `${name} is not waiting on a second shoot.` };
+  const res = await prisma.deliverableOutput.updateMany({ where: { id: row.id, briefJson: row.briefJson }, data: { briefJson: withSecondShoot(row.briefJson, null) } });
+  if (res.count === 0) return { ok: false, message: "That video changed while you were saving. Reload and try again." };
+  await activity(row.projectId, `${name}: no longer waiting on a second shoot (taken back by ${actor}). It is back on the editors' queue.`);
+  if (input.kick !== false) await kickHandoff(row.projectId);
+  return { ok: true, outputId: row.id, message: `${name} is back on the editors' queue.` };
+}
+
+/**
  * Release a waiting video: the office's "Release to the editor" (how "office")
  * or footage from a later appointment (how "upload"). Its OWN clock starts from
  * that shoot (a later appointment that has happened; with none, the moment the
