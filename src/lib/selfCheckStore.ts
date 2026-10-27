@@ -57,6 +57,23 @@ async function brandChoicesFor(projectId: string): Promise<Map<string, SelfCheck
   return new Map(rows.map((r) => [`${r.deliverableId}:${r.slot}`, readOutputBrief(r.briefJson)?.brandChoice ?? "unspecified"]));
 }
 
+/** Oct 27 2026: the client has brand colors (a hex on their row, or a color
+ *  palette) or a logo / branding card on file, so the final check asks for
+ *  the brand to be applied (selfCheck BRAND_APPLIED_LABEL). A failed read
+ *  asks nothing new. */
+async function brandOnFileFor(projectId: string): Promise<boolean> {
+  try {
+    const p = await prisma.project.findUnique({ where: { id: projectId }, select: { client: { select: { id: true, brandColors: true } } } });
+    if (!p?.client) return false;
+    // A hex code with its "#", as the client profile reads their colors ("bad gold" is not one).
+    if (/#[0-9a-f]{6}\b|#[0-9a-f]{3}\b/i.test(p.client.brandColors ?? "")) return true;
+    const kit = await prisma.clientAsset.count({ where: { clientId: p.client.id, status: "ACTIVE", activeVersionId: { not: null }, type: { in: ["LOGO", "BRANDING_CARD", "COLOR_PALETTE"] } } });
+    return kit > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** Which product a cut is — the Style Guide key behind cutSlots' label. A
  *  folder cut with no deliverable is its job's only video when the job owes
  *  one; otherwise it names no product and gets the default list. */
@@ -84,7 +101,7 @@ export async function checkContextForSlot(
 ): Promise<SlotCheckContext> {
   const { slotKeyOf } = await import("@/lib/reviewCuts");
   const { openIssuesForSlot } = await import("@/lib/revisionIssues");
-  const [styleKey, issues, earlier, brands] = await Promise.all([
+  const [styleKey, issues, earlier, brands, brandOnFile] = await Promise.all([
     styleOfSlot(projectId, slot.deliverableId),
     openIssuesForSlot(projectId, slot).catch(() => []),
     prisma.reviewSubmission.count({
@@ -95,10 +112,11 @@ export async function checkContextForSlot(
       },
     }).catch(() => 0),
     slot.deliverableId ? brandChoicesFor(projectId) : Promise.resolve(new Map<string, SelfCheckFacts["brandChoice"]>()),
+    brandOnFileFor(projectId),
   ]);
   return {
     key: slot.deliverableId ? slotKeyOf(slot.deliverableId, slot.slot) : "folder",
-    profile: await profileForStyle(styleKey, { brandChoice: slot.deliverableId ? brands.get(`${slot.deliverableId}:${slot.slot ?? 1}`) : null }),
+    profile: await profileForStyle(styleKey, { brandChoice: slot.deliverableId ? brands.get(`${slot.deliverableId}:${slot.slot ?? 1}`) : null, brandOnFile }),
     isRevision: (opts.round ?? 1) > 1 || earlier > 0 || issues.length > 0,
     issues,
   };
@@ -109,7 +127,7 @@ export async function checkContextForSlot(
 export async function checkContextsForProject(projectId: string): Promise<Record<string, SlotCheckContext>> {
   const { cutSlots, slotKeyOf } = await import("@/lib/reviewCuts");
   const { openIssuesByCut } = await import("@/lib/revisionIssues");
-  const [slots, overrides, issues, decided, brands] = await Promise.all([
+  const [slots, overrides, issues, decided, brands, brandOnFile] = await Promise.all([
     cutSlots(projectId).catch(() => []),
     selfCheckOverrides().catch(() => ({})),
     openIssuesByCut(projectId).catch(() => ({ forCut: () => [] })),
@@ -117,6 +135,7 @@ export async function checkContextsForProject(projectId: string): Promise<Record
       .findMany({ where: { projectId, deliverableId: { not: null }, status: { in: ["CHANGES_REQUESTED", "APPROVED", "SUPERSEDED"] } }, select: { deliverableId: true, slot: true } })
       .catch(() => []),
     brandChoicesFor(projectId),
+    brandOnFileFor(projectId),
   ]);
   const hadVersion = new Set(decided.map((r) => slotKeyOf(r.deliverableId!, r.slot)));
   const out: Record<string, SlotCheckContext> = {};
@@ -124,7 +143,7 @@ export async function checkContextsForProject(projectId: string): Promise<Record
     const key = slotKeyOf(s.deliverableId, s.slot);
     const slotIssues = issues.forCut({ deliverableId: s.deliverableId, slot: s.slot, assetPath: null });
     const styleKey = VIDEO_TYPES.find((t) => t.name === s.deliverableLabel)?.key ?? "default";
-    out[key] = { key, profile: resolveSelfCheckProfile(styleKey, overrides, { brandChoice: brands.get(key) }), isRevision: hadVersion.has(key) || slotIssues.length > 0, issues: slotIssues };
+    out[key] = { key, profile: resolveSelfCheckProfile(styleKey, overrides, { brandChoice: brands.get(key), brandOnFile }), isRevision: hadVersion.has(key) || slotIssues.length > 0, issues: slotIssues };
   }
   return out;
 }

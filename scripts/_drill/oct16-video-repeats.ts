@@ -239,15 +239,18 @@ async function main() {
     const john = await view("John", listing.id);
     const article = block(john.html, new RegExp(`<article[^>]*id="brief-${out.id}"`));
     const make = block(article, /data-brief-section="make"/);
-    const spellBox = text(block(make, /data-spell-list/));
-    c.ok("Spell these exactly sits in What to make", !!spellBox && spellBox.includes("Spell these exactly.") && spellBox.includes("auto-transcription"), spellBox.slice(0, 200));
+    // Oct 27 2026 (Jordan's Loom): the script moved into Instructions, and the
+    // names to spell and the end card with it; Make this stays under What to make.
+    const instructions = block(article, /data-brief-section="instructions"/);
+    const spellBox = text(block(instructions, /data-spell-list/));
+    c.ok("Spell these exactly sits in Instructions, beside the script", !!spellBox && spellBox.includes("Spell these exactly.") && spellBox.includes("auto-transcription"), spellBox.slice(0, 200));
     c.ok("…with her name corrected from her own notes, her brokerage and team, the street and the town", ["Erika Walker (not Erica)", "Keller Williams", "The Walker Team", "412 Okehocking Ln", "West Chester (two words, never Westchester)"].every((x) => spellBox.includes(x)), spellBox);
     c.ok("…Okehocking's \"spelled wrong before\" rides on the street; Bath (a grammar fix) is nowhere", spellBox.includes("412 Okehocking Ln (spelled wrong before)") && !/\bBath\b/.test(spellBox));
     c.ok("…and it is a line, not a new section of the brief", !/data-spell-list[^>]*data-brief-section|data-brief-section[^>]*data-spell-list/.test(article));
     c.ok("the Listing flow line sits under Make this", text(block(make, /data-listing-flow/)).trim() === vs.LISTING_FLOW && make.indexOf("data-listing-flow") > make.indexOf("data-make-this"));
     const music = text(block(article, /data-brief-section="music"/));
     c.ok("music: licensed only, and why; never trending audio", music.includes("licensed music only (it's a listing video for YouTube and the MLS)") && !/trending audio that/.test(music) && music.includes("No trending audio"), music);
-    const end = block(make, /data-end-card/);
+    const end = block(instructions, /data-end-card/);
     c.ok("the end card says plainly there's no logo file and Kyle has been asked, with the way to message him", text(end).includes("Their notes ask for their logo, and there's no logo file yet. Kyle has been asked for it.") && /href="#messages"/.test(end), text(end));
     c.ok("Keep the raw footage and your project file for 30 days after delivery, once", count(text(john.html), "Keep the raw footage and your project file for 30 days after delivery. Revisions come back.") === 1);
     const task = await prisma.smartTask.findUnique({ where: { dedupeKey: logoKey } });
@@ -275,7 +278,7 @@ async function main() {
     // Kyle attaches the file: the brief and the final check name it.
     const attached = await attachAssetReference(task!.id, "https://example.test/walker-logo.png", "Kyle");
     const after = await view("John", listing.id);
-    const endAfter = block(block(after.html, /data-brief-section="make"/), /data-end-card/);
+    const endAfter = block(block(after.html, /data-brief-section="instructions"/), /data-end-card/);
     const brandAfter = ((after.els.find((e) => e.name === "CutUploader")?.props.checks ?? {}) as typeof checks)[key]?.profile.items.find((i) => i.key === "brand_assets")?.help ?? "";
     c.ok("once Kyle attaches it, the brief links the file he found", attached.ok && text(endAfter).includes("Kyle found it") && endAfter.includes('href="https://example.test/walker-logo.png"'), text(endAfter));
     c.ok("…and the final check names it", brandAfter.includes("the file Kyle attached (https://example.test/walker-logo.png)"), brandAfter);

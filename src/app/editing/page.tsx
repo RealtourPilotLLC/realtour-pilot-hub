@@ -23,6 +23,7 @@ import { prisma } from "@/lib/prisma";
 import { syntheticClientIds } from "@/lib/syntheticClients";
 import { isCreativeLead } from "@/lib/auth/access";
 import { remindViewsFor, type RemindView } from "@/lib/remindPhotographer";
+import { EditorSpeedPanel, type SpeedNow } from "@/components/editing/EditorSpeedPanel";
 
 export const dynamic = "force-dynamic";
 
@@ -256,13 +257,34 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
   // instructions missing until the upload has been submitted or it says ready
   // for editing").
   const canRemind = !me || isCreativeLead(me.role);
-  const [unread, wn, act, workload, removedRows, reminders] = await Promise.all([
+  // EDITOR SPEED (Jordan, Oct 27 2026: "how long it takes Kim to work on
+  // specific videos of personal branding, how long it takes him to start ...
+  // so that I can know when to hire other editors"). The owner and the
+  // creative manager only; 30 or 90 days (lib/editorSpeed). A failed read
+  // says so on the card.
+  const seesSpeed = !me || me.role === "OWNER" || me.role === "CREATIVE_MANAGER";
+  const speedDays: 30 | 90 = sp.speed === "90" ? 90 : 30;
+  const speedRead = seesSpeed
+    ? import("@/lib/editorSpeed").then((m) => m.editorSpeedReport({ days: speedDays, now: new Date(), excludeClientIds })).catch(() => null)
+    : Promise.resolve(null);
+  const [unread, wn, act, workload, removedRows, reminders, speed] = await Promise.all([
     unreadThreadCount(me?.id ?? null, [...notDone, ...upcomingRows, ...done].map((r) => r.id)),
     workingNow({ now, excludeProjectIds }), editorActivityToday({ now, excludeProjectIds }),
     editingWorkload(workloadRows([...notDone, ...upcomingRows])),
     recentlyRemovedFromQueue(),
     canRemind ? remindViewsFor(notDone.filter((r) => r.status !== WAITING_ON_FOOTAGE).map((r) => r.id), now, { audience: "editing" }).catch(() => new Map<string, RemindView>()) : new Map<string, RemindView>(),
+    speedRead,
   ]);
+  const speedNow: Record<string, SpeedNow> = Object.fromEntries(
+    (wn.ok ? wn.editors : []).map((e) => [e.key, e.active ? { key: e.key, projectId: e.active.projectId, street: e.active.street, outputTitle: e.active.outputTitle ?? null, sinceISO: e.active.sinceISO ?? null, firstStartedISO: e.active.firstStartedISO ?? null } : null]),
+  );
+  const speedHref = (d: 30 | 90) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(sp)) if (typeof v === "string" && k !== "speed") q.set(k, v);
+    if (d === 90) q.set("speed", "90");
+    const qs = q.toString();
+    return `/editing${qs ? `?${qs}` : ""}#editor-speed`;
+  };
   const today = editorLines(wn, act, now);
   const capacityNow = Object.values(workload.capacity ?? {}).flatMap((windows) => windows.now);
   const lateCount = notDone.filter((r) => r.late).length;
@@ -315,6 +337,7 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
         {/* The undo window for a job taken off the board, made visible. Renders
             nothing when nothing is in it. */}
         <RecentlyRemoved rows={removedRows.filter((row) => !excludedProjects.has(row.projectId))} />
+        {seesSpeed && <EditorSpeedPanel report={speed} now={now} working={speedNow} days={speedDays} hrefFor={speedHref} />}
         <details className="group rounded-xl border border-border bg-surface" id="editing-capacity">
           <summary className="min-h-11 cursor-pointer rounded-xl px-4 py-3 text-sm focus-visible:outline-2 focus-visible:outline-brand">
             <span className="font-semibold">Workload by editor</span>

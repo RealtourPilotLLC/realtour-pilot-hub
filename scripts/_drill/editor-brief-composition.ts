@@ -235,7 +235,10 @@ async function main() {
     // under the job bar, so the page no longer needs a banner linking down to
     // it; the exact-version link lives on in the history's revision line.
     const revisionLink = String(by("EditTracker")[0]?.props.revisionHref ?? "");
-    c.ok("exact current-cut, submit and conversation destinations survive", flat.some((e) => e.props.id === "submit-cut") && revisionLink.includes(`cut=${cuts[0].id}`) && revisionLink.endsWith(`#cut-${cuts[0].id}`) && by("EditorCutPanel").some((e) => e.props.submissionId === cuts[0].id) && by("CutUploader").length === 1 && flat.some((e) => e.props.href === "#messages"));
+    // Oct 27 2026 (Jordan's Loom): the upload row moved into the panel the job
+    // bar's button opens (UploadPanel), which carries #submit-cut and #upload.
+    const uploadPanel = by("UploadPanel")[0];
+    c.ok("exact current-cut, submit and conversation destinations survive", by("UploadPanel").length === 1 && elements(uploadPanel?.props.children).some((e) => e.name === "CutUploader") && revisionLink.includes(`cut=${cuts[0].id}`) && revisionLink.endsWith(`#cut-${cuts[0].id}`) && by("EditorCutPanel").some((e) => e.props.submissionId === cuts[0].id) && by("CutUploader").length === 1 && flat.some((e) => e.props.href === "#messages"));
     // Oct 15 2026: the cut's open notes are listed ONCE, under its player (EditorCutPanel `issues`), not in a second panel.
     const currentIssues = by("EditorCutPanel").find((e) => e.props.submissionId === cuts[0].id)?.props.issues as { id: string }[] | undefined;
     c.ok("linked legacy OPEN notes do not duplicate verified or reopened instructions", (currentIssues ?? []).filter((issue) => issue.id === reopened.id).length === 1 && !(currentIssues ?? []).some((issue) => issue.id === praiseIssue.id) && by("EditorCutPanel").every((e) => !(e.props.notes as { id: string }[]).some((entry) => entry.id === praise.id || entry.id === note.id)));

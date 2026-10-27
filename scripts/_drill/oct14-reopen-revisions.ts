@@ -192,7 +192,9 @@ async function main() {
     c.ok("the Review Room has Reopen for revisions on an approved video, and no revision form", /Reopen for revisions/.test(panel) && /requestCutChanges\(submission\.id, \{ reopen: true \}\)/.test(panel) && !/StaffCutRevisionForm/.test(panel));
     c.ok("a team message is one click, no form", /messageToRevision\(projectId, messageId/.test(read("src/components/project/ProjectMessages.tsx")) && !/StaffCutRevisionForm/.test(read("src/components/project/ProjectMessages.tsx")));
     const page = read("src/app/edit/[id]/page.tsx");
-    c.ok("the editor brief puts Changes to make right under the header", page.indexOf('data-brief-section="header"') < page.indexOf('data-brief-section="changes"') && page.indexOf('data-brief-section="changes"') < page.indexOf('data-brief-section="make"'));
+    // Oct 27 2026 (Jordan's Loom): What to make is one line inside the job bar,
+    // so Changes to make still comes right under it, before the instructions.
+    c.ok("the editor brief puts Changes to make right under the header", page.indexOf('data-brief-section="header"') < page.indexOf('data-brief-section="make"') && page.indexOf('data-brief-section="make"') < page.indexOf('data-brief-section="changes"') && page.indexOf('data-brief-section="changes"') < page.indexOf('data-brief-section="instructions"'));
     const packet = read("src/lib/editorPacket.ts");
     c.ok("the editor's PDF packet puts the open revision requests first", packet.indexOf('heading("Open revision requests")') < packet.indexOf('heading("Where the files are")'));
     c.ok("the portal lets a client reopen an approved video with notes and a change request", /const reopenable = approved/.test(read("src/components/portal/CutReview.tsx")));
