@@ -1,14 +1,15 @@
 "use client";
 
 import { etDateTimeYear, etWeekdayDateYear } from "@/lib/datetime";
-import { useEffect, useRef, useState, useTransition } from "react";
-import { Calendar, Clock, RefreshCw, XCircle, Loader2, AlertTriangle, ChevronDown } from "lucide-react";
+import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
+import { Calendar, Clock, RefreshCw, XCircle, Loader2, AlertTriangle, ChevronDown, ExternalLink } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Action";
 import { TextField } from "@/components/ui/FormField";
 import { rescheduleAppointmentAction, cancelAppointmentAction } from "@/app/actions";
 import type { ApptResult } from "@/app/actions";
+import { briefText, parseAppointmentBrief } from "@/lib/appointmentBrief";
 
 export type ApptView = {
   id: string;
@@ -34,18 +35,6 @@ function fmt(d: string | Date | null, withTime = true) {
   return (withTime ? etDateTimeYear(d) : etWeekdayDateYear(d)) || null;
 }
 
-// Aryeo appointment descriptions mix newlines + light HTML.
-function cleanBrief(s: string): string {
-  return s
-    .replace(/<\/(div|p|li|ul)>/gi, "\n")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<li>/gi, "• ")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
 
 // datetime-local needs "YYYY-MM-DDTHH:mm" in local time.
 function toLocalInput(d: string | Date | null): string {
@@ -231,17 +220,8 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
           ))}
       </div>
 
-      {/* Shoot brief (customer, lockbox, special instructions) */}
-      {appt.description && (
-        <details className="mt-4 rounded-lg bg-surface-2 px-3 py-2 [&_summary]:list-none">
-          <summary className="flex min-h-11 cursor-pointer items-center gap-2 rounded-md text-sm font-semibold text-foreground/80 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
-            <ChevronDown className="size-4 shrink-0" /> Shoot brief
-          </summary>
-          <pre className="mt-2 whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-foreground/80">
-            {cleanBrief(appt.description)}
-          </pre>
-        </details>
-      )}
+      {/* Shoot brief: open, in fields (Jordan, Oct 27 2026) */}
+      {appt.description && <ShootBriefView description={appt.description} />}
 
       {/* Actions */}
       {!canceled && (appt.canReschedule || appt.canCancel) && (
@@ -363,5 +343,106 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
         </dl>
       )}
     </div>
+  );
+}
+
+// ---- the shoot brief, in fields -------------------------------------------------------------
+// Aryeo's appointment text read into its own fields (lib/appointmentBrief):
+// who the customer is, what this visit covers, how to get in, what they asked
+// for, then the order and Zillow links as buttons. Open by default; the
+// original text stays one tap away, and a description that does not parse is
+// shown as written.
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="min-w-0 break-words">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-2">{label}</div>
+      <div className="mt-0.5 whitespace-pre-wrap text-sm font-medium leading-relaxed text-foreground/90">{children}</div>
+    </div>
+  );
+}
+
+function Group({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="min-w-0 space-y-2.5">
+      <h4 className="text-[13px] font-semibold text-foreground/70">{title}</h4>
+      {children}
+    </div>
+  );
+}
+
+export function ShootBriefView({ description }: { description: string }) {
+  const b = parseAppointmentBrief(description);
+  const text = briefText(description);
+  if (!b) {
+    return (
+      <div className="mt-4 rounded-lg bg-surface-2 px-4 py-3">
+        <h3 className="text-sm font-semibold text-foreground/80">Shoot brief</h3>
+        <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground/80">{text}</p>
+      </div>
+    );
+  }
+  const c = b.customer;
+  const hasCustomer = !!(c.name || c.email || c.phone || c.notes);
+  const hasAccess = !!(b.presence || b.lockbox || b.access);
+  const hasAsks = !!(b.special || b.orderNotes || b.other.length);
+  const hasVisit = !!(b.services.length || b.squareFeet || b.flexible || b.waitlist);
+  return (
+    <section className="mt-4 rounded-lg bg-surface-2 px-4 py-4" aria-label="Shoot brief" data-brief="fields">
+      <h3 className="text-sm font-semibold text-foreground/80">Shoot brief</h3>
+      <div className="mt-3 grid grid-cols-1 gap-x-6 gap-y-5 sm:grid-cols-2">
+        {hasVisit && (
+          <Group title="This visit">
+            {b.services.length > 0 && (
+              <ul className="space-y-1 text-sm font-medium leading-relaxed text-foreground/90">
+                {b.services.map((x) => <li key={x}>{x}</li>)}
+              </ul>
+            )}
+            {b.squareFeet && <Field label="Square footage">{b.squareFeet}</Field>}
+            {b.flexible && <Field label="Time flexible?">{b.flexible}</Field>}
+            {b.waitlist && <Field label="Waitlist">{b.waitlist}</Field>}
+          </Group>
+        )}
+        {hasCustomer && (
+          <Group title="Customer">
+            {c.name && <Field label="Name">{c.name}</Field>}
+            {c.phone && <Field label="Phone"><a className="text-brand hover:underline" href={`tel:${c.phone.replace(/[^\d+]/g, "")}`}>{c.phone}</a></Field>}
+            {c.email && <Field label="Email"><a className="break-all text-brand hover:underline" href={`mailto:${c.email}`}>{c.email}</a></Field>}
+            {c.notes && <Field label="Notes">{c.notes}</Field>}
+          </Group>
+        )}
+        {hasAccess && (
+          <Group title="Getting in">
+            {b.presence && <Field label="Who will be there">{b.presence}</Field>}
+            {b.lockbox && <Field label="Lock box / door code">{b.lockbox}</Field>}
+            {b.access && <Field label="Access">{b.access}</Field>}
+          </Group>
+        )}
+        {hasAsks && (
+          <Group title="Instructions">
+            {b.special && <Field label="For the photographer">{b.special}</Field>}
+            {b.orderNotes && <Field label="Order notes">{b.orderNotes}</Field>}
+            {b.other.map((o) => <Field key={o.label} label={o.label}>{o.value}</Field>)}
+          </Group>
+        )}
+      </div>
+      {!hasAccess && !hasAsks && <p className="mt-4 text-sm text-muted">No access notes or special instructions on this order.</p>}
+      {b.links.length > 0 && (
+        <div className="mt-4 flex flex-wrap gap-2">
+          {b.links.map((l) => (
+            <a key={l.href} href={l.href} target="_blank" rel="noopener noreferrer"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border-strong bg-surface px-3 text-sm font-medium text-foreground/85 hover:border-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+              <ExternalLink className="size-4 shrink-0" /> {l.label}
+            </a>
+          ))}
+        </div>
+      )}
+      <details className="mt-3 [&_summary]:list-none">
+        <summary className="inline-flex min-h-11 cursor-pointer items-center gap-1.5 text-[13px] font-medium text-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+          <ChevronDown className="size-4 shrink-0" /> Original text from Aryeo
+        </summary>
+        <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-foreground/70">{text}</pre>
+      </details>
+    </section>
   );
 }
