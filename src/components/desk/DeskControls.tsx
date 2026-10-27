@@ -449,7 +449,8 @@ export function RevisionDecide({ a }: { a: Extract<DeskAction, { kind: "revision
 }
 
 /** Mark done (with a note), Not needed, or a new date: the task lists' own closes. */
-export function TaskResolve({ taskId, nextDay, allowNewDate = true }: { taskId: string; nextDay: string; allowNewDate?: boolean }) {
+/** `doneLabel` (Oct 27 2026): "Mark handled" on a client request Kyle handles (officeDesk taskPrimary). */
+export function TaskResolve({ taskId, nextDay, allowNewDate = true, doneLabel = "Mark done" }: { taskId: string; nextDay: string; allowNewDate?: boolean; doneLabel?: string }) {
   const { busy, msg, run } = useRun();
   const [note, setNote] = useState("");
   const [day, setDay] = useState(nextDay);
@@ -460,7 +461,7 @@ export function TaskResolve({ taskId, nextDay, allowNewDate = true }: { taskId: 
       <input aria-label="What was done (optional)" value={note} onChange={(e) => setNote(e.target.value)} placeholder="What was done (optional)" className={FIELD} />
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" disabled={busy} onClick={() => run(() => deskCloseTaskAction({ taskId, how: "done", note }))} className={PRIMARY} data-task-done>
-          {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />} Mark done
+          {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />} {doneLabel}
         </button>
         <button type="button" disabled={busy} onClick={() => run(() => deskCloseTaskAction({ taskId, how: "not-needed", note }))} className={QUIET}>
           <X aria-hidden className="size-4" /> Not needed

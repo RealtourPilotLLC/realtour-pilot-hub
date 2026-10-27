@@ -581,7 +581,8 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
       if (card.clientId && excluded.has(card.clientId)) continue;
       // The office chases AutoHDR and the photo fixes, so a one-press ask about a photo set goes to the office.
       const base = { id: `photos:${card.id}`, street: street(card.street), client: card.clientName, dueISO: card.slaDueAt, late: isLate(card.slaDueAt), dueSoon: isSoon(card.slaDueAt), waitingSinceISO: card.shootDate, href: `/ops/photo-delivery/${card.id}`, projectId: card.projectId, ownerKey: officeKey };
-      if (col.key === "editing" || col.key === "fixing") editing.push({ ...base, what: `Photos: ${card.stageLabel}`, blocked: card.lastError ? `Edit problem: ${card.lastError}`.slice(0, 120) : null, owner: col.key === "editing" ? "AutoHDR" : "Photo fixes" });
+      // Oct 27 2026: the board's Waiting for upload column (split out of Editing) counts here as before.
+      if (col.key === "upload" || col.key === "editing" || col.key === "fixing") editing.push({ ...base, what: `Photos: ${card.stageLabel}`, blocked: card.lastError ? `Edit problem: ${card.lastError}`.slice(0, 120) : null, owner: col.key === "fixing" ? "Photo fixes" : "AutoHDR" });
       else if (col.key === "qc" || col.key === "decision" || col.key === "hold" || col.key === "ready") reviewItems.push({ ...base, what: `Photos: ${card.stageLabel}`, blocked: col.key === "hold" ? card.holdReason ?? "On hold" : null, owner: officeName });
       else if (col.key === "delivering") delivery.push({ ...base, what: "Photos: delivering", blocked: card.lastError ? "Delivery problem" : null, owner: officeName });
     }

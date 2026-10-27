@@ -13,6 +13,10 @@ import type { QueueCard, QueueColumn, QueueData, Severity } from "./types";
 // same columns stack with Needs decision, On hold and Ready first, so an
 // approval or an alert is one scroll away and never a sideways hunt. Each
 // column's hint is its heading's tooltip; an empty column is its header only.
+// EMPTY COLUMNS FOLD (Jordan, Oct 27 2026: "any of these, like, statuses here,
+// should be compacted or collapsed in some way" so Delivering and Ready to
+// review show without scrolling): on a desktop an empty column is a slim strip
+// with its name and 0, and the columns with jobs share the width.
 // ---------------------------------------------------------------------------
 
 const FIX_TONE = { ok: "text-success", warn: "text-warning", danger: "text-danger", muted: "text-muted" } as const;
@@ -121,9 +125,18 @@ function Column({ col, nowIso }: { col: QueueColumn; nowIso: string }) {
   const headingId = `pd-col-${col.key}`;
   const empty = col.cards.length === 0;
   return (
-    <section aria-labelledby={headingId} className={cn("flex min-w-0 flex-col rounded-2xl border border-border bg-surface-2/30 lg:w-[19rem] lg:shrink-0", FIRST_ON_PHONE.has(col.key) && "order-first lg:order-none")}>
-      <header title={col.hint} className={cn("flex items-baseline gap-2 px-3 py-2.5", !empty && "border-b border-border")}>
-        <h2 id={headingId} className="text-sm font-semibold">{col.label}</h2>
+    <section
+      aria-labelledby={headingId}
+      data-column={col.key}
+      data-empty={empty ? "" : undefined}
+      className={cn(
+        "flex min-w-0 flex-col rounded-2xl border border-border bg-surface-2/30",
+        empty ? "lg:w-11 lg:shrink-0 lg:self-stretch" : "lg:min-w-[15rem] lg:max-w-[20rem] lg:flex-1 lg:basis-0",
+        FIRST_ON_PHONE.has(col.key) && "order-first lg:order-none",
+      )}
+    >
+      <header title={col.hint} className={cn("flex items-baseline gap-2 px-3 py-2.5", !empty && "border-b border-border", empty && "lg:flex-col-reverse lg:items-center lg:justify-end lg:px-0 lg:py-3")}>
+        <h2 id={headingId} className={cn("text-sm font-semibold", empty && "text-muted lg:whitespace-nowrap lg:[writing-mode:vertical-rl]")}>{col.label}</h2>
         <span className="rounded-full bg-surface-2 px-2 text-ui-status font-medium text-muted">{col.cards.length}</span>
       </header>
       {!empty && (

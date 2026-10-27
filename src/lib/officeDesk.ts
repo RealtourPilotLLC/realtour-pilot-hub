@@ -22,6 +22,7 @@ import { scrubMoney } from "@/lib/text";
 import { RERUN_LABEL } from "@/lib/topazRerun";
 import { VIDEO_DELIVERY_LABEL } from "@/lib/sidebarNavigation";
 import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
+import { OFFICE_TASK_KEY_PREFIX } from "@/lib/photoDelivery/afterDeliveryAsk";
 import { listAssignees, viewerAssigneeKey, type Assignee } from "@/lib/assignees";
 import { syntheticClientIds } from "@/lib/syntheticClients";
 import { etAt, etDate, etDateTime, etDayBoundsUtc, etDayKey, etDayStartUtc, etFullDate, etTime } from "@/lib/datetime";
@@ -174,7 +175,7 @@ export type DeskAction =
   /** a task assigned to Kyle through delegation: Accept until accepted, then Update (and the rest of its actions) */
   | { kind: "delegation"; taskId: string; state: DelegationState; needsVerification: boolean }
   | { kind: "follow-up"; clientId: string | null; projectId: string | null; title: string }
-  | { kind: "task"; taskId: string; allowNewDate: boolean; canWait: boolean }
+  | { kind: "task"; taskId: string; allowNewDate: boolean; canWait: boolean; doneLabel?: string }
   | { kind: "ask"; askId: string; askKind: "SPECIAL_REQUEST" | "SCHEDULING" }
   | { kind: "remind"; projectId: string; street: string; view: RemindView }
   /** the confirmation text (the template, through the outbox), or "confirmed another way" */
@@ -885,6 +886,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     const a: AssetLine = { id: `photo:${c.id}`, kind: "photos", label: "Photos", status: "", tone: "waiting", late, dueISO: c.slaDueAt, who: null, note: null, action: null };
     const held = holdingAsks.get(c.projectId) ?? [];
     switch (col) {
+      case "upload": // Oct 27 2026: the board's own column for it (photoDelivery data.ts)
       case "editing":
         // A failed or late edit is a production follow-up (Requests & Follow-Ups), not a delivery.
         if (c.stage === "EDIT_FAILED" || late) photoLate.push({ c, failed: c.stage === "EDIT_FAILED" });
@@ -1474,6 +1476,9 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       return { label: "Chase CubiCasa", action: md, extra: [taskAction(t.id)] };
     }
     if (key.startsWith("brand-ack:")) return { label: "Open the brief", action: { kind: "link", label: "Open the edit brief", href: t.href }, extra: [taskAction(t.id)] };
+    // A client's request after the photos went out that is not a photo fix (Jordan, Oct 27 2026: "give Kyle a, you know, handle
+    // this button, and he clicks it, the window pops open ... open the listing, and then Mark is handled").
+    if (key.startsWith(OFFICE_TASK_KEY_PREFIX) && t.projectId) return { label: "Handle request", action: { kind: "link", label: "Open the listing", href: `/listings/${t.projectId}` }, extra: [{ kind: "task", taskId: t.id, allowNewDate: true, canWait: true, doneLabel: "Mark handled" }] };
     return { label: back ? "Follow up" : "Mark done", action: taskAction(t.id), extra: [] };
   };
   const dueTaskItem = (t: OldItem, earlier: boolean) => {

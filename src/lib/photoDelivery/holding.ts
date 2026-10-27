@@ -37,11 +37,13 @@ export const HOLDING_ORDER = [
   "wrapup", // the photographer's wrap-up
   "addon", // Lot Lines needed, Virtual Staging needed
   "ask", // what the client asked about the photos
+  // Oct 27 2026 (Jordan on the Needs decision column: "I don't know why these are in here"):
+  // a reopened job says why first (the client's request), before the checks; it is still sent last.
+  "revision", // the client asked for changes after delivery: send again once the rest is settled
   "decisions", // QC issues to fix or set aside
   "privacy", // a privacy or wrong-property issue
   "coverage", // something ordered not covered
   "checks", // the checklist's own checks (files, the QC covering every photo, rooms)
-  "revision", // the client asked for changes after delivery: send again once the rest is settled
   "update", // photos edited in the hub whose old file is still on the Aryeo listing (Update on Aryeo)
   "listing", // no Aryeo listing linked
   "aryeo", // the push into Aryeo: running, stopped, a photo twice, the order, changed
@@ -58,7 +60,8 @@ export type HoldingAction =
   | { kind: "wrapup"; label: string; href: string }
   | { kind: "addon"; label: string; addOn: string }
   | { kind: "ask"; label: string; askId: string }
-  | { kind: "approve"; label: string }
+  /** upload (Oct 27 2026): "Approve and upload" beside it, the photos put on the listing without the delivery. */
+  | { kind: "approve"; label: string; upload?: boolean }
   | { kind: "deliver"; label: string }
   | { kind: "mark"; label: string }
   | { kind: "verify"; label: string }
@@ -172,6 +175,13 @@ export type HoldingBase = {
   rawBatches?: number | null;
   /** How many edited photos the job has read (finalsCount); with 0 raws and 0 photos the job is not uploaded yet. */
   photosRead?: number | null;
+  /**
+   * Oct 27 2026 (Jordan: "what is the request? Where is it? I don't see what
+   * the request is"): on a reopened job, what the client asked after delivery,
+   * in their words, with who, how and when ("Mike Flatley, by text, Tue Oct 27,
+   * 3:04 PM"). Null: not read (the board). One already listed as its own request (askId) is not quoted twice.
+   */
+  revisionRequests?: { text: string; from: string; askId?: string | null }[] | null;
 };
 
 /**
@@ -274,9 +284,20 @@ export function holdingFor(input: HoldingInput): HoldingView {
   } else if (stage === "FIXING") {
     add(true, item("fixing", "fixing", "Approved fixes are running in AutoHDR.", "Fixes running", "Waiting on AutoHDR", { kind: "tab", label: "See the fixes", tab: "cart" }));
   } else if (stage === "REVISION_REQUESTED") {
-    const again: HoldingAction = pushOn(push) && input.listingUrl ? { kind: "approve", label: "Approve and deliver again" } : { kind: "mark", label: "Mark as delivering" };
+    const again: HoldingAction = pushOn(push) && input.listingUrl ? { kind: "approve", label: "Approve and deliver again", upload: true } : { kind: "mark", label: "Mark as delivering" };
     // Oct 22 2026 (photo audit C1): the revision leaves only by sending again, or by this, with a reason (never by Aryeo's old "delivered").
-    add(true, item("revision", "revision", "The client asked for changes after delivery. Once the photos are fixed and each request is settled, send them again. If it was settled with the client and nothing goes out again, say so instead.", "Client asked for changes", "Waiting on Kyle", again, { alt: { kind: "settle", label: "Settled with the client: nothing to resend" } }));
+    // Oct 27 2026 (Jordan: "I don't know what the client requested ... There's too much going on here"): the request itself, in the client's words, and one short line.
+    // A request already listed above as its own item (the checklist's "Client asked", with Done) is not quoted again.
+    const listed = new Set((gate?.checks ?? []).map((c) => c.askId).filter(Boolean));
+    const all = input.revisionRequests ?? [];
+    const asks = all.filter((a) => !a.askId || !listed.has(a.askId)).map((a) => ({ text: a.text, from: a.from }));
+    const text = asks.length > 1 ? `The client asked for ${asks.length} changes after delivery.` : asks.length ? "The client asked for a change after delivery." : all.length ? "The client asked for changes after delivery (listed above)." : "The client asked for changes after delivery.";
+    // The board card's line says it too (Jordan on the Needs decision column: "I don't know why these are in here").
+    add(true, item("revision", "revision", text, asks.length ? `Client asked: "${clipTo(asks[0].text, 48)}"` : "Client asked for changes", "Waiting on Kyle", again, {
+      detail: "Fix the photos, then send them again. Or, if it was settled with the client, say so.",
+      quotes: asks,
+      alt: { kind: "settle", label: "Settled with the client: nothing to resend" },
+    }));
   }
 
   // ---- the delivery checklist ----
@@ -413,7 +434,7 @@ export function holdingFor(input: HoldingInput): HoldingView {
     const next = on ? (APPROVE_STAGES.has(stage) && input.listingUrl ? pushNext(push) : null) : APPROVE_STAGES.has(stage) && stage !== "DELIVERING" ? "mark" : null;
     const personal = (gate?.checks ?? []).some((c) => c.personOnly);
     const sameDay = on && push.sameDayAuto && !personal && stage === "READY" ? "Same-day order: the hub sends it by itself once every check passes, or approve it now." : null;
-    if (next === "approve") ready = { text: "Ready to send.", detail: sameDay, action: { kind: "approve", label: "Approve and deliver" } };
+    if (next === "approve") ready = { text: "Ready to send.", detail: sameDay, action: { kind: "approve", label: "Approve and deliver", upload: true } };
     else if (next === "deliver") ready = { text: "Ready to send. The photos are on the listing.", detail: sameDay, action: { kind: "deliver", label: "Deliver in Aryeo" } };
     else if (next === "mark") ready = { text: "Ready to send.", detail: "The hub's upload is off: deliver in Aryeo, then mark it here.", action: { kind: "mark", label: "Mark as delivering" } };
   }

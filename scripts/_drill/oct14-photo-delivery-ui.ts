@@ -265,7 +265,8 @@ async function main() {
       const p = await project(title, projOver);
       return prisma.photoJob.create({ data: { projectId: p.id, stage, ...over } });
     };
-    const jEditing = await mk("1 Risk Way, Testville, PA", "EDITING", { slaDueAt: new Date(now.getTime() + 1 * HOUR) });
+    // Oct 27 2026: its raws are in (an AutoHDR shoot), so it is in Editing; one with none sits in Waiting for upload (oct27-loom-photo).
+    const jEditing = await mk("1 Risk Way, Testville, PA", "EDITING", { slaDueAt: new Date(now.getTime() + 1 * HOUR), autohdrPhotoshootId: 4242 });
     const jEdited = await mk("2 Landed Ct, Testville, PA", "EDITED", { slaDueAt: new Date(now.getTime() + 40 * HOUR) });
     const jFixing = await mk("3 Fix St, Testville, PA", "FIXING", { slaDueAt: new Date(now.getTime() + 10 * HOUR) });
     const jMismatch = await mk("4 Diff Ave, Testville, PA", "DELIVERY_MISMATCH", { slaDueAt: new Date(now.getTime() - 2 * HOUR) });
@@ -292,7 +293,8 @@ async function main() {
     const q = await data.loadQueue({ now });
     const col = (k: string) => q.columns.find((x) => x.key === k)!;
     const ids = (k: string) => col(k).cards.map((x) => x.id);
-    c.ok("the columns, in pipeline order", q.columns.map((x) => x.key).join(",") === "editing,qc,decision,fixing,hold,ready,delivering,delivered", q.columns.map((x) => x.key).join(","));
+    // Oct 27 2026 (Jordan: "these aren't in editing yet, so they shouldn't say they're in editing, they should say waiting for upload"): the board starts with Waiting for upload.
+    c.ok("the columns, in pipeline order", q.columns.map((x) => x.key).join(",") === "upload,editing,qc,decision,fixing,hold,ready,delivering,delivered", q.columns.map((x) => x.key).join(","));
     c.ok("Editing has the editing job; the cancelled shoot is not on the board", ids("editing").join() === jEditing.id, JSON.stringify(ids("editing")));
     c.ok("QC running holds the landed (EDITED) gallery", ids("qc").join() === jEdited.id);
     c.ok("Needs decision: both QC_REVIEW jobs, soonest SLA first", ids("decision").join() === [job.id, job2.id].join(), JSON.stringify(ids("decision")));

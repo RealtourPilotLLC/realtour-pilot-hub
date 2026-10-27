@@ -157,8 +157,8 @@ async function main() {
     c.head("3 · what the free check never and always raises");
     // ======================================================================
     const q = check.checkPrompt(new Set());
-    c.ok("the question is v5 and says the never-list: a neighbor's property, cords that belong to the house, unfinished spaces",
-      check.CHECK_PROMPT_VERSION === 5 && /Never anything on a neighbor's property: a neighbor's car, a car in another home's driveway/.test(q) && /Never report cords or cables that belong to the house \(a TV, lamp or appliance plugged into the wall, a cord barely visible/.test(q) && /Unfinished spaces \(a garage, an unfinished basement or room/.test(q) && /Trash cans still count/.test(q));
+    c.ok("the question is v5 or later (Oct 27 2026: v6 names the house being shot) and says the never-list: a neighbor's property, cords that belong to the house, unfinished spaces",
+      check.CHECK_PROMPT_VERSION >= 5 && /Never anything on a neighbor's property: a neighbor's car, a car in another home's driveway/.test(q) && /Never report cords or cables that belong to the house \(a TV, lamp or appliance plugged into the wall, a cord barely visible/.test(q) && /Unfinished spaces \(a garage, an unfinished basement or room/.test(q) && /Trash cans still count/.test(q));
     c.ok("…and the always-list: bins, a car in this home's own driveway, what the photographer could have moved, random clutter in a finished room, the floating lamp shade",
       /Always report, wherever they are on this property: trash or recycling bins; a car in this home's own driveway or in front of it; anything the photographer could have moved before the shot \(a crooked door mat, a broom or mop leaning against a door\); random clutter in an otherwise clean, finished room/.test(q) &&
       /a lamp shade with no lamp stand or base/.test(q) && /EXT_PARKED_CARS_DRIVEWAY: a car parked in this home's own driveway or carport, or right in front of this home \(never a neighbor's car/.test(q));
