@@ -466,28 +466,50 @@ export async function loadRevisionsView(enrollmentId: string) {
   const ids = projects.map((p) => p.id);
   const keyOf = new Map(months.map((m) => [m.id, m.monthKey]));
   const projectOf = new Map(projects.map((p) => [p.id, { title: p.title, monthKey: p.contentMonthId ? keyOf.get(p.contentMonthId) ?? null : null }]));
-  const [briefs, cuts] = ids.length
+  const [briefs, cuts, allCuts] = ids.length
     ? await Promise.all([
         prisma.revisionBrief.findMany({
           where: { projectId: { in: ids } }, orderBy: { createdAt: "desc" }, take: 40,
-          select: { id: true, projectId: true, source: true, headline: true, originalText: true, itemsJson: true, doneJson: true, createdAt: true },
+          select: { id: true, projectId: true, taskId: true, source: true, headline: true, originalText: true, requestedBy: true, itemsJson: true, doneJson: true, createdAt: true },
         }),
         prisma.reviewSubmission.findMany({
           where: { projectId: { in: ids }, status: { in: ["PENDING", "CHANGES_REQUESTED"] } }, orderBy: { createdAt: "desc" }, take: 60,
           select: { id: true, projectId: true, fileName: true, round: true, status: true, createdAt: true },
         }),
+        // Oct 27 2026: every cut's status and time, to tell whether a newer cut answered an ask.
+        prisma.reviewSubmission.findMany({
+          where: { projectId: { in: ids }, status: { in: ["PENDING", "CHANGES_REQUESTED", "APPROVED"] } }, orderBy: { createdAt: "desc" }, take: 400,
+          select: { projectId: true, status: true, createdAt: true },
+        }),
       ])
-    : [[], []];
+    : [[], [], []];
+  // Oct 27 2026 (Jordan: "why isn't it with the editor? ... It says it's not
+  // done, but was it done? ... 0 of 1 done, so why does it say that?"): the
+  // ask's own revision task says whether it is done and who holds it
+  // (revisionAskStatus.ts); the editor's ticks are only one of the signs.
+  const taskIds = [...new Set(briefs.map((b) => b.taskId).filter((x): x is string => !!x))];
+  const tasks = taskIds.length ? await prisma.smartTask.findMany({ where: { id: { in: taskIds } }, select: { id: true, status: true, assignedKey: true } }) : [];
+  const taskOf = new Map(tasks.map((t) => [t.id, t]));
+  const { editorMeta } = await import("@/lib/editors");
+  const { isPhotoOnly } = await import("@/lib/itemMedium");
+  const { revisionAskStatus } = await import("@/lib/revisionAskStatus");
   const briefRows: RevisionBriefUi[] = briefs.map((b) => {
-    let total = 0, done = 0;
-    try { total = ((JSON.parse(b.itemsJson ?? "{}") as { items?: unknown[] }).items ?? []).length; } catch { total = 0; }
-    try { done = (JSON.parse(b.doneJson ?? "[]") as unknown[]).length; } catch { done = 0; }
+    let items: { id?: string; medium?: unknown }[] = [];
+    let ticked: string[] = [];
+    try { items = ((JSON.parse(b.itemsJson ?? "{}") as { items?: { id?: string; medium?: unknown }[] }).items ?? []).filter((it) => !isPhotoOnly(it)); } catch { items = []; }
+    try { ticked = JSON.parse(b.doneJson ?? "[]") as string[]; } catch { ticked = []; }
+    const total = items.length;
+    const done = items.filter((it) => !!it.id && ticked.includes(it.id)).length;
     const p = projectOf.get(b.projectId);
+    const task = b.taskId ? taskOf.get(b.taskId) ?? null : null;
+    const laterCut = allCuts.find((c) => c.projectId === b.projectId && c.createdAt > b.createdAt) ?? null;
+    const editorName = task && task.status !== "COMPLETED" && task.status !== "CANCELLED" ? editorMeta(task.assignedKey)?.name ?? null : null;
+    const st = revisionAskStatus({ total, done, taskStatus: task?.status ?? null, editorName, laterCut });
     return {
       id: b.id, projectId: b.projectId, projectTitle: p?.title ?? "Job", monthKey: p?.monthKey ?? null, source: b.source,
       headline: b.headline ?? b.originalText.slice(0, 140), total, done,
-      // An ask nobody itemised is still open: "0 of 0" must never read as finished.
-      open: total === 0 || done < total, createdAtISO: b.createdAt.toISOString(),
+      open: st.open, createdAtISO: b.createdAt.toISOString(),
+      clientWords: b.originalText, requestedBy: b.requestedBy, statusWord: st.word, statusTone: st.tone,
     };
   });
   const cutRows: RevisionCutUi[] = cuts.map((c) => {
@@ -496,5 +518,9 @@ export async function loadRevisionsView(enrollmentId: string) {
   });
   return { briefs: briefRows, cuts: cutRows };
 }
-export type RevisionBriefUi = { id: string; projectId: string; projectTitle: string; monthKey: string | null; source: string; headline: string; total: number; done: number; open: boolean; createdAtISO: string };
+export type RevisionBriefUi = {
+  id: string; projectId: string; projectTitle: string; monthKey: string | null; source: string; headline: string; total: number; done: number; open: boolean; createdAtISO: string;
+  /** Oct 27 2026: the client's own words (unclipped), who asked, and the ask's status in words. */
+  clientWords: string; requestedBy: string | null; statusWord: string; statusTone: "done" | "editor" | "review" | "waiting";
+};
 export type RevisionCutUi = { id: string; projectId: string; projectTitle: string; monthKey: string | null; fileName: string | null; round: number; status: string; createdAtISO: string };

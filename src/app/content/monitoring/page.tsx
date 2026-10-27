@@ -8,7 +8,11 @@ import { Section } from "@/components/ui/Section";
 import { BackLink } from "@/components/ui/BackLink";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { canAccess } from "@/lib/auth/access";
+import { canAccess, isOffice } from "@/lib/auth/access";
+import { programOverview } from "@/lib/programOverview";
+import { bookingReminderLine, clientCallName } from "@/lib/contentStatusLine";
+import { contentHref } from "@/lib/contentNav";
+import { SendReminderButton } from "@/components/content/SendReminderButton";
 import { cn } from "@/lib/utils";
 import { aiRunLedger, aiQuotaUse, failedAutomations, sessionRequestState, reminderLedger, importOverview, linkOnlyClients } from "@/lib/programMonitoring";
 import { allAutomations } from "@/lib/programAutomation";
@@ -33,7 +37,7 @@ export default async function ContentMonitoringPage() {
   if (me && !canAccess(me, "content")) redirect("/");
   const ownerEyes = me ? me.role === "OWNER" : !authEnforced();
 
-  const [runs, quota, jobs, jobBatch, sessions, reminders, failures, switches, imports, lastSync, linkOnly] = await Promise.all([
+  const [runs, quota, jobs, jobBatch, sessions, reminders, failures, switches, imports, lastSync, linkOnly, overview] = await Promise.all([
     aiRunLedger({ take: 60 }).catch(() => []),
     aiQuotaUse().catch(() => null),
     transcriptJobsSnapshot().catch(() => null),
@@ -45,7 +49,12 @@ export default async function ContentMonitoringPage() {
     importOverview().catch(() => ({ batches: [], unapplied: 0 })),
     lastRunDeploy("sync").catch(() => null),
     linkOnlyClients().catch(() => null),
+    // Oct 27 2026: this month's clients whose filming session is theirs to book.
+    programOverview({}).catch(() => null),
   ]);
+  const now = new Date();
+  const canRemind = me ? isOffice(me.role) : !authEnforced();
+  const unbooked = (overview?.rows ?? []).filter((r) => r.waiting.them.some((x) => x.key === "book_session"));
   // CP-15: which build is answering, and which build the hourly run that wrote
   // most of these rows was. Right after a deploy they differ until the next
   // hour — that is the point of showing both.
@@ -300,6 +309,29 @@ export default async function ContentMonitoringPage() {
                   {r.error && <p className="text-warning">{r.error.slice(0, 200)}</p>}
                 </div>
               ))}
+            </div>
+          </Section>
+        </div>
+
+        {/* SESSIONS NOT BOOKED (Oct 27 2026, Jordan on Monitoring: "I'd like a button
+            to be able to send, like, reminders when they're not scheduled"): every
+            client whose session is still theirs to book this month, when the
+            daily booking reminder last went, and Send reminder now (owner and
+            office) through the same path as the daily send. */}
+        <div id="unbooked" className="scroll-mt-20">
+          <Section icon={CalendarCheck} title="Sessions not booked" count={unbooked.length} flush>
+            <div className="divide-y divide-border">
+              {unbooked.length === 0 && <p className="px-5 py-3 text-sm text-muted">Every client has this month&rsquo;s filming session booked.</p>}
+              {unbooked.map((r) => {
+                const line = bookingReminderLine(r.comms, now);
+                return (
+                  <div key={`${r.enrollmentId}:${r.monthKey}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2.5 text-sm">
+                    <Link href={contentHref(r.enrollmentId, { tab: "production", view: "sessions", month: r.monthKey })} className="font-medium hover:underline">{r.clientName}</Link>
+                    <span className={cn("text-xs", line.tone === "attention" ? "text-foreground/80" : "text-muted")}>{line.text}</span>
+                    {canRemind && r.monthId && <span className="ml-auto"><SendReminderButton monthId={r.monthId} clientName={clientCallName(r.clientName)} /></span>}
+                  </div>
+                );
+              })}
             </div>
           </Section>
         </div>

@@ -178,7 +178,8 @@ async function main() {
     walk("src");
     const unknownKeys = [...written].filter((k) => !(k in LEGACY_TAB_MAP) && !STAFF_TABS.some((t) => t.key === k) && k !== "import" && k !== "portal");
     c.ok(`every ?tab= key still written anywhere in src resolves (${[...written].sort().join(", ") || "none"})`, unknownKeys.length === 0, unknownKeys.join(","));
-    c.ok("the roster view: ?view wins, then the cookie, then cards; the old 'rows' means the table", resolveRosterView(null, null) === "cards" && resolveRosterView("rows", "cards") === "table" && resolveRosterView(null, "table") === "table" && resolveRosterView("cards", "table") === "cards" && resolveRosterView("junk", "junk") === "cards");
+    // CHANGED Oct 27 2026 (Jordan's Loom: "The table looks okay"): with no ?view and no cookie the roster opens on the table.
+    c.ok("the roster view: ?view wins, then the cookie, then the table; the old 'rows' means the table", resolveRosterView(null, null) === "table" && resolveRosterView("rows", "cards") === "table" && resolveRosterView(null, "table") === "table" && resolveRosterView("cards", "table") === "cards" && resolveRosterView(null, "cards") === "cards" && resolveRosterView("junk", "junk") === "table");
   }
 
   // =========================================================================
@@ -223,7 +224,8 @@ async function main() {
     const oldRoster = show("src/app/content/page.tsx");
     c.ok("OLD: /content defaulted to rows, and the cards read a second engine (getProgramRoster)", /sp\.view === "cards" \? "cards" : "rows"/.test(oldRoster) && /getProgramRoster\(/.test(oldRoster) && /function ClientCard\(\{ r \}: \{ r: ProgramRow \}\)/.test(oldRoster));
     const newRoster = read("src/app/content/page.tsx");
-    c.ok("NEW: the roster no longer reads getProgramRoster, and cards are the default", !/getProgramRoster/.test(newRoster.replace(/\/\/.*$/gm, "")) && resolveRosterView(undefined, undefined) === "cards");
+    // CHANGED Oct 27 2026 (Jordan's Loom: "The table looks okay"): the table is the default now; cards stay one click away.
+    c.ok("NEW: the roster no longer reads getProgramRoster, and the table is the default (Oct 27 2026)", !/getProgramRoster/.test(newRoster.replace(/\/\/.*$/gm, "")) && resolveRosterView(undefined, undefined) === "table");
     c.ok("NEW: the card and the table row both draw overviewFacts(r)", /overviewFacts\(r\)/.test(read("src/components/content/ClientMonthCard.tsx")) && /overviewFacts\(r\)/.test(read("src/components/content/OverviewRow.tsx")));
     c.ok("NEW: both views render the same programOverview rows on the page", /<ClientMonthCard [^>]*r=\{r\}/.test(newRoster) && /<OverviewRow [^>]*r=\{r\}/.test(newRoster) && /programOverview\(\{ monthKey: monthParam/.test(newRoster));
 

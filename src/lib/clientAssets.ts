@@ -142,8 +142,10 @@ export const ASSET_TYPES = [
 ] as const;
 export type AssetType = (typeof ASSET_TYPES)[number];
 export const isAssetType = (t: unknown): t is AssetType => typeof t === "string" && (ASSET_TYPES as readonly string[]).includes(t);
+// Oct 27 2026 (Jordan: "Brand Colors, this should be Colors"): the palette is
+// labelled "Colors", US spelling, the same everywhere on the Brand tab.
 export const ASSET_TYPE_WORDS: Record<AssetType, string> = {
-  LOGO: "Logo", COLOR_PALETTE: "Brand colours", BRANDING_CARD: "Branding card / end card", FONT: "Font or font reference", HEADSHOT: "Headshot", APPROVED_PHOTO: "Approved photo",
+  LOGO: "Logo", COLOR_PALETTE: "Colors", BRANDING_CARD: "Branding card / end card", FONT: "Font or font reference", HEADSHOT: "Headshot", APPROVED_PHOTO: "Approved photo",
   EXAMPLE_VIDEO: "Example video", PRONUNCIATION: "Pronunciation", CONTACT_CARD: "Contact details", EDITING_INSTRUCTIONS: "Persistent editing instructions", PRODUCTION_PREFERENCE: "Production preference",
   WEBSITE: "Website", SOCIAL_LINKS: "Social links", MUSIC_PREFERENCE: "Music preference", OTHER: "Other",
 };

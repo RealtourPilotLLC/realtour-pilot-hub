@@ -150,9 +150,11 @@ export function ContentLibraryPanel({
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-3 gap-3 text-center">
+        {/* Oct 27 2026 (Jordan: "What does this mean, never shown to them?"): it meant no version of the
+            video was ever sent to the client's portal. Said that way now. */}
         <Stat label="In the library" value={rows.length} />
-        <Stat label="Seen by the client" value={released} tone="success" />
-        <Stat label="Internal only" value={internalOnly} tone={internalOnly > 0 ? "warning" : undefined} />
+        <Stat label="Sent to the client" value={released} tone="success" />
+        <Stat label="Edited, not sent yet" value={internalOnly} />
       </div>
       {flagged > 0 && (
         <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-ui-status leading-relaxed text-warning">
@@ -166,7 +168,7 @@ export function ContentLibraryPanel({
         title={monthLabelText ? `Videos — ${monthLabelText}` : "Every video"}
         count={rows.length}
         flush
-        action={<span className="hidden text-ui-status text-muted sm:inline">staff view — all rounds, including what the client never saw</span>}
+        action={<span className="hidden text-ui-status text-muted sm:inline">every version, including ones not sent to the client</span>}
       >
         <div className="divide-y divide-border">
           {rows.map((v) => {
@@ -187,7 +189,9 @@ export function ContentLibraryPanel({
                     <Layers className="mr-0.5 inline size-3 text-muted" />{v.cuts.length} cut{v.cuts.length === 1 ? "" : "s"}
                   </span>
                   <span className={cn("max-w-full text-ui-status", releasedCuts.length > 0 ? "text-success" : "text-muted")}>
-                    {releasedCuts.length > 0 ? <><Eye className="mr-0.5 inline size-3" />{releasedCuts.length} released</> : <><EyeOff className="mr-0.5 inline size-3" />never shown to them</>}
+                    {releasedCuts.length > 0
+                      ? <><Eye className="mr-0.5 inline size-3" />{releasedCuts.length === 1 ? "sent to the client" : `${releasedCuts.length} versions sent to the client`}</>
+                      : <><EyeOff className="mr-0.5 inline size-3" />{v.cuts.length === 0 ? (v.deliveredAtISO ? "delivered outside the portal" : "no edit uploaded yet") : "not sent to the client yet"}</>}
                   </span>
                 </summary>
                 <div className="space-y-2 border-t border-border/70 bg-surface-2/30 px-5 py-3 text-ui-status leading-relaxed">

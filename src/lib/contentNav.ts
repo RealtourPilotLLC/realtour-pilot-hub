@@ -206,10 +206,14 @@ export function canOpenPortal(me: { role: string } | null | undefined, enforced:
   return me ? me.role === "OWNER" || me.role === "ADMIN" : !enforced;
 }
 
-/** The roster's layout: an explicit ?view wins, then the remembered cookie, then cards. */
+/**
+ * The roster's layout: an explicit ?view wins, then the remembered cookie,
+ * then the TABLE (Oct 27 2026, Jordan on Monthly Content: "The table looks
+ * okay"; the cards were the "overwhelming" view). Cards stay one click away.
+ */
 export type RosterView = "cards" | "table";
 export const ROSTER_VIEW_COOKIE = "rtp_content_view";
 export function resolveRosterView(param?: string | null, cookie?: string | null): RosterView {
   const read = (v: string | null | undefined): RosterView | null => (v === "table" || v === "rows" ? "table" : v === "cards" ? "cards" : null);
-  return read(param) ?? read(cookie) ?? "cards";
+  return read(param) ?? read(cookie) ?? "table";
 }

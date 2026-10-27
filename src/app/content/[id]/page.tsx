@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import {
-  Activity, BookOpen, CalendarDays, ChevronDown, Clapperboard, Compass, Eye, FileUp, Info, ListChecks, MessageSquare, Palette, Settings2, User, Wrench,
+  Activity, BookOpen, CalendarDays, ChevronDown, Clapperboard, Compass, Eye, FileUp, Info, ListChecks, MessageSquare, MessageSquareDot, Palette, Settings2, User, Wrench,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -187,10 +187,20 @@ export default async function ContentClientPage({
                   on ? "bg-brand-action font-semibold text-white" : "border border-border font-medium text-muted hover:bg-surface-2 hover:text-foreground",
                 )}
               >
-                <Icon className="size-4 shrink-0" aria-hidden />
+                {/* Oct 27 2026 (Jordan: "If they do send us a message, I would like a little
+                    icon here"): an unanswered client message turns the Messages tab's icon
+                    into a message-with-a-dot and the count reads "N new". */}
+                {t.key === "messages" && n > 0
+                  ? <MessageSquareDot className={cn("size-4 shrink-0", on ? "" : "text-brand")} aria-hidden />
+                  : <Icon className="size-4 shrink-0" aria-hidden />}
                 <span className="truncate">{t.label}</span>
                 {n > 0 && (
-                  <span className={cn("rounded-full px-1.5 text-xs font-semibold", on ? "bg-white/25" : t.key === "messages" ? "bg-warning-soft text-warning" : "bg-brand-soft text-brand")}>{n}</span>
+                  <span
+                    className={cn("rounded-full px-1.5 text-xs font-semibold", on ? "bg-white/25" : t.key === "messages" ? "bg-brand-action text-white" : "bg-brand-soft text-brand")}
+                    aria-label={t.key === "messages" ? `${n} new message${n === 1 ? "" : "s"} from the client` : undefined}
+                  >
+                    {t.key === "messages" ? `${n} new` : n}
+                  </span>
                 )}
               </Link>
             );

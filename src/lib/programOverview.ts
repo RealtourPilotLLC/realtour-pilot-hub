@@ -13,6 +13,7 @@ import { isSyntheticClientRow } from "@/lib/testClients";
 import { isAutomationEnabled } from "@/lib/programAutomation";
 import { programCallEvidence } from "@/lib/programCallEvidence";
 import { strategyGatesFor } from "@/lib/strategyGate";
+import { waitingFor, monthNameOf, type Waiting } from "@/lib/contentStatusLine";
 
 // ---------------------------------------------------------------------------
 // THE MONTHLY PORTFOLIO OVERVIEW (spec §16). One row per (client, program
@@ -56,7 +57,10 @@ export const OVERVIEW_FILTERS: { key: OverviewFilterKey; label: string; hint: st
   { key: "in_production", label: "In production", hint: "filmed, being edited" },
   { key: "awaiting_review", label: "Awaiting review", hint: "a cut is with the client" },
   { key: "failed_automation", label: "Failed automation", hint: "something automatic errored on this client" },
-  { key: "overdue", label: "Overdue", hint: "the month is short and the calendar has run out" },
+  // Oct 27 2026 (Jordan: "Overdue on what? What's overdue?"): the flag also
+  // covers a month ending within a week with nothing booked, so it says so,
+  // and each row carries the reason in words (row.overdue.why).
+  { key: "overdue", label: "Overdue or due soon", hint: "the month is over with videos short, or it ends within a week and no session is booked" },
 ];
 
 export type SessionState = "NOT_SCHEDULED" | "REQUESTED" | "CONFIRMED" | "COMPLETED" | "CANCELLED";
@@ -145,6 +149,8 @@ export type OverviewRow = {
   };
 
   nextAction: {
+    /** Oct 27 2026: which rung of the ladder spoke (stable, for the status line and drills). */
+    kind: NextActionKind;
     text: string;
     owner: string; // the person's name
     ownerDuty: string;
@@ -167,7 +173,20 @@ export type OverviewRow = {
     /** CP-13: client messages on the program conversation nobody has answered yet. */
     messagesWaiting: number;
     oldestWaitingAt: Date | null;
+    /** Oct 27 2026: the last content-session booking reminder actually EMAILED for this month (not a copied link). */
+    lastBookingSentAt: Date | null;
+    bookingSentCount: number;
+    /** the month's reminder snooze, when one is set (Mike Ciunci's October, for one) */
+    snoozedUntil: Date | null;
+    snoozeReason: string | null;
   };
+
+  /** Oct 27 2026: who the month waits on, item by item, worded by contentStatusLine.ts. */
+  waiting: Waiting;
+  /** Oct 27 2026: why the overdue flag is up, in words ("over": past its deadline; "soon": ends within a week, nothing booked). */
+  overdue: { kind: "over" | "soon"; why: string } | null;
+  /** Oct 27 2026: a new client before their strategy, with the brand discovery call (Jordan: "only when they're a new client"). */
+  newClient: { discovery: "needed" | "booked" | "held"; atISO: string | null } | null;
 
   failures: FailedAutomation[];
   flags: OverviewFilterKey[];
@@ -177,6 +196,14 @@ export type OverviewRow = {
    *  file's hero draws — null only when the reader returned nothing. */
   journey: JourneyInput | null;
 };
+
+export type NextActionKind =
+  | "dormant" | "no_workspace" | "ended" | "skipped" | "forfeited" | "history"
+  | "book_discovery" | "discovery_booked" | "build_strategy" | "call_problem"
+  | "videos_to_approve" | "videos_to_send" | "reconcile" | "book_call" | "choose_path" | "call_booked"
+  | "answers" | "pick_topics" | "approve_strategy" | "approve_scripts" | "write_scripts"
+  | "confirm_request" | "book_late_session" | "book_session" | "confirm_appointment" | "filming_soon"
+  | "confirm_filmed" | "cuts_with_client" | "in_production" | "all_delivered";
 
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 
@@ -201,6 +228,9 @@ function monthEndISO(monthKey: string): string {
   // day 0 of the next month = the last day of this one; 23:59 ET ≈ 03:59Z next day.
   return new Date(Date.UTC(y, m, 1, 3, 59)).toISOString();
 }
+
+/** "Oct 31", ET */
+const fmtShort = (isoStr: string) => new Date(isoStr).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
 
 export type OverviewOptions = {
   /** a month key, or "ALL_OPEN" for every month that still carries an obligation. */
@@ -351,7 +381,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       orderBy: { scheduledStart: "desc" },
     }),
     monthIds.length ? prisma.programSessionRequest.findMany({ where: { monthId: { in: monthIds } }, select: { id: true, monthId: true, status: true, slotStart: true, bookingState: true, lastError: true } }) : [],
-    prisma.programReminder.findMany({ where: { enrollmentId: { in: enrollmentIds } }, orderBy: { createdAt: "desc" }, take: 400, select: { enrollmentId: true, monthKey: true, action: true, state: true, createdAt: true, sentAt: true, nextEligibleAt: true, suppressionReason: true, lastError: true, outcome: true } }),
+    prisma.programReminder.findMany({ where: { enrollmentId: { in: enrollmentIds } }, orderBy: { createdAt: "desc" }, take: 400, select: { enrollmentId: true, monthKey: true, action: true, state: true, channel: true, createdAt: true, sentAt: true, nextEligibleAt: true, suppressionReason: true, lastError: true, outcome: true } }),
     failedAutomationIndex({ includeTest: opts.includeTest }),
     monthIds.length ? prisma.programTranscriptJob.findMany({ where: { enrollmentId: { in: enrollmentIds } }, select: { callRecordId: true, kind: true, state: true, reviewReason: true, lastError: true }, orderBy: { updatedAt: "desc" }, take: 300 }) : [],
     isAutomationEnabled("transcript_jobs").catch(() => null),
@@ -596,6 +626,9 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     const myReminders = reminders.filter((r) => r.enrollmentId === e.id && (r.monthKey ? r.monthKey === key : true));
     const lastSent = myReminders.find((r) => r.state === "SENT") ?? null;
     const lastAny = myReminders[0] ?? null;
+    // Oct 27 2026: the daily booking emails (the BOOK_SESSION lane), as sent; a copied link is not an email.
+    const bookingSent = myReminders.filter((r) => r.action === "BOOK_SESSION" && r.state === "SENT" && r.channel !== "copy");
+    const lastBooking = bookingSent[0] ?? null;
     const nextEligible = myReminders.map((r) => r.nextEligibleAt).filter((d): d is Date => !!d && d > now).sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
     const comms = {
       lastAt: lastSent?.sentAt ?? lastSent?.createdAt ?? null,
@@ -607,6 +640,10 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       everSent: !!lastSent,
       messagesWaiting: waiting.get(e.id)?.n ?? 0,
       oldestWaitingAt: waiting.get(e.id)?.oldest ?? null,
+      lastBookingSentAt: lastBooking ? lastBooking.sentAt ?? lastBooking.createdAt : null,
+      bookingSentCount: bookingSent.length,
+      snoozedUntil: m?.remindersSnoozedUntil ?? null,
+      snoozeReason: m?.remindersSnoozedUntil ? m.remindersSnoozeReason ?? null : null,
     };
 
     const myFailures = failures.byEnrollment.get(e.id) ?? [];
@@ -634,105 +671,108 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       // put three deliberately-paused clients at the top of Jordan's morning
       // filter as false alarms. A dormant month is nobody's obligation.
       next = {
-        text: `${e.status === "PAUSED" ? "Paused" : "Ended"} — no ${monthLabel(key)} workspace, and none is minted while the enrollment is ${e.status.toLowerCase()}`,
+        kind: "dormant", text: `${e.status === "PAUSED" ? "Paused" : "Ended"} — no ${monthLabel(key)} workspace, and none is minted while the enrollment is ${e.status.toLowerCase()}`,
         owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href(), cta: "Open the client file",
       };
     } else if (!m) {
-      next = { text: `No ${monthLabel(key)} workspace yet — "Sync now" mints it`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href(), cta: "Open the client file" };
+      next = { kind: "no_workspace", text: `No ${monthLabel(key)} workspace yet — "Sync now" mints it`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href(), cta: "Open the client file" };
     } else if (e.status === "ENDED") {
-      next = { text: `Ended — ${monthLabel(key)} is the last month on file`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", closed: true, deadlineISO: null, href: href(), cta: "Open the history" };
+      next = { kind: "ended", text: `Ended — ${monthLabel(key)} is the last month on file`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", closed: true, deadlineISO: null, href: href(), cta: "Open the history" };
     } else if (m.status === "SKIPPED") {
       const caughtUp = catchUpFrom(e.overridesJson, key);
-      next = { text: caughtUp ? `Caught up in ${monthLabel(caughtUp.targetMonthKey)} — nothing owed here` : "Month skipped on purpose — nothing owed", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", closed: true, deadlineISO: null, href: href(), cta: "Open" };
+      next = { kind: "skipped", text: caughtUp ? `Caught up in ${monthLabel(caughtUp.targetMonthKey)} — nothing owed here` : "Month skipped on purpose — nothing owed", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", closed: true, deadlineISO: null, href: href(), cta: "Open" };
     } else if (forfeited) {
       // Staff-only words. The link opens the catch-up flow on the next open
       // month with this month picked — an exception, never a routine step.
       // Jordan, Oct 8 2026: a catch-up is an exception — the quiet header link
       // offers it; the next-action card stays a plain "Open", never a CTA.
       next = {
-        text: `Forfeited — ${monthLabel(key)} was missed, nothing is owed`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", closed: true, deadlineISO: null,
+        kind: "forfeited", text: `Forfeited — ${monthLabel(key)} was missed, nothing is owed`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", closed: true, deadlineISO: null,
         href: href(), cta: "Open",
       };
     } else if (m.historical) {
-      next = { text: "Imported history — read only", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", closed: true, deadlineISO: null, href: href(), cta: "Open" };
+      next = { kind: "history", text: "Imported history — read only", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", closed: true, deadlineISO: null, href: href(), cta: "Open" };
     } else if (strategyPending && strategyGate) {
       // Oct 21 2026: discovery call → strategy → strategy call → filming. Until
       // the strategy is in the client's portal there is nothing to book or chase.
       const when = strategyGate.discoveryAt ? strategyGate.discoveryAt.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : null;
       next = strategyGate.discovery === "needed"
-        ? { text: "New client — no brand discovery call booked yet. Nothing to book until their strategy is in the portal", owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "client", deadlineISO: null, href: href("plan"), cta: "Open the plan" }
+        ? { kind: "book_discovery", text: "New client — no brand discovery call booked yet. Nothing to book until their strategy is in the portal", owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "client", deadlineISO: null, href: href("plan"), cta: "Open the plan" }
         : strategyGate.discovery === "booked"
-          ? { text: `New client — brand discovery call ${when ? `${when} ET` : "booked"}. Strategy next; no strategy call or filming until it is in the portal`, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "nobody", deadlineISO: strategyGate.discoveryAt ? iso(strategyGate.discoveryAt) : null, href: href("plan"), cta: "Open the plan" }
-          : { text: "Build and release their content strategy — strategy call and filming open once it is in the portal", owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: href("plan"), cta: "Open the plan" };
+          ? { kind: "discovery_booked", text: `New client — brand discovery call ${when ? `${when} ET` : "booked"}. Strategy next; no strategy call or filming until it is in the portal`, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "nobody", deadlineISO: strategyGate.discoveryAt ? iso(strategyGate.discoveryAt) : null, href: href("plan"), cta: "Open the plan" }
+          : { kind: "build_strategy", text: "Build and release their content strategy — strategy call and filming open once it is in the portal", owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: href("plan"), cta: "Open the plan" };
     } else if (blockingCallProblem) {
       // A confirmed transcript nobody has analysed opens the month's call card,
       // where "Analyze the call" runs it now (Oct 12 2026); anything else
       // (a failed import, a transcript to confirm) opens the call review queue.
-      next = { text: blockingCallProblem, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: callEvidence.analyzeHere && !hardCallProblem ? contentHref(e.id, { tab: "plan", view: "calls", month: key, now, anchor: "call" }) : "/content/calls#review", cta: callEvidence.cta };
+      next = { kind: "call_problem", text: blockingCallProblem, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: callEvidence.analyzeHere && !hardCallProblem ? contentHref(e.id, { tab: "plan", view: "calls", month: key, now, anchor: "call" }) : "/content/calls#review", cta: callEvidence.cta };
     } else if ((pp?.awaitingClient ?? 0) > 0) {
       // The entitlement reader, not a stale video status, says these exact
       // cuts are released. Their live decision or send takes priority over
       // reconciling older month/video topic links.
       const n = pp!.awaitingClient;
       next = progress?.portalApprover
-        ? { text: `${n} video${n === 1 ? "" : "s"} released and awaiting the client's approval`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "client", deadlineISO: deadline, href: href("production", "videos"), cta: "See the videos" }
-        : { text: `${n} video${n === 1 ? "" : "s"} approved and ready to send — this client has no portal access`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "us", deadlineISO: deadline, href: "/", cta: "Open Ready to send" };
+        ? { kind: "videos_to_approve", text: `${n} video${n === 1 ? "" : "s"} released and awaiting the client's approval`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "client", deadlineISO: deadline, href: href("production", "videos"), cta: "See the videos" }
+        : { kind: "videos_to_send", text: `${n} video${n === 1 ? "" : "s"} approved and ready to send — this client has no portal access`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "us", deadlineISO: deadline, href: "/", cta: "Open Ready to send" };
     } else if (needsReconciliation) {
       next = {
-        text: `Filming or video work exists, but ${topicsSelected === 0 || production.filmed > topicsSelected || unlinkedFilmedOutput ? "the topic links" : "the planning route"} for ${monthLabel(key)} need checking before asking the client to plan again`,
+        kind: "reconcile", text: `Filming or video work exists, but ${topicsSelected === 0 || production.filmed > topicsSelected || unlinkedFilmedOutput ? "the topic links" : "the planning route"} for ${monthLabel(key)} need checking before asking the client to plan again`,
         owner: owner.STRATEGY.label, ownerDuty: "month reconciliation", blocked: "us", deadlineISO: deadline,
         href: href("plan", "topics"), cta: "Check month history",
       };
     } else if (callMode === "REQUIRED" && !callHeld && !callSkipped && !bookedCall && m.strategyCallStatus !== "SCHEDULED" && !planningInWriting) {
-      next = { text: "Strategy call is required and nothing is booked", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href("plan", "calls"), cta: "Chase the booking" };
+      next = { kind: "book_call", text: "Strategy call is required and nothing is booked", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href("plan", "calls"), cta: "Chase the booking" };
     } else if (callMode === "OPTIONAL_WRITTEN" && planningMode === "UNDECIDED" && !callHeld && !callSkipped && !bookedCall && !clientPlanned) {
-      next = { text: "They have not chosen a call or the written path", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href("plan", "calls"), cta: "Ask them to choose" };
+      next = { kind: "choose_path", text: "They have not chosen a call or the written path", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href("plan", "calls"), cta: "Ask them to choose" };
     } else if (bookedCall?.scheduledStart && !callHeld) {
-      next = { text: `Strategy call booked for ${bookedCall.scheduledStart.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" })}`, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "nobody", deadlineISO: iso(bookedCall.scheduledStart), href: href("plan", "calls"), cta: "Open the call" };
+      next = { kind: "call_booked", text: `Strategy call booked for ${bookedCall.scheduledStart.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" })}`, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "nobody", deadlineISO: iso(bookedCall.scheduledStart), href: href("plan", "calls"), cta: "Open the call" };
     } else if (answersOutstanding > 0 && !clientPlanned) {
       const overtook = planningInWriting && callMode === "REQUIRED" && !callHeld && !callSkipped && !bookedCall;
       next = {
-        text: `${answersOutstanding} topic${answersOutstanding === 1 ? "" : "s"} still waiting on their answers${overtook ? " — they are planning this month in writing rather than on a call" : ""}`,
+        kind: "answers", text: `${answersOutstanding} topic${answersOutstanding === 1 ? "" : "s"} still waiting on their answers${overtook ? " — they are planning this month in writing rather than on a call" : ""}`,
         owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "client", deadlineISO: deadline, href: href("plan", "topics"), cta: "See the questions",
       };
     } else if (topicsNeeded > 0 && !e.clientSuppliesTopics) {
-      next = { text: `${topicsNeeded} more topic${topicsNeeded === 1 ? "" : "s"} to pick for ${monthLabel(key)}`, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: href("plan", "topics"), cta: "Pick topics" };
+      next = { kind: "pick_topics", text: `${topicsNeeded} more topic${topicsNeeded === 1 ? "" : "s"} to pick for ${monthLabel(key)}`, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: href("plan", "topics"), cta: "Pick topics" };
     } else if (strategyReviewNeeded > 0) {
-      next = { text: `A strategy version is waiting for ${owner.STRATEGY.label}`, owner: owner.STRATEGY.label, ownerDuty: "strategy approval", blocked: "us", deadlineISO: deadline, href: href("plan", "strategy"), cta: "Review the strategy" };
+      next = { kind: "approve_strategy", text: `A strategy version is waiting for ${owner.STRATEGY.label}`, owner: owner.STRATEGY.label, ownerDuty: "strategy approval", blocked: "us", deadlineISO: deadline, href: href("plan", "strategy"), cta: "Review the strategy" };
     } else if (reviewNeeded > 0 && !clientPlanned) {
       // Oct 22 2026 (audit M5): the same words as the month's reader and the Dashboard card.
-      next = { text: scriptsAwaitingWords({ needsJordan: reviewNeeded - drafting, drafting }, `waiting for ${owner.SCRIPTS.label}`) ?? `${reviewNeeded} scripts waiting for ${owner.SCRIPTS.label}`, owner: owner.SCRIPTS.label, ownerDuty: "script approval", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Review the scripts" };
+      next = { kind: "approve_scripts", text: scriptsAwaitingWords({ needsJordan: reviewNeeded - drafting, drafting }, `waiting for ${owner.SCRIPTS.label}`) ?? `${reviewNeeded} scripts waiting for ${owner.SCRIPTS.label}`, owner: owner.SCRIPTS.label, ownerDuty: "script approval", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Review the scripts" };
     } else if (!clientPlanned && approved < production.owed && myScripts.length < production.owed) {
       const notStarted = Math.max(0, production.owed - myScripts.length);
-      next = { text: `${notStarted} script${notStarted === 1 ? "" : "s"} not started`, owner: owner.SCRIPTS.label, ownerDuty: "scripts", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Open scripts" };
+      next = { kind: "write_scripts", text: `${notStarted} script${notStarted === 1 ? "" : "s"} not started`, owner: owner.SCRIPTS.label, ownerDuty: "scripts", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Open scripts" };
     } else if (sessionState === "REQUESTED") {
-      next = { text: "They asked for a session — nothing confirmed", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Confirm the slot" };
+      next = { kind: "confirm_request", text: "They asked for a session — nothing confirmed", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Confirm the slot" };
     } else if (lateIn && (sessionState === "NOT_SCHEDULED" || sessionState === "CANCELLED")) {
-      next = { text: `Filming late, in ${monthLabel(lateIn)}: ${monthLabel(key).split(" ")[0]}'s session isn't booked yet`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href("production", "sessions"), cta: "See the session" };
+      next = { kind: "book_late_session", text: `Filming late, in ${monthLabel(lateIn)}: ${monthLabel(key).split(" ")[0]}'s session isn't booked yet`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href("production", "sessions"), cta: "See the session" };
     } else if (sessionState === "NOT_SCHEDULED" || sessionState === "CANCELLED") {
-      next = { text: clientPlanned ? "Client-planned — no filming session on the calendar" : "Scripts are ready — no filming session on the calendar", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Book the session" };
+      // THE CLIENT BOOKS (Jordan, Oct 27 2026: "One session still to book.
+      // That's not on us, that's on them."). The daily booking reminder chases
+      // it; a request they sent is ours to confirm (the REQUESTED rung above).
+      next = { kind: "book_session", text: clientPlanned ? "Client-planned — no filming session on the calendar" : "Scripts are ready — no filming session on the calendar", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href("production", "sessions"), cta: "See the sessions" };
     } else if (ps && sessionState === "CONFIRMED" && ps.missing > 0) {
       // One Pro booking does not complete a two-session month.
       next = ps.pendingRequests > 0
-        ? { text: `${accounted} of ${ps.required} sessions on the calendar — they asked for another, nothing confirmed`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Confirm the slot" }
-        : { text: `${accounted} of ${ps.required} sessions on the calendar — ${ps.missing} still to book`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Book the session" };
+        ? { kind: "confirm_request", text: `${accounted} of ${ps.required} sessions on the calendar — they asked for another, nothing confirmed`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Confirm the slot" }
+        : { kind: "book_session", text: `${accounted} of ${ps.required} sessions on the calendar — ${ps.missing} still to book`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href("production", "sessions"), cta: "See the sessions" };
     } else if (ps && sessionState === "CONFIRMED" && ps.unverified > 0) {
       const u = ps.list.find((f) => f.state === "UNVERIFIED")!;
-      next = { text: `A job dated ${u.startsAtISO ? new Date(u.startsAtISO).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "(undated)"} has no Aryeo appointment — confirm it`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Confirm the appointment" };
+      next = { kind: "confirm_appointment", text: `A job dated ${u.startsAtISO ? new Date(u.startsAtISO).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "(undated)"} has no Aryeo appointment — confirm it`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Confirm the appointment" };
     } else if (sessionState === "CONFIRMED" && upcoming) {
-      next = { text: `Filming ${sessionDate ? sessionDate.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "soon"}`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "nobody", deadlineISO: iso(sessionDate), href: href("production", "sessions"), cta: "See the session" };
+      next = { kind: "filming_soon", text: `Filming ${sessionDate ? sessionDate.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "soon"}`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "nobody", deadlineISO: iso(sessionDate), href: href("production", "sessions"), cta: "See the session" };
     } else if (ps && sessionState === "CONFIRMED" && ps.heldUnconfirmed > 0 && production.produced === 0) {
       // Held, and nobody has said it was filmed. Once edits exist the footage
       // plainly does, and the ladder moves on to production.
       const h = ps.list.find((f) => f.state === "HELD_UNCONFIRMED")!;
-      next = { text: "The session was held — nobody has confirmed what was filmed", owner: h.photographer ?? owner.SCHEDULING.label, ownerDuty: h.photographer ? "photographer" : "scheduling", blocked: "us", deadlineISO: deadline, href: h.projectId ? `/upload/${h.projectId}` : href(), cta: "Submit the upload page" };
+      next = { kind: "confirm_filmed", text: "The session was held — nobody has confirmed what was filmed", owner: h.photographer ?? owner.SCHEDULING.label, ownerDuty: h.photographer ? "photographer" : "scheduling", blocked: "us", deadlineISO: deadline, href: h.projectId ? `/upload/${h.projectId}` : href(), cta: "Submit the upload page" };
     } else if (production.clientReview > 0) {
-      next = { text: `${production.clientReview} cut${production.clientReview === 1 ? "" : "s"} waiting on the client`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "client", deadlineISO: deadline, href: "/review", cta: "Open the Review Room" };
+      next = { kind: "cuts_with_client", text: `${production.clientReview} cut${production.clientReview === 1 ? "" : "s"} waiting on the client`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "client", deadlineISO: deadline, href: "/review", cta: "Open the Review Room" };
     } else if (production.delivered < production.owed) {
       const left = production.owed - production.delivered;
-      next = { text: `${left} of ${production.owed} video${production.owed === 1 ? "" : "s"} still in production`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "us", deadlineISO: deadline, href: href("production", "videos"), cta: "See the videos" };
+      next = { kind: "in_production", text: `${left} of ${production.owed} video${production.owed === 1 ? "" : "s"} still in production`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "us", deadlineISO: deadline, href: href("production", "videos"), cta: "See the videos" };
     } else {
-      next = { text: `All ${production.owed} videos delivered`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href("production", "videos"), cta: "Open" };
+      next = { kind: "all_delivered", text: `All ${production.owed} videos delivered`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href("production", "videos"), cta: "Open" };
     }
 
     // ---- filters ------------------------------------------------------------------
@@ -760,12 +800,27 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     // past by definition, and flagging all twelve of them "overdue" the moment
     // Jordan ticks "show ended clients" would be twelve accusations about work
     // nobody owes.
-    if (live && production.delivered < production.owed && (monthOver || (key === thisMonth && sessionState === "NOT_SCHEDULED" && new Date(deadline).getTime() - now.getTime() < 7 * 864e5))) flags.push("overdue");
+    // Oct 27 2026 (Jordan: "Overdue on what? What's overdue?"): the flag names
+    // its reason, and a new client whose strategy is not in their portal yet
+    // is never overdue (Kristen Pavillard read yellow): nothing can be booked
+    // or filmed before it, so nothing is late.
+    const overdueKind: "over" | "soon" | null = !live || strategyPending || production.delivered >= production.owed ? null
+      : monthOver ? "over"
+      : key === thisMonth && sessionState === "NOT_SCHEDULED" && new Date(deadline).getTime() - now.getTime() < 7 * 864e5 ? "soon"
+      : null;
+    const short = production.owed - production.delivered;
+    const overdue = overdueKind === "over"
+      ? { kind: "over" as const, why: bulk ? `the bulk plan was due ${fmtShort(deadline)} and ${short} of ${production.owed} videos aren't delivered` : `${monthLabel(lateIn ?? key)} is over and ${short} of ${production.owed} video${production.owed === 1 ? "" : "s"} ${short === 1 ? "isn't" : "aren't"} delivered` }
+      : overdueKind === "soon"
+        ? { kind: "soon" as const, why: `${monthNameOf(key)} ends ${fmtShort(deadline)} and no filming session is booked` }
+        : null;
+    if (overdue) flags.push("overdue");
 
     // ---- priority: the worse it is, the smaller the number ------------------------
     let priority = 500;
     if (m?.status === "SKIPPED" || m?.historical || forfeited) priority = 900;
-    else if (flags.includes("overdue")) priority = 10;
+    else if (overdue?.kind === "over") priority = 10;
+    else if (overdue?.kind === "soon") priority = 45;
     else if (blockingCallProblem) priority = 20;
     else if (flags.includes("failed_automation")) priority = 30;
     else if (flags.includes("needs_reconciliation")) priority = 35;
@@ -779,6 +834,44 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     else if (production.delivered >= production.owed && production.owed > 0) priority = 800;
     if (e.status === "PAUSED") priority += 300;
     if (e.status === "ENDED") priority += 400;
+
+    // ---- WHO IT WAITS ON (Oct 27 2026): every open ask, on its side ----------------
+    // The ladder above names the ONE next step; Jordan reads the month as
+    // "waiting on them: ... / waiting on us: ...", so both sides are listed
+    // (contentStatusLine.ts words them).
+    const closedMonth = !!next.closed || next.kind === "dormant" || !m;
+    const pendingRequests = ps?.pendingRequests ?? (liveRequest ? 1 : 0);
+    const callAsk: "book" | "choose" | null = clientPlanned || callHeld || callSkipped || bookedCall ? null
+      : callMode === "REQUIRED" && m?.strategyCallStatus !== "SCHEDULED" && !planningInWriting ? "book"
+      : callMode === "OPTIONAL_WRITTEN" && planningMode === "UNDECIDED" ? "choose"
+      : null;
+    const awaitingClientCuts = pp?.awaitingClient ?? 0;
+    const waitingLists = waitingFor({
+      monthKey: key,
+      closed: closedMonth || e.status !== "ACTIVE",
+      strategy: strategyPending && strategyGate ? (strategyGate.discovery === "needed" ? "discovery_needed" : strategyGate.discovery === "booked" ? "discovery_booked" : "build") : null,
+      callProblem: !!blockingCallProblem,
+      reconcile: needsReconciliation,
+      callAsk,
+      answersOwed: clientPlanned ? 0 : answersOutstanding,
+      topicsToPick: e.clientSuppliesTopics ? 0 : topicsNeeded,
+      strategyToApprove: strategyReviewNeeded,
+      scriptsToApprove: clientPlanned ? 0 : reviewNeeded,
+      scriptsToWrite: !clientPlanned && approved < production.owed && myScripts.length < production.owed ? Math.max(0, production.owed - myScripts.length) : 0,
+      sessionRequests: pendingRequests,
+      sessionsToBook: live && pendingRequests === 0 && sessionState !== "COMPLETED" ? (ps?.missing ?? (sessionState === "NOT_SCHEDULED" || sessionState === "CANCELLED" ? sessionsForMonth(e, key) : 0)) : 0,
+      lateHostMonthKey: lateIn,
+      unverified: ps?.unverified ?? 0,
+      heldUnconfirmed: production.produced === 0 ? ps?.heldUnconfirmed ?? 0 : 0,
+      videosToApprove: progress?.portalApprover ? awaitingClientCuts : 0,
+      videosToSend: progress?.portalApprover ? 0 : awaitingClientCuts,
+      cutsWithClient: production.clientReview,
+      videosInProduction: next.kind === "in_production" ? production.owed - production.delivered : production.editing,
+      scriptRequests: progress?.scripts.openSuggestions ?? 0,
+    });
+    const newClient = strategyPending && strategyGate
+      ? { discovery: strategyGate.discovery === "needed" ? "needed" as const : strategyGate.discovery === "booked" ? "booked" as const : "held" as const, atISO: iso(strategyGate.discoveryAt) }
+      : null;
 
     rows.push({
       enrollmentId: e.id, clientId: e.clientId, clientName: nameOf.get(e.clientId) ?? "Unknown client",
@@ -803,6 +896,9 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       production,
       nextAction: next,
       comms,
+      waiting: waitingLists,
+      overdue,
+      newClient,
       failures: myFailures,
       flags,
       priority,
@@ -888,7 +984,8 @@ export function overviewFacts(r: OverviewRow): OverviewFacts {
   // Oct 8 2026: a forfeited month has nothing to schedule — never "Not scheduled" in warning colour.
   const s = r.forfeited ? { word: "Forfeited", tone: "foreground" as const } : SESSION_FACT_WORDS[r.session.state];
   const exception: OverviewException | null =
-    r.flags.includes("overdue") ? { kind: "overdue", label: "Overdue" }
+    // Oct 27 2026: the label says what is overdue (Jordan: "Overdue on what?").
+    r.overdue ? { kind: "overdue", label: `${r.overdue.kind === "over" ? "Overdue" : "Due soon"}: ${r.overdue.why}` }
     : r.failures.length > 0 ? { kind: "failed_automation", label: "Failed automation" }
     : r.flags.includes("needs_approval") ? { kind: "needs_approval", label: "Needs approval" }
     : r.nextAction.blocked === "client" ? { kind: "awaiting_client", label: "Waiting on client" }

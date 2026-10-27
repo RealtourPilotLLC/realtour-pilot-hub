@@ -107,7 +107,11 @@ function OneIssue({ issue, canEdit, projects }: { issue: ClientIssueView; canEdi
   );
 }
 
-export function ClientIssuesCard({ clientId, issues, canEdit, projects }: { clientId: string; issues: ClientIssueView[]; canEdit: boolean; projects: { id: string; title: string }[] }) {
+// Oct 27 2026 (Jordan on a client's Settings tab: "record a complaint, I think
+// they should automatically be recorded"): `addManually` turns the form into
+// a quiet secondary "Add one manually" link under the list, for the rare one
+// that came some other way. Without it (the client file) nothing changes.
+export function ClientIssuesCard({ clientId, issues, canEdit, projects, addManually = false }: { clientId: string; issues: ClientIssueView[]; canEdit: boolean; projects: { id: string; title: string }[]; addManually?: boolean }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -123,8 +127,8 @@ export function ClientIssuesCard({ clientId, issues, canEdit, projects }: { clie
         <ul className="space-y-2 text-sm">{issues.map((i) => <OneIssue key={i.id} issue={i} canEdit={canEdit} projects={projects} />)}</ul>
       )}
       {canEdit && (
-        <details className="mt-3 rounded-lg border border-border px-3 py-2 text-sm">
-          <summary className="cursor-pointer font-medium">Record a complaint</summary>
+        <details className={cn("mt-3 text-sm", !addManually && "rounded-lg border border-border px-3 py-2")}>
+          <summary className={cn("cursor-pointer", addManually ? "text-xs text-muted hover:text-foreground" : "font-medium")}>{addManually ? "Add one manually" : "Record a complaint"}</summary>
           <div className="mt-2 space-y-2">
             <input value={title} onChange={(e) => setTitle(e.target.value)} disabled={pending} placeholder="Short title" className="block w-full rounded-md border border-border bg-surface px-2 py-1.5" />
             <textarea value={what} onChange={(e) => setWhat(e.target.value)} rows={3} disabled={pending} placeholder="What happened, in the client's words where you have them" className="block w-full rounded-md border border-border bg-surface px-2 py-1.5" />

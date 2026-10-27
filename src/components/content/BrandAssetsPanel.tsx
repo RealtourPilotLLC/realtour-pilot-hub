@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { BellRing, FolderOpen, History, Image as ImageIcon, Info, Palette, Plus, Quote, Sparkles } from "lucide-react";
 import { Section } from "@/components/ui/Section";
+import { colorSwatches } from "@/lib/colorSwatches";
 import {
   createAssetAction, addAssetVersionAction, setActiveAssetVersionAction, retireAssetAction,
   updateAssetMetaAction, registerFolderFileAction,
@@ -127,25 +128,32 @@ export function BrandAssetsPanel({
         </Section>
       )}
 
-      {/* ---- THE SOURCES, shown as sources ---- */}
-      <Section icon={Info} title="Where this client's brand lives today" flush>
-        <div className="divide-y divide-border text-[13px]">
-          <SourceRow label="Brand colours (client record)" value={sources.client.brandColors} />
-          <SourceRow label="Brand assets folder (client record)" value={sources.client.brandAssetsPath} />
-          <SourceRow label="Headshot / avatar" value={sources.client.avatarUrl} />
-          <SourceRow label="Video style (portal)" value={sources.client.portalVideoStyle} />
-          <SourceRow label="Preferences (portal)" value={sources.client.portalPreferences} />
-          <SourceRow label="Customer note" value={sources.client.generalNotes} />
-          {Object.entries(sources.profile).map(([section, kv]) => (
-            Object.keys(kv).length > 0 ? (
-              <div key={section} className="px-5 py-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">AI profile · {section}</p>
-                {Object.entries(kv).map(([k, v]) => <p key={k} className="text-muted"><span className="text-foreground/80">{k}:</span> {v.slice(0, 220)}</p>)}
-              </div>
-            ) : null
-          ))}
-        </div>
-      </Section>
+      {/* ---- THE SOURCES, shown as sources ----
+          Oct 27 2026 (Jordan: "Brand, AI Profile, again, the Brand, the Voice,
+          Counter, Prefs, AI Profile, Production, Editing, Stories ... it just
+          looks like a bunch of text on the screen"): this card used to repeat
+          the six agent-profile sections as raw "AI PROFILE · contentPrefs"
+          text. They are shown once now, readable and editable, in Agent
+          profile below. Fields with nothing in them are left out, colors are
+          labelled "Colors" and shown as swatches. */}
+      {(() => {
+        const rows = [
+          { label: "Colors", value: sources.client.brandColors, colors: true },
+          { label: "Brand assets folder", value: sources.client.brandAssetsPath },
+          { label: "Headshot", value: sources.client.avatarUrl },
+          { label: "Video style (from their portal)", value: sources.client.portalVideoStyle },
+          { label: "Preferences (from their portal)", value: sources.client.portalPreferences },
+          { label: "Customer note", value: sources.client.generalNotes },
+        ].filter((r) => r.value && r.value.trim());
+        if (rows.length === 0) return null;
+        return (
+          <Section icon={Info} title="On the client record" flush>
+            <dl className="divide-y divide-border text-[13px]">
+              {rows.map((r) => <SourceRow key={r.label} label={r.label} value={r.value} colors={r.colors} />)}
+            </dl>
+          </Section>
+        );
+      })()}
 
       {/* ---- THE DROPBOX FOLDER — the file store, unchanged ---- */}
       <Section
@@ -201,12 +209,35 @@ export function BrandAssetsPanel({
   );
 }
 
-function SourceRow({ label, value }: { label: string; value: string | null }) {
+function SourceRow({ label, value, colors }: { label: string; value: string | null; colors?: boolean }) {
   return (
-    <div className="flex flex-wrap items-baseline gap-2 px-5 py-2">
-      <span className="w-52 shrink-0 text-muted">{label}</span>
-      <span className={value ? "min-w-0 flex-1 break-words" : "text-muted-2"}>{value ? value.slice(0, 300) : "not set"}</span>
+    <div className="grid gap-1 px-5 py-2.5 sm:grid-cols-[13rem_1fr] sm:gap-4">
+      <dt className="text-xs font-medium text-muted sm:pt-px">{label}</dt>
+      <dd className="min-w-0 whitespace-pre-line break-words leading-relaxed">
+        {colors ? <ColorText text={value ?? ""} /> : (value ?? "").slice(0, 300)}
+      </dd>
     </div>
+  );
+}
+
+/** Oct 27 2026: a colors note with a swatch for every color a browser can
+ *  paint (colorSwatches.ts); words with no color in them stay plain text. */
+function ColorText({ text }: { text: string }) {
+  const swatches = colorSwatches(text);
+  return (
+    <span className="block">
+      {swatches.length > 0 && (
+        <span className="mb-1 flex flex-wrap items-center gap-2">
+          {swatches.map((s) => (
+            <span key={s.css} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-muted">
+              <span aria-hidden className="size-3.5 rounded-full border border-border" style={{ backgroundColor: s.css }} />
+              {s.label}
+            </span>
+          ))}
+        </span>
+      )}
+      <span className="block">{text.slice(0, 300)}</span>
+    </span>
   );
 }
 
@@ -239,7 +270,9 @@ function AssetRow({
           </span>
         )}
       </div>
-      {a.active?.valueText && <p className="mt-1 whitespace-pre-wrap text-[13px] text-foreground/85">{a.active.valueText}</p>}
+      {a.active?.valueText && (a.type === "COLOR_PALETTE"
+        ? <div className="mt-1 text-[13px] text-foreground/85"><ColorText text={a.active.valueText} /></div>
+        : <p className="mt-1 whitespace-pre-wrap text-[13px] text-foreground/85">{a.active.valueText}</p>)}
       {a.active?.cleared && <p className="mt-1 text-[13px] italic text-muted">Cleared — nothing on file, on purpose.</p>}
       {a.active?.fileName && (
         <p className="mt-1 text-[13px]">
@@ -323,13 +356,13 @@ function NewAsset({
           <select className={input} value={type} onChange={(e) => setType(e.target.value)} disabled={busy}>
             {types.map((t) => <option key={t.key} value={t.key}>{t.word}</option>)}
           </select>
-          <input className={`${input} flex-1`} placeholder="Name it (e.g. Primary logo, on-camera colours)" value={name} onChange={(e) => setName(e.target.value)} disabled={busy} />
+          <input className={`${input} flex-1`} placeholder="Name it (e.g. Primary logo, on-camera colors)" value={name} onChange={(e) => setName(e.target.value)} disabled={busy} />
           <select className={input} value={ownership} onChange={(e) => setOwnership(e.target.value)} disabled={busy}>
             <option value="CLIENT">the client owns it</option><option value="AGENCY">we own it</option><option value="LICENSED">licensed</option>
           </select>
         </div>
         {isText ? (
-          <textarea className={`${input} h-20 w-full`} placeholder="The value — colours, pronunciation, the instruction the editor must follow every time…" value={text} onChange={(e) => setText(e.target.value)} disabled={busy} />
+          <textarea className={`${input} h-20 w-full`} placeholder="The value: colors, pronunciation, the instruction the editor must follow every time…" value={text} onChange={(e) => setText(e.target.value)} disabled={busy} />
         ) : (
           <input className={`${input} w-full`} placeholder="Dropbox path (/Clients/…/Brand/logo.png) or a URL" value={ref} onChange={(e) => setRef(e.target.value)} disabled={busy} />
         )}

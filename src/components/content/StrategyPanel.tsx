@@ -17,6 +17,7 @@ import {
 import { setPillarEmphasisAction } from "@/app/content/actions";
 import { CreativeIdentityCard, type CreativeIdentityUi } from "@/components/content/CreativeIdentityCard";
 import { strategyInForceNo, strategyStaleDraft } from "@/lib/strategyAwaiting";
+import { forContentManager, isMonthScopedProposal, proposalKindWord, proposalSourceWord } from "@/lib/proposalWording";
 
 // ---------------------------------------------------------------------------
 // Strategy tab (spec §3/§21): versions never overwrite; approve and release
@@ -96,6 +97,11 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, owne
   const inForceNo = strategyInForceNo(versions);
   const run = (fn: () => Promise<{ ok: boolean; message: string }>) => start(async () => { const r = await fn(); setNote(r.message); });
   const clientSuggestions = proposals.filter((p) => p.sourceKind === "client");
+  // Oct 27 2026 (Jordan: "why am I getting a message up here about this when
+  // that should be in October 2026 priorities?"): a call's note about THIS
+  // month is offered inside the month's priorities, not as a strategy change.
+  const forMonth = month ? proposals.filter((p) => p.sourceKind !== "client" && isMonthScopedProposal(p, month.label)) : [];
+  const strategyProposals = proposals.filter((p) => !forMonth.includes(p));
   // Oct 13 2026: changes chain on the NEWEST version in play; only it is edited.
   const newestNo = Math.max(0, ...versions.filter((v) => EDITABLE.includes(v.status)).map((v) => v.versionNo));
   /** The version that was in force just before vN (the one an undo puts back): the latest approved of the older ones. */
@@ -136,10 +142,10 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, owne
         onWaive={(reason) => run(() => waiveDiscoveryAction(enrollmentId, reason))} />}
 
       {/* Proposals from calls / clients */}
-      {proposals.length > 0 && (
-        <Section icon={Send} title="Proposed changes to the strategy" count={proposals.length} tone="warning" flush>
+      {strategyProposals.length > 0 && (
+        <Section icon={Send} title="Proposed changes to the strategy" count={strategyProposals.length} flush>
           <div className="divide-y divide-border">
-            {proposals.map((p) => <ProposalItem key={p.id} p={p} target={targets[p.id] ?? null} sections={sections} workingVersionNo={workingVersionNo} busy={busy} onResolve={(accept, n, text, sectionId) => run(() => resolveStrategyProposal(p.id, accept, n, text, sectionId))} />)}
+            {strategyProposals.map((p) => <ProposalItem key={p.id} p={p} target={targets[p.id] ?? null} sections={sections} workingVersionNo={workingVersionNo} busy={busy} onResolve={(accept, n, text, sectionId) => run(() => resolveStrategyProposal(p.id, accept, n, text, sectionId))} />)}
           </div>
         </Section>
       )}
@@ -190,7 +196,7 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, owne
                     sections={v.sections}
                     collapsible
                     openFirst
-                    size="xs"
+                    size="sm"
                     actions={(s) => !(v.versionNo === newestNo && !s.canonical) && !isFrameworkView(s) ? null : (
                       <>
                         {/* Oct 6 2026: one Video Structure Framework for every client. */}
@@ -238,7 +244,15 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, owne
       <CreativeIdentityCard enrollmentId={enrollmentId} data={creativeIdentity} hasApprovedStrategy={hasApprovedStrategy} />
 
       {/* This month's priorities (apart from the foundation) */}
-      {month && <PrioritiesCard month={month} busy={busy} onSave={(t) => run(() => saveMonthPriorities(month.id, t))} />}
+      {month && <PrioritiesCard key={month.priorities.join("\n")} month={month} busy={busy} onSave={(t) => run(() => saveMonthPriorities(month.id, t))}
+        notes={forMonth}
+        onAddNote={(p) => run(async () => {
+          const r = await saveMonthPriorities(month.id, [...month.priorities, p.summary].join("\n"));
+          if (!r.ok) return r;
+          await resolveStrategyProposal(p.id, false, `Added to the ${month.label} priorities instead of the strategy.`);
+          return { ok: true, message: `Added to the ${month.label} priorities.` };
+        })}
+        onDismissNote={(p) => run(() => resolveStrategyProposal(p.id, false, `Only about ${month.label}; not a strategy change.`))} />}
 
       {/* The confirmed pillars: the approved strategy's, plus any added here. Nothing else makes one. */}
       <Section icon={Layers} title="Content pillars" count={pillars.length} flush action={approved ? <span className="text-[11px] text-muted-2">from v{approved.versionNo} + edits</span> : undefined}>
@@ -379,50 +393,86 @@ function ProposalItem({ p, target, sections, workingVersionNo, busy, onResolve }
 }) {
   // Oct 13 2026: accepting no longer pastes a replacement over the section. The
   // change is written into the newest version by the revision (which reads the
-  // whole section), so the box below is an optional instruction, not new text.
+  // whole section).
+  // Oct 27 2026 (Jordan: "How to apply it, optional. I don't know what that
+  // means"; "It's all jam-packed together"): the always-open "how to apply it"
+  // box is gone. A note is one tap away ("Add a note"), labelled for what it
+  // does: an instruction for the next draft on Accept, the reason on Reject.
+  // A planning note worded at "editors" reads as the content manager's
+  // (proposalWording.ts: "It's the person who does the content strategy").
   const [n, setN] = useState("");
+  const [noting, setNoting] = useState(false);
   const [place, setPlace] = useState("");
   const on = workingVersionNo ? `v${workingVersionNo}` : "the newest version";
   return (
-    <div className="px-5 py-3">
-      <div className="text-[10px] font-semibold uppercase tracking-wide text-warning">{p.kind.toLowerCase()} · from {p.sourceKind}{p.sourceRef ? ` · ${p.sourceRef}` : ""} · {fmt(p.createdAt)}</div>
-      <p className="mt-1 text-sm">{p.summary}</p>
-      {p.impact && <p className="mt-0.5 text-[12px] text-muted">Impact: {p.impact}</p>}
-      {target ? (
-        <div className="mt-2 space-y-1.5 rounded-lg border border-border bg-surface-2/40 p-2.5">
-          <p className="text-[12px] font-semibold">Changes the “{target.heading ?? "?"}” section of {on}</p>
-          {target.stale && <p className="rounded bg-warning-soft/60 px-2 py-1 text-[11px] text-warning">That section isn&apos;t in {on} any more. Reject this, or accept it and the change is placed where it fits.</p>}
-          {target.current != null && <details><summary className="cursor-pointer text-[11px] text-muted">What it says now</summary><p className="mt-1 whitespace-pre-wrap text-[12px] text-foreground/80">{target.current}</p></details>}
-          {target.proposed.trim() && <details><summary className="cursor-pointer text-[11px] text-muted">Suggested wording</summary><p className="mt-1 whitespace-pre-wrap text-[12px] text-foreground/80">{target.proposed}</p></details>}
-        </div>
-      ) : (
-        <div className="mt-2 space-y-1.5 rounded-lg border border-dashed border-border p-2.5">
-          <p className="text-[11px] text-muted"><span className="font-semibold text-foreground">No section named.</span> Accept it and the change is placed where it fits, or pick the section yourself.</p>
-          {sections.length > 0 && (
-            <select value={place} onChange={(e) => setPlace(e.target.value)} className="rounded border border-border bg-surface-2 px-2 py-1 text-xs">
-              <option value="">Where it fits</option>
-              {sections.map((s) => <option key={s.id} value={s.id}>{s.heading}</option>)}
-            </select>
-          )}
+    <div className="space-y-2.5 px-5 py-4">
+      <p className="text-xs text-muted-2">{proposalKindWord(p.kind)} · from {proposalSourceWord(p.sourceKind)}{p.sourceRef ? ` (${p.sourceRef})` : ""} · {fmt(p.createdAt)}</p>
+      <p className="text-[15px] leading-relaxed">{forContentManager(p.summary)}</p>
+      {p.impact && (
+        <div className="rounded-lg bg-surface-2/50 px-3 py-2">
+          <p className="text-xs font-semibold text-muted">Why it matters for the content manager</p>
+          <p className="mt-0.5 text-sm leading-relaxed text-foreground/85">{forContentManager(p.impact)}</p>
         </div>
       )}
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        <input value={n} onChange={(e) => setN(e.target.value)} placeholder="how to apply it (optional)" className="w-64 rounded border border-border bg-surface-2 px-2 py-1 text-xs" />
+      {target ? (
+        <div className="space-y-1.5 rounded-lg border border-border p-3">
+          <p className="text-sm font-medium">Changes the &ldquo;{target.heading ?? "?"}&rdquo; section of {on}</p>
+          {target.stale && <p className="rounded bg-warning-soft/60 px-2 py-1 text-xs text-warning">That section isn&apos;t in {on} any more. Reject this, or accept it and the change is placed where it fits.</p>}
+          {target.current != null && <details><summary className="cursor-pointer text-xs text-muted">What it says now</summary><p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-foreground/80">{target.current}</p></details>}
+          {target.proposed.trim() && <details><summary className="cursor-pointer text-xs text-muted">Suggested wording</summary><p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-foreground/80">{target.proposed}</p></details>}
+        </div>
+      ) : sections.length > 0 ? (
+        <label className="flex flex-wrap items-center gap-2 text-xs text-muted">
+          Goes in
+          <select value={place} onChange={(e) => setPlace(e.target.value)} className="rounded border border-border bg-surface-2 px-2 py-1 text-xs text-foreground">
+            <option value="">wherever it fits</option>
+            {sections.map((s) => <option key={s.id} value={s.id}>{s.heading}</option>)}
+          </select>
+        </label>
+      ) : null}
+      {noting && (
+        <AutoTextarea value={n} onChange={(e) => setN(e.target.value)} minRows={2} aria-label="Note for the next draft, or why you rejected it"
+          placeholder="Accepting: tell the next draft how to use it. Rejecting: say why."
+          className="w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-sm" />
+      )}
+      <div className="flex flex-wrap items-center gap-1.5">
         <button disabled={busy} onClick={() => onResolve(true, n, null, !target && place ? place : null)} className={`${btn} bg-success/15 text-success`}>
-          Accept → add to the next draft
+          Accept, add to the next draft
         </button>
         <button disabled={busy} onClick={() => onResolve(false, n)} className={quiet}>Reject</button>
+        {!noting && <button type="button" onClick={() => setNoting(true)} className="text-xs text-muted hover:text-foreground hover:underline">Add a note</button>}
       </div>
-      <p className="mt-1 text-[11px] text-muted-2">The next draft is {on} plus this change, with every earlier change kept. Approve it to put it in force.</p>
+      <p className="text-xs text-muted-2">The next draft is {on} plus this change, with every earlier change kept. Approve it to put it in force.</p>
     </div>
   );
 }
 
-function PrioritiesCard({ month, busy, onSave }: { month: { label: string; priorities: string[]; sourceRef: string | null }; busy: boolean; onSave: (t: string) => void }) {
+function PrioritiesCard({ month, busy, onSave, notes = [], onAddNote, onDismissNote }: {
+  month: { label: string; priorities: string[]; sourceRef: string | null }; busy: boolean; onSave: (t: string) => void;
+  notes?: ProposalRow[]; onAddNote?: (p: ProposalRow) => void; onDismissNote?: (p: ProposalRow) => void;
+}) {
   const [t, setT] = useState(month.priorities.join("\n"));
   return (
-    <Section icon={Compass} title={`${month.label} priorities`} action={<span className="text-[11px] text-muted-2">{month.sourceRef ? `from ${month.sourceRef.split(":")[0]}` : "this month only — the brand foundation is above"}</span>}>
-      <AutoTextarea value={t} onChange={(e) => setT(e.target.value)} minRows={2} placeholder="One priority per line — e.g. 'Lead with the November anniversary'" className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs" />
+    <Section icon={Compass} title={`${month.label} priorities`} action={month.sourceRef ? <span className="text-xs text-muted-2">from {month.sourceRef.split(":")[0]}</span> : undefined}>
+      {/* Oct 27 2026 (Jordan: "that's cool, that's good, but like, where is this getting used?"). */}
+      <p className="mb-2 text-[13px] leading-relaxed text-muted">
+        Used when the hub writes this month&rsquo;s topic ideas and scripts, and shown to the client on their portal&rsquo;s Strategy page. This month only; the lasting strategy is above.
+      </p>
+      {notes.length > 0 && (
+        <div className="mb-3 space-y-2 rounded-xl border border-border bg-surface-2/40 p-3">
+          <p className="text-xs font-semibold text-muted">From the call, about {month.label.split(" ")[0]}</p>
+          {notes.map((p) => (
+            <div key={p.id} className="space-y-1.5">
+              <p className="text-sm leading-relaxed">{forContentManager(p.summary)}</p>
+              <div className="flex flex-wrap gap-1.5">
+                <button disabled={busy} onClick={() => onAddNote?.(p)} className={`${btn} bg-brand-action text-white`}>Add to the priorities</button>
+                <button disabled={busy} onClick={() => onDismissNote?.(p)} className={quiet}>Dismiss</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <AutoTextarea value={t} onChange={(e) => setT(e.target.value)} minRows={2} placeholder="One priority per line, e.g. 'Lead with the November anniversary'" className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-sm" />
       <button disabled={busy || t === month.priorities.join("\n")} onClick={() => onSave(t)} className={`${btn} mt-1.5 bg-brand-action text-white`}>Save priorities</button>
     </Section>
   );
