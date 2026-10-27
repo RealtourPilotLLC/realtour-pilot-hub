@@ -5,9 +5,10 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { prisma } from "@/lib/prisma";
 import { listAssignees, viewerAssigneeKey } from "@/lib/assignees";
 import { addBusinessDayKeysET, etAt, etDayKey, etDateTime } from "@/lib/datetime";
+import { revalidatePath } from "next/cache";
 import {
-  MANUAL_CHECKS, closeoutSettingKey, officeDeskFor, waitingSettingKey,
-  type CheckKey, type CloseoutRecord, type WaitingRecord,
+  MANUAL_CHECKS, REVISION_CHOICE_WORDS, closeoutSettingKey, deliveredMarkKey, officeDeskFor, revisionDecisionKey, waitingSettingKey,
+  type CheckKey, type CloseoutRecord, type DeliveredMark, type RevisionChoice, type RevisionDecision, type WaitingRecord,
 } from "@/lib/officeDesk";
 
 // ---------------------------------------------------------------------------
@@ -26,6 +27,19 @@ import {
 //     the owner, each with a bell. It comes back to Kyle's desk at that time.
 // Both refuse the owner's "view as" preview (requireAdmin does), and both are
 // recorded in the AuditLog before they answer.
+//
+// THE QUICK ACTIONS (Oct 27 2026, Jordan: "allow Kyle to close the task, like
+// mark floorplan delivered. It should close the open task for that"):
+//   · Mark floor plan (or 3D tour) delivered: who and when (office_delivered:
+//     <projectId>:<floorplan|tour>, which the hourly status read cannot reset),
+//     the deliverable set Done, the vendor chase closed (tasks.ts's own close),
+//     a line on the job's activity;
+//   · a client's photo change request, decided with a note: "No change needed"
+//     is Photo Delivery's own "Settled with the client" (it closes the
+//     revision); the others record the decision (office_revision:<jobId>) and
+//     send Kyle to the right place, "Ask the client" with a follow-up;
+//   · Mark done / Not needed with a note: the task lists' own closes
+//     (setSmartTaskStatus, dismissTask, with their guards), the note kept.
 // ---------------------------------------------------------------------------
 
 export type DeskResult = { ok: boolean; message: string };
@@ -214,4 +228,122 @@ export async function draftProgramReplyAction(enrollmentId: string): Promise<Dra
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Could not draft a reply." };
   }
+}
+
+const clip = (s: string | null | undefined, n: number) => (s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
+
+export type MarkDeliveredInput = { projectId: string; category: "Floor plan" | "3D tour"; note?: string | null };
+
+/** "Mark floor plan delivered" (Oct 27 2026): Kyle checked it is on the
+ *  listing. Records who and when, sets the owed deliverable Done, closes the
+ *  vendor chase, and says so on the job. Pressing it twice changes nothing. */
+export async function deskMarkDeliveredAction(input: MarkDeliveredInput): Promise<DeskResult> {
+  try { await requireAdmin(); } catch (e) { return denied(e); }
+  if (!ID.test(String(input?.projectId))) return { ok: false, message: "That job id is not valid." };
+  if (input.category !== "Floor plan" && input.category !== "3D tour") return { ok: false, message: "Only a floor plan or a 3D tour can be marked delivered here." };
+  const { OWED_DELIVERABLE_WHERE } = await import("@/lib/tasks");
+  const types = input.category === "Floor plan" ? ["FLOORPLAN" as const] : ["MATTERPORT_3D" as const, "ZILLOW_3D" as const];
+  const project = await prisma.project.findUnique({
+    where: { id: input.projectId },
+    select: { id: true, title: true, deliverables: { where: { ...OWED_DELIVERABLE_WHERE, type: { in: types } }, select: { id: true, status: true } } },
+  });
+  if (!project) return { ok: false, message: "That job no longer exists." };
+  if (!project.deliverables.length) return { ok: false, message: `This job has no ${input.category.toLowerCase()} on the order.` };
+  const key = deliveredMarkKey(project.id, input.category);
+  const already = await prisma.appSetting.findUnique({ where: { key } });
+  if (already?.value) {
+    try {
+      const m = JSON.parse(already.value) as DeliveredMark;
+      return { ok: true, message: `Already marked delivered by ${m.by.split(" ")[0]} ${etDateTime(m.at)}.` };
+    } catch { /* unreadable: write it again */ }
+  }
+  const { by } = await actor();
+  const at = new Date().toISOString();
+  const note = clip(input.note, 300) || null;
+  const mark: DeliveredMark = { by, at, note };
+  await prisma.auditLog.create({ data: { actor: by, action: "office_marked_delivered", target: project.id, detail: JSON.stringify({ category: input.category, ...mark }) } });
+  await prisma.appSetting.upsert({ where: { key }, create: { key, value: JSON.stringify(mark), updatedBy: by }, update: { value: JSON.stringify(mark), updatedBy: by } });
+  await prisma.deliverable.updateMany({ where: { id: { in: project.deliverables.map((d) => d.id) }, status: { not: "DONE" } }, data: { status: "DONE" } });
+  const { closeVendorChasesForPresent } = await import("@/lib/tasks");
+  const closed = await closeVendorChasesForPresent(project.id, [input.category]).catch(() => 0);
+  await prisma.activity
+    .create({ data: { projectId: project.id, type: "SYSTEM", body: clip(`${input.category} marked delivered by ${by} on the dashboard${note ? `: ${note}` : ""}`, 600) } })
+    .catch(() => undefined);
+  revalidatePath(`/projects/${project.id}`);
+  return { ok: true, message: `${input.category} marked delivered${closed ? ", and its chase is closed" : ""}.` };
+}
+
+export type RevisionDecisionInput = { jobId: string; choice: RevisionChoice; note: string };
+export type RevisionDecisionResult = DeskResult & { href?: string };
+
+/** A client's photo change request, decided and noted (Jordan, Oct 27 2026:
+ *  "He should then decide and note the fix"). No change needed settles the
+ *  revision through Photo Delivery's own action; the other three keep the
+ *  decision on the job and say where to do it. Nothing is sent to anyone. */
+export async function deskRevisionDecisionAction(input: RevisionDecisionInput): Promise<RevisionDecisionResult> {
+  try { await requireAdmin(); } catch (e) { return denied(e); }
+  if (!ID.test(String(input?.jobId))) return { ok: false, message: "That photo job id is not valid." };
+  if (!Object.prototype.hasOwnProperty.call(REVISION_CHOICE_WORDS, String(input.choice))) return { ok: false, message: "Pick what to do about the change." };
+  const note = clip(input.note, 500);
+  const pj = await prisma.photoJob.findUnique({ where: { id: input.jobId }, select: { id: true, projectId: true, stage: true } });
+  if (!pj) return { ok: false, message: "That photo job no longer exists." };
+  const project = await prisma.project.findUnique({ where: { id: pj.projectId }, select: { title: true, clientId: true, client: { select: { name: true } } } }).catch(() => null);
+  const job = { ...pj, project };
+  const { by } = await actor();
+  const at = new Date().toISOString();
+  const key = revisionDecisionKey(job.id);
+  if (input.choice === "none") {
+    // Photo Delivery's own "Settled with the client: nothing to resend" (its guard and its minimum reason).
+    const { settleRevisionAction } = await import("@/app/ops/photo-delivery/actions");
+    const r = await settleRevisionAction(job.id, note);
+    if (r.ok) {
+      await prisma.auditLog.create({ data: { actor: by, action: "office_revision_decision", target: job.id, detail: JSON.stringify({ choice: "none", note, at }) } });
+      await prisma.appSetting.deleteMany({ where: { key } });
+    }
+    return { ok: r.ok, message: r.message };
+  }
+  if (job.stage !== "REVISION_REQUESTED") return { ok: false, message: "These photos are not waiting on a decision any more. Reload the page." };
+  if (note.length < 3) return { ok: false, message: "Note the fix: what will change, or what you will ask the client." };
+  const rec: RevisionDecision = { choice: input.choice, note, by, at };
+  await prisma.auditLog.create({ data: { actor: by, action: "office_revision_decision", target: job.id, detail: JSON.stringify(rec) } });
+  await prisma.appSetting.upsert({ where: { key }, create: { key, value: JSON.stringify(rec), updatedBy: by }, update: { value: JSON.stringify(rec), updatedBy: by } });
+  const { logJobEvent } = await import("@/lib/photoDelivery/jobState");
+  await logJobEvent(job.id, by, `office decision: ${REVISION_CHOICE_WORDS[input.choice].toLowerCase()}: ${note}`, { choice: input.choice }).catch(() => undefined);
+  await prisma.activity
+    .create({ data: { projectId: job.projectId, type: "SYSTEM", body: clip(`Client's photo change: ${by} decided "${REVISION_CHOICE_WORDS[input.choice]}": ${note}`, 600) } })
+    .catch(() => undefined);
+  const street = (job.project?.title ?? "").split(",")[0].trim() || "the job";
+  if (input.choice === "ask") {
+    const f = await deskFollowUpAction({ clientId: job.project?.clientId ?? null, projectId: job.projectId, title: `Ask ${job.project?.client?.name?.split(" ")[0] ?? "the client"} about the photo change at ${street}`, when: "tomorrow", note });
+    return { ok: true, message: `Noted. ${f.ok ? f.message : "The follow-up could not be created: set one by hand."} Reply to the client from Client Communications or Messages.` };
+  }
+  return input.choice === "editor"
+    ? { ok: true, message: "Noted. Open the photos to send the fix to AutoHDR (a photo's AI re-edit, or the fixes to approve).", href: `/ops/photo-delivery/${job.id}#pd-gallery-h` }
+    : { ok: true, message: "Noted. Make the fix, then Approve and deliver again on the photos.", href: `/ops/photo-delivery/${job.id}#pd-holding-h` };
+}
+
+export type CloseTaskInput = { taskId: string; how: "done" | "not-needed"; note?: string | null };
+
+/** Mark done (or Not needed) with a note, from the side panel: the task
+ *  lists' own closes and guards (a task that needs verification is submitted
+ *  for it, a brand confirmation refuses), then the note on the task. */
+export async function deskCloseTaskAction(input: CloseTaskInput): Promise<DeskResult> {
+  try { await requireAdmin(); } catch (e) { return denied(e); }
+  if (!ID.test(String(input?.taskId))) return { ok: false, message: "That task id is not valid." };
+  if (input.how !== "done" && input.how !== "not-needed") return { ok: false, message: "Pick Done or Not needed." };
+  const t = await prisma.smartTask.findUnique({ where: { id: input.taskId }, select: { id: true, title: true, status: true, summary: true, projectId: true } });
+  if (!t) return { ok: false, message: "That task no longer exists." };
+  if (t.status === "COMPLETED" || t.status === "CANCELLED") return { ok: true, message: "Already closed." };
+  const { setSmartTaskStatus, dismissTask } = await import("@/app/actions");
+  const r = input.how === "done" ? await setSmartTaskStatus(t.id, "COMPLETED") : await dismissTask(t.id, "not needed");
+  if (r && !r.ok) return { ok: false, message: r.message };
+  const note = clip(input.note, 300);
+  const { by } = await actor();
+  await prisma.auditLog.create({ data: { actor: by, action: input.how === "done" ? "office_task_done" : "office_task_not_needed", target: t.id, detail: JSON.stringify({ title: t.title, note: note || null }) } });
+  if (note) {
+    await prisma.smartTask.update({ where: { id: t.id }, data: { summary: clip(`${input.how === "done" ? "Done" : "Not needed"} (${by.split(" ")[0]}): ${note}${t.summary ? ` · ${t.summary}` : ""}`, 500) } }).catch(() => undefined);
+    if (t.projectId) await prisma.activity.create({ data: { projectId: t.projectId, type: "SYSTEM", body: clip(`${t.title}: ${input.how === "done" ? "done" : "not needed"}, ${by}: ${note}`, 600) } }).catch(() => undefined);
+  }
+  // The close's own words when it said something (a task that needs verification is submitted for it).
+  return { ok: true, message: r?.message || (input.how === "done" ? "Done. It has left the list." : "Closed as not needed.") };
 }

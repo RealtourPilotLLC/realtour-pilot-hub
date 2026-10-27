@@ -3,17 +3,22 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Check, Loader2, Plus, RotateCcw, Send, X } from "lucide-react";
+import { ArrowUpRight, CalendarClock, Check, ExternalLink, Loader2, Mail, Plus, RotateCcw, Send, UserRoundPlus, X } from "lucide-react";
 import { approveAryeoAction } from "@/app/ops/photo-delivery/actions";
 import { sendThreadText } from "@/app/communications/threadActions";
-import { createManualTask, dismissTask, draftTaskReply, sendConfirmationText } from "@/app/actions";
+import { createManualTask, dismissTask, draftTaskReply, markCommsHandled, sendConfirmationText } from "@/app/actions";
+import { pushOldItem } from "@/app/ops/old/actions";
 import { generateReply, sendReply } from "@/app/communications/replyActions";
 import { sendEmailReply } from "@/app/emailActions";
 import { postProgramMessageAction } from "@/app/content/[id]/workspaceActions";
 import { acceptTaskAction, assignTaskAction, completeTaskAction, escalateTaskAction, flagBlockerAction, submitForVerificationAction, updateTaskAction } from "@/app/delegation/actions";
 import { sendPhotographerBriefNow } from "@/app/shoot/brief/actions";
-import { closeoutTickAction, deskFollowUpAction, deskWaitAction, draftProgramReplyAction, finishDayAction, type DeskResult, type FollowUpInput, type WaitInput } from "@/app/deskActions";
-import type { CheckKey } from "@/lib/officeDesk";
+import {
+  closeoutTickAction, deskCloseTaskAction, deskFollowUpAction, deskMarkDeliveredAction, deskRevisionDecisionAction, deskWaitAction, draftProgramReplyAction, finishDayAction,
+  type DeskResult, type FollowUpInput, type WaitInput,
+} from "@/app/deskActions";
+import type { CheckKey, DeskAction, RevisionChoice } from "@/lib/officeDesk";
+import { etDateTime } from "@/lib/datetime";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -65,8 +70,8 @@ export function PhotoApprove({ jobId }: { jobId: string }) {
   );
 }
 
-/** A text back to the client, through the Messages screen's own send. */
-export function ReplyBox({ phone, clientId }: { phone: string; clientId: string | null }) {
+/** A text back to the client (or a photographer), through the Messages screen's own send. */
+export function ReplyBox({ phone, clientId, label = "Text back" }: { phone: string; clientId: string | null; label?: string }) {
   const { busy, msg, run, setMsg } = useRun();
   const [text, setText] = useState("");
   const send = () => {
@@ -79,7 +84,7 @@ export function ReplyBox({ phone, clientId }: { phone: string; clientId: string 
   };
   return (
     <div className="space-y-2" data-control="reply">
-      <label className="block text-sm font-medium" htmlFor="desk-reply">Text back</label>
+      <label className="block text-sm font-medium" htmlFor="desk-reply">{label}</label>
       <textarea
         id="desk-reply"
         value={text}
@@ -322,6 +327,209 @@ export function DelegationControls({ taskId, state, needsVerification }: { taskI
           : <button type="button" disabled={busy} onClick={() => run(() => completeTaskAction(taskId, note || undefined))} className={QUIET}>Complete</button>}
         <button type="button" disabled={busy || note.trim().length < 3} onClick={() => run(() => escalateTaskAction(taskId, note))} className={QUIET}>Escalate</button>
       </div>
+      <Said msg={msg} />
+    </div>
+  );
+}
+
+// ---- the quick actions (Oct 27 2026) ------------------------------------------------------------
+// Jordan: "Buttons should either handle the action or take the user to where it
+// can be handled and scroll to the correct part of the screen or page." Each
+// control below does the thing in place (one press, its result said), or links
+// to the exact section (#anchor) where it is done. Nothing here sends a
+// message to a client or the team without its own press.
+
+const FIELD = "min-h-11 w-full rounded-lg border border-border bg-surface px-2 text-sm";
+const AREA = "w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-brand";
+
+/** A floor plan or 3D tour: what is missing and why, its history, and Mark delivered
+ *  (records who and when, closes the vendor chase). The vendor's email opens in
+ *  Kyle's own mail with the job filled in; nothing is sent from here. */
+export function MarkDelivered({ a }: { a: Extract<DeskAction, { kind: "mark-delivered" }> }) {
+  const { busy, msg, run } = useRun();
+  const [note, setNote] = useState("");
+  const what = a.category === "Floor plan" ? "floor plan" : "3D tour";
+  const mail = `mailto:?subject=${encodeURIComponent(`${a.category} for ${a.street}`)}&body=${encodeURIComponent(`Hi ${a.maker} team,\n\nCould you send the ${what} for ${a.street}? It is not on the listing yet.\n\nThank you,\nRealtour Pilot`)}`;
+  return (
+    <div className="space-y-3" data-control="mark-delivered" data-category={a.category}>
+      <p className="text-sm" data-why>{a.why}</p>
+      {a.history.length > 0 && (
+        <div>
+          <p className="text-[12px] font-semibold uppercase tracking-wide text-muted">History</p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-muted" data-history>{a.history.map((h) => <li key={h}>{h}</li>)}</ul>
+        </div>
+      )}
+      {msg?.ok ? <Said msg={msg} /> : (
+        <div className="space-y-2 rounded-lg border border-border p-3">
+          <label className="block text-sm font-medium" htmlFor={`md-note-${a.projectId}`}>Note (optional)</label>
+          <input id={`md-note-${a.projectId}`} value={note} onChange={(e) => setNote(e.target.value)} placeholder={`Where you saw the ${what}`} className={FIELD} />
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" disabled={busy} onClick={() => run(() => deskMarkDeliveredAction({ projectId: a.projectId, category: a.category, note }))} className={PRIMARY} data-mark-delivered>
+              {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />} Mark {what} delivered
+            </button>
+            <Said msg={msg} />
+          </div>
+          <p className="text-[12px] text-muted">Records you and the time, and closes the {a.maker} chase.</p>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <a href={mail} className={QUIET} data-email-vendor><Mail aria-hidden className="size-4" /> Email {a.maker}</a>
+        <Link href={`/projects/${a.projectId}#${a.anchor}`} className={QUIET} data-anchor-link={a.anchor}><ArrowUpRight aria-hidden className="size-4" /> Open the job&rsquo;s {what} section</Link>
+      </div>
+    </div>
+  );
+}
+
+const CHOICES: { key: RevisionChoice; label: string; hint: string }[] = [
+  { key: "editor", label: "Send to the photo editor (AutoHDR fix)", hint: "Then open the photos and send the fix." },
+  { key: "self", label: "Fix it myself", hint: "Then make the fix and deliver again." },
+  { key: "none", label: "No change needed", hint: "Closes the change request: the photos stay as delivered. Say what was settled with the client." },
+  { key: "ask", label: "Ask the client", hint: "Sets a follow-up for the next business day." },
+];
+
+/** A client's photo change request: their own words, then Kyle's decision and
+ *  his note. "No change needed" is Photo Delivery's own Settled with the client. */
+export function RevisionDecide({ a }: { a: Extract<DeskAction, { kind: "revision-decide" }> }) {
+  const { busy, msg, run, setMsg } = useRun();
+  const [choice, setChoice] = useState<RevisionChoice | null>(a.decided?.choice ?? null);
+  const [note, setNote] = useState(a.decided?.note ?? "");
+  const [href, setHref] = useState<string | null>(null);
+  const min = choice === "none" ? 10 : 3;
+  const save = () => {
+    if (!choice) return;
+    run(async () => {
+      const r = await deskRevisionDecisionAction({ jobId: a.jobId, choice, note });
+      if (r.ok && r.href) setHref(r.href);
+      return r;
+    });
+  };
+  return (
+    <div className="space-y-3" data-control="revision-decide">
+      <div data-client-words>
+        <p className="text-[12px] font-semibold uppercase tracking-wide text-muted">What the client asked</p>
+        {a.asks.length ? (
+          <ul className="mt-1 space-y-1.5">
+            {a.asks.map((x) => (
+              <li key={x.id} className="rounded-lg bg-surface-2/60 px-3 py-2 text-sm">
+                <span className="block text-[11px] text-muted">{etDateTime(x.askedAtISO)}</span>
+                &ldquo;{x.text}&rdquo;
+              </li>
+            ))}
+          </ul>
+        ) : a.taskNote ? <p className="mt-1 rounded-lg bg-surface-2/60 px-3 py-2 text-sm">{a.taskNote}</p> : <p className="mt-1 text-sm text-muted">The request&rsquo;s own words are not on file. Open the photos to see it.</p>}
+      </div>
+      {a.decided && !msg && <p className="text-sm text-muted" data-decided={a.decided.choice}>Decided by {a.decided.by.split(" ")[0]}: {CHOICES.find((c) => c.key === a.decided!.choice)?.label}{a.decided.note ? `. ${a.decided.note}` : ""}</p>}
+      {msg?.ok ? (
+        <div className="space-y-2">
+          <Said msg={msg} />
+          {href && <Link href={href} className={PRIMARY} data-next-step>Open the photos <ExternalLink aria-hidden className="size-4" /></Link>}
+        </div>
+      ) : (
+        <fieldset className="space-y-2 rounded-lg border border-border p-3">
+          <legend className="px-1 text-sm font-semibold">Decide the fix</legend>
+          {CHOICES.map((c) => (
+            <label key={c.key} className="flex min-h-11 cursor-pointer items-start gap-2 rounded-lg px-1 py-1.5 hover:bg-surface-2" data-choice={c.key}>
+              <input type="radio" name={`rev-${a.jobId}`} checked={choice === c.key} onChange={() => { setChoice(c.key); setMsg(null); }} className="mt-1 size-4" />
+              <span><span className="block text-sm font-medium">{c.label}</span><span className="block text-[12px] text-muted">{c.hint}</span></span>
+            </label>
+          ))}
+          <label className="block text-sm font-medium" htmlFor={`rev-note-${a.jobId}`}>Note the fix</label>
+          <textarea id={`rev-note-${a.jobId}`} value={note} onChange={(e) => setNote(e.target.value)} rows={3} className={AREA} placeholder={choice === "none" ? "What was settled with the client, and why nothing goes out again" : "What will change, or what you will ask"} />
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" disabled={busy || !choice || note.trim().length < min} onClick={save} className={PRIMARY}>
+              {busy && <Loader2 aria-hidden className="size-4 animate-spin" />} Save decision
+            </button>
+            <Link href={`/ops/photo-delivery/${a.jobId}#pd-holding-h`} className={QUIET}>Open the photos</Link>
+            <Said msg={msg} />
+          </div>
+        </fieldset>
+      )}
+    </div>
+  );
+}
+
+/** Mark done (with a note), Not needed, or a new date: the task lists' own closes. */
+export function TaskResolve({ taskId, nextDay, allowNewDate = true }: { taskId: string; nextDay: string; allowNewDate?: boolean }) {
+  const { busy, msg, run } = useRun();
+  const [note, setNote] = useState("");
+  const [day, setDay] = useState(nextDay);
+  if (msg?.ok) return <Said msg={msg} />;
+  return (
+    <fieldset className="space-y-2 rounded-lg border border-border p-3" data-control="task-resolve">
+      <legend className="px-1 text-sm font-semibold">Close it</legend>
+      <input aria-label="What was done (optional)" value={note} onChange={(e) => setNote(e.target.value)} placeholder="What was done (optional)" className={FIELD} />
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" disabled={busy} onClick={() => run(() => deskCloseTaskAction({ taskId, how: "done", note }))} className={PRIMARY} data-task-done>
+          {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />} Mark done
+        </button>
+        <button type="button" disabled={busy} onClick={() => run(() => deskCloseTaskAction({ taskId, how: "not-needed", note }))} className={QUIET}>
+          <X aria-hidden className="size-4" /> Not needed
+        </button>
+      </div>
+      {allowNewDate && (
+        <div className="flex flex-wrap items-center gap-2 border-t border-border pt-2">
+          <label className="text-sm" htmlFor={`snooze-${taskId}`}>Follow up on</label>
+          <input id={`snooze-${taskId}`} type="date" value={day} onChange={(e) => setDay(e.target.value)} className="min-h-11 rounded-lg border border-border bg-surface px-2 text-sm" />
+          <button type="button" disabled={busy || !day} onClick={() => run(async () => { const r = await pushOldItem(taskId, day); return { ok: r.ok, message: r.message || "Moved." }; })} className={QUIET} data-snooze>
+            <CalendarClock aria-hidden className="size-4" /> New date
+          </button>
+        </div>
+      )}
+      <Said msg={msg} />
+    </fieldset>
+  );
+}
+
+/** Delegate (to James, Jordan, an editor, a photographer) or Escalate to Jordan,
+ *  through the delegation build (one canonical task; the person is told in
+ *  the hub). A row with no task of its own gets one, linked back to it. */
+export function HandOn({ taskId, title, href, projectId, clientId, delegates, ownerKey, ownerName }: {
+  taskId: string | null; title: string; href: string | null; projectId: string | null; clientId: string | null;
+  delegates: { key: string; name: string }[]; ownerKey: string | null; ownerName: string;
+}) {
+  const { busy, msg, run } = useRun();
+  const [who, setWho] = useState(delegates[0]?.key ?? "");
+  const [note, setNote] = useState("");
+  if (msg?.ok) return <Said msg={msg} />;
+  const send = (to: string) => run(() => assignTaskAction({ title, assigneeKey: to, sourceTaskId: taskId ?? undefined, sourceHref: taskId ? undefined : href ?? undefined, projectId: projectId ?? undefined, clientId: clientId ?? undefined, note: note || undefined, outcome: note || undefined }));
+  return (
+    <fieldset className="space-y-2 rounded-lg border border-border p-3" data-control="hand-on">
+      <legend className="px-1 text-sm font-semibold">Hand it on</legend>
+      <input aria-label="What they need to know" value={note} onChange={(e) => setNote(e.target.value)} placeholder="What they need to know" className={FIELD} />
+      <div className="flex flex-wrap items-center gap-2">
+        <select aria-label="Who to delegate to" value={who} onChange={(e) => setWho(e.target.value)} className="min-h-11 rounded-lg border border-border bg-surface px-2 text-sm">
+          {delegates.map((d) => <option key={d.key} value={d.key}>{d.name}</option>)}
+        </select>
+        <button type="button" disabled={busy || !who} onClick={() => send(who)} className={QUIET} data-delegate>
+          <UserRoundPlus aria-hidden className="size-4" /> Delegate
+        </button>
+        {ownerKey && (
+          <button type="button" disabled={busy || note.trim().length < 3} onClick={() => send(ownerKey)} className={QUIET} data-escalate title={note.trim().length < 3 ? `Say what ${ownerName} needs to decide` : undefined}>
+            <ArrowUpRight aria-hidden className="size-4" /> Escalate to {ownerName}
+          </button>
+        )}
+      </div>
+      <Said msg={msg} />
+    </fieldset>
+  );
+}
+
+/** "Mark handled": the conversation closes with no reply (Messages' own Handled,
+ *  a cut point: a new message from them is waiting again). */
+export function MarkHandled({ threadKey, family, clientId, groupKey }: { threadKey: string; family: "phone" | "email"; clientId: string | null; groupKey: string }) {
+  const { busy, msg, run } = useRun();
+  if (msg?.ok) return <Said msg={msg} />;
+  const press = (reason: "no reply needed" | "answered elsewhere") =>
+    run(async () => {
+      const r = await markCommsHandled(clientId, family, groupKey, { threadKey, reason });
+      return { ok: r.ok, message: r.ok ? (r.message ?? "Marked handled. It has left the list.") : r.message ?? "That didn't go through. Try again." };
+    });
+  return (
+    <div className="flex flex-wrap items-center gap-2" data-control="handled">
+      <button type="button" disabled={busy} onClick={() => press("no reply needed")} className={QUIET} data-mark-handled>
+        {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />} Mark handled: no reply needed
+      </button>
+      <button type="button" disabled={busy} onClick={() => press("answered elsewhere")} className={QUIET}>Answered elsewhere</button>
       <Said msg={msg} />
     </div>
   );

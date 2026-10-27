@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
-import type { ShootRow } from "@/lib/jobsBoard";
+import type { DeliverExtra, ShootRow } from "@/lib/jobsBoard";
 import { RequestsChip, StageChip } from "./StageChip";
 
 // ---------------------------------------------------------------------------
@@ -13,7 +13,7 @@ import { RequestsChip, StageChip } from "./StageChip";
 
 const COLS = "sm:grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_minmax(0,1.3fr)_minmax(0,1.5fr)_minmax(0,1.2fr)_1rem]";
 
-function Row({ r }: { r: ShootRow }) {
+function Row({ r, extra }: { r: ShootRow; extra?: DeliverExtra | null }) {
   return (
     <li>
       <Link
@@ -34,6 +34,19 @@ function Row({ r }: { r: ShootRow }) {
           {(r.waitingOnShoot ?? []).map((w) => (
             <div key={w} className="truncate text-xs text-warning" data-waiting-on-shoot title={`${w}. Open the job to release it to the editor.`}>{w}</div>
           ))}
+          {/* Oct 27 2026 (Review & deliver): the floor plan and 3D tour, and anything still missing. */}
+          {extra && extra.pieces.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1.5" data-pieces>
+              {extra.pieces.map((p) => (
+                <span key={p.label} className="inline-flex items-center gap-1 text-xs" data-piece={p.label}>
+                  <span className="text-muted">{p.label}</span> <StageChip stage={p.stage} />
+                </span>
+              ))}
+            </div>
+          )}
+          {extra && extra.missing.length > 0 && (
+            <div className="text-xs font-medium text-danger [overflow-wrap:anywhere]" data-missing>Missing: {extra.missing.join(" · ")}</div>
+          )}
         </div>
         <div className={`hidden text-sm tabular-nums sm:block ${r.late ? "font-semibold text-danger" : "text-foreground/80"}`}>{r.dueWords}</div>
         <div className="flex min-w-0 items-center gap-2">
@@ -54,7 +67,7 @@ function Row({ r }: { r: ShootRow }) {
   );
 }
 
-export function ShootsList({ rows, empty }: { rows: ShootRow[]; empty: string }) {
+export function ShootsList({ rows, empty, extras = null }: { rows: ShootRow[]; empty: string; extras?: Record<string, DeliverExtra> | null }) {
   if (!rows.length) {
     return <p className="rounded-xl border border-border bg-surface px-4 py-6 text-sm text-muted">{empty}</p>;
   }
@@ -72,7 +85,7 @@ export function ShootsList({ rows, empty }: { rows: ShootRow[]; empty: string })
       </div>
       {listing.length > 0 && (
         <ul className="divide-y divide-border" aria-label="Shoots">
-          {listing.map((r) => <Row key={r.projectId} r={r} />)}
+          {listing.map((r) => <Row key={r.projectId} r={r} extra={extras?.[r.projectId]} />)}
         </ul>
       )}
       {monthly.length > 0 && (
@@ -81,7 +94,7 @@ export function ShootsList({ rows, empty }: { rows: ShootRow[]; empty: string })
             Monthly content
           </p>
           <ul className="divide-y divide-border" aria-label="Monthly content">
-            {monthly.map((r) => <Row key={r.projectId} r={r} />)}
+            {monthly.map((r) => <Row key={r.projectId} r={r} extra={extras?.[r.projectId]} />)}
           </ul>
         </>
       )}

@@ -6,7 +6,7 @@ import { ShootsScheduleTabs } from "@/components/jobs/ShootsScheduleTabs";
 import { canAccess } from "@/lib/auth/access";
 import { ShootsList } from "@/components/jobs/ShootsList";
 import { ProgramVideoWatch, type WatchViewRow } from "@/components/tracker/ProgramVideoWatch";
-import { SHOOT_FILTERS, filterShootRows, shootsBoard, type ShootFilter } from "@/lib/jobsBoard";
+import { SHOOT_FILTERS, deliverPieces, filterShootRows, shootsBoard, type DeliverExtra, type ShootFilter } from "@/lib/jobsBoard";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +23,10 @@ export const dynamic = "force-dynamic";
 // (the late ones included, Jordan's rule), This week (due in the next 7 days,
 // late included), Requests (an open client request on the shoot: the
 // dashboard's Special requests tile lands here), Monthly, All (the last 10
-// days' delivered too). The
+// days' delivered too), Review & deliver (Oct 27 2026: every job shot and
+// not yet delivered, with the floor plan and 3D tour states and anything
+// missing; Kyle's Review & Deliver card opens it, ?f=deliver or ?view=deliver).
+// The
 // program videos' milestones (ProgramVideoWatch, which lived on the old
 // Project Tracker) sit under the list on Open and Monthly. /pipeline (the old
 // Project Tracker) redirects here, so the program alerts' link still lands.
@@ -31,6 +34,7 @@ export const dynamic = "force-dynamic";
 
 const EMPTY: Record<ShootFilter, string> = {
   open: "Nothing in progress. Every shoot is delivered.",
+  deliver: "Nothing shot is waiting to be delivered.",
   late: "Nothing is late.",
   today: "Nothing is due today, and nothing is late.",
   week: "Nothing is due in the next 7 days.",
@@ -68,10 +72,10 @@ async function programWatch(now: Date, includeTest: boolean): Promise<{ rows: Wa
   }
 }
 
-export default async function ShootsPage({ searchParams }: { searchParams: Promise<{ f?: string; test?: string }> }) {
+export default async function ShootsPage({ searchParams }: { searchParams: Promise<{ f?: string; view?: string; test?: string }> }) {
   await requirePageAccess("pipeline");
   const sp = await searchParams;
-  const f: ShootFilter = SHOOT_FILTERS.find((x) => x.key === sp.f)?.key ?? "open";
+  const f: ShootFilter = SHOOT_FILTERS.find((x) => x.key === (sp.f ?? sp.view))?.key ?? "open";
   const includeTest = sp.test === "1";
   const now = new Date();
   const [board, watch, me] = await Promise.all([
@@ -93,6 +97,10 @@ export default async function ShootsPage({ searchParams }: { searchParams: Promi
   };
   const rows = board?.rows ?? [];
   const shown = filterShootRows(rows, f);
+  // Review & deliver: each piece's state and what is missing (a failed read leaves the chips alone).
+  const extras: Record<string, DeliverExtra> | null = f === "deliver" && shown.length
+    ? await deliverPieces(shown.map((r) => r.projectId), now).catch((e: unknown) => { console.error("[shoots] deliver pieces failed", e); return null; })
+    : null;
   const counts = board?.counts;
   const tally = Object.fromEntries(SHOOT_FILTERS.map((x) => [x.key, filterShootRows(rows, x.key).length])) as Record<ShootFilter, number>;
   const subtitle = counts
@@ -127,8 +135,9 @@ export default async function ShootsPage({ searchParams }: { searchParams: Promi
           })}
         </nav>
         {f === "today" && <p className="text-xs text-muted">Due today, with the late ones first.</p>}
+        {f === "deliver" && <p className="text-xs text-muted">Every job shot and not delivered yet: where each piece stands and anything missing. A row opens the job.</p>}
         {board ? (
-          <ShootsList rows={shown} empty={EMPTY[f]} />
+          <ShootsList rows={shown} empty={EMPTY[f]} extras={extras} />
         ) : (
           <p role="alert" className="rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
             The shoots list could not be read just now, so nothing here is a count of zero. Reload in a minute.

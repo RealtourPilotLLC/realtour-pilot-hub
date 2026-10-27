@@ -84,7 +84,13 @@ export type ShootRow = JobRow & {
   videoSetup: string | null;
   /** Oct 22 2026: "Video 4 (Premium Social Reel): Waiting on a second shoot: half shot", one line per held video; empty when none. */
   waitingOnShoot?: string[];
+  /** Oct 27 2026: the shoot has happened (the Review & deliver filter: in review and delivery). */
+  shot?: boolean;
 };
+
+/** Oct 27 2026 (Review & deliver): one piece of a job beyond the Photos and Video chips. */
+export type DeliverPiece = { label: string; stage: DeliverableStage };
+export type DeliverExtra = { pieces: DeliverPiece[]; missing: string[] };
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -497,6 +503,7 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
       dueThisWeek: !delivered && !!dueAt && dueAt.getTime() <= weekEnd,
       videoSetup: delivered ? null : setupGaps.get(j.id)?.words ?? null,
       waitingOnShoot: waitingOnShoot.get(j.id) ?? [],
+      shot: shootOver,
       _rank: delivered ? 4 : late ? 0 : owedNoClock ? 1 : dueAt ? 2 : 3,
       _sort: delivered ? -(j.deliveredAt?.getTime() ?? 0) : dueAt?.getTime() ?? 0,
     });
@@ -518,6 +525,10 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
 /** The Shoots page's filters. Open (the default) is everything not delivered; Due today has the late ones too (Jordan's rule); This week is due in the next 7 days, late included; Requests is every open shoot with an open client request (the dashboard's Special requests tile opens it, audit A10); All adds the last 10 days' delivered. */
 export const SHOOT_FILTERS = [
   { key: "open", label: "Open" },
+  // Oct 27 2026 (Jordan: "Clicking Review and Deliver should open a full job status page like the
+  // shoots page ... that can show the listing and anything missing"): every job shot and not yet
+  // delivered, each piece's state and what is missing. Kyle's Review & Deliver card opens it.
+  { key: "deliver", label: "Review & deliver" },
   { key: "late", label: "Late" },
   { key: "today", label: "Due today" },
   { key: "week", label: "This week" },
@@ -529,6 +540,7 @@ export type ShootFilter = (typeof SHOOT_FILTERS)[number]["key"];
 
 export function filterShootRows<T extends ShootRow>(rows: T[], f: ShootFilter): T[] {
   switch (f) {
+    case "deliver": return rows.filter((r) => !r.delivered && r.shot === true);
     case "late": return rows.filter((r) => !r.delivered && r.late);
     case "today": return rows.filter((r) => !r.delivered && (r.late || r.dueToday));
     case "week": return rows.filter((r) => !r.delivered && r.dueThisWeek);
@@ -537,6 +549,51 @@ export function filterShootRows<T extends ShootRow>(rows: T[], f: ShootFilter): 
     case "all": return rows;
     default: return rows.filter((r) => !r.delivered);
   }
+}
+
+/**
+ * REVIEW & DELIVER, PIECE BY PIECE (Oct 27 2026). Beyond the Photos and Video
+ * chips: the floor plan and 3D tour each with its own state (on the listing,
+ * marked delivered by the office, ready to check, flagged, not in yet), and
+ * what is still missing in words (the status read's own `missing` and
+ * `awaitingSend`, less what the office marked delivered). One batched read.
+ */
+export async function deliverPieces(projectIds: string[], now: Date = new Date()): Promise<Record<string, DeliverExtra>> {
+  const ids = [...new Set(projectIds)].slice(0, 300);
+  if (!ids.length) return {};
+  const [{ parseEvidence }, projects, marks] = await Promise.all([
+    import("@/lib/statusEvidence"),
+    prisma.project.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, statusEvidence: true, promisedDueAt: true, deliveryDue: true, deliverables: { where: { removedFromOrderAt: null, waivedAt: null, type: { in: ["FLOORPLAN", "MATTERPORT_3D", "ZILLOW_3D"] } }, select: { type: true, status: true } } },
+    }),
+    prisma.appSetting.findMany({ where: { key: { in: ids.flatMap((id) => [`office_delivered:${id}:floorplan`, `office_delivered:${id}:tour`]) } }, select: { key: true } }),
+  ]);
+  const marked = new Set(marks.map((m) => m.key));
+  const out: Record<string, DeliverExtra> = {};
+  for (const p of projects) {
+    const ev = parseEvidence(p.statusEvidence);
+    const late = !!(p.promisedDueAt ?? p.deliveryDue) && (p.promisedDueAt ?? p.deliveryDue)!.getTime() < now.getTime();
+    const handMarked = (cat: "Floor plan" | "3D tour") => marked.has(`office_delivered:${p.id}:${cat === "Floor plan" ? "floorplan" : "tour"}`);
+    const pieces: DeliverPiece[] = [];
+    for (const cat of ["Floor plan", "3D tour"] as const) {
+      const ds = p.deliverables.filter((d) => (cat === "Floor plan" ? d.type === "FLOORPLAN" : d.type !== "FLOORPLAN"));
+      if (!ds.length) continue;
+      const stage: DeliverableStage = handMarked(cat) ? { label: "Marked delivered", tone: "done" }
+        : ev?.present.includes(cat) ? { label: "On the listing", tone: "done" }
+        : ds.every((d) => d.status === "DONE") ? { label: "Done", tone: "done" }
+        : ds.some((d) => d.status === "FLAGGED") ? { label: "Flagged", tone: "late" }
+        : ds.some((d) => d.status === "UPLOADED" || d.status === "IN_PROGRESS") ? { label: "Ready to check", tone: "active" }
+        : { label: "Not in yet", tone: late ? "late" : "waiting" };
+      pieces.push({ label: cat, stage });
+    }
+    const missing = [
+      ...(ev?.missing ?? []).filter((c) => !((c === "Floor plan" || c === "3D tour") && handMarked(c))).map((c) => `${c}: not on the listing yet`),
+      ...(ev?.awaitingSend ?? []).map((c) => `${c}: ready, not sent yet`),
+    ];
+    out[p.id] = { pieces, missing };
+  }
+  return out;
 }
 
 /** THE DASHBOARD'S CONTRACT: every live job, late first then by due. Test clients left out unless `includeTest`. */

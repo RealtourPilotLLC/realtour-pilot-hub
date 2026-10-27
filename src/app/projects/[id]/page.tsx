@@ -484,8 +484,10 @@ export default async function ProjectPage({
                 {project.deliverables.length === 0 && (
                   <p className="px-5 py-4 text-sm text-muted">Nothing ordered yet.</p>
                 )}
-                {project.deliverables.map((d) => (
-                  <div key={d.id} className={`flex flex-wrap items-center justify-between gap-3 px-5 py-3 ${d.removedFromOrderAt || d.waivedAt ? "opacity-60" : ""}`}>
+                {/* Oct 27 2026: the first row of each kind is an anchor (#deliverable-floorplan, …), so the
+                    dashboard's "Open the job's floor plan section" lands on it. */}
+                {project.deliverables.map((d, n) => (
+                  <div key={d.id} id={project.deliverables.findIndex((x) => x.type === d.type) === n ? `deliverable-${d.type.toLowerCase()}` : undefined} data-deliverable-type={d.type} className={`flex scroll-mt-20 flex-wrap items-center justify-between gap-3 px-5 py-3 ${d.removedFromOrderAt || d.waivedAt ? "opacity-60" : ""}`}>
                     <div className="flex min-w-0 items-center gap-3">
                       <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-muted">
                         <Package className="size-4" />
