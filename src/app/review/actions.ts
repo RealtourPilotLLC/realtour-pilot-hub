@@ -609,7 +609,7 @@ export async function submitCutForReview(
     // cleared) once nothing stays OPEN in another lane, a delivered job keeps
     // Revisions until the verdict — see reviewCuts.correctedCutSubmitted.
     const { correctedCutSubmitted } = await import("@/lib/reviewCuts");
-    await correctedCutSubmitted(projectId, { round: submission.round, isRedo: cut.isRedo || !!project.deliveredAt });
+    await correctedCutSubmitted(projectId, { round: submission.round, isRedo: cut.isRedo || !!project.deliveredAt, submissionId: submission.id });
   }
   await prisma.activity.create({
     data: {

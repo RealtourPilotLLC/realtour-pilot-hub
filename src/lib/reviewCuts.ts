@@ -1439,7 +1439,7 @@ async function uploadCutEntered(sub: EnteringCut): Promise<{ ok: boolean; messag
     // holds off the engines.
     await prisma.project.update({ where: { id: sub.projectId }, data: { status: "REVIEW", statusPinnedAt: null } });
   } else {
-    await correctedCutSubmitted(sub.projectId, { round: sub.round });
+    await correctedCutSubmitted(sub.projectId, { round: sub.round, submissionId: sub.id });
   }
   // The uploading editor's active stretch on this job ends with the hand-in
   // (§7.1): SUBMITTED, their item only — a co-editor on the same job keeps
@@ -1876,6 +1876,46 @@ async function cutAnswersAsk(projectId: string, opts: { round?: number | null; i
   return owed <= 1;
 }
 
+/**
+ * Does THIS cut answer the client's open asks, by the videos they name?
+ * Oct 26 2026 (Mike Flatley): his portal asks were on video 2 and video 4;
+ * Kim uploaded version 2 of video 3, the round-2 rule above read that as the
+ * correction, and the job showed "waiting on review" with both asks untouched.
+ * A portal ask names its video (its items' cuts), so when the open asks name
+ * videos, a cut answers them only if it is one of those videos, and only once
+ * every video they name has a cut made since its ask (a fix for video 2 alone
+ * leaves video 4's ask open). Null = the asks name no video (a text, an email,
+ * an old brief): cutAnswersAsk decides, as before.
+ */
+async function namedCorrectionState(projectId: string, laneTaskIds: string[], submissionId: string): Promise<boolean | null> {
+  const cut = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { deliverableId: true, slot: true } });
+  if (!cut?.deliverableId) return null;
+  const briefs = await prisma.revisionBrief.findMany({ where: { projectId, taskId: { in: laneTaskIds } }, select: { itemsJson: true, doneJson: true, createdAt: true } });
+  const owed = new Map<string, Date>(); // slot key -> the latest ask on that video
+  for (const b of briefs) {
+    let items: RevisionItemShape[] = [];
+    let done: string[] = [];
+    try { items = b.itemsJson ? ((JSON.parse(b.itemsJson) as { items?: RevisionItemShape[] }).items ?? []) : []; } catch { /* unreadable: names nothing */ }
+    try { done = b.doneJson ? (JSON.parse(b.doneJson) as string[]) : []; } catch { /* ticks are best-effort */ }
+    for (const it of items) {
+      if (it.scope !== "named" || it.medium === "photo" || done.includes(it.id)) continue;
+      for (const k of it.cuts ?? []) {
+        if (!k) continue;
+        const at = owed.get(k);
+        if (!at || at < b.createdAt) owed.set(k, b.createdAt);
+      }
+    }
+  }
+  if (owed.size === 0) return null;
+  if (!owed.has(slotKeyOf(cut.deliverableId, cut.slot))) return false;
+  for (const [key, askedAt] of owed) {
+    const i = key.lastIndexOf(":");
+    const made = await prisma.reviewSubmission.count({ where: { projectId, deliverableId: key.slice(0, i), slot: Number(key.slice(i + 1)), createdAt: { gt: askedAt }, status: { not: "UPLOADING" } } });
+    if (made === 0) return false;
+  }
+  return true;
+}
+
 /** The photo-lane revision key — the one revision row a cut never answers
  *  (same scheme as comms.ts dedupeKey([project, "revision", "photo"])). */
 export function photoLaneRevisionKey(projectId: string): string {
@@ -1927,7 +1967,8 @@ export async function closeStragglerCutTasks(projectId: string): Promise<void> {
  *  portal upload, the Final-folder submit and the queue's "Completed" alike. */
 export async function correctedCutSubmitted(
   projectId: string,
-  opts: { round?: number; isRedo?: boolean } = {},
+  /** submissionId: the cut just handed in, so the asks' named videos decide (namedCorrectionState). Left out by the editor's own "this is the correction" click. */
+  opts: { round?: number; isRedo?: boolean; submissionId?: string | null } = {},
 ): Promise<{ moved: number; status: string | null }> {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
@@ -1936,11 +1977,15 @@ export async function correctedCutSubmitted(
   if (!project) return { moved: 0, status: null };
   const lane = await prisma.smartTask.findMany({ where: videoLaneRevisionWhere(projectId), select: { id: true, status: true, summary: true } });
   // A cut that is not the correction (a fresh video on a never-delivered
-  // batch) leaves the ask — and the stage — exactly where they are. With no
-  // lane task at all (a queue flip / Room bounce that only stamped the job)
-  // the stage move below still runs, as it always did.
-  if (lane.length > 0 && !(await cutAnswersAsk(projectId, { round: opts.round, isRedo: opts.isRedo, deliveredAt: project.deliveredAt }))) {
-    return { moved: 0, status: project.status };
+  // batch, or another video than the client asked about) leaves the ask, and
+  // the stage, exactly where they are. With no lane task at all (a queue flip
+  // / Room bounce that only stamped the job) the stage move below still runs,
+  // as it always did.
+  if (lane.length > 0) {
+    const named = opts.submissionId ? await namedCorrectionState(projectId, lane.map((t) => t.id), opts.submissionId) : null;
+    if (named === false || (named === null && !(await cutAnswersAsk(projectId, { round: opts.round, isRedo: opts.isRedo, deliveredAt: project.deliveredAt })))) {
+      return { moved: 0, status: project.status };
+    }
   }
   const toMove = lane.filter((t) => t.status !== "IN_PROGRESS");
   if (toMove.length > 0) {

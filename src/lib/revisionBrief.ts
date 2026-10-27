@@ -508,8 +508,17 @@ export function staffReceiptIntake(itemsJson: string | null): StaffReceiptIntake
  * fix for video B close video A's ask. Pure.
  */
 export function pinnedItems(text: string, cutKey: string): RevisionItem[] {
-  const bullets = text.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("•")).map((l) => l.replace(/^•\s*/, "").trim()).filter(Boolean);
-  const lines = bullets.length ? bullets : [text.trim()];
+  // A note can run over several lines (Mike Flatley, Oct 24 2026: "Couple
+  // things:" then 1, 2, 3 on lines of their own, and the item kept only the
+  // first line). Every line after a bullet belongs to it, up to the next one.
+  const bullets: string[] = [];
+  for (const raw of text.split("\n")) {
+    const l = raw.trim();
+    if (l.startsWith("•")) bullets.push(l.replace(/^•\s*/, "").trim());
+    else if (l && bullets.length) bullets[bullets.length - 1] = `${bullets[bullets.length - 1]}\n${l}`.trim();
+  }
+  const kept = bullets.filter(Boolean);
+  const lines = kept.length ? kept : [text.trim()];
   return lines.map((ask, i) => ({ id: `i${i + 1}`, area: "Other", ask: ask.slice(0, 1000), detail: null, quote: null, scope: "named" as const, cuts: [cutKey], kind: kindOf({ ask }) }));
 }
 

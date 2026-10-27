@@ -353,7 +353,7 @@ function Item({
       </button>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-1.5">
-          <p className={cn("min-w-0 flex-1 text-[13px] leading-snug", isDone ? "text-success line-through" : it.held ? "italic text-muted" : "font-medium text-foreground")}>
+          <p className={cn("min-w-0 flex-1 whitespace-pre-line text-[13px] leading-snug", isDone ? "text-success line-through" : it.held ? "italic text-muted" : "font-medium text-foreground")}>
             {it.ask}
           </p>
           {/* Oct 15 2026 (creative review): a feeling with no instruction in it
