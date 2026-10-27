@@ -570,8 +570,11 @@ async function main() {
     const o = (status: string, decided: Date | null, issues: { cause: string; state?: string; foundAfterApproval?: boolean; duplicateOfId?: string | null }[]) =>
       eq.firstReviewOutcome({ status, decidedAt: decided }, issues.map((i) => ({ cause: i.cause, causeConfirmedAt: i.cause === "UNCLASSIFIED" ? null : dec, causeConfirmedBy: i.cause === "UNCLASSIFIED" ? null : "James", state: i.state ?? "OPEN", foundAfterApproval: !!i.foundAfterApproval, duplicateOfId: i.duplicateOfId ?? null })));
     c.ok("a pending first review is pending, not a pass or a fail", o("PENDING", null, []) === "pendingReview");
-    c.ok("a bounce whose issues nobody classified is pending classification", o("CHANGES_REQUESTED", dec, [{ cause: "UNCLASSIFIED" }]) === "pendingClassification");
-    c.ok("a CLIENT_CHANGE bounce does not fail the editor", o("CHANGES_REQUESTED", dec, [{ cause: "CLIENT_CHANGE" }]) === "passed");
+    // Oct 27 2026 (Jordan: "96.8% passed the first time. I don't think this is
+    // accurate"): a bounce waiting on a cause counts as sent back, not left out;
+    // a bounce that was all somebody else's is left out, never a pass.
+    c.ok("a bounce whose issues nobody classified counts as sent back (waiting on a cause)", o("CHANGES_REQUESTED", dec, [{ cause: "UNCLASSIFIED" }]) === "waitingOnCause");
+    c.ok("a CLIENT_CHANGE bounce does not fail the editor, and is not a pass either", o("CHANGES_REQUESTED", dec, [{ cause: "CLIENT_CHANGE" }]) === "notEditors");
     c.ok("an EDITOR_ERROR bounce does", o("CHANGES_REQUESTED", dec, [{ cause: "EDITOR_ERROR" }]) === "failed");
     c.ok("a defect found after approval is not a first-review fail", o("APPROVED", dec, [{ cause: "EDITOR_ERROR", foundAfterApproval: true }]) === "passed");
     c.ok("replaced before anyone ruled is not reviewed", o("SUPERSEDED", null, []) === "replacedBeforeReview");
@@ -599,8 +602,9 @@ async function main() {
     const err = await mkIssue(bad.id, "EDITOR_ERROR");
     await mkIssue(unk.id, "UNCLASSIFIED");
     const rep = await eq.editorQuality({ editorKey: "remar", from: day(27, 0), to: NOW, now: NOW });
-    c.ok("first review: 5 of 6 reviewed passed; pending and unclassified are NOT in the denominator", rep.firstReview.passed === 5 && rep.firstReview.reviewed === 6 && rep.firstReview.pendingReview === 1 && rep.firstReview.pendingClassification === 1, JSON.stringify(rep.firstReview));
-    c.ok("…with n shown and a rate (n ≥ 5)", rep.firstReview.rate === 83.3 && !rep.firstReview.thin);
+    // Oct 27 2026: the unclassified bounce is sent back all the same (5 of 7); only the pending one is left out.
+    c.ok("first review: 5 of 7 approved as they were; the unclassified bounce counts as sent back, the pending one is NOT in the denominator", rep.firstReview.passed === 5 && rep.firstReview.reviewed === 7 && rep.firstReview.sentBack === 2 && rep.firstReview.waitingOnCause === 1 && rep.firstReview.pendingReview === 1 && rep.firstReview.notEditors === 0, JSON.stringify(rep.firstReview));
+    c.ok("…with n shown and a rate (n ≥ 5)", rep.firstReview.rate === 71.4 && !rep.firstReview.thin);
     // A duplicate of the editor error counts once; a second, different one groups.
     const dup = await mkIssue(bad.id, "EDITOR_ERROR");
     await ri.mergeDuplicate(dup.id, err.id, { name: "James" });
@@ -610,7 +614,8 @@ async function main() {
     // Reclassify: the same cut, a client change → it passes; history kept.
     await ri.classifyIssue(err.id, { cause: "CLIENT_CHANGE" }, { name: "James" });
     const rep3 = await eq.editorQuality({ editorKey: "remar", from: day(27, 0), to: NOW, now: NOW });
-    c.ok("reclassifying the editor error as a client change re-scores: 6 of 6", rep3.firstReview.passed === 6 && rep3.firstReview.reviewed === 6, JSON.stringify(rep3.firstReview));
+    // Oct 27 2026: a client change moves the bounce out of the count (5 of 6), never into the passes.
+    c.ok("reclassifying the editor error as a client change re-scores: 5 of 6, the bounce set aside as not the editor's", rep3.firstReview.passed === 5 && rep3.firstReview.reviewed === 6 && rep3.firstReview.notEditors === 1 && rep3.firstReview.rate === 83.3, JSON.stringify(rep3.firstReview));
     c.ok("…and the change is on the record, from → to", !!(await prisma.revisionIssueEvent.findFirst({ where: { issueId: err.id, kind: "CLASSIFIED", fromValue: "EDITOR_ERROR", toValue: "CLIENT_CHANGE" } })));
     c.ok("blocked time with no active-work pauses reads 'not recorded' (null), never 0", rep3.turnaround.waitingOnAssetsHours === null);
     // Review waiting through the report: a Fri 5pm entry ruled Mon 10am, James → Kyle.

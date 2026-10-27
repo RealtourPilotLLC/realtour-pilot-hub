@@ -7,7 +7,7 @@ import { canAccess, homeFor } from "@/lib/auth/access";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { prisma } from "@/lib/prisma";
-import { etDateYear, etDayStartUtc } from "@/lib/datetime";
+import { etDateTime, etDateYear, etDayStartUtc } from "@/lib/datetime";
 import {
   bucketClientThreads,
   coachingAuditKey,
@@ -24,6 +24,47 @@ import {
 // question is how a coaching note ends up on the wrong person's screen.
 import { photographerMemberId as teamMemberIdForLogin } from "@/lib/shoot";
 import { NoteCard } from "@/components/coaching/NoteCard";
+import { AckControl } from "@/components/coaching/AckControl";
+import { ackWords, coachingAckKey, parseAck, type CoachingAck } from "@/lib/coachingAck";
+
+// ---------------------------------------------------------------------------
+// GOT IT (Jordan, Oct 27 2026: "I'd like to be able to see if Kyle
+// acknowledges, like, give him an option to acknowledge, you know, whatever
+// the coaching is"). The person a note is about presses Got it under it, with
+// an optional note (app/coaching/actions.ts). Jordan's report says on every
+// note whether, when (Eastern) and what they wrote, and the trend counts them.
+// ---------------------------------------------------------------------------
+
+/** Every "Got it" for these notes, one read. A failed read is null (unknown), never "nobody said it". */
+async function readAcks(notes: { teamMemberId: string; dayKey: string }[]): Promise<Map<string, CoachingAck> | null> {
+  const keys = [...new Set(notes.map((n) => coachingAckKey(n.teamMemberId, n.dayKey)))];
+  if (!keys.length) return new Map();
+  try {
+    const rows = await prisma.appSetting.findMany({ where: { key: { in: keys } }, select: { key: true, value: true } });
+    const out = new Map<string, CoachingAck>();
+    for (const r of rows) {
+      const a = parseAck(r.value);
+      if (a) out.set(r.key, a);
+    }
+    return out;
+  } catch (e) {
+    console.warn("[coaching] Got it reads unavailable", (e as Error)?.message);
+    return null;
+  }
+}
+
+/** The owner's line under a note: whether the person said Got it, when, and their note. */
+function AckLine({ audit, acks }: { audit: CoachingAudit; acks: Map<string, CoachingAck> | null }) {
+  const first = (audit.personName || "They").split(" ")[0];
+  if (acks === null) return <p className="mt-3 border-t border-border pt-2.5 text-xs text-muted">Whether {first} said Got it could not be read just now.</p>;
+  const ack = acks.get(coachingAckKey(audit.teamMemberId, audit.dayKey)) ?? null;
+  return (
+    <div className="mt-3 border-t border-border pt-2.5 text-sm" data-ack-line={ack ? "done" : "open"}>
+      <p className={ack ? "font-medium text-success" : "text-muted"}>{ackWords(ack, audit.personName)}</p>
+      {ack?.note && <p className="mt-0.5 text-muted">{`${first}'s note: ${ack.note}`}</p>}
+    </div>
+  );
+}
 
 export const dynamic = "force-dynamic";
 
@@ -509,7 +550,14 @@ export default async function CoachingPage() {
     // Scoped at the QUERY, not filtered after: the key prefix carries their own
     // id, so this read cannot return another person's note.
     const mine = await loadAudits([myId]).catch(() => null);
+    const myAcks = mine && !mine.failed ? await readAcks(mine.audits) : null;
     const firstName = (user?.name ?? "").split(" ")[0];
+    // Got it under each note (Oct 27 2026). A preview shows it without the press.
+    const ackFor = (a: CoachingAudit) => {
+      if (myAcks === null) return <p className="mt-3 border-t border-border pt-2.5 text-xs text-muted">Got it could not be read just now. Reload to try again.</p>;
+      const ack = myAcks.get(coachingAckKey(a.teamMemberId, a.dayKey)) ?? null;
+      return <AckControl teamMemberId={a.teamMemberId} dayKey={a.dayKey} initial={ack} atWords={ack ? `${etDateTime(ack.at)} ET` : null} readOnly={!!user?.impersonating} />;
+    };
     return (
       <div>
         <PageHeader
@@ -527,8 +575,9 @@ export default async function CoachingPage() {
               </p>
             ) : (
               <div className="space-y-3">
+                <p className="text-sm text-muted">Read a note, then press Got it. You can add a note of your own; Jordan sees both.</p>
                 {mine.audits.map((a) => (
-                  <NoteCard key={`${a.teamMemberId}:${a.dayKey}`} audit={a} />
+                  <NoteCard key={`${a.teamMemberId}:${a.dayKey}`} audit={a} footer={ackFor(a)} />
                 ))}
               </div>
             )}
@@ -553,6 +602,7 @@ export default async function CoachingPage() {
   const audits = notes?.audits ?? [];
   const notesBroken = notes === null || notes.failed;
   const rosterSet = new Set(rosterIds);
+  const acks = notesBroken ? null : await readAcks(audits);
 
   // The freshest day we have per person — the "what happened today" answer,
   // which on the morning after an audit IS yesterday's note. loadAudits hands
@@ -572,6 +622,8 @@ export default async function CoachingPage() {
       clean: theirs.filter((a) => a.suggestions.length === 0).length,
       read: theirs.reduce((sum, a) => sum + a.messagesAnalysed, 0),
       sent: theirs.filter((a) => a.sent).length,
+      // Oct 27 2026: how many of their notes they said Got it to (null: could not be read).
+      gotIt: acks === null ? null : theirs.filter((a) => acks.has(coachingAckKey(a.teamMemberId, a.dayKey))).length,
       week: coverage?.weekBySender.find((s) => s.id === id)?.count ?? 0,
     };
   });
@@ -626,7 +678,7 @@ export default async function CoachingPage() {
           ) : (
             <div className="space-y-3">
               {Array.from(latestPerPerson.values()).map((a) => (
-                <NoteCard key={`latest:${a.teamMemberId}:${a.dayKey}`} audit={a} showPerson showDelivery />
+                <NoteCard key={`latest:${a.teamMemberId}:${a.dayKey}`} audit={a} showPerson showDelivery footer={<AckLine audit={a} acks={acks} />} />
               ))}
             </div>
           )}
@@ -712,7 +764,8 @@ export default async function CoachingPage() {
                     <p className="mt-1 text-[13px] text-muted">
                       {`${t.days} day${t.days === 1 ? "" : "s"} audited · ${t.clean} read fine as-is · ` +
                         `${t.read} message${t.read === 1 ? "" : "s"} read · ` +
-                        `${t.sent} note${t.sent === 1 ? "" : "s"} sent to them`}
+                        `${t.sent} note${t.sent === 1 ? "" : "s"} sent to them` +
+                        (t.gotIt === null ? "" : ` · Got it on ${t.gotIt} of ${t.days}`)}
                     </p>
                   )}
                 </div>
@@ -736,7 +789,7 @@ export default async function CoachingPage() {
             </summary>
             <div className="space-y-3 border-t px-5 py-4">
               {audits.map((a) => (
-                <NoteCard key={`all:${a.teamMemberId}:${a.dayKey}`} audit={a} showPerson showDelivery />
+                <NoteCard key={`all:${a.teamMemberId}:${a.dayKey}`} audit={a} showPerson showDelivery footer={<AckLine audit={a} acks={acks} />} />
               ))}
             </div>
           </details>

@@ -29,12 +29,12 @@ async function main() {
     for (const [label, user] of [["Kyle", kyle], ["James", james]] as const) {
       await as(user);
       const html = renderToStaticMarkup(await page({ searchParams: Promise.resolve({}) }));
-      // Oct 19 2026 (tightened): the headline counts the three sections
-      // ("0 to review · … with editors"); the sent-back version sits in
-      // "With the editors", the one list that replaced Late, Due today and
-      // In revision.
-      c.ok(`${label}: no-cut headline still points at the editors' work`, html.includes("0 to review") && /\d+ with editors/.test(html));
-      c.ok(`${label}: exact revision remains visible with no first-cut approval pending`, html.includes(">With the editors<") && html.includes(`cut=${revision.id}`) && html.includes("exact-version-two.mp4"));
+      // Oct 19 2026 (tightened): the headline counts the sections. Oct 27 2026
+      // (Jordan's Loom: "We don't need to see what's with the editors ... it
+      // should just say, you know, in revision"): the sent-back version sits
+      // in "In revision", first, and "With the editors" is gone.
+      c.ok(`${label}: no-cut headline still points at the revision`, html.includes("0 ready to review") && /1 in revision/.test(html) && !/with editors/i.test(html));
+      c.ok(`${label}: exact revision remains visible with no first-cut approval pending`, html.includes(">In revision<") && !html.includes(">With the editors<") && html.includes(`cut=${revision.id}`) && html.includes("exact-version-two.mp4"));
       // Oct 19 2026 (Jordan): the room is video only; the media checks moved to
       // Photo Delivery (oct19-video-review-room.ts checks them there).
       c.ok(`${label}: the media checks are not in the Video Review Room, never a photo set`, !html.includes("Delivery checks") && !html.includes("Media checks to finish") && !html.includes("Photo sets") && !html.includes("Hidden fixture media job"));

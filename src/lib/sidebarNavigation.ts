@@ -42,8 +42,9 @@ export function groupSidebarDestinations<T extends Destination>(items: readonly 
 // THE ROLE MENUS (Jordan, Oct 22 2026: "The 4 menus and alerts are good").
 // Each of the four people who live in the hub gets the doors of their own
 // day, in this order and with these labels, and everything else they can open
-// folded under "More" in plain groups. Built from what each person actually
-// opened in the 30 days before (People → Activity): Kyle never opened
+// under plain group headings (no "More" title since Oct 27 2026). Built
+// from what each person actually opened in the 30 days before (People →
+// Activity): Kyle never opened
 // Messages, Schedule, Shoots or his checklist from the old six doors while
 // the Editing Room (his most used page) sat under More; James's Upload Portal
 // and Jordan's Editing Room and Monthly Content were buried the same way.
@@ -65,6 +66,12 @@ export function groupSidebarDestinations<T extends Destination>(items: readonly 
 /** The two delivery doors' one name each (Oct 23 2026). */
 export const PHOTO_DELIVERY_LABEL = "Photo Delivery";
 export const VIDEO_DELIVERY_LABEL = "Video Delivery";
+/** PROJECTS (Jordan, Oct 27 2026 Loom: "Shoots should be, maybe listings or
+ *  projects ... something that shows everything photos, video, and, you know,
+ *  floor plans"; "My Shoots" is the photographers' page). The /jobs board's
+ *  one name on every menu and on the page. "Listings" is the archive of
+ *  delivered listings (/listings), so it is not this page's name. */
+export const PROJECTS_LABEL = "Projects";
 
 /** One door: the destination it labels (`href`, what access and the active
  *  state are read from) and, when the door opens a section of that page, the
@@ -79,12 +86,12 @@ export const OWNER_MENU: readonly MenuDoor[] = [
   { href: "/content", label: "Monthly Content" },
   { href: "/ops/photo-delivery", label: PHOTO_DELIVERY_LABEL },
   { href: "/communications", label: "Messages" },
-  { href: "/jobs", label: "Shoots" },
+  { href: "/jobs", label: PROJECTS_LABEL },
 ];
 
 /** Kyle (the office): his list, the client inbox, photo approvals, the videos
  *  he sends (Video Delivery, opened at its Ready to send section), the
- *  Editing Room he works in most, and Shoots. */
+ *  Editing Room he works in most, and Projects. */
 export const OFFICE_MENU: readonly MenuDoor[] = [
   { href: "/", label: "Dashboard" },
   { href: "/ops/checklist", label: "Your list" },
@@ -92,7 +99,7 @@ export const OFFICE_MENU: readonly MenuDoor[] = [
   { href: "/ops/photo-delivery", label: PHOTO_DELIVERY_LABEL },
   { href: "/review", label: VIDEO_DELIVERY_LABEL, link: "/review#ready-to-send" },
   { href: "/editing", label: "Editing Room" },
-  { href: "/jobs", label: "Shoots" },
+  { href: "/jobs", label: PROJECTS_LABEL },
 ];
 
 /** James (the creative manager): the creative process end to end, his own
@@ -106,7 +113,7 @@ export const CREATIVE_MENU: readonly MenuDoor[] = [
   { href: "/content", label: "Monthly Content" },
   { href: "/ops/photo-delivery", label: PHOTO_DELIVERY_LABEL },
   { href: "/upload", label: "Uploads" },
-  { href: "/jobs", label: "Shoots" },
+  { href: "/jobs", label: PROJECTS_LABEL },
   { href: "/my-pay", label: "My Pay" },
 ];
 
@@ -151,6 +158,13 @@ const MORE_GROUPS = [
   { id: "administration", title: "Settings", paths: ["/settings", "/connections", "/feedback"] },
 ] as const;
 
+// NO "MORE" LABEL (Jordan, Oct 27 2026 Loom: "this more thing in the menu can
+// be removed ... I want everything under it, but we don't need the more
+// label"). The section keeps every door and its plain group headings (Money,
+// Lists & schedule, Work, …), which now read as the menu's own headings; only
+// the "More" title is gone (the section is named for screen readers only).
+export const OTHER_PAGES_ARIA = "Other pages";
+
 export function officeMenuDestinations<T extends Destination & { label: string; link?: string }>(items: readonly T[], pathname: string, role?: string | null) {
   const activeHref = activeSidebarHref(items, pathname);
   const primary: T[] = [];
@@ -162,8 +176,8 @@ export function officeMenuDestinations<T extends Destination & { label: string; 
   const isPrimary = (item: T) => primary.some((p) => p.href === item.href && !item.external);
   const rest = items.filter((item) => !isPrimary(item));
   const groupOf = (item: Destination) => item.external ? "reference" : MORE_GROUPS.find((g) => g.paths.some((href) => href === item.href))?.id ?? "administration";
-  // More keeps its headings inside the fold (Jordan: "the menu should be
-  // organized still when you click more").
+  // The rest keeps its plain group headings (Jordan, Oct 22: "the menu should
+  // be organized still"), now the menu's own headings with no More above them.
   const restGroups = MORE_GROUPS.map((group) => ({
     id: group.id,
     title: group.title,
@@ -178,6 +192,6 @@ export function officeMenuDestinations<T extends Destination & { label: string; 
   const ordered = restGroups.flatMap((group) => group.items);
   return [
     { id: "work", title: "Daily work", frequent: true, current: primary.some((item) => item.href === activeHref), activeHref, items: primary, subgroups: null },
-    { id: "more", title: "More", frequent: false, current: ordered.some((item) => item.href === activeHref), activeHref, items: ordered, subgroups: restGroups },
+    { id: "more", title: "", frequent: false, current: ordered.some((item) => item.href === activeHref), activeHref, items: ordered, subgroups: restGroups },
   ].filter((group) => group.items.length > 0);
 }

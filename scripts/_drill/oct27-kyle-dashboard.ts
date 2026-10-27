@@ -323,7 +323,12 @@ async function main() {
     c.ok("…it lists every job shot and not delivered (not the unshot, not the delivered)", jobs.filterShootRows(rows, "deliver").map((r) => r.projectId).join() === "a");
     const sr: ShootRow = { projectId: P.chase, street: "30 Example Dr", client: "Sam Sample", dueISO: null, dueWords: "Today 5 PM", late: false, dueToday: true, photos: { label: "Delivered", tone: "done" }, video: null, requests: { open: 0, photo: 0, video: 0, needsOwner: 0 }, monthly: false, href: `/projects/${P.chase}`, holding: null, delivered: false, dueThisWeek: true, videoSetup: null, shot: true };
     const listHtml = ssr(createElement(ShootsList, { rows: [sr], empty: "none", extras: { [P.chase]: { pieces: [{ label: "Floor plan", stage: { label: "Marked delivered", tone: "done" } }, { label: "3D tour", stage: { label: "Not in yet", tone: "waiting" } }], missing: ["3D tour: not on the listing yet"] } } }));
-    c.ok("…each row shows the floor plan and 3D tour states and what is missing, and opens the job", listHtml.includes("data-pieces") && text(listHtml).includes("Floor plan Marked delivered") && text(listHtml).includes("Missing: 3D tour: not on the listing yet") && listHtml.includes(`href="/projects/${P.chase}"`));
+    // Oct 27 2026 (Jordan's Loom, the Projects page): one line per piece, so the tour's own line says it is not in
+    // yet and the "Missing:" note no longer repeats it (a missing piece with no line of its own still gets one).
+    const noRow = ssr(createElement(ShootsList, { rows: [sr], empty: "none", extras: { [P.chase]: { pieces: [], missing: ["Floor plan: not on the listing yet"] } } }));
+    c.ok("…each row shows the floor plan and 3D tour states, each once, and opens the job",
+      listHtml.includes("data-pieces") && text(listHtml).includes("Floor plan Marked delivered") && text(listHtml).includes("3D tour Not in yet") && (text(listHtml).match(/3D tour/g) ?? []).length === 1 && listHtml.includes(`href="/projects/${P.chase}"`)
+      && text(noRow).includes("Floor plan Not on the listing yet"), text(listHtml));
 
     // =====================================================================
     c.head("§5 · The actions (PGlite): Mark floor plan delivered, a task's close, a change decision");

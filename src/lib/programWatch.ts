@@ -64,8 +64,6 @@ const DAY = 86_400_000;
 export const FRESH_HOURS = 48;
 /** How far back the watch looks at a program job's shoot. */
 const SHOOT_LOOKBACK_DAYS = 75;
-/** Late deliveries stay on the tracker this long so a cause can be recorded. */
-const DELIVERED_LATE_DAYS = 21;
 const NOT_A_ROUND = ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"];
 const CLAIM_PREFIX = "program-watch:";
 export const PROGRAM_WATCH_REASON = "Program watch: a video missed a milestone";
@@ -378,7 +376,7 @@ export async function programVideos(opts: Scope & { now?: Date } = {}): Promise<
 
 export type WatchBoardRow = ProgramVideoRow & { level: "late" | "risk" | "delivered-late" };
 
-/** The tracker's list: at risk, late, and delivered late in the last three weeks. */
+/** The tracker's list: at risk and late, never a delivered video (Oct 27 2026). "delivered-late" is no longer listed. */
 export async function programWatchBoard(opts: { now?: Date; includeTest?: boolean } = {}): Promise<{ rows: WatchBoardRow[]; causesAvailable: boolean; rules: ProgramWatchRules }> {
   const now = opts.now ?? new Date();
   const [all, rules] = await Promise.all([programVideos({ now }), programWatchRules()]);
@@ -394,7 +392,11 @@ export async function programWatchBoard(opts: { now?: Date; includeTest?: boolea
     const e = r.evaluation;
     if (e.status === "LATE") rows.push({ ...r, level: "late" });
     else if (e.status === "AT_RISK") rows.push({ ...r, level: "risk" });
-    else if (e.status === "DONE" && e.deliveredLate && r.facts.deliveredAt && now.getTime() - r.facts.deliveredAt.getTime() <= DELIVERED_LATE_DAYS * DAY) rows.push({ ...r, level: "delivered-late" });
+    // A DELIVERED VIDEO LEAVES THE LIST (Jordan, Oct 27 2026 Loom: "if
+    // they've been delivered, I don't really want them in here anymore, so
+    // this needs to auto-clean up after they're delivered"). Late deliveries
+    // used to stay 21 days for a cause to be recorded; a cause already
+    // recorded stays in its store (readMissCauses), it is only off the list.
   }
   const rank = { late: 0, risk: 1, "delivered-late": 2 } as const;
   rows.sort((a, b) => rank[a.level] - rank[b.level] || (a.promisedAt?.getTime() ?? 0) - (b.promisedAt?.getTime() ?? 0));

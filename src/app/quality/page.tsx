@@ -658,10 +658,13 @@ function EditorsTab({ data }: { data: Awaited<ReturnType<typeof loadEditorsTab>>
   if (data.own) return <EditorQualityCard report={data.own} own />;
   return (
     <div className="space-y-5">
+      {/* Oct 27 2026 (Jordan: "96.8% passed the first time. I don't think this is
+          accurate"): the rule in plain words, as lib/editorQuality counts it now. */}
       <p className="text-sm text-muted">
-        First-review results count only a cause a reviewer confirmed as the editor&rsquo;s — a client&rsquo;s change, new scope, a brief
-        gap, a capture or processing problem never counts against them, and an issue nobody has classified counts for nobody yet.
-        Every block shows its sample size; small samples say so instead of a percentage.
+        First review counts a first version as passed only when it was approved as it was. A version sent back for changes counts
+        as sent back, even before anyone gives the reason. It is left out only once a reviewer confirms the reason was somebody
+        else&rsquo;s: a client&rsquo;s change, new scope, a brief gap, or a capture or processing problem. Every block shows its sample
+        size; small samples say so instead of a percentage.
       </p>
       {data.team && <EditorQualityCard report={data.team} />}
       {data.cards.map((r) => <EditorQualityCard key={r.editorKey ?? "team"} report={r} />)}

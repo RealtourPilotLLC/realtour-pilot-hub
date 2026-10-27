@@ -59,11 +59,22 @@ export const maxDuration = 60;
 //                        each row; held and still-in-1080p rows as status
 //                        lines; the delivery follow-ups as one compact fold,
 //                        only when there are any
-//   · With the editors   ONE list for every listing video being edited or
-//                        revised (it replaced Late, Due today and In
-//                        revision): late first, then by due, who has it and
-//                        Remind editor (at most once every 4 hours)
-// Coming up and Monthly content live on the Shoots page and the Dashboard.
+//   · With the editors   (retired Oct 27 2026, below)
+//
+// Oct 27 2026 (Jordan's Loom: "I think we should just be able to see what's
+// in revision right now. What's ready to review and what's ready to send.
+// And then the history and send videos. We don't need to see what's with the
+// editors. We can open the editing room to see what's with the editors. When
+// it says with editors, this should just say, you know, in revision"). The
+// room is now, in his order:
+//   · In revision        only the videos sent back for changes (a reviewer's
+//                        or the client's): who has it, when it is due, and
+//                        Remind editor. A first edit nobody has handed in is
+//                        the Editing Room's (the header's shortcut), not here.
+//   · Ready to review    the old To review, unchanged inside
+//   · Ready to send      unchanged
+//   · History            the approved and sent videos, one link
+// Coming up and Monthly content live on the Projects page and the Dashboard.
 // The history (approved, sent, feedback follow-through, revision causes,
 // review observations) is one quiet link away at /review/history. The photo
 // media checks are on Photo Delivery (/ops/photo-delivery); /ops/video-delivery
@@ -86,6 +97,7 @@ const PUSH_TONE: Record<string, string> = {
 };
 const DAY = 24 * 3_600_000;
 const EDITORS_SHOWN = 15;
+const SENT_SHOWN = 8;
 
 /** The three steps of a press: Uploading, On the listing, Sent. */
 function Steps({ progress, stopped }: { progress: "uploading" | "on-listing" | "sent" | null; stopped: boolean }) {
@@ -419,17 +431,20 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
   const followUpCount = fu ? (fu.needsFinishing?.length ?? 0) + fu.notTold.length + fu.noticeIncidents.length + fu.portal.length : 0;
   const followUpUnchecked = !!fu && (!!fu.boardUnavailable || fu.followUpChecks?.needsFinishing === null || fu.followUpChecks?.notTold === null || fu.noticeIncidentCheck === null);
 
-  // ---- 3 · With the editors: every listing video being edited or revised ----
+  // ---- In revision: only the videos sent back for changes (Oct 27 2026) ----
+  // What "With the editors" listed besides these (a first edit not handed in
+  // yet) is the Editing Room's; the header's Editing Room button opens it.
   const revisionById = new Map(q.waitingOnEditor.map((s) => [s.id, s]));
+  const inRevision = (round: number | null) => `In revision${round ? `, version ${round} sent back` : ""}`;
   const onBoard: EditorItem[] = board
     ? (["late", "today", "upcoming"] as const)
         .flatMap((l) => board.lanes[l])
-        .filter((r) => r.cutStatus === "CHANGES_REQUESTED" || (r.cutStatus === null && r.stage !== "Not shot yet" && !pairedUncut.has(r.key)))
+        .filter((r) => r.cutStatus === "CHANGES_REQUESTED")
         .map((r) => ({
           key: r.key, projectId: r.projectId, submissionId: r.submissionId, street: r.street, clientName: r.clientName, label: r.label, round: r.round, lane: r.lane,
-          stage: r.stage, promiseISO: r.promiseISO, promiseWords: r.promiseWords, late: r.late, dueToday: r.dueToday, reviewHref: r.reviewHref,
+          stage: inRevision(r.round), promiseISO: r.promiseISO, promiseWords: r.promiseWords, late: r.late, dueToday: r.dueToday, reviewHref: r.reviewHref,
           cut: r.submissionId ? (revisionById.get(r.submissionId) ?? null) : null,
-          revisionSinceISO: r.cutStatus === "CHANGES_REQUESTED" ? r.sinceISO : null,
+          revisionSinceISO: r.sinceISO,
         }))
     : [];
   // A sent-back version the board does not date (a monthly video, a job the
@@ -438,19 +453,20 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
     .filter((s) => !rowByKey.has(s.id))
     .map((s) => ({
       key: s.id, projectId: s.projectId, submissionId: s.id, street: s.street, clientName: s.clientName, label: "Video", round: s.round, lane: "upcoming" as VideoLane,
-      stage: `Changes asked, version ${s.round}`, promiseISO: null, promiseWords: "", late: false, dueToday: false, reviewHref: `/review/${s.projectId}?cut=${s.id}`,
+      stage: inRevision(s.round), promiseISO: null, promiseWords: "", late: false, dueToday: false, reviewHref: `/review/${s.projectId}?cut=${s.id}`,
       cut: s, revisionSinceISO: s.decidedAt,
     }));
   // Late first (the earliest promise is the most late), then by due; undated last.
-  const editors = [...onBoard, ...offBoard].sort((a, b) => (a.promiseISO ?? "9999").localeCompare(b.promiseISO ?? "9999") || (a.revisionSinceISO ?? "").localeCompare(b.revisionSinceISO ?? ""));
-  const editorsLate = editors.filter((e) => e.late).length;
-  const notShotLate = board ? board.lanes.late.filter((r) => r.cutStatus === null && r.stage === "Not shot yet") : [];
+  const revisions = [...onBoard, ...offBoard].sort((a, b) => (a.promiseISO ?? "9999").localeCompare(b.promiseISO ?? "9999") || (a.revisionSinceISO ?? "").localeCompare(b.revisionSinceISO ?? ""));
+  const revisionsLate = revisions.filter((e) => e.late).length;
+  // ---- History: the listing videos sent in the last 7 days (the board's delivered lane), newest first ----
+  const sentThisWeek = board?.lanes.delivered ?? [];
   const remindButtonFor = (e: EditorItem) => e.late || e.dueToday || (!!e.revisionSinceISO && now.getTime() - Date.parse(e.revisionSinceISO) > DAY);
 
   // Who holds each video, and when it was last reminded (one batch of reads).
   const remindItems: RemindItem[] = boardDesk
     ? [
-        ...editors.map((e) => ({ key: e.key, projectId: e.projectId, submissionId: e.submissionId, street: e.street, promiseISO: e.promiseISO, late: e.late, dueToday: e.dueToday, revisionSinceISO: e.revisionSinceISO })),
+        ...revisions.map((e) => ({ key: e.key, projectId: e.projectId, submissionId: e.submissionId, street: e.street, promiseISO: e.promiseISO, late: e.late, dueToday: e.dueToday, revisionSinceISO: e.revisionSinceISO })),
         // A late (or due today) cut waiting on someone else's review: Remind reviewer.
         ...toReview.flatMap((s) => {
           const r = rowByKey.get(s.id);
@@ -469,12 +485,12 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
   // sign-in switched off, everyone).
   const showEditingRoom = me ? canAccess(me, "editing") : !authEnforced();
   const subtitle = [
-    `${q.pending.length} to review`,
+    `${revisions.length} in revision${revisionsLate ? ` (${revisionsLate} late)` : ""}`,
+    `${q.pending.length} ready to review`,
     board ? `${ready.length} ready to send` : null,
     finishing.length ? `${finishing.length} with Topaz` : null,
-    `${editors.length} with editors${editorsLate ? ` (${editorsLate} late)` : ""}`,
   ].filter(Boolean).join(" · ");
-  const editorRow = (e: EditorItem) => (
+  const revisionRow = (e: EditorItem) => (
     <EditorRow key={e.key} e={e}>
       {boardDesk && <Holder st={reminds.get(e.key)} rowKey={e.key} projectId={e.projectId} submissionId={e.submissionId} viewerName={viewerName} showButton={!preview && remindButtonFor(e)} now={now} />}
     </EditorRow>
@@ -507,13 +523,32 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
           <p role="alert" className="rounded-2xl border border-warning/30 bg-warning-soft/40 p-4 text-sm text-warning">Ready to send and the due dates could not be read just now. Refresh to try again.</p>
         )}
 
-        {/* ————— 1 · TO REVIEW ————— */}
-        <Section icon={PlayCircle} title="To review" count={q.pending.length}>
+        {/* ————— 1 · IN REVISION (Oct 27 2026: it replaced With the editors) ————— */}
+        <Section
+          icon={Hourglass}
+          title="In revision"
+          count={revisionsLate ? `${revisions.length}, ${revisionsLate} late` : revisions.length}
+          flush
+        >
+          {revisions.length ? (
+            <>
+              <ul className="divide-y divide-border">{revisions.slice(0, EDITORS_SHOWN).map(revisionRow)}</ul>
+              {revisions.length > EDITORS_SHOWN && (
+                <details className="border-t border-border">
+                  <summary className="min-h-11 cursor-pointer px-5 py-3 text-sm font-medium">Show {revisions.length - EDITORS_SHOWN} more</summary>
+                  <ul className="divide-y divide-border">{revisions.slice(EDITORS_SHOWN).map(revisionRow)}</ul>
+                </details>
+              )}
+            </>
+          ) : (
+            <p className="px-5 py-4 text-sm text-muted">Nothing is in revision right now.</p>
+          )}
+        </Section>
+
+        {/* ————— 2 · READY TO REVIEW ————— */}
+        <Section icon={PlayCircle} title="Ready to review" count={q.pending.length}>
           {toReview.length === 0 ? (
-            <p className="text-sm text-muted">
-              No cuts waiting. When an editor uploads a version on the edit page and finishes the send-for-review
-              check, it shows up here with a player and timestamped notes.
-            </p>
+            <p className="text-sm text-muted">Nothing is waiting on review.</p>
           ) : (
             <ul className="space-y-2.5">
               {toReview.map((s) => {
@@ -550,7 +585,7 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
           )}
         </Section>
 
-        {/* ————— 2 · READY TO SEND ————— */}
+        {/* ————— 3 · READY TO SEND ————— */}
         {/* Kyle's door lands here (Oct 22 2026, sidebarNavigation OFFICE_MENU; labelled Video Delivery since Oct 23). */}
         {board && (
           <div id="ready-to-send" className="scroll-mt-24">
@@ -597,41 +632,22 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
           </div>
         )}
 
-        {/* ————— 3 · WITH THE EDITORS ————— */}
-        <Section
-          icon={Hourglass}
-          title="With the editors"
-          count={editorsLate ? `${editors.length}, ${editorsLate} late` : editors.length}
-          action={showEditingRoom ? <Link href="/editing" prefetch={false} className={linkCls}>Open the Editing Room</Link> : undefined}
-          flush
-        >
-          {editors.length ? (
-            <>
-              <ul className="divide-y divide-border">{editors.slice(0, EDITORS_SHOWN).map(editorRow)}</ul>
-              {editors.length > EDITORS_SHOWN && (
-                <details className="border-t border-border">
-                  <summary className="min-h-11 cursor-pointer px-5 py-3 text-sm font-medium">Show {editors.length - EDITORS_SHOWN} more</summary>
-                  <ul className="divide-y divide-border">{editors.slice(EDITORS_SHOWN).map(editorRow)}</ul>
-                </details>
-              )}
-            </>
-          ) : (
-            <p className="px-5 py-4 text-sm text-muted">No video is with an editor right now.</p>
-          )}
-          {notShotLate.length > 0 && (
-            <p className="border-t border-border px-5 py-3 text-sm text-muted">
-              Also late, not shot yet:{" "}
-              {notShotLate.map((r, i) => (
-                <span key={r.key}>
-                  {i > 0 && ", "}
-                  <Link href={`/projects/${r.projectId}`} className="font-medium text-foreground underline underline-offset-2 hover:text-brand">{r.street}</Link>
-                </span>
+        {/* ————— 4 · HISTORY: sent this week, then every approved and sent video ————— */}
+        {sentThisWeek.length > 0 && (
+          <Section icon={History} title="Sent this week" count={sentThisWeek.length} flush>
+            <ul className="divide-y divide-border" data-sent-this-week>
+              {sentThisWeek.slice(0, SENT_SHOWN).map((r) => (
+                <li key={r.key} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 px-5 py-2.5 text-sm">
+                  <span className="min-w-0">
+                    <Link href={`/projects/${r.projectId}`} prefetch={false} className="font-medium text-foreground hover:text-brand hover:underline">{r.street}</Link>
+                    <span className="text-muted"> · {r.label.replace(/\s*[—–]\s*/g, ", ")}</span>
+                  </span>
+                  <span className="text-muted">Sent{r.deliveredAtISO ? ` ${etDateTime(r.deliveredAtISO)} ET` : ""}{r.deliveredBy ? ` by ${r.deliveredBy}` : ""}</span>
+                </li>
               ))}
-              .
-            </p>
-          )}
-        </Section>
-
+            </ul>
+          </Section>
+        )}
         <p className="text-center">
           <Link href={includeTest ? "/review/history?test=1" : "/review/history"} className="inline-flex min-h-11 items-center gap-1.5 text-sm text-muted underline underline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
             <History aria-hidden className="size-4" /> History: approved and sent videos

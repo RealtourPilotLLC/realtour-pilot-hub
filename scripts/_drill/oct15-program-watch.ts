@@ -264,11 +264,12 @@ async function main() {
   const dm3 = dms(/Dana Rivers/);
   c.ok("Mon Oct 19 5:30 PM: one message, three videos past the promise", dm3.length === 3 && /past its promise/.test(dm3[2].text) && /Tip #2/.test(dm3[2].text) && /Tip #3/.test(dm3[2].text) && /Tip #4/.test(dm3[2].text), dm3[2]?.text);
   c.ok("…Tip #4, approved five days ago and not on the portal, reads as our review holding it", /Tip #4[^\n]*Likely cause: Waiting on our review/.test(dm3[2]?.text ?? ""));
-  // Leo: delivered late a fortnight ago; listed for a cause, never pinged.
+  // Leo: delivered late a fortnight ago; never pinged.
+  // Oct 27 2026 (Jordan's Loom: "if they've been delivered, I don't really want them in here anymore"): off the list too.
   const leo = await programJob("Leo Park", "2026-09", { shootDate: SEP(17, 10), promisedDueAt: OCT(1, 17), qty: 1 });
   await cut(leo, 1, { createdAt: SEP(30, 9), status: "APPROVED", decidedAt: OCT(2, 9), clientReleasedAt: OCT(3, 10) });
   const b3 = await pw.programWatchBoard({ now: OCT(19, 18) });
-  c.ok("a video that reached the portal late is listed so its cause can be recorded", b3.rows.find((r) => r.outputId === leo.outs[0])?.level === "delivered-late");
+  c.ok("a video that reached the portal (late or not) leaves the list by itself", !b3.rows.some((r) => r.outputId === leo.outs[0]) && b3.rows.every((r) => r.level !== "delivered-late"));
   await promiseWatch.sweepPromiseWatch(setNow(OCT(19, 18)));
   c.ok("…and is never pinged", dms(/Leo Park/).length === 0);
   // They all reach the portal: the month's draft closes itself.

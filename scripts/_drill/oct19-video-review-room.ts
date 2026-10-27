@@ -5,19 +5,24 @@
 // buttons' server actions pressed for real (Aryeo is never reached: the hub's
 // Aryeo login is deliberately not set up here, so a press shows the
 // "cannot start" path).
-//   1  the room renders: "Video Review Room", THREE sections only (tightened
-//      Oct 19): To review, Ready to send, With the editors, a count in each
-//      heading ("N, M late" on the editors' list); the subtitle "1 to review ·
-//      4 ready to send · N with editors (M late)"
-//   2  To review: street, video, version, editor, how long it waited, when it
-//      is due (late in red), Remind reviewer on a late cut someone else holds;
-//      the editor's-check cut as one quiet line under it. Ready to send: the
-//      button, the job's open client request (the press asks first), Send all
-//      for the rows with none, the hand path folded (open on a row the hub
-//      cannot send), never "the hub sends it"; Needs a follow-up folded inside
-//   3  With the editors: one list (it replaced Late, Due today and In
-//      revision), late first, then by due, who holds each and Remind editor;
-//      not shot yet is a quiet line; the history is one link at the bottom
+//   1  the room renders: "Video Review Room", in Jordan's order (Oct 27 2026
+//      Loom; it was To review, Ready to send, With the editors since Oct 19):
+//      In revision, Ready to review, Ready to send, then Sent this week (only
+//      when there are any), a count in each heading ("N, M late" on In
+//      revision); the subtitle "1 in revision · 1 ready to review · 4 ready
+//      to send"; no With the editors anywhere
+//   2  Ready to review: street, video, version, editor, how long it waited,
+//      when it is due (late in red), Remind reviewer on a late cut someone
+//      else holds; the editor's-check cut as one quiet line under it. Ready
+//      to send: the button, the job's open client request (the press asks
+//      first), Send all for the rows with none, the hand path folded (open on
+//      a row the hub cannot send), never "the hub sends it"; Needs a
+//      follow-up folded inside
+//   3  In revision: only the versions sent back for changes, each reading "In
+//      revision", who sent it back, who holds it and Remind editor; a first
+//      edit nobody handed in and a video not shot yet are the Editing Room's
+//      (the header's button), not the room's; the history is one link at the
+//      bottom
 //   4  button only: rendering and the cron start nothing; a press with no
 //      Aryeo login writes a FAILED run that says why; a press on a job with an
 //      open request is refused until it is checked
@@ -153,7 +158,7 @@ async function main() {
     const runs = () => prisma.appSetting.count({ where: { key: { startsWith: "video_aryeo_push:" } } });
 
     // ======================================================================
-    c.head("1 · the room renders: THREE sections, a count in each heading");
+    c.head("1 · the room renders: In revision, Ready to review, Ready to send, a count in each heading");
     let h = "";
     try {
       h = await render();
@@ -169,30 +174,36 @@ async function main() {
     // Dashboard; Needs a follow-up is a fold inside Ready to send; the
     // editor's-check cuts are a quiet line; the history folds moved to
     // /review/history.
+    // Oct 27 2026 (Jordan's Loom: "I think we should just be able to see what's in revision right now. What's
+    // ready to review and what's ready to send. And then the history and send videos. We don't need to see what's
+    // with the editors. We can open the editing room to see what's with the editors. When it says with editors,
+    // this should just say, you know, in revision"). Sent this week shows only when something was sent.
     const headings = [...h.matchAll(/<h2[^>]*>([^<]+)<\/h2>/g)].map((m) => m[1]);
-    c.ok("three sections only, in order: To review, Ready to send, With the editors", JSON.stringify(headings) === JSON.stringify(["To review", "Ready to send", "With the editors"]), JSON.stringify(headings));
-    c.ok("…no Late, Due today, In revision, Coming up, Monthly content, Needs a follow-up or Waiting on the editor's check section, and no history fold", ["Late", "Due today", "In revision", "Coming up", "Monthly content", "Needs a follow-up", "Waiting on the editor&#x27;s check", "Waiting on the editor's check"].every((s) => !h.includes(`>${s}</h2>`)) && !/Approved, last 14 days|Sent this week|Feedback follow-through|Revision causes|Review observations/.test(t));
+    c.ok("in Jordan's order: In revision, Ready to review, Ready to send (no Sent this week before anything is sent)", JSON.stringify(headings) === JSON.stringify(["In revision", "Ready to review", "Ready to send"]), JSON.stringify(headings));
+    c.ok("…no With the editors, To review, Late, Due today, Coming up, Monthly content, Needs a follow-up or Waiting on the editor's check section, and no history fold", ["With the editors", "To review", "Late", "Due today", "Coming up", "Monthly content", "Needs a follow-up", "Waiting on the editor&#x27;s check", "Waiting on the editor's check"].every((s) => !h.includes(`>${s}</h2>`)) && !/with editors/i.test(t) && !/Approved, last 14 days|Feedback follow-through|Revision causes|Review observations/.test(t));
     const { videoDeliveryBoard } = await import("@/lib/videoDelivery");
     const board = await videoDeliveryBoard({ fresh: true });
     const countOf = (title: string) => (new RegExp(`>${title}</h2><span[^>]*>([^<]+)<`).exec(h) ?? [])[1] ?? "";
-    // The editors' list, from the board on its own: every listing video being edited or revised (not shot yet is not theirs).
-    // (12 Held Check Ln's version is in, held for the editor's own check: the board shows it as not cut yet, the room lists it once, under To review.)
-    const editorRows = (["late", "today", "upcoming"] as const).flatMap((l) => board.lanes[l]).filter((r) => r.cutStatus === "CHANGES_REQUESTED" || (r.cutStatus === null && r.stage !== "Not shot yet" && r.street !== "12 Held Check Ln"));
-    const editorsLate = editorRows.filter((r) => r.late).length;
+    // In revision, from the board on its own: only the versions sent back for changes (9 Revision Pl). The first edits
+    // nobody handed in (6 Late Edit Way, 8 Today Terrace) and the unshot video are the Editing Room's now.
+    const revisionRows = (["late", "today", "upcoming"] as const).flatMap((l) => board.lanes[l]).filter((r) => r.cutStatus === "CHANGES_REQUESTED");
+    const revisionsLate = revisionRows.filter((r) => r.late).length;
     c.ok("Ready to send's count is the ready rows (approved, file ready)", Number(countOf("Ready to send")) === board.lanes.sending.length && board.lanes.sending.length === 4, `${countOf("Ready to send")} / ${board.lanes.sending.length}`);
-    c.ok("To review's count is the cuts waiting on a verdict (the held one not counted)", countOf("To review") === "1", countOf("To review"));
-    c.ok("With the editors' count is 'N, M late' (the editing and sent-back videos)", countOf("With the editors") === `${editorRows.length}, ${editorsLate} late` && editorsLate === 1 && editorRows.length === (canTestToday ? 3 : 2), `${countOf("With the editors")} · ${editorRows.map((r) => r.street)}`);
-    c.ok("the subtitle sums it up: to review · ready to send · with editors (late)", new RegExp(`1 to review · ${board.lanes.sending.length} ready to send · ${editorRows.length} with editors \\(${editorsLate} late\\)`).test(t), t.slice(0, 260));
+    c.ok("Ready to review's count is the cuts waiting on a verdict (the held one not counted)", countOf("Ready to review") === "1", countOf("Ready to review"));
+    c.ok("In revision's count is the sent-back versions only ('1'; 'N, M late' when any is late)", countOf("In revision") === (revisionsLate ? `${revisionRows.length}, ${revisionsLate} late` : String(revisionRows.length)) && revisionRows.length === 1 && revisionRows[0].street === "9 Revision Pl", `${countOf("In revision")} · ${revisionRows.map((r) => r.street)}`);
+    c.ok("the subtitle sums it up: in revision · ready to review · ready to send", new RegExp(`Video Review Room 1 in revision · 1 ready to review · ${board.lanes.sending.length} ready to send `).test(t), t.slice(0, 260));
 
     // ======================================================================
-    c.head("2 · To review first, then Ready to send (Needs a follow-up folded inside it)");
-    const review = between(h, "To review", "Ready to send");
+    c.head("2 · Ready to review, then Ready to send (Needs a follow-up folded inside it)");
+    const review = between(h, "Ready to review", "Ready to send");
+    /** Where Ready to send ends: Sent this week when anything was sent, else the history link. */
+    const afterReady = (hh: string) => (/>Sent this week<\/h2>/.test(hh) ? "Sent this week" : "History: approved and sent videos");
     c.ok("To review: the street, which video and version, the editor, how long it has waited, when it is due (late in red)", /5 Late Review St Standard Cinematic Video, version 1/.test(review) && /from Kim · waiting /.test(review) && /Late by \d+ h \(due /.test(review) && /font-semibold text-danger">·[^<]*(<!-- -->)?Late by/.test(h), review.slice(0, 400));
     c.ok("…a late cut waiting on someone else's review: Waiting on James Rivera's review, Remind reviewer", /5 Late Review St.*Waiting on James Rivera's review\..*Remind reviewer/.test(review), review.slice(0, 600));
     c.ok("the version held for the editor's own check is one quiet line under it, not a section (with its due date)", /1 more is waiting on the editor’s own check/.test(review) && /12 Held Check Ln Listing video, version 1 .*held-check\.mp4/.test(review) && /12 Held Check Ln .*· Due /.test(review) && /data-waiting-on-check="1"/.test(h), review.slice(review.indexOf("1 more"), review.indexOf("1 more") + 400));
     const fuAt = h.indexOf("data-follow-ups=");
-    c.ok("Needs a follow-up is one fold inside Ready to send, with the delivery card's own rows (the unknown delivery text, its conversation link)", fuAt > h.indexOf(">Ready to send</h2>") && fuAt < h.indexOf(">With the editors</h2>") && />Needs a follow-up</.test(h) && /Delivery texts needing a check/.test(h) && h.includes(`incident=${encodeURIComponent(notice.id)}`) && /data-follow-ups="1"/.test(h), String(fuAt));
-    const ready = between(h, "Ready to send", "With the editors");
+    c.ok("Needs a follow-up is one fold inside Ready to send, with the delivery card's own rows (the unknown delivery text, its conversation link)", fuAt > h.indexOf(">Ready to send</h2>") && fuAt < h.indexOf("History: approved and sent videos") && />Needs a follow-up</.test(h) && /Delivery texts needing a check/.test(h) && h.includes(`incident=${encodeURIComponent(notice.id)}`) && /data-follow-ups="1"/.test(h), String(fuAt));
+    const ready = between(h, "Ready to send", afterReady(h));
     c.ok("each ready row has Upload to Aryeo and send", (ready.match(/Upload to Aryeo and send/g) ?? []).length === 3, ready.slice(0, 400));
     // Oct 23 2026 (Jordan: "give an option to upload to Aryeo without sending").
     c.ok("…and beside it Upload to Aryeo only (the same three rows)", (ready.match(/Upload to Aryeo only/g) ?? []).length === 3, ready.slice(0, 400));
@@ -202,21 +213,21 @@ async function main() {
     c.ok("never says the hub sends a video nobody pressed", !/hub sends|next pass|by itself to Aryeo/i.test(ready));
 
     // ======================================================================
-    c.head("3 · With the editors: one list, late first, who has it, Remind editor");
-    const editors = between(h, "With the editors", "History: approved and sent videos");
-    /** One editors' row, by its key (the text of that list item alone). */
+    c.head("3 · In revision: only the sent-back versions, who has it, Remind editor");
+    const revisionsText = between(h, "In revision", "Ready to review");
+    /** One In revision row, by its key (the text of that list item alone). */
     const rowOf = (html: string, key: string) => {
       const a = html.indexOf(`data-editor-row="${key}"`);
       return a < 0 ? "" : text(html.slice(a, html.indexOf("</li>", a)));
     };
-    const r6 = board.lanes.late.find((r) => r.street === "6 Late Edit Way")!;
-    c.ok("a late video with the editor: Late, With Kim, Remind editor", /Late/.test(rowOf(h, r6.key)) && /With Kim\..*Remind editor/.test(rowOf(h, r6.key)), rowOf(h, r6.key));
-    c.ok("the sent-back version: who sent it back, the file, who has it, Remind editor (over a day), the cut's link", /Changes asked, version 2/.test(rowOf(h, v9.id)) && /Sent back by James/.test(rowOf(h, v9.id)) && /revision-v2\.mp4/.test(rowOf(h, v9.id)) && /With Kim\..*Remind editor/.test(rowOf(h, v9.id)) && new RegExp(`cut=${v9.id}`).test(h), rowOf(h, v9.id));
-    c.ok("late first, then by due (6 Late Edit Way, then 8 Today Terrace, then the sent-back 9 Revision Pl)", editors.indexOf("6 Late Edit Way") >= 0 && editors.indexOf("9 Revision Pl") > editors.indexOf("6 Late Edit Way") && (!canTestToday || (editors.indexOf("8 Today Terrace") > editors.indexOf("6 Late Edit Way") && editors.indexOf("8 Today Terrace") < editors.indexOf("9 Revision Pl"))), editors.slice(0, 500));
-    c.ok("not shot yet is not the editors': a quiet 'Also late, not shot yet' line, no button", /Also late, not shot yet: 7 Not Shot Rd ?\./.test(editors) && !h.includes(`data-editor-row="${board.lanes.late.find((r) => r.street === "7 Not Shot Rd")!.key}"`));
-    c.ok("only the editors' rows and the late reviewer carry a Remind button (6, 9 and 5)", (t.match(/Remind (editor|reviewer)/g) ?? []).length === 3, String((t.match(/Remind (editor|reviewer)/g) ?? []).length));
-    c.ok("the in-review and approved videos are not in it (5 is under To review, 1 to 4 under Ready to send)", !/5 Late Review St|1 Request Rd|2 Ready Ave|12 Held Check Ln/.test(editors));
-    c.ok("a future job not shot yet is on the Shoots page, not in the room", !/10 Future Blvd/.test(t));
+    c.ok("the sent-back version reads In revision: who sent it back, the file, who has it, Remind editor (over a day), the cut's link",
+      /In revision, version 2 sent back/.test(rowOf(h, v9.id)) && !/Changes asked/.test(rowOf(h, v9.id)) && /Sent back by James/.test(rowOf(h, v9.id)) && /revision-v2\.mp4/.test(rowOf(h, v9.id)) && /With Kim\..*Remind editor/.test(rowOf(h, v9.id)) && new RegExp(`cut=${v9.id}`).test(h), rowOf(h, v9.id));
+    c.ok("a first edit nobody handed in is the Editing Room's, not the room's (6 Late Edit Way, 8 Today Terrace), and the header opens the Editing Room",
+      !/6 Late Edit Way|8 Today Terrace/.test(t) && /href="\/editing"/.test(h) && /Editing Room/.test(t), revisionsText.slice(0, 400));
+    c.ok("a video not shot yet is not in the room either (no 'Also late, not shot yet' line)", !/7 Not Shot Rd|Also late, not shot yet/.test(t));
+    c.ok("only the sent-back version and the late reviewer carry a Remind button (9 and 5)", (t.match(/Remind (editor|reviewer)/g) ?? []).length === 2, String((t.match(/Remind (editor|reviewer)/g) ?? []).length));
+    c.ok("the in-review and approved videos are not in it (5 is under Ready to review, 1 to 4 under Ready to send)", /9 Revision Pl/.test(revisionsText) && !/5 Late Review St|1 Request Rd|2 Ready Ave|12 Held Check Ln/.test(revisionsText));
+    c.ok("a future job not shot yet is on the Projects page, not in the room", !/10 Future Blvd/.test(t));
     c.ok("one quiet link at the bottom to the history", /href="\/review\/history"/.test(h) && /History: approved and sent videos/.test(t));
 
     // ======================================================================
@@ -231,7 +242,7 @@ async function main() {
     const run2 = await V.videoPushRun(r2);
     c.ok("a press with no Aryeo login: a FAILED run that says why (nothing sent)", !p2.ok && run2?.state === "FAILED" && /Aryeo login is not set up/.test(run2.note ?? "") && run2.by === "Kyle Smith", `${p2.message} · ${run2?.state}`);
     const h2 = await render();
-    const ready2 = between(h2, "Ready to send", "With the editors");
+    const ready2 = between(h2, "Ready to send", afterReady(h2));
     c.ok("…the row shows it with Try again", /2 Ready Ave/.test(ready2) && /Aryeo login is not set up/.test(ready2) && /Try again/.test(ready2), ready2.slice(0, 300));
     const p1plain = await sendVideoToAryeoAction(r1);
     const run1plain = await V.videoPushRun(r1);
@@ -259,15 +270,16 @@ async function main() {
     c.ok("the message has no em or en dash", !LONG_DASH.test(msg?.body ?? "—") && !LONG_DASH.test(bell?.title ?? "—"));
     const again = await remindVideoAction({ key: lateRow.key, projectId: lateRow.projectId, submissionId: null });
     c.ok("a second press within 4 hours is refused, saying when and by whom (you)", !again.ok && /^Kim was reminded \d+m ago by you\. You can remind them again after/.test(again.message) && (await prisma.projectMessage.count({ where: { projectId: L6.p.id } })) === 1, again.message);
-    const h3 = await render();
-    const row6 = (() => { const a = h3.indexOf(`data-editor-row="${lateRow.key}"`); return a < 0 ? "" : text(h3.slice(a, h3.indexOf("</li>", a))); })();
-    c.ok("the row says 'Reminded …ago by you.' and the button is gone", /6 Late Edit Way.*With Kim\. Reminded \d+m ago by you\./.test(row6) && (row6.match(/Remind editor/g) ?? []).length === 0, row6);
     await prisma.appSetting.update({ where: { key: `video_remind:${lateRow.key}` }, data: { value: JSON.stringify({ at: new Date(Date.now() - 4 * HOUR - 60_000).toISOString(), by: "Kyle Smith", to: "Kim", kind: "editor" }) } });
     const later = await remindVideoAction({ key: lateRow.key, projectId: lateRow.projectId, submissionId: null });
     c.ok("after 4 hours it can go again", later.ok, later.message);
     const revRem = await remindVideoAction({ key: v9.id, projectId: V9.p.id, submissionId: v9.id });
     const revMsg = await prisma.projectMessage.findFirst({ where: { projectId: V9.p.id }, orderBy: { createdAt: "desc" } });
     c.ok("a sent-back version: Remind editor says how long it has been back with them", revRem.ok && /9 Revision Pl's video has been back with you for changes for 2 days\./.test(revMsg?.body ?? ""), `${revRem.message} · ${revMsg?.body}`);
+    // The row that was reminded (since Oct 27 2026 the room's editor rows are the In revision ones).
+    const h3 = await render();
+    const row9 = (() => { const a = h3.indexOf(`data-editor-row="${v9.id}"`); return a < 0 ? "" : text(h3.slice(a, h3.indexOf("</li>", a))); })();
+    c.ok("the row says 'Reminded …ago by you.' and the button is gone", /9 Revision Pl.*With Kim\. Reminded \d+m ago by you\./.test(row9) && (row9.match(/Remind editor/g) ?? []).length === 0, row9);
     const l5Row = board.lanes.late.find((r) => r.street === "5 Late Review St")!;
     const revw = await remindVideoAction({ key: l5Row.key, projectId: l5Row.projectId, submissionId: l5.id });
     const jamesBell = await prisma.notification.findFirst({ where: { userKey: `tm:${jamesTm.id}` }, orderBy: { createdAt: "desc" } });
@@ -308,9 +320,9 @@ async function main() {
 
     // ======================================================================
     c.head("7 · copy");
-    const delivery = [between(h4, "To review", "Ready to send"), between(h4, "Ready to send", "With the editors"), between(h4, "With the editors", null)].join(" ");
-    c.ok("the three sections say 'you', never 'Kyle'", !/\bKyle\b/.test(delivery.replace(/Kyle Smith pressed/g, "")), (delivery.match(/.{40}\bKyle\b.{40}/) ?? [""])[0]);
-    c.ok("no em or en dash in the three sections", !LONG_DASH.test(delivery), (delivery.match(/.{40}[–—].{40}/) ?? [""])[0]);
+    const delivery = [between(h4, "In revision", "Ready to review"), between(h4, "Ready to review", "Ready to send"), between(h4, "Ready to send", null)].join(" ");
+    c.ok("the room's sections say 'you', never 'Kyle'", delivery.length > 500 && !/\bKyle\b/.test(delivery.replace(/Kyle Smith pressed/g, "")), (delivery.match(/.{40}\bKyle\b.{40}/) ?? [""])[0]);
+    c.ok("no em or en dash in the room's sections", !LONG_DASH.test(delivery), (delivery.match(/.{40}[–—].{40}/) ?? [""])[0]);
     c.ok("nothing rendered says undefined or NaN", !/\b(undefined|NaN)\b/.test(text(h4)));
 
     // ======================================================================
@@ -331,7 +343,14 @@ async function main() {
     c.ok("…the approved videos, each with who approved it", /1 Request Rd/.test(between(hh, "Approved, last 14 days", "Sent this week")) && /Approved by James Rivera/.test(ht), between(hh, "Approved, last 14 days", "Sent this week").slice(0, 300));
     c.ok("…what was sent this week, by whom", /14 Sent Sq/.test(between(hh, "Sent this week", "Feedback follow-through")) && /Sent .* by Kyle Smith/.test(between(hh, "Sent this week", "Feedback follow-through")), between(hh, "Sent this week", "Feedback follow-through").slice(0, 300));
     c.ok("…a way back to the room", /href="\/review"/.test(hh) && /Video Review Room/.test(ht));
-    c.ok("…and the room itself still shows none of it", !/14 Sent Sq|Approved, last 14 days|Sent this week/.test(text(await render())));
+    // Oct 27 2026 (Jordan's Loom: "And then the history and send videos"): the room ends with what was sent this
+    // week (the board's delivered lane) and the link; the approvals, follow-through and causes stay on the history page.
+    const h8 = await render();
+    const roomHeadings = [...h8.matchAll(/<h2[^>]*>([^<]+)<\/h2>/g)].map((m) => m[1]);
+    const sentNow = between(h8, "Sent this week", "History: approved and sent videos");
+    c.ok("…the room ends with Sent this week (14 Sent Sq, who sent it), then the link; nothing else from the history page",
+      roomHeadings[roomHeadings.length - 1] === "Sent this week" && /14 Sent Sq/.test(sentNow) && /Sent .* by Kyle Smith/.test(sentNow) && h8.indexOf(">Sent this week</h2>") < h8.indexOf("History: approved and sent videos") && !/Approved, last 14 days|Feedback follow-through|Revision causes/.test(text(h8)),
+      `${JSON.stringify(roomHeadings)} · ${sentNow.slice(0, 300)}`);
 
     // ======================================================================
     c.head("9 · the reviewer screen: the player leads, ONE 'Before you approve' box");

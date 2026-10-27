@@ -9,6 +9,7 @@ import { ActionMenu } from "@/components/ui/ActionMenu";
 import { ModalDialog } from "@/components/ui/ModalDialog";
 import type { MediaVideoView } from "./types";
 import { fmtDuration, startDownload } from "./util";
+import { ShareVideoButton } from "./ShareVideoButton";
 
 // ---------------------------------------------------------------------------
 // ONE VIDEO (Oct 23 2026, /media and the listing pages). The poster first
@@ -18,6 +19,10 @@ import { fmtDuration, startDownload } from "./util";
 // the listing and the client are one press away. A vertical reel sits in a
 // 9:16 frame and a horizontal video in 16:9; a video whose shape differs from
 // its group's frame is shown whole (letterboxed), never cropped.
+// SHARE (Jordan, Oct 27 2026: "a button to be able to share"): beside
+// Download on a video that has a home in its client's portal; it copies that
+// portal link (lib/mediaShareCore), never a Dropbox address. A listing video
+// has no client-safe link in the hub, so it shows no Share.
 // ---------------------------------------------------------------------------
 
 const btn = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-xl border border-border-strong bg-surface px-3 text-sm font-medium text-foreground hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
@@ -134,6 +139,7 @@ export function VideoTile({ video, frame, hideListing }: { video: MediaVideoView
           <a href={video.downloadHref} download className={cn(btn, "px-0 @2xs:px-3")} aria-label={`Download ${video.title}`}>
             <Download aria-hidden className="size-4" /><span className="hidden @2xs:inline">Download</span>
           </a>
+          {video.shareHref && <ShareVideoButton href={video.shareHref} title={video.title} compact className={cn(btn, "px-0 @2xs:px-3")} />}
           {listingHref && <Link href={listingHref} className={cn(btn, "hidden @2xs:inline-flex")}><House aria-hidden className="size-4" />Listing</Link>}
           {clientHref && <Link href={clientHref} className={cn(btn, "hidden @2xs:inline-flex")}><UserRound aria-hidden className="size-4" />Client</Link>}
           <ActionMenu
@@ -176,6 +182,7 @@ export function VideoModal({ video, narrow, onClose, hideListing }: { video: Med
       <div className="mt-4 flex flex-wrap gap-2">
         <a href={video.downloadHref} download className={btn}><Download aria-hidden className="size-4" />Download</a>
         {video.coverHref && <a href={video.coverHref} download className={btn} data-cover-download><ImageDown aria-hidden className="size-4" />Cover</a>}
+        {video.shareHref && <ShareVideoButton href={video.shareHref} title={video.title} className={btn} />}
         {listingHref && <Link href={listingHref} className={btn}><House aria-hidden className="size-4" />Open listing</Link>}
         {clientHref && <Link href={clientHref} className={btn}><UserRound aria-hidden className="size-4" />Open client</Link>}
         <button type="button" data-modal-initial-focus onClick={onClose} className={cn(btn, "ml-auto")}>Close</button>

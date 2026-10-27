@@ -17,7 +17,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
-import { Badge } from "@/components/ui/Badge";
 import { Markdown } from "@/components/ui/Markdown";
 import { prisma } from "@/lib/prisma";
 import { Aryeo } from "@/lib/integrations/aryeo";
@@ -25,6 +24,8 @@ import { getSecret } from "@/lib/integrations/connections";
 import { getCurrentUser } from "@/lib/auth/user";
 import { contentTier } from "@/lib/auth/access";
 import { GUIDES, guideForRole } from "./guide/content";
+import { ResourceSearch } from "./ResourceSearch";
+import { RESOURCE_TOPICS, resourceTopicOf, type ResourceTopic } from "./topics";
 
 // Photographers/editors get the CREATIVE cut of this page: no client pricing,
 // fee schedules, sales SOPs, or finance tools (QuickBooks/Stripe). Jordan's
@@ -70,15 +71,8 @@ const ICONS: Record<string, LucideIcon> = {
   sliders: Sliders,
 };
 
-function groupBy<T>(items: T[], key: (t: T) => string) {
-  const map = new Map<string, T[]>();
-  for (const it of items) {
-    const k = key(it);
-    if (!map.has(k)) map.set(k, []);
-    map.get(k)!.push(it);
-  }
-  return [...map.entries()];
-}
+/** What the search box reads for one item: its words, lower-cased, an SOP's body capped. */
+const searchText = (...parts: (string | null | undefined)[]) => parts.filter(Boolean).join(" ").replace(/\s+/g, " ").toLowerCase().slice(0, 6000);
 
 export default async function ResourcesPage() {
   await requirePageAccess("resources");
@@ -95,176 +89,157 @@ export default async function ResourcesPage() {
   const sops = creative ? allSops.filter(creativeSafeSop) : allSops;
   const forms = creative ? [] : orderForms;
 
-  const resourceGroups = groupBy(resources, (r) => r.category);
-  const sopGroups = groupBy(sops, (s) => s.category);
   // The walkthrough card names the guide this person will actually land on.
   const guideTitle = GUIDES[guideForRole(me?.role)].title;
+
+  // BY WHO USES THEM (Jordan, Oct 27 2026: "it could be organized a little
+  // better"). One section per topic (./topics), the links first and then the
+  // procedures, each with its typed category as a small label; the booking
+  // forms sit with the office's topic. A topic with nothing in it is not drawn,
+  // and the search box above them hides what does not match.
+  const byTopic = (k: ResourceTopic) => ({
+    links: resources.filter((r) => resourceTopicOf(r.category) === k),
+    sops: sops.filter((x) => resourceTopicOf(x.category) === k),
+    forms: k === "office" ? forms : [],
+  });
+  const topics = RESOURCE_TOPICS.map((t) => ({ ...t, ...byTopic(t.key) })).filter((t) => t.links.length + t.sops.length + t.forms.length > 0);
 
   return (
     <div>
       <PageHeader
         title={creative ? "SOP Center" : "Resources & SOPs"}
-        subtitle={creative ? "How we shoot, edit, and deliver — the standards for every job" : "Links, tools, and standard operating procedures for the team"}
+        subtitle={creative ? "How we shoot, edit and deliver: the standards for every job" : "Links, tools and how we do things, grouped by who uses them"}
       />
-      <div className="space-y-8 p-4 sm:p-6">
-        {/* Pinned FIRST: this person's own walkthrough guide. Go-live onboarding
-            (Sep 2026) — everybody gets a runbook for their day plus a
-            screen-by-screen walkthrough, and the link lands them on THEIRS
-            (/resources/guide redirects creatives straight to their own; the
-            page itself gates who may open which). */}
-        <Link
-          href="/resources/guide"
-          className="flex items-center gap-3 rounded-2xl border border-brand/40 bg-brand/[0.04] p-4 transition hover:border-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-        >
-          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-brand/15 text-brand">
-            <Compass className="size-5" />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-sm font-semibold">{guideTitle} — how the hub works</span>
-            <span className="block text-sm leading-relaxed text-muted">
-              Your day in order, then a walkthrough of every screen you use — start here
-            </span>
-          </span>
-          <ExternalLink className="size-4 shrink-0 text-muted-2" />
-        </Link>
-
-        {/* Pinned: the Video Style Guide — every role sees this card (it's the
-            one reference page the editors live by, and photographers/admin
-            benefit from knowing the bar too). */}
-        <Link
-          href="/resources/video-styles"
-          className="flex items-center gap-3 rounded-2xl border border-border bg-surface p-4 transition hover:border-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-        >
-          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-brand/15 text-brand">
-            <Clapperboard className="size-5" />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-sm font-semibold">Video Style Guide</span>
-            <span className="block text-sm leading-relaxed text-muted">
-              Every video type we edit — style specs, linked examples, edit-time budgets and turnarounds
-            </span>
-          </span>
-          <ExternalLink className="size-4 shrink-0 text-muted-2" />
-        </Link>
-
-        {/* Booking forms (live from Aryeo) */}
-        {forms.length > 0 && (
-          <section className="space-y-3">
-            <div className="flex items-center gap-2">
-              <ClipboardList className="size-4 text-brand" />
-              <h2 className="text-sm font-semibold text-muted">Booking forms</h2>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {forms.map((f) => (
-                <a
-                  key={f.id}
-                  href={f.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="group flex items-center justify-between gap-3 rounded-2xl border bg-surface p-4 transition-shadow hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1 truncate font-medium">
-                      <span className="truncate">{f.title}</span>
-                      <ExternalLink className="size-3 shrink-0 text-muted-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
-                    </div>
-                    <div className="text-sm text-muted">Client order form</div>
-                  </div>
-                  {f.is_public ? (
-                    <Badge color="#16a34a" soft="#dcfce7">Public</Badge>
-                  ) : (
-                    <Badge soft="var(--surface-2)">Private</Badge>
-                  )}
-                </a>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {/* Quick links */}
-        <section className="space-y-5">
-          <h2 className="text-sm font-semibold text-muted">Quick links</h2>
-          {/* Service Catalog lives here now — it's a static price reference and
-              its own nav door went unopened in all recorded history (audit). */}
-          {!creative && (
+      <div className="mx-auto max-w-5xl space-y-8 p-4 pb-16 sm:p-6">
+        {/* Start here: this person's own walkthrough guide (go-live, Sep 2026;
+            /resources/guide lands each role on theirs) and the Video Style
+            Guide every role reads. Always shown, above the search. */}
+        <section aria-labelledby="start-here" className="space-y-3">
+          <h2 id="start-here" className="text-base font-semibold">Start here</h2>
+          <div className="grid gap-3 md:grid-cols-2">
             <Link
-              href="/catalog"
-              className="flex min-h-11 items-center justify-between gap-3 rounded-2xl border border-border bg-surface px-4 py-3 text-sm font-medium hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+              href="/resources/guide"
+              className="flex items-center gap-3 rounded-2xl border border-brand/40 bg-brand/[0.04] p-4 transition hover:border-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
             >
-              <span>Service Catalog — every product, price, and description</span>
-              <span className="text-muted-2">→</span>
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-brand/15 text-brand">
+                <Compass className="size-5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold">{guideTitle}: how the hub works</span>
+                <span className="block text-sm leading-relaxed text-muted">Your day in order, then every screen you use</span>
+              </span>
             </Link>
-          )}
-          {resourceGroups.map(([category, items]) => (
-            <div key={category}>
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-2">
-                {category}
+            <Link
+              href="/resources/video-styles"
+              className="flex items-center gap-3 rounded-2xl border border-border bg-surface p-4 transition hover:border-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+            >
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-brand/15 text-brand">
+                <Clapperboard className="size-5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold">Video Style Guide</span>
+                <span className="block text-sm leading-relaxed text-muted">Every video type we edit: specs, examples, edit time and turnaround</span>
+              </span>
+            </Link>
+            {/* Service Catalog lives here: a static price reference whose own nav door went unopened (audit). */}
+            {!creative && (
+              <Link
+                href="/catalog"
+                className="flex items-center gap-3 rounded-2xl border border-border bg-surface p-4 transition hover:border-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand md:col-span-2"
+              >
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-surface-2 text-muted">
+                  <BookOpen className="size-5" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold">Service Catalog</span>
+                  <span className="block text-sm leading-relaxed text-muted">Every product, price and description</span>
+                </span>
+              </Link>
+            )}
+          </div>
+        </section>
+
+        <ResourceSearch label={creative ? "Search the SOPs" : "Search resources and SOPs"}>
+          {topics.length === 0 && <p className="text-sm text-muted">Nothing has been added here yet.</p>}
+          {topics.map((t) => (
+            <section key={t.key} aria-labelledby={`topic-${t.key}`} data-search-group={t.key} data-topic={t.key} className="space-y-3">
+              <div>
+                <h2 id={`topic-${t.key}`} className="text-base font-semibold">{t.title}</h2>
+                {t.blurb && <p className="text-sm text-muted">{t.blurb}</p>}
               </div>
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {items.map((r) => {
-                  const Icon = (r.icon && ICONS[r.icon]) || ExternalLink;
-                  return (
+
+              {/* Booking forms, live from Aryeo (the office's topic). */}
+              {t.forms.length > 0 && (
+                <div className="grid gap-2.5 sm:grid-cols-2">
+                  {t.forms.map((f) => (
                     <a
-                      key={r.id}
-                      href={r.url}
+                      key={f.id}
+                      href={f.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="group flex items-center gap-3 rounded-2xl border bg-surface p-4 transition-shadow hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                      data-search={searchText(f.title, "booking form client order form")}
+                      className="flex items-center justify-between gap-3 rounded-xl border border-border bg-surface px-4 py-3 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
                     >
-                      <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-brand-soft text-brand">
-                        <Icon className="size-5" />
+                      <span className="min-w-0">
+                        <span className="flex items-center gap-1.5 text-sm font-medium"><ClipboardList aria-hidden className="size-4 shrink-0 text-brand" /> {f.title}</span>
+                        <span className="block text-xs text-muted">Client booking form{f.is_public ? ", public" : ", private"}</span>
                       </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1 font-medium">
-                          <span className="truncate">{r.title}</span>
-                          <ExternalLink className="size-3 shrink-0 text-muted-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
-                        </div>
-                        {r.description && (
-                          <div className="text-sm leading-relaxed text-muted">{r.description}</div>
-                        )}
-                      </div>
+                      <ExternalLink aria-hidden className="size-4 shrink-0 text-muted-2" />
                     </a>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </section>
+                  ))}
+                </div>
+              )}
 
-        {/* SOP center */}
-        <section className="space-y-5">
-          <div className="flex items-center gap-2">
-            <BookOpen className="size-4 text-brand" />
-            <h2 className="text-sm font-semibold text-muted">SOP Center</h2>
-          </div>
-          {sopGroups.map(([category, items]) => (
-            <div key={category}>
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-2">
-                {category}
-              </div>
-              <div className="space-y-2">
-                {items.map((s) => (
-                  <details
-                    key={s.id}
-                    className="group rounded-2xl border bg-surface px-5 py-3.5 [&_summary]:list-none"
-                  >
-                    <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-3 rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
-                      <div>
-                        <div className="text-sm font-semibold">{s.title}</div>
-                        {s.summary && <div className="text-sm leading-relaxed text-muted">{s.summary}</div>}
+              {t.links.length > 0 && (
+                <div className="grid gap-2.5 sm:grid-cols-2">
+                  {t.links.map((r) => {
+                    const Icon = (r.icon && ICONS[r.icon]) || ExternalLink;
+                    return (
+                      <a
+                        key={r.id}
+                        href={r.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        data-search={searchText(r.title, r.description, r.category)}
+                        className="flex items-center gap-3 rounded-xl border border-border bg-surface px-4 py-3 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                      >
+                        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-brand-soft text-brand">
+                          <Icon aria-hidden className="size-4" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-medium">{r.title}</span>
+                          {r.description && <span className="block text-xs leading-relaxed text-muted">{r.description}</span>}
+                        </span>
+                        <ExternalLink aria-hidden className="size-4 shrink-0 text-muted-2" />
+                      </a>
+                    );
+                  })}
+                </div>
+              )}
+
+              {t.sops.length > 0 && (
+                <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface">
+                  {t.sops.map((x) => (
+                    <details key={x.id} data-search={searchText(x.title, x.summary, x.category, x.content)} className="group px-4 py-1 [&_summary]:list-none">
+                      <summary className="flex min-h-12 cursor-pointer items-center justify-between gap-3 rounded-lg py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden">
+                        <span className="min-w-0">
+                          <span className="block text-sm font-semibold">{x.title}</span>
+                          {x.summary && <span className="block text-sm leading-relaxed text-muted">{x.summary}</span>}
+                          <span className="block text-xs text-muted-2">{x.category}</span>
+                        </span>
+                        <span className="shrink-0 text-sm text-muted group-open:hidden">Open</span>
+                        <span className="hidden shrink-0 text-sm text-muted group-open:inline">Close</span>
+                      </summary>
+                      <div className="mb-3 mt-1 border-t border-border pt-3">
+                        <Markdown content={x.content} />
                       </div>
-                      <span className="text-sm text-muted group-open:hidden">Open</span>
-                      <span className="hidden text-sm text-muted group-open:inline">Close</span>
-                    </summary>
-                    <div className="mt-3 border-t pt-3">
-                      <Markdown content={s.content} />
-                    </div>
-                  </details>
-                ))}
-              </div>
-            </div>
+                    </details>
+                  ))}
+                </div>
+              )}
+            </section>
           ))}
-        </section>
+        </ResourceSearch>
       </div>
     </div>
   );

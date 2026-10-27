@@ -69,7 +69,12 @@ async function ListView({ excludeClientIds, includeTest, office, tabs }: { exclu
         actions={<ScheduleViewToggle view="list" includeTest={includeTest} />}
       />
       <ShootsScheduleTabs current="schedule" includeTest={includeTest} show={tabs} />
-      <div className="space-y-6 p-4 sm:p-6">
+      {/* NARROWER COLUMNS (Jordan, Oct 27 2026: "they don't have to be so wide
+          on the screen. I think they could be closer together"). The day lists
+          sit in one readable column instead of stretching across a wide
+          screen, and the stage and the photographer keep fixed widths so they
+          line up beside the address. The Map view keeps the full width. */}
+      <div className="mx-auto max-w-3xl space-y-6 p-4 sm:p-6" data-schedule-list>
         {appts.length === 0 && <p className="text-sm text-muted">No shoots scheduled in the next {WINDOW_DAYS} days.</p>}
         {[...groups.entries()].map(([day, items]) => (
           <div key={day}>
@@ -106,16 +111,18 @@ async function ListView({ excludeClientIds, includeTest, office, tabs }: { exclu
                         <span className="truncate">{p.client.name}</span>
                       </div>
                     </div>
-                    <Badge color={stage.color} soft={stage.soft}>
-                      {stage.short}
-                    </Badge>
+                    <span className="shrink-0 sm:w-24">
+                      <Badge color={stage.color} soft={stage.soft}>
+                        {stage.short}
+                      </Badge>
+                    </span>
                     {a.assignedTo ? (
-                      <span className="flex items-center gap-1.5 text-xs text-muted">
+                      <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted sm:w-24">
                         <Avatar name={a.assignedTo.name} color={a.assignedTo.avatarColor} size={22} />
                         <span className="hidden sm:inline">{a.assignedTo.name.split(" ")[0]}</span>
                       </span>
                     ) : (
-                      <span className="flex items-center gap-1 text-xs text-muted-2">
+                      <span className="flex shrink-0 items-center gap-1 text-xs text-muted-2 sm:w-24">
                         <Camera className="size-3.5" /> Unassigned
                       </span>
                     )}

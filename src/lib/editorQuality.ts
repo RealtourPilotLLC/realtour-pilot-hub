@@ -62,26 +62,45 @@ const median = (xs: number[]): number | null => {
 
 // ---- pure rules, exported for the drills ---------------------------------------
 
-export type FirstReviewOutcome = "passed" | "failed" | "pendingReview" | "pendingClassification" | "replacedBeforeReview";
+/**
+ * passed            approved at its first review, no editor-caused issue on it
+ * failed            sent back (or approved over) a confirmed editor-caused issue
+ * waitingOnCause    sent back, no cause recorded yet: NOT a pass (it was sent back)
+ * notEditors        sent back, every issue confirmed as somebody else's: left out
+ * pendingReview / replacedBeforeReview / notCounted   never judged: left out
+ */
+export type FirstReviewOutcome = "passed" | "failed" | "waitingOnCause" | "notEditors" | "pendingReview" | "replacedBeforeReview" | "notCounted";
 type IssueForOutcome = { cause: string; causeConfirmedAt?: Date | null; causeConfirmedBy?: string | null; state: string; duplicateOfId: string | null; foundAfterApproval: boolean };
 
 /**
- * The first version of a video, judged on its FIRST review. Only a confirmed
- * editor-caused issue fails it — a client preference, new scope, a brief gap,
- * a capture or processing problem does not. A bounce whose issues nobody has
- * classified is not a pass or a fail yet: it is pending classification. A
- * version replaced before anyone ruled was never reviewed. Defects found after
- * approval belong to the client-visible block, not here.
+ * The first version of a video, judged on its FIRST review.
+ *
+ * PASSED MEANS APPROVED AS IT WAS (Jordan, Oct 27 2026: "96.8% passed the
+ * first time. I don't think this is accurate"). Until then a first version
+ * sent back with no cause recorded was "pending classification" and left out
+ * of the count, while every approval counted at once, so the rate was read off
+ * the approvals and the few bounces somebody had classified; a bounce whose
+ * issues were all someone else's counted as a PASS; and any decided status
+ * other than approved or sent back with no issue on it fell through to a pass.
+ * Now a version sent back is not a pass unless every issue on it is confirmed
+ * as somebody else's (a client change, new scope, a brief gap, capture,
+ * processing): those are left out of the count, never credited. A sent-back
+ * version waiting on a cause counts as sent back; classifying it later can
+ * only move it out. A version replaced before anyone ruled was never reviewed;
+ * defects found after approval belong to the client-visible block, not here.
  */
 export function firstReviewOutcome(round: { status: string; decidedAt: Date | null }, issues: IssueForOutcome[]): FirstReviewOutcome {
   if (round.status === "PENDING" || round.status === "UPLOADING") return "pendingReview";
   if (!round.decidedAt && (round.status === "SUPERSEDED" || round.status === "WITHDRAWN" || round.status === "UPLOAD_FAILED")) return "replacedBeforeReview";
   const live = issues.filter((i) => !i.foundAfterApproval && !i.duplicateOfId && i.state !== "DUPLICATE" && i.state !== "NOT_APPLICABLE");
-  if (live.some((i) => hasConfirmedIssueCause(i) && isEditorCaused(i.cause))) return "failed";
-  if (live.some((i) => !hasConfirmedIssueCause(i))) return "pendingClassification";
-  // Sent back with nothing recorded on it: the reason is unknown, not good.
-  if (round.status === "CHANGES_REQUESTED" && live.length === 0) return "pendingClassification";
-  return "passed";
+  const editorCaused = live.some((i) => hasConfirmedIssueCause(i) && isEditorCaused(i.cause));
+  if (round.status === "APPROVED") return editorCaused ? "failed" : "passed";
+  if (round.status !== "CHANGES_REQUESTED") return "notCounted";
+  if (editorCaused) return "failed";
+  // Sent back with every issue confirmed as somebody else's: not the editor's, not a pass.
+  if (live.length > 0 && live.every((i) => hasConfirmedIssueCause(i) && !isEditorCaused(i.cause))) return "notEditors";
+  // Sent back with nothing recorded, or a cause still to give: sent back all the same.
+  return "waitingOnCause";
 }
 
 /** Still-valid earlier asks the next version did not address (stamped at the
@@ -140,7 +159,18 @@ export type EditorQualityReport = {
   toISO: string;
   trackedSinceISO: string;
   firstReview: {
-    passed: number; reviewed: number; pendingReview: number; pendingClassification: number; replacedBeforeReview: number;
+    /** Approved at the first review. */
+    passed: number;
+    /** First versions that got a verdict and count: approved + sent back (waiting on a cause included). */
+    reviewed: number;
+    /** Sent back: a confirmed editor cause, or no cause recorded yet. */
+    sentBack: number;
+    /** Of `sentBack`, the ones nobody has given a cause yet. */
+    waitingOnCause: number;
+    /** Not counted: sent back, every issue confirmed as somebody else's. */
+    notEditors: number;
+    /** Not counted: never judged (waiting on review, replaced before review, any other state). */
+    pendingReview: number; replacedBeforeReview: number; notCounted: number;
     rate: number | null; thin: boolean;
     byProduct: { product: string; passed: number; reviewed: number }[];
   };
@@ -245,16 +275,21 @@ export async function editorQuality(opts: TaskClientScope & { editorKey?: string
     issuesBySub.set(i.raisedOnSubmissionId!, arr);
   }
   const firsts = subs.filter((s) => s.round === 1);
-  let passed = 0, failed = 0, pendingReview = 0, pendingClassification = 0, replacedBeforeReview = 0;
+  // Oct 27 2026 (firstReviewOutcome): reviewed = approved + sent back, the
+  // sent-back ones still waiting on a cause included; a bounce that was
+  // somebody else's, and anything never judged, are counted apart.
+  let passed = 0, failed = 0, waitingOnCause = 0, notEditors = 0, pendingReview = 0, replacedBeforeReview = 0, notCounted = 0;
   const prod = new Map<string, { passed: number; reviewed: number }>();
   for (const s of firsts) {
     const o = firstReviewOutcome(s, (issuesBySub.get(s.id) ?? []) as unknown as IssueForOutcome[]);
     if (o === "passed") passed++;
     else if (o === "failed") failed++;
+    else if (o === "waitingOnCause") waitingOnCause++;
+    else if (o === "notEditors") notEditors++;
     else if (o === "pendingReview") pendingReview++;
-    else if (o === "pendingClassification") pendingClassification++;
-    else replacedBeforeReview++;
-    if (o === "passed" || o === "failed") {
+    else if (o === "replacedBeforeReview") replacedBeforeReview++;
+    else notCounted++;
+    if (o === "passed" || o === "failed" || o === "waitingOnCause") {
       const p = productOf(s.deliverableId);
       const cur = prod.get(p) ?? { passed: 0, reviewed: 0 };
       cur.reviewed++;
@@ -262,7 +297,8 @@ export async function editorQuality(opts: TaskClientScope & { editorKey?: string
       prod.set(p, cur);
     }
   }
-  const reviewed = passed + failed;
+  const sentBack = failed + waitingOnCause;
+  const reviewed = passed + sentBack;
 
   // ---- recurring editor-caused issues ----------------------------------------
   const roots = issues.filter((i) => !i.duplicateOfId && i.state !== "DUPLICATE" && i.state !== "NOT_APPLICABLE" && hasConfirmedIssueCause(i) && !!i.versionEditorKey?.trim() && isEditorCaused(i.cause));
@@ -451,7 +487,7 @@ export async function editorQuality(opts: TaskClientScope & { editorKey?: string
     toISO: to.toISOString(),
     trackedSinceISO: QUALITY_TRACKED_SINCE.toISOString(),
     firstReview: {
-      passed, reviewed, pendingReview, pendingClassification, replacedBeforeReview,
+      passed, reviewed, sentBack, waitingOnCause, notEditors, pendingReview, replacedBeforeReview, notCounted,
       rate: reviewed >= THIN_SAMPLE ? Math.round((passed / reviewed) * 1000) / 10 : null,
       thin: reviewed < THIN_SAMPLE,
       byProduct: [...prod.entries()].map(([product, v]) => ({ product, ...v })).sort((a, b) => b.reviewed - a.reviewed),

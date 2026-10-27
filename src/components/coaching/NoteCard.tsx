@@ -41,10 +41,13 @@ export function NoteCard({
   showPerson = false,
   /** The owner's view says whether it was delivered; the recipient already knows. */
   showDelivery = false,
+  /** Oct 27 2026: the "Got it" control (the person's view) or whether they said it (the owner's). */
+  footer = null,
 }: {
   audit: CoachingAudit;
   showPerson?: boolean;
   showDelivery?: boolean;
+  footer?: React.ReactNode;
 }) {
   const clean = audit.suggestions.length === 0;
   const Icon = clean ? CheckCircle2 : MessageSquareText;
@@ -134,6 +137,7 @@ export function NoteCard({
         {audit.suggestionsDropped ? ` · ${audit.suggestionsDropped} dropped as unquotable` : ""}
         {showDelivery && !audit.sent && audit.sendSkipped && ` · ${audit.sendSkipped}`}
       </p>
+      {footer}
     </article>
   );
 }

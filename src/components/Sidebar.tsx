@@ -43,7 +43,7 @@ import { cn } from "@/lib/utils";
 import { canAccess, isCreativeLead, isOffice, parsePermissions, ROLE_LABEL, type PageKey } from "@/lib/auth/access";
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { groupSidebarDestinations, officeMenuDestinations, PHOTO_DELIVERY_LABEL, usesRoleMenu, VIDEO_DELIVERY_LABEL } from "@/lib/sidebarNavigation";
+import { groupSidebarDestinations, officeMenuDestinations, OTHER_PAGES_ARIA, PHOTO_DELIVERY_LABEL, PROJECTS_LABEL, usesRoleMenu, VIDEO_DELIVERY_LABEL } from "@/lib/sidebarNavigation";
 
 export type ShellUser = {
   name: string | null;
@@ -101,7 +101,9 @@ const SECTIONS: NavSection[] = [
       // middleware and the page itself check (Oct 20 2026, audit A21: the door
       // tested `ops`, so an override on either key showed a door that bounced
       // or hid one that worked). Owner + office by default, as before.
-      { label: "Shoots", href: "/jobs", icon: House, key: "pipeline" },
+      // Oct 27 2026 (Jordan's Loom): "Projects" (PROJECTS_LABEL), every photo,
+      // video, floor plan and tour per job; the route stays /jobs.
+      { label: PROJECTS_LABEL, href: "/jobs", icon: House, key: "pipeline" },
       // Today + Daily Tasks + Task History merged into the one Tasks hub
       // (tabs: Today / Board / Done) — Jordan: "the toolbar has too many things".
       { label: "Tasks", href: "/tasks", icon: ListTodo, key: "tasks" },
@@ -373,20 +375,26 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
           // administrative pages are folded. Preserve its existing grant.
           const shortcut = !expanded ? section.items.filter((item) => item.href === "/feedback") : [];
           const folded = section.items.filter((item) => !shortcut.includes(item));
-          // More (the office menu) keeps its groups' headings inside the fold.
+          // The role menu's other pages keep their groups' headings. With no
+          // "More" title above them (Jordan, Oct 27 2026) each group heading
+          // reads like "Daily work": the same size and colour, one level.
           const subgroups = "subgroups" in section && Array.isArray(section.subgroups) ? section.subgroups : null;
+          const titled = !!section.title;
           const renderList = (list: typeof section.items) => subgroups
-            ? <div className="space-y-2.5">{subgroups.map((g) => {
+            ? <div className={titled ? "space-y-2.5" : "space-y-3"}>{subgroups.map((g) => {
                 const inGroup = g.items.filter((item) => list.includes(item as (typeof list)[number]));
                 return inGroup.length ? <div key={g.id} data-sidebar-subgroup={g.id}>
-                  <p className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-brand/80">{g.title}</p>
+                  {titled
+                    ? <p className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-brand/80">{g.title}</p>
+                    : <h2 className="px-3 pb-1.5 text-sm font-semibold text-brand">{g.title}</h2>}
                   <div className="space-y-0.5">{inGroup.map((item) => renderItem(item as (typeof list)[number]))}</div>
                 </div> : null;
               })}</div>
             : <div className="space-y-0.5">{list.map(renderItem)}</div>;
-          return <section key={section.id} data-sidebar-group={section.id} aria-labelledby={`${navigationId}-${section.id}`}>
+          const named = titled ? { "aria-labelledby": `${navigationId}-${section.id}` } : { "aria-label": OTHER_PAGES_ARIA };
+          return <section key={section.id} data-sidebar-group={section.id} {...named}>
             {expanded ? <>
-              <h2 id={`${navigationId}-${section.id}`} className="px-3 pb-1.5 text-sm font-semibold text-brand">{section.title}</h2>
+              {titled && <h2 id={`${navigationId}-${section.id}`} className="px-3 pb-1.5 text-sm font-semibold text-brand">{section.title}</h2>}
               {renderList(section.items)}
             </> : <>
               {folded.length > 0 ? <details className="group/sidebar">

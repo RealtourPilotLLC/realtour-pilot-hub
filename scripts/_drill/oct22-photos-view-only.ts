@@ -187,7 +187,8 @@ async function main() {
     const section = (h: string, id: string) => h.match(new RegExp(`<section[^>]*data-sidebar-group="${id}"[^>]*>([\\s\\S]*?)</section>`))?.[1] ?? "";
     const jamesMenu = menu({ name: "James", email: james.email, role: "CREATIVE_MANAGER" });
     // Oct 23 2026 (Jordan): the doors read Video Delivery and Photo Delivery.
-    c.ok("James's doors: Photo Delivery after Monthly Content, where the owner's menu has it", hrefs(section(jamesMenu, "work")).join() === "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay" && labels(section(jamesMenu, "work")).join() === "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Uploads,Shoots,My Performance", `${hrefs(section(jamesMenu, "work")).join()} / ${labels(section(jamesMenu, "work")).join()}`);
+    // Oct 27 2026: /jobs reads Projects (Jordan's Loom) and the pay door My Pay (the team sees its own pay).
+    c.ok("James's doors:Photo Delivery after Monthly Content, where the owner's menu has it", hrefs(section(jamesMenu, "work")).join() === "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay" && labels(section(jamesMenu, "work")).join() === "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Uploads,Projects,My Pay", `${hrefs(section(jamesMenu, "work")).join()} / ${labels(section(jamesMenu, "work")).join()}`);
     c.ok("…and still no Your list, no Messages", !hrefs(jamesMenu).includes("/ops/checklist") && !hrefs(jamesMenu).includes("/communications"));
     c.ok("a photos override takes the door away", !hrefs(menu({ name: "J", email: "j@x", role: "CREATIVE_MANAGER", permissions: JSON.stringify({ photos: false }) })).includes("/ops/photo-delivery"));
     // Oct 23 2026 audit: Jordan granted Harrison Photo Delivery by name and the

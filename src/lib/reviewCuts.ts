@@ -2562,6 +2562,8 @@ export type ProjectVideoState = {
   owed: number;
   /** the owed videos, `${deliverableId}:${slot}`, in order (Oct 22 2026) */
   slotKeys?: string[];
+  /** each owed video's name, in the same order as slotKeys (Oct 27 2026: the Projects page names an uncut video) */
+  slotLabels?: string[];
   /** videos waiting on a second shoot: not owed, not due, nobody's work yet */
   waitingOnShoot?: number;
   /** "Video 4 (Premium Social Reel): Waiting on a second shoot: half shot", one per waiting video */
@@ -2763,6 +2765,7 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
     out.set(p.id, {
       projectId: p.id, owed, approved, waiting, revising, uploaded: cuts.length, stage, detail: fullDetail, cuts,
       slotKeys: slots.map((s) => slotKeyOf(s.deliverableId, s.slot)),
+      slotLabels: slots.map((s) => s.label),
       waitingOnShoot: held,
       waitingLines,
     });
