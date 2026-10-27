@@ -680,12 +680,14 @@ async function main() {
     const labels = (html: string) => [...html.matchAll(/<a\b[^>]*>[\s\S]*?<span class="flex-1">([^<]+)<\/span>/g)].map((m) => m[1]);
     const section = (html: string, id: string) => html.match(new RegExp(`<section[^>]*data-sidebar-group="${id}"[^>]*>([\\s\\S]*?)</section>`))?.[1] ?? "";
     const ROLE_DOORS = [
+      // Oct 27 2026 (Jordan's Loom): the /jobs door reads "Projects" (it read "Shoots"), and the rest sits under its
+      // plain group headings with no "More" title (the section keeps data-sidebar-group="more").
       // Oct 23 2026 (Jordan): Photo Delivery and Video Delivery; Kyle's "Ready to send" door is Video Delivery too.
       // Oct 23 2026: the media library's one door, Media, is under More for all three (never a role door).
-      ["Jordan (owner)", { name: "Jordan", email: owner.email, role: "OWNER" }, "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Messages,Shoots", ["/tasks", "/clients", "/upload", "/settings", "/schedule", "/sales", "/media"]],
-      ["Kyle (office)", { name: "Kyle Smith", email: kyle.email, role: "ADMIN" }, "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs", "Dashboard,Your list,Messages,Photo Delivery,Video Delivery,Editing Room,Shoots", ["/tasks", "/clients", "/content", "/upload", "/settings", "/schedule", "/media"]],
+      ["Jordan (owner)", { name: "Jordan", email: owner.email, role: "OWNER" }, "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Messages,Projects", ["/tasks", "/clients", "/upload", "/settings", "/schedule", "/sales", "/media"]],
+      ["Kyle (office)", { name: "Kyle Smith", email: kyle.email, role: "ADMIN" }, "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs", "Dashboard,Your list,Messages,Photo Delivery,Video Delivery,Editing Room,Projects", ["/tasks", "/clients", "/content", "/upload", "/settings", "/schedule", "/media"]],
       // Oct 22 2026: Photo Delivery, the view-only photo desk, joins James's doors.
-      ["James (creative manager)", { name: "James", email: james.email, role: "CREATIVE_MANAGER" }, "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Uploads,Shoots,My Pay", ["/tasks", "/clients", "/shoot", "/schedule", "/media"]],
+      ["James (creative manager)", { name: "James", email: james.email, role: "CREATIVE_MANAGER" }, "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Uploads,Projects,My Pay", ["/tasks", "/clients", "/shoot", "/schedule", "/media"]],
     ] as const;
     for (const [who, u, doors, doorLabels, more] of ROLE_DOORS) {
       const html = menu(u);
@@ -710,7 +712,7 @@ async function main() {
     const onList = menu({ name: "Kyle Smith", email: kyle.email, role: "ADMIN" });
     c.ok("on Kyle's list the Your list door is lit, and only it", (onList.match(/aria-current="page"/g) ?? []).length === 1 && /<a[^>]*href="\/ops\/checklist"[^>]*aria-current="page"|<a[^>]*aria-current="page"[^>]*href="\/ops\/checklist"/.test(onList));
     pathname = "/jobs/abc";
-    c.ok("on a Shoots page the Shoots door is lit", /<a[^>]*href="\/jobs"[^>]*aria-current="page"|<a[^>]*aria-current="page"[^>]*href="\/jobs"/.test(menu({ name: "Kyle Smith", email: kyle.email, role: "ADMIN" })));
+    c.ok("on a Projects page (/jobs) the Projects door is lit", /<a[^>]*href="\/jobs"[^>]*aria-current="page"|<a[^>]*aria-current="page"[^>]*href="\/jobs"/.test(menu({ name: "Kyle Smith", email: kyle.email, role: "ADMIN" })));
     pathname = "/";
 
     // =====================================================================

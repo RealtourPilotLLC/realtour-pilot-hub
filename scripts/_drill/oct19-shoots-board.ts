@@ -18,9 +18,11 @@
 //      a future shoot; delivered and test clients left out (and back in when
 //      asked); late first then by due; the counts; limit; the dashboard's
 //      contract shape
-//   3  the /jobs page renders: the table, the Monthly content heading, each
-//      row opens its job, the filters (Open, Late, Due today, This week,
-//      Monthly, All), test records, mobile labels, no em dash
+//   3  the /jobs page renders ("Projects" since Oct 27 2026): one row per
+//      job with each piece's plain status (was a table of chips), the
+//      Monthly content heading, each row opens its job, the filters (Open,
+//      Late, Due today, This week, Monthly, All), test records, the same
+//      lines on a phone, no em dash
 //   4  the job page's two cards: chips, step bars, the photo count and
 //      flagged, each video with its version, the requests with their owners,
 //      the needs-an-owner picker, one Checked per card, money scrubbed for
@@ -237,16 +239,42 @@ async function main() {
     const h = await page();
     const t = text(h);
     const has = (hh: string, street: string) => hh.includes(`>${street}<`);
-    c.ok("titled Shoots; the header counts late, due today, due tomorrow", /Shoots/.test(t) && new RegExp(`${board.counts.late} late · ${board.counts.dueToday} due today · ${board.counts.dueTomorrow} due tomorrow · 7 in progress`).test(t), t.slice(0, 300));
-    c.ok("the table: Shoot, Due, Photos, Video, Requests", /Shoot Due Photos Video Requests/.test(t));
+    // Oct 27 2026 (Jordan's Loom): the door and the page are "Projects" ("Shoots should be, maybe listings or
+    // projects"), and the table of chips became one readable row per job: every piece on its own line with
+    // what it is waiting on or when it was sent ("I need to see it as more of like a list ... where it's at").
+    const listText = text(h.slice(h.indexOf("data-shoots-list"), h.includes('id="program-watch"') ? h.indexOf('id="program-watch"') : undefined));
+    const rowText = (street: string) => {
+      const at = h.indexOf(`>${street}<`);
+      const start = h.lastIndexOf("data-shoot-row", at);
+      const end = h.indexOf("</li>", at);
+      return at < 0 || start < 0 ? "" : text(h.slice(start, end));
+    };
+    c.ok("titled Projects (Shoots until Oct 27 2026); the header counts late, due today, due tomorrow",
+      /^\s*Projects /.test(t) && !/\bShoots\b/.test(t) && new RegExp(`${board.counts.late} late · ${board.counts.dueToday} due today · ${board.counts.dueTomorrow} due tomorrow · 7 in progress`).test(t), t.slice(0, 300));
+    c.ok("one row per job, no column header: each piece on its own line",
+      !/Shoot Due Photos Video Requests/.test(t) && (h.match(/data-shoot-row/g) ?? []).length === 7 && (h.match(/data-piece=/g) ?? []).length >= 9, listText.slice(0, 2500));
     c.ok("Open (the default) lists every live shoot, not the delivered or the test one",
       ["10 Photo Ln", "20 Video Ct", "30 Both Rd", "40 Monthly Way", "50 Late St", "80 Future Pl", "90 Ready Rd"].every((s) => has(h, s)) && !has(h, "60 Done Dr") && !has(h, "70 Test Ave"));
-    c.ok("…each row opens its job page; the chips and the requests chip ('4 open', '1 needs an owner', '1 photo', 'none')",
-      [A, C, E, I].every((id) => h.includes(`href="/projects/${id}"`)) && t.includes("Not cut · John") && t.includes("Ready to review") && t.includes("4 open") && t.includes("1 needs an owner") && t.includes("2 open") && /none/.test(t));
-    c.ok("monthly content under its own heading, after the listing shoots", h.indexOf("data-monthly-heading") > h.indexOf(">90 Ready Rd<") && h.indexOf(">40 Monthly Way<") > h.indexOf("data-monthly-heading") && /n\/a/.test(t));
+    c.ok("…each row opens its job page; each piece says where it is in plain words",
+      [A, C, E, I].every((id) => h.includes(`href="/projects/${id}"`)) &&
+      /Photos In the photo check/.test(rowText("10 Photo Ln")) &&
+      /Video Version 2 waiting on review/.test(rowText("20 Video Ct")) &&
+      /Photos Sent [A-Z][a-z]{2} \d+/.test(rowText("30 Both Rd")) && /Video Waiting on John to start, late/.test(rowText("30 Both Rd")) &&
+      /Photos Waiting on review, late/.test(rowText("50 Late St")) &&
+      /Photos Waiting on the shoot/.test(rowText("80 Future Pl")) && /Video Waiting on the shoot/.test(rowText("80 Future Pl")) &&
+      /Video Approved, ready to send/.test(rowText("90 Ready Rd")),
+      ["10 Photo Ln", "20 Video Ct", "30 Both Rd", "50 Late St", "80 Future Pl", "90 Ready Rd"].map(rowText).join(" || "));
+    c.ok("…the client's requests in words ('Client requests: 4 open, 1 needs an owner'); a job without any says nothing",
+      /Client requests: 4 open, 1 needs an owner/.test(rowText("30 Both Rd")) && /Client requests: 2 open/.test(rowText("80 Future Pl")) && !/needs an owner/.test(rowText("80 Future Pl")) &&
+      !/Client requests/.test(rowText("10 Photo Ln")) && !/\bnone\b|n\/a/.test(listText));
+    c.ok("monthly content under its own heading, after the listing shoots, no 'n/a' for the photos it never had",
+      h.indexOf("data-monthly-heading") > h.indexOf(">90 Ready Rd<") && h.indexOf(">40 Monthly Way<") > h.indexOf("data-monthly-heading") && !/Photos/.test(rowText("40 Monthly Way")) && /Video/.test(rowText("40 Monthly Way")), rowText("40 Monthly Way"));
     c.ok("filter chips: Open (current), Late, Due today, This week, Monthly, All",
       ["open", "late", "today", "week", "monthly", "all"].every((k) => h.includes(`data-filter="${k}"`)) && /aria-current="page"[^>]*data-filter="open"|data-filter="open"[^>]*aria-current="page"/.test(h.replace(/href="[^"]*"/g, "")) && h.includes('href="/jobs?f=late"'));
-    c.ok("mobile: each row stacks with its own labels (Photos, Video, Asks)", (h.match(/sm:hidden">Photos</g) ?? []).length === 7 && (h.match(/sm:hidden">Asks</g) ?? []).length === 7);
+    // Oct 27 2026: no hover-only text and no cut-off chip strings; the same lines read on a phone.
+    const listHtml = h.slice(h.indexOf("data-shoots-list"), h.includes('id="program-watch"') ? h.indexOf('id="program-watch"') : undefined);
+    c.ok("phone and desktop read the same lines: no width-only labels, no hover-only title, nothing truncated",
+      !/sm:hidden|hidden sm:/.test(listHtml) && !/\stitle="/.test(listHtml) && !/\btruncate\b|line-clamp/.test(listHtml));
     const late = await page({ f: "late" });
     c.ok("Late: only late shoots (50 Late St and 30 Both Rd in, the future one out)", has(late, "50 Late St") && has(late, "30 Both Rd") && !has(late, "80 Future Pl") && /aria-current="page"/.test(late));
     const today = await page({ f: "today" });

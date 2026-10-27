@@ -352,7 +352,10 @@ async function main() {
     const buttons = (frag: string) => [...frag.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].map((m) => text(m[1]).trim());
     const readyHtml = (() => {
       const a = h.indexOf(">Ready to send</h2>");
-      const b = h.indexOf(">With the editors</h2>", a + 1);
+      // Oct 27 2026 (Jordan's Loom): With the editors is gone; Ready to send is followed by Sent this week (when
+      // anything was sent) or the history link.
+      const sent = h.indexOf(">Sent this week</h2>", a + 1);
+      const b = sent > a ? sent : h.indexOf("History: approved and sent videos", a + 1);
       return a >= 0 && b > a ? h.slice(a, b) : "";
     })();
     const streets = ["300 Only Ln", "310 Send All Way", "320 Second Fresh Ct"];

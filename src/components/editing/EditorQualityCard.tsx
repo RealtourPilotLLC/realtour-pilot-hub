@@ -7,11 +7,18 @@ import type { EditorQualityReport, Example } from "@/lib/editorQuality";
 // and each editor on the team view — never a table sorted by score. Every
 // number carries its n, and below the thin-sample floor it says so instead of
 // a percentage. Plain markup, no client code.
+//
+// FIRST REVIEW IN PLAIN WORDS (Jordan, Oct 27 2026: "96.8% passed the first
+// time. I don't think this is accurate"): the share of first versions
+// APPROVED AS THEY WERE, out of every first version that was approved or sent
+// back (lib/editorQuality firstReviewOutcome). How many were sent back, and
+// how many of those still wait on a cause, sit under it; what is left out of
+// the count (a bounce that was somebody else's, anything not reviewed yet) is
+// one quiet line. No em dashes on this card.
 // ---------------------------------------------------------------------------
 
 const THIN = "not enough to judge yet";
-const hrs = (h: number | null) => (h == null ? "—" : h < 24 ? `${h}h` : `${Math.round((h / 24) * 10) / 10} weekdays`);
-
+const hrs = (h: number | null) => (h == null ? "not recorded" : h < 24 ? `${h}h` : `${Math.round((h / 24) * 10) / 10} weekdays`);
 function Block({ title, n, children, thin }: { title: string; n: number; children: React.ReactNode; thin?: boolean }) {
   return (
     <div className="rounded-xl border border-border bg-surface p-3">
@@ -32,7 +39,7 @@ function Examples({ items, own = false }: { items: (Example & { reason?: string 
     <ul className="mt-1.5 space-y-1">
       {items.map((e, i) => (
         <li key={i} className="text-xs text-muted">
-          <Link href={own ? e.editHref : e.href} className="text-brand hover:underline">{e.street}</Link> — {e.text}
+          <Link href={own ? e.editHref : e.href} className="text-brand hover:underline">{e.street}</Link>: {e.text}
           {e.reason ? <span className="text-muted-2"> (said: {e.reason})</span> : null}
         </li>
       ))}
@@ -42,22 +49,35 @@ function Examples({ items, own = false }: { items: (Example & { reason?: string 
 
 export function EditorQualityCard({ report, own = false }: { report: EditorQualityReport; own?: boolean }) {
   const fr = report.firstReview;
-  const since = new Date(report.fromISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
+  const day = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
+  const since = day(report.fromISO);
+  // The window: the last 90 days, or since the hub began recording review issues when that is later.
+  const windowWords = report.fromISO === report.trackedSinceISO ? `Since ${since}, when review issues began being recorded` : `Last 90 days, since ${since}`;
+  const notCounted = [
+    fr.notEditors ? `${fr.notEditors} sent back for a reason that wasn't the editor's` : null,
+    fr.pendingReview ? `${fr.pendingReview} waiting on review` : null,
+    fr.replacedBeforeReview ? `${fr.replacedBeforeReview} replaced before review` : null,
+    fr.notCounted ? `${fr.notCounted} with no verdict on record` : null,
+  ].filter(Boolean);
   return (
     <section className="panel-shadow rounded-2xl border border-border bg-surface-2/30 p-4 sm:p-5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h3 className="text-base font-semibold">{own ? "Your review results" : report.editorName}</h3>
-        <p className="text-xs text-muted">Since {since}. Numbers only — nothing here touches pay.</p>
+        <p className="text-xs text-muted">{windowWords}. Numbers only, nothing here touches pay.</p>
       </div>
       <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
         <Block title="First review" n={fr.reviewed} thin={fr.thin}>
-          <p>
-            <span className={cn("text-xl font-semibold tabular-nums", fr.thin && "text-muted")}>{fr.rate == null ? "—" : `${fr.rate}%`}</span>{" "}
-            <span className="text-xs text-muted">passed first time · {fr.passed} of {fr.reviewed}</span>
+          <p data-first-review>
+            <span className={cn("text-xl font-semibold tabular-nums", fr.thin && "text-muted")}>{fr.rate == null ? "Too few yet" : `${fr.rate}%`}</span>{" "}
+            <span className="text-xs text-muted">approved on the first version · {fr.passed} of {fr.reviewed}</span>
           </p>
-          <p className="mt-0.5 text-[11px] text-muted-2">
-            Not counted: {fr.pendingReview} waiting on review · {fr.pendingClassification} waiting on a cause · {fr.replacedBeforeReview} replaced before review
-          </p>
+          {fr.sentBack > 0 && (
+            <p className="mt-0.5 text-xs text-muted">
+              {fr.sentBack} sent back for changes
+              {fr.waitingOnCause > 0 ? `, ${fr.waitingOnCause === fr.sentBack ? (fr.sentBack === 1 ? "still waiting on a cause" : "all still waiting on a cause") : `${fr.waitingOnCause} of them still waiting on a cause`}` : ""}
+            </p>
+          )}
+          {notCounted.length > 0 && <p className="mt-0.5 text-[11px] text-muted-2">Not counted: {notCounted.join(" · ")}</p>}
           {fr.byProduct.length > 0 && (
             <p className="mt-0.5 text-[11px] text-muted-2">{fr.byProduct.map((p) => `${p.product}: ${p.passed}/${p.reviewed}`).join(" · ")}</p>
           )}
@@ -76,7 +96,9 @@ export function EditorQualityCard({ report, own = false }: { report: EditorQuali
           )}
         </Block>
         <Block title="Revision turnaround" n={report.turnaround.n} thin={report.turnaround.thin}>
-          <p><span className="text-xl font-semibold tabular-nums">{hrs(report.turnaround.medianHours)}</span> <span className="text-xs text-muted">median, ask → next version (weekday hours)</span></p>
+          {report.turnaround.medianHours == null
+            ? <p className="text-xs text-muted">No revision turned around yet.</p>
+            : <p><span className="text-xl font-semibold tabular-nums">{hrs(report.turnaround.medianHours)}</span> <span className="text-xs text-muted">median, ask → next version (weekday hours)</span></p>}
           <p className="mt-0.5 text-[11px] text-muted-2">
             Processing (Topaz pass): {hrs(report.turnaround.medianProcessingHours)} (n = {report.turnaround.processingN}) · Waiting on assets or feedback:{" "}
             {report.turnaround.waitingOnAssetsHours == null ? "not recorded" : hrs(report.turnaround.waitingOnAssetsHours)} · Client&rsquo;s total wait: {hrs(report.turnaround.medianClientWaitHours)} (n = {report.turnaround.clientWaitN})

@@ -58,13 +58,16 @@ async function main() {
     const scope = { excludeClientIds: [test.id] };
     const from = new Date(now.getTime() - 86_400_000);
     const report = await editorQuality({ ...scope, editorKey: "kim", from, to: now, now });
-    c.ok("first-review denominator holds unconfirmed legacy labels for classification", report.firstReview.reviewed === 2 && report.firstReview.pendingClassification === 1 && report.firstReview.passed === 0, JSON.stringify(report.firstReview));
+    // Oct 27 2026 (Jordan: "96.8% passed the first time. I don't think this is accurate"): a version
+    // sent back with only an unconfirmed label is sent back all the same, waiting on a cause, never left out.
+    c.ok("first review counts a bounce with an unconfirmed label as sent back, waiting on a cause", report.firstReview.reviewed === 3 && report.firstReview.sentBack === 3 && report.firstReview.waitingOnCause === 1 && report.firstReview.passed === 0, JSON.stringify(report.firstReview));
     c.ok("recurring editor KPI requires confirmation and version-editor attribution", report.recurring.n === 2 && (await editorQuality({ ...scope, from, to: now, now })).recurring.n === 2);
     c.ok("normal editor roster excludes synthetic-only work; full reader retains it", (await editorsWithWork(from, now, scope)).length === 1 && (await editorsWithWork(from, now)).length === 2);
     c.ok("unconfirmed stored cause is actionable in the classification queue", (await unclassifiedIssues(40, scope)).some((x) => x.id === unconfirmed.id));
     await classifyIssue(unconfirmed.id, { cause: "CLIENT_CHANGE" }, { name: "James" });
     const reclassified = await editorQuality({ ...scope, editorKey: "kim", from, to: now, now });
-    c.ok("actual reviewer classification settles first review without creating an editor fault", reclassified.firstReview.passed === 1 && reclassified.firstReview.reviewed === 3 && reclassified.recurring.n === 2 && await prisma.revisionIssueEvent.count({ where: { issueId: unconfirmed.id, kind: "CLASSIFIED" } }) === 1);
+    // Oct 27 2026: a client change sets the bounce aside (out of the count), never into the passes.
+    c.ok("actual reviewer classification settles first review without creating an editor fault", reclassified.firstReview.passed === 0 && reclassified.firstReview.reviewed === 2 && reclassified.firstReview.notEditors === 1 && reclassified.firstReview.waitingOnCause === 0 && reclassified.recurring.n === 2 && await prisma.revisionIssueEvent.count({ where: { issueId: unconfirmed.id, kind: "CLASSIFIED" } }) === 1, JSON.stringify(reclassified.firstReview));
     await prisma.revisionIssue.createMany({ data: Array.from({ length: 45 }, (_, i) => ({ projectId: testJob.id, sourceKind: "MANUAL", sourceId: `new-test-${i}`, originalText: "Synthetic unclassified", cause: "UNCLASSIFIED", createdAt: now })) });
     const olderUnknown = await issue({ cause: "UNCLASSIFIED", causeConfirmedAt: null, causeConfirmedBy: null });
     c.ok("normal classification queue scopes before its cap", (await unclassifiedIssues(40, scope)).some((x) => x.id === olderUnknown.id) && !(await unclassifiedIssues(40)).some((x) => x.id === olderUnknown.id));

@@ -6,18 +6,26 @@ import { ShootsScheduleTabs } from "@/components/jobs/ShootsScheduleTabs";
 import { canAccess } from "@/lib/auth/access";
 import { ShootsList } from "@/components/jobs/ShootsList";
 import { ProgramVideoWatch, type WatchViewRow } from "@/components/tracker/ProgramVideoWatch";
-import { SHOOT_FILTERS, deliverPieces, filterShootRows, shootsBoard, type DeliverExtra, type ShootFilter } from "@/lib/jobsBoard";
+import { SHOOT_FILTERS, filterShootRows, shootsBoard, type ShootFilter } from "@/lib/jobsBoard";
+import { PROJECTS_LABEL } from "@/lib/sidebarNavigation";
+import type { Metadata } from "next";
 
 export const dynamic = "force-dynamic";
+export const metadata: Metadata = { title: PROJECTS_LABEL };
 
 // ---------------------------------------------------------------------------
-// SHOOTS (Oct 19 2026; menu label "Shoots", route /jobs because /shoot is the
+// PROJECTS (Oct 19 2026 as "Shoots"; route /jobs because /shoot is the
 // photographers' screen). Jordan: "I need to be able to track each job and
 // where they are at, and special requests for either photo or video." The
-// home page oversees; this is the in-depth list: every shoot in progress with
-// its due date, where the photos and the video stand, and the client's open
-// requests, late first. Each row opens the job's own page (/projects/<id>),
-// which has the Photos and Video cards.
+// home page oversees; this is the in-depth list: every job in progress with
+// its due date, where each piece stands and the client's open requests, late
+// first. Each row opens the job's own page (/projects/<id>).
+//
+// Oct 27 2026 (Jordan's Loom): renamed "Projects" ("Shoots should be, maybe
+// listings or projects ... something that shows everything photos, video,
+// and, you know, floor plans"; /listings is already the delivered archive),
+// and each row lists every piece with what it is waiting on or when it was
+// sent (shootsBoard `detail`, components/jobs/ShootsList), on every filter.
 //
 // Filters: Open (the default: everything not delivered), Late, Due today
 // (the late ones included, Jordan's rule), This week (due in the next 7 days,
@@ -33,14 +41,14 @@ export const dynamic = "force-dynamic";
 // ---------------------------------------------------------------------------
 
 const EMPTY: Record<ShootFilter, string> = {
-  open: "Nothing in progress. Every shoot is delivered.",
+  open: "Nothing in progress. Every project is delivered.",
   deliver: "Nothing shot is waiting to be delivered.",
   late: "Nothing is late.",
   today: "Nothing is due today, and nothing is late.",
   week: "Nothing is due in the next 7 days.",
-  requests: "No open client requests on a shoot in progress.",
+  requests: "No open client requests on a project in progress.",
   monthly: "No monthly content in progress.",
-  all: "No shoots in progress or delivered in the last 10 days.",
+  all: "No projects in progress or delivered in the last 10 days.",
 };
 
 async function programWatch(now: Date, includeTest: boolean): Promise<{ rows: WatchViewRow[]; rules: Awaited<ReturnType<typeof import("@/lib/programWatch").programWatchBoard>>["rules"]; causesAvailable: boolean } | null> {
@@ -67,7 +75,7 @@ async function programWatch(now: Date, includeTest: boolean): Promise<{ rows: Wa
     return { rows, rules: watch.rules, causesAvailable: watch.causesAvailable };
   } catch (e) {
     // A failed read hides the panel rather than the list.
-    console.error("[shoots] program watch failed", e);
+    console.error("[projects] program watch failed", e);
     return null;
   }
 }
@@ -79,8 +87,9 @@ export default async function ShootsPage({ searchParams }: { searchParams: Promi
   const includeTest = sp.test === "1";
   const now = new Date();
   const [board, watch, me] = await Promise.all([
-    shootsBoard(now, { includeTest, includeDelivered: f === "all" }).catch((e: unknown) => {
-      console.error("[shoots] board failed", e);
+    // `detail`: one line per piece of each job (each video, the floor plan, the tour), Oct 27 2026.
+    shootsBoard(now, { includeTest, includeDelivered: f === "all", detail: true }).catch((e: unknown) => {
+      console.error("[projects] board failed", e);
       return null;
     }),
     // The program videos' milestones (they lived on the old Project Tracker): on Open and Monthly, where
@@ -97,10 +106,6 @@ export default async function ShootsPage({ searchParams }: { searchParams: Promi
   };
   const rows = board?.rows ?? [];
   const shown = filterShootRows(rows, f);
-  // Review & deliver: each piece's state and what is missing (a failed read leaves the chips alone).
-  const extras: Record<string, DeliverExtra> | null = f === "deliver" && shown.length
-    ? await deliverPieces(shown.map((r) => r.projectId), now).catch((e: unknown) => { console.error("[shoots] deliver pieces failed", e); return null; })
-    : null;
   const counts = board?.counts;
   const tally = Object.fromEntries(SHOOT_FILTERS.map((x) => [x.key, filterShootRows(rows, x.key).length])) as Record<ShootFilter, number>;
   const subtitle = counts
@@ -111,13 +116,13 @@ export default async function ShootsPage({ searchParams }: { searchParams: Promi
   return (
     <div>
       <PageHeader
-        title="Shoots"
+        title={PROJECTS_LABEL}
         subtitle={subtitle}
         // Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden.
       />
-      <ShootsScheduleTabs current="shoots" includeTest={includeTest} show={!me || canAccess(me, "schedule")} />
+      <ShootsScheduleTabs current="projects" includeTest={includeTest} show={!me || canAccess(me, "schedule")} />
       <div className="mx-auto max-w-6xl space-y-4 p-4 pb-16 sm:p-6">
-        <nav aria-label="Filter shoots" className="flex flex-wrap gap-2">
+        <nav aria-label="Filter projects" className="flex flex-wrap gap-2">
           {SHOOT_FILTERS.map((x) => {
             const on = x.key === f;
             return (
@@ -135,12 +140,12 @@ export default async function ShootsPage({ searchParams }: { searchParams: Promi
           })}
         </nav>
         {f === "today" && <p className="text-xs text-muted">Due today, with the late ones first.</p>}
-        {f === "deliver" && <p className="text-xs text-muted">Every job shot and not delivered yet: where each piece stands and anything missing. A row opens the job.</p>}
+        {f === "deliver" && <p className="text-xs text-muted">Every job shot and not delivered yet. A row opens the job.</p>}
         {board ? (
-          <ShootsList rows={shown} empty={EMPTY[f]} extras={extras} />
+          <ShootsList rows={shown} empty={EMPTY[f]} />
         ) : (
           <p role="alert" className="rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
-            The shoots list could not be read just now, so nothing here is a count of zero. Reload in a minute.
+            The projects list could not be read just now, so nothing here is a count of zero. Reload in a minute.
           </p>
         )}
         {watch && <ProgramVideoWatch rows={watch.rows} rules={watch.rules} canEdit={canEdit} causesAvailable={watch.causesAvailable} />}

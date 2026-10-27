@@ -579,14 +579,20 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         title="Settings"
         subtitle="The rules the hub runs on. Most changes apply within a minute; automated texts wait for the next hourly run."
       />
-      <div className="mx-auto min-w-0 max-w-6xl p-4 pb-16 [overflow-wrap:anywhere] sm:p-6">
+      {/* WIDER (Jordan, Oct 27 2026, on the overview: "Team Permissions and
+          Cover. Like, these can be a little bit wider"). The page runs wider
+          (max-w-7xl, was 6xl) so every section, Team, permissions & coverage
+          first, gets more room beside the menu, and the overview's section
+          tiles stay two to a row (a third column squeezed "Team, permissions
+          & coverage" onto two broken lines). */}
+      <div className="mx-auto min-w-0 max-w-7xl p-4 pb-16 [overflow-wrap:anywhere] sm:p-6" data-settings-page>
         <SettingsNav groups={groups} badges={{ readiness: <Suspense fallback={null}><ReadinessBadge report={readiness} /></Suspense> }}>
           <SettingsView id="overview" className="space-y-4">
             <h2 className="sr-only">Overview</h2>
             <Suspense fallback={<ProviderCardSkeleton icon={Gauge} title="Readiness" note="reading every switch…" />}>
               <ReadinessSummary report={readiness} />
             </Suspense>
-            <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">{groups.map(tile)}</div>
+            <div className="grid gap-3 md:grid-cols-2" data-settings-tiles>{groups.map(tile)}</div>
           </SettingsView>
           <SettingsView id="readiness">
             <Suspense fallback={<ProviderCardSkeleton icon={Gauge} title="Readiness" note="reading every switch…" />}>

@@ -82,14 +82,17 @@ async function main() {
     const creative = render(Sidebar, user("CREATIVE_MANAGER"));
     const MENUS: [string, string, string, string][] = [
       // Oct 23 2026 (Jordan): "Photo Delivery" and "Video Delivery" on every role menu that has them.
-      ["owner", owner, "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Messages,Shoots"],
-      ["open development", render(Sidebar, null), "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Messages,Shoots"],
+      ["owner", owner, "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Messages,Projects"],
+      ["open development", render(Sidebar, null), "/,/review,/editing,/content,/ops/photo-delivery,/communications,/jobs", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Messages,Projects"],
       // Kyle's door read "Ready to send": Video Delivery now, still opening that section.
-      ["ADMIN (Kyle)", admin, "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs", "Dashboard,Your list,Messages,Photo Delivery,Video Delivery,Editing Room,Shoots"],
+      ["ADMIN (Kyle)", admin, "/,/ops/checklist,/communications,/ops/photo-delivery,/review#ready-to-send,/editing,/jobs", "Dashboard,Your list,Messages,Photo Delivery,Video Delivery,Editing Room,Projects"],
       // Oct 22 2026: Photo Delivery (the view-only desk) joins James's doors where the owner's menu has it.
-      ["CREATIVE_MANAGER (James)", creative, "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Uploads,Shoots,My Performance"],
-      ["PHOTOGRAPHER (Harrison)", photographer, "/shoot,/upload,/review,/my-pay,/resources", "My Shoots,Upload,My Videos,My Performance,Help"],
+      // Oct 27 2026 (Jordan's decisions: the team sees its own pay): the door reads My Pay unless pay is hidden.
+      ["CREATIVE_MANAGER (James)", creative, "/,/review,/editing,/content,/ops/photo-delivery,/upload,/jobs,/my-pay", "Dashboard,Video Delivery,Editing Room,Monthly Content,Photo Delivery,Uploads,Projects,My Pay"],
+      ["PHOTOGRAPHER (Harrison)", photographer, "/shoot,/upload,/review,/my-pay,/resources", "My Shoots,Upload,My Videos,My Pay,Help"],
     ];
+    // Oct 27 2026 (Jordan's Loom): the /jobs door reads "Projects" (it read "Shoots"); the rest of the menu shows
+    // under plain group headings with no "More" title over them (the section keeps its data-sidebar-group="more").
     for (const [who, html, hrefList, labelList] of MENUS) {
       check(`${who}: own doors in order (${labelList}), then More`, [...html.matchAll(/data-sidebar-group="([^"]+)"/g)].map((match) => match[1]).join() === "work,more" && doorHrefs(html) === hrefList && doorLabels(html) === labelList && !group(html, "work").includes("<details"));
     }
@@ -132,7 +135,7 @@ async function main() {
     // stays folded); the office still finds it under More, which opens.
     check("current client work lights the owner's Monthly Content door and opens the office's More", /<a[^>]*(?:aria-current="page"[^>]*href="\/content"|href="\/content"[^>]*aria-current="page")/.test(group(render(Sidebar, user("OWNER")), "work")) && !group(render(Sidebar, user("ADMIN")), "more").includes("<details"));
     pathname = "/jobs/123";
-    check("a Shoots page lights the Shoots door", /<a[^>]*(?:aria-current="page"[^>]*href="\/jobs"|href="\/jobs"[^>]*aria-current="page")/.test(render(Sidebar, user("ADMIN"))));
+    check("a Projects page (/jobs) lights the Projects door",/<a[^>]*(?:aria-current="page"[^>]*href="\/jobs"|href="\/jobs"[^>]*aria-current="page")/.test(render(Sidebar, user("ADMIN"))));
     const destinations = [{ href: "/resources" }, { href: "/resources/video-styles" }, { href: "https://scripts.example.invalid", external: true }];
     check("longest path respects boundaries and external destinations", activeSidebarHref(destinations, "/resources/video-styles/premium") === "/resources/video-styles" && activeSidebarHref(destinations, "/resources-old") === null && activeSidebarHref(destinations, "https://scripts.example.invalid") === null);
     check("grouping retains authorized future destinations without mutating inputs", groupSidebarDestinations([{ href: "/future" }], "/future")[0]?.items[0].href === "/future" && destinations[0].href === "/resources");

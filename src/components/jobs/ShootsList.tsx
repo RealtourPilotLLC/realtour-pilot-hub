@@ -1,68 +1,111 @@
 import Link from "next/link";
-import { ChevronRight } from "lucide-react";
-import type { DeliverExtra, ShootRow } from "@/lib/jobsBoard";
-import { RequestsChip, StageChip } from "./StageChip";
+import { ChevronRight, CircleAlert, MessageSquareText } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { projectPiecesOf, type DeliverExtra, type ProjectPiece, type ShootRow, type StageTone } from "@/lib/jobsBoard";
 
 // ---------------------------------------------------------------------------
-// THE SHOOTS LIST (Oct 19 2026, /jobs). One row per shoot: the street and the
-// client, when it is due, where the photos and the video stand, and the
-// client's open requests. Every row opens the job's own page. On a phone the
-// columns stack into a card per shoot. Monthly content sits under its own
-// heading after the listing shoots, as on Jordan's approved plan.
+// THE PROJECTS LIST (/jobs; "Shoots" until Oct 27 2026). Jordan's Loom, Oct 27
+// 2026: "we need to know what each job is waiting on and what has been sent
+// ... you can't even read it. 34 Oakland, video 4, premium social media reel
+// 2, waiting on second shoot, half shot, needs second appointment, like you
+// have to mouse over it, I don't like that. This is kind of overwhelming."
+//
+// One card per job: the street (it opens the job), the client and when it is
+// due, then ONE LINE PER PIECE: the photos, each video, the floor plan, the
+// 3D tour and anything else ordered, each saying what it is waiting on or
+// "Sent <date>". Words wrap; nothing is cut off or kept in a tooltip. More
+// than a few videos read as one counted line with each under Details. What
+// holds the job and the client's open requests follow as plain sentences,
+// only when there are any. Monthly content sits under its own heading after
+// the listing jobs, as on Jordan's approved plan.
 // ---------------------------------------------------------------------------
 
-const COLS = "sm:grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_minmax(0,1.3fr)_minmax(0,1.5fr)_minmax(0,1.2fr)_1rem]";
+const DOT: Record<StageTone, string> = {
+  done: "bg-success",
+  active: "bg-brand",
+  waiting: "bg-warning",
+  late: "bg-danger",
+  none: "bg-muted-2",
+};
+const WORDS: Record<StageTone, string> = {
+  done: "text-success",
+  active: "text-foreground",
+  waiting: "text-foreground",
+  late: "font-medium text-danger",
+  none: "text-muted",
+};
+
+function PieceLine({ p }: { p: ProjectPiece }) {
+  return (
+    <div className="grid grid-cols-[minmax(0,7.5rem)_minmax(0,1fr)] gap-x-3 py-0.5 sm:grid-cols-[minmax(0,15rem)_minmax(0,1fr)]" data-piece={p.label} {...(p.key.startsWith("waiting-") ? { "data-waiting-on-shoot": "" } : {})}>
+      <dt className="text-sm text-muted [overflow-wrap:anywhere]">{p.label}</dt>
+      <dd className={cn("flex min-w-0 items-start gap-2 text-sm", WORDS[p.tone])}>
+        <i aria-hidden className={cn("mt-[0.45rem] size-2 shrink-0 rounded-full", DOT[p.tone])} />
+        <span className="min-w-0 [overflow-wrap:anywhere]">{p.status}</span>
+      </dd>
+    </div>
+  );
+}
+
+/** "4 open client requests, 1 needs an owner". */
+function requestsLine(q: ShootRow["requests"]): string | null {
+  if (!q.open) return null;
+  const owner = q.needsOwner ? `, ${q.needsOwner} ${q.needsOwner === 1 ? "needs" : "need"} an owner` : "";
+  return `Client requests: ${q.open} open${owner}`;
+}
+
+/** "Due Tue 5 PM", "2 days late", "Delivered Oct 24", "No date yet". */
+function dueLine(r: ShootRow): string {
+  if (r.delivered || r.late || !r.dueISO) return r.dueWords;
+  return `Due ${r.dueWords}`;
+}
 
 function Row({ r, extra }: { r: ShootRow; extra?: DeliverExtra | null }) {
+  const pieces = r.pieces ?? projectPiecesOf(r, { extra });
+  const each = pieces.flatMap((p) => p.each ?? []);
+  const asks = requestsLine(r.requests);
   return (
-    <li>
+    <li className={cn("px-4 py-4 sm:px-5", r.delivered && "opacity-70")} data-shoot-row={r.projectId}>
       <Link
         href={r.href}
-        data-shoot-row={r.projectId}
-        className={`grid grid-cols-1 gap-x-4 gap-y-1.5 px-4 py-3 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand sm:items-center ${COLS} ${r.delivered ? "opacity-70" : ""}`}
+        className="-mx-2 flex items-start justify-between gap-3 rounded-lg px-2 py-1 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
       >
-        <div className="min-w-0">
-          <div className="flex items-baseline justify-between gap-3">
-            <span className="truncate font-semibold text-foreground">{r.street}</span>
-            <span className={`shrink-0 text-sm tabular-nums sm:hidden ${r.late ? "font-semibold text-danger" : "text-muted"}`}>{r.dueWords}</span>
-          </div>
-          {r.client && <div className="truncate text-xs text-muted">{r.client}</div>}
-          {r.holding && <div className="truncate text-xs text-warning" title={r.holding}>{r.holding}</div>}
-          {/* Oct 22 2026: the order sells more videos than the job has set up. */}
-          {r.videoSetup && <div className="truncate text-xs font-semibold text-danger" data-video-setup title={`${r.videoSetup}. Open the job to set up the missing video.`}>{r.videoSetup}</div>}
-          {/* Oct 22 2026: a video held for a second shoot, with the office's note. */}
-          {(r.waitingOnShoot ?? []).map((w) => (
-            <div key={w} className="truncate text-xs text-warning" data-waiting-on-shoot title={`${w}. Open the job to release it to the editor.`}>{w}</div>
-          ))}
-          {/* Oct 27 2026 (Review & deliver): the floor plan and 3D tour, and anything still missing. */}
-          {extra && extra.pieces.length > 0 && (
-            <div className="mt-1 flex flex-wrap gap-1.5" data-pieces>
-              {extra.pieces.map((p) => (
-                <span key={p.label} className="inline-flex items-center gap-1 text-xs" data-piece={p.label}>
-                  <span className="text-muted">{p.label}</span> <StageChip stage={p.stage} />
-                </span>
-              ))}
-            </div>
-          )}
-          {extra && extra.missing.length > 0 && (
-            <div className="text-xs font-medium text-danger [overflow-wrap:anywhere]" data-missing>Missing: {extra.missing.join(" · ")}</div>
-          )}
-        </div>
-        <div className={`hidden text-sm tabular-nums sm:block ${r.late ? "font-semibold text-danger" : "text-foreground/80"}`}>{r.dueWords}</div>
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="w-12 shrink-0 text-xs text-muted sm:hidden">Photos</span>
-          <StageChip stage={r.photos} empty={r.monthly ? "n/a" : "Not ordered"} />
-        </div>
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="w-12 shrink-0 text-xs text-muted sm:hidden">Video</span>
-          <StageChip stage={r.video} />
-        </div>
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="w-12 shrink-0 text-xs text-muted sm:hidden">Asks</span>
-          <RequestsChip requests={r.requests} />
-        </div>
-        <ChevronRight aria-hidden className="hidden size-4 text-muted-2 sm:block" />
+        <span className="min-w-0">
+          <span className="block font-semibold text-foreground [overflow-wrap:anywhere]">{r.street}</span>
+          {r.client && <span className="block text-sm text-muted">{r.client}</span>}
+        </span>
+        <span className="flex shrink-0 items-center gap-1.5">
+          <span className={cn("text-sm tabular-nums", r.late ? "font-semibold text-danger" : "text-muted")}>{dueLine(r)}</span>
+          <ChevronRight aria-hidden className="size-4 text-muted-2" />
+        </span>
       </Link>
+      {pieces.length > 0 && (
+        <dl className="mt-2 space-y-0.5" data-pieces aria-label={`What ${r.street} is waiting on`}>
+          {pieces.map((p) => <PieceLine key={p.key} p={p} />)}
+        </dl>
+      )}
+      {each.length > 0 && (
+        <details className="mt-1.5">
+          <summary className="min-h-9 cursor-pointer py-1.5 text-sm font-medium text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Details: each video</summary>
+          <dl className="mt-1 space-y-0.5 border-l-2 border-border pl-3">
+            {each.map((p) => <PieceLine key={p.key} p={p} />)}
+          </dl>
+        </details>
+      )}
+      {/* Oct 22 2026: the order sells more videos than the job has set up. */}
+      {r.videoSetup && <div className="mt-2 flex items-start gap-2 text-sm font-medium text-danger" data-video-setup><CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0" /><span>{r.videoSetup}. Open the job to set up the missing video.</span></div>}
+      {r.holding && (
+        <p className="mt-2 flex items-start gap-2 text-sm text-warning" data-holding>
+          <CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <span className="[overflow-wrap:anywhere]">Holding it: {r.holding.replace(/ · /g, ", ")}</span>
+        </p>
+      )}
+      {asks && (
+        <p className="mt-2 flex items-start gap-2 text-sm text-foreground/80" data-requests>
+          <MessageSquareText aria-hidden className="mt-0.5 size-4 shrink-0 text-muted" />
+          <span>{asks}</span>
+        </p>
+      )}
     </li>
   );
 }
@@ -75,22 +118,14 @@ export function ShootsList({ rows, empty, extras = null }: { rows: ShootRow[]; e
   const monthly = rows.filter((r) => r.monthly);
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-surface" data-shoots-list>
-      <div className={`hidden gap-x-4 border-b border-border px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted sm:grid ${COLS}`} aria-hidden>
-        <span>Shoot</span>
-        <span>Due</span>
-        <span>Photos</span>
-        <span>Video</span>
-        <span>Requests</span>
-        <span />
-      </div>
       {listing.length > 0 && (
-        <ul className="divide-y divide-border" aria-label="Shoots">
+        <ul className="divide-y divide-border" aria-label="Projects">
           {listing.map((r) => <Row key={r.projectId} r={r} extra={extras?.[r.projectId]} />)}
         </ul>
       )}
       {monthly.length > 0 && (
         <>
-          <p data-monthly-heading className={`bg-surface-2 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted ${listing.length ? "border-t border-border" : ""}`}>
+          <p data-monthly-heading className={`bg-surface-2 px-4 py-2 text-sm font-semibold text-foreground sm:px-5 ${listing.length ? "border-t border-border" : ""}`}>
             Monthly content
           </p>
           <ul className="divide-y divide-border" aria-label="Monthly content">

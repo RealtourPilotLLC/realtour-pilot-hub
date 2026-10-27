@@ -87,11 +87,41 @@ export type ShootRow = JobRow & {
   waitingOnShoot?: string[];
   /** Oct 27 2026: the shoot has happened (the Review & deliver filter: in review and delivery). */
   shot?: boolean;
+  /** Oct 27 2026 (the Projects page, read with `detail`): one plain line per piece of the job. */
+  pieces?: ProjectPiece[];
 };
 
 /** Oct 27 2026 (Review & deliver): one piece of a job beyond the Photos and Video chips. */
 export type DeliverPiece = { label: string; stage: DeliverableStage };
-export type DeliverExtra = { pieces: DeliverPiece[]; missing: string[] };
+export type DeliverExtra = {
+  pieces: DeliverPiece[];
+  missing: string[];
+  /** Virtual staging, headshots and anything else ordered beyond photos, video, floor plan and tour. */
+  more?: DeliverPiece[];
+  /** "drone", "twilight": photo add-ons that ride with the photos (same edit, same delivery). */
+  photoAddOns?: string[];
+  /** Floor plan / 3D tour finished in our Dropbox and on no listing yet. */
+  awaitingSend?: string[];
+};
+
+/**
+ * PROJECTS, ONE LINE PER PIECE (Jordan, Oct 27 2026 Loom: "we need to know
+ * what each job is waiting on and what has been sent ... you can't even read
+ * it ... you have to mouse over it, I don't like that"). The photos, each
+ * video, the floor plan, the 3D tour and anything else ordered, each with
+ * what it is waiting on or "Sent <date>", in plain words that wrap (never a
+ * truncated chip with the rest in a tooltip).
+ */
+export type ProjectPiece = {
+  key: string;
+  /** "Photos", "Photos and drone", "Standard Cinematic Video", "Floor plan". */
+  label: string;
+  /** What it is waiting on, or "Sent Oct 24". */
+  status: string;
+  tone: StageTone;
+  /** A grouped line ("Videos (12)"): each video's own line, for the row's Details. */
+  each?: ProjectPiece[];
+};
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -269,7 +299,10 @@ export function phaseOfVideoRow(r: { lane: string; cutStatus: string | null; sta
 type CutStateLike = {
   owed: number;
   stage: string;
-  cuts: { submissionId: string; status: string; round: number; cutLabel: string; editorKey: string | null }[];
+  slotKeys?: string[];
+  slotLabels?: string[];
+  waitingOnShoot?: number;
+  cuts: { submissionId: string; status: string; round: number; cutLabel: string; editorKey: string | null; slotKey?: string | null }[];
 };
 
 /** A job's videos from the cut states (monthly content, test jobs, or a job the room's board does not list). */
@@ -311,6 +344,156 @@ export function countRequests(asks: { medium: string | null }[], shootOver: bool
   return out;
 }
 
+// ---- pure: the Projects page's lines (Oct 27 2026) ------------------------------------------------
+
+/** More videos than this on one job read as one grouped line, each video under the row's Details. */
+export const VIDEO_LINES_MAX = 4;
+
+const sentWords = (at: Date | string | null | undefined) => (at ? `Sent ${etMonthDay(at)}` : "Sent");
+const firstNameOf = (n: string | null | undefined) => (n ?? "").trim().split(/\s+/)[0] || null;
+const lateTail = (status: string, tone: StageTone) => (tone === "late" ? `${status}, late` : status);
+
+/** The photos' line: what they are waiting on, or when they were sent. */
+export function photoPieceStatus(stage: DeliverableStage, o: { sentAt?: Date | string | null; photographer?: string | null; shootAt?: Date | string | null } = {}): string {
+  const who = firstNameOf(o.photographer);
+  const words = ((): string => {
+    switch (stage.label) {
+      case "Delivered": return sentWords(o.sentAt);
+      case "Not shot yet": return o.shootAt ? `Waiting on the shoot (${etWeekday(o.shootAt)} ${etMonthDay(o.shootAt)})` : "Waiting on the shoot";
+      case WAITING_FOR_UPLOAD: return who ? `Waiting on ${who}'s upload` : "Waiting on the photographer's upload";
+      case "Editing": return "Being edited";
+      case "Edit failed": return "The edit failed, needs a look";
+      case "In QC": return "In the photo check";
+      case "On hold": return "On hold";
+      case "Ready to review": return "Waiting on review";
+      case "Revisions": return "Changes asked, being fixed";
+      case "Delivering": return "Going onto the listing";
+      case "Delivery problem": return "Delivery problem, needs a look";
+      default: return stage.label;
+    }
+  })();
+  return lateTail(words, stage.tone);
+}
+
+/** One video on the Projects page, before it is put in words. */
+export type VideoLineFact = {
+  key: string;
+  label: string;
+  phase: VideoPhase;
+  round: number | null;
+  late: boolean;
+  /** When it reached the client (the listing, or the portal for a monthly video). */
+  sentAt?: Date | string | null;
+  /** The Video Review Room's own words for an approved one ("On Aryeo, not sent yet"), or "Ready to edit". */
+  stage?: string | null;
+};
+
+const VIDEO_TONE: Record<VideoPhase, StageTone> = { not_shot: "waiting", not_cut: "waiting", editing: "active", changes: "waiting", review: "active", finishing: "active", held: "waiting", ready: "done", approved: "done", sent: "done" };
+
+/** One video's line. `editor` is the name the line says ("Kim", "Cliffside Cuts"). */
+export function videoPieceStatus(v: VideoLineFact, editor: string | null): { status: string; tone: StageTone } {
+  const words = ((): string => {
+    switch (v.phase) {
+      case "sent": return sentWords(v.sentAt);
+      case "approved": return "Approved, goes to the client's portal";
+      case "ready": return v.stage === "On Aryeo, not sent yet" ? "On the listing, not sent yet" : v.stage === "Uploading to Aryeo" ? "Uploading to the listing" : "Approved, ready to send";
+      case "held": return "Approved, the Topaz file is held (check the sound)";
+      case "finishing": return "Approved, in the Topaz pass";
+      case "review": return v.round ? `Version ${v.round} waiting on review` : "Waiting on review";
+      // "With editors because of a revision reads In revision" (Oct 27 2026, the same words as the Video Review Room).
+      case "changes": return `In revision with ${editor ?? "the editor"}`;
+      case "editing": return editor ? `${editor} is editing` : "Being edited";
+      case "not_shot": return "Waiting on the shoot";
+      default: return v.stage === "Ready to edit"
+        ? (editor ? `Waiting on ${editor} to start` : "Waiting on an editor to start")
+        : editor ? `Waiting on ${editor}'s first cut` : "Waiting on the first cut";
+    }
+  })();
+  const tone: StageTone = v.late && PHASE_RANK[v.phase] < 5 ? "late" : VIDEO_TONE[v.phase];
+  return { status: lateTail(words, tone), tone };
+}
+
+const GROUP_WORDS: Record<VideoPhase, string> = {
+  not_shot: "waiting on the shoot", not_cut: "waiting on the first cut", editing: "being edited", changes: "in revision", review: "waiting on review",
+  finishing: "in the Topaz pass", held: "held", ready: "ready to send", approved: "approved", sent: "sent",
+};
+
+/** A job's video lines: one per video, or (more than VIDEO_LINES_MAX) one grouped line with each under it. */
+export function videoPieces(facts: VideoLineFact[], editor: string | null): ProjectPiece[] {
+  const each: ProjectPiece[] = facts.map((v) => ({ key: v.key, label: v.label, ...videoPieceStatus(v, editor) }));
+  if (each.length <= VIDEO_LINES_MAX) return each;
+  const lead = leadVideo(facts)!;
+  const byPhase = new Map<VideoPhase, number>();
+  for (const v of [...facts].sort((a, b) => PHASE_RANK[a.phase] - PHASE_RANK[b.phase])) byPhase.set(v.phase, (byPhase.get(v.phase) ?? 0) + 1);
+  const late = facts.filter((v) => v.late && PHASE_RANK[v.phase] < 5).length;
+  const status = [...byPhase.entries()].map(([p, n]) => `${n} ${GROUP_WORDS[p]}`).join(", ") + (late ? ` (${late} late)` : "");
+  return [{ key: "videos", label: `Videos (${facts.length})`, status, tone: late ? "late" : VIDEO_TONE[lead.phase], each }];
+}
+
+/** "Video 4 (Premium Social Reel): Waiting on a second shoot: half shot" → its label and its words. */
+export function waitingPiece(line: string, i: number): ProjectPiece {
+  const at = line.indexOf("): ");
+  return at > 0
+    ? { key: `waiting-${i}`, label: line.slice(0, at + 1), status: line.slice(at + 3), tone: "waiting" }
+    : { key: `waiting-${i}`, label: "Video", status: line, tone: "waiting" };
+}
+
+/** A floor plan, 3D tour or other ordered piece (deliverPieces' stage) in words. */
+export function otherPieceStatus(label: string, stage: DeliverableStage, o: { shootOver: boolean; awaitingSend?: boolean }): string {
+  switch (stage.label) {
+    case "Marked delivered": return "Marked delivered by the office";
+    case "On the listing": return "Sent, on the listing";
+    case "Done": return o.awaitingSend ? "Ready, not sent yet" : "Done";
+    case "Flagged": return "Flagged, needs a look";
+    case "Ready to check": return "In, waiting on a check";
+    case "Not in yet": return lateTail(!o.shootOver ? "Waiting on the shoot" : label === "Floor plan" ? "Waiting on CubiCasa" : "Not in yet", stage.tone);
+    default: return stage.label;
+  }
+}
+
+/** "Photos", "Photos and drone", "Photos, drone and twilight". */
+export function photosLabel(addOns: string[] = []): string {
+  if (!addOns.length) return "Photos";
+  const all = ["Photos", ...addOns];
+  return `${all.slice(0, -1).join(", ")} and ${all[all.length - 1]}`;
+}
+
+/**
+ * Every line of one job, in order: the photos, the videos (and any waiting on
+ * a second shoot), the floor plan, the 3D tour, then anything else ordered.
+ * Without per-video facts (a caller that did not read them) the video chip
+ * stands as one line.
+ */
+export function projectPiecesOf(
+  r: Pick<ShootRow, "photos" | "video" | "waitingOnShoot" | "shot" | "monthly">,
+  o: { photoSentAt?: Date | string | null; photographer?: string | null; shootAt?: Date | string | null; videos?: VideoLineFact[] | null; editor?: string | null; extra?: DeliverExtra | null } = {},
+): ProjectPiece[] {
+  const out: ProjectPiece[] = [];
+  if (r.photos) out.push({ key: "photos", label: photosLabel(o.extra?.photoAddOns), status: photoPieceStatus(r.photos, { sentAt: o.photoSentAt, photographer: o.photographer, shootAt: o.shootAt }), tone: r.photos.tone });
+  if (o.videos?.length) out.push(...videoPieces(o.videos, o.editor ?? null));
+  else if (r.video) out.push({ key: "video", label: "Video", status: lateTail(r.video.label, r.video.tone), tone: r.video.tone });
+  (r.waitingOnShoot ?? []).forEach((w, i) => out.push(waitingPiece(w, i)));
+  const shootOver = r.shot !== false;
+  const awaiting = new Set(o.extra?.awaitingSend ?? []);
+  for (const p of [...(o.extra?.pieces ?? []), ...(o.extra?.more ?? [])]) {
+    out.push({ key: `piece-${p.label}`, label: p.label, status: otherPieceStatus(p.label, p.stage, { shootOver, awaitingSend: awaiting.has(p.label) }), tone: p.stage.tone });
+  }
+  // What the listing read says is missing ("Floor plan: not on the listing yet") only when that piece has
+  // no line of its own (an order item with no deliverable set up): said once, on its own line, never twice.
+  const hasLine = (cat: string) =>
+    cat === "Photos" ? !!r.photos
+      : cat === "Video" ? !!r.video || !!o.videos?.length || out.some((p) => p.key.startsWith("video"))
+      : out.some((p) => p.label.toLowerCase().startsWith(cat.toLowerCase()));
+  for (const m of o.extra?.missing ?? []) {
+    const at = m.indexOf(": ");
+    const cat = at > 0 ? m.slice(0, at) : m;
+    if (!cat || hasLine(cat)) continue;
+    const why = at > 0 ? m.slice(at + 2) : "not on the listing yet";
+    out.push({ key: `missing-${cat}`, label: cat, status: why.charAt(0).toUpperCase() + why.slice(1), tone: "waiting" });
+  }
+  return out;
+}
+
 // ---- the board ----------------------------------------------------------------------------------
 
 type BoardJobLike = import("@/lib/deliveryBoard").BoardJob;
@@ -327,11 +510,13 @@ function mediumDue(j: BoardJobLike, category: "Photos" | "Video", categoryLabels
 const HOLDING_KINDS = new Set(["on_hold", "handoff_incomplete", "awaiting_upload"]);
 
 /**
- * The whole list. jobsBoard() is the dashboard's contract; the Shoots page
- * reads this with `includeDelivered` for its "All" filter. Throws when the
- * delivery board itself cannot be read (the caller shows that, never zeros).
+ * The whole list. jobsBoard() is the dashboard's contract; the Projects page
+ * reads this with `includeDelivered` for its "All" filter and `detail` for its
+ * one line per piece (each video, the floor plan, the tour: a few more batched
+ * reads the dashboard does not pay for). Throws when the delivery board itself
+ * cannot be read (the caller shows that, never zeros).
  */
-export async function shootsBoard(now: Date = new Date(), opts: { limit?: number; includeTest?: boolean; includeDelivered?: boolean } = {}): Promise<{ rows: ShootRow[]; counts: JobsBoard["counts"] }> {
+export async function shootsBoard(now: Date = new Date(), opts: { limit?: number; includeTest?: boolean; includeDelivered?: boolean; detail?: boolean } = {}): Promise<{ rows: ShootRow[]; counts: JobsBoard["counts"] }> {
   const [{ deliveryBoard }, { categoryLabelsForLabel }, ca] = await Promise.all([
     import("@/lib/deliveryBoard"),
     import("@/lib/qcCategories"),
@@ -348,7 +533,7 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
   const nearNow = Math.abs(now.getTime() - Date.now()) < 60_000;
   const [extras, photoJobs, asks, editTasks, room] = await Promise.all([
     prisma.project.findMany({ where: { id: { in: ids } }, select: { id: true, contentMonthId: true } }),
-    prisma.photoJob.findMany({ where: { projectId: { in: ids } }, select: { projectId: true, stage: true, finalsCount: true, autohdrPhotoshootId: true } }),
+    prisma.photoJob.findMany({ where: { projectId: { in: ids } }, select: { projectId: true, stage: true, finalsCount: true, autohdrPhotoshootId: true, deliveredAt: true } }),
     prisma.clientAsk.findMany({
       where: { projectId: { in: ids }, state: "OPEN", kind: "SPECIAL_REQUEST", source: { in: [...ca.ASK_SOURCES] } },
       select: { projectId: true, medium: true, kind: true, askedAt: true },
@@ -411,17 +596,47 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
     } else if (!editorKeyBy.has(t.projectId)) editorKeyBy.set(t.projectId, t.assignedKey);
   }
   const editorKeyOf = (pid: string) => editorKeyBy.get(pid) ?? null;
-  const roomRows = new Map<string, { lane: string; cutStatus: string | null; stage: string; late: boolean }[]>();
+  const roomRows = new Map<string, { lane: string; cutStatus: string | null; stage: string; late: boolean; submissionId: string | null; deliveredAtISO: string | null }[]>();
   if (room) {
     for (const lane of Object.keys(room.lanes) as (keyof typeof room.lanes)[]) {
-      for (const r of room.lanes[lane]) roomRows.set(r.projectId, [...(roomRows.get(r.projectId) ?? []), { lane: r.lane, cutStatus: r.cutStatus, stage: r.stage, late: r.late }]);
+      for (const r of room.lanes[lane]) roomRows.set(r.projectId, [...(roomRows.get(r.projectId) ?? []), { lane: r.lane, cutStatus: r.cutStatus, stage: r.stage, late: r.late, submissionId: r.submissionId, deliveredAtISO: r.deliveredAtISO }]);
     }
   }
   // Video jobs the room's board does not list (monthly content, test clients, or the room unreadable): the cut states, one batched read.
+  // With `detail` (the Projects page) every video job's: the one list of its videos, each named, sent ones too.
   const fallbackIds = videoIds.filter((id) => !roomRows.has(id));
-  const states = fallbackIds.length
-    ? await import("@/lib/reviewCuts").then((m) => m.videoStatesFor(fallbackIds)).catch(() => new Map<string, CutStateLike>())
+  const stateIds = opts.detail ? videoIds : fallbackIds;
+  const states = stateIds.length
+    ? await import("@/lib/reviewCuts").then((m) => m.videoStatesFor(stateIds)).catch(() => new Map<string, CutStateLike>())
     : new Map<string, CutStateLike>();
+  // `detail`: when each approved video reached the client (the listing, or the portal), then the floor plan, tour and the rest.
+  const approvedIds = opts.detail ? [...states.values()].flatMap((s) => s.cuts).filter((c) => c.status === "APPROVED").map((c) => c.submissionId) : [];
+  const sentAtOf = new Map<string, Date>();
+  if (approvedIds.length) {
+    const sent = await prisma.reviewSubmission
+      .findMany({ where: { id: { in: approvedIds } }, select: { id: true, sentToClientAt: true, clientReleasedAt: true } })
+      .catch(() => [] as { id: string; sentToClientAt: Date | null; clientReleasedAt: Date | null }[]);
+    for (const x of sent) {
+      const at = x.sentToClientAt ?? x.clientReleasedAt;
+      if (at) sentAtOf.set(x.id, at);
+    }
+  }
+  const others: Record<string, DeliverExtra> = opts.detail
+    ? await deliverPieces(ids, now).catch((e: unknown) => {
+        console.warn("[jobs-board] the other pieces could not be read", (e as Error)?.message);
+        return {} as Record<string, DeliverExtra>;
+      })
+    : {};
+  const photoSentBy = new Map(photoJobs.map((p) => [p.projectId, p.deliveredAt ?? null]));
+  // The name a line says: an editor's first name, an outside shop's own name ("Cliffside Cuts").
+  const lineNames = new Map<string, string | null>();
+  if (opts.detail) {
+    const { editorMeta } = await import("@/lib/editors");
+    for (const k of new Set([...videoIds.map(editorKeyOf), ...[...states.values()].flatMap((s) => s.cuts.map((c) => c.editorKey))].filter((x): x is string => !!x))) {
+      const meta = editorMeta(k);
+      lineNames.set(k, meta?.kind === "external" ? meta.name : firstNameOf(meta?.name ?? k.replace(/_/g, " ")));
+    }
+  }
   // An editor word per key, once.
   const words = new Map<string, string | null>();
   for (const k of new Set([...videoIds.map(editorKeyOf), ...[...states.values()].flatMap((s) => s.cuts.map((c) => c.editorKey))].filter((x): x is string => !!x))) {
@@ -477,6 +692,65 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
       if (monthly && video.label === "Ready to send") video = { label: "Approved", tone: "done" };
     }
 
+    // THE PROJECTS PAGE'S LINES (`detail`, Oct 27 2026): every video by name
+    // (the cut states' one list, the room's own row deciding an approved
+    // one's lane), then the floor plan, the tour and the rest.
+    let pieces: ProjectPiece[] | undefined;
+    if (opts.detail) {
+      const st = videoOrdered ? states.get(j.id) : undefined;
+      const lines: (VideoLineFact & { order: number })[] = [];
+      if (st) {
+        const roomBySub = new Map((roomRows.get(j.id) ?? []).flatMap((r) => (r.submissionId ? [[r.submissionId, r] as const] : [])));
+        const videoDue = mediumDue(j, "Video", categoryLabelsForLabel);
+        const videoLate = !delivered && !!videoDue && videoDue.getTime() < now.getTime();
+        const allLive = st.stage === "delivered";
+        const slotAt = (k: string | null | undefined, fallback: number) => {
+          const i = k ? (st.slotKeys ?? []).indexOf(k) : -1;
+          return i >= 0 ? i : fallback;
+        };
+        st.cuts.forEach((c, i) => {
+          const rr = roomBySub.get(c.submissionId);
+          const phase: VideoPhase = rr ? phaseOfVideoRow(rr)
+            : c.status === "PENDING" ? "review"
+            : c.status === "CHANGES_REQUESTED" ? "changes"
+            : sentAtOf.has(c.submissionId) || allLive || delivered ? "sent"
+            : monthly ? "approved"
+            : "ready";
+          lines.push({
+            key: c.submissionId, label: cleanLabel(c.cutLabel), phase, round: c.round,
+            late: rr ? rr.late && rr.lane !== "delivered" : videoLate && PHASE_RANK[phase] < 5,
+            sentAt: rr?.deliveredAtISO ?? sentAtOf.get(c.submissionId) ?? (phase === "sent" ? j.deliveredAt : null),
+            stage: rr?.stage ?? null,
+            order: slotAt(c.slotKey, 1000 + i),
+          });
+        });
+        // Owed and not cut yet, by name. A job whose only videos wait on a second shoot owes none yet.
+        const cutKeys = new Set(st.cuts.map((c) => c.slotKey).filter(Boolean));
+        const uncut = (st.slotKeys ?? []).map((k, i) => ({ k, label: st.slotLabels?.[i] ?? null })).filter((x) => !cutKeys.has(x.k));
+        const owed = st.owed > 0 ? st.owed : (st.waitingOnShoot ?? 0) > 0 ? 0 : 1;
+        const missing = allLive ? 0 : Math.max(0, owed - st.cuts.length);
+        for (let i = 0; i < missing; i++) {
+          const phase: VideoPhase = !shootOver ? "not_shot" : st.stage === "editing" ? "editing" : "not_cut";
+          const label = uncut[i]?.label ? cleanLabel(uncut[i].label!) : owed > 1 ? `Video ${st.cuts.length + i + 1} of ${owed}` : monthly ? "Video" : "Listing video";
+          lines.push({ key: `uncut-${i}`, label, phase, round: null, late: videoLate, sentAt: null, stage: st.stage === "ready_to_edit" ? "Ready to edit" : null, order: slotAt(uncut[i]?.k, 2000 + i) });
+        }
+        if (!lines.length && allLive) lines.push({ key: "live", label: monthly ? "Video" : "Listing video", phase: "sent", round: null, late: false, sentAt: j.deliveredAt, order: 0 });
+        lines.sort((a, b) => a.order - b.order);
+      }
+      const edKey = editorKeyOf(j.id) ?? st?.cuts.find((c) => c.editorKey)?.editorKey ?? null;
+      pieces = projectPiecesOf(
+        { photos, video, waitingOnShoot: waitingOnShoot.get(j.id) ?? [], shot: shootOver, monthly },
+        {
+          photoSentAt: photoSentBy.get(j.id) ?? (photos?.label === "Delivered" ? j.deliveredAt : null),
+          photographer: j.photographer,
+          shootAt: j.shootDate,
+          videos: lines.length ? lines.map(({ order, ...v }) => (void order, v)) : null,
+          editor: edKey ? lineNames.get(edKey) ?? null : null,
+          extra: others[j.id] ?? null,
+        },
+      );
+    }
+
     const open = (asksBy.get(j.id) ?? []).filter((a) => !ca.closesOnDelivery(a, { status: j.status, deliveredAt: j.deliveredAt }));
     const dueWords = delivered
       ? `Delivered${j.deliveredAt ? ` ${etMonthDay(j.deliveredAt)}` : ""}`
@@ -505,6 +779,7 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
       videoSetup: delivered ? null : setupGaps.get(j.id)?.words ?? null,
       waitingOnShoot: waitingOnShoot.get(j.id) ?? [],
       shot: shootOver,
+      ...(pieces ? { pieces } : {}),
       _rank: delivered ? 4 : late ? 0 : owedNoClock ? 1 : dueAt ? 2 : 3,
       _sort: delivered ? -(j.deliveredAt?.getTime() ?? 0) : dueAt?.getTime() ?? 0,
     });
@@ -566,7 +841,10 @@ export async function deliverPieces(projectIds: string[], now: Date = new Date()
     import("@/lib/statusEvidence"),
     prisma.project.findMany({
       where: { id: { in: ids } },
-      select: { id: true, statusEvidence: true, promisedDueAt: true, deliveryDue: true, deliverables: { where: { removedFromOrderAt: null, waivedAt: null, type: { in: ["FLOORPLAN", "MATTERPORT_3D", "ZILLOW_3D"] } }, select: { type: true, status: true } } },
+      select: {
+        id: true, statusEvidence: true, promisedDueAt: true, deliveryDue: true,
+        deliverables: { where: { removedFromOrderAt: null, waivedAt: null, type: { in: ["FLOORPLAN", "MATTERPORT_3D", "ZILLOW_3D", ...OTHER_TYPES, ...PHOTO_ADD_ON_TYPES] } }, orderBy: { createdAt: "asc" }, select: { type: true, status: true, label: true, productTitle: true } },
+      },
     }),
     prisma.appSetting.findMany({ where: { key: { in: ids.flatMap((id) => [`office_delivered:${id}:floorplan`, `office_delivered:${id}:tour`]) } }, select: { key: true } }),
   ]);
@@ -577,25 +855,37 @@ export async function deliverPieces(projectIds: string[], now: Date = new Date()
     const late = !!(p.promisedDueAt ?? p.deliveryDue) && (p.promisedDueAt ?? p.deliveryDue)!.getTime() < now.getTime();
     const handMarked = (cat: "Floor plan" | "3D tour") => marked.has(`office_delivered:${p.id}:${cat === "Floor plan" ? "floorplan" : "tour"}`);
     const pieces: DeliverPiece[] = [];
-    for (const cat of ["Floor plan", "3D tour"] as const) {
-      const ds = p.deliverables.filter((d) => (cat === "Floor plan" ? d.type === "FLOORPLAN" : d.type !== "FLOORPLAN"));
-      if (!ds.length) continue;
-      const stage: DeliverableStage = handMarked(cat) ? { label: "Marked delivered", tone: "done" }
-        : ev?.present.includes(cat) ? { label: "On the listing", tone: "done" }
-        : ds.every((d) => d.status === "DONE") ? { label: "Done", tone: "done" }
+    const stageOf = (ds: { status: string }[]): DeliverableStage =>
+      ds.every((d) => d.status === "DONE") ? { label: "Done", tone: "done" }
         : ds.some((d) => d.status === "FLAGGED") ? { label: "Flagged", tone: "late" }
         : ds.some((d) => d.status === "UPLOADED" || d.status === "IN_PROGRESS") ? { label: "Ready to check", tone: "active" }
         : { label: "Not in yet", tone: late ? "late" : "waiting" };
+    for (const cat of ["Floor plan", "3D tour"] as const) {
+      const ds = p.deliverables.filter((d) => (cat === "Floor plan" ? d.type === "FLOORPLAN" : d.type === "MATTERPORT_3D" || d.type === "ZILLOW_3D"));
+      if (!ds.length) continue;
+      const stage: DeliverableStage = handMarked(cat) ? { label: "Marked delivered", tone: "done" }
+        : ev?.present.includes(cat) ? { label: "On the listing", tone: "done" }
+        : stageOf(ds);
       pieces.push({ label: cat, stage });
     }
+    // Oct 27 2026 (the Projects page): anything else ordered, one line each, and the photo add-ons the Photos line names.
+    const more: DeliverPiece[] = p.deliverables
+      .filter((d) => (OTHER_TYPES as readonly string[]).includes(d.type))
+      .map((d) => ({ label: d.type === "VIRTUAL_STAGING" ? "Virtual staging" : d.type === "HEADSHOT" ? "Headshots" : cleanLabel(d.productTitle || d.label || "Other"), stage: stageOf([d]) }));
+    const photoAddOns = [...new Set(p.deliverables.filter((d) => (PHOTO_ADD_ON_TYPES as readonly string[]).includes(d.type)).map((d) => (d.type === "DRONE" ? "drone" : "twilight")))];
     const missing = [
       ...(ev?.missing ?? []).filter((c) => !((c === "Floor plan" || c === "3D tour") && handMarked(c))).map((c) => `${c}: not on the listing yet`),
       ...(ev?.awaitingSend ?? []).map((c) => `${c}: ready, not sent yet`),
     ];
-    out[p.id] = { pieces, missing };
+    out[p.id] = { pieces, missing, more, photoAddOns, awaitingSend: (ev?.awaitingSend ?? []).filter((c) => c === "Floor plan" || c === "3D tour") };
   }
   return out;
 }
+
+/** Ordered pieces with a line of their own beyond photos, video, floor plan and tour. */
+const OTHER_TYPES = ["VIRTUAL_STAGING", "HEADSHOT", "OTHER"] as const;
+/** Ride with the photos (the same edit, the same delivery): named on the Photos line. */
+const PHOTO_ADD_ON_TYPES = ["DRONE", "TWILIGHT"] as const;
 
 /** THE DASHBOARD'S CONTRACT: every live job, late first then by due. Test clients left out unless `includeTest`. */
 export async function jobsBoard(now: Date = new Date(), opts: { limit?: number; includeTest?: boolean } = {}): Promise<JobsBoard> {

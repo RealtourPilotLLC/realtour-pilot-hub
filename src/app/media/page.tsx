@@ -24,7 +24,8 @@ export const dynamic = "force-dynamic";
 // video itself, the date it went out, the client and the address, with
 // Download, View, the listing and the client one press away. Nothing on this
 // page is ops status, a task or money, and nothing on it writes. The owner,
-// the office and the creative manager (lib/mediaAccess).
+// the office and the creative manager (lib/mediaAccess). Oct 27 2026: a
+// program video also has Share, which copies its link in the client's portal.
 // ---------------------------------------------------------------------------
 
 type SP = { tab?: string | string[]; q?: string | string[]; range?: string | string[]; sort?: string | string[]; n?: string | string[] };
@@ -60,6 +61,15 @@ export default async function MediaPage({ searchParams }: { searchParams: Promis
   const keepVideo = (v: MediaVideo) => inRange(v.dateISO, range) && matchesQuery(q, [v.title, v.place, v.clientName, v.eyebrow, v.placement.groupLabel]);
   const keepListing = (l: ListingCard) => inRange(l.dateISO, range) && matchesQuery(q, [l.title, l.clientName]);
   const videosOn = (t: VideoTab) => (videos ?? []).filter((v) => v.placement.tab === t && keepVideo(v));
+
+  // SHARE (Jordan, Oct 27 2026: "a button to be able to share"): each program
+  // video's link in its client's portal (lib/mediaShareCore), one batched read
+  // for this tab's videos; never a Dropbox link. A failed read leaves every
+  // tile without Share.
+  const shares = videos && tab !== "photos"
+    ? await import("@/lib/mediaShare").then((m) => m.shareLinksFor(videosOn(tab).map((v) => v.contentVideoId))).catch((e) => { console.warn("[media] share links unavailable", e); return new Map<string, string>(); })
+    : new Map<string, string>();
+  const view = (v: MediaVideo) => toVideoView({ ...v, shareHref: v.contentVideoId ? shares.get(v.contentVideoId) ?? null : null });
   const photos = listings ? photosByAddress(listings).filter(keepListing).sort(byDate(sort, (l) => l.dateISO)) : null;
   const counts: Record<MediaTab, number | null> = {
     standard: videos ? videosOn("standard").length : null,
@@ -147,7 +157,7 @@ export default async function MediaPage({ searchParams }: { searchParams: Promis
               {groups.map((g) => (
                 // A page of each group at a time (24, then +24): the server sends no more tiles than show.
                 <VideoGroup
-                  key={g.key} id={g.key} label={g.label} frame={g.frame} items={g.items.slice(0, n).map(toVideoView)}
+                  key={g.key} id={g.key} label={g.label} frame={g.frame} items={g.items.slice(0, n).map(view)}
                   page={{ total: g.items.length, moreHref: g.items.length > n ? hrefFor({ n: n + PAGE_SIZE }) : null, step: PAGE_SIZE }}
                 />
               ))}
