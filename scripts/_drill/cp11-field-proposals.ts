@@ -148,6 +148,7 @@ async function main() {
 
   await saveSecret("slack", "xoxb-drill-not-a-real-token");
   await prisma.teamMember.create({ data: { name: "Kim Miguel", email: "kim-drill@example.com", role: "EDITOR", slackId: "U-KIM" } });
+  await prisma.teamMember.create({ data: { name: "James Drill", email: "james-drill@example.com", creativeManager: true } });
   await prisma.appUser.create({ data: { email: "kim-drill@example.com", name: "Kim", role: "EDITOR", status: "ACTIVE", editorKey: "kim" } });
   await prisma.appUser.create({ data: { email: "jordan@realtourpilot.com", name: "Jordan", role: "OWNER", status: "ACTIVE" } });
   await prisma.programAutomation.create({ data: { key: "brand_change_alerts", enabled: true, enabledBy: "drill", enabledAt: new Date() } });
@@ -259,7 +260,8 @@ async function main() {
     const brief = await bp.brandBriefFor(W.clientId, { projectId: W.projectId, scrub: true, links: false });
     c.ok("the editor brief now says 'Calm acoustic'", brief.music === "Calm acoustic");
     c.ok("one Slack DM to Kim", slackPosts.filter((x) => x.channel === "U-KIM").length === dms + 1 && /Calm acoustic/.test(slackPosts.at(-1)?.text ?? ""), slackPosts.at(-1)?.text.slice(0, 140));
-    c.ok("Kyle's confirmation task is open", (await prisma.smartTask.count({ where: { assignedKey: "kyle", status: "OPEN", dedupeKey: { startsWith: `brand-ack:${W.clientId}:` } } })) === 1);
+    // Oct 27 2026: the confirmation is the creative manager's (was Kyle's).
+    c.ok("the creative manager's confirmation task is open", (await prisma.smartTask.count({ where: { assignedKey: "james", status: "OPEN", dedupeKey: { startsWith: `brand-ack:${W.clientId}:` } } })) === 1);
     c.ok("the brief banner carries it", brief.pending.some((x) => x.kind === "APPLIED_FROM_CALL"));
     const again = await pf.applyFieldProposal(musicProposalId, { email: "jordan@realtourpilot.com" });
     c.ok("applying again → refused, still 2 versions", !again.ok && (await musicVersions(W.clientId)).versions.length === 2, again.message);

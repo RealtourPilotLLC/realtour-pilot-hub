@@ -230,6 +230,8 @@ async function main() {
   // ---- the world every section shares -----------------------------------
   await prisma.appSetting.create({ data: { key: "editor_routing", value: JSON.stringify({ personalBranding: "kim" }) } });
   const kyle = await prisma.teamMember.create({ data: { name: "Kyle Drill", email: "kyle-drill@example.com" }, select: { id: true } });
+  // Oct 27 2026: "Filmed beyond the plan" is the creative manager's (the flag, not a name).
+  const james = await prisma.teamMember.create({ data: { name: "James Drill", email: "james-drill@example.com", creativeManager: true }, select: { id: true } });
   const photographer = await prisma.teamMember.create({ data: { email: "harrison-drill@example.com", name: "Harrison", role: "PHOTOGRAPHER" } });
   const harrison = await prisma.appUser.create({ data: { email: "harrison-drill@example.com", name: "Harrison", role: "PHOTOGRAPHER", status: "ACTIVE", teamMemberId: photographer.id }, select: { id: true } });
   await establishSession(harrison.id); // the stubbed cookie jar now carries his session
@@ -373,7 +375,7 @@ async function main() {
   c.ok("…with one EXTRA video that does not count toward the allowance", vOf(extraId).length === 1 && vOf(extraId)[0].kind === "EXTRA" && !vOf(extraId)[0].countsTowardAllowance);
   c.ok("the ticked topics are FILMED", (await prisma.contentTopic.count({ where: { id: { in: [t1, t2] }, status: "FILMED" } })) === 2);
   const capTasks = await prisma.smartTask.findMany({ where: { projectId: f1.projectId!, taskType: "content_capacity_review" } });
-  c.ok("exactly one capacity-review task, on Kyle's desk", capTasks.length === 1 && capTasks[0].assignedKey === "kyle" && capTasks[0].ownerId === kyle.id && capTasks[0].priority === "MEDIUM");
+  c.ok("exactly one capacity-review task, on the creative manager's desk (Oct 27 2026, was Kyle's)", capTasks.length === 1 && capTasks[0].assignedKey === "james" && capTasks[0].ownerId === james.id && capTasks[0].priority === "MEDIUM", `${capTasks[0]?.assignedKey}`);
   c.ok("…naming the extra and why", /Open-house mistakes — filmed on site, beyond this month's allowance/.test(capTasks[0]?.description ?? ""), capTasks[0]?.description ?? "");
   c.ok("…and the three choices, nothing charged", /this month, next month, or is billed as an extra/.test(capTasks[0]?.summary ?? "") && JSON.parse(capTasks[0]?.checklist ?? "[]").length === 3);
   c.ok("the office got a bell for it", (await prisma.notification.count({ where: { kind: "content_capacity_review" } })) === 1);

@@ -2329,22 +2329,37 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
 }
 
 /**
- * THE 15th's FOLLOW-UP FOR KYLE (§12). It is raised whether or not the client
- * is written to, which is the whole point of it in the two exempt cases: a
+ * THE 15th's FOLLOW-UP (§12). It is raised whether or not the client is
+ * written to, which is the whole point of it in the two exempt cases: a
  * first-cycle client and a client whose shortfall we caused both get no
- * warning, and Kyle still gets the work.
+ * warning, and someone still gets the work.
  *
  * ONE task per month, not one per action and not one per lane — §12 is explicit
  * that alerting several people must not produce several independent tasks. If
  * this month has already been escalated for this action, the escalation IS the
  * follow-up and nothing further is raised.
+ *
+ * THE CREATIVE MANAGER'S, NOT KYLE'S (Jordan, Oct 27 2026: content clients are
+ * "the Creative Manager and Jordan"). It went to the SCHEDULING duty owner
+ * (Kyle); it now goes to whoever carries the creativeManager flag, else the
+ * owner (taskRouting.creativeWorkDesk). The escalation is unchanged: an
+ * overdue month still reaches the ESCALATION duty owner (Jordan).
+ *
+ * NOT BEFORE THE PROGRAM HAS STARTED (Oct 27 2026, Kristen Pavillard: signed
+ * up Oct 18, brand discovery call Oct 29, and a "mid-month check on 2026-10"
+ * the day she joined). No task while the client's content strategy is not in
+ * their portal yet (strategyGate: discovery comes first), and none for a month
+ * whose 15th came before the program began.
  */
 async function raiseMidMonthFollowUp(c: ReminderCandidate, p: ReminderPolicy, now: Date, dryRun: boolean): Promise<{ created: boolean; owner: string }> {
   if (dryRun) return { created: false, owner: "(not resolved in a dry run)" };
   if (c.isTest) return { created: false, owner: "(TEST client — no owner work)" };
   const already = await prisma.programReminder.count({ where: { monthId: c.monthId, action: "ESCALATION", templateKey: `escalation:${c.action}` } });
   if (already > 0) return { created: false, owner: "(already escalated for this action)" };
-  const owner = await escalationOwner(c.enrollmentId, c.monthId, "SCHEDULING").catch(() => null);
+  const notStarted = await programNotStartedFor(c.enrollmentId, c.calendar?.midMonthAt ?? null);
+  if (notStarted) return { created: false, owner: `(not raised: ${notStarted})` };
+  const { creativeWorkDesk } = await import("@/lib/taskRouting");
+  const owner = await creativeWorkDesk().catch(() => null);
   const exempt = c.suppressionReason === "first_cycle_exempt" || c.suppressionReason === "catch_up_owed";
   const task = await prisma.smartTask
     .create({
@@ -2362,14 +2377,39 @@ async function raiseMidMonthFollowUp(c: ReminderCandidate, p: ReminderPolicy, no
           `Open the client file on /content/${c.enrollmentId}.`,
         ].join("\n\n"),
         reasonCreated: "Content-program mid-month milestone (spec §12)",
-        clientId: c.clientId, assignedKey: owner?.assignedKey ?? null,
+        clientId: c.clientId, assignedKey: owner?.key ?? null, ownerId: owner?.id ?? null,
         dedupeKey: `program-reminder-midmonth:${c.monthId}`,
         dueAt: new Date(now.getTime() + 2 * 864e5),
       },
       select: { id: true },
     })
     .catch(() => null); // P2002 = this month already has its mid-month task
-  return { created: !!task, owner: owner?.label ?? "(unassigned)" };
+  return { created: !!task, owner: owner?.name ?? "(unassigned)" };
+}
+
+/**
+ * Why a program has not started yet, or null when it has (Oct 27 2026). Two
+ * facts, both read, neither guessed: the strategy gate is still closed (no
+ * approved strategy in the client's portal, and they do not plan their own),
+ * or the enrollment began after `since` (the month's 15th). Shared with the
+ * hourly closer (programTaskCloser.midMonthVerdict), so a task raised before
+ * this rule closes on the same reading.
+ */
+export async function programNotStartedFor(enrollmentId: string, since: Date | null): Promise<string | null> {
+  const [gate, enrollment] = await Promise.all([
+    strategyGatesFor([enrollmentId]).then((m) => m.get(enrollmentId) ?? null).catch(() => null),
+    prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { startedAt: true } }).catch(() => null),
+  ]);
+  const day = (d: Date) => d.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
+  if (gate && !gate.open) {
+    return gate.discovery === "held" || gate.discovery === "waived"
+      ? "the program has not started yet: their content strategy is not in their portal yet"
+      : `the program has not started yet: the brand discovery call comes first${gate.discoveryAt ? ` (booked for ${day(gate.discoveryAt)})` : ""}`;
+  }
+  if (since && enrollment?.startedAt && enrollment.startedAt.getTime() >= since.getTime()) {
+    return `the program started on ${day(enrollment.startedAt)}, after this month's mid-month check`;
+  }
+  return null;
 }
 
 // ---- the ADDRESS lane (§8, CP-05) ----------------------------------------------------

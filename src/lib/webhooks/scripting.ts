@@ -191,8 +191,20 @@ export async function processScriptingEvent(
   // the Studio status advances past them — each event used to only re-open the
   // same key, so nothing ever closed these tasks (audit crack #35).
   const street = project.title?.split(",")[0]?.trim() || "a job";
+  // LISTING SCRIPTS ARE JORDAN'S (Oct 27 2026: the owner dashboard lists them
+  // "Writing: Jordan · Approval: Jordan", and Jordan: "Kyle handles comms,
+  // delegation, review, delivery, and coordination"). Both Studio nudges used
+  // to land on Kyle: the package by his roster row, the client's response by
+  // having nobody's name (the shared ops pile is Kyle's list). They now go to
+  // whoever owns listing scripts (taskRouting.listingScriptsDesk). A reopened
+  // task moves over too, unless a person put it on someone on purpose.
+  const { listingScriptsDesk, deskFields } = await import("@/lib/taskRouting");
+  const scriptsDesk = deskFields(await listingScriptsDesk().catch(() => null));
+  const reopen = async (key: string) => {
+    const prior = await prisma.smartTask.findUnique({ where: { dedupeKey: key }, select: { assignedManually: true, delegatedAt: true } });
+    return { status: "OPEN" as const, completedAt: null, ...(prior && !prior.assignedManually && !prior.delegatedAt && scriptsDesk.assignedKey ? scriptsDesk : {}) };
+  };
   if (event === "project.script_generated") {
-    const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } }, select: { id: true } });
     await prisma.smartTask.upsert({
       where: { dedupeKey: `scripting-script-${project.id}` },
       create: {
@@ -203,12 +215,12 @@ export async function processScriptingEvent(
         source: "system",
         priority: "MEDIUM",
         dueAt: new Date(Date.now() + 24 * 3600_000),
-        ownerId: kyle?.id ?? null,
+        ...scriptsDesk,
         projectId: project.id,
         clientId: project.clientId,
         dedupeKey: `scripting-script-${project.id}`,
       },
-      update: { status: "OPEN", completedAt: null },
+      update: await reopen(`scripting-script-${project.id}`),
     });
     // A regenerated script means the client's response was handled — retire the
     // "client responded" nudge rather than leaving both open.
@@ -227,11 +239,12 @@ export async function processScriptingEvent(
         source: "system",
         priority: revision ? "HIGH" : "MEDIUM",
         dueAt: new Date(Date.now() + 8 * 3600_000),
+        ...scriptsDesk,
         projectId: project.id,
         clientId: project.clientId,
         dedupeKey: `scripting-client-${project.id}`,
       },
-      update: { status: "OPEN", completedAt: null },
+      update: await reopen(`scripting-client-${project.id}`),
     });
   } else if (event === "project.sent_to_client") {
     // The script was locked + sent — the "Script ready" review step is done.

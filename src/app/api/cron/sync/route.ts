@@ -98,8 +98,8 @@ export async function GET(req: NextRequest) {
     const { ensureVideoClientAssetFolders } = await import("@/lib/clientAssets");
     return ensureVideoClientAssetFolders();
   }, { maxMs: 20_000 });
-  // CP-06: a brand change whose inline alert never ran gets its Kyle task and
-  // banner here, and — only once `brand_change_alerts` is on — changes held
+  // CP-06: a brand change whose inline alert never ran gets its confirmation
+  // task (the creative manager's since Oct 27 2026) and banner here, and — only once `brand_change_alerts` is on — changes held
   // while it was off get their editor DM. Database + the switch-gated bridge.
   await step("brandChangeAlerts", async () => {
     const { sweepBrandChangeAlerts } = await import("@/lib/brandProfile");
@@ -311,6 +311,17 @@ export async function GET(req: NextRequest) {
     const { closeSlackAsksOnEvidence } = await import("@/lib/slackAskEvidence");
     const r = await closeSlackAsksOnEvidence();
     return { checked: r.checked, closed: r.closed.length, leftOpen: r.leftOpen };
+  }, { maxMs: 20_000 });
+  // TASKS CLOSE THEMSELVES ON EVIDENCE (Jordan, Oct 27 2026; lib/taskEvidence).
+  // A client reply task whose client we have since answered (a person's text,
+  // call or same-subject email after their last message, never a robot or a
+  // holding line), and a CubiCasa chase whose floor plan is on the listing or
+  // marked Done, are completed with the evidence written on the row. A task a
+  // person assigned, delegated or flagged stays theirs. Nothing is sent.
+  await step("taskEvidence", async () => {
+    const { sweepTaskEvidence } = await import("@/lib/taskEvidence");
+    const r = await sweepTaskEvidence();
+    return { checked: r.checked, closed: r.closed };
   }, { maxMs: 20_000 });
   // Lead and vendor-mail hygiene (Oct 14 2026): an open lead from a number
   // muted as spam, untouched 7 days, is cancelled (never deleted); stale

@@ -1352,11 +1352,16 @@ export async function createProjectFollowupTask(opts: {
 // next month, or billed as an extra. Nothing is charged automatically and
 // nothing is blocked; this is the one place that decision is asked for.
 //
-// One card per job (dedupe [projectId, "filmed_extra"]), on Kyle's desk. A later
-// report on the same job ADDS its lines to the open card rather than stacking a
-// second one, and re-opens a handled card only when it brings a line the card
-// has not already listed. Internal only: a bell for the office, nothing to the
-// client or the photographer.
+// One card per job (dedupe [projectId, "filmed_extra"]). A later report on the
+// same job ADDS its lines to the open card rather than stacking a second one,
+// and re-opens a handled card only when it brings a line the card has not
+// already listed. Internal only: a bell for the office, nothing to the client
+// or the photographer.
+//
+// THE CREATIVE MANAGER DECIDES (Jordan, Oct 27 2026: content clients are "the
+// Creative Manager and Jordan", not Kyle). The card was Kyle's; it now goes to
+// whoever carries the creativeManager flag, else the owner
+// (taskRouting.creativeWorkDesk). A card a person reassigned stays theirs.
 // ---------------------------------------------------------------------------
 export async function fileCapacityReview(projectId: string, extras: { title: string; reason: string }[]): Promise<boolean> {
   if (!extras.length) return false;
@@ -1365,7 +1370,8 @@ export async function fileCapacityReview(projectId: string, extras: { title: str
   const key = dedupe([projectId, "filmed_extra"]);
   const street = (p.title ?? "this job").split(",")[0];
   const lineOf = (x: { title: string; reason: string }) => `• ${clip(x.title, 120)} — ${clip(x.reason, 200)}`;
-  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+  const { creativeWorkDesk } = await import("@/lib/taskRouting");
+  const desk = await creativeWorkDesk().catch(() => null);
   // Twice at most: a concurrent first call can win the create between our read
   // and our insert, and then this call's lines merge into its row instead.
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -1388,15 +1394,18 @@ export async function fileCapacityReview(projectId: string, extras: { title: str
       clientId: p.clientId,
       projectId,
       propertyAddress: p.title,
-      ownerId: kyle?.id ?? null,
-      assignedKey: "kyle",
+      ownerId: desk?.id ?? null,
+      assignedKey: desk?.key ?? null,
       dedupeKey: key,
     };
     if (existing) {
       const open = existing.status !== "COMPLETED" && existing.status !== "CANCELLED";
+      // A person's pick stays (assignedManually); the hub's own earlier pick moves over.
+      const keep = existing.assignedManually ? { ownerId: existing.ownerId, assignedKey: existing.assignedKey } : {};
+      const reroute = !existing.assignedManually && !existing.delegatedAt && !!desk && existing.assignedKey !== desk.key ? { ownerId: data.ownerId, assignedKey: data.assignedKey } : {};
       await prisma.smartTask.update({
         where: { id: existing.id },
-        data: open ? { summary: data.summary, description: data.description } : { ...data, status: "OPEN", completedAt: null },
+        data: open ? { summary: data.summary, description: data.description, ...reroute } : { ...data, ...keep, status: "OPEN", completedAt: null },
       });
     } else {
       // createMany + skipDuplicates: a lost race is a no-op, not a P2002.

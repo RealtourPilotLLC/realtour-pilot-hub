@@ -1810,6 +1810,11 @@ export async function setDeliverableStatus(
     where: { id: deliverableId },
     data: { status },
   });
+  // A floor plan marked Done answers its CubiCasa chase now, not at the next
+  // hourly pass (Oct 27 2026, lib/taskEvidence). Never fails the status change.
+  if (d.type === "FLOORPLAN" && status === "DONE") {
+    await import("@/lib/taskEvidence").then(({ closeFloorPlanChaseNow }) => closeFloorPlanChaseNow(d.projectId)).catch(() => 0);
+  }
   revalidatePath(`/projects/${d.projectId}`);
 }
 
