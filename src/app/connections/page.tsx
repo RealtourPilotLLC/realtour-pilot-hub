@@ -738,9 +738,9 @@ export default async function ConnectionsPage({
 
           <HashView id="media" className="space-y-4">
             <ViewHeader id="media" title="Photo & video">
-              The Topaz 1080p pass for approved videos, AutoHDR for photo edits, and uploads to Aryeo.
+              The Topaz pass for approved videos, AutoHDR for photo edits, and uploads to Aryeo.
             </ViewHeader>
-            {/* The 1080p pass (Sep 16): what is running, what it cost, what failed. */}
+            {/* The Topaz pass (Sep 16): what is running, what it cost, what failed. */}
             <TopazLane stats={topazStats} jobs={topazRows} />
             {/* AutoHDR (§10 AU-20, Sep 26): its own card, with the last reading
                 and the last top-up seen in the bank. */}
