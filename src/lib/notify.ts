@@ -8,6 +8,7 @@ import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
 import type { Role } from "@/lib/auth/access";
 import { etDayKey, etHour } from "@/lib/datetime";
 import { allSlackOwnerIds, wantsAllSlack } from "@/lib/notifyAllSlack";
+import { ROLE_ROUTES, namedSeatInCall, routeTarget, seatOfMember, type NotifySeat, type RowMute, type SeatBook } from "@/lib/notifyRoles";
 
 // ---------------------------------------------------------------------------
 // Internal operational pings → Slack (never clients). The task engine files
@@ -169,6 +170,24 @@ async function creativeManagerMemberIds(): Promise<Set<string>> {
   }
 }
 
+/** Who sits in which seat (Oct 27 2026, notifyRoles.ts): the OWNER logins'
+ *  roster rows, the CREATIVE_MANAGER logins', and the office's (ADMIN logins
+ *  that are not shooters or editors). Cached ten minutes per lambda by the
+ *  lookups themselves; a failed read is an empty seat, which routes nothing. */
+async function seatBook(): Promise<SeatBook> {
+  try {
+    const { ownerTeamMemberIds, officeTeamMemberIds } = await import("@/lib/smsPrefs");
+    const [owners, creatives, office] = await Promise.all([
+      ownerTeamMemberIds().catch(() => [] as string[]),
+      creativeManagerMemberIds(),
+      officeTeamMemberIds().catch(() => [] as string[]),
+    ]);
+    return { owners: new Set(owners), creatives, office: new Set(office) };
+  } catch {
+    return { owners: new Set(), creatives: new Set(), office: new Set() };
+  }
+}
+
 /** THE CREATIVE MANAGER HEARS EVERY CLIENT REVISION BY NAME (Oct 26 2026).
  *  Jordan: "I think James should be pinged as well as Kim. Or whoever is
  *  editing the project in the future but creative manager should know too."
@@ -230,6 +249,12 @@ export type NotifyTarget = {
    *  says. Leave it OFF for a self-tag: a tag or reply row with no sentence
    *  goes nowhere but the bell. */
   slackDm?: string;
+  /** Oct 27 2026 (notifyRoles.ts): how this row may go out beyond the bell.
+   *  "channels" = the bell only (no Slack DM, no text, no Slack mirror);
+   *  "text" = no text, Slack still by the person's switch. The role table
+   *  sets "channels" for a seat routed "bell"; an emitter may set either (the
+   *  Review Room texts a reviewer only for the first cut of a pile). */
+  mute?: RowMute;
 };
 
 // ---------------------------------------------------------------------------
@@ -272,6 +297,11 @@ export type NotifyTarget = {
 //   · photos_undelivered — deliveryWatch.ts uses the same row as its "already
 //     texted staff about this job" ledger; no row means it re-texts Kyle and
 //     Jordan every afternoon, forever.
+//
+// WHO among Jordan, Kyle and James gets a kind is a second, finer gate since
+// Oct 27 2026: the role table in src/lib/notifyRoles.ts (ROLE_ROUTES, with the
+// dated decision table), applied per target in notifyInApp below. BELL_RULES
+// still decides the kind as a whole; the role table decides each seat.
 // ---------------------------------------------------------------------------
 type BellRule = "all" | "person" | "off";
 
@@ -317,7 +347,7 @@ const BELL_RULES: Record<string, BellRule> = {
   note_reply: "all", // your question on a thread finally has an answer
   project_message: "all", // a message on a job you are editing (Jordan, Sep 15; always person-addressed — mentions.ts)
   revision_raised: "all", // a client wants a change
-  revision_resolved: "all", // it came back — check it and re-deliver
+  revision_resolved: "all", // it came back — check it and re-deliver (Kyle; Oct 27 2026: not Jordan or James, notifyRoles.ts)
   cut_ready: "all", // a cut is waiting on a verdict
   review_ready: "all",
   review_submitted: "all",
@@ -345,7 +375,7 @@ const BELL_RULES: Record<string, BellRule> = {
   cut_change_ask: "all",
   review_feedback: "all", // capture feedback the photographer has to fix
   feedback_shared: "all",
-  new_lead: "all", // someone is trying to give us money
+  new_lead: "all", // someone is trying to give us money (Kyle answers; Oct 27 2026: Jordan reads them in the 6 PM wrap, notifyRoles.ts)
   new_client: "all", // a new client to say hello to (Jordan + Kyle, Sep 7)
   program_signup: "all", // a website signup that needs a look — a lead by another name
   client_feedback: "all", // a rating, and a bad one needs a person today
@@ -354,7 +384,7 @@ const BELL_RULES: Record<string, BellRule> = {
   cull: "all", // has to happen before the edit starts
   task_assigned: "all", // someone put a job on YOUR name
   edit_assigned: "all", // …the editor version of the same
-  edit_started: "all", // an editor pressed Start (or the office started it for them, named as the office) — owner/admin hear it; a Resume is silent (§7.1, Sep 25)
+  edit_started: "all", // an editor pressed Start (or the office started it for them, named as the office) — owner/admin hear it; a Resume is silent (§7.1, Sep 25). Oct 27 2026: the office only (Kyle dispatched it), not Jordan (notifyRoles.ts)
   edit_finished: "all",
   shoot_add_on: "all", // sold in the field; it doesn't get invoiced unless someone sees it
   portal_suggestion: "all", // a client asked for a script change
@@ -1646,6 +1676,10 @@ export async function notifyInApp(n: {
   href: string; // default deep link; a target's href wins for its row
   targets: NotifyTarget[]; // ONE Notification row per target
   dedupeKey?: string; // suffixed "-0","-1",… per target index so multi-target events insert every row
+  /** Oct 27 2026: the roster row of whoever caused this event. Their own
+   *  named row is not written and a broadcast skips their Slack and text
+   *  legs: nobody is notified about their own press (notifyRoles.ts). */
+  actorTeamMemberId?: string | null;
 }, opts: {
   /** Oct 5 2026: write the bell rows NOW and hand back their channel legs
    *  (Slack / text) as `bridgeRest`, for the caller to run in after(). A
@@ -1666,6 +1700,17 @@ export async function notifyInApp(n: {
   try {
     const title = n.title.slice(0, 90);
     const rule: BellRule = BELL_RULES[n.kind] ?? "all";
+    // The role table (Oct 27 2026, notifyRoles.ts) and the actor's echo. The
+    // seat lookups are read only when this kind has a route or an actor.
+    const actor = n.actorTeamMemberId ?? null;
+    const routed = !!ROLE_ROUTES[n.kind] || !!actor;
+    // A broadcast's roles name their seats; only a named row needs the roster.
+    const book: SeatBook | null = !routed
+      ? null
+      : ROLE_ROUTES[n.kind] && n.targets.some((x) => x.userKey?.startsWith("tm:"))
+        ? await seatBook()
+        : { owners: new Set(), creatives: new Set(), office: new Set() };
+    const namedInCall = book ? namedSeatInCall(n.targets, (id) => seatOfMember(id, book)) : false;
     for (let i = 0; i < n.targets.length; i++) {
       let t = n.targets[i];
       // Bell policy (BELL_RULES above) — silence the ROW, never the emitter:
@@ -1676,6 +1721,17 @@ export async function notifyInApp(n: {
       if (rule === "off" || (rule === "person" && !t.userKey)) {
         silenced++;
         continue;
+      }
+      // Each seat by its job (notifyRoles.ROLE_ROUTES), and never the actor.
+      let mutedSeats: NotifySeat[] = [];
+      if (book) {
+        const r = routeTarget(n.kind, t, { seatOf: (id) => seatOfMember(id, book), namedInCall, actor });
+        if (!r.keep) {
+          silenced++;
+          continue;
+        }
+        t = { ...t, roles: r.roles as Role[], ...(r.mute ? { mute: r.mute } : {}) };
+        mutedSeats = r.mutedSeats;
       }
       let roles = t.roles;
       let body = n.body ? n.body.slice(0, 140) : null;
@@ -1745,7 +1801,8 @@ export async function notifyInApp(n: {
         const bridgeRow = async () => {
           if (tmId || editorKey) {
             // A person: their matrix row for this event decides Slack / text /
-            // both / neither (see the bridge header above and bridgePerson).
+            // both / neither (see the bridge header above and bridgePerson),
+            // inside what the row's own mute allows (Oct 27 2026).
             const out = await bridgePerson(n.kind, t, { tmId, editorKey, title, href, notificationId: row.id }, delivered);
             if (editorKey && rowRoles.includes("EDITOR") && !opts.bridgeLater) {
               // A held ping is "quiet", never "slack": the emitters turn this
@@ -1753,7 +1810,7 @@ export async function notifyInApp(n: {
               // brand panel, and a DM waiting in its row has pinged nobody yet.
               bridged.push({ userKey: t.userKey!, channel: out.held ? "quiet" : out.slack ? "slack" : out.sms ? "sms" : "bell" });
             }
-          } else if ((rowRoles.includes("OWNER") || rowRoles.includes("ADMIN")) && t.ownerSms) {
+          } else if ((rowRoles.includes("OWNER") || rowRoles.includes("ADMIN")) && t.ownerSms && t.mute !== "channels") {
             // A broadcast is bell-only — except the Review Room's OWNER+ADMIN
             // "cut ready" row, which carries a sentence for the owner (Sep 11)
             // and, since Sep 16, the office (bridgeBroadcast). `ownerActed` says
@@ -1762,15 +1819,17 @@ export async function notifyInApp(n: {
             await bridgeBroadcast(
               n.kind,
               t.ownerSms,
-              { roles: rowRoles, notificationId: row.id, ownerActed: t.ownerActed === true },
+              { roles: rowRoles, notificationId: row.id, ownerActed: t.ownerActed === true, mutedSeats, actor, noText: t.mute === "text" },
               delivered,
             );
           }
           // Oct 22 2026: a broadcast the owner sees in his bell also reaches his
-          // Slack when he asked for every notification there (DM only).
-          if (!tmId && !editorKey && rowRoles.includes("OWNER")) {
+          // Slack when he asked for every notification there (DM only). Not a
+          // row muted to the bell, and never his own press (Oct 27 2026).
+          if (!tmId && !editorKey && rowRoles.includes("OWNER") && t.mute !== "channels" && !mutedSeats.includes("owner")) {
             try {
               for (const ownerId of await allSlackOwnerIds()) {
+                if (ownerId === actor) continue;
                 await bridgePerson(n.kind, t, { tmId: ownerId, editorKey: null, title, href, notificationId: row.id, slackOnly: true }, delivered);
               }
             } catch (err) { console.warn("all-slack owner copy failed", n.kind, err); }
@@ -2025,6 +2084,9 @@ async function bridgePerson(
     if (!ctx.retry) {
       await logDelivery({ notificationId: ctx.notificationId, teamMemberId: personId, kind, channel: "bell", status: "sent" });
     }
+    // A row muted to the bell (Oct 27 2026, notifyRoles.ts) stops here: the
+    // bell row and its log line, nothing else, whatever the switches say.
+    if (t.mute === "channels") return state;
     const event = eventForKind(kind);
     // EVERYTHING ON SLACK (Oct 22 2026, Jordan: "please make sure I get all
     // notifications via slack"). A person with the switch on gets a DM for
@@ -2034,7 +2096,9 @@ async function bridgePerson(
     if (!event && !allSlack) return state; // an unclassified kind is bell-only
     if (event && SENTENCE_EVENTS.has(event) && !t.slackDm) return state; // a self-tag
     const saved = event ? (await notifyPrefsFor(personId))[event] : { slack: false, sms: false };
-    const want = { slack: saved.slack || allSlack, sms: saved.sms && !ctx.slackOnly };
+    // A row muted for text (Oct 27 2026: a reviewer's second cut of a pile)
+    // keeps its Slack leg and drops the text.
+    const want = { slack: saved.slack || allSlack, sms: saved.sms && !ctx.slackOnly && t.mute !== "text" };
     if (!want.slack && !want.sms) return state;
     const link = `${appBase()}${ctx.href}`;
     const meta = { kind, notificationId: ctx.notificationId };
@@ -2204,7 +2268,16 @@ async function bridgePerson(
 async function bridgeBroadcast(
   kind: string,
   sentence: string,
-  ctx: { roles: Role[]; notificationId: string; ownerActed?: boolean },
+  ctx: {
+    roles: Role[];
+    notificationId: string;
+    ownerActed?: boolean;
+    /** Oct 27 2026 (notifyRoles.ts): seats routed to the bell only, the
+     *  person who caused the event, and a row muted for text. */
+    mutedSeats?: NotifySeat[];
+    actor?: string | null;
+    noText?: boolean;
+  },
   delivered: Map<string, Delivery>,
 ): Promise<void> {
   try {
@@ -2214,8 +2287,10 @@ async function bridgeBroadcast(
     const { escapeSlack, scrubMoney } = await import("@/lib/text");
     const owners = new Set(await ownerTeamMemberIds());
     const ids = new Set<string>();
-    if (ctx.roles.includes("OWNER")) for (const id of owners) ids.add(id);
-    if (ctx.roles.includes("ADMIN")) for (const id of await officeTeamMemberIds()) ids.add(id);
+    const muted = new Set(ctx.mutedSeats ?? []);
+    if (ctx.roles.includes("OWNER") && !muted.has("owner")) for (const id of owners) ids.add(id);
+    if (ctx.roles.includes("ADMIN") && !muted.has("office")) for (const id of await officeTeamMemberIds()) ids.add(id);
+    if (ctx.actor) ids.delete(ctx.actor);
     const meta = { kind, notificationId: ctx.notificationId };
     // WHEN: each person's own quiet time and nothing else (Oct 6 2026 — the
     // Sep 20 weekend rota answer for this broadcast is gone with Jordan's
@@ -2229,7 +2304,8 @@ async function bridgeBroadcast(
       const member = await prisma.teamMember.findUnique({ where: { id }, select: { name: true, slackId: true, active: true } });
       if (!member?.active) continue;
       await logDelivery({ ...meta, teamMemberId: id, channel: "bell", status: "sent" });
-      const want = (await notifyPrefsFor(id)).review_ready;
+      const saved = (await notifyPrefsFor(id)).review_ready;
+      const want = { slack: saved.slack, sms: saved.sms && !ctx.noText };
       // HIS OWN UPLOAD (Sep 11 carve-out, now per person — Sep 21). Both
       // channels, not just the text: a DM saying a video is waiting on him is
       // as wrong as a buzz when he is the one who just filed it. He keeps the

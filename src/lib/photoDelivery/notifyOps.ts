@@ -1,6 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
+import { seatRoute } from "@/lib/notifyRoles";
 
 // ---------------------------------------------------------------------------
 // PHOTO DELIVERY ALERTS → JORDAN AND KYLE (docs/photo-delivery/01 §5.5).
@@ -55,7 +56,7 @@ const noLongDashes = (s: string) => s.replace(/\s*[–—]\s*/g, ", ");
 // KYLE'S PHOTO BELLS (Oct 23 2026, Jordan and Kyle's huddle, item 11: "kind of
 // overloading you with notifications"; 42 photo bells in 7 days, up to 6 on
 // one job). Kyle's row, and the Slack DM or text that goes with it, follows
-// one rule; Jordan's is unchanged:
+// one rule (Jordan's follows ownerSkips below since Oct 27 2026):
 //   · NOTHING HE CAN'T ACT ON (KYLE_SKIPS): the hub sending raws to AutoHDR
 //     by itself (16 a week), AutoHDR being slow, credits running low (Jordan
 //     tops them up), the paid QC's shadow and budget (paid QC is off), the
@@ -100,6 +101,17 @@ export const KYLE_BUCKET: Readonly<Record<string, "review" | "delivery" | "aryeo
   photo_delivery_duplicate: "aryeo",
 };
 
+/** JORDAN'S PHOTO BELLS (Oct 27 2026). Jordan: "make sure we are not
+ *  overloading Kyle, James, and me with notifications that are not needed or
+ *  that do not apply to our roles". The photo pipeline (checks, AutoHDR hand
+ *  offs, fixes, delivery problems) is Kyle's lane, so the owner's copy of those
+ *  kinds goes (notifyRoles.ROLE_ROUTES, owner "drop"); money and vendor risk
+ *  (credits, billing, AutoHDR slow) stay his. Only when Kyle resolves: with no
+ *  delivery owner the owner still gets it (a person, never silence). Pure. */
+export function ownerSkips(kind: string, kyleId: string | null, ownerId: string | null): boolean {
+  return seatRoute(kind, "owner") === "drop" && !!kyleId && kyleId !== ownerId;
+}
+
 /** The photo job a bell is about, from its link (/ops/photo-delivery/<jobId>). Pure. */
 export function jobIdOfHref(href: string): string | null {
   const id = /^\/ops\/photo-delivery\/([A-Za-z0-9_-]{6,64})(?:[/?#]|$)/.exec(href)?.[1] ?? null;
@@ -133,7 +145,8 @@ export async function kyleRowKey(a: { kind: string; dedupeKey: string; href: str
 export async function bellOnly(a: { kind: string; title: string; body?: string; href: string; dedupeKey: string; to: "kyle" | "both" }): Promise<number> {
   const { ownerId, kyleId } = await opsRecipients();
   const people: { id: string; role: "OWNER" | "ADMIN"; slot: number }[] = [];
-  if (ownerId && a.to === "both") people.push({ id: ownerId, role: "OWNER", slot: 0 });
+  // Oct 27 2026 (notifyRoles.ts): Jordan's copy only for a kind his seat keeps.
+  if (ownerId && a.to === "both" && !ownerSkips(a.kind, kyleId, ownerId)) people.push({ id: ownerId, role: "OWNER", slot: 0 });
   if (kyleId && kyleId !== ownerId) people.push({ id: kyleId, role: "ADMIN", slot: 1 });
   // The engine's dash rule: a dash becomes a comma, and a doubled comma one.
   const plain = (s: string) => noLongDashes(s).replace(/,\s*,/g, ",");
@@ -166,7 +179,10 @@ export async function alertOwnerAndKyle(a: OpsAlert): Promise<{ announced: numbe
     const people: Array<{ id: string; role: "OWNER" | "ADMIN"; slot: number }> = [];
     // Addressed to Kyle but no delivery owner resolves: the owner gets it
     // rather than an ops channel nobody reads (a person, never silence).
-    if (ownerId && (want !== "kyle" || !kyleId)) people.push({ id: ownerId, role: "OWNER", slot: 0 });
+    // Oct 27 2026 (notifyRoles.ts): a step of Kyle's photo pipeline is not
+    // Jordan's, so his copy goes whenever Kyle has one (an alert addressed to
+    // the owner alone always reaches him).
+    if (ownerId && (want !== "kyle" || !kyleId) && (want === "owner" || !ownerSkips(a.kind, kyleId, ownerId))) people.push({ id: ownerId, role: "OWNER", slot: 0 });
     if (kyleId && kyleId !== ownerId && want !== "owner") people.push({ id: kyleId, role: "ADMIN", slot: 1 });
     const { notifyStaffSms, logDelivery, opsAlert } = await import("@/lib/notify");
     const title = noLongDashes(a.title).slice(0, 90);

@@ -526,9 +526,14 @@ async function main() {
       const tl2 = await prisma.activity.findFirst({ where: { projectId: J2.id, body: { startsWith: "Cut approved in review (round 2)" } } });
       c.ok("…the timeline line names him", tl2?.body === "Cut approved in review (round 2) by James Rivera." && tl2.authorId === james.id, tl2?.body);
       // Oct 22 2026: the office is no longer on a verdict's bell (Jordan approved
-      // the alert routing), so the owner's row is read.
-      const bell2 = await prisma.notification.findFirst({ where: { kind: "review_approved", dedupeKey: { startsWith: `review-approved-${c2b}` }, audience: { contains: "OWNER" } } });
-      c.ok("…and so does the bell", bell2?.body?.startsWith("Approved by James Rivera.") === true, bell2?.body ?? "none");
+      // the alert routing), so the owner's row was read here. Oct 27 2026
+      // (Jordan: "make sure we are not overloading Kyle, James, and me with
+      // notifications that are not needed ... I am CEO."): a routine approval
+      // is not his news either, and James pressed this one, so no seat row is
+      // left to read. The bell's "Approved by" line is pinned where a seat
+      // still gets the row (oct5-instant-review §2, oct27-notification-roles).
+      const bells2 = await prisma.notification.findMany({ where: { kind: "review_approved", dedupeKey: { startsWith: `review-approved-${c2b}` } }, select: { userKey: true } });
+      c.ok("…and the bell rings neither Jordan nor James, who pressed it (Oct 27 2026)", !bells2.some((b) => b.userKey === `tm:${jordan.id}` || b.userKey === `tm:${james.id}`), JSON.stringify(bells2));
       const ws = await room.getCutWorkspace(J2.id, c2b);
       const v1 = ws?.submissions.find((s) => s.id === c2)?.verdict;
       const v2 = ws?.submissions.find((s) => s.id === c2b)?.verdict;

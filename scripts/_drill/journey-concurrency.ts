@@ -190,10 +190,14 @@ async function main() {
     // broadcast, the owner broadcast, the editor and the photographer: four
     // rows, each a DIFFERENT audience. The point of the check is unchanged —
     // one row per audience, never one per press.
+    // Oct 27 2026 (Jordan: "make sure we are not overloading Kyle, James, and
+    // me with notifications that are not needed ... I am CEO."): a routine
+    // approval no longer reaches Jordan (notifyRoles.ts), so it is three rows
+    // now: the creative manager's broadcast, the editor and the photographer.
     const rows1 = await prisma.notification.findMany({ where: bellsWhere, select: { audience: true, userKey: true } });
     const audiences = new Set(rows1.map((r) => `${r.userKey ?? "broadcast"}|${r.audience}`));
-    ok("…and the first press rang one row per audience addressed (office, Jordan, editor, photographer), not one per press",
-      bells1 === 4 && audiences.size === bells1, `${bells1} rows: ${[...audiences].join(", ")}`);
+    ok("…and the first press rang one row per audience addressed (creative manager, editor, photographer), not one per press",
+      bells1 === 3 && audiences.size === bells1 && !rows1.some((r) => r.audience.includes("OWNER")), `${bells1} rows: ${[...audiences].join(", ")}`);
     const timeline = await activityLike(P.id, "Cut approved in review");
     ok("ONE 'cut approved' line on the timeline", timeline === 1, `${timeline} timeline rows`);
     // The sweep that runs after any verdict.

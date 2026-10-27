@@ -982,7 +982,10 @@ export async function drainTopicRefreshQueue(opts: { max?: number; budgetMs?: nu
   return { ran, succeeded, failed, paused, lastError };
 }
 
-/** Jordan's bell when unattended suggestions are waiting. Internal; never for a TEST client. */
+/** Jordan's bell when unattended suggestions are waiting. Internal; never for a TEST client.
+ *  Oct 27 2026: the role table drops it for his seat (notifyRoles.ts,
+ *  topic_suggestions_ready owner "drop"); the 6 PM wrap lists the day's
+ *  suggestions per client instead (eveningPush.composeEveningWrap). */
 async function bellSuggestionsReady(runId: string, enrollmentId: string, n: number): Promise<void> {
   try {
     const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true } });

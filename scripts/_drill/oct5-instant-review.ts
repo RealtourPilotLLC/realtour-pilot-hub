@@ -291,9 +291,13 @@ async function main() {
       dropboxCalls.includes("files/save_url") && f1.some((x) => x.step === "Final folder copy" && /finalizeApprovedCuts/.test(x.repairedBy)),
       JSON.stringify(f1));
 
-    c.head("5 · the bells reach Jordan and the seats by person — never the one who pressed it");
+    c.head("5 · the bells reach the seats by person — never the one who pressed it, and not Jordan (Oct 27 2026)");
     const byKey = (k: string) => b1.find((b) => b.userKey === k);
-    c.ok("Jordan has his own row (his OWNER login could never see the ADMIN broadcast)", !!byKey(`tm:${jordan.id}`) && JSON.parse(byKey(`tm:${jordan.id}`)!.audience).includes("OWNER"));
+    // Oct 27 2026 (Jordan: "make sure we are not overloading Kyle, James, and
+    // me with notifications that are not needed or that do not apply to our
+    // roles and responsibilities ... I am CEO."): a routine approval is the
+    // review seats' news, not the CEO's. notifyRoles.ts drops his row.
+    c.ok("Jordan has no row for a routine approval (Oct 27 2026)", !byKey(`tm:${jordan.id}`), JSON.stringify(b1.map((b) => b.userKey)));
     // Oct 22 2026 (Jordan approved the alert routing): a verdict is the creative
     // manager's and Jordan's news; Kyle (the office, backup seat) hears when the
     // video is ready to send, not at approval.
@@ -301,8 +305,10 @@ async function main() {
     c.ok("James pressed it — no row tells him about his own press", !byKey(`tm:${james.id}`));
     c.ok("the role-only ADMIN broadcast is gone (every seat is addressed by name)", !b1.some((b) => b.userKey === null));
     c.ok("Kim, who cut it, keeps her editor row", !!byKey("editor:kim"));
-    const seatBell = byKey(`tm:${jordan.id}`)?.body ?? "";
-    c.ok("the seat's bell keeps its body: who approved it and the honest next step — no 'Ready to deliver.'", seatBell.startsWith("Approved by James Livingston.") && /Topaz pass running/.test(seatBell) && !/Ready to deliver/.test(seatBell), seatBell);
+    // The seat's body check ("who approved it and the honest next step") was
+    // read off Jordan's row here. His row is gone (Oct 27 2026) and an editor's
+    // row never carries a body (the money clamp), so it is read off James's
+    // seat row in section 2, where Kyle presses it.
     c.ok("no text was queued by any of it (bell rows only)", (await prisma.pendingSms.count()) === 0);
 
     // =========================================================================
@@ -322,6 +328,10 @@ async function main() {
     parked.release();
     await Promise.all(eagerRuns.splice(0));
     c.ok("…and the parked step finishes afterwards", (await bells(`review-approved-${cut2}`)).length > 0 && (await prisma.deliverableOutput.count({ where: { approvedSubmissionId: cut2 } })) === 1);
+    // Kyle pressed this one, so James's seat has the row (Jordan's is gone, Oct 27 2026).
+    const seatBell2 = (await bells(`review-approved-${cut2}`)).find((b) => b.userKey === `tm:${james.id}`)?.body ?? "";
+    c.ok("the seat's bell keeps its body: who approved it and the honest next step — no 'Ready to deliver.'", seatBell2.startsWith("Approved by Kyle Smith.") && /Topaz pass running/.test(seatBell2) && !/Ready to deliver/.test(seatBell2), seatBell2);
+    c.ok("…and Jordan has no row for it (Oct 27 2026)", !(await bells(`review-approved-${cut2}`)).some((b) => b.userKey === `tm:${jordan.id}`));
     afterMode = "queue";
 
     // =========================================================================
@@ -345,9 +355,10 @@ async function main() {
     c.ok("the library row is missing after the failure…", (await prisma.portalVideo.count({ where: { externalKey: `sub:${cut3}` } })) === 0);
     const repair = await repairApprovedCutLibrary({ sinceDays: 45, max: 200 });
     c.ok("…and the hourly sweep it names puts it there", repair.repaired >= 1 && (await prisma.portalVideo.count({ where: { externalKey: `sub:${cut3}` } })) === 1, JSON.stringify(repair));
-    const mBell = (await bells(`review-approved-${cut3}`)).find((b) => b.userKey === `tm:${jordan.id}`)?.body ?? "";
-    c.ok("Jordan's bell: who approved it, the portal gets it after the 1080p pass, nothing to send", mBell.startsWith("Approved by Kyle Smith.") && /client's portal/.test(mBell) && /Nothing to send/i.test(mBell), mBell);
-    c.ok("James and Jordan were told; Kyle (who pressed it) was not", (await bells(`review-approved-${cut3}`)).some((b) => b.userKey === `tm:${james.id}`) && !(await bells(`review-approved-${cut3}`)).some((b) => b.userKey === `tm:${kyle.id}`));
+    // Oct 27 2026: the seat that did not press it (James) reads the body; Jordan has no row.
+    const mBell = (await bells(`review-approved-${cut3}`)).find((b) => b.userKey === `tm:${james.id}`)?.body ?? "";
+    c.ok("James's bell: who approved it, the portal gets it after the 1080p pass, nothing to send", mBell.startsWith("Approved by Kyle Smith.") && /client's portal/.test(mBell) && /Nothing to send/i.test(mBell), mBell);
+    c.ok("James was told; Kyle (who pressed it) was not, and neither was Jordan (Oct 27 2026)", (await bells(`review-approved-${cut3}`)).some((b) => b.userKey === `tm:${james.id}`) && !(await bells(`review-approved-${cut3}`)).some((b) => b.userKey === `tm:${kyle.id}` || b.userKey === `tm:${jordan.id}`));
 
     // Same month, the 1080p pass switched OFF: nothing to wait for, so the
     // publication IS attempted in the background.
@@ -395,8 +406,11 @@ async function main() {
     c.ok("…Kim's own bell row is written with the answer; the FYI bells wait for after()", afterQueue.length === 1 && JSON.stringify((await bells(`review-changes-${cut6}`)).map((b) => b.userKey)) === JSON.stringify(["editor:kim"]));
     await flush();
     const b6 = await bells(`review-changes-${cut6}`);
-    c.ok("after(): Kim's row and Jordan's — not James's own, not the office's (Oct 22 2026)", !!b6.find((b) => b.userKey === "editor:kim") && !!b6.find((b) => b.userKey === `tm:${jordan.id}`) && !b6.find((b) => b.userKey === `tm:${kyle.id}`) && !b6.find((b) => b.userKey === `tm:${james.id}`), JSON.stringify(b6.map((b) => b.userKey)));
-    c.ok("…the seat's row names the sender", (b6.find((b) => b.userKey === `tm:${jordan.id}`)?.body ?? "").startsWith("James Livingston sent back 1 note"));
+    // Oct 27 2026 (Jordan: "I am CEO."): a routine send-back is not his news;
+    // notifyRoles.ts drops his row. The editor's row and the office rule stay.
+    c.ok("after(): Kim's row only — not Jordan's (Oct 27 2026), not James's own, not the office's (Oct 22 2026)", !!b6.find((b) => b.userKey === "editor:kim") && !b6.find((b) => b.userKey === `tm:${jordan.id}`) && !b6.find((b) => b.userKey === `tm:${kyle.id}`) && !b6.find((b) => b.userKey === `tm:${james.id}`), JSON.stringify(b6.map((b) => b.userKey)));
+    // "The seat's row names the sender" was read off Jordan's row here; it is
+    // read off James's seat row below, where Kyle sends one back (Oct 27 2026).
 
     // An outside agency's round.
     const J7 = await mkJob("107 Agency Way");
@@ -421,7 +435,8 @@ async function main() {
     c.ok("…and a Slack DM through the staff helper, with the link to the edit card — at once, whatever the hour",
       dm.length === 1 && /Relay to Luma Visuals/.test(dm[0].text) && dm[0].text.includes(`/edit/${J7.id}`) && heldRelay.length === 0,
       `${dm.map((m) => m.text).join(" | ")} · held ${heldRelay.length}`);
-    c.ok("…Jordan still gets the FYI row; Kyle is not rung twice", (await bells(`review-changes-${cut7}`)).some((b) => b.userKey === `tm:${jordan.id}`) && !(await bells(`review-changes-${cut7}`)).some((b) => b.userKey === `tm:${kyle.id}`));
+    // Oct 27 2026: Jordan's FYI copy of a send-back is dropped (notifyRoles.ts).
+    c.ok("…Jordan gets no FYI row (Oct 27 2026); Kyle is not rung twice", !(await bells(`review-changes-${cut7}`)).some((b) => b.userKey === `tm:${jordan.id}`) && !(await bells(`review-changes-${cut7}`)).some((b) => b.userKey === `tm:${kyle.id}`));
     c.ok("no other DM went out for it", slack.filter((m) => m.channel !== "U-KYLE").length === 0, slack.map((m) => m.channel).join(", "));
 
     // Kyle sends one back himself: the relay is still his row, but no Slack to himself.
@@ -434,6 +449,9 @@ async function main() {
     const r8 = await actions.requestCutChanges(cut8);
     await flush();
     c.ok("Kyle pressing it himself: 'relay them yourself', and no Slack DM to himself", r8.ok && /relay them to Luma Visuals yourself/.test(r8.message) && slack.filter((m) => m.channel === "U-KYLE").length === 0, r8.message);
+    // Kyle pressed it, so James's seat has the FYI row, and it names the sender.
+    const b8 = await bells(`review-changes-${cut8}`);
+    c.ok("…James's seat row names the sender; Jordan has none (Oct 27 2026)", (b8.find((b) => b.userKey === `tm:${james.id}`)?.body ?? "").startsWith("Kyle Smith sent back 1 note") && !b8.some((b) => b.userKey === `tm:${jordan.id}`), JSON.stringify(b8.map((b) => [b.userKey, b.body])));
 
     // =========================================================================
     c.head("7 · nextCutToReview: this job first, then the cuts waiting on the viewer");

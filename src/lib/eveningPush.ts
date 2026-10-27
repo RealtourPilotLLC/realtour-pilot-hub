@@ -18,7 +18,9 @@ import type { DeliveryBoard, BoardJob } from "@/lib/deliveryBoard";
 //   delivered today · due by 9 AM tomorrow and not out (with its stage) ·
 //   late and who owns it · Kyle's open asks to Jordan and the cuts / photo
 //   decisions waiting on him · Jordan's asks to Kyle open 3+ days ·
-//   unanswered clients · tomorrow's gaps.
+//   unanswered clients · tomorrow's gaps · (Oct 27 2026) the new leads and,
+//   on Jordan's copy only, the new topic suggestions since the last wrap,
+//   which replaced his live pings for both (notifyRoles.ts).
 // Under 15 lines, plain words, no dashes. notifyStaffSms holds Jordan's copy
 // inside his own quiet time (Saturday until 7:30 PM, notifySchedule.holdFor),
 // so Saturday's lands at 7:30. One AppSetting claim per ET day.
@@ -96,7 +98,7 @@ function lateOwner(j: BoardJob, editorOf: Map<string, string | null>, kyleFirst:
   }
 }
 
-export type EveningWrap = { lines: string[]; text: string };
+export type EveningWrap = { lines: string[]; text: string; /** the office's copy (Oct 27 2026) */ officeText: string };
 
 /** The wrap's lines from Home's own reads. Pure apart from the asks it is handed. */
 export function composeEveningWrap(input: {
@@ -111,6 +113,12 @@ export function composeEveningWrap(input: {
   photoDecisions: number;
   /** tasks whose status says they wait on Jordan (WAITING_JORDAN) */
   tasksWaitingOnJordan?: number;
+  /** Oct 27 2026: leads that came in since the last wrap (Kyle answers them;
+   *  Jordan's live ping is gone, notifyRoles.ts). */
+  newLeads?: { name: string; open: boolean }[];
+  /** Oct 27 2026: AI topic suggestions that arrived since the last wrap, per
+   *  client (Jordan's live bell per batch is gone). Jordan's copy only. */
+  topicSuggestions?: { client: string; count: number }[];
   link: string;
 }): EveningWrap {
   const { now, day, board } = input;
@@ -149,6 +157,22 @@ export function composeEveningWrap(input: {
   const unanswered = day.unanswered.all ?? day.unanswered.preview;
   lines.push(`Unanswered clients (${day.closeout.unanswered}): ${unanswered.length ? listOf(unanswered.map((u) => `${u.name} ${ageWords(u.hours)}`)) : "none"}`);
 
+  // THE DAY'S LEADS AND TOPIC SUGGESTIONS, ONCE (Oct 27 2026). Jordan: "make
+  // sure we are not overloading Kyle, James, and me with notifications that
+  // are not needed". A new lead pinged him live (Kyle answers it) and every AI
+  // topic batch rang his bell and Slack (67 in 14 days); both are one line
+  // here now, and only when there is something to say.
+  const leads = input.newLeads ?? [];
+  if (leads.length) {
+    const open = leads.filter((l) => l.open).length;
+    lines.push(`New leads since the last wrap (${leads.length}${open ? `, ${open} still open` : ""}): ${listOf(leads.map((l) => l.name))}`);
+  }
+  const topics = (input.topicSuggestions ?? []).filter((t) => t.count > 0);
+  const topicLine = topics.length
+    ? `Topic suggestions to review (${topics.length} client${topics.length === 1 ? "" : "s"}): ${listOf(topics.map((t) => `${t.client} (${t.count})`))}`
+    : null;
+  if (topicLine) lines.push(topicLine);
+
   const gaps = day.tomorrowShoots.filter((s) => s.gaps.length > 0);
   lines.push(
     `Tomorrow: ${day.tomorrowShoots.length} shoot${day.tomorrowShoots.length === 1 ? "" : "s"}, ${day.closeout.tomorrowGaps} gap${day.closeout.tomorrowGaps === 1 ? "" : "s"}` +
@@ -156,10 +180,47 @@ export function composeEveningWrap(input: {
   );
   lines.push(input.link);
   const clean = lines.map((l) => noDashes(l));
-  return { lines: clean, text: clean.join("\n") };
+  // Kyle's copy leaves out the content-program line (not his, Oct 27 2026).
+  const ownerOnly = topicLine ? noDashes(topicLine) : null;
+  return { lines: clean, text: clean.join("\n"), officeText: clean.filter((l) => l !== ownerOnly).join("\n") };
 }
 
 export type EveningPushResult = { sent: boolean; reason?: string; lines?: string[]; to?: string[] };
+
+/** The lead rows minted since `since` (openphone.ts / google.ts, taskType
+ *  "lead"), named as a person would say them: "Laura Kaplan", "(208) 514-1287". */
+async function wrapLeads(since: Date): Promise<{ name: string; open: boolean }[]> {
+  const rows = await prisma.smartTask.findMany({
+    where: { taskType: "lead", createdAt: { gte: since } },
+    select: { title: true, contactName: true, status: true },
+    orderBy: { createdAt: "asc" },
+    take: 50,
+  });
+  return rows.map((r) => ({
+    name: (r.contactName?.trim() || r.title.replace(/^New (?:lead|caller|texter)\s*[:—–-]\s*(?:call back |reply to )?/i, "")).trim() || "a lead",
+    open: r.status !== "COMPLETED" && r.status !== "CANCELLED",
+  }));
+}
+
+/** AI topic suggestions still pending that arrived since `since`, per client,
+ *  most first; never a TEST client. */
+async function wrapTopicSuggestions(since: Date): Promise<{ client: string; count: number }[]> {
+  const groups = await prisma.contentTopicSuggestion.groupBy({
+    by: ["clientId"],
+    where: { disposition: "PENDING", createdAt: { gte: since } },
+    _count: { _all: true },
+  });
+  if (!groups.length) return [];
+  const [clients, { isTestClientName }] = await Promise.all([
+    prisma.client.findMany({ where: { id: { in: groups.map((g) => g.clientId) } }, select: { id: true, name: true } }),
+    import("@/lib/testClients"),
+  ]);
+  const nameOf = new Map(clients.map((c) => [c.id, c.name]));
+  return groups
+    .filter((g) => !isTestClientName(nameOf.get(g.clientId)))
+    .map((g) => ({ client: nameOf.get(g.clientId) ?? "a client", count: g._count._all }))
+    .sort((a, b) => b.count - a.count || a.client.localeCompare(b.client));
+}
 
 async function sendEveningWrap(now: Date, day: OpsDay): Promise<EveningPushResult> {
   const dayKey = etDayKey(now);
@@ -172,7 +233,9 @@ async function sendEveningWrap(now: Date, day: OpsDay): Promise<EveningPushResul
     const { kylesOpenAsksToJordan, jordansOpenAsksToKyle } = await import("@/lib/slackAskEvidence");
     const board = await deliveryBoard({ includeTest: false }).catch((): DeliveryBoard => ({ today: [], tomorrow: [], upcoming: [], delivered: [], overdueCount: 0, unavailable: true }));
     const lateIds = board.today.filter((j) => j.overdue).map((j) => j.id);
-    const [editors, kyleAsks, jordanAsksOld, reviewQueue, photoDecisions, tasksWaitingOnJordan] = await Promise.all([
+    // Since the last wrap: yesterday's, or Saturday's on a Monday (no Sunday wrap).
+    const since = new Date(now.getTime() - (etDow(now) === 1 ? 2 : 1) * DAY);
+    const [editors, kyleAsks, jordanAsksOld, reviewQueue, photoDecisions, tasksWaitingOnJordan, newLeads, topicSuggestions] = await Promise.all([
       lateIds.length ? prisma.project.findMany({ where: { id: { in: lateIds } }, select: { id: true, editor: { select: { name: true } } } }) : Promise.resolve([]),
       kylesOpenAsksToJordan({ now }).catch(() => []),
       jordansOpenAsksToKyle({ now, minAgeDays: 3 }).catch(() => []),
@@ -180,6 +243,8 @@ async function sendEveningWrap(now: Date, day: OpsDay): Promise<EveningPushResul
       // The photo-delivery system's "needs a decision" pile (read only).
       prisma.photoJob.count({ where: { stage: "QC_REVIEW" } }).catch(() => 0),
       prisma.smartTask.count({ where: { status: "WAITING_JORDAN" } }).catch(() => 0),
+      wrapLeads(since).catch(() => []),
+      wrapTopicSuggestions(since).catch(() => []),
     ]);
     const { appBase } = await import("@/lib/appUrl");
     const wrap = composeEveningWrap({
@@ -193,6 +258,8 @@ async function sendEveningWrap(now: Date, day: OpsDay): Promise<EveningPushResul
       cutsWaitingOnJordan: jordanId ? (reviewQueue?.pending ?? []).filter((c) => c.reviewer?.id === jordanId).length : 0,
       photoDecisions,
       tasksWaitingOnJordan,
+      newLeads,
+      topicSuggestions,
       link: `${appBase()}/`,
     });
     const { notifyStaffSms } = await import("@/lib/notify");
@@ -203,7 +270,7 @@ async function sendEveningWrap(now: Date, day: OpsDay): Promise<EveningPushResul
     }
     // Kyle's copy: no dollar figure ever reaches him (access.canSeeMoney).
     if (kyle && kyle.id !== jordanId) {
-      const out = await notifyStaffSms([kyle.id], scrubMoney(`Copy of Jordan's ${wrap.text}`), "evening_push");
+      const out = await notifyStaffSms([kyle.id], scrubMoney(`Copy of Jordan's ${wrap.officeText}`), "evening_push");
       to.push(...out.map((o) => `${o.name}:${o.outcome}`));
     }
     return { sent: true, lines: wrap.lines, to };
