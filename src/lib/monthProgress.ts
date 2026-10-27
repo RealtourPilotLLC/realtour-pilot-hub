@@ -828,12 +828,14 @@ function nextActionFor(p: MonthProgress): MonthNextAction | null {
       if (late && s.pendingRequests === 0) return { text: `Filming late, in ${lateMonthName(late.hostMonthKey, p.monthKey)}: ${monthShort}'s session isn't booked yet`, cta: "See the sessions", href: "#sessions", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client" };
       return s.pendingRequests > 0
         ? { text: "They asked for a session — nothing confirmed", cta: "See the sessions", href: "#sessions", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us" }
-        : { text: clientPlanned ? "Client-planned — no filming session on the calendar yet" : "No filming session on the calendar yet", cta: "See the sessions", href: "#sessions", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us" };
+        // Oct 27 2026 (Jordan: "One session still to book. That's not on us,
+        // that's on them."): unbooked is the client's; a request they sent is ours.
+        : { text: clientPlanned ? "Client-planned — no filming session on the calendar yet" : "No filming session on the calendar yet", cta: "See the sessions", href: "#sessions", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client" };
     }
     if (s.missing > 0) {
       return s.pendingRequests > 0
         ? { text: `${s.count.accountedFor} of ${plural(s.required, "session")} on the calendar — they asked for another, nothing confirmed`, cta: "See the sessions", href: "#sessions", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us" }
-        : { text: `${s.count.accountedFor} of ${plural(s.required, "session")} on the calendar — ${s.missing} still to book`, cta: "See the sessions", href: "#sessions", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us" };
+        : { text: `${s.count.accountedFor} of ${plural(s.required, "session")} on the calendar — ${s.missing} still to book`, cta: "See the sessions", href: "#sessions", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client" };
     }
     if (unverified) {
       return { text: `The ${unverified.startsAtISO ? fmtDay(unverified.startsAtISO) : "undated"} job has no Aryeo appointment — confirm it`, cta: "See the sessions", href: "#sessions", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us" };

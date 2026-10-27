@@ -2,7 +2,7 @@ import { Compass, Sparkles, Target } from "lucide-react";
 import { monthLabel } from "@/lib/contentProgram";
 import type { PortalStrategyView } from "@/lib/portal";
 import { Card, CardTitle, Empty, LoadFailed, fmtShort } from "@/components/portal/ui";
-import { StrategyDocView } from "@/components/content/StrategyDocView";
+import { StrategyDocView, isPageMarker, stripPageMarkers } from "@/components/content/StrategyDocView";
 import { DiscoveryCard } from "@/components/portal/DiscoveryCard";
 import type { PortalStrategyGate } from "@/lib/yourMonth";
 
@@ -34,7 +34,9 @@ export function StrategyTab({ strategy, failed, priorities, monthKey, gate = nul
       </div>
     );
   }
-  const s = strategy.summary;
+  // Oct 27 2026 (Jordan: "1 of 3 ... it shows on the client portal too"): PDF page markers never show here.
+  const raw = strategy.summary;
+  const s = raw ? { ...raw, goals: raw.goals.filter((g) => !isPageMarker(g)).map((g) => stripPageMarkers(g).trim()).filter(Boolean) } : null;
   return (
     <div className="mt-6 space-y-4">
       <div>

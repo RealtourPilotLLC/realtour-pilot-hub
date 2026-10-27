@@ -12,7 +12,7 @@ import { UnlinkedSessionLinker } from "@/components/content/UnlinkedSessionLinke
 import { prisma } from "@/lib/prisma";
 import { ReassessmentBanner } from "@/components/content/ReassessmentBanner";
 import { ContentLibraryPanel } from "@/components/content/ContentLibraryPanel";
-import { loadContentTab, loadRevisionsView, loadSessionGates, loadSessionsView, type RevisionCutUi } from "../workspaceData";
+import { loadContentTab, loadRevisionsView, loadSessionGates, loadSessionsView, type RevisionBriefUi, type RevisionCutUi } from "../workspaceData";
 import { MonthHeader, SubNav, type TabCtx } from "./shared";
 
 // ---------------------------------------------------------------------------
@@ -37,6 +37,28 @@ function CutRow({ c }: { c: RevisionCutUi }) {
         {c.status === "PENDING" ? "waiting for review" : "back with the editor"}
       </span>
     </Link>
+  );
+}
+
+const SOURCE_WORDS: Record<string, string> = { review_room: "the portal", portal: "the portal", openphone: "a text", gmail: "an email", email: "an email", manual: "the office", office: "the office", review_room_staff: "the office" };
+const fmtWhen = (iso: string) => new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+
+/** One revision ask: what the client said, when, who has it, and where it stands. */
+function RevisionAskRow({ b }: { b: RevisionBriefUi }) {
+  const tone = b.statusTone === "done" ? "bg-success/15 text-success" : b.statusTone === "review" ? "bg-brand-soft text-brand" : b.statusTone === "editor" ? "bg-surface-2 text-foreground/80" : "bg-warning-soft text-warning";
+  return (
+    <div className="space-y-2 px-5 py-3.5">
+      <div className="flex flex-wrap items-start gap-2">
+        <Link href={`/edit/${b.projectId}`} className="min-w-0 flex-1 basis-56 text-[15px] font-medium hover:text-brand hover:underline">{b.headline}</Link>
+        <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${tone}`}>{b.statusWord}</span>
+      </div>
+      <blockquote className="whitespace-pre-wrap rounded-lg border-l-2 border-border-strong bg-surface-2/40 px-3 py-2 text-sm leading-relaxed text-foreground/85">
+        {b.clientWords.length > 600 ? `${b.clientWords.slice(0, 600)}…` : b.clientWords}
+      </blockquote>
+      <p className="text-xs text-muted">
+        Came in {fmtWhen(b.createdAtISO)} ET{b.requestedBy ? ` from ${b.requestedBy}` : ""}{SOURCE_WORDS[b.source] ? ` by ${SOURCE_WORDS[b.source]}` : ""} · {b.projectTitle}{b.monthKey ? ` · ${monthLabel(b.monthKey)}` : ""}
+      </p>
+    </div>
   );
 }
 
@@ -70,25 +92,20 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
     return (
       <div className="space-y-5">
         {sub}
+        {/* Oct 27 2026 (Jordan: "When did this one come in? And why isn't it
+            with the editor? ... I can't even see where or what the revision
+            was"): each ask shows the client's own words, when it came in, who
+            has it, and its status from the revision task (revisionAskStatus). */}
         <Section icon={FileWarning} title="Revision asks" count={open.length} flush
-          action={<span className="text-[11px] text-muted-2">every month · newest first</span>}>
+          action={<span className="text-xs text-muted-2">every month, newest first</span>}>
           <div className="divide-y divide-border">
             {open.length === 0 && <p className="px-5 py-3 text-sm text-muted">No open revision asks.</p>}
-            {open.map((b) => (
-              <Link key={b.id} href={`/edit/${b.projectId}`} className="block px-5 py-2.5 hover:bg-surface-2/60">
-                <div className="text-[13px] font-medium">{b.headline}</div>
-                <div className="text-[12px] text-muted">
-                  {b.projectTitle}{b.monthKey ? ` · ${monthLabel(b.monthKey)}` : ""} · {b.total > 0 ? `${b.done} of ${b.total} done` : "not itemised yet"} · from {b.source.replace(/_/g, " ")} · {fmtDay(b.createdAtISO)}
-                </div>
-              </Link>
-            ))}
+            {open.map((b) => <RevisionAskRow key={b.id} b={b} />)}
           </div>
           {closed.length > 0 && (
-            <details className="border-t border-border px-5 text-[12px] text-muted">
-              <summary className="cursor-pointer py-2.5">{closed.length} finished</summary>
-              <ul className="space-y-0.5 pb-2.5">
-                {closed.map((b) => <li key={b.id}><Link href={`/edit/${b.projectId}`} className="hover:underline">{b.headline}</Link> <span className="text-muted-2">· {b.projectTitle}</span></li>)}
-              </ul>
+            <details className="border-t border-border">
+              <summary className="min-h-11 cursor-pointer px-5 py-2.5 text-[13px] text-muted">{closed.length} done</summary>
+              <div className="divide-y divide-border">{closed.map((b) => <RevisionAskRow key={b.id} b={b} />)}</div>
             </details>
           )}
         </Section>
@@ -194,8 +211,9 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
                 </p>
               )}
             </div>
+            {/* Oct 27 2026: the session-link repair lives inside the list it repairs (office only). */}
+            {ctx.officeEyes && <UnlinkedSessionLinker monthId={month.id} monthKey={month.monthKey} monthName={monthName.split(" ")[0]} jobs={unlinkedJobs.map((p) => ({ id: p.id, title: p.title, date: fmtDay(p.shootDate?.toISOString() ?? null) }))} />}
           </Section>
-          {ctx.officeEyes && <UnlinkedSessionLinker monthId={month.id} monthKey={month.monthKey} jobs={unlinkedJobs.map((p) => ({ id: p.id, title: p.title, date: fmtDay(p.shootDate?.toISOString() ?? null) }))} />}
           {/* CP-04/CP-05: the requests behind these sessions (confirm, decline,
               retry the hub's booking) and each exact address. */}
           <SessionsPanel enrollmentId={id} monthId={month.id} />

@@ -222,12 +222,12 @@ export function ProfileSections({
 }) {
   return (
     <Section icon={NotebookPen} title="Agent profile" action={<ProfileBuildButton clientId={clientId} />}>
-      <div className="space-y-2">
+      <div className="space-y-3">
         {SECTIONS.map((s) => (
           <ProfileSection key={s.key} clientId={clientId} section={s} raw={profile[s.key] ?? null} />
         ))}
         {customerNote && (
-          <p className="whitespace-pre-line rounded-lg bg-surface-2/60 px-3 py-2 text-[11px] text-muted">
+          <p className="whitespace-pre-line rounded-lg bg-surface-2/60 px-3 py-2 text-xs text-muted">
             Customer notes on the client record: &ldquo;{customerNote.slice(0, 160)}&rdquo;
           </p>
         )}
@@ -236,24 +236,51 @@ export function ProfileSections({
   );
 }
 
+// Oct 27 2026 (Jordan: "the Brand, the Voice, Prefs, AI Profile, Production,
+// Editing, Stories ... This is all good, but it needs to be cleaned up and much
+// easier to read ... It just looks like a bunch of text on the screen ... It
+// says 37 filled or 6 filled or whatever it is"): each section now READS as a
+// labelled list of what we know (empty fields left out), with Edit to change
+// it. The "N filled" counter is gone; it counted keys, not anything a person
+// needs. The fields are filled from the calls and the strategy automatically
+// (CONTENT-AI); this is where a person reads and corrects them.
 function ProfileSection({ clientId, section, raw }: { clientId: string; section: (typeof SECTIONS)[number]; raw: string | null }) {
   let parsed: Record<string, string> = {};
   try { parsed = raw ? JSON.parse(raw) : {}; } catch { parsed = {}; }
   const [open, setOpen] = useState(false);
   const [values, setValues] = useState<Record<string, string>>(parsed);
+  const [shownValues, setShownValues] = useState<Record<string, string>>(parsed);
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
-  const filled = Object.keys(parsed).length;
+  // The section's own fields first, in order, then anything else the profile
+  // builder wrote under its own label. Blank ones are not listed.
+  const keys = [...section.fields, ...Object.keys(shownValues).filter((k) => !section.fields.includes(k))];
+  const shown = keys.map((k) => [k, String(shownValues[k] ?? "").trim()] as const).filter(([, v]) => v.length > 0);
 
   return (
-    <div className="rounded-xl border border-border">
-      <button onClick={() => setOpen(!open)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
-        <span className="flex-1 text-sm font-medium">{section.label}</span>
-        <span className="text-[11px] text-muted-2">{filled > 0 ? `${filled} filled` : "empty"}</span>
-      </button>
+    <div className="rounded-xl border border-border bg-surface">
+      <div className="flex items-start gap-3 px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-semibold">{section.label}</h3>
+          <p className="mt-0.5 text-xs text-muted-2">{section.hint}{shown.length === 0 && !open ? ". Nothing here yet." : ""}</p>
+        </div>
+        <button onClick={() => setOpen(!open)} className="shrink-0 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+          {open ? "Close" : shown.length > 0 ? "Edit" : "Fill in"}
+        </button>
+      </div>
+      {note && !open && <p className="-mt-1 px-4 pb-2 text-[11px] text-muted">{note}</p>}
+      {!open && shown.length > 0 && (
+        <dl className="grid gap-x-6 border-t border-border px-4 py-3 sm:grid-cols-[11rem_1fr] sm:gap-y-3">
+          {shown.map(([k, v]) => (
+            <div key={k} className="contents">
+              <dt className="text-xs font-medium text-muted sm:pt-px">{k}</dt>
+              <dd className="mb-3 whitespace-pre-line text-[13px] leading-relaxed text-foreground/90 sm:mb-0">{v}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
       {open && (
-        <div className="space-y-2 border-t border-border p-3">
-          <p className="text-[11px] text-muted-2">{section.hint}</p>
+        <div className="space-y-2 border-t border-border p-4">
           {section.fields.map((f) => (
             <div key={f}>
               <label className="text-[11px] font-medium text-muted">{f}</label>
@@ -265,6 +292,7 @@ function ProfileSection({ clientId, section, raw }: { clientId: string; section:
           <button disabled={busy} onClick={() => start(async () => {
             const r = await saveProfileSection(clientId, section.key, values);
             setNote(r.message);
+            if (r.ok) { setShownValues(values); setOpen(false); }
           })} className="rounded-md bg-brand-action px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50">
             {busy ? <Loader2 className="inline size-3 animate-spin" /> : "Save"}
           </button>

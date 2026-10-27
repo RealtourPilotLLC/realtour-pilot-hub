@@ -1,9 +1,12 @@
 import Link from "next/link";
-import { AlertTriangle, CalendarDays, CheckCircle2, ClipboardCheck, FileText, FileUp, MessageSquare, Rocket } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, FileText, FileUp, Hand, Hourglass, MessageSquare, Rocket } from "lucide-react";
 import { MonthBriefPanel } from "@/components/brief/MonthBriefPanel";
 import { Section } from "@/components/ui/Section";
 import { MonthJourney, journeyFromOverview, monthJourneyLinks } from "@/components/content/MonthJourney";
-import { BlockedChip, SESSION_TONE } from "@/components/content/OverviewRow";
+import { SESSION_TONE } from "@/components/content/OverviewRow";
+import { StatusNotes, StatusSentence } from "@/components/content/ClientStatus";
+import { SendReminderButton } from "@/components/content/SendReminderButton";
+import { bookingReminderLine, clientCallName } from "@/lib/contentStatusLine";
 import { contentHref } from "@/lib/contentNav";
 import { overviewFacts } from "@/lib/programOverview";
 import { progressKey, staffMonthView } from "@/lib/monthProgress";
@@ -24,11 +27,23 @@ import { monthLabel } from "@/lib/contentProgram";
 // lives one click away: every line links to the Plan or Production view that
 // holds it. Scripts are approved on Plan › Scripts only (version-exact); the
 // Overview's old script list with its own Approve button is gone.
+//
+// Oct 27 2026 (Jordan: "This could be, like, way cleaner ... One session still
+// to book. That's not on us, that's on them."): the hero says who the month
+// waits on in one sentence, and the old "Missing work & approvals" list with
+// its us/them/approve chips is now two plain lists side by side, "Waiting on
+// <client>" and "Waiting on us", from the roster row's own items
+// (contentStatusLine.ts). The booking reminder's last send shows with them.
 // ---------------------------------------------------------------------------
 
 const fmtDay = (iso: string | null | undefined) =>
   iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : null;
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+const REMINDER_WORDS: Record<string, string> = {
+  BOOK_SESSION: "book the content session", BOOK_CALL: "book the strategy call", CHOOSE_PATH: "choose a call or written planning",
+  COMPLETE_ANSWERS: "answer the topic questions", PICK_TOPICS: "pick the month's topics", REVIEW_WORK: "review the videos",
+};
 
 const ONBOARDING_WORDS: Record<string, string> = {
   NOT_STARTED: "not started", DISCOVERY_BOOKED: "discovery call booked", DISCOVERY_HELD: "discovery call held",
@@ -80,20 +95,24 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
   // dominant button reloaded the page it sat on (Sep 24). Words only, then.
   const selfLink = !!row && row.nextAction.href === contentHref(id, { month: mk });
 
-  // What is still to do, and what waits on a decision — each with the view that holds it.
-  const work: { text: string; href: string; tone: "us" | "client" | "approval" }[] = [];
-  if (row) {
-    const w = row.work;
-    if (unanalyzed > 0) work.push({ text: `${plural(unanalyzed, "call transcript")} in — not analyzed yet`, href: contentHref(id, { tab: "plan", view: "calls", month: mk, anchor: "call" }), tone: "us" });
-    if (w.strategyReviewNeeded > 0) work.push({ text: `${plural(w.strategyReviewNeeded, "strategy version")} waiting for approval`, href: planHref("strategy"), tone: "approval" });
-    if (w.scriptsReviewNeeded > 0) work.push({ text: `${plural(w.scriptsReviewNeeded, "script")} waiting for approval`, href: planHref("scripts"), tone: "approval" });
-    if (w.openScriptRequests > 0) work.push({ text: `${plural(w.openScriptRequests, "client script request")} to answer`, href: planHref("scripts"), tone: "us" });
-    if (w.topicsNeeded > 0) work.push({ text: `${plural(w.topicsNeeded, "topic")} still to pick`, href: planHref("topics"), tone: "us" });
-    if (w.answersOutstanding > 0) work.push({ text: `${plural(w.answersOutstanding, "topic")} waiting on their answers`, href: planHref("topics"), tone: "client" });
-    if (row.production.awaitingInternalReview > 0) work.push({ text: `${plural(row.production.awaitingInternalReview, "cut")} waiting in the Review Room`, href: "/review", tone: "approval" });
-    if (row.production.clientReview > 0) work.push({ text: `${plural(row.production.clientReview, "cut")} with the client`, href: prodHref("videos"), tone: "client" });
-    if (row.session.missing > 0 && row.enrollmentStatus === "ACTIVE") work.push({ text: `${plural(row.session.missing, "session")} still to book`, href: prodHref("sessions"), tone: "us" });
-  }
+  // WHO IT WAITS ON (Oct 27 2026): the roster row's items, each linked to the
+  // view that holds the work, plus two only this page counts (a call
+  // transcript nobody analysed, cuts waiting in the Review Room).
+  const ITEM_HREF: Record<string, string> = {
+    book_discovery: planHref("strategy"), build_strategy: planHref("strategy"), approve_strategy: planHref("strategy"),
+    call_notes: contentHref(id, { tab: "plan", view: "calls", month: mk, anchor: "call" }), book_call: planHref("calls"), choose_path: planHref("calls"),
+    reconcile: planHref("topics"), pick_topics: planHref("topics"), answers: planHref("topics"),
+    approve_scripts: planHref("scripts"), write_scripts: planHref("scripts"), script_requests: planHref("scripts"),
+    confirm_session: prodHref("sessions"), book_session: prodHref("sessions"), confirm_appointment: prodHref("sessions"), confirm_filmed: prodHref("sessions"),
+    approve_videos: prodHref("videos"), review_cuts: prodHref("videos"), send_videos: "/", finish_videos: prodHref("videos"),
+  };
+  const theirs = (row?.waiting.them ?? []).map((x) => ({ key: x.key, text: x.text, href: ITEM_HREF[x.key] ?? contentHref(id, { month: mk }) }));
+  const ours = (row?.waiting.us ?? []).map((x) => ({ key: x.key, text: x.text, href: ITEM_HREF[x.key] ?? contentHref(id, { month: mk }) }));
+  if (unanalyzed > 0 && !ours.some((x) => x.key === "call_notes")) ours.unshift({ key: "analyze", text: `analyze ${plural(unanalyzed, "call transcript")}`, href: contentHref(id, { tab: "plan", view: "calls", month: mk, anchor: "call" }) });
+  if (row && row.production.awaitingInternalReview > 0) ours.push({ key: "review_room", text: `review ${plural(row.production.awaitingInternalReview, "cut")} in the Review Room`, href: "/review" });
+  const name = row ? clientCallName(row.clientName) : "the client";
+  const bookingWaiting = !!row && row.waiting.them.some((x) => x.key === "book_session");
+  const booking = row && bookingWaiting ? bookingReminderLine(row.comms, new Date()) : null;
 
   return (
     <div className="space-y-6">
@@ -142,13 +161,11 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
             </p>
           ) : (
             <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
-              <div className="min-w-0 flex-1 basis-64">
-                <div className="flex items-start gap-2">
-                  <BlockedChip blocked={f.blocked} closed={f.closed} />
-                  <p className="text-[15px] font-medium">{row.nextAction.text}</p>
-                </div>
-                <p className="mt-1 text-[12px] text-muted-2">
-                  {f.owner} · {f.ownerDuty}{f.dueLabel ? ` · due ${f.dueLabel}` : ""}
+              <div className="min-w-0 flex-1 basis-64 space-y-1.5">
+                <StatusSentence r={row} size="lg" />
+                <StatusNotes r={row} now={new Date()} />
+                <p className="text-xs text-muted-2">
+                  Next step: {row.nextAction.text.replace(/\s+[—–]\s+/g, ". ")} ({f.owner}{f.dueLabel ? `, due ${f.dueLabel}` : ""})
                 </p>
               </div>
               {!selfLink && (
@@ -227,23 +244,33 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
           ) : <p className="text-sm text-muted">Nothing to read.</p>}
         </Section>
 
-        {/* MISSING WORK & APPROVALS. */}
-        <Section icon={ClipboardCheck} title="Missing work & approvals" count={work.length}>
-          {work.length === 0 ? (
-            <p className="flex items-center gap-1.5 text-[13px] text-success"><CheckCircle2 className="size-4" /> Nothing outstanding on {month ? "this month" : "the program"}.</p>
-          ) : (
-            <ul className="space-y-1.5 text-[13px]">
-              {work.map((w, i) => (
-                <li key={i} className="flex items-start gap-2">
-                  <span className={w.tone === "client" ? "mt-0.5 shrink-0 rounded bg-waiting-soft px-1.5 text-[10px] font-semibold text-waiting" : w.tone === "approval" ? "mt-0.5 shrink-0 rounded bg-brand-soft px-1.5 text-[10px] font-semibold text-brand" : "mt-0.5 shrink-0 rounded bg-warning/15 px-1.5 text-[10px] font-semibold text-warning"}>
-                    {w.tone === "client" ? "them" : w.tone === "approval" ? "approve" : "us"}
-                  </span>
-                  <Link href={w.href} className="hover:text-brand hover:underline">{w.text}</Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Section>
+        {/* WHO IT WAITS ON (Oct 27 2026): theirs and ours, never one mixed list. */}
+        <div className="space-y-5">
+          <Section icon={Hourglass} title={`Waiting on ${name}`} count={theirs.length}>
+            {theirs.length === 0 ? (
+              <p className="text-[13px] text-muted">Nothing.</p>
+            ) : (
+              <ul className="space-y-1.5 text-sm">
+                {theirs.map((w) => <li key={w.key}><Link href={w.href} className="hover:text-brand hover:underline">{w.text[0].toUpperCase() + w.text.slice(1)}</Link></li>)}
+              </ul>
+            )}
+            {booking && (
+              <div className="mt-2.5 flex flex-wrap items-center gap-2 border-t border-border pt-2.5 text-xs text-muted">
+                <span>{booking.text}</span>
+                {ctx.officeEyes && row?.monthId && <SendReminderButton monthId={row.monthId} clientName={row.clientName} />}
+              </div>
+            )}
+          </Section>
+          <Section icon={Hand} title="Waiting on us" count={ours.length}>
+            {ours.length === 0 ? (
+              <p className="flex items-center gap-1.5 text-[13px] text-muted"><CheckCircle2 className="size-4 text-success" /> Nothing on our side.</p>
+            ) : (
+              <ul className="space-y-1.5 text-sm">
+                {ours.map((w) => <li key={w.key} className="flex items-start gap-2"><span aria-hidden className="mt-[0.45em] size-1.5 shrink-0 rounded-full bg-brand" /><Link href={w.href} className="hover:text-brand hover:underline">{w.text[0].toUpperCase() + w.text.slice(1)}</Link></li>)}
+              </ul>
+            )}
+          </Section>
+        </div>
       </div>
 
       {/* COMMUNICATION — reminders are READ from the ledger (an empty one says so), plus the program conversation. */}
@@ -251,7 +278,7 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
         <Section icon={MessageSquare} title="Communication" action={<Link href={contentHref(id, { tab: "messages" })} className="inline-flex min-h-9 items-center text-[12px] font-medium text-brand hover:underline">Messages →</Link>}>
           <div className="space-y-1 text-[13px]">
             {row.comms.messagesWaiting > 0 ? (
-              <p className="text-warning">{plural(row.comms.messagesWaiting, "client message")} waiting for an answer{row.comms.oldestWaitingAt ? ` since ${fmtDay(row.comms.oldestWaitingAt.toISOString())}` : ""}</p>
+              <p className="font-medium text-brand">{plural(row.comms.messagesWaiting, "new client message")} waiting for an answer{row.comms.oldestWaitingAt ? ` since ${fmtDay(row.comms.oldestWaitingAt.toISOString())}` : ""}</p>
             ) : (
               <p className="text-muted">No client message waiting.</p>
             )}
@@ -261,7 +288,7 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
               </p>
             )}
             {remindersOn && (row.comms.everSent ? (
-              <p>Last reminder: {row.comms.lastAction?.toLowerCase().replace(/_/g, " ")} · {fmtDay(row.comms.lastAt?.toISOString())}</p>
+              <p className="text-muted">Last reminder email: {row.comms.lastAction ? REMINDER_WORDS[row.comms.lastAction] ?? row.comms.lastAction.toLowerCase().replace(/_/g, " ") : "a reminder"}, {fmtDay(row.comms.lastAt?.toISOString())}</p>
             ) : (
               <p className="text-muted">No reminder has been sent for this month.</p>
             ))}

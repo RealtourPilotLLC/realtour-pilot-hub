@@ -65,9 +65,21 @@ export type TermInput = {
   termStartMonth: string | null;
   termEndMonth: string | null;
   billingMonths: number | null;
-  /** the first live ContentMonth, when the start was never set */
+  /** the client's first program month on record, when the start was never set
+   *  (earliestMonthKey: imported history and the enrollment's start count) */
   firstMonthKey: string | null;
 };
+
+/** Oct 27 2026 (Jordan, a client's Settings tab: "signed August, 2026, no ...
+ *  she did not sign in August, she signed much before that"). With no signed
+ *  start on file, the term started at the EARLIEST evidence: the first month
+ *  on record including imported history, or the day the enrollment started.
+ *  It used to read the first live month only, so every client whose earlier
+ *  months were imported rather than run through the hub "started" the month
+ *  the hub took over (August 2026). Pure. */
+export function earliestMonthKey(keys: (string | null | undefined)[]): string | null {
+  return keys.filter(isMonthKey).sort()[0] ?? null;
+}
 export type LedgerRow = { kind: string; qty: number; state: string };
 
 export type Term = {

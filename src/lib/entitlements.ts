@@ -1,10 +1,11 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import {
-  ENTITLEMENT_LABEL, RECORD_ONLY, isEntitlementKind, isMonthKey, monthName, termOf,
+  ENTITLEMENT_LABEL, RECORD_ONLY, earliestMonthKey, isEntitlementKind, isMonthKey, monthName, termOf,
   type EntitlementKind, type EntitlementState, type Term,
 } from "@/lib/entitlementsCore";
 import { monthStarted } from "@/lib/forfeit";
+import { etDayKey } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // THE CLIENT ENTITLEMENT LEDGER, SERVER HALF (Oct 15 2026). The words and the
@@ -140,13 +141,17 @@ const view = (r: Awaited<ReturnType<typeof prisma.programEntitlement.findMany>>[
 
 /** Everything the staff card shows for one program. */
 export async function entitlementSummary(enrollmentId: string, opts: { now?: Date; sessions?: boolean } = {}): Promise<EntitlementSummary | null> {
-  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { id: true, termStartMonth: true, termEndMonth: true, billingMonths: true, sessionsPerMonth: true } });
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { id: true, termStartMonth: true, termEndMonth: true, billingMonths: true, sessionsPerMonth: true, startedAt: true } });
   if (!e) return null;
-  const [rows, months] = await Promise.all([
+  const [rows, months, firstOnRecord] = await Promise.all([
     prisma.programEntitlement.findMany({ where: { enrollmentId }, orderBy: { createdAt: "asc" } }),
     prisma.contentMonth.findMany({ where: { enrollmentId, historical: false }, orderBy: { monthKey: "asc" }, select: { id: true, monthKey: true, status: true } }),
+    // Oct 27 2026: imported (historical) months count for WHEN THEY STARTED,
+    // never for the session ledger below (earliestMonthKey says why).
+    prisma.contentMonth.findFirst({ where: { enrollmentId }, orderBy: { monthKey: "asc" }, select: { monthKey: true } }),
   ]);
-  const term = termOf({ termStartMonth: e.termStartMonth, termEndMonth: e.termEndMonth, billingMonths: e.billingMonths, firstMonthKey: months[0]?.monthKey ?? null }, rows);
+  const firstMonthKey = earliestMonthKey([months[0]?.monthKey, firstOnRecord?.monthKey, e.startedAt ? etDayKey(e.startedAt).slice(0, 7) : null]);
+  const term = termOf({ termStartMonth: e.termStartMonth, termEndMonth: e.termEndMonth, billingMonths: e.billingMonths, firstMonthKey }, rows);
   const views = rows.map(view);
   const live = views.filter((r) => r.state !== "VOID");
   const owed = live.filter((r) => (r.state === "OPEN" || r.state === "SCHEDULED") && !RECORD_ONLY.has(r.kind));

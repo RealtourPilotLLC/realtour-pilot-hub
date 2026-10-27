@@ -106,13 +106,34 @@ export function strategyBlocks(text: string): StrategyBlock[] {
   return top;
 }
 
+// PDF PAGE FURNITURE (Oct 27 2026, Jordan: "The one of three, I don't know
+// what this is. And it shows on the client portal too"). pdf-parse writes a
+// "-- 1 of 3 --" line at every page break of an uploaded strategy, and it was
+// stored with the section text, so "1 of 3" and "3 of 3" printed as
+// paragraphs on the staff page and the client's My Strategy page. They are
+// dropped when the section is DISPLAYED (the stored version is untouched);
+// strategyBlocks itself still keeps every word it is given.
+const PAGE_MARKER_LINE = /^\s*(?:--\s*\d+\s+of\s+\d+\s*--|page\s+\d+\s+of\s+\d+|\d+\s+of\s+\d+)\s*$/i;
+const PAGE_MARKER_INLINE = /\s*--\s*\d+\s+of\s+\d+\s*--\s*/g;
+/** True for a line that is only a page marker ("-- 2 of 3 --", "Page 2 of 3"). */
+export const isPageMarker = (line: string): boolean => PAGE_MARKER_LINE.test(line);
+/** The text without PDF page markers, every other word kept. */
+export function stripPageMarkers(text: string): string {
+  return text
+    .split("\n")
+    .filter((l) => !PAGE_MARKER_LINE.test(l))
+    .join("\n")
+    .replace(PAGE_MARKER_INLINE, " ")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
 /**
  * The blocks of one SECTION. Content Goals are a list whatever the source
  * did with them: a Word export gives each goal its own paragraph with no
  * bullet, and five one-line paragraphs read as prose, not goals.
  */
 export function sectionBlocks(section: StrategyDocSection): StrategyBlock[] {
-  const blocks = strategyBlocks(section.text);
+  const blocks = strategyBlocks(stripPageMarkers(section.text));
   const goals = section.id === "content-goals" || /content goals?$/i.test(section.heading.trim());
   if (goals && blocks.length > 1 && blocks.every((b) => b.kind === "paragraph" && b.text.length <= 240)) {
     return [{ kind: "list", ordered: false, items: blocks.map((b) => (b.kind === "paragraph" ? b.text : "")) }];
