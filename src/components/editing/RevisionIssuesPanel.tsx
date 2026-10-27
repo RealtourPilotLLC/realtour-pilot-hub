@@ -16,6 +16,7 @@ import {
   verifyIssueAction,
 } from "@/app/review/issueActions";
 import type { IssueView } from "@/lib/revisionIssues";
+import { AskQuestionButton } from "@/components/editing/AskQuestionButton";
 
 // ---------------------------------------------------------------------------
 // THE JOB'S REVISION ISSUES (§8.3) — every actionable ask on this job's videos,
@@ -54,7 +55,7 @@ function stateTone(state: string): string {
   return "bg-surface-2 text-muted";
 }
 
-function IssueRow({ issue, all, canReview }: { issue: IssueView; all: IssueView[]; canReview: boolean }) {
+function IssueRow({ issue, all, canReview, ask }: { issue: IssueView; all: IssueView[]; canReview: boolean; ask?: { projectId: string; who: (i: IssueView) => string } | null }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<string | null>(null);
@@ -180,6 +181,8 @@ function IssueRow({ issue, all, canReview }: { issue: IssueView; all: IssueView[
         </div>
       )}
       {msg && <p className="mt-1.5 text-[11px] text-muted">{msg}</p>}
+      {/* Oct 27 2026: the editor's "Ask a question" on this note (lib/editorQuestions). */}
+      {ask && !canReview && live && <AskQuestionButton projectId={ask.projectId} target={{ kind: "issue", id: issue.id }} who={ask.who(issue)} className="-ml-2 mt-1" />}
       {canReview && issue.events.length > 0 && (
         <details className="mt-1.5">
           <summary className="cursor-pointer text-[11px] text-muted-2">History ({issue.events.length})</summary>
@@ -201,7 +204,10 @@ function IssueRow({ issue, all, canReview }: { issue: IssueView; all: IssueView[
 // anchorId: the job's issue list answers /edit/<id>#issues (editorQuality,
 // revisionIssues). A second, partial list on the same page (the editor brief's
 // "Fix these") passes null so the page never carries the id twice.
-export function RevisionIssuesPanel({ issues, canReview, attestations = [], anchorId = "issues" }: { issues: IssueView[]; canReview: boolean; attestations?: AttestationView[]; anchorId?: string | null }) {
+export function RevisionIssuesPanel({ issues, canReview, attestations = [], anchorId = "issues", askProjectId = null, askWho = {} }: { issues: IssueView[]; canReview: boolean; attestations?: AttestationView[]; anchorId?: string | null; askProjectId?: string | null; askWho?: Record<string, string> }) {
+  // Oct 27 2026: the editor's Ask a question, with who each note's question
+  // is texted to (worked out on the server, lib/editorQuestionsCore askWhoWords).
+  const ask = askProjectId ? { projectId: askProjectId, who: (i: IssueView) => askWho[i.id] ?? "the creative manager" } : null;
   if (issues.length === 0 && attestations.length === 0) return null;
   const groups = new Map<string, IssueView[]>();
   for (const i of issues.filter((x) => !x.duplicateOfId)) {
@@ -225,7 +231,7 @@ export function RevisionIssuesPanel({ issues, canReview, attestations = [], anch
           <div key={label}>
             <p className="text-xs font-semibold uppercase tracking-wide text-muted-2">{label}</p>
             <ul className="mt-2 space-y-2">
-              {list.map((i) => <IssueRow key={i.id} issue={i} all={issues} canReview={canReview} />)}
+              {list.map((i) => <IssueRow key={i.id} issue={i} all={issues} canReview={canReview} ask={ask} />)}
             </ul>
           </div>
         ))}

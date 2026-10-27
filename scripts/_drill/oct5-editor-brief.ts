@@ -11,13 +11,14 @@
 // monthly content session and as John Mark on a listing reel, and asserts:
 //   §1 the money scrub: a client-approved hook ("The first weekend decides
 //      your price.") survives; our billing language in an order note does not
-//   §2 the selected video reads (Oct 15 2026, the brief audit) job bar →
-//      What to make (Make this, their words, Script, Music, end card) →
-//      Footage and brand files; Fix these comes right under the job bar
-//      when it was sent back; About the client closes the page
-//   §3 one footage link in the brief (plus the job bar's "Open footage"
-//      before the edit starts), one link per brand file, ONE deadline in the
-//      reader's own clock
+//   §2 the selected video reads (Oct 27 2026, Jordan's Loom) job bar with
+//      What to make in one line (Make this folded under Details) → team
+//      messages → their brand → Footage → Instructions (their words, Script,
+//      Music, end card); Fix these comes right under the job bar when it was
+//      sent back; About the client is a side column
+//   §3 one footage link on the page, in Footage (the job bar's own "Open
+//      footage" is gone, Oct 27 2026), one link per brand file, ONE deadline
+//      in the reader's own clock
 //   §4 every video chip names its topic on the chip
 //   §5 none of the audit's jargon reaches an editor
 //   §6 the Agent Profile: collapsed (name, brokerage, team, segment, summary),
@@ -224,21 +225,23 @@ async function main() {
     c.ok("the selected video is one article", !!article1 && count(kim1, 'data-brief="selected-video"') === 1);
     c.ok("the hook reaches the editor intact, and so does the rest of the approved script", text(article1).includes(HOOK) && text(article1).includes("At a $1M price point") && text(article1).includes("down payment math"), text(article1).slice(0, 400));
     const order1 = sectionsInOrder(article1);
-    // Oct 15 2026 (the brief audit): the order the work happens — the job bar,
-    // What to make (script and music inside it), Footage and brand files; the
-    // client closes the page, outside the video's brief.
-    c.ok("sections in order: job bar, What to make (script, music), Their brand (Oct 20 2026), Footage", JSON.stringify(order1) === JSON.stringify(["header", "make", "script", "music", "brand", "footage"]), order1.join(" > "));
-    const make1 = block(article1, /data-brief-section="make"/);
+    // Oct 27 2026 (Jordan's Loom: "this whole editing brief needs to be
+    // cleaned up"): the job bar with What to make in one line, the team's
+    // messages, their brand, the footage, then the instructions with the
+    // script and the music inside them; the client sits beside the brief.
+    const NEW_ORDER = ["header", "make", "messages", "brand", "footage", "instructions", "script", "music"];
+    c.ok("sections in order: job bar (What to make inside it), team messages, their brand, Footage, Instructions (script, music)", JSON.stringify(order1) === JSON.stringify(NEW_ORDER), order1.join(" > "));
+    const make1 = block(article1, /data-brief-section="instructions"/);
     c.ok("Make this: the personal-branding default when the office wrote no specs", text(block(article1, /data-make-this/)).includes(PERSONAL_BRANDING_MAKE_THIS.replace(/&/g, "&")), text(block(article1, /data-make-this/)));
     c.ok("the script is OPEN by default with a Copy button, and an approved script wears no warning", /<section[^>]*data-brief-section="script"[\s\S]*?<details open=""/.test(article1) && article1.includes('aria-label="Copy the script"') && !article1.includes("data-not-approved"));
     c.ok("a blank script section is not drawn as '(empty)'", !kim1Text.includes("(empty)") && !/Caption CTA/i.test(text(block(article1, /data-brief-section="script"/))));
     const links1 = externalLinks(article1);
     const footageLinks = (links: string[]) => links.filter((u) => u.includes("/isolated/oct5/") || u.startsWith("/api/dropbox/open/"));
-    // Oct 15 2026: before the edit starts the job bar offers "Open footage"
-    // beside Start (the audit's table); the brief itself links it once.
+    // Oct 27 2026 (Jordan's Loom): the job bar's own "Open footage" is gone;
+    // the footage is opened from Footage, once.
     const barLinks = (html: string) => externalLinks(block(html, /data-brief-section="header"/));
     const briefLinks = (html: string) => { const bar = barLinks(html); return externalLinks(html).filter((u) => { const i = bar.indexOf(u); if (i === -1) return true; bar.splice(i, 1); return false; }); };
-    c.ok("one footage link in the brief — this topic's own clips — the job bar's Open footage is the same link, and no other duplicate", footageLinks(briefLinks(article1)).length === 1 && links1.some((u) => u.includes("01-First%20weekend") || u.includes("01-First weekend")) && footageLinks(barLinks(article1)).length === 1 && footageLinks(barLinks(article1))[0] === footageLinks(briefLinks(article1))[0] && new Set(briefLinks(article1)).size === briefLinks(article1).length, links1.join(" | "));
+    c.ok("one footage link in the brief — this topic's own clips — none in the job bar, and no other duplicate", footageLinks(briefLinks(article1)).length === 1 && links1.some((u) => u.includes("01-First%20weekend") || u.includes("01-First weekend")) && footageLinks(barLinks(article1)).length === 0 && footageLinks(externalLinks(block(article1, /data-brief-section="footage"/))).length === 1 && new Set(briefLinks(article1)).size === briefLinks(article1).length, links1.join(" | "));
     c.ok("the raw job folder is linked nowhere else on the page", count(kim1, "isolated/oct5/maple/oct\"") + count(kim1, "isolated/oct5/maple/oct/02-RAW-Video\"") === 0, String(count(kim1, "maple/oct")));
     const dueBlock = text(block(article1, /<div[^>]*data-due/));
     const manila = due.toLocaleString("en-US", { timeZone: "Asia/Manila", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -250,13 +253,14 @@ async function main() {
     c.ok("Footage carries the photographer's note", footage1.includes("Take 3 is the keeper"));
     const brand1 = block(article1, /data-brief-section="brand"/);
     c.ok("Brand: the portal's colours with hex and the note's fonts", text(brand1).includes("#0B3D2E") && text(brand1).includes("#C9A227") && !text(brand1).includes("#FF0000") && text(brand1).includes("Montserrat and Lora"), text(brand1).slice(0, 300));
-    // Oct 15 2026: their own words are part of What to make (they win over
-    // the house style); About the client closes the page, outside the brief.
+    // Oct 15 2026: their own words are part of the brief (they win over the
+    // house style); since Oct 27 2026 they sit in Instructions, and About the
+    // client is the side column, outside the video's brief.
     const client1 = block(make1, /data-their-words/);
-    c.ok("their own words sit in What to make, and say they win over the house style", text(client1).includes("Calm, confident, no flashy transitions.") && text(client1).includes("theirs wins"));
+    c.ok("their own words sit in Instructions, and say they win over the house style", text(client1).includes("Calm, confident, no flashy transitions.") && text(client1).includes("theirs wins"));
     c.ok("the order note reaches the editor without our billing", text(client1).includes("Please keep her on the left third.") && !kim1Text.includes("$175") && !/invoice/i.test(kim1Text), text(client1).slice(0, 300));
-    c.ok("About the client comes after the brief, the team messages and the upload", !article1.includes('data-brief-section="client"') && kim1.indexOf('data-brief-section="client"') > kim1.indexOf('id="submit-cut"'));
-    c.ok("the office's fee sentence is withheld, its real-estate instruction kept", text(block(article1, /data-brief-section="make"/)).includes("Show the pricing chart") && !kim1Text.includes("$150"));
+    c.ok("About the client is the side column, outside the video's brief", !article1.includes('data-brief-section="client"') && /<aside[^>]*data-brief-section="client"/.test(kim1) && kim1.indexOf('data-brief-section="client"') > kim1.indexOf('id="submit-cut"'));
+    c.ok("the office's fee sentence is withheld, its real-estate instruction kept", text(block(article1, /data-brief-section="instructions"/)).includes("Show the pricing chart") && !kim1Text.includes("$150"));
     c.ok("Music: trending audio for a monthly reel, once", text(block(article1, /data-brief-section="music"/)).includes("trending audio") && count(kim1Text, "trending audio") === 1);
     // Oct 16 2026 (the repeating video problems): a monthly video has no
     // listing flow; it does get the names to spell, beside its script.
@@ -288,7 +292,7 @@ async function main() {
     c.ok("the Brand section carries the portal's colours (hex) and the Aryeo note's fonts", text(brand1).includes("#0B3D2E") && text(brand1).includes("Montserrat and Lora"), text(brand1).slice(0, 400));
     c.ok("…and the Agent Profile does not repeat them", !expanded1.includes("#0B3D2E") && !expanded1.includes("Montserrat and Lora"), expanded1.slice(0, 400));
     c.ok("the Aryeo note's style line is in their words, said once", text(client1).includes("Always add her animated logo") && count(kim1Text, "Always add her animated logo") === 1);
-    c.ok("…so the end card asks for the logo instead of skipping it (in What to make), with a way to ask Kyle", text(block(make1, /data-end-card/)).includes("Their notes ask for their logo") && text(block(make1, /data-end-card/)).includes("name card") && /data-end-card[^>]*>[\s\S]*?href="#messages"/.test(make1));
+    c.ok("…so the end card asks for the logo instead of skipping it (in Instructions), with a way to ask Kyle", text(block(make1, /data-end-card/)).includes("Their notes ask for their logo") && text(block(make1, /data-end-card/)).includes("name card") && /data-end-card[^>]*>[\s\S]*?href="#messages"/.test(make1));
     c.ok("…the portal's explicit colours win over the note's, and no money anywhere in the card", !text(profile1).includes("#FF0000") && !text(profile1).includes("$175") && !/lifetime|\$\d/i.test(text(profile1)));
 
     // =======================================================================
@@ -299,7 +303,10 @@ async function main() {
     c.ok("the header names the topic", text(block(article2, /data-brief-section="header"/)).includes(`Video 2 of 4: ${titles[1]}`));
     c.ok("Make this: the office's line for this video replaces the default", text(block(article2, /data-make-this/)).includes("16:9 horizontal for YouTube") && text(article2).includes("Set by the office for this video"));
     c.ok("Oct 16: a video the office made for YouTube (90 s) is licensed music only, never trending audio", text(block(article2, /data-brief-section="music"/)).includes("licensed music only (it's for YouTube or the MLS)") && !/use trending audio/.test(text(article2)), text(block(article2, /data-brief-section="music"/)));
-    c.ok("a script the client has not approved wears the badge", article2.includes("data-not-approved") && text(article2).includes("Not approved by the client yet"));
+    // Oct 27 2026 (Jordan's Loom: "that doesn't matter, it doesn't need to
+    // show up here"): the editor's brief no longer says whether the client
+    // approved the script, either way.
+    c.ok("a script the client has not approved wears no badge and no warning", !article2.includes("data-not-approved") && !text(article2).includes("Not approved by the client yet") && !text(article2).includes("Check with Kyle before you burn in the captions") && !text(article1).includes("Approved by the client"));
     c.ok("no topic folder: one raw-footage link and the honest one-line fallback", footageLinks(briefLinks(article2)).length === 1 && text(article2).includes("aren't in a folder of their own"));
 
     // =======================================================================
@@ -309,7 +316,7 @@ async function main() {
     const johnText = text(john);
     const articleL = block(john, new RegExp(`<article[^>]*id="brief-${oak.id}"`));
     const orderL = sectionsInOrder(articleL);
-    c.ok("the same order on a listing reel", JSON.stringify(orderL) === JSON.stringify(["header", "make", "script", "music", "brand", "footage"]), orderL.join(" > "));
+    c.ok("the same order on a listing reel", JSON.stringify(orderL) === JSON.stringify(NEW_ORDER), orderL.join(" > "));
     c.ok("Make this: the listing style's own spec, not the monthly one", text(block(articleL, /data-make-this/)).includes(defaultMakeThis("standard_reel_agent_intro")) && !text(articleL).includes("30–60 s"));
     c.ok("Oct 16: the listing reel carries the Listing flow line and spells Rob, his brokerage, the street and the town", text(block(articleL, /data-listing-flow/)).includes("inside within 5 seconds") && ["Rob Listing", "Main Line Realty", "415 Oak Street", "Wayne"].every((x) => text(block(articleL, /data-spell-list/)).includes(x)), text(block(articleL, /data-spell-list/)));
     const scriptL = text(block(articleL, /data-brief-section="script"/));
@@ -322,7 +329,7 @@ async function main() {
     c.ok("John's Agent Profile: Rob, Main Line Realty and the segment; the Aryeo note's colours are in the Brand section", text(block(profileL, /<summary/)).includes("Rob Listing") && text(profileL).includes("Main Line Realty") && text(profileL).includes("One-Timer") && !text(profileL).includes("#1B2A4A") && text(block(articleL, /data-brief-section="brand"/)).includes("#1B2A4A"), text(profileL).slice(0, 400));
     const jargonL = JARGON.filter((j) => johnText.includes(j) || john.includes(j));
     c.ok("none of the audit's jargon reaches John", jargonL.length === 0, jargonL.join(", "));
-    c.ok("one video on the job: no chooser, one footage link (plus the job bar's Open footage)", !john.includes('aria-label="Video selector"') && footageLinks(briefLinks(john)).length === 1);
+    c.ok("one video on the job: no chooser, one footage link", !john.includes('aria-label="Video selector"') && footageLinks(briefLinks(john)).length === 1);
 
     // =======================================================================
     c.head("§7 · sent back: Fix these comes first, right under the job bar");
@@ -334,7 +341,7 @@ async function main() {
     const articleB = block(back, new RegExp(`<article[^>]*id="brief-${outs[0].id}"`));
     const orderB = sectionsInOrder(articleB);
     // Oct 14 2026 (Jordan): "revision requests should be at the top of the editor brief".
-    c.ok("the order holds, with Fix these first, right under the job bar", JSON.stringify(orderB) === JSON.stringify(["header", "changes", "make", "script", "music", "brand", "footage"]), orderB.join(" > "));
+    c.ok("the order holds, with Fix these first, right under the job bar", JSON.stringify(orderB) === JSON.stringify(["header", "make", "changes", ...NEW_ORDER.slice(2)]), orderB.join(" > "));
     // Oct 15 2026 (the brief audit): Fix these IS the version's player and its
     // numbered notes, each time playable, said once on the page, with
     // "Upload version 2" at the end of the list.
@@ -363,8 +370,9 @@ async function main() {
     const header = (html: string) => block(html, /data-brief-section="header"/);
     const actions = (html: string) => block(header(html), /<div[^>]*data-job-actions/);
     const kimV2 = await view("Kim", monthly.id, { output: outs[1].id });
-    c.ok("not started: \"Not started yet\", the main button Start video 2, Open footage beside it, no upload yet",
-      text(header(kimV2)).includes("Not started yet.") && /Start video 2[\s\S]*Open footage/.test(text(actions(kimV2))) && !actions(kimV2).includes("data-upload-trigger"), text(actions(kimV2)));
+    // Oct 27 2026 (Jordan's Loom): no second "Open footage" beside Start.
+    c.ok("not started: \"Not started yet\", the main button Start video 2, no Open footage beside it, no upload yet",
+      text(header(kimV2)).includes("Not started yet.") && /Start video 2/.test(text(actions(kimV2))) && !/Open (raw )?footage/.test(text(actions(kimV2))) && !actions(kimV2).includes("data-upload-trigger"), text(actions(kimV2)));
     const { startEditingAction } = await import("@/app/editing/workActions");
     await as("Kim");
     const started = await startEditingAction({ projectId: monthly.id, requestId: globalThis.crypto.randomUUID(), outputId: outs[1].id });
@@ -375,7 +383,9 @@ async function main() {
     const kimV3 = await view("Kim", monthly.id, { output: outs[2].id });
     c.ok("with the reviewer: no main button, \"… since …\", and Edit the note to the reviewer",
       /(With James|In review) since/.test(text(header(kimV3))) && text(actions(kimV3)).includes("Edit the note to the reviewer") && !actions(kimV3).includes("data-upload-trigger") && !actions(kimV3).includes("bg-brand-action"), text(header(kimV3)).slice(0, 300));
-    c.ok("…and What to make folds to one line once a version is in", /data-brief-section="make"[^>]*>\s*<details/.test(kimV3) && !/data-brief-section="make"[^>]*>\s*<details/.test(kimV2));
+    // Oct 27 2026: What to make is one line in the job bar in every state; the
+    // instructions fold once a version is in.
+    c.ok("…and the Instructions fold once a version is in, What to make staying one line in the job bar", /data-brief-section="instructions"[^>]*>\s*<details/.test(kimV3) && !/data-brief-section="instructions"[^>]*>\s*<details/.test(kimV2) && /data-what-to-make/.test(header(kimV3)) && /data-what-to-make/.test(header(kimV2)));
     c.ok("…and the version plays in Send for review, not in a Fix these", kimV3.includes(`id="cut-${v3.id}"`) && !kimV3.includes('data-brief-section="changes"'));
     await prisma.reviewSubmission.create({ data: { projectId: monthly.id, deliverableId: accel.id, outputId: outs[3].id, slot: outs[3].slot, round: 1, status: "APPROVED", fileName: "maple-4-v1.mp4", source: "upload", sourceWidth: 1080, sourceHeight: 1920, submittedByKey: "kim", submittedByName: "Kim", selfCheckedAt: yesterday, decidedAt: yesterday, decidedBy: "James", completedAt: yesterday } });
     const kimV4 = await view("Kim", monthly.id, { output: outs[3].id });

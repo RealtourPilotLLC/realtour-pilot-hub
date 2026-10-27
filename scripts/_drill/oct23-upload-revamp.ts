@@ -329,10 +329,15 @@ async function main() {
     console.warn = () => {};
     const songTree = await EditPage({ params: Promise.resolve({ id: songJob }), searchParams: Promise.resolve({}) } as never);
     console.warn = warn;
-    const footage = find(songTree, (e) => e.props?.id === "video-footage")[0];
-    const fw = footage ? said(footage) : "";
+    // Oct 27 2026 (Jordan's Loom): the video notes moved out of Footage into
+    // Instructions ("video notes, style, color profile, vision for the edit,
+    // and then script"), each field on its own line.
+    const instructionsCard = find(songTree, (e) => e.props?.["data-brief-section"] === "instructions")[0];
+    const fw = instructionsCard ? said(instructionsCard) : "";
     c.ok("the editor's brief has the song on its own line: title, link and start", /Song request: Good Days by LAKEY INSPIRED · https:\/\/open\.spotify\.com\/track\/abc · start: 0:30/.test(fw), fw.slice(0, 400));
-    c.ok("…and the video notes without the machine lines", /Video notes: COLOR PROFILE: iPhone/.test(fw) && !/Video notes:[^]*SONG TITLE/.test(fw));
+    c.ok("…and the video notes without the machine lines", /Color profile\s*iPhone/.test(fw) && /Open on the deck, quick cuts\./.test(fw) && !/COLOR PROFILE:|SONG TITLE/.test(fw), fw.slice(0, 400));
+    const footageWords = said(find(songTree, (e) => e.props?.id === "video-footage")[0]);
+    c.ok("…and the footage card does not say them a second time", !/Song request|Open on the deck/.test(footageWords), footageWords.slice(0, 300));
     const songPacket = await buildEditorPacket(songJob);
     c.ok("the packet lists the song request", (songPacket?.manifest.job.songRequests ?? []).some((l) => /Good Days by LAKEY INSPIRED/.test(l)), JSON.stringify(songPacket?.manifest.job.songRequests));
     // Different songs for different videos.

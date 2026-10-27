@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Clapperboard, FolderOpen, ExternalLink, Loader2, MessageSquarePlus, PlayCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { EditFeedback } from "@/components/editing/EditFeedback";
+import { AskQuestionButton } from "@/components/editing/AskQuestionButton";
 import { addCutNote } from "@/app/review/actions";
 import type { CutNote } from "@/lib/reviewRoom";
 import { verdictLine, type Verdict } from "@/lib/reviewAttribution";
@@ -54,6 +55,7 @@ export function EditorCutPanel({
   viewerName,
   player = true,
   verdict = null,
+  ask = false,
 }: {
   projectId: string;
   submissionId: string;
@@ -73,7 +75,10 @@ export function EditorCutPanel({
   /** The editor's own notes for the reviewer: shown apart, never as fixes (Oct 15 2026). */
   ownNotes?: CutNote[];
   /** The reviewer's notes on this video still to fix (or marked fixed, waiting on the reviewer): under the player, each time plays its moment. */
-  issues?: { id: string; state: string; text: string; timeSec: number | null; by: string | null; round: number | null }[];
+  issues?: { id: string; state: string; text: string; timeSec: number | null; by: string | null; round: number | null; askWho?: string | null }[];
+  /** Oct 27 2026 (Jordan: "an ask a question button ... about a specific
+   *  revision"): a small Ask a question on each note, for the editor. */
+  ask?: boolean;
   canFix: boolean;
   viewerName?: string | null;
   /** Mount the video for this cut. Only the cut the page opened on plays here
@@ -258,6 +263,7 @@ export function EditorCutPanel({
                       {i.by ? `${i.by.split(/\s+/)[0]}` : "The reviewer"}{i.round ? ` · on version ${i.round}` : ""} ·{" "}
                       <span className={done ? "text-brand" : "font-semibold text-danger"}>{done ? "marked fixed, the reviewer checks it" : "to fix"}</span>
                     </span>
+                    {ask && <AskQuestionButton projectId={projectId} target={{ kind: "issue", id: i.id }} who={i.askWho ?? "the creative manager"} className="-ml-2" />}
                   </span>
                 </li>
               );

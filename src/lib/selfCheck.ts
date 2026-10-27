@@ -63,10 +63,18 @@ export type SelfCheckFacts = {
    *  (deliverableOutputs.readOutputBrief): "none" = the office recorded
    *  intentionally no brand assets for it. */
   brandChoice?: "asset" | "none" | "unspecified" | null;
+  /** Oct 27 2026: the client has brand colors or a logo on file (selfCheckStore.brandOnFileFor). */
+  brandOnFile?: boolean | null;
 };
 
 /** The reason stored when brand assets don't apply because the office said so. */
 export const BRAND_NONE_REASON = "The office recorded no brand assets for this video.";
+
+/** THE BRAND IS USED WHEN THERE IS ONE (Jordan, Oct 27 2026: "I want to make
+ *  sure that we're enforcing this is used ... when there is colors and brand
+ *  assets in there"). With colors or a logo on file, the brand line is one
+ *  plain tick that cannot be waved off as "doesn't apply". */
+export const BRAND_APPLIED_LABEL = "Brand applied (colors and logo).";
 
 export type SelfCheckProfile = {
   styleKey: string;
@@ -194,7 +202,11 @@ export const DEFAULT_SELF_CHECK: Record<string, { name: string; version: number;
  *  "intentionally none" for this video, a forced "Yes" would be an untrue
  *  attestation. Then, and only then, the line takes "doesn't apply" (with the
  *  office's reason, and starting there). The list's words are unchanged, so
- *  the checklist key is too. */
+ *  the checklist key is too.
+ *
+ *  Oct 27 2026: with brand colors or a logo on file (`brandOnFile`), the
+ *  brand line reads BRAND_APPLIED_LABEL and may not be waved off. The key
+ *  stays the same: the attestation stores each line's own words. */
 export function resolveSelfCheckProfile(
   styleKey: string | null | undefined,
   overrides?: Record<string, { version?: number; items?: SelfCheckItem[] } | undefined> | null,
@@ -208,9 +220,13 @@ export function resolveSelfCheckProfile(
       ? o.items.map((i) => ({ key: i.key, label: i.label.trim(), help: i.help, naAllowed: !!i.naAllowed, naHint: i.naHint, when: i.when === "revision" ? ("revision" as const) : ("always" as const) }))
       : def.items;
   const brandNone = facts?.brandChoice === "none";
+  // The office's "no logo on this video" still wins over a kit on file.
+  const brandEnforced = !brandNone && facts?.brandOnFile === true;
   const items = brandNone
     ? listed.map((i) => (i.key === "brand_assets" ? { ...i, naAllowed: true, naHint: BRAND_NONE_REASON, naDefault: true } : i))
-    : listed;
+    : brandEnforced
+      ? listed.map((i) => (i.key === "brand_assets" ? { ...i, label: BRAND_APPLIED_LABEL, naAllowed: false, naHint: undefined, naDefault: undefined } : i))
+      : listed;
   // Watching the actual export is the one line no refinement may remove (§3).
   const withWatch = items.some((i) => i.key === "watched_full") ? items : [ITEM.watched_full, ...items];
   const version = o && typeof o.version === "number" && o.version > def.version ? Math.floor(o.version) : def.version;
