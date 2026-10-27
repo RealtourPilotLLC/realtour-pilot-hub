@@ -170,7 +170,10 @@ async function main() {
     const read = (p: string) => fs.readFileSync(path.join(REPO, p), "utf8");
     const portal = read("src/components/upload/UploadPortal.tsx");
     const actions = read("src/app/upload/actions.ts");
-    c.ok("the upload page's video step shows the section, and the file answers its instructions", /<DropboxInstructions projectId=\{project\.id\} current=\{dropboxInstructions\} \/>/.test(portal) && /hadPriorBrief \|\| !!dropboxInstructions \|\|/.test(portal));
+    // Oct 27 2026 (Jordan: "I'd rather just have them paste it in the portal"):
+    // the upload page no longer offers the section; a file said before then
+    // reads back, read-only, and still answers its instructions.
+    c.ok("the upload page no longer offers the section; a file said before reads back and still answers its instructions", !/<DropboxInstructions\b/.test(portal) && /data-dropbox-instructions-legacy/.test(portal) && /hadPriorBrief \|\| !!dropboxInstructions \|\|/.test(portal));
     c.ok("the submit gate takes the file instead of typed instructions", /!prior\.videoInstructions && !instructionsInDropbox\)/.test(actions) && /instructionsDropboxPath: true/.test(actions));
     const section = read("src/components/upload/DropboxInstructions.tsx");
     c.ok("the section's words: the button and the done line", section.includes("Instructions added to Dropbox") && section.includes("Instructions added to Dropbox:</span>") && /min-h-11/.test(section));

@@ -178,7 +178,7 @@ async function main() {
     tick("video");
     c.ok("ticking it again brings them back, word for word", editBox()?.value === "Open on the front walk, quick cuts.");
     tick("photos");
-    c.ok("Photos shows its details: gallery order, the standard, removal (and the square footage that sets the target)", !!elements(tree, (ty, p) => ty === "section" && p["data-service-section"] === "photos")[0] && contains(tree, "Gallery order") && contains(tree, "Anything to remove in editing?") && !!elements(tree, (ty, p) => ty === "input" && p.id === "sqft")[0]);
+    c.ok("Photos shows its details: gallery order, the standard, removal, and (Oct 27 2026, Jordan) the order's square footage READ-ONLY beside the photo count, no size box for the photographer", !!elements(tree, (ty, p) => ty === "section" && p["data-service-section"] === "photos")[0] && contains(tree, "Gallery order") && contains(tree, "Anything to remove in editing?") && !elements(tree, (ty, p) => ty === "input" && p.id === "sqft")[0] && elements(tree, (ty, p) => ty === "p" && "data-sqft-readonly" in p).some((p) => contains(p.children, "2,400 sq ft")));
     const songField = elements(tree, (ty) => byName("SongRequestField")(ty))[0];
     c.ok("the video's song request is on the page, with what is already on file shown", !!songField && songField.id === "song-video-1" && JSON.stringify(songField.existing).includes("Sweet Home Alabama"));
     (songField.onChange as (s: unknown) => void)({ mode: "requested", title: "", link: "", start: "" });
@@ -187,7 +187,7 @@ async function main() {
     missingNow();
     await until(() => contains(card.render(), "Not done yet"));
     tree = card.render();
-    c.ok("a requested song with neither title nor link holds the submit, in plain words", JSON.stringify(elements(tree, (ty) => ty === "div").map((p) => p.children)).includes("song title or a link"));
+    c.ok("a requested song with no link holds the submit, in plain words (Oct 27 2026: the link is all it asks for)", JSON.stringify(elements(tree, (ty) => ty === "div").map((p) => p.children)).includes("the song link for the video"));
     card.stop();
 
     // =====================================================================

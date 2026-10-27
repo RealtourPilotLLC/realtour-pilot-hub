@@ -21,8 +21,11 @@
 // the KPI's word count (lib/kpiEvidence) and the submit's own gate skip it, so
 // a song alone never satisfies "the vision for the edit".
 //
-// A requested song needs enough to find it: a title (with or without the
-// artist) OR a link. Both are welcome, neither is demanded on its own.
+// A requested song needs its LINK (Jordan, Oct 27 2026: "We don't need the
+// title and artist. Just the song link and to start time or section. As long
+// as we have the song link, that's fine."). The page no longer asks for a
+// title; a title saved before then is still read, shown and kept, and still
+// answers the request on its own, so nothing already submitted is re-asked.
 //
 // Before this, video 2's area had a free-text "SONG OR MUSIC" section (Oct 22).
 // That text is read here as a requested song, so nothing typed there is lost.
@@ -58,7 +61,7 @@ export function songProblem(s: SongRequest | null | undefined, videoName = "this
   if (!s || s.mode !== "requested") return null;
   const link = normalizeSongLink(s.link);
   if (link === null) return `the song link for ${videoName} isn't a web address (paste the Spotify, YouTube or Apple Music link)`;
-  if (!one(s.title, SONG_LIMITS.title) && !link) return `the song title or a link for ${videoName} (or choose No request)`;
+  if (!one(s.title, SONG_LIMITS.title) && !link) return `the song link for ${videoName} (or choose No request)`;
   return null;
 }
 

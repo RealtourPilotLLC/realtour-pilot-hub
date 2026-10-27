@@ -779,7 +779,17 @@ export async function finalizeUpload(
     // brief already saved with a line keeps it.
     const colorLine = (t: string | null | undefined) =>
       /^COLOR PROFILE:\s*(iPhone|S-Log3|D-LogM|S-Log3, D-LogM)\s*$/im.test(t ?? "");
-    if (wantsVideoGate && data.videoInstructions !== undefined && !colorLine(data.videoInstructions) && !colorLine(prior.videoInstructions)) {
+    // VIDEO 1 HALF SHOT (Oct 27 2026, Jordan: "the video half shot, hold it
+    // for the next appointment should really just be on the upload portal").
+    // A first video waiting on a second appointment (lib/secondShoot, set from
+    // this page or by the office) owes nothing yet, exactly as a later waiting
+    // video never has: its color, instructions, intro and script are asked
+    // when its footage is in. The later videos keep their own gates below.
+    const firstWaiting = wantsVideoGate
+      ? await import("@/lib/deliverableOutputs").then((m) => m.videoInstructionsFor(projectId)).then((rows) => rows.some((r) => r.number === 1 && r.waiting)).catch(() => false)
+      : false;
+    const firstVideoGate = wantsVideoGate && !firstWaiting;
+    if (firstVideoGate && data.videoInstructions !== undefined && !colorLine(data.videoInstructions) && !colorLine(prior.videoInstructions)) {
       return { blocked: "Pick the color profile you shot in (iPhone, S-Log3, D-LogM, or S-Log3 and D-LogM) so the editor grades the footage the right way." };
     }
     // A plain social reel demands no brief at all (Jordan: "if it's a standard
@@ -819,7 +829,7 @@ export async function finalizeUpload(
         }
       }
     }
-    if (wantsVideoGate && !spec.minimalReel && !prior.videoInstructions && !instructionsInDropbox) {
+    if (firstVideoGate && !spec.minimalReel && !prior.videoInstructions && !instructionsInDropbox) {
       // Strip the auto-added STYLE / COLOR PROFILE lines and section labels —
       // the gate demands the photographer's OWN words, not machine boilerplate
       // (review: the color-profile line vacuously satisfied a bare check).
@@ -841,7 +851,7 @@ export async function finalizeUpload(
         return {
           blocked: spec.requireIntro && !spec.fullBrief
             ? "The agent's intro script can't be left blank — type it exactly as it was delivered on camera."
-            : "Video instructions are required — the flow and your vision for the edit. This can't be left blank; skipping it forfeits premium shoot assignments.",
+            : "Video instructions are required: the flow and your vision for the edit. Skipped or light instructions count against your KPI.",
         };
       }
       // Agent-intro packages: the INTRO SCRIPT itself is the requirement (a
@@ -849,7 +859,7 @@ export async function finalizeUpload(
       // its old-style brief above already carried the photographer's words,
       // so never trap it behind a refresh that would lose their typing.
       if (
-        wantsVideoGate &&
+        firstVideoGate &&
         spec.requireVideoCount &&
         // undefined = a pre-update tab; never trap those. Anything else must be
         // a real positive integer (0 used to pass the gate then be dropped).
@@ -859,7 +869,7 @@ export async function finalizeUpload(
       ) {
         return { blocked: "Tell us how many videos you filmed — the editor cuts to that count." };
       }
-      if (wantsVideoGate && spec.requireIntro && data.introScript === null && !instructionsInDropbox) {
+      if (firstVideoGate && spec.requireIntro && data.introScript === null && !instructionsInDropbox) {
         return { blocked: "The agent's intro script can't be left blank — type it exactly as it was delivered on camera." };
       }
     }
@@ -867,7 +877,7 @@ export async function finalizeUpload(
     // Studio has one, the confirm gate below covers it; when it doesn't, the
     // photographer types what was delivered. Key absent = pre-update tab.
     if (
-      wantsVideoGate &&
+      firstVideoGate &&
       spec.requireScript &&
       !prior.reelScript &&
       !prior.scriptConfirmedAt &&
@@ -876,7 +886,7 @@ export async function finalizeUpload(
     ) {
       return { blocked: "The script can't be left blank for this premium package — type or paste it exactly as it was delivered on camera." };
     }
-    if (wantsVideoGate && prior.reelScript && !data.scriptConfirm && !prior.scriptConfirmedAt) {
+    if (firstVideoGate && prior.reelScript && !data.scriptConfirm && !prior.scriptConfirmedAt) {
       // The script may have landed from Studio AFTER their page loaded — an
       // un-satisfiable error with no visible confirm control is a trap.
       // A photographer who TYPED the script on site has already answered this
@@ -891,7 +901,7 @@ export async function finalizeUpload(
         };
       }
     }
-    if (wantsVideoGate && data.scriptConfirm?.state === "edited" && !data.scriptConfirm.script?.trim()) {
+    if (firstVideoGate && data.scriptConfirm?.state === "edited" && !data.scriptConfirm.script?.trim()) {
       return { blocked: "You marked the script as changed but the script box is empty — paste what was actually filmed, or choose “Delivered as written.”" };
     }
   }

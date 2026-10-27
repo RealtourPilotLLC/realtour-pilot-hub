@@ -60,7 +60,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { MarkdownEditor } from "@/components/ui/MarkdownEditor";
 import { WhatYouSubmitted, type SubmittedItem } from "@/components/upload/WhatYouSubmitted";
 import { NoticeGroup, type Notice } from "@/components/upload/NoticeGroup";
-import { DropboxInstructions, type DropboxInstructionsView } from "@/components/upload/DropboxInstructions";
+import type { DropboxInstructionsView } from "@/components/upload/DropboxInstructions";
 import { parseUploadAttempt, uploadAttemptFingerprint, type UploadAttempt } from "@/lib/uploadReceipt";
 import type { BriefShape } from "@/lib/perVideoInstructions";
 // Oct 23 2026 (the upload-page revamp): agent requests first, "What did you
@@ -79,7 +79,11 @@ import {
   type Contribution, type ServiceKey, type SharedNote,
 } from "@/lib/sharedShootCore";
 import type { AgentRequestItem } from "@/lib/agentRequestsCore";
-import { markMyUploads, saveMyCapture, submitMyPart, saveAddedVideo } from "@/app/upload/sharedActions";
+import { markMyUploads, saveMyCapture, submitMyPart, saveAddedVideo, setVideoHalfShot } from "@/app/upload/sharedActions";
+// Oct 27 2026 (Jordan's Loom): a light-instructions hint before the submit, and
+// the "script not approved by the client yet" answer per filmed topic.
+import { lightInstructions } from "@/lib/instructionsLight";
+import { asksScriptConfirm, joinTopicScriptNote, splitTopicScriptNote, topicScriptProblem, TOPIC_NOTE_CAP, type TopicScriptChoice } from "@/lib/topicScriptConfirm";
 
 // ---------------------------------------------------------------------------
 // The shoot debrief portal (rebuilt Aug 31 2026 per Jordan; readability pass
@@ -478,6 +482,12 @@ function LaterVideoArea({
 // (Oct 23 2026: the numbered step card is portalUi's PortalCard now: three
 // steps, the agent's requests above them.)
 
+/** Oct 27 2026: the ordered items the creative confirms with one tick each (floor plan, 3D tours). */
+const UPLOAD_TICK_TYPES: readonly string[] = ["FLOORPLAN", "MATTERPORT_3D", "ZILLOW_3D"];
+function uploadTickLabel(type: string): string {
+  return type === "FLOORPLAN" ? "Floor plan uploaded" : type === "ZILLOW_3D" ? "Zillow 3D tour uploaded" : "3D tour uploaded";
+}
+
 // Small uppercase label that groups the standard into scannable chunks.
 function MiniHeading({ children }: { children: React.ReactNode }) {
   return <div className="mb-1.5 mt-4 text-[11px] font-bold uppercase tracking-widest text-brand first:mt-0">{children}</div>;
@@ -604,6 +614,7 @@ export function UploadPortal({
   existingSongs = {},
   slots = {},
   viewerName = null,
+  halfShot = null,
 }: {
   project: {
     id: string;
@@ -786,6 +797,13 @@ export function UploadPortal({
   slots?: { crew?: React.ReactNode; debrief?: React.ReactNode; additionalShoot?: React.ReactNode };
   /** the viewer's display name (the shared instructions sign with it) */
   viewerName?: string | null;
+  /**
+   * Oct 27 2026: the listing job's videos the person who filmed them can hold
+   * for a second appointment ("Video half shot: needs a second appointment",
+   * lib/secondShoot). Key = `${deliverableId}:${slot}`, numbered as the page's
+   * videos are. Absent or empty: no tick (a content session, nothing owed).
+   */
+  halfShot?: { key: string; number: number; label: string; waiting: boolean; finished: boolean }[] | null;
 }) {
   const router = useRouter();
   // A MONTHLY CONTENT SESSION (Oct 5): the page speaks about topics and clips,
@@ -898,6 +916,35 @@ export function UploadPortal({
   // Each later video keeps its own style, sections and color profile; they
   // compose exactly like the first video's and save on the submit.
   const laterVideos = videos?.later ?? [];
+  // VIDEO HALF SHOT (Oct 27 2026, Jordan: "the video half shot, hold it for
+  // the next appointment should really just be on the upload portal ... they
+  // were the ones shooting it"). One tick per video, saved at once: the SAME
+  // hold as the office's "Waiting on a second shoot" (lib/secondShoot). A held
+  // video owes nothing on this page until its footage is in.
+  const [halfShotOn, setHalfShotOn] = useState<Record<string, boolean>>(() => Object.fromEntries((halfShot ?? []).map((r) => [r.key, r.waiting])));
+  const [halfShotBusy, setHalfShotBusy] = useState<string | null>(null);
+  const [halfShotMsg, setHalfShotMsg] = useState<{ key: string; ok: boolean; text: string } | null>(null);
+  const heldKey = (key: string | undefined, fallback: boolean) => (key && key in halfShotOn ? halfShotOn[key] : fallback);
+  const firstKey = videos?.first.key ?? (halfShot ?? []).find((r) => r.number === 1)?.key;
+  /** video 1 is held for a second appointment: its color, instructions, intro and script are not asked yet */
+  const firstHeld = heldKey(firstKey, !!videos?.first.waiting);
+  const laterHeld = (v: PortalVideo) => heldKey(v.key, !!v.waiting);
+  const toggleHalfShot = (key: string, on: boolean) => {
+    if (halfShotBusy) return;
+    setHalfShotBusy(key);
+    setHalfShotMsg(null);
+    setHalfShotOn((m) => ({ ...m, [key]: on }));
+    setVideoHalfShot(project.id, { key, on })
+      .then((r) => {
+        if (!r.ok) setHalfShotOn((m) => ({ ...m, [key]: !on }));
+        setHalfShotMsg({ key, ok: r.ok, text: r.message });
+      })
+      .catch(() => {
+        setHalfShotOn((m) => ({ ...m, [key]: !on }));
+        setHalfShotMsg({ key, ok: false, text: "Couldn't save that. Check your connection and try again." });
+      })
+      .finally(() => setHalfShotBusy(null));
+  };
   type LaterState = LaterVidState;
   // Oct 23 2026: each video's song is read out of its words (songOfText), and
   // a draft now carries the later videos' answers too (laterTexts).
@@ -975,6 +1022,12 @@ export function UploadPortal({
   const [requestsReviewed, setRequestsReviewed] = useState<boolean>(!!d0?.requestsReviewed);
   const has = (k: ServiceKey) => captured.includes(k);
   const photoShown = has("photos") || has("drone") || has("twilight");
+  // Oct 27 2026 (Jordan's Loom): the job's note for the editor sits in the
+  // Photo section as "Photo editor notes", by the gallery order, whenever that
+  // section is open; otherwise (a video-only job, a content session, nothing
+  // ticked yet) it stays in the last step. One box, one value. A shared shoot
+  // keeps its shared instructions in the last step as before.
+  const editorNotesInPhotos = !(shared && sharedShoot) && photoShown && policy.photosOrdered;
   const videoShown = has("video");
   // A video added on site has no row until the office puts it on the order:
   // its own area, numbered after the ordered videos, saved as it is typed.
@@ -1164,11 +1217,13 @@ export function UploadPortal({
   const isRequiredKey = (k: VidKey) =>
     (k === "intro" && spec.requireIntro) || (k === "vision" && fullFields) || (k === "editNotes" && notesRequired);
   const countAnswered = !spec.requireVideoCount || project.videosFilmed != null || (videosFilmedNum ?? 0) > 0;
-  // Oct 22 2026: instructions in a Dropbox file answer the typed ones.
+  // Oct 22 2026: instructions in a Dropbox file answer the typed ones. Oct 27
+  // 2026 (Jordan: "I'd rather just have them paste it in the portal"): the page
+  // no longer offers that; a file said before then still answers, read-only.
   const dropboxInstructions = project.instructionsDropbox ?? null;
   const vidAnswered =
     countAnswered &&
-    (hadPriorBrief || !!dropboxInstructions ||
+    (hadPriorBrief || !!dropboxInstructions || firstHeld ||
     ((!spec.requireIntro || !!vidSections.intro.trim()) &&
       (!fullFields || (!!vidSections.vision.trim() && effectiveStyle !== null)) &&
       (!notesRequired || !!vidSections.editNotes.trim())));
@@ -1201,7 +1256,7 @@ export function UploadPortal({
   const laterMissing = laterVideos.flatMap((v) => {
     if (v.own?.trim()) return [];
     // Waiting on a second shoot (Oct 22 2026): not asked for until its footage is in.
-    if (v.waiting) return [];
+    if (laterHeld(v)) return [];
     const deliverableId = v.key.split(":")[0];
     if (notDone[deliverableId] || deliverables.some((d) => d.id === deliverableId && d.waivedAt)) return [];
     const st = laterVids[v.key];
@@ -1506,6 +1561,8 @@ export function UploadPortal({
   // "Remaining" = truly unanswered — a "couldn't complete + reason" item is
   // accounted for, so it doesn't nag on submit.
   const remaining = deliverables.filter((d) => !uploaded[d.id] && !notDone[d.id] && !d.waivedAt);
+  // Oct 27 2026: the floor plan and 3D tour rows, each confirmed with its own tick in its section.
+  const confirmRows = deliverables.filter((d) => UPLOAD_TICK_TYPES.includes(d.type));
   const reviewFingerprint = JSON.stringify({ payloadJson, uploaded, notDone, flags, evidence });
 
   function toggle(id: string) {
@@ -1645,10 +1702,13 @@ export function UploadPortal({
     if (pOn && !cullOk) pm.push("the pre-upload checklist (all four boxes)");
     if (pOn && orderChoice === null) pm.push("answer the shot order");
     if (pOn && orderChoice === "out-of-order" && !orderNotes.trim()) pm.push("the order you shot the home (and why)");
-    if (pOn && !removal.trim() && !nothingToRemove) pm.push("answer the removal notes");
-    if (vOn && colorProfile === null) vm.push(laterVideos.length ? "pick the color profile for video 1" : "pick the color profile you shot in");
+    if (pOn && !removal.trim() && !nothingToRemove) pm.push("answer “Anything to remove in editing?” (list it, or choose Nothing to remove)");
+    // Oct 27 2026: video 1 held for a second appointment ("Video half shot")
+    // owes its color, instructions, intro and script when its footage is in.
+    const v1 = vOn && !firstHeld;
+    if (v1 && colorProfile === null) vm.push(laterVideos.length ? "pick the color profile for video 1" : "pick the color profile you shot in");
     if (vOn) vm.push(...laterMissing);
-    if (vOn && !hadPriorBrief) {
+    if (v1 && !hadPriorBrief) {
       if (spec.requireIntro && !vidSections.intro.trim()) vm.push("the agent's intro script — type it exactly as delivered");
       if (fullFields && !vidSections.vision.trim()) vm.push("the vision for the edit");
       if (fullFields && effectiveStyle === null) vm.push("pick an edit style");
@@ -1662,12 +1722,22 @@ export function UploadPortal({
     if (vOn && !topicsUnavailable && spec.requireVideoCount && project.videosFilmed == null && !((videosFilmedNum ?? 0) > 0)) {
       vm.push(answersByTopic ? "tick the topics you filmed (or add one you filmed on site)" : "how many videos you filmed");
     }
-    if (vOn && script && !scriptChoice) vm.push("confirm the script");
-    if (vOn && scriptChoice === "edited" && !scriptText.trim()) vm.push("the edited script text (or pick “Delivered as written”)");
+    if (v1 && script && !scriptChoice) vm.push("confirm the script");
+    if (v1 && scriptChoice === "edited" && !scriptText.trim()) vm.push("the edited script text (or pick “Delivered as written”)");
     // Premium packages: the script can NOT be left blank (Jordan, Sep 1) —
     // when Studio has none, the photographer types what was delivered.
-    if (vOn && spec.requireScript && !script && !hadPriorBrief && !scriptText.trim()) {
+    if (v1 && spec.requireScript && !script && !hadPriorBrief && !scriptText.trim()) {
       vm.push("the script — this premium package can't be submitted without it");
+    }
+    // Oct 27 2026 (lib/topicScriptConfirm): each filmed topic whose script the
+    // client has not approved says what was filmed: as written, or what changed.
+    if (vOn && answersByTopic) {
+      for (const t of sessionTopics?.topics ?? []) {
+        if (confirmedElsewhere(t) || !asksScriptConfirm(t, filmedTopicIds.includes(t.topicId))) continue;
+        const parts = splitTopicScriptNote(topicNotes[t.topicId]);
+        const p = topicScriptProblem({ title: t.title, choice: parts.choice, changed: parts.changed });
+        if (p) vm.push(p);
+      }
     }
     // Oct 23 2026: a requested song needs a title or a link (lib/songRequest).
     if (vOn) {
@@ -1689,7 +1759,26 @@ export function UploadPortal({
     else missing.push(...pm);
     if (vm.length && !videoShown && vOn) missing.push("the video is on the order but not ticked under “What did you capture?” (tick it and fill in its details, or say why it wasn’t completed)");
     else missing.push(...vm);
+    // The floor plan and tour ticks go with the photos half on a split page;
+    // on a shared shoot, with whichever half the person who captured them submits.
+    if (scope !== "video" || asMember) missing.push(...uploadTicksMissing());
     return missing;
+  }
+
+  /**
+   * FLOOR PLAN AND 3D TOUR: ONE TICK EACH (Jordan, Oct 27 2026: "for the floor
+   * plan and 3D tour, if it's ordered, they should have to confirm that they
+   * uploaded it, so just a check mark for each of these items"). Asked on the
+   * first submit (the photos half, or the whole page), never retro on a page
+   * already handed in; a row marked "couldn't complete" or waived is answered.
+   * On a shared shoot only the person who captured it is asked.
+   */
+  function uploadTicksMissing(): string[] {
+    if (project.debriefSubmittedAt) return [];
+    return confirmRows
+      .filter((d) => !uploaded[d.id] && !notDone[d.id] && !d.waivedAt)
+      .filter((d) => !asMember || has(serviceOfType(d.type)!))
+      .map((d) => `tick “${uploadTickLabel(d.type)}” (or tell us why it couldn’t be completed)`);
   }
 
   function finalize(scope?: HandoffCategory) {
@@ -1992,7 +2081,7 @@ export function UploadPortal({
         {(notes.length > 0 || editorBrief.trim() || (videoIn && scriptChoice)) && <div>
           <strong>Editing instructions:</strong>
           {notes.map((n) => <p key={n} className="whitespace-pre-wrap">{n}</p>)}
-          {editorBrief.trim() && <p className="whitespace-pre-wrap">For the editor: {editorBrief.trim()}</p>}
+          {editorBrief.trim() && <p className="whitespace-pre-wrap">{editorNotesInPhotos ? "Photo editor notes" : "For the editor"}: {editorBrief.trim()}</p>}
           {videoIn && scriptChoice && <p className="whitespace-pre-wrap">Script {scriptChoice === "edited" ? "edited on site" : "delivered as written"}: {scriptChoice === "edited" ? scriptText.trim() : script?.body?.trim() || "the confirmed on-site text"}</p>}
         </div>}
         {exceptions.length > 0 && <p><strong>Could not complete:</strong> {exceptions.map((d) => `${DELIVERABLE_META[d.type].label} — ${notDone[d.id]}`).join(" · ")}</p>}
@@ -2003,7 +2092,8 @@ export function UploadPortal({
   };
   // Where the size came from, said plainly: the ordered band is a range the
   // client picked, not a measurement, so the page never prints it as one.
-  const sizeNote = bandText
+  // Oct 27 2026: the photographer reads it on its own line in the standard box.
+  const sizeNote = !viewerIsOffice ? "" : bandText
     ? ` (${bandText.replace(/\s*\(.*\)$/, "")} on the order)`
     : sqftSaved
       ? ` (${sqftSaved.toLocaleString("en-US")} sq ft)`
@@ -2084,11 +2174,24 @@ export function UploadPortal({
     (orderChoice === "out-of-order" && !!orderNotes.trim());
   const videoDone =
     vidAnswered &&
-    colorProfile !== null &&
+    (firstHeld || colorProfile !== null) &&
     laterMissing.length === 0 &&
-    (!script || hadPriorBrief || (scriptChoice !== null && (scriptChoice !== "edited" || !!scriptText.trim()))) &&
+    (firstHeld || !script || hadPriorBrief || (scriptChoice !== null && (scriptChoice !== "edited" || !!scriptText.trim()))) &&
     // Premium: no Studio script → the typed script is part of "done".
-    (!spec.requireScript || !!script || hadPriorBrief || !!scriptText.trim());
+    (firstHeld || !spec.requireScript || !!script || hadPriorBrief || !!scriptText.trim());
+  // LIGHT INSTRUCTIONS, SAID BEFORE THE SUBMIT (Jordan, Oct 27 2026: skipped or
+  // light instructions count against the KPI). The KPI's own rule
+  // (lib/instructionsLight): under 20 words of the photographer's own, or a
+  // premium brief with no vision and no style. A hint, never a block: the
+  // required fields above are the block. Not on a plain social reel (it needs
+  // no brief), a held video, or words already handed in.
+  const lightHint = (() => {
+    if (!videoShown || !videoLive || firstHeld || spec.minimalReel || hadPriorBrief || dropboxInstructions) return null;
+    const own = vidInstructions.trim();
+    if (!own || own.split("\n").every((l) => /^(STYLE|COLOR PROFILE|SONG (?:REQUEST|TITLE|LINK|START)):/i.test(l.trim()))) return null;
+    const v = lightInstructions(vidInstructions, { full: spec.mode === "premium-script" });
+    return v.light ? v.why : null;
+  })();
 
   // The filmed-topics answer (F12 / CP-09), declared once and placed by the
   // video step: first on a content session, under the instructions header on
@@ -2163,7 +2266,7 @@ export function UploadPortal({
                               <span className="block text-[11px] text-muted">
                                 {t.laterSession && t.sessionNo && !recorded ? `from Session ${t.sessionNo} · ` : ""}
                                 {t.pillarName ? `${t.pillarName} · ` : ""}
-                                {t.scriptTitle ? (t.clientApproved ? "script signed off by the client" : "script written") : "no script yet"}
+                                {t.scriptTitle ? (t.clientApproved ? "script signed off by the client" : "script not approved by the client yet") : "no script yet"}
                                 {t.overflow ? " · beyond this month's plan" : ""}
                                 {elsewhere
                                   ? " · filmed at another session this month"
@@ -2181,17 +2284,54 @@ export function UploadPortal({
                                   as the topic is ticked, and it asks for the
                                   clip names — the editor cannot tell one
                                   topic's takes from another's without them. */}
-                              {on && (
-                                <AutoTextarea
-                                  value={topicNotes[t.topicId] ?? ""}
-                                  onChange={(e) => setTopicNotes((n) => ({ ...n, [t.topicId]: e.target.value }))}
-                                  maxLength={1000}
-                                  minRows={2}
-                                  aria-label={`Note for the editor about ${t.title}`}
-                                  placeholder="Which clips are this one? File names, e.g. C0012–C0015 or IMG_4412–4418 · the take to use · a line they flubbed."
-                                  className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
-                                />
-                              )}
+                              {on && (() => {
+                                // Oct 27 2026 (lib/topicScriptConfirm): a script the
+                                // client has not approved asks the uploader what was
+                                // filmed; the answer is the note's own last line.
+                                const asks = asksScriptConfirm(t, on);
+                                const raw = topicNotes[t.topicId] ?? "";
+                                const parts = asks ? splitTopicScriptNote(raw) : { note: raw, choice: null, changed: "" };
+                                const setParts = (note: string, choice: TopicScriptChoice | null, changed: string) =>
+                                  setTopicNotes((n) => ({ ...n, [t.topicId]: asks ? joinTopicScriptNote(note, choice, changed) : note }));
+                                return (
+                                  <>
+                                    <AutoTextarea
+                                      value={parts.note}
+                                      onChange={(e) => setParts(e.target.value, parts.choice, parts.changed)}
+                                      maxLength={TOPIC_NOTE_CAP}
+                                      minRows={2}
+                                      aria-label={`Note for the editor about ${t.title}`}
+                                      placeholder="Which clips are this one? File names, e.g. C0012–C0015 or IMG_4412–4418 · the take to use · a line they flubbed."
+                                      className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                                    />
+                                    {asks && (
+                                      <div data-topic-script-confirm className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2">
+                                        <p className="text-[13px] font-semibold">Script not approved by the client yet</p>
+                                        <p className="text-xs text-muted">Confirm what you filmed for &ldquo;{t.scriptTitle}&rdquo;. The script itself is not changed here.</p>
+                                        <div role="radiogroup" aria-label={`What you filmed for ${t.title}`} className="mt-1.5 flex flex-wrap gap-2">
+                                          <button type="button" role="radio" aria-checked={parts.choice === "as-written"} onClick={() => setParts(parts.note, "as-written", "")} className={choiceBtn(parts.choice === "as-written")}>
+                                            {parts.choice === "as-written" && <Check className="size-4" />}I filmed this script as written
+                                          </button>
+                                          <button type="button" role="radio" aria-checked={parts.choice === "changed"} onClick={() => setParts(parts.note, "changed", parts.changed)} className={choiceBtn(parts.choice === "changed", "warn")}>
+                                            I changed it on site
+                                          </button>
+                                        </div>
+                                        {parts.choice === "changed" && (
+                                          <AutoTextarea
+                                            value={parts.changed}
+                                            onChange={(e) => setParts(parts.note, "changed", e.target.value)}
+                                            maxLength={600}
+                                            minRows={2}
+                                            aria-label={`What changed on site in the script for ${t.title}`}
+                                            placeholder="What changed? e.g. She dropped the line about rates and closed on the open house instead."
+                                            className="mt-1.5 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand"
+                                          />
+                                        )}
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              })()}
                               {folder && (
                                 <a
                                   href={folder.url}
@@ -2602,6 +2742,46 @@ export function UploadPortal({
     </section>
   );
 
+  // "Flag a problem", first in "From the shoot" (Oct 27 2026; it was folded under the submit).
+  const flagBlock = (
+    <div>
+      <label htmlFor="flag-a-problem" className="mb-1.5 flex items-center gap-2 text-sm font-semibold">
+        <Flag className="size-4 text-danger" /> Flag a problem
+      </label>
+      <div className="flex gap-2">
+        <input
+          id="flag-a-problem"
+          value={flagInput}
+          onChange={(e) => setFlagInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submitFlag()}
+          placeholder={contentSession ? "e.g. The mic cut out during topic 3, so that take's audio is rough." : "e.g. Couldn’t shoot the garage. Heads up for the editor."}
+          className="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+        />
+        <button onClick={submitFlag} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2">
+          Flag
+        </button>
+      </div>
+      {flagFailed && <p role="alert" className="mt-1.5 text-xs text-danger">{flagFailed}</p>}
+      {/* Oct 21 2026: the raised flags fold to one line (open after a new one). */}
+      {flags.length > 0 && (
+        <details className="mt-2 rounded-lg border border-danger/30 bg-danger/5" open={flagsOpen} onToggle={(e) => setFlagsOpen((e.target as HTMLDetailsElement).open)}>
+          <summary className="flex min-h-11 cursor-pointer items-center gap-2 px-3 text-[13px] font-medium text-danger focus-visible:outline-2 focus-visible:outline-brand">
+            <AlertTriangle className="size-3.5 shrink-0" />
+            {flags.length === 1 ? "1 problem flagged" : `${flags.length} problems flagged`}
+            <span className="truncate font-normal text-foreground/70">: {flags[0]}</span>
+          </summary>
+          <ul className="space-y-1 px-3 pb-3">
+            {flags.map((f, i) => (
+              <li key={i} className="flex items-center gap-2 rounded-lg bg-danger-soft/60 px-2.5 py-1.5 text-xs text-danger">
+                <AlertTriangle className="size-3.5 shrink-0" /> {f}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+
   return (
     <div className="space-y-4">
       {/* ---- The job, big and first. ---- */}
@@ -2814,7 +2994,14 @@ export function UploadPortal({
               customer note at the top, submitted or not, and something the
               agent asks for often comes back after the submit. */}
           {agentRequests !== undefined && (
-            <AgentRequests projectId={project.id} initial={agentRequests} blocked={briefNoteBlocked} reviewed={requestsReviewed} onReviewed={setRequestsReviewed} />
+            <AgentRequests
+              projectId={project.id}
+              initial={agentRequests}
+              blocked={briefNoteBlocked}
+              reviewed={requestsReviewed}
+              onReviewed={setRequestsReviewed}
+              extra={<FieldFeedback projectId={project.id} clientName={project.clientName} reports={fieldReports} office={viewerIsOffice} />}
+            />
           )}
           {/* The read-back (Jordan, Sep 15: "see ... what was uploaded and
               the notes for them"): every answer verbatim, above the reopen
@@ -2892,7 +3079,8 @@ export function UploadPortal({
               office plans recoveries from here. */}
           <section className="rounded-2xl border bg-surface p-4 sm:p-5">
             <MissingWork projectId={project.id} gaps={gaps} office={viewerIsOffice} />
-            <FieldFeedback projectId={project.id} clientName={project.clientName} reports={fieldReports} office={viewerIsOffice} />
+            {/* Oct 27 2026: the client preference is in the requests card above, when it loaded. */}
+            {agentRequests === undefined && <FieldFeedback projectId={project.id} clientName={project.clientName} reports={fieldReports} office={viewerIsOffice} />}
           </section>
           {/* Still reachable after the submit, as they always were. */}
           <AddedAtShoot projectId={project.id} initial={addOns} onRowsChange={setAddOns} />
@@ -2901,74 +3089,33 @@ export function UploadPortal({
         </>
       ) : (
       <>
-      {/* ---- AGENT REQUESTS: what was already asked for, first ---- */}
+      {/* ---- AGENT REQUESTS: what was already asked for, first. Oct 27 2026
+          (Jordan's Loom): the on-site add and the client preference live in
+          this one card, and each request can be marked "I couldn't fulfill
+          this" with the reason. ---- */}
       {agentRequests !== undefined && (
-        <AgentRequests projectId={project.id} initial={agentRequests} blocked={briefNoteBlocked} reviewed={requestsReviewed} onReviewed={setRequestsReviewed} />
+        <AgentRequests
+          projectId={project.id}
+          initial={agentRequests}
+          blocked={briefNoteBlocked}
+          reviewed={requestsReviewed}
+          onReviewed={setRequestsReviewed}
+          extra={<FieldFeedback projectId={project.id} clientName={project.clientName} reports={fieldReports} office={viewerIsOffice} />}
+        />
       )}
 
-      {/* ---- STEP 1: WHAT DID YOU CAPTURE? ---- */}
-      <PortalCard id="capture" n={1} title="What did you capture?" subtitle="Select your work to show the matching handoff fields." done={captured.length > 0}>
-        <div role="group" aria-label="What you captured" className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          {offered.map((k) => {
-            const on = has(k);
-            const Icon = capIcon[k];
-            const added = addedBy.get(k);
-            return (
-              <div key={k} className={cn("rounded-xl border transition-colors", on ? "border-brand bg-brand-soft/40" : "border-border bg-surface-2/40")}>
-                <button
-                  type="button"
-                  role="checkbox"
-                  aria-checked={on}
-                  data-capture={k}
-                  onClick={() => toggleService(k)}
-                  className="flex min-h-14 w-full items-center gap-2.5 px-3 py-2 text-left"
-                >
-                  <span aria-hidden className={cn("flex size-5 shrink-0 items-center justify-center rounded border", on ? "border-brand bg-brand-action text-brand-fg" : "border-border-strong")}>
-                    {on && <Check className="size-3.5" />}
-                  </span>
-                  <Icon aria-hidden className={cn("size-4 shrink-0", on ? "text-brand" : "text-muted")} />
-                  <span className="min-w-0">
-                    <span className="block text-sm font-semibold leading-tight">{SERVICE_LABEL[k]}</span>
-                    <span className="block text-[11px] text-muted">
-                      {orderedBy.has(k) ? "Ordered" : added ? `Added on site${added.every((a) => a.handled) ? "" : " · waiting for the office"}` : "Not ordered"}
-                    </span>
-                  </span>
-                </button>
-                {k === "video" && on && (
-                  <label className="flex min-h-11 cursor-pointer items-center gap-2 border-t border-border/60 px-3 text-xs">
-                    <input type="checkbox" checked={videoDrone} onChange={(e) => setVideoDrone(e.target.checked)} className="size-4 accent-[var(--brand)]" />
-                    Includes drone footage
-                  </label>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        {orderedServices.length > 0 && (
-          <p className="mt-3 flex items-start gap-2 rounded-lg bg-brand-soft/30 px-3 py-2 text-[13px]">
-            <Info aria-hidden className="mt-0.5 size-4 shrink-0 text-brand" />
-            <span>Ordered: {orderedWords}.{asMember && others.some((x) => x.captured.length) ? ` ${others.filter((x) => x.captured.length).map((x) => `${x.name.split(/\s+/)[0]} ${contributionState(x, null) === "submitted" ? "submitted" : "is on"} ${x.captured.map((c) => SERVICE_LABEL[c].toLowerCase()).join(", ")}`).join("; ")}. Both of you can contribute to the same service.` : ""}</span>
-          </p>
-        )}
-        {unchecked.length > 0 && (
-          <ul data-ordered-unchecked className="mt-2 space-y-1.5">
-            {unchecked.map((k) => {
-              const st = statusOf(k);
-              return (
-                <li key={k} data-unchecked={k} className="flex flex-wrap items-center gap-2 rounded-lg border border-border px-3 py-2 text-[13px]">
-                  <span className="font-medium">{SERVICE_LABEL[k]}</span>
-                  <StatusChip tone={st.tone}>{st.words}</StatusChip>
-                  {st.tone === "danger" && (
-                    <button type="button" onClick={() => { setItemsOpen(true); document.getElementById("ordered-items")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} className="ml-auto min-h-11 text-xs font-medium text-brand hover:underline">
-                      Say why
-                    </button>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-        <Fold id="ordered-items" className="mt-3" open={itemsOpen} onToggle={setItemsOpen} title="Something ordered wasn't completed?" summary={`each ordered item${notDoneCount ? ` · ${notDoneCount} couldn't be completed` : ""}`}>
+      {/* ---- FROM THE SHOOT (Oct 27 2026, Jordan's Loom: the problems, what
+          wasn't completed and how the shoot went come right after the
+          agent's requests, before the capture and the details; they used to
+          be folded under the submit). ---- */}
+      <PortalCard
+        id="from-the-shoot"
+        icon={<Flag className="size-4.5" />}
+        title="From the shoot"
+        subtitle="Flag a problem, say what couldn't be completed, and how the shoot went."
+      >
+        {flagBlock}
+        <Fold id="ordered-items" className="mt-4" open={itemsOpen} onToggle={setItemsOpen} title="Something ordered wasn't completed?" summary={`each ordered item${notDoneCount ? ` · ${notDoneCount} couldn't be completed` : ""}`}>
           <p className="mb-2 text-xs text-muted">Every ordered item: mark it uploaded once its files are in Dropbox, or tell the office why it wasn&rsquo;t done.</p>
           <div className="space-y-2">
             {deliverables.map((d) => {
@@ -3036,7 +3183,7 @@ export function UploadPortal({
                           if (e.key === "Enter" && reasonText.trim()) saveNotCompleted(d.id, reasonText.trim());
                           if (e.key === "Escape") { setReasonFor(null); setReasonText(""); }
                         }}
-                        placeholder={contentSession ? "Why couldn't it be completed? e.g. The client ran out of time — two topics move to the next session" : "Why couldn't it be completed? e.g. Seller refused the drone — needs a re-shoot"}
+                        placeholder={contentSession ? "Why couldn't it be completed? e.g. The client ran out of time, so two topics move to the next session" : "Why couldn't it be completed? e.g. Seller refused the drone, needs a re-shoot"}
                         className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
                       />
                       <button
@@ -3059,6 +3206,73 @@ export function UploadPortal({
             })}
           </div>
         </Fold>
+        <MissingWork projectId={project.id} gaps={gaps} office={viewerIsOffice} />
+        {/* No requests card (its read failed): the client preference sits here instead. */}
+        {agentRequests === undefined && <FieldFeedback projectId={project.id} clientName={project.clientName} reports={fieldReports} office={viewerIsOffice} />}
+        {/* "How did the shoot go?" moved up with the rest of the shoot's report
+            (a judgment call on Jordan's order: it is part of telling the
+            office what happened on site). */}
+        {slots.debrief && <div className="mt-4 border-t border-border pt-4">{slots.debrief}</div>}
+      </PortalCard>
+
+      {/* ---- STEP 1: WHAT DID YOU CAPTURE? ---- */}
+      <PortalCard id="capture" n={1} title="What did you capture?" subtitle="Select your work to show the matching handoff fields." done={captured.length > 0}>
+        <div role="group" aria-label="What you captured" className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {offered.map((k) => {
+            const on = has(k);
+            const Icon = capIcon[k];
+            const added = addedBy.get(k);
+            return (
+              <div key={k} className={cn("rounded-xl border transition-colors", on ? "border-brand bg-brand-soft/40" : "border-border bg-surface-2/40")}>
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={on}
+                  data-capture={k}
+                  onClick={() => toggleService(k)}
+                  className="flex min-h-14 w-full items-center gap-2.5 px-3 py-2 text-left"
+                >
+                  <span aria-hidden className={cn("flex size-5 shrink-0 items-center justify-center rounded border", on ? "border-brand bg-brand-action text-brand-fg" : "border-border-strong")}>
+                    {on && <Check className="size-3.5" />}
+                  </span>
+                  <Icon aria-hidden className={cn("size-4 shrink-0", on ? "text-brand" : "text-muted")} />
+                  <span className="min-w-0">
+                    <span className="block text-sm font-semibold leading-tight">{SERVICE_LABEL[k]}</span>
+                    <span className="block text-[11px] text-muted">
+                      {orderedBy.has(k) ? "Ordered" : added ? `Added on site${added.every((a) => a.handled) ? "" : " · waiting for the office"}` : "Not ordered"}
+                    </span>
+                  </span>
+                </button>
+                {/* Oct 27 2026 (Jordan): the "Includes drone footage" tick came
+                    off. A part saved with it keeps it (the roster still reads it). */}
+              </div>
+            );
+          })}
+        </div>
+        {orderedServices.length > 0 && (
+          <p className="mt-3 flex items-start gap-2 rounded-lg bg-brand-soft/30 px-3 py-2 text-[13px]">
+            <Info aria-hidden className="mt-0.5 size-4 shrink-0 text-brand" />
+            <span>Ordered: {orderedWords}.{asMember && others.some((x) => x.captured.length) ? ` ${others.filter((x) => x.captured.length).map((x) => `${x.name.split(/\s+/)[0]} ${contributionState(x, null) === "submitted" ? "submitted" : "is on"} ${x.captured.map((c) => SERVICE_LABEL[c].toLowerCase()).join(", ")}`).join("; ")}. Both of you can contribute to the same service.` : ""}</span>
+          </p>
+        )}
+        {unchecked.length > 0 && (
+          <ul data-ordered-unchecked className="mt-2 space-y-1.5">
+            {unchecked.map((k) => {
+              const st = statusOf(k);
+              return (
+                <li key={k} data-unchecked={k} className="flex flex-wrap items-center gap-2 rounded-lg border border-border px-3 py-2 text-[13px]">
+                  <span className="font-medium">{SERVICE_LABEL[k]}</span>
+                  <StatusChip tone={st.tone}>{st.words}</StatusChip>
+                  {st.tone === "danger" && (
+                    <button type="button" onClick={() => { setItemsOpen(true); document.getElementById("ordered-items")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} className="ml-auto min-h-11 text-xs font-medium text-brand hover:underline">
+                      Say why
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
         <div className="mt-3 rounded-xl border border-dashed border-border p-3">
           <AddedAtShoot
             projectId={project.id}
@@ -3143,7 +3357,11 @@ export function UploadPortal({
         {photoShown && policy.photosOrdered && (
           <section data-service-section="photos" className="mt-5 border-t border-border pt-4">
             <h3 className="flex items-center gap-2 text-base font-semibold"><ImageIcon aria-hidden className="size-4.5 text-brand" /> Photo details</h3>
-            <div className="mt-3 grid gap-4 sm:grid-cols-2">
+            {/* Oct 27 2026 (Jordan's Loom): the gallery order, what to remove and
+                the photo editor's notes come first; the standard (with the
+                order's square footage beside the photo count), the guide and the
+                four checks follow. */}
+            <div className="mt-3 grid gap-4">
               <div className="min-w-0">
                 <p className="text-sm font-semibold">Gallery order</p>
                 <p className="mb-2 text-xs text-muted">The gallery walks the house the way a buyer would.</p>
@@ -3174,8 +3392,56 @@ export function UploadPortal({
                   )}
               </div>
               <div className="min-w-0">
+                <p className="text-sm font-semibold">Anything to remove in editing? <span className="text-danger">*</span></p>
+                <p className="mb-2 text-xs text-muted">Required. Pets, trash cans, vehicles, clutter that couldn&rsquo;t be moved. Move what you can on site.</p>
+                <div role="radiogroup" aria-label="Anything to remove in editing?" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <button type="button" role="radio" aria-checked={nothingToRemove} onClick={() => { setNothingToRemove(true); setRemoval(""); setRemovalOpen(false); }} className={choiceBtn(nothingToRemove)}>
+                    <CheckCircle2 className="size-4" /> Nothing to remove
+                  </button>
+                  <button type="button" role="radio" aria-checked={!nothingToRemove && (removalOpen || !!removal.trim())} onClick={() => { setNothingToRemove(false); setRemovalOpen(true); }} className={choiceBtn(!nothingToRemove && (removalOpen || !!removal.trim()), "warn")}>
+                    Add removal notes
+                  </button>
+                </div>
+                {!nothingToRemove && (removalOpen || !!removal.trim()) && (
+                  <AutoTextarea
+                    value={removal}
+                    onChange={(e) => { setRemoval(e.target.value); if (e.target.value.trim()) setNothingToRemove(false); }}
+                    minRows={2}
+                    aria-label="What to remove in editing"
+                    placeholder="e.g. Trash cans in exterior 3–4 · dog bed in the primary bedroom · neighbor's car in the driveway shots."
+                    className="mt-2 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                  />
+                )}
+              </div>
+              {editorNotesInPhotos && (
+                <div className="min-w-0">
+                  <label htmlFor="photo-editor-notes" className="block text-sm font-semibold">Photo editor notes <span className="font-normal text-muted">(optional)</span></label>
+                  <AutoTextarea
+                    id="photo-editor-notes"
+                    value={editorBrief}
+                    onChange={(e) => setEditorBrief(e.target.value)}
+                    minRows={2}
+                    placeholder="e.g. House faces west, so the exteriors are backlit: recover the sky. Seller wants the pool emphasized. Skip the cluttered office."
+                    className="mt-1.5 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                  />
+                </div>
+              )}
+              <div className="min-w-0">
                 <p className="mb-2 text-sm font-semibold">Photo standard</p>
                   <div className="rounded-xl bg-brand-soft/50 px-3.5 py-2.5 text-sm">
+                    {/* Oct 27 2026 (Jordan): the square footage comes from the order
+                        and is read-only for the photographer, shown with the
+                        photo count it sets. The office still edits it below. */}
+                    {!viewerIsOffice && (
+                      <p data-sqft-readonly className="mb-1 text-[13px] text-foreground/85">
+                        <span className="font-semibold">Square footage:</span>{" "}
+                        {bandText
+                          ? `${bandText.replace(/\s*\(.*\)$/, "")} (from the order)`
+                          : sqftSaved != null
+                            ? `${sqftSaved.toLocaleString("en-US")} sq ft (on file)`
+                            : "not on the order (the office adds it)"}
+                      </p>
+                    )}
                     {policy.rangeMode === "override" ? (
                       <>
                         <span className="font-semibold">This home&rsquo;s target: {policy.photoTarget} photos.</span>{" "}
@@ -3225,8 +3491,10 @@ export function UploadPortal({
             </div>
             {/* THE SIZE THIS TIER IS BUILT ON. Aryeo carries a square footage on
                 7 of 1,701 listings, so without this every home shows the smallest
-                range. The person standing in the house is the one who knows. */}
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-surface-2/40 px-3.5 py-2.5">
+                range. Oct 27 2026 (Jordan): the office's to set; the
+                photographer reads it from the order above. */}
+            {viewerIsOffice && (
+            <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-surface-2/40 px-3.5 py-2.5">
               <label htmlFor="sqft" className="text-sm font-medium">
                 Square footage
                 {policy.rangeMode === "sop" && <span className="ml-1 font-normal text-muted">— sets the target above</span>}
@@ -3260,6 +3528,7 @@ export function UploadPortal({
                       ? <span className="w-full text-xs text-muted">Not on the order. Add it and the range above matches the house.</span>
                       : null}
             </div>
+            )}
             <Fold className="mt-3" title="Full guide" summary="the 7 rules, room by room, the $1 policy">
               {/* Oct 21 2026 (upload page tidy): the seven rules fold to one line,
                   like the room-by-room guide below. Photographers know them; the
@@ -3350,28 +3619,6 @@ export function UploadPortal({
                     ? `The gallery makes sense for this home (aim ${policy.range.low}–${policy.range.high}) — anything above has a reason to exist.`
                     : "The gallery size makes sense for this property — every photo has a reason to exist."} />
             </div>
-            <div className="mt-4">
-              <p className="text-sm font-semibold">Anything to remove in editing?</p>
-              <p className="mb-2 text-xs text-muted">Pets, trash cans, vehicles, clutter that couldn&rsquo;t be moved. Move what you can on site.</p>
-              <div role="radiogroup" aria-label="Anything to remove in editing?" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <button type="button" role="radio" aria-checked={nothingToRemove} onClick={() => { setNothingToRemove(true); setRemoval(""); setRemovalOpen(false); }} className={choiceBtn(nothingToRemove)}>
-                  <CheckCircle2 className="size-4" /> Nothing to remove (I checked)
-                </button>
-                <button type="button" role="radio" aria-checked={!nothingToRemove && (removalOpen || !!removal.trim())} onClick={() => { setNothingToRemove(false); setRemovalOpen(true); }} className={choiceBtn(!nothingToRemove && (removalOpen || !!removal.trim()), "warn")}>
-                  Add removal notes
-                </button>
-              </div>
-              {!nothingToRemove && (removalOpen || !!removal.trim()) && (
-                <AutoTextarea
-                  value={removal}
-                  onChange={(e) => { setRemoval(e.target.value); if (e.target.value.trim()) setNothingToRemove(false); }}
-                  minRows={2}
-                  aria-label="What to remove in editing"
-                  placeholder="e.g. Trash cans in exterior 3–4 · dog bed in the primary bedroom · neighbor's car in the driveway shots."
-                  className="mt-2 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
-                />
-              )}
-            </div>
           </section>
         )}
 
@@ -3399,11 +3646,42 @@ export function UploadPortal({
                 </p>
               </div>
             )}
+            {/* Oct 27 2026 (Jordan's Loom): "Video half shot: needs a second
+                appointment", set by the person who filmed it. The same hold as
+                the office's control (lib/secondShoot), saved the moment it is
+                ticked; unticking takes it back while it has not been released. */}
+            {(halfShot ?? []).some((r) => !r.finished) && (
+              <div data-half-shot className="mb-4 border-b border-border pb-3.5">
+                {(halfShot ?? []).filter((r) => !r.finished).map((r) => {
+                  const on = !!halfShotOn[r.key];
+                  const many = (halfShot ?? []).length > 1;
+                  return (
+                    <div key={r.key}>
+                      <label className={cn("flex min-h-11 items-center gap-2.5 text-sm", briefNoteBlocked ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
+                        <input
+                          type="checkbox"
+                          data-half-shot-key={r.key}
+                          checked={on}
+                          disabled={!!briefNoteBlocked || halfShotBusy !== null}
+                          onChange={(e) => toggleHalfShot(r.key, e.target.checked)}
+                          className="size-5 shrink-0 accent-[var(--brand)]"
+                        />
+                        <span>
+                          <span className="font-medium">{many ? `Video ${r.number} (${r.label}): half shot` : "Video half shot"}: needs a second appointment</span>
+                          {on && <span className="block text-xs text-muted">Held. The editor won&rsquo;t start {many ? `video ${r.number}` : "it"} until footage from the next appointment is in, and nothing for it is required here until then.</span>}
+                        </span>
+                      </label>
+                      {halfShotMsg?.key === r.key && <p role="status" aria-live="polite" className={cn("ml-7 text-xs", halfShotMsg.ok ? "text-success" : "text-danger")}>{halfShotMsg.text}</p>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             {/* Oct 21 2026 (Jordan): the color profile is the photographer's
                 pick, required, never guessed from the order's tier. */}
             <div className="mb-4 border-b border-border pb-3.5">
               <p id="color-profile-label" className="text-[13px] font-medium text-muted">
-                {laterVideos.length ? "Color profile you shot video 1 in" : "Color profile you shot in"} <span className="text-danger">*</span>
+                {laterVideos.length ? "Color profile you shot video 1 in" : "Color profile you shot in"} {firstHeld ? <span className="font-normal">(not needed until its footage is in)</span> : <span className="text-danger">*</span>}
               </p>
               <div role="radiogroup" aria-labelledby="color-profile-label" className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {COLOR_PROFILE_CHOICES.map((c) => {
@@ -3427,9 +3705,17 @@ export function UploadPortal({
               </div>
               {colorProfile === null && <p className="mt-1.5 text-xs text-muted-2">Pick one so the editor grades the footage the right way.</p>}
             </div>
-            {/* Oct 22 2026: "Instructions added to Dropbox" — the file stands in
-                for the typed flow and vision below. */}
-            <DropboxInstructions projectId={project.id} current={dropboxInstructions} />
+            {/* Oct 27 2026 (Jordan: "I'd rather just have them paste it in the
+                portal"): no more "Instructions added to Dropbox". A file said
+                before then is still read here, and still answers the typed
+                flow and vision (the server keeps that excuse for old jobs). */}
+            {dropboxInstructions && (
+              <p data-dropbox-instructions-legacy className="mb-4 rounded-lg bg-surface-2/60 px-3 py-2 text-[13px] text-foreground/85">
+                <span className="font-semibold">Instructions file in Dropbox:</span> {dropboxInstructions.name}
+                {dropboxInstructions.by ? `, said by ${dropboxInstructions.by}` : ""}
+                {dropboxInstructions.atISO ? ` on ${etDate(dropboxInstructions.atISO)}` : ""}. New instructions go in the boxes below.
+              </p>
+            )}
             {/* §7.5: what the editor is told for each video, read here before
                 the photographer writes their own instructions below. */}
             {briefs.length > 0 && <div className="mb-4 border-b border-border pb-3.5">{briefCard}</div>}
@@ -3616,6 +3902,14 @@ export function UploadPortal({
                 );
               })()}
 
+              {/* Oct 27 2026: light instructions said before the submit (the KPI's own rule). */}
+              {lightHint && (
+                <p data-light-instructions role="status" className="mt-2 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[13px]">
+                  <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />
+                  <span><span className="font-semibold">These instructions are light:</span> {lightHint}. Light instructions count against your KPI.</span>
+                </p>
+              )}
+
               {/* Oct 23 2026: video 1's song request (each later video has its own below). */}
               <div className="mt-3">
                 <SongRequestField
@@ -3628,12 +3922,20 @@ export function UploadPortal({
               </div>
 
               {laterVideos.map((v) => (
-                <LaterVideoArea key={v.key} video={v} state={laterVids[v.key]} onChange={(patch) => setLater(v.key, patch)} existingSongs={existingSongs[v.key] ?? []} />
+                <LaterVideoArea
+                  key={v.key}
+                  // Oct 27 2026: "Video half shot" ticked on this page holds it too.
+                  video={{ ...v, waiting: laterHeld(v) ? v.waiting ?? "Waiting on a second shoot: half shot; needs a second appointment" : null }}
+                  state={laterVids[v.key]}
+                  onChange={(patch) => setLater(v.key, patch)}
+                  existingSongs={existingSongs[v.key] ?? []}
+                />
               ))}
 
-              {requiredLabels.length > 0 && (
+              {requiredLabels.length > 0 && !firstHeld && (
                 <p className="mt-1.5 text-xs text-warning">
-                  {`${requiredLabels.length > 2 ? `${requiredLabels.slice(0, -1).join(", ")} and ${requiredLabels[requiredLabels.length - 1]}` : requiredLabels.join(" and ")} can’t be left blank${spec.requireIntro ? " — the editor cuts and captions to the intro" : ""}.${contentSession ? "" : " Skipping the instructions forfeits future premium shoot assignments."}`}
+                  {/* Oct 27 2026 (Jordan): the KPI is what skipped or light instructions cost now. */}
+                  {`${requiredLabels.length > 2 ? `${requiredLabels.slice(0, -1).join(", ")} and ${requiredLabels[requiredLabels.length - 1]}` : requiredLabels.join(" and ")} can’t be left blank${spec.requireIntro ? ": the editor cuts and captions to the intro" : ""}. Skipped or light instructions count against your KPI.`}
                 </p>
               )}
             </div>
@@ -3667,8 +3969,49 @@ export function UploadPortal({
           <p className="mt-4 text-[13px] text-muted">Tick Video above to write the instructions for the {addedVideoRows.length === 1 ? "video" : "videos"} added on site.</p>
         )}
 
-        {/* ---- Floor plan / 3D tour / headshots: nothing extra to answer ---- */}
-        {(["floorplan", "tour", "headshots", "twilight"] as const).filter((k) => has(k) && (k !== "twilight" || !policy.photosOrdered)).map((k) => (
+        {/* ---- Floor plan / 3D tour: one tick per ordered item (Oct 27 2026,
+            Jordan: "if it's ordered, they should have to confirm that they
+            uploaded it, so just a check mark for each of these items"). Shown
+            when ordered, ticked or not under Step 1 (on a shared shoot, to the
+            one who captured it). The same tick as the ordered-items list at
+            the top; required on the first submit unless it couldn't be done. ---- */}
+        {(["floorplan", "tour"] as const).filter((k) => has(k) || (!asMember && orderedBy.has(k))).map((k) => {
+          const rows = confirmRows.filter((d) => serviceOfType(d.type) === k);
+          return (
+            <div key={k} data-service-section={k} className="mt-4 rounded-lg border border-border bg-surface-2/40 px-3 py-2.5">
+              <p className="text-[13px] font-semibold">{SERVICE_LABEL[k]}</p>
+              {rows.length ? rows.map((d) => {
+                const on = !!uploaded[d.id];
+                const reason = !on ? notDone[d.id] : undefined;
+                return (
+                  <div key={d.id}>
+                    <button
+                      type="button"
+                      role="checkbox"
+                      aria-checked={on}
+                      data-upload-tick={d.type}
+                      onClick={() => toggle(d.id)}
+                      className="mt-1 flex min-h-11 w-full items-center gap-2.5 text-left text-sm"
+                    >
+                      <span aria-hidden className={cn("flex size-5 shrink-0 items-center justify-center rounded border", on ? "border-success bg-success text-brand-fg" : "border-border-strong")}>
+                        {on && <Check className="size-3.5" />}
+                      </span>
+                      <span className="font-medium">{uploadTickLabel(d.type)}</span>
+                      {!on && !reason && !d.waivedAt && !project.debriefSubmittedAt && <span className="text-danger">*</span>}
+                    </button>
+                    {reason && <p className="ml-7 text-xs text-warning">Couldn&rsquo;t complete: {reason}</p>}
+                    {d.waivedAt && !on && <p className="ml-7 text-xs text-muted">The office marked it not required.</p>}
+                  </div>
+                );
+              }) : (
+                <p className="mt-0.5 text-[13px] text-foreground/85">Not on the order. Upload the files to Dropbox; the office adds it to the order.</p>
+              )}
+              {rows.length > 0 && <p className="mt-0.5 text-xs text-muted">Upload it, then tick it. Couldn&rsquo;t? Say why under &ldquo;Something ordered wasn&rsquo;t completed?&rdquo; at the top.</p>}
+            </div>
+          );
+        })}
+        {/* ---- Headshots / twilight: nothing extra to answer ---- */}
+        {(["headshots", "twilight"] as const).filter((k) => has(k) && (k !== "twilight" || !policy.photosOrdered)).map((k) => (
           <p key={k} data-service-section={k} className="mt-4 rounded-lg bg-surface-2/60 px-3 py-2 text-[13px] text-foreground/85">
             <span className="font-semibold">{SERVICE_LABEL[k]}:</span> nothing extra to fill in. Upload the files to Dropbox and mark them uploaded above{orderedBy.has(k) ? "" : "; the office adds it to the order"}.
           </p>
@@ -3685,7 +4028,7 @@ export function UploadPortal({
       </PortalCard>
 
       {/* ---- STEP 3: INSTRUCTIONS AND SUBMIT ---- */}
-      <PortalCard id="submit" n={3} title={asMember ? "Shared instructions & submit" : "Notes & submit"} subtitle={asMember ? "Review what is already filled in, then edit or add." : "Add anything else the editor should know (optional)."} done={pageDone}>
+      <PortalCard id="submit" n={3} title={asMember ? "Shared instructions & submit" : editorNotesInPhotos ? "Submit" : "Notes & submit"} subtitle={asMember ? "Review what is already filled in, then edit or add." : editorNotesInPhotos ? "Check what is left, then submit." : "Add anything else the editor should know (optional)."} done={pageDone}>
         {shared && sharedShoot ? (
           <>
             <SharedInstructions
@@ -3716,6 +4059,8 @@ export function UploadPortal({
               </div>
             ) : null}
           </>
+        ) : editorNotesInPhotos ? (
+          <p className="text-[13px] text-muted">Your notes for the photo editor are in Photo details above.</p>
         ) : (
           <div>
             <label className="block text-sm font-semibold">
@@ -3735,55 +4080,10 @@ export function UploadPortal({
         )}
 
         {!pageDone && <div className="mt-4 sm:hidden">{readinessBlock}</div>}
-        <Fold className="mt-4" title={<span className="inline-flex items-center gap-1.5"><Plus aria-hidden className="size-4" /> Report a problem, new request, or extra service</span>} summary={
-          // What is inside, said on the closed line (audit, Oct 23 2026): the
-          // shoot debrief and an overdue missing-work plan used to sit in
-          // plain sight on the old page.
-          [
-            flags.length ? `${flags.length} flagged` : null,
-            gaps.length ? `${gaps.length} missing work${gaps.some((g) => g.overdue) ? " (overdue)" : ""}` : null,
-          ].filter(Boolean).join(" · ") || "flags, missing work, client preferences, how the shoot went"
-        }>
-          <div>
-            <div className="mb-1.5 flex items-center gap-2 text-sm font-semibold">
-              <Flag className="size-4 text-danger" /> Flag a problem
-            </div>
-            <div className="flex gap-2">
-              <input
-                value={flagInput}
-                onChange={(e) => setFlagInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && submitFlag()}
-                placeholder={contentSession ? "e.g. The mic cut out during topic 3 — that take's audio is rough." : "e.g. Couldn’t shoot the garage — heads up for the editor."}
-                className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
-              />
-              <button onClick={submitFlag} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2">
-                Flag
-              </button>
-            </div>
-            {flagFailed && <p role="alert" className="mt-1.5 text-xs text-danger">{flagFailed}</p>}
-            {/* Oct 21 2026: the raised flags fold to one line (open after a new one). */}
-            {flags.length > 0 && (
-              <details className="mt-2 rounded-lg border border-danger/30 bg-danger/5" open={flagsOpen} onToggle={(e) => setFlagsOpen((e.target as HTMLDetailsElement).open)}>
-                <summary className="flex min-h-11 cursor-pointer items-center gap-2 px-3 text-[13px] font-medium text-danger focus-visible:outline-2 focus-visible:outline-brand">
-                  <AlertTriangle className="size-3.5 shrink-0" />
-                  {flags.length === 1 ? "1 problem flagged" : `${flags.length} problems flagged`}
-                  <span className="truncate font-normal text-foreground/70">: {flags[0]}</span>
-                </summary>
-                <ul className="space-y-1 px-3 pb-3">
-                  {flags.map((f, i) => (
-                    <li key={i} className="flex items-center gap-2 rounded-lg bg-danger-soft/60 px-2.5 py-1.5 text-xs text-danger">
-                      <AlertTriangle className="size-3.5 shrink-0" /> {f}
-                    </li>
-                  ))}
-                </ul>
-              </details>
-            )}
-          </div>
-          <MissingWork projectId={project.id} gaps={gaps} office={viewerIsOffice} />
-          <FieldFeedback projectId={project.id} clientName={project.clientName} reports={fieldReports} office={viewerIsOffice} />
-          {slots.debrief && <div className="mt-4 border-t border-border pt-4">{slots.debrief}</div>}
-          {slots.additionalShoot && <div className="mt-4 border-t border-border pt-4">{slots.additionalShoot}</div>}
-        </Fold>
+        {/* Oct 27 2026: the flags, missing work, client preference and "How did
+            the shoot go?" moved to "From the shoot" at the top; only the way
+            back in for a second shoot stays down here. */}
+        {slots.additionalShoot && <div className="mt-4 border-t border-border pt-4">{slots.additionalShoot}</div>}
       </PortalCard>
       </>
       )}

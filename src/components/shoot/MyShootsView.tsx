@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronLeft, ChevronRight, CheckCircle2, Upload as UploadIcon, Camera, X, Eye, GraduationCap, Target, Wrench, ScrollText } from "lucide-react";
+import { ChevronLeft, ChevronRight, CheckCircle2, Upload as UploadIcon, Camera, X, Eye, GraduationCap, Target, Wrench, ScrollText, Home } from "lucide-react";
 import { etDayKey, etTime, etFullDate } from "@/lib/datetime";
 import { DELIVERABLE_META } from "@/lib/pipeline";
 import { Badge } from "@/components/ui/Badge";
@@ -371,6 +371,40 @@ function ShootRowCard({ r, showWho, as }: { r: MyShootRow; showWho: boolean; as:
   return <ShootRowLink r={r} showWho={showWho} as={as} types={types} className="rounded-2xl border bg-surface hover:border-brand/40 hover:bg-surface-2/50" />;
 }
 
+/**
+ * The card's picture (Oct 27 2026, lib/shoot shootThumbCandidates): the cover
+ * photo once the listing has photos, else Street View; on a miss (Street View
+ * answers a real 404, a cover link can go dead) the next frame is tried, and a
+ * plain house tile stands in when none loads, so no card is left blank.
+ */
+function ShootThumb({ r }: { r: MyShootRow }) {
+  const frames = [
+    ...(r.thumbUrl ? [{ url: r.thumbUrl, kind: r.thumbKind ?? "street" }] : []),
+    ...(r.thumbFallbacks ?? []),
+  ];
+  const [i, setI] = useState(0);
+  const frame = frames[i];
+  const box = "h-16 w-24 shrink-0 rounded-xl border border-border sm:h-[4.5rem] sm:w-28";
+  if (!frame) {
+    return (
+      <span data-thumb-placeholder aria-hidden className={cn(box, "flex items-center justify-center bg-surface-2 text-muted-2")}>
+        <Home className="size-6" />
+      </span>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      key={frame.url}
+      src={frame.url}
+      alt={frame.kind === "aryeo" ? `First listing photo of ${r.street}` : `Street View of ${r.street}`}
+      loading="lazy"
+      onError={() => setI((n) => n + 1)}
+      className={cn(box, "object-cover")}
+    />
+  );
+}
+
 function ShootRowLink({ r, showWho, as, types, className }: { r: MyShootRow; showWho: boolean; as: string | null; types: string[]; className: string }) {
   return (
     <Link
@@ -379,18 +413,7 @@ function ShootRowLink({ r, showWho, as, types, className }: { r: MyShootRow; sho
     >
       {/* Property thumbnail: Street View of the address until the photos are
           live on Aryeo, then the listing's first image (server-side swap). */}
-      {r.thumbUrl && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={r.thumbUrl}
-          alt={r.thumbKind === "aryeo" ? `First listing photo of ${r.street}` : `Street View of ${r.street}`}
-          loading="lazy"
-          // Street View misses return a real 404 (return_error_code) — hide the
-          // frame instead of showing a broken-image icon.
-          onError={(e) => { e.currentTarget.style.display = "none"; }}
-          className="h-16 w-24 shrink-0 rounded-xl border border-border object-cover sm:h-[4.5rem] sm:w-28"
-        />
-      )}
+      <ShootThumb r={r} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-brand">{r.whenISO ? etTime(r.whenISO) : "—"}</span>

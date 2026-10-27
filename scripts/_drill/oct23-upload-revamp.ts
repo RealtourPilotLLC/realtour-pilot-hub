@@ -317,7 +317,7 @@ async function main() {
     await establishSession(harrison.id);
     const songJob = await job("44 Song Ave", [{ type: "PHOTOS", label: "Photos" }, { type: "SOCIAL_REEL", label: "Standard Reel", videoStyle: "standard_reel" }], [{ who: harrisonTm.id }]);
     const noTitle = await finalizeUpload(songJob, { editorBrief: "", force: true, scope: "video", videoInstructions: "COLOR PROFILE: iPhone\nSONG REQUEST: Requested\n\nEDITING NOTES\nQuick cuts.", captured: ["video"] } as never);
-    c.ok("a requested song with neither title nor link is refused, naming what is missing", /song title or a link/.test(String(noTitle.blocked)), String(noTitle.blocked));
+    c.ok("a requested song with neither title nor link is refused, naming what is missing (Oct 27 2026: the link)", /the song link for/.test(String(noTitle.blocked)), String(noTitle.blocked));
     // A video whose brief is required (a standard cinematic; a plain reel needs none, as ever): the song alone is not direction.
     const gateJob = await job("45 Song Ave", [{ type: "VIDEO", label: "Listing Video", videoStyle: "standard_cinematic" }], [{ who: harrisonTm.id }]);
     const songOnly = await finalizeUpload(gateJob, { editorBrief: "", force: true, videoInstructions: `COLOR PROFILE: iPhone\n${lines.join("\n")}`, captured: ["video"] } as never);

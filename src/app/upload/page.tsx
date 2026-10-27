@@ -7,7 +7,6 @@ import { Avatar } from "@/components/ui/Avatar";
 import { Badge, ink } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
-import { CullingReminder } from "@/components/upload/CullingReminder";
 import { getCurrentUser } from "@/lib/auth/user";
 import { crewProjectIds, photographerMemberId } from "@/lib/shoot";
 import { rawPhotoCounts } from "@/lib/dropboxFolders";
@@ -226,7 +225,7 @@ export default async function UploadListPage() {
         subtitle="Unload gear, sit down, and clear today's uploads — newest shoots first"
       />
       <div className="mx-auto max-w-3xl space-y-8 p-6">
-        <CullingReminder />
+        {/* Oct 27 2026 (Jordan): the "Cull to the Photography SOP" line came off this list; the shoot screen keeps its compact one. */}
 
         {shoots.length === 0 && <p className="text-sm text-muted">No shoots in the last week or coming up.</p>}
 

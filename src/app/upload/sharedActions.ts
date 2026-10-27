@@ -198,6 +198,69 @@ export async function addAgentRequest(
   }
 }
 
+// ---- "I couldn't fulfill this" (Oct 27 2026, lib/agentRequests) -------------------
+
+export async function markRequestNotFulfilled(
+  projectId: string,
+  input: { requestId: string; why: string },
+): Promise<{ ok: boolean; message: string; items?: AgentRequestItem[] }> {
+  const w = await who(projectId);
+  if (!w.ok) return { ok: false, message: w.message };
+  const { requestNotFulfilled } = await import("@/lib/agentRequests");
+  try {
+    const r = await requestNotFulfilled({ projectId, requestId: String(input.requestId ?? ""), why: String(input.why ?? ""), by: { name: w.who.name }, office: w.who.office, money: w.who.money });
+    if (r.ok) refresh(projectId);
+    return r;
+  } catch (e) {
+    return { ok: false, message: (e as Error).message || "Couldn't save that. Try again." };
+  }
+}
+
+export async function undoRequestNotFulfilled(projectId: string, input: { requestId: string }): Promise<{ ok: boolean; message: string; items?: AgentRequestItem[] }> {
+  const w = await who(projectId);
+  if (!w.ok) return { ok: false, message: w.message };
+  const { withdrawNotFulfilled } = await import("@/lib/agentRequests");
+  try {
+    const r = await withdrawNotFulfilled({ projectId, requestId: String(input.requestId ?? ""), office: w.who.office, money: w.who.money });
+    if (r.ok) refresh(projectId);
+    return r;
+  } catch (e) {
+    return { ok: false, message: (e as Error).message || "Couldn't undo that. Try again." };
+  }
+}
+
+// ---- "Video half shot: needs a second appointment" (Oct 27 2026) ------------------
+// Jordan: "the video half shot, hold it for the next appointment should really
+// just be on the upload portal ... they were the ones shooting it." The SAME
+// hold the office's control sets (lib/secondShoot markVideoWaitingOnShoot):
+// the video leaves the editors' queue and every clock until footage from a
+// later appointment is in or the office releases it. Undo takes the hold back
+// while it has not been released.
+
+export async function setVideoHalfShot(
+  projectId: string,
+  input: { key: string; on: boolean },
+): Promise<{ ok: boolean; message: string; waiting?: string | null }> {
+  const w = await who(projectId);
+  if (!w.ok) return { ok: false, message: w.message };
+  const key = String(input.key ?? "");
+  try {
+    const ss = await import("@/lib/secondShoot");
+    if (input.on) {
+      const r = await ss.markVideoWaitingOnShoot({ projectId, key, note: HALF_SHOT_NOTE, actor: w.who.name });
+      if (r.ok) refresh(projectId);
+      return { ok: r.ok, message: r.ok ? "Held for the next appointment. The editor won't start this video until that footage is in." : r.message, waiting: r.ok ? HALF_SHOT_NOTE : null };
+    }
+    const r = await ss.clearVideoWaitingOnShoot({ projectId, key, actor: w.who.name });
+    if (r.ok) refresh(projectId);
+    return { ok: r.ok, message: r.message, waiting: r.ok ? null : undefined };
+  } catch (e) {
+    return { ok: false, message: (e as Error).message || "Couldn't save that. Try again." };
+  }
+}
+
+const HALF_SHOT_NOTE = "Half shot; needs a second appointment";
+
 // ---- a video added on site ------------------------------------------------------
 // (Adding the service itself is the Added at the shoot card, actions.addShootAddOn,
 // unchanged: its task, its bell, its billing note, the reconcile that closes it.)
