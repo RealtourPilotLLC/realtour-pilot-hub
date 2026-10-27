@@ -124,7 +124,7 @@ async function main() {
     const nowB = (sB?.topics ?? []).filter((x) => !x.laterSession);
     c.ok("session 2's list starts at plan number 4 (carried) — not renumbered from 1", nowB[0]?.topicId === t(4) && nowB[0]?.planNo === 4, nowB.map((x) => `${x.planNo}`).join(","));
     c.ok("…and its numbers skip the one filmed early (5, 7, 8 — no 6)", nowB.map((x) => x.planNo).join(",") === "4,5,7,8", nowB.map((x) => x.planNo).join(","));
-    const plain = await buildContentMonth(prisma as unknown as PrismaClient, { name: "Monthly Plain TEST", package: "Accelerator", monthKey: CUR, project: true, topics: [{ title: "First topic", selection: "SELECTED" }, { title: "Second topic", selection: "SELECTED" }] });
+    const plain = await buildContentMonth(prisma as unknown as PrismaClient, { name: "Monthly Plain TEST", package: "Accelerator", monthKey: CUR, project: {}, topics: [{ title: "First topic", selection: "SELECTED" }, { title: "Second topic", selection: "SELECTED" }] });
     const sP = await ft.topicsForSession(plain.projectId!);
     c.ok("a monthly client's numbers are their place on the month's list (1, 2)", (sP?.topics ?? []).map((x) => x.planNo).join(",") === "1,2", (sP?.topics ?? []).map((x) => x.planNo).join(","));
 
