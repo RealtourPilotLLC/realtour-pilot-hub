@@ -9,6 +9,8 @@ import { classifyComm, isReaction, PRAISE_ONLY } from "@/lib/comms";
 import { stripQuotedReply } from "@/lib/text";
 import { HUB_REPLY_SOURCE, HUB_SMS_PREFIXES, HUB_SMS_SOURCES, isHubSms, isHubSmsSource } from "@/lib/hubSms";
 import { holdingReplyDueAt, isHoldingReply, type HoldingLine } from "@/lib/holdingReply";
+import { bookingAnswering, type Booking } from "@/lib/bookingQuestion";
+import { jobAddressKey } from "@/lib/teamRouting";
 
 // ---------------------------------------------------------------------------
 // THE ONE ANSWER TO "WHO IS WAITING ON A REPLY".
@@ -171,6 +173,16 @@ const ASK_RE =
 // Short, appreciative, no question in it — "Thank you!!", "These look amazing".
 // PRAISE_ONLY is the classifier's own regex (src/lib/comms.ts), imported rather
 // than copied: three files used to carry their own edition of it.
+//
+// A DATE IN A SIGN-OFF IS NOT INFORMATION (Jordan, Oct 27 2026 Loom, 37:41:
+// Mike Ciunci's "thanks so much" to Jordan sat open on Messages). A thank-you
+// that ends "See you on the 12th" or "Looking forward to Nov 12 at 10" read as
+// carrying a number (a time, an address) and stayed owed. The date and time
+// words inside a see-you closer are taken out before that test; anything else
+// with a digit in it (a bare phone number, an address) is still information.
+const SEE_YOU_RE = /\b(?:see (?:you|ya)|looking forward to|talk (?:to you )?(?:then|soon)|until then)\b/i;
+const DATE_TIME_RE =
+  /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s*\d{1,2}(?:st|nd|rd|th)?\b|\b\d{1,2}(?:st|nd|rd|th)\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)|\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b|\bat \d{1,2}(?::\d{2})?\b/gi;
 
 /** Reactions, tapbacks, machine breadcrumbs: not messages at all. Dropped
  *  outright — they are never even shown under the "probably handled" fold. */
@@ -266,10 +278,52 @@ function isCourtesy(text: string): boolean {
   if (words.length === 0) return !/\d/.test(t);
   if (words.length <= 10 && words.every((w) => ACK_WORDS.has(w))) return true;
   // A short message carrying a closing phrase, unless it is also asking for an
-  // edit ("Sounds good — can you also swap the cover photo").
-  if (/\d/.test(t)) return false; // a time, a date, an address, a price
-  if (t.length <= 80 && ACK_PHRASE_RE.test(t) && !classifyComm(t).isRevision) return true;
-  if (t.length <= 60 && PRAISE_ONLY.test(t) && !classifyComm(t).isRevision) return true;
+  // edit ("Sounds good — can you also swap the cover photo"). A see-you
+  // closer's own date is not a number that means anything (see SEE_YOU_RE).
+  const seeYou = SEE_YOU_RE.test(t);
+  const plain = seeYou ? t.replace(DATE_TIME_RE, " ").replace(/\s+/g, " ").trim() : t;
+  if (/\d/.test(plain)) return false; // a time, a date, an address, a price
+  // A see-you closer counts only beside a thank-you ("See you on the 12th"
+  // alone is a plan; "Thanks! See you on the 12th" is a sign-off).
+  if (plain.length <= 80 && (ACK_PHRASE_RE.test(plain) || (seeYou && PRAISE_ONLY.test(plain))) && !classifyComm(t).isRevision) return true;
+  if (plain.length <= 60 && PRAISE_ONLY.test(plain) && !classifyComm(t).isRevision) return true;
+  return false;
+}
+
+/** Boilerplate under a signature: a wire-fraud warning, a confidentiality
+ *  notice. Long, but nobody's words (Oct 27 2026). */
+const BOILERPLATE_RE = /\b(?:wire fraud|wiring instructions|wire (?:money|funds)|confidential(?:ity)?|privileged|intended (?:only )?for the (?:named |intended )?(?:recipient|addressee)|disclaimer|equal housing|licensed (?:in|real estate))\b/i;
+
+/**
+ * AN EMAIL THANK-YOU IS JUDGED ON ITS OWN LINES, SIGNATURE OFF (Oct 27 2026,
+ * the Loom's Mike Ciunci "thanks so much"). The walk judged an email on
+ * cleanEmailBody's text, which joins every line into one: the signature under
+ * "Thanks so much Jordan!" (a name, a brokerage, a cell number, a wire-fraud
+ * notice) made it long and full of digits, so it read as a real message and
+ * stayed owed. This reads the body the way isAckOnlyInbound reads an email
+ * task: the first line or two must be closers, and everything under them a
+ * signature or boilerplate. `raw` is the stored body, newlines intact.
+ */
+export function isAckOnlyEmailBody(raw: string): boolean {
+  let body = stripQuotedReply(raw ?? "")
+    .replace(/\[image:[^\]]*\]/gi, " ")
+    .replace(/<(?:https?:\/\/|mailto:|tel:)[^>]*>/gi, " ")
+    .replace(/<\+?[\d\s().-]{7,}>/g, " ")
+    .replace(/\bSent from my (?:iPhone|iPad|Galaxy|Android|mobile device)[\s\S]*$/i, "")
+    .trim();
+  if (!body) return false;
+  body = body.replace(/[ \t]+/g, " ");
+  const lines = body.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return false;
+  const tailOk = (l: string) => isSignatureLine(l) || (!l.includes("?") && !ASK_RE.test(l) && BOILERPLATE_RE.test(l));
+  for (let k = 1; k <= Math.min(2, lines.length); k++) {
+    const head = lines.slice(0, k).join(" ");
+    const tail = lines.slice(k);
+    if (tail.length > 12) continue;
+    if (!tail.every(tailOk)) continue;
+    const closer = (l: string) => isReaction(l) || (isCourtesy(l) && !classifyComm(l).isRevision);
+    if (lines.slice(0, k).every(closer) && closer(head)) return true;
+  }
   return false;
 }
 
@@ -328,11 +382,22 @@ export function commsMuteKey(phone: string): string {
  *  "Photos uploaded" is a status text, not spam, and a muted photographer is a
  *  silent field. */
 export async function muteNumberAsSpam(phone: string, at: Date = new Date()): Promise<"muted" | "teammate" | "not a phone number"> {
+  return muteNumber(phone, "spam", at);
+}
+
+/** Why an unsaved number was put away (Oct 27 2026 Loom, 40:12: "a way to
+ *  dismiss these, not a client, or spam"). Both mute the number: it is not
+ *  client communication, today or next time. */
+export const UNSAVED_NUMBER_REASONS = ["not a client", "spam"] as const;
+export type UnsavedNumberReason = (typeof UNSAVED_NUMBER_REASONS)[number];
+
+/** Cut and mute one number with a reason. Same guard as spam: never one of ours. */
+export async function muteNumber(phone: string, reason: UnsavedNumberReason, at: Date = new Date()): Promise<"muted" | "teammate" | "not a phone number"> {
   const key = phoneKey(phone);
   if (key.length !== 10) return "not a phone number";
   const team = await prisma.teamMember.findMany({ select: { phone: true } });
   if (team.some((t) => phoneKey(t.phone) === key)) return "teammate";
-  const value = ackValue(at, "spam");
+  const value = ackValue(at, reason);
   const ack = threadAckKey("phone", `p:${key}`);
   const mute = commsMuteKey(key);
   await prisma.appSetting.upsert({ where: { key: ack }, create: { key: ack, value }, update: { value } });
@@ -389,6 +454,78 @@ export async function mutedNumbers(): Promise<MutedNumber[]> {
 // definition nobody waiting on us, and one was sitting on the board.)
 const EMAIL_NOISE_SUBJECT = /^(accepted|declined|tentatively accepted|updated invitation|canceled event|cancelled event):|^(automatic reply|auto-?reply|out of (the )?office)\b|^(your |payment )?(receipt|invoice|statement|renewal|auto-?pay(ment)?)\b|subscription (on hold|paused|cancell?ed)\b|payment (failed|failure|declined|unsuccessful)\b|\b(webinar|newsletter|unsubscribe|promo code|chamber)\b|\bweekly (update|digest)\b|% off|\bsale ends\b/i;
 const EMAIL_NOISE_SENDER = /no-?reply|do-?not-?reply|notifications?@|\bbilling\b|support@|\bchamber\b|marketing@|\bnewsletter\b|mailer-daemon|\bautomated\b/i;
+
+// ---------------------------------------------------------------------------
+// CLIENT COMMUNICATIONS ONLY (Jordan, Oct 27 2026 Loom, 38:23: "this should
+// only be client communications ... accepted Google Meet invitation, why is
+// that here? ... shipment is on the way ... top tier capital program, that's
+// spam"). Rules first, AI second (lib/commsNotClient): these are the shapes no
+// client ever writes. Each rule reads the SUBJECT, the sender label, or the
+// opening of the body, and a subject that asks something ("?") is never a
+// scheduler's or a shipper's.
+// ---------------------------------------------------------------------------
+/** A calendar invite or its answer ("Accepted: Google Meet invitation"). */
+const CALENDAR_SUBJECT_RE = /^(?:invitation|updated invitation|accepted|declined|tentatively accepted|canceled event|cancelled event|new event|event canceled|event cancelled)\s*:|\binvitation (?:accepted|declined)\b|\b(?:accepted|declined)\b.{0,40}\binvitation\b|\bgoogle meet\b.{0,40}\binvit/i;
+const CALENDAR_BODY_RE = /\bhas (?:accepted|declined|tentatively accepted) this invitation\b|\binvitation from google calendar\b|\bjoin with google meet\b|\bjoin zoom meeting\b|\byou are receiving this (?:courtesy )?email at the account\b/i;
+/** A scheduler's own confirmation: Calendly, Acuity, Aryeo, a booking page. */
+const SCHEDULER_SUBJECT_RE = /^(?:new event|confirmed|updated|canceled|cancelled|rescheduled|reminder)\s*:|\b(?:calendly|acuity|setmore|square appointments)\b|\b(?:appointment|booking|meeting|order|shoot|session) (?:confirmed|confirmation|scheduled|reminder|rescheduled|canceled|cancelled)\b|\byour (?:appointment|booking|meeting|order|shoot|session) (?:is|has been) (?:confirmed|scheduled|booked|rescheduled)\b/i;
+/** A shipping or delivery notice ("your shipment is on the way"). */
+const SHIPPING_BODY_RE = /\byour (?:shipment|package|order|parcel)\b.{0,40}\b(?:is on (?:its|the) way|has shipped|shipped|out for delivery|was delivered|has been delivered|is arriving)\b|\b(?:shipment|package|parcel) (?:is )?(?:on (?:its|the) way|out for delivery)\b/i;
+const SHIPPING_RE = new RegExp(`${SHIPPING_BODY_RE.source}|\\btracking (?:number|#|info)\\b|\\bhas shipped\\b|\\bshipping (?:confirmation|update|notification)\\b`, "i");
+/** A cold solicitation: business funding, SEO, lists. */
+const SOLICIT_RE = /\b(?:capital program|working capital|business (?:loan|funding|line of credit|financing)|line of credit|merchant cash advance|cash advance|pre-?approved (?:for|up to)|funding (?:offer|options|approval|is ready)|sba loan|revenue[- ]based financing|top tier capital|seo (?:services|audit|package|proposal)|rank (?:higher|#?1|first) on google|first page (?:of|on) google|guest post|backlinks?|lead list|leads? (?:list|database)|we buy houses)\b/i;
+
+export type NotClientReason = "calendar" | "scheduler" | "shipping" | "solicitation" | "automated" | "bulk";
+
+/**
+ * Is this email something other than a client writing to us? The rule half of
+ * "client communications only" (Oct 27 2026); `raw` is the stored body. Null
+ * means it may be a client (the AI fail-safe in lib/commsNotClient may still
+ * say otherwise). Conservative: a false "not a client" costs a client.
+ */
+export function notClientEmailReason(e: { subject: string | null; contactName: string | null; body: string | null }): NotClientReason | null {
+  const subject = (e.subject ?? "").trim();
+  const raw = e.body ?? "";
+  // A question in the subject, or a reply ("Re: Your session is confirmed",
+  // a client answering our own confirmation), is a person writing.
+  const asks = subject.includes("?") || /^(?:re|fwd?|fw)\s*:/i.test(subject);
+  if (EMAIL_NOISE_SENDER.test(e.contactName ?? "")) return "automated";
+  if (EMAIL_NOISE_SUBJECT.test(subject)) return /^(accepted|declined|tentatively accepted|updated invitation|canceled event|cancelled event):/i.test(subject) ? "calendar" : "automated";
+  if (!asks && (CALENDAR_SUBJECT_RE.test(subject) || CALENDAR_BODY_RE.test(raw))) return "calendar";
+  if (!asks && SCHEDULER_SUBJECT_RE.test(subject)) return "scheduler";
+  const own = cleanEmailBody(raw);
+  const head = own.slice(0, 600);
+  if (!asks && (SHIPPING_RE.test(subject) || SHIPPING_BODY_RE.test(head))) return "shipping";
+  if (SOLICIT_RE.test(subject) || SOLICIT_RE.test(head)) return "solicitation";
+  if (isBulkEmail(raw, own)) return "bulk";
+  return null;
+}
+
+export const NOT_CLIENT_LABEL: Record<NotClientReason | "ai", string> = {
+  calendar: "Calendar invite or reply",
+  scheduler: "Scheduling confirmation",
+  shipping: "Shipping notice",
+  solicitation: "Sales pitch",
+  automated: "Automated mail",
+  bulk: "Newsletter or blast",
+  ai: "Not a client (AI check)",
+};
+
+/** AppSetting key holding the AI fail-safe's "not a client" verdict for one
+ *  email row (lib/commsNotClient). Only positive verdicts are stored. */
+export function notClientVerdictKey(commLogId: string): string {
+  return `comms-not-client:${commLogId}`;
+}
+
+/** The email rows the AI fail-safe has called not-a-client, from this set. */
+export async function notClientVerdicts(commLogIds: string[]): Promise<Set<string>> {
+  const ids = [...new Set(commLogIds.filter(Boolean))];
+  if (ids.length === 0) return new Set();
+  const rows = await prisma.appSetting
+    .findMany({ where: { key: { in: ids.map(notClientVerdictKey) } }, select: { key: true, value: true } })
+    .catch(() => [] as { key: string; value: string }[]);
+  return new Set(rows.filter((r) => !!parseAckValue(r.value)).map((r) => r.key.slice("comms-not-client:".length)));
+}
 
 // Bulk mail and cold pitches from a MATCHED sender — the two regexes above
 // judge the subject and the sender label, and on Sep 8 2026 both let through
@@ -464,6 +601,55 @@ export function cleanEmailBody(raw: string): string {
     .replace(/\s+/g, " ")
     .trim();
   return t || base.replace(/\s+/g, " ").trim();
+}
+
+// ---------------------------------------------------------------------------
+// Bookings, for "a booking answers a booking question" (Oct 27 2026, see
+// lib/bookingQuestion). Read by the walk, the ledger and the open scheduling
+// asks, so every Messages surface drops the same question at the same moment.
+// ---------------------------------------------------------------------------
+
+/** A booking made up to this long before the question still answers it. */
+const BOOKING_SLACK_MS = 10 * 60_000;
+const DEAD_SESSION_STATES = ["CANCELLED", "DECLINED", "EXPIRED", "CANCEL_REQUESTED"];
+
+/** Content sessions and jobs booked for these clients since `since`, per
+ *  client. A failed read answers nothing (every question stays). */
+export async function bookingsByClient(clientIds: string[], since: Date): Promise<Map<string, Booking[]>> {
+  const out = new Map<string, Booking[]>();
+  const ids = [...new Set(clientIds.filter(Boolean))];
+  if (ids.length === 0) return out;
+  try {
+    const [sessions, jobs] = await Promise.all([
+      prisma.programSessionRequest.findMany({
+        where: { clientId: { in: ids }, createdAt: { gte: since }, status: { notIn: DEAD_SESSION_STATES } },
+        select: { clientId: true, createdAt: true, slotStart: true },
+      }),
+      prisma.project.findMany({
+        where: { clientId: { in: ids }, createdAt: { gte: since }, status: { not: "CANCELLED" } },
+        select: { clientId: true, createdAt: true, orderedAt: true, title: true, addressLine: true },
+      }),
+    ]);
+    const add = (b: Booking) => {
+      const list = out.get(b.clientId) ?? [];
+      list.push(b);
+      out.set(b.clientId, list);
+    };
+    const day = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" });
+    for (const s of sessions) add({ clientId: s.clientId, at: s.createdAt, kind: "session", words: s.slotStart ? `content session ${day(s.slotStart)}` : "content session" });
+    // The real order date when Aryeo gave one (createdAt is import time).
+    for (const j of jobs) add({ clientId: j.clientId, at: j.orderedAt ?? j.createdAt, kind: "job", title: j.title, addressLine: j.addressLine, words: j.title.split(",")[0] });
+  } catch (e) {
+    console.error("[replyQueue] reading bookings failed", e);
+  }
+  return out;
+}
+
+/** Is this client message a booking question their own later booking answered? */
+export function answeredByBooking(m: { clientId: string | null; text: string; at: Date }, bookings: Map<string, Booking[]>): Booking | null {
+  if (!m.clientId) return null;
+  const list = bookings.get(m.clientId);
+  return list?.length ? bookingAnswering({ text: m.text, at: m.at }, list, jobAddressKey) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -596,6 +782,7 @@ export type UnansweredOptions = {
 };
 
 type Row = {
+  id?: string;
   channel: string;
   direction: string;
   clientId: string | null;
@@ -1407,12 +1594,13 @@ export async function openObligations(
       if (!/missed|voicemail|no answer/i.test(r.body ?? "")) continue;
       body = /voicemail/i.test(r.body ?? "") ? "Voicemail — call them back" : "Missed call — call them back";
     } else if (r.channel === "email") {
-      if (EMAIL_NOISE_SUBJECT.test(r.subject ?? "") || EMAIL_NOISE_SENDER.test(r.contactName ?? "")) continue;
+      // The walk's rules exactly (Oct 27 2026): not a client, or a thank-you
+      // over a signature, is not a message anyone is owed an answer to.
+      if (notClientEmailReason(r)) continue;
       body = cleanEmailBody(r.body ?? "");
-      if (isBulkEmail(r.body ?? "", body)) continue;
       if (!body) body = (r.subject ?? "").trim();
       if (isNoise(body) && !/\?/.test(r.subject ?? "")) continue;
-      if (isCourtesy(body) && !/\?/.test(r.subject ?? "")) continue;
+      if ((isCourtesy(body) || isAckOnlyEmailBody(r.body ?? "")) && !/\?/.test(r.subject ?? "")) continue;
     } else {
       if (isNoise(r.body)) continue;
       body = (r.body ?? "").trim();
@@ -1721,6 +1909,15 @@ async function ledgerThreads(
       (x.family !== "email" || !!x.clientId),
   );
   if (keep.length === 0) return [];
+  // A booking answers a booking question here too (Oct 27 2026): the walk and
+  // the ledger must never disagree about Mike Ciunci's "schedule November".
+  const owedIds = [...new Set(keep.map((x) => x.clientId).filter((c): c is string => !!c))];
+  const booked = await bookingsByClient(owedIds, new Date(Math.min(...keep.map((x) => x.lastInboundAt.getTime())) - BOOKING_SLACK_MS));
+  if (booked.size) {
+    const answered = new Set(keep.filter((x) => answeredByBooking({ clientId: x.clientId, text: x.lastInboundText, at: x.lastInboundAt }, booked)));
+    if (answered.size) keep.splice(0, keep.length, ...keep.filter((x) => !answered.has(x)));
+    if (keep.length === 0) return [];
+  }
 
   const ids = [...new Set(keep.map((x) => x.clientId).filter((c): c is string => !!c))];
   const [clients, team] = await Promise.all([
@@ -1839,7 +2036,14 @@ async function withSchedulingAsks(
     import("@/lib/clientAsks"),
   ]);
   const projectById = new Map(projects.map((p) => [p.id, p]));
-  const live = asks.filter((a) => !closesOnDelivery({ kind: "SCHEDULING", askedAt: a.askedAt }, a.projectId ? projectById.get(a.projectId) : null));
+  // …and an ask a later booking answered (Oct 27 2026, lib/bookingQuestion);
+  // the asks sweep closes it for good (clientAsks.closeBookedSchedulingAsks).
+  const booked = await bookingsByClient(asks.map((a) => a.clientId), new Date(asks[0].askedAt.getTime() - BOOKING_SLACK_MS));
+  const live = asks.filter(
+    (a) =>
+      !closesOnDelivery({ kind: "SCHEDULING", askedAt: a.askedAt }, a.projectId ? projectById.get(a.projectId) : null) &&
+      !answeredByBooking({ clientId: a.clientId, text: a.text, at: a.askedAt }, booked),
+  );
   const byClient = new Map<string, typeof live>();
   for (const a of live) {
     const list = byClient.get(a.clientId) ?? [];
@@ -1994,7 +2198,7 @@ async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
   // One read per family under the shared scan, so each keeps its own cap.
   const channelSets = o.perFamilyCap && wantPhone && wantEmail ? [["text", "call"], ["email"]] : [channels];
   const ROW_SELECT = {
-    channel: true, direction: true, clientId: true, clientName: true, contactName: true,
+    id: true, channel: true, direction: true, clientId: true, clientName: true, contactName: true,
     fromPhone: true, projectId: true, subject: true, body: true, occurredAt: true, source: true,
     externalId: true, createdAt: true,
   } as const;
@@ -2051,6 +2255,12 @@ async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
   // ledger to an empty scan (the 60-day-old request is precisely the case
   // where the window returns nothing; audit R07).
   if (rows.length === 0) return [];
+  // The AI fail-safe's "not a client" verdicts for the matched inbound email
+  // in the window (Oct 27 2026, lib/commsNotClient). Read once; a failed read
+  // hides nothing.
+  const aiNotClient = await notClientVerdicts(
+    rows.filter((r) => r.channel === "email" && r.direction !== "out" && !!r.clientId && !!r.id).map((r) => r.id as string),
+  );
 
   // Our own people, by number and by name. The number is the reliable signal
   // (a name only helps on rows logged before fromPhone existed).
@@ -2306,18 +2516,24 @@ async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
     // a courtesy note, and a subject-only email ("Available Friday? EOM") still
     // surfaces.
     let asksInSubject = false;
+    let ackOnly = false;
     if (r.channel === "call") {
       // A missed call / voicemail demands a callback like a text demands a
       // reply — those rows used to be orphaned from every surface.
       if (!/missed|voicemail|no answer/i.test(r.body ?? "")) continue; // answered — nothing owed
       body = /voicemail/i.test(r.body ?? "") ? "Voicemail — call them back" : "Missed call — call them back";
     } else if (r.channel === "email") {
-      if (EMAIL_NOISE_SUBJECT.test(r.subject ?? "") || EMAIL_NOISE_SENDER.test(r.contactName ?? "")) continue;
+      // CLIENT COMMUNICATIONS ONLY (Oct 27 2026): calendar answers, scheduler
+      // confirmations, shipping notices, pitches and blasts (rule 6) are
+      // nobody waiting on us; the AI fail-safe catches what the rules miss.
+      if (notClientEmailReason(r)) continue;
+      if (r.id && aiNotClient.has(r.id)) continue;
       subject = r.subject;
       // Judge on the CLEANED text — raw quoted history made every "Thanks!"
       // reply look long enough to need an answer.
       body = cleanEmailBody(r.body ?? "");
-      if (isBulkEmail(r.body ?? "", body)) continue; // rule 6: a blast, not a person
+      // A thank-you over a signature is a thank-you (Oct 27 2026, Mike Ciunci).
+      ackOnly = isAckOnlyEmailBody(r.body ?? "");
       asksInSubject = /\?/.test(r.subject ?? "");
       if (!body) body = (r.subject ?? "").trim();
       if (isNoise(body) && !asksInSubject) continue;
@@ -2342,12 +2558,13 @@ async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
       b,
       { channel: r.channel as WaitingMessage["channel"], subject, body, at: r.occurredAt, ...(mailbox ? { mailboxes: [mailbox] } : {}), ...(loggedAt ? { loggedAt } : {}) },
       asksInSubject,
+      ackOnly,
     );
   }
 
   /** File one unanswered inbound: real ask, or courtesy closer. */
-  function pushPending(b: Bucket, m: WaitingMessage, forceReal = false) {
-    const list = !forceReal && isCourtesy(m.body) ? b.courtesy : b.pending;
+  function pushPending(b: Bucket, m: WaitingMessage, forceReal = false, forceCourtesy = false) {
+    const list = !forceReal && (forceCourtesy || isCourtesy(m.body)) ? b.courtesy : b.pending;
     // One email often lands twice (sent to both inboxes) — show it once, but
     // keep the LATEST timestamp: a repeated "Any update?" nudge after a
     // Handled tick must resurface, not stay hidden behind the old ack.
@@ -2439,7 +2656,7 @@ async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
   type HandledClose = { id: string; clientId: string | null; completedAt: Date | null; source: string };
   type HandledReads = { rows: HandledClose[]; perRequest: Map<string, Date> };
 
-  const [handled, emailAcks, mutes, openTasks, clients, leadTasks] = await Promise.all([
+  const [handled, emailAcks, mutes, openTasks, clients, leadTasks, bookings] = await Promise.all([
     allClientIds.length
       ? prisma.smartTask
           .findMany({
@@ -2497,6 +2714,12 @@ async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
           select: { id: true, dedupeKey: true, propertyAddress: true, projectId: true },
         })
       : Promise.resolve([] as { id: string; dedupeKey: string | null; propertyAddress: string | null; projectId: string | null }[]),
+    // The bookings made since the window opened: a booking answers a booking
+    // question (Oct 27 2026, lib/bookingQuestion).
+    bookingsByClient(
+      allClientIds,
+      new Date(Math.min(now.getTime(), ...live.flatMap((b) => b.pending.map((m) => m.at.getTime()))) - BOOKING_SLACK_MS),
+    ),
   ]);
 
   // Handled is CHANNEL-SCOPED: a text reply must not hide a genuinely
@@ -2634,6 +2857,14 @@ async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
       b.pending = b.pending.filter((i) => (i.loggedAt ?? i.at) > at);
       b.courtesy = b.courtesy.filter((i) => (i.loggedAt ?? i.at) > at);
       b.firstAt = b.pending[0]?.at ?? null;
+    }
+    // A BOOKING ANSWERS A BOOKING QUESTION (Jordan, Oct 27 2026 Loom, 36:30):
+    // "Can we schedule ahead of time for November?" stops waiting once that
+    // client has a session or a job booked after they asked.
+    if (b.clientId && bookings.has(b.clientId) && b.pending.length) {
+      const before = b.pending.length;
+      b.pending = b.pending.filter((m) => !answeredByBooking({ clientId: b.clientId, text: `${m.subject ?? ""} ${m.body}`, at: m.at }, bookings));
+      if (b.pending.length !== before) b.firstAt = b.pending.reduce<Date | null>((min, m) => (!min || m.at < min ? m.at : min), null);
     }
     if (b.pending.length === 0 && b.courtesy.length === 0) continue;
 
@@ -2873,6 +3104,100 @@ export async function replyWaitingSummary(): Promise<{
     email: email.length,
     total: threads.length,
   };
+}
+
+// ---------------------------------------------------------------------------
+// THE REPLY BACKLOG (Jordan, Oct 27 2026 Loom, 39:40: "if they're getting
+// behind on responding to messages ... we should escalate it ... reminding
+// Kyle that hey, you've got these messages that need to be responded to").
+// Client threads only (no teammates, no unsaved numbers), the office's own
+// tier, the work list's rules (includeOwed). Behind = more than
+// REPLY_BACKLOG_MAX_WAITING open, or any one older than
+// REPLY_BACKLOG_MAX_HOURS. The OWNER dashboard's bottleneck topics read the
+// same helper.
+// ---------------------------------------------------------------------------
+export const REPLY_BACKLOG_MAX_WAITING = 8;
+export const REPLY_BACKLOG_MAX_HOURS = 24;
+
+export type ReplyBacklog = {
+  /** client threads waiting on our answer */
+  waiting: number;
+  /** the oldest one's wait, in whole hours */
+  oldestHours: number;
+  /** how many have waited past REPLY_BACKLOG_MAX_HOURS */
+  overDay: number;
+  /** who has waited longest, for a line like "Mike Ciunci, 30h" */
+  oldestName: string | null;
+  behind: boolean;
+};
+
+/** Pure: the backlog in a set of waiting threads (a drill holds the rule). */
+export function backlogOf(threads: Pick<WaitingThread, "isClient" | "isTeam" | "courtesyOnly" | "waitingSince" | "displayName">[], now: Date): ReplyBacklog {
+  const live = threads.filter((t) => t.isClient && !t.isTeam && !t.courtesyOnly);
+  const hours = (t: (typeof live)[number]) => Math.max(0, Math.floor((now.getTime() - t.waitingSince.getTime()) / 3_600_000));
+  const oldest = live.reduce<(typeof live)[number] | null>((o, t) => (!o || t.waitingSince < o.waitingSince ? t : o), null);
+  const oldestHours = oldest ? hours(oldest) : 0;
+  return {
+    waiting: live.length,
+    oldestHours,
+    overDay: live.filter((t) => hours(t) > REPLY_BACKLOG_MAX_HOURS).length,
+    oldestName: oldest?.displayName ?? null,
+    behind: live.length > REPLY_BACKLOG_MAX_WAITING || oldestHours > REPLY_BACKLOG_MAX_HOURS,
+  };
+}
+
+/** Kyle's reply backlog right now: the client threads on Messages · Waiting on us. */
+export async function replyBacklog(opts: { now?: Date; excludeClientIds?: string[] } = {}): Promise<ReplyBacklog> {
+  const now = opts.now ?? new Date();
+  const threads = await unansweredComms({
+    now,
+    includeTeam: false,
+    includeUnmatched: false,
+    includeOwed: true,
+    // The office's tier (Kyle's), whoever asks: a cron has no viewer.
+    minRoles: Object.keys(ROLE_RANK).filter((r) => ROLE_RANK[r] <= ROLE_RANK.ADMIN),
+    excludeClientIds: opts.excludeClientIds,
+  });
+  return backlogOf(threads, now);
+}
+
+/** The words Kyle reads, once (bell and DM). */
+export function backlogNoticeText(b: ReplyBacklog): string {
+  return `We're behind on replies: ${b.waiting} waiting, the oldest ${b.oldestHours}h. Review, reply or mark handled.`;
+}
+
+/**
+ * ONE escalation a day while Kyle is behind (Oct 27 2026): from 9 AM ET, the
+ * first gmail cron pass that finds the backlog over the line sends one bell
+ * row and one DM. The bell row's dedupeKey is the ET day, so a second pass
+ * (or a second server) sends nothing. Never throws.
+ */
+export async function escalateReplyBacklog(now: Date = new Date()): Promise<{ sent: boolean; backlog: ReplyBacklog | null; skipped?: string }> {
+  try {
+    const { etDayKey, etHour } = await import("@/lib/datetime");
+    if (etHour(now) < 9) return { sent: false, backlog: null, skipped: "before 9 AM ET" };
+    const day = etDayKey(now);
+    const dedupeKey = `reply-backlog-${day}`;
+    // Already announced today: skip the walk.
+    const done = await prisma.notification.findFirst({ where: { dedupeKey: { startsWith: dedupeKey } }, select: { id: true } }).catch(() => null);
+    if (done) return { sent: false, backlog: null, skipped: "already sent today" };
+    const backlog = await replyBacklog({ now });
+    if (!backlog.behind) return { sent: false, backlog };
+    const [{ noticeForKyle }, { appBase }] = await Promise.all([import("@/lib/kyleNotice"), import("@/lib/appUrl")]);
+    const words = backlogNoticeText(backlog);
+    const r = await noticeForKyle({
+      kind: "reply_backlog",
+      title: "We're behind on replies",
+      body: words,
+      href: "/communications",
+      dedupeKey,
+      slack: `${words}${backlog.oldestName ? ` Longest wait: ${backlog.oldestName}.` : ""} ${appBase()}/communications`,
+    });
+    return { sent: r.bell, backlog };
+  } catch (e) {
+    console.error("[replyQueue] reply backlog escalation failed", e);
+    return { sent: false, backlog: null, skipped: "error" };
+  }
 }
 
 // Rebuild ONE card after something changes (a send, a regenerate) without

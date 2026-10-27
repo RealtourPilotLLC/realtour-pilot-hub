@@ -403,6 +403,9 @@ type TaskSpec = {
 /** The project went ON_HOLD (Sep 8 audit: a "QC & deliver" card on a held job
  *  sat open 41 days, invisible on every screen but counted in "84 open"). */
 export const JOB_ON_HOLD = "job-on-hold";
+/** An open confirmation whose shoot was moved with no new date (Oct 27 2026):
+ *  its summary while it waits; the re-time puts the SOP summary back. */
+export const CONFIRMATION_HELD = "Held: the shoot was moved and has no new date yet. This text comes back the day before the new date.";
 /** The job reads SHOT/EDITING/REVIEW while its shoot is still ahead — a
  *  same-address re-shoot whose Dropbox folder already holds the FIRST shoot's
  *  raws (1946 Rowan St #2, Sep 8: "2 ready now" for photos that don't exist). */
@@ -801,8 +804,9 @@ export function specsForProject(p: {
   // only" meant tomorrow's 9 AM shoot got no confirmation text at all. The
   // same hole swallowed every return visit on a job past SCHEDULED (1224 Gail
   // Rd, 3206 W Dauphin: zero outbound texts in the 72h before the second leg).
-  // A job still BOOKED/SCHEDULED with no date yet keeps its dateless row (the
-  // date has to be chased — clientTexts.ts); past SCHEDULED a real upcoming
+  // A job still BOOKED/SCHEDULED with no date yet keeps its dateless row (held
+  // off the Outbox since Oct 27 2026, lib/clientTexts; the Aryeo sync's rebook
+  // card chases the date); past SCHEDULED a real upcoming
   // date is required, otherwise a shot job that lost its slot would grow one.
   // The shoot INSTANT, not the ET-day start: a job that shot this morning and
   // reads SHOT kept emitting a confirmation spec all day, so its unsent row
@@ -5047,6 +5051,17 @@ async function syncOneProjectTasks(
       // confirmation's drafted preview embeds the old date/time and
       // sendConfirmationText re-renders fresh at send time — re-render here too
       // so the draft Kyle reviews matches what actually gets sent.
+      // HELD (Jordan, Oct 27 2026 Loom, Georgiana at 2031 Ruth St): the shoot
+      // was moved and has no new date yet, so the spec has no dueAt. The open
+      // confirmation used to keep its OLD day-before dueAt and sat in the
+      // Outbox reading "may be out of date". It waits, dateless, for the new
+      // date (the rebook task chases it; the Outbox lists a confirmation only
+      // for a shoot ahead and no later than tomorrow, lib/clientTexts), and
+      // the re-time below brings it back, the day before, when a date lands.
+      if (s.taskType === "confirmation_text" && !s.dueAt && exists.dueAt) {
+        await prisma.smartTask.update({ where: { id: exists.id }, data: { dueAt: null, summary: CONFIRMATION_HELD } });
+        continue;
+      }
       if (s.dueAt && (!exists.dueAt || Math.abs(s.dueAt.getTime() - exists.dueAt.getTime()) >= HOUR)) {
         const postShoot = ["media_qa", "delivery", "delivery_text"].includes(s.taskType);
         await prisma.smartTask.update({
@@ -5054,7 +5069,9 @@ async function syncOneProjectTasks(
           data: {
             dueAt: s.dueAt,
             priority: computePriority({ dueAt: s.dueAt, shootDate: postShoot ? null : p.shootDate, status: p.status }),
-            ...(s.taskType === "confirmation_text" ? { description: draftConfirmation() } : {}),
+            ...(s.taskType === "confirmation_text"
+              ? { description: draftConfirmation(), ...(exists.summary === CONFIRMATION_HELD ? { summary: s.summary ?? null } : {}) }
+              : {}),
           },
         });
       }

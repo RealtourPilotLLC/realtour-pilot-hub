@@ -42,6 +42,7 @@ import {
 import { cn } from "@/lib/utils";
 import { canAccess, isCreativeLead, isOffice, parsePermissions, ROLE_LABEL, type PageKey } from "@/lib/auth/access";
 import { NotificationsBell } from "@/components/NotificationsBell";
+import { MessagesButton } from "@/components/comms/MessagesButton";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { groupSidebarDestinations, officeMenuDestinations, PHOTO_DELIVERY_LABEL, usesRoleMenu, VIDEO_DELIVERY_LABEL } from "@/lib/sidebarNavigation";
 
@@ -411,6 +412,8 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
             </div>
             <div className="flex items-center justify-end gap-2">
               <ThemeToggle />
+              {/* Oct 27 2026 Loom: the messages icon, beside the bell (always on screen on a desktop). */}
+              <MessagesButton variant="sidebar" role={user.role} />
               <NotificationsBell />
               <form action="/api/auth/logout" method="post">
                 <button type="submit" title="Sign out" className="flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-2 hover:bg-surface-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">

@@ -11,20 +11,26 @@
 //
 //   1. OLD (17df024): nothing in the tree drafted a delay update, and the
 //      exceptions board had no such kind.
-//   2. What is at risk: a video 20h from its pinned promise, a photo-only job
-//      10h from its frozen promise, one already past — not one 3 days out, not
-//      a delivered, waived or dropped one.
+//   2. What is listed: ONLY the one already past its promise. Not the video
+//      20h from its pinned promise, nor the photo-only job 10h from its frozen
+//      promise (Jordan, Oct 27 2026 Loom, 40:34: "They should only be at risk
+//      if they're late, not if you think they're going to be late"), not one
+//      3 days out, not a delivered, waived or dropped one. A draft is refused
+//      before the promise; the same video, once its promise has passed, is
+//      listed and drafts (sections 4-6 ask at that later moment).
 //   3. No typed time → refused, the model never called. Both → refused.
 //   4. "We'll confirm by" → the model gets the promise and that time and NO
-//      other date; one task on Kyle's list, due four hours before the promise;
+//      other date; one task on Kyle's list, due within the hour (the promise
+//      has passed);
 //      nothing sent (no outbox row, no outbound comms row, no request but the
 //      model's).
 //   5. A second click (a confirmed new time) updates the same task.
 //   6. Changing the turnaround defaults does not move the quoted promise.
 //   7. A draft that names a date nobody typed is flagged on the task.
-//   8. The exceptions board carries the undrafted ones (Kyle, a link, the
-//      real total); the drafted one leaves it. Kyle's digest lines carry the
-//      rows with his name and the unanswered counts.
+//   8. The exceptions board carries the undrafted LATE ones (Kyle, a link,
+//      the real total); the drafted one leaves it, and one still ahead of its
+//      promise is not there at all. Kyle's digest lines carry the rows with
+//      his name and the unanswered counts.
 // ---------------------------------------------------------------------------
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -113,14 +119,23 @@ async function main() {
   const outLate = await video(lateJob.id, 1, { promisedAt: new RealDate(NOW - 6 * HOUR), title: "His and hers" });
 
   // =========================================================================
-  c.head("2 · What is at risk");
+  c.head("2 · What is late (Oct 27 2026: late only, never predicted)");
   // =========================================================================
   const rows = await at.atRiskOutputs(new RealDate(NOW));
   const keys = rows.map((r) => r.key).sort();
-  c.ok("exactly three: the video 20h out, the photo-only job 10h out, the one past its promise", rows.length === 3 && keys.includes(out20.id) && keys.includes(photos.id) && keys.includes(outLate.id), rows.map((r) => `${r.street}:${r.hoursLeft}h`).join(" | "));
+  c.ok("exactly one: the one past its promise", rows.length === 1 && keys.includes(outLate.id), rows.map((r) => `${r.street}:${r.hoursLeft}h`).join(" | "));
+  c.ok("NOT the video 20h out, nor the photo-only job 10h out (due later, not late)", !keys.includes(out20.id) && !keys.includes(photos.id));
   c.ok("not the video 3 days out, nor the delivered, waived or dropped ones", !rows.some((r) => r.projectId === farJob.id || r.projectId === doneJob.id));
   const late = rows.find((r) => r.key === outLate.id);
   c.ok("the past one is marked overdue and named by its title", !!late?.overdue && /His and hers/.test(late.owed), `${late?.owed} ${late?.overdue}`);
+  const early = await at.draftAtRiskUpdate({ projectId: linden.id, outputId: out20.id, actor: "Kyle", confirmBy: new RealDate(NOW + 29 * HOUR) });
+  c.ok("a draft for the video 20h out is refused: its promise has not passed", !early.ok && /not late/.test(early.ok ? "" : early.message), early.ok ? "drafted" : early.message);
+  const watchEarly = await at.autoDraftAtRiskUpdate({ projectId: photos.id, promisedAt: PHOTO_10H, now: new RealDate(NOW) });
+  c.ok("…and so is the delivery watch's own draft, 10h before the promise", !watchEarly.ok && (await prisma.smartTask.count({ where: { taskType: "at_risk_update" } })) === 0, watchEarly.ok ? "drafted" : watchEarly.message);
+  c.ok("the model was never called for them", asked.length === 0, `${asked.length}`);
+  // From here the video's promise has passed: 21h on, it is late.
+  const LATER = new RealDate(NOW + 21 * HOUR);
+  c.ok("21h on, the same video is listed as late", (await at.atRiskOutputs(LATER)).some((r) => r.key === out20.id && r.overdue));
 
   // =========================================================================
   c.head("3 · No typed time, no draft");
@@ -137,7 +152,7 @@ async function main() {
   c.head("4 · 'We'll confirm by' — the only dates are the promise and that time");
   // =========================================================================
   const CONFIRM = new RealDate(NOW + 29 * HOUR); // Wed Oct 7, 3:00 PM
-  const d1 = await at.draftAtRiskUpdate({ projectId: linden.id, outputId: out20.id, actor: "Kyle", confirmBy: CONFIRM });
+  const d1 = await at.draftAtRiskUpdate({ projectId: linden.id, outputId: out20.id, actor: "Kyle", confirmBy: CONFIRM, now: LATER });
   c.ok("drafted", d1.ok, d1.ok ? d1.draft.slice(0, 60) : d1.message);
   c.ok("the model was asked once", asked.length === 1);
   const prompt = asked[0] ?? "";
@@ -150,7 +165,7 @@ async function main() {
   const task = await prisma.smartTask.findUnique({ where: { dedupeKey: `at-risk:${out20.id}:${PROMISE_20H.toISOString()}` } });
   c.ok("ONE task, keyed on the output and its promise", !!task && task.taskType === "at_risk_update" && task.status === "OPEN", task?.dedupeKey ?? "none");
   c.ok("…on Kyle's list", task?.assignedKey === "kyle" && task?.ownerId === kyle.id);
-  c.ok("…due four hours before the promise", task?.dueAt?.getTime() === PROMISE_20H.getTime() - 4 * HOUR, task?.dueAt?.toISOString());
+  c.ok("…due within the hour (the promise has passed)", task?.dueAt?.getTime() === LATER.getTime() + HOUR, task?.dueAt?.toISOString());
   c.ok("…carrying the draft and saying it was not sent", !!task?.description?.includes(d1.ok ? d1.draft : "∅") && /Nothing has been sent/.test(task?.description ?? ""));
   c.ok("…linked to the video it is about", task?.outputId === out20.id && task?.projectId === linden.id);
   c.ok("nothing sent: no outbox row", (await prisma.outboxMessage.count()) === 0);
@@ -162,7 +177,7 @@ async function main() {
   // =========================================================================
   const NEWTIME = new RealDate(NOW + 52 * HOUR); // Thu Oct 8, 2:00 PM
   reply = "Hi Erica, the video for 812 Linden Ave will now be delivered by Thu, Oct 8 at 2:00 PM. Apologies for the change.";
-  const d2 = await at.draftAtRiskUpdate({ projectId: linden.id, outputId: out20.id, actor: "Kyle", newTime: NEWTIME });
+  const d2 = await at.draftAtRiskUpdate({ projectId: linden.id, outputId: out20.id, actor: "Kyle", newTime: NEWTIME, now: LATER });
   c.ok("drafted again", d2.ok && !d2.created, d2.ok ? `created=${d2.created}` : d2.message);
   c.ok("still ONE task for this promise", (await prisma.smartTask.count({ where: { taskType: "at_risk_update", outputId: out20.id } })) === 1);
   c.ok("the instruction now carries the confirmed new time", (asked[1] ?? "").includes(ET_DT(NEWTIME)));
@@ -172,7 +187,7 @@ async function main() {
   c.head("6 · The quoted promise is the recorded one");
   // =========================================================================
   await putSetting("turnarounds", { standardVideoHours: 1, premiumVideoHours: 1, photos: 1 });
-  const again = await at.atRiskOutputs(new RealDate(NOW));
+  const again = await at.atRiskOutputs(LATER);
   c.ok("changing turnaround defaults moves no quoted promise", again.find((r) => r.key === out20.id)?.promisedAt.getTime() === PROMISE_20H.getTime() && again.find((r) => r.key === photos.id)?.promisedAt.getTime() === PHOTO_10H.getTime());
 
   // =========================================================================
@@ -189,12 +204,15 @@ async function main() {
   // =========================================================================
   c.head("8 · The exceptions board and Kyle's digest");
   // =========================================================================
-  const board = await opsExceptionsBoard({ now: new RealDate(NOW) });
+  // 11h on: the photo-only job (10h) is late and undrafted; the video (20h) is
+  // not late yet; the past one has its draft.
+  const AFTER_PHOTOS = new RealDate(NOW + 11 * HOUR);
+  const board = await opsExceptionsBoard({ now: AFTER_PHOTOS });
   const risk = board.rows.filter((r) => r.kind === "at-risk-promise");
-  c.ok("the board carries the one still undrafted (the photo-only job), not the two with drafts", risk.length === 1 && risk[0].title === "5 Quarry Ln" && board.totals["at-risk-promise"].all === 1, risk.map((r) => r.title).join(" | "));
+  c.ok("the board carries the one late and undrafted (the photo-only job), not the drafted one or the one still ahead", risk.length === 1 && risk[0].title === "5 Quarry Ln" && board.totals["at-risk-promise"].all === 1, risk.map((r) => r.title).join(" | "));
   c.ok("…owned by Kyle, one next action, a link to where the button is", risk[0]?.owner === "Kyle" && /Draft an update/.test(risk[0]?.nextAction ?? "") && risk[0]?.href === "/tasks?tab=comms#at-risk");
   await prisma.commLog.create({ data: { channel: "text", direction: "in", clientId: erica.id, clientName: "Erica Walker", contactName: "Erica Walker", fromPhone: "6105550144", body: "Any update on the Linden Ave video?", occurredAt: new RealDate(NOW - 2 * HOUR), source: "openphone" } });
-  const lines = await exceptionDigestLines("https://hub.invalid", { now: new RealDate(NOW) });
+  const lines = await exceptionDigestLines("https://hub.invalid", { now: AFTER_PHOTOS });
   c.ok("Kyle's digest names the at-risk row with its link", lines.some((l) => /5 Quarry Ln/.test(l) && l.includes("https://hub.invalid/tasks?tab=comms#at-risk")), lines.join(" ⏎ "));
   c.ok("…heads the section with his count", lines.some((l) => /^\*Exceptions\* \(\d+ for you/.test(l)), lines[0] ?? "");
   c.ok("…and the unanswered counts from the same walk the Comms tab reads", lines.some((l) => /Unanswered: 1 text, 0 emails → https:\/\/hub\.invalid\/tasks\?tab=comms/.test(l)), lines.join(" ⏎ "));

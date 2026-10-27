@@ -5,6 +5,7 @@ import { CommsDismissButton } from "@/components/tasks/ChecklistButtons";
 import { LoopActions } from "@/components/ops/LoopActions";
 import { AtRiskUpdates } from "@/components/tasks/AtRiskUpdates";
 import { MutedNumbers } from "@/components/comms/ReplyQueue";
+import { UnsavedNumberActions } from "@/components/comms/UnsavedNumberActions";
 import { normalizeSubject } from "@/components/comms/emailThreads";
 import { emailNewestFirst } from "@/components/comms/emailOrder";
 import { messagesHref, waitingReplyHref } from "@/components/comms/messagesNav";
@@ -25,14 +26,18 @@ import { etDateTime } from "@/lib/datetime";
 //     spam: Oct 21 2026, the Texts tab's own control and reasons, so this is
 //     the one place a waiting client is cleared, by one path);
 //   · new leads waiting on a call or text back: View, Handled, Not needed;
-//   · promises at risk: work due inside a day or just past, so the client
-//     hears from us before they have to ask (this lived only on the Tasks
-//     page's Replies tab, which now opens this view).
+//   · late promises: work already past what we told the client, so they hear
+//     from us before they have to ask (Oct 27 2026 Loom, 40:34: "they should
+//     only be at risk if they're late, not if you think they're going to be
+//     late"; was "Promises at risk", which also listed work due tomorrow).
 // ONE QUEUE (Jordan, Oct 27 2026: "One queue"). This is the only list of
 // things to answer. What only the Texts tab listed is here now: texts from
-// numbers we have not saved (their own section, Reply and Dismiss like a
-// client), and, folded, the ones that probably need nothing (thank-yous, our
-// own team), with the muted numbers under them.
+// numbers we have not saved (their own section: Reply, Not a client, Spam;
+// Oct 27 2026 Loom, 40:12), and, folded, the thank-yous, with the muted
+// numbers under them. Our own team's texts are not client communication
+// (Loom, 38:54): they are on the messages icon's Team messages.
+// UNREAD (Loom, 37:49): a conversation they wrote on since this person last
+// opened it carries a dot and "Unread" (lib/messageReads).
 // Internal follow-ups are not messages: they are on the daily checklist.
 // No money for anyone but the owner: every client line goes through `clean`
 // (the page cleans the text cards before they get here).
@@ -50,15 +55,30 @@ export function waitingRowReplyHref(w: WaitingClient, includeTest: boolean): str
   return waitingReplyHref(w.family, w.family === "email" ? emailFocusKey(w) : w.group.groupKey, includeTest);
 }
 
+/** The unread set's key for a waiting client row and for a text card. */
+export const waitingUnreadKey = (w: WaitingClient) => `w:${w.family}:${w.group.groupKey}`;
+export const textUnreadKey = (card: { key: string }) => `t:${card.key}`;
+
+function UnreadMark() {
+  return (
+    <>
+      <span aria-hidden className="size-2 shrink-0 rounded-full bg-brand-action" />
+      <span data-unread className="rounded-full bg-brand-soft px-1.5 py-0.5 text-[11px] font-semibold text-brand">Unread</span>
+    </>
+  );
+}
+
 /** One text conversation that is not a waiting client's (an unsaved number,
- *  our own team, a thank-you): Reply opens its reply screen. */
-function TextRow({ card, test }: { card: ReplyCard; test: boolean }) {
+ *  a thank-you): Reply opens its reply screen. An unsaved number's row puts it
+ *  away with Not a client or Spam (Oct 27 2026). */
+function TextRow({ card, test, unread = false, unsaved = false }: { card: ReplyCard; test: boolean; unread?: boolean; unsaved?: boolean }) {
   return (
     <li data-waiting-text={card.key} className="py-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <Avatar name={card.displayName} size={32} />
         <div className="min-w-0 flex-1 basis-48">
           <p className="flex flex-wrap items-center gap-1.5 text-sm">
+            {unread && <UnreadMark />}
             <span className="font-semibold">{card.displayName}</span>
             {card.isTeam ? (
               <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted"><Camera aria-hidden className="size-3" /> our team</span>
@@ -70,13 +90,17 @@ function TextRow({ card, test }: { card: ReplyCard; test: boolean }) {
           {card.lastInbound && <p className="mt-0.5 truncate text-[13px] text-muted">&ldquo;{card.lastInbound}&rdquo;</p>}
         </div>
         <Link href={messagesHref("texts", { focus: card.key, test })} className="inline-flex min-h-11 shrink-0 items-center rounded-lg bg-brand-action px-3 text-sm font-semibold text-white hover:opacity-90">Reply</Link>
-        <CommsDismissButton threadKey={card.key} family={card.family} clientId={card.clientId} />
+        {unsaved && card.key.startsWith("p:") ? (
+          <UnsavedNumberActions threadKey={card.key} />
+        ) : (
+          <CommsDismissButton threadKey={card.key} family={card.family} clientId={card.clientId} />
+        )}
       </div>
     </li>
   );
 }
 
-export function WaitingOnUs({ board, now, clean, includeTest, excludeClientIds, showFollowupsLink, texts = { unsaved: [], aside: [] } }: {
+export function WaitingOnUs({ board, now, clean, includeTest, excludeClientIds, showFollowupsLink, texts = { unsaved: [], aside: [] }, unread = new Set<string>() }: {
   board: MessagesBoard;
   now: Date;
   clean: (s: string) => string;
@@ -87,6 +111,8 @@ export function WaitingOnUs({ board, now, clean, includeTest, excludeClientIds, 
   /** Oct 27 2026 (one queue): texts from numbers we have not saved, and the
    *  ones that probably need nothing (thank-yous, our own team). Cleaned. */
   texts?: { unsaved: ReplyCard[]; aside: ReplyCard[] };
+  /** Oct 27 2026: rows this viewer has not read (waitingUnreadKey, textUnreadKey). */
+  unread?: Set<string>;
 }) {
   const scopeHref = (href: string) => homeRecordHref(href, includeTest);
   return (
@@ -111,6 +137,7 @@ export function WaitingOnUs({ board, now, clean, includeTest, excludeClientIds, 
                     <Avatar name={w.group.clientName} size={32} />
                     <div className="min-w-0 flex-1 basis-48">
                       <p className="flex flex-wrap items-center gap-1.5 text-sm">
+                        {unread.has(waitingUnreadKey(w)) && <UnreadMark />}
                         <span className="font-semibold">{w.group.clientName}</span>
                         {w.group.isVip && <Star aria-label="VIP client" className="size-3.5 shrink-0 text-warning" />}
                         <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">
@@ -182,7 +209,7 @@ export function WaitingOnUs({ board, now, clean, includeTest, excludeClientIds, 
             <PhoneCall aria-hidden className="size-4 text-muted-2" /> Texts from numbers we have not saved
           </h2>
           <ul className="mt-2 divide-y divide-border">
-            {texts.unsaved.map((card) => <TextRow key={card.key} card={card} test={includeTest} />)}
+            {texts.unsaved.map((card) => <TextRow key={card.key} card={card} test={includeTest} unread={unread.has(textUnreadKey(card))} unsaved />)}
           </ul>
         </section>
       )}
@@ -213,22 +240,23 @@ export function WaitingOnUs({ board, now, clean, includeTest, excludeClientIds, 
         )}
       </section>
 
-      {/* 3 · PROMISES AT RISK (renders nothing when nothing is at risk) */}
+      {/* 3 · LATE PROMISES (renders nothing when nothing is late) */}
       <AtRiskUpdates excludeClientIds={excludeClientIds} />
 
-      {/* 4 · TEXTS THAT PROBABLY NEED NOTHING: thank-yous and our own team.
-          Out of the count, folded, still answerable or dismissable; then the
-          muted numbers, so a mute can always be undone (both lived on Texts). */}
+      {/* 4 · TEXTS THAT PROBABLY NEED NOTHING: thank-yous (our own team's
+          texts are Team messages now, Oct 27 2026). Out of the count, folded,
+          still answerable or dismissable; then the muted numbers, so a mute
+          can always be undone (both lived on Texts). */}
       <div>
         {texts.aside.length > 0 && (
           <details data-aside-texts={texts.aside.length} className="group">
             <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-1.5 text-sm font-medium text-muted hover:text-foreground">
               <ChevronDown aria-hidden className="size-4 transition group-open:rotate-180" />
               {texts.aside.length} more {texts.aside.length === 1 ? "text that probably needs" : "texts that probably need"} nothing
-              <span className="text-xs text-muted-2">(thank-yous and our own team)</span>
+              <span className="text-xs text-muted-2">(thank-yous)</span>
             </summary>
             <ul className="mt-1 divide-y divide-border rounded-2xl border border-border bg-surface px-4">
-              {texts.aside.map((card) => <TextRow key={card.key} card={card} test={includeTest} />)}
+              {texts.aside.map((card) => <TextRow key={card.key} card={card} test={includeTest} unread={unread.has(textUnreadKey(card))} unsaved={!card.clientId && !card.isTeam} />)}
             </ul>
           </details>
         )}

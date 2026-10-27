@@ -125,7 +125,7 @@ export const EXCEPTION_LABEL: Record<ExceptionKind, string> = {
   "other-output": "Order line with no known output",
   "missing-prerequisite": "Missing what the product needs first",
   "photo-batch": "AutoHDR batch short or doubled",
-  "at-risk-promise": "Promise at risk — client not updated",
+  "at-risk-promise": "Late promise: client not updated",
 };
 
 const DAY = 86_400_000;

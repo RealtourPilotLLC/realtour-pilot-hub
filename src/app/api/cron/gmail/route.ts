@@ -260,6 +260,20 @@ export async function GET(req: NextRequest) {
     return sweepUnsentClientNotes();
   }, { maxMs: 40_000 });
   await step("replySla", () => sweepReplySla());
+  // MESSAGES, Oct 27 2026 Loom: (1) the AI fail-safe reads the matched email
+  // the "client communications only" rules let through and hides what it is
+  // sure is not a client (lib/commsNotClient; AI down = nothing changes);
+  // (2) one escalation a day to Kyle while client replies are behind (more
+  // than 8 waiting, or one older than 24h; lib/replyQueue escalateReplyBacklog).
+  await step("notClientMail", async () => {
+    const { sweepNotClientEmail } = await import("@/lib/commsNotClient");
+    return sweepNotClientEmail();
+  }, { maxMs: 30_000 });
+  await step("replyBacklog", async () => {
+    const { escalateReplyBacklog } = await import("@/lib/replyQueue");
+    const r = await escalateReplyBacklog();
+    return { sent: r.sent, waiting: r.backlog?.waiting ?? null, oldestHours: r.backlog?.oldestHours ?? null, skipped: r.skipped ?? null };
+  }, { maxMs: 20_000 });
 
   // THE PHOTOGRAPHER BRIEF (Oct 23 2026, lib/photographerBrief): at the send
   // time on the business day before (Friday covers the weekend and Monday),

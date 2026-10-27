@@ -131,7 +131,7 @@ function TextCard({ row, onGone }: { row: ClientTextRow; onGone: (id: string, no
       </div>
 
       <div className="mt-3 space-y-2.5">
-        {row.warnStale && <Warn>This confirmation may be out of date — the shoot time may have already passed. Double-check before sending (or just mark it done).</Warn>}
+        {row.warnStale && <Warn>The shoot moved or has passed since this list was read. Check the job&apos;s date before sending, or mark it done.</Warn>}
         {row.warnQcOpen && <Warn>QC is still open on this job — the content may not all be delivered yet. Finish the check before telling the client it&apos;s all sent.</Warn>}
 
         {/* Review box: preloaded with the drafted message off the task. */}

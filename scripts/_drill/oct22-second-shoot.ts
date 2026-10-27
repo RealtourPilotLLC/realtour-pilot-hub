@@ -124,7 +124,9 @@ async function main() {
     const fourthKey = `${fourth.deliverableId}:${fourth.slot}`;
     const fourthOut = await prisma.deliverableOutput.findUniqueOrThrow({ where: { deliverableId_slot: { deliverableId: fourth.deliverableId, slot: fourth.slot } } });
     // A date somebody had put on the 4th before anyone knew (so at-risk could see it).
-    await prisma.deliverableOutput.update({ where: { id: fourthOut.id }, data: { promisedAt: at("2026-10-24T01:00:00Z"), promiseSource: "drill" } });
+    // CHANGED Oct 27 2026 (Jordan: "only at risk if they're late"): the date is
+    // now five hours PAST (was five hours ahead, which is no longer listed).
+    await prisma.deliverableOutput.update({ where: { id: fourthOut.id }, data: { promisedAt: at("2026-10-23T15:00:00Z"), promiseSource: "drill" } });
     const { videoDeliveryBoard } = await import("@/lib/videoDelivery");
     const { atRiskOutputs } = await import("@/lib/atRiskUpdates");
     const { behindReport } = await import("@/lib/behindAlert");

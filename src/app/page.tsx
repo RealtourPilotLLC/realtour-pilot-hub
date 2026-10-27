@@ -2,6 +2,8 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { PageHeader } from "@/components/PageHeader";
+// Oct 27 2026 Loom (26:50): a Messages button on the main dashboards.
+import { MessagesButton } from "@/components/comms/MessagesButton";
 import { authEnforced } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { canAccess, contentTier, homeFor } from "@/lib/auth/access";
@@ -193,7 +195,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
           eyebrow="Dashboard"
           title={`${nowMinC < 12 * 60 ? "Good morning" : nowMinC < 18 * 60 ? "Good afternoon" : "Good evening"}, ${me.name?.split(" ")[0] ?? "there"}`}
           subtitle={`Your shoots, creative quality, and team development. ${etFullDate(now0)} · updated ${etTime(now0)} ET`}
-          actions={<Link href="/schedule" className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-border-strong bg-surface px-3 text-sm font-semibold hover:bg-surface-2">View my schedule</Link>}
+          actions={<><Link href="/schedule" className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-border-strong bg-surface px-3 text-sm font-semibold hover:bg-surface-2">View my schedule</Link><MessagesButton variant="dashboard" role={me.role} /></>}
         />
         <div className="mx-auto max-w-7xl space-y-4 p-4 pb-16 sm:p-6">
           {includeTest && (
@@ -238,7 +240,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
           eyebrow="Dashboard"
           title={`${nowMin0 < 12 * 60 ? "Good morning" : nowMin0 < 18 * 60 ? "Good afternoon" : "Good evening"}, ${first}`}
           subtitle={<>Keep shoots prepared, clients informed, and media delivered.<span className="block text-[12px] text-muted-2">{etFullDate(now0)} · updated {etTime(now0)} ET</span></>}
-          actions={<AddTaskButton people={addPeople} me={deskMe} readOnly={!!me?.impersonating} />}
+          actions={<><MessagesButton variant="dashboard" role={me?.role} /><AddTaskButton people={addPeople} me={deskMe} readOnly={!!me?.impersonating} /></>}
         />
         <div className="mx-auto max-w-7xl space-y-4 p-4 pb-16 sm:p-6">
           {includeTest && (

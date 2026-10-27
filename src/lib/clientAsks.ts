@@ -1105,11 +1105,35 @@ export async function closeBookedSchedulingAsks(now: Date = new Date()): Promise
     const since = new Date(now.getTime() - 21 * 86_400_000);
     const open = await prisma.clientAsk.findMany({
       where: { state: "OPEN", kind: "SCHEDULING", projectId: null, source: { in: ["text", "email", "call"] }, askedAt: { gte: since } },
-      select: { id: true, text: true, askedAt: true },
+      select: { id: true, clientId: true, text: true, askedAt: true },
       take: 200,
     });
+    // AN ASK THAT NAMES NO ADDRESS (Jordan, Oct 27 2026 Loom, 36:30: Mike
+    // Ciunci's "Can we schedule ahead of time for November?" after he had
+    // booked November): any session or job booked for that client after a
+    // plain booking question answers it (lib/bookingQuestion; a reschedule, a
+    // cancel, or a second question about the work stays for a person).
+    const { namesStreetAddress, isBookingQuestion } = await import("@/lib/bookingQuestion");
+    const plain = open.filter((a) => !namesStreetAddress(a.text) && isBookingQuestion(a.text));
+    if (plain.length) {
+      const { bookingsByClient, answeredByBooking } = await import("@/lib/replyQueue");
+      const booked = await bookingsByClient(
+        plain.map((a) => a.clientId),
+        new Date(Math.min(...plain.map((a) => a.askedAt.getTime())) - 10 * 60_000),
+      );
+      for (const a of plain) {
+        const hit = answeredByBooking({ clientId: a.clientId, text: a.text, at: a.askedAt }, booked);
+        if (!hit) continue;
+        const why = `booked: ${hit.words}`;
+        const r = await move(a.id, ["OPEN"], "DONE", "Hub", { doneAt: now, doneBy: "Hub", confirmNote: why }, why);
+        if (r.ok && r.row) {
+          out.closed++;
+          out.ids.push(a.id);
+        }
+      }
+    }
     // Only asks that name a house number can ever match: skip the read otherwise.
-    const named = open.filter((a) => /\b\d+[a-z]?\s+[a-z]/i.test(a.text));
+    const named = open.filter((a) => /\b\d+[a-z]?\s+[a-z]/i.test(a.text) && !out.ids.includes(a.id));
     if (!named.length) return out;
     const earliest = new Date(Math.min(...named.map((a) => a.askedAt.getTime())) - 10 * 60_000);
     const jobs = await prisma.project.findMany({

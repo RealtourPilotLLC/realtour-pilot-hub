@@ -31,7 +31,10 @@ const cases: [string, ShellUser | null][] = [
 ];
 // A door that opens a section of its page (Kyle's Video Delivery →
 // /review#ready-to-send, Oct 22 2026) is still that destination.
-const hrefs = (html: string) => [...html.matchAll(/<a\b[^>]*\shref="([^"]+)"/g)].map((match) => match[1].replace(/#.*$/, "")).sort();
+// The footer's messages icon (Oct 27 2026 Loom, 38:54: "a messages thing up
+// here at all times", beside the bell) is a control like the bell, not a menu
+// destination: for an editor it links to their message center.
+const hrefs = (html: string) => [...html.replace(/<a\b[^>]*data-messages-button[^>]*>/g, "<a>").matchAll(/<a\b[^>]*\shref="([^"]+)"/g)].map((match) => match[1].replace(/#.*$/, "")).sort();
 const group = (html: string, id: string) => html.match(new RegExp(`<section[^>]*data-sidebar-group="${id}"[^>]*>([\\s\\S]*?)</section>`))?.[1] ?? "";
 let checked = 0;
 function check(label: string, condition: boolean) { assert.ok(condition, label); checked++; console.log(`PASS ${label}`); }

@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { AT_RISK_HOURS, owedNow, owedPhrase, owedVerb, parseEvidence, sameCategory } from "@/lib/statusEvidence";
+import { owedNow, owedPhrase, owedVerb, parseEvidence, sameCategory } from "@/lib/statusEvidence";
 import { pinnedPromise } from "@/lib/turnaround";
 import { etDateTime } from "@/lib/datetime";
 
@@ -67,10 +67,18 @@ export function atRiskTaskKey(r: { outputId: string | null; projectId: string; p
   return `at-risk:${r.outputId ?? r.projectId}:${r.promisedAt.toISOString()}`;
 }
 
-/** Everything owed to a client whose recorded promise is inside AT_RISK_HOURS
- *  or already past (up to LOOKBACK_DAYS). Read-only. */
+/** Everything owed to a client whose recorded promise has PASSED (up to
+ *  LOOKBACK_DAYS ago) and is still not delivered. Read-only.
+ *
+ *  LATE, NEVER PREDICTED (Jordan, Oct 27 2026 Loom, 40:34: William Hannum's
+ *  photos were listed under "Promises at risk" a day before they were due;
+ *  "it should only show up when it's actually late"). This used to list
+ *  anything due inside AT_RISK_HOURS too; a promise that is still ahead is
+ *  now never a row here, on the exceptions board, or a draft on Kyle's list.
+ *  The status card's own "At risk" chip (lib/statusEvidence) is unchanged. */
 export async function atRiskOutputs(now: Date = new Date(), opts: { excludeClientIds?: string[] } = {}): Promise<AtRiskRow[]> {
-  const horizon = new Date(now.getTime() + AT_RISK_HOURS * HOUR);
+  // The latest promise a row may carry: now. AT_RISK_HOURS no longer widens it.
+  const horizon = now;
   const floor = new Date(now.getTime() - LOOKBACK_DAYS * 86_400_000);
   const live = { status: { notIn: ["DELIVERED", "CANCELLED"] as ("DELIVERED" | "CANCELLED")[] } };
   // Output rows carry a plain projectId, so exclude synthetic projects before
@@ -83,7 +91,7 @@ export async function atRiskOutputs(now: Date = new Date(), opts: { excludeClien
     // waived, not dropped from the order — on a job that is still live.
     prisma.deliverableOutput.findMany({
       where: {
-        promisedAt: { not: null, lte: horizon, gte: floor },
+        promisedAt: { not: null, lt: horizon, gte: floor },
         deliveredAt: null, waivedAt: null, removedFromOrderAt: null,
         ...(excludedProjectIds.length ? { projectId: { notIn: excludedProjectIds } } : {}),
       },
@@ -99,7 +107,7 @@ export async function atRiskOutputs(now: Date = new Date(), opts: { excludeClien
     // frozen promise, read the way every reader must (pinnedPromise — a
     // rebooked visit voids a pin, nothing else does).
     prisma.project.findMany({
-      where: { ...live, deliveredAt: null, promisedDueAt: { not: null, lte: horizon, gte: floor }, ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) },
+      where: { ...live, deliveredAt: null, promisedDueAt: { not: null, lt: horizon, gte: floor }, ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) },
       select: { id: true, title: true, clientId: true, promisedDueAt: true, shootDate: true, statusEvidence: true, promisedTierKey: true, client: { select: { name: true } } },
       take: 200,
     }),
@@ -132,7 +140,7 @@ export async function atRiskOutputs(now: Date = new Date(), opts: { excludeClien
   for (const p of projects) {
     if (withOutputs.has(p.id)) continue;
     const pin = pinnedPromise(p);
-    if (!pin || pin > horizon || pin < floor) continue;
+    if (!pin || pin >= horizon || pin < floor) continue;
     const phrase = owedPhrase(owedNow(parseEvidence(p.statusEvidence)));
     rows.push(row(now, { projectId: p.id, outputId: null, title: p.title, clientId: p.clientId, clientName: p.client.name, promisedAt: pin, promiseSource: p.promisedTierKey ?? "project", owed: phrase || "the order" }));
   }
@@ -146,7 +154,7 @@ export async function atRiskOutputs(now: Date = new Date(), opts: { excludeClien
     .then((m) => m.programAtRiskRows({ now, lookbackDays: LOOKBACK_DAYS, excludeClientIds: opts.excludeClientIds }))
     .catch(() => []);
   for (const pr of program) {
-    if (!pr.promisedAt) continue;
+    if (!pr.promisedAt || pr.promisedAt.getTime() >= now.getTime()) continue;
     const at = rows.findIndex((r) => r.outputId === pr.outputId);
     const next = row(now, {
       projectId: pr.projectId, outputId: pr.outputId, title: `${pr.monthWords} videos`, clientId: pr.clientId, clientName: pr.clientName,
@@ -267,7 +275,7 @@ export async function draftAtRiskUpdate(input: AtRiskDraftInput): Promise<AtRisk
 
   const rows = await atRiskOutputs(now);
   const r = rows.find((x) => x.projectId === input.projectId && (x.outputId ?? null) === (input.outputId ?? null));
-  if (!r) return { ok: false, message: "That promise is no longer at risk (delivered, waived, or not within a day of its deadline) — nothing to draft." };
+  if (!r) return { ok: false, message: "That promise is not late (delivered, waived, or its time has not passed yet), so there is nothing to draft." };
 
   const instruction = atRiskInstruction({ ...r, newTime: hasNew ? when : null, confirmBy: hasConfirm ? when : null });
   let draft: string;
@@ -300,7 +308,7 @@ export async function draftAtRiskUpdate(input: AtRiskDraftInput): Promise<AtRisk
       "—",
       "Drafted from the recorded promise and the time typed above. Nothing has been sent: copy it into the client's conversation (Communications → Replies, or the client page) and send it yourself.",
     ].filter(Boolean).join("\n\n"),
-    reasonCreated: `Promise at risk (${r.overdue ? "past" : `${r.hoursLeft}h left`}) — update drafted on request`,
+    reasonCreated: `Late promise (${r.overdue ? "past" : `${r.hoursLeft}h left`}): update drafted on request`,
     source: "system",
     sourceDetail: `/tasks?tab=comms`,
     priority: r.overdue ? "URGENT" : "HIGH",
@@ -352,11 +360,11 @@ export async function atRiskExceptionRows(opts: { now?: Date; cap: number; exclu
     title: r.street,
     why: r.why
       ? `${r.owed} (${r.clientName}): ${r.why}. Due ${promiseWords(r.promisedAt)}; the client has not been updated`.slice(0, 220)
-      : r.overdue
-      ? `${r.owed} was promised by ${promiseWords(r.promisedAt)} and the client has not been updated`
-      : `${r.owed} is due ${promiseWords(r.promisedAt)} (${Math.max(0, Math.round(r.hoursLeft))}h left) and the client has not been updated`,
+      : `${r.owed} was promised by ${promiseWords(r.promisedAt)} and the client has not been updated`,
     owner: "Kyle",
-    nextAction: "Draft an update from Tasks → Comms (Promises at risk) and send it",
+    // Oct 27 2026: every row here is past its promise (atRiskOutputs), so the
+    // "Nh left" wording is gone and the section is "Late promises".
+    nextAction: "Draft an update from Messages (Late promises) and send it",
     href: "/tasks?tab=comms#at-risk",
     ageDays: r.overdue ? Math.floor(-r.hoursLeft / 24) : 0,
   }));
@@ -407,6 +415,11 @@ export async function autoDraftAtRiskUpdate(input: {
   { ok: true; taskId: string; created: boolean; draft: string } | { ok: false; message: string }
 > {
   const now = input.now ?? new Date();
+  // NEVER BEFORE THE PROMISE (Jordan, Oct 27 2026 Loom, 40:34: "They should
+  // only be at risk if they're late, not if you think they're going to be
+  // late"). The delivery watch still gives Kyle its heads-up 3 covered hours
+  // ahead; the "running behind" draft waits until the promise has passed.
+  if (input.promisedAt.getTime() > now.getTime()) return { ok: false, message: "The promise has not passed yet; no update is drafted before it is late." };
   const p = await prisma.project.findUnique({
     where: { id: input.projectId },
     select: { id: true, title: true, clientId: true, statusEvidence: true, client: { select: { name: true } } },

@@ -26,6 +26,9 @@ import { noDashes, scrubMoney } from "@/lib/text";
 //     edited photos on the listing, an open QC card, delivered or not.
 //   · AND a client update DRAFTED (atRiskUpdates.autoDraftAtRiskUpdate) on his
 //     list, naming only the recorded promise. Nothing is sent to the client.
+//     Since Oct 27 2026 that draft is refused while the promise is still
+//     ahead (Jordan: "only at risk if they're late"), so this heads-up is the
+//     Slack line alone; a missed promise is on Messages, Late promises.
 //   · ONCE per job per promise: an AppSetting claim keyed on both, so a moved
 //     promise is watched again and two sweeps at once send once.
 // The same stage line rides onto a reply task when a client asks "when will

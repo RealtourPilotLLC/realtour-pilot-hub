@@ -22,10 +22,16 @@
 /** "texts" is a view (one text conversation's reply screen), not a tab. */
 export type MessagesTab = "waiting" | "texts" | "email" | "team" | "outbox" | "all";
 
-export const MESSAGES_TABS: { key: Exclude<MessagesTab, "texts">; label: string; title: string }[] = [
+// TEAM IS OFF THE BAR (Jordan, Oct 27 2026 Loom, 38:54: "the team chat should
+// not be in here ... we should have like a messages thing up here at all
+// times"). Messages is client communication; team messages open from the
+// messages icon beside the bell (components/comms/MessagesButton) and the
+// dashboards' Messages button. ?tab=team still opens the team center, which
+// is where that icon sends the office.
+export const MESSAGES_TABS: { key: Exclude<MessagesTab, "texts">; label: string; title: string; onBar?: false }[] = [
   { key: "waiting", label: "Waiting on us", title: "Everything waiting on a reply: clients, unsaved numbers and new leads" },
   { key: "email", label: "Email", title: "Client email from the last 60 days, to read and answer" },
-  { key: "team", label: "Team", title: "Team messages by property" },
+  { key: "team", label: "Team", title: "Team messages by property", onBar: false },
   { key: "outbox", label: "Outbox", title: "Confirmation and delivery texts ready to check and send" },
   { key: "all", label: "All", title: "Every text and call conversation, live from OpenPhone" },
 ];
