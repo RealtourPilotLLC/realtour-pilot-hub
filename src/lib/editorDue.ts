@@ -3,7 +3,6 @@ import { prisma } from "@/lib/prisma";
 import { getVideoSlaStatus, videoTier } from "@/lib/projectStatus";
 import { pinnedPromise, type PromiseRules } from "@/lib/turnaround";
 import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
-import { BULK_BATCH_SOURCE } from "@/lib/bulkBatchCore";
 
 // ---------------------------------------------------------------------------
 // THE EDIT'S DUE DATE IN EVERY "YOU HAVE WORK" MESSAGE (Oct 22 2026). Jordan:
@@ -130,19 +129,11 @@ async function promiseRules(): Promise<PromiseRules | undefined> {
 export async function videoDuesFor(projectIds: string[], opts: { now?: Date } = {}): Promise<Map<string, VideoDue>> {
   const ids = [...new Set(projectIds)];
   if (!ids.length) return new Map();
-  const [rows, rules, batchRows] = await Promise.all([
+  const [rows, rules, batch] = await Promise.all([
     prisma.project.findMany({ where: { id: { in: ids } }, select: { id: true, ...VIDEO_DUE_SELECT } }),
     promiseRules(),
-    prisma.deliverableOutput.findMany({
-      where: { projectId: { in: ids }, promiseSource: BULK_BATCH_SOURCE, promisedAt: { not: null }, approvedAt: null, deliveredAt: null, waivedAt: null, removedFromOrderAt: null },
-      select: { projectId: true, promisedAt: true, targetAt: true },
-    }).catch(() => [] as { projectId: string; promisedAt: Date | null; targetAt: Date | null }[]),
+    import("@/lib/bulkBatches").then((m) => m.batchDuesFor(ids)).catch(() => new Map<string, { at: Date; aimAt: Date | null }>()),
   ]);
-  const batch = new Map<string, { at: Date; aimAt: Date | null }>();
-  for (const o of batchRows) {
-    const was = batch.get(o.projectId);
-    if (!was || o.promisedAt! < was.at) batch.set(o.projectId, { at: o.promisedAt!, aimAt: o.targetAt });
-  }
   const deliveredOnce = rows.filter((p) => !!p.deliveredAt);
   const board = deliveredOnce.length ? await import("@/lib/deliveryBoard") : null;
   const [clocks, dueSet] = board

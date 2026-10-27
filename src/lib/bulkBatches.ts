@@ -14,6 +14,28 @@ import { batchStamps, BULK_BATCH_SOURCE, type BatchVideo } from "@/lib/bulkBatch
 // dates only: nothing here is shown to the client or sent to anyone.
 // ---------------------------------------------------------------------------
 
+/**
+ * Each job's CURRENT batch: the earliest batch date among its videos not yet
+ * approved or delivered, with that batch's aim. Jobs on no bulk plan (or whose
+ * videos are all done) are absent. One query; every reader of a job's date
+ * (editorDue's video due, the delivery board's promise, the job page, the
+ * brief) calls this, so they cannot disagree.
+ */
+export async function batchDuesFor(projectIds: string[]): Promise<Map<string, { at: Date; aimAt: Date | null }>> {
+  const out = new Map<string, { at: Date; aimAt: Date | null }>();
+  const ids = [...new Set(projectIds)];
+  if (!ids.length) return out;
+  const rows = await prisma.deliverableOutput.findMany({
+    where: { projectId: { in: ids }, promiseSource: BULK_BATCH_SOURCE, promisedAt: { not: null }, approvedAt: null, deliveredAt: null, waivedAt: null, removedFromOrderAt: null },
+    select: { projectId: true, promisedAt: true, targetAt: true },
+  });
+  for (const o of rows) {
+    const was = out.get(o.projectId);
+    if (!was || o.promisedAt! < was.at) out.set(o.projectId, { at: o.promisedAt!, aimAt: o.targetAt });
+  }
+  return out;
+}
+
 export type BatchChange = {
   outputId: string;
   projectId: string;

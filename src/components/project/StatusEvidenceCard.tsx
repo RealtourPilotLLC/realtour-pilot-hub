@@ -126,7 +126,7 @@ async function statusContext(
     const { outstandingPromise } = await import("@/lib/deliveryBoard");
     const { turnaroundRules } = await import("@/lib/settings");
     const { OWED_DELIVERABLE_WHERE } = await import("@/lib/tasks");
-    const [project, bounces, briefs, turnarounds] = await Promise.all([
+    const [project, bounces, briefs, turnarounds, batches] = await Promise.all([
       prisma.project.findUnique({
         where: { id: projectId },
         select: {
@@ -183,13 +183,15 @@ async function statusContext(
           })
         : [],
       turnaroundRules().catch(() => undefined),
+      // A bulk plan's current batch (Oct 27 2026), the same answer as the board.
+      import("@/lib/bulkBatches").then((m) => m.batchDuesFor([projectId])).catch(() => new Map<string, { at: Date; aimAt: Date | null }>()),
     ]);
     const base = {
       shootDate: project?.shootDate ?? null,
       attemptedAt: project?.evidenceAttemptedAt ?? null,
       succeededAt: project?.evidenceSucceededAt ?? null,
       error: project?.evidenceError ?? null,
-      promise: project ? outstandingPromise(project, { turnarounds }) : null,
+      promise: project ? outstandingPromise({ ...project, batchDue: batches.get(projectId) ?? null }, { turnarounds }) : null,
     };
     if (!isRevision) return { ...base, who: null };
 

@@ -19,6 +19,7 @@ import { isMonthlyContentJob } from "@/lib/pipeline";
 // from projectStatus.ts was one pure string function, and importing it pulled
 // the whole status engine — Aryeo, Dropbox, connections — into /pipeline's chain.
 import { categoryLabelsForLabel } from "@/lib/qcCategories";
+import { BATCH_TIER_LABEL } from "@/lib/bulkBatchCore";
 import { pendingDuesByCategory, slaTierOf, OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import { turnaroundRules } from "@/lib/settings";
 // Who is ACTUALLY editing a job right now — the editor's own Start/Pause (§7.1).
@@ -556,6 +557,10 @@ export type PromiseInput = {
   /** Project.promisedReason — the documented exception, in the office's own
    *  words, for a job whose date is not what the product table would say. */
   promisedReason?: string | null;
+  /** A bulk plan's current batch (Oct 27 2026, lib/bulkBatches.batchDuesFor):
+   *  the next 8 videos' date and aim. Optional: a caller that does not read it
+   *  dates the job as before. */
+  batchDue?: { at: Date; aimAt: Date | null } | null;
   packageName: string | null;
   statusEvidence: string | null;
   orderItems: { title: string; quantity: number }[];
@@ -964,6 +969,20 @@ export function outstandingPromise(
       sessionLabel,
     };
   }
+  // A BULK PLAN IS DUE BY BATCH (Oct 27 2026; Jordan: "8 videos done every
+  // 7 - 10 business days"). Its order's own date is the first delivery's, long
+  // gone on a 48-video plan; the job is chasing its current batch of 8.
+  if (!settled && !reopened && p.batchDue) {
+    return {
+      at: p.batchDue.at,
+      label: "the next batch of 8 videos",
+      tierLabel: BATCH_TIER_LABEL,
+      office: false,
+      reason: null,
+      sessionLabel: null,
+      targetAt: p.batchDue.aimAt,
+    };
+  }
   // THE PROMISE THE JOB WAS SOLD UNDER (Sep 18). Project.promisedDueAt is the
   // whole-job client deadline frozen at the rules in force when it was booked.
   // An item promise recomputed today can now land AFTER it — moving premium
@@ -1276,6 +1295,10 @@ export async function deliveryBoard(opts: { includeTest?: boolean; excludeClient
   // date", as they did before, never an invented one.
   const clocks = await reopenedClocksFor(rows.filter((p) => !!p.deliveredAt).map((p) => p.id));
   const dueSet = await dueSetTimesFor(rows.filter((p) => !!p.deliveredAt && !!p.dueOverrideAt).map((p) => p.id));
+  // Bulk plans' current batch (Oct 27 2026). A failed read dates them as before.
+  const batches = await import("@/lib/bulkBatches")
+    .then((m) => m.batchDuesFor(rows.map((p) => p.id)))
+    .catch(() => new Map<string, { at: Date; aimAt: Date | null }>());
   // §7.6: open production gaps — one batched read. A failed read is an empty
   // map, and every job then reads exactly as it did before gaps existed.
   const gapLines = await import("@/lib/productionGaps")
@@ -1297,7 +1320,7 @@ export async function deliveryBoard(opts: { includeTest?: boolean; excludeClient
     // The promise — the same function the project page's Status check card
     // reads, so the two screens can never call a job late on different days
     // (review, Sep 16). The reopened clock rides in with it (A52).
-    const promise = outstandingPromise({ ...p, reopenedClock: clock, dueSetAt: dueSet.get(p.id) ?? null }, { now, turnarounds, evidence: ev });
+    const promise = outstandingPromise({ ...p, reopenedClock: clock, dueSetAt: dueSet.get(p.id) ?? null, batchDue: batches.get(p.id) ?? null }, { now, turnarounds, evidence: ev });
     const dueAt = promise.at;
     // §9's grouping, computed once for the card and for the "for …" line.
     const sessions = boardSessions(p, turnarounds);

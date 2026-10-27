@@ -23,6 +23,8 @@ import { endOfBusinessDaysET } from "@/lib/datetime";
 export const BULK_BATCH = { size: 8, aimBusinessDays: 7, dueBusinessDays: 10 } as const;
 /** The promiseSource the batch dates are stamped with. */
 export const BULK_BATCH_SOURCE = "bulk-batch";
+/** The delivery board's tierLabel for a job dated by its batch. */
+export const BATCH_TIER_LABEL = "batch of 8";
 
 /** One video of the plan, in the order it is counted. */
 export type BatchVideo = { key: string; sessionNo: number; slot: number; shootAt: Date | null };

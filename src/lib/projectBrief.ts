@@ -220,6 +220,8 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
   const reopenedClock = p.deliveredAt ? (await reopenedClocksFor([projectId])).get(projectId) ?? null : null;
   // When the office's due itself was saved (A52 review) — not overrideAt, which any later override save moves.
   const dueSetAt = p.deliveredAt && p.dueOverrideAt ? (await dueSetTimesFor([projectId])).get(projectId) ?? null : null;
+  // A bulk plan's current batch (Oct 27 2026), the same answer as the board.
+  const batchDue = (await import("@/lib/bulkBatches").then((m) => m.batchDuesFor([projectId])).catch(() => null))?.get(projectId) ?? null;
   const promise = outstandingPromise(
     {
       status: p.status,
@@ -242,6 +244,7 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
       reopenedClock,
       overrideAt: p.overrideAt,
       dueSetAt,
+      batchDue,
     },
     { turnarounds },
   );

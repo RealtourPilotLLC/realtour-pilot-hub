@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etAddDays, etDateTime, etDayKey, etMonthDay, etTime, etWeekday } from "@/lib/datetime";
 import { WAITING_FOR_UPLOAD } from "@/lib/photoDelivery/holding";
+import { BATCH_TIER_LABEL } from "@/lib/bulkBatchCore";
 
 // ---------------------------------------------------------------------------
 // SHOOTS (Jordan, Oct 19 2026): every shoot (job) in progress, one row each,
@@ -314,9 +315,9 @@ export function countRequests(asks: { medium: string | null }[], shootOver: bool
 
 type BoardJobLike = import("@/lib/deliveryBoard").BoardJob;
 
-/** When THIS medium is promised: the job's ordered items in that category, or the job's own date (the office's date or a reopened job's clock always wins). */
+/** When THIS medium is promised: the job's ordered items in that category, or the job's own date (the office's date, a reopened job's clock or a bulk plan's batch always wins). */
 function mediumDue(j: BoardJobLike, category: "Photos" | "Video", categoryLabelsForLabel: (l: string) => string[]): Date | null {
-  if (j.reopened || j.dueTierLabel === "office override") return j.dueAt;
+  if (j.reopened || j.dueTierLabel === "office override" || j.dueTierLabel === BATCH_TIER_LABEL) return j.dueAt;
   if (!j.dueAt) return null; // nothing outstanding, or no clock at all
   const items = j.items.filter((i): i is typeof i & { dueAt: Date } => !!i.dueAt && categoryLabelsForLabel(i.title).includes(category));
   if (items.length) return items.reduce((a, b) => (a.dueAt <= b.dueAt ? a : b)).dueAt;
@@ -707,7 +708,7 @@ export async function jobDeliverables(projectId: string, now: Date = new Date())
   const photoRows = p.deliverables.filter((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
   const videoRows = p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
 
-  const [photoJob, states, editTasks, sent, turnarounds, clocks, dueSet] = await Promise.all([
+  const [photoJob, states, editTasks, sent, turnarounds, clocks, dueSet, batches] = await Promise.all([
     prisma.photoJob.findUnique({ where: { projectId }, select: { id: true, stage: true, finalsCount: true, autohdrPhotoshootId: true } }),
     import("@/lib/reviewCuts").then((m) => m.videoStatesFor([projectId])).catch(() => new Map<string, CutStateLike>()),
     prisma.smartTask.findMany({ where: { projectId, taskType: "edit_video" }, orderBy: { createdAt: "desc" }, take: 10, select: { assignedKey: true, status: true } }),
@@ -715,13 +716,14 @@ export async function jobDeliverables(projectId: string, now: Date = new Date())
     turnaroundRules().catch(() => undefined),
     p.deliveredAt ? db.reopenedClocksFor([projectId]) : Promise.resolve(new Map<string, import("@/lib/deliveryBoard").ReopenedClock>()),
     p.deliveredAt && p.dueOverrideAt ? db.dueSetTimesFor([projectId]) : Promise.resolve(new Map<string, Date>()),
+    import("@/lib/bulkBatches").then((m) => m.batchDuesFor([projectId])).catch(() => new Map<string, { at: Date; aimAt: Date | null }>()),
   ]);
 
   // ---- the dates: the board's engine, per medium ----
-  const promise = db.outstandingPromise({ ...p, reopenedClock: clocks.get(projectId) ?? null, dueSetAt: dueSet.get(projectId) ?? null }, { now, turnarounds, evidence: ev });
+  const promise = db.outstandingPromise({ ...p, reopenedClock: clocks.get(projectId) ?? null, dueSetAt: dueSet.get(projectId) ?? null, batchDue: batches.get(projectId) ?? null }, { now, turnarounds, evidence: ev });
   const items0 = db.boardItems(p, now, turnarounds);
   const dueOf = (category: "Photos" | "Video"): Date | null => {
-    if (promise.reopened || promise.office) return promise.at;
+    if (promise.reopened || promise.office || promise.tierLabel === BATCH_TIER_LABEL) return promise.at;
     if (!promise.at) return null; // nothing outstanding (settled), or no clock at all
     const its = items0.filter((i): i is typeof i & { dueAt: Date } => !!i.dueAt && categoryLabelsForLabel(i.title).includes(category));
     return its.length ? its.reduce((a, b) => (a.dueAt <= b.dueAt ? a : b)).dueAt : promise.at;

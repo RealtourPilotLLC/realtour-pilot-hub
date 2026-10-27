@@ -11,6 +11,8 @@
 //   3  THE video due reads the batch: the job is due on its earliest open
 //      video's batch, moves to the next batch when the first 8 are approved,
 //      and the office's own date still wins
+//   3b the Shoots board and the job page (outstandingPromise) read the same
+//      batch: Rick's job read "6 days late" there once the office date went
 //   4  a session's videos that arrive later are dated without moving the rest
 // ISOLATION: PGlite on 127.0.0.1 via the shared harness (DRILL_PORT, default
 // 6991). Production is never opened; every outbound call is fenced.
@@ -104,6 +106,24 @@ async function main() {
     await prisma.project.update({ where: { id: one.p.id }, data: { dueOverrideAt: new Date("2026-11-04T14:27:00Z") } });
     dues = await videoDuesFor([one.p.id], { now: NOW });
     c.ok("the office's own date still wins", dues.get(one.p.id)!.source === "office" && iso(dues.get(one.p.id)!.computedAt) === "2026-11-17T22:00:00.000Z", `${dues.get(one.p.id)!.source} hub=${iso(dues.get(one.p.id)!.computedAt)}`);
+
+    c.head("3b · the Shoots board and the job page read the same batch (outstandingPromise)");
+    const { outstandingPromise } = await import("@/lib/deliveryBoard");
+    const { batchDuesFor } = await import("@/lib/bulkBatches");
+    const base = {
+      status: "REVIEW", shootDate: S1, deliveredAt: null, revisionRequestedAt: null, dueOverrideAt: null, tierOverride: null, packageName: null, statusEvidence: null,
+      orderItems: [{ title: "Full Day Content Shoot", quantity: 1 }],
+      deliverables: [{ type: "VIDEO", status: "PENDING", uploadedAt: null, label: "Full Day Content Shoot" }],
+      appointments: [{ startAt: S1, status: "COMPLETED" }],
+    };
+    const batch2 = (await batchDuesFor([one.p.id])).get(one.p.id) ?? null;
+    const viaBoard = outstandingPromise({ ...base, batchDue: batch2 }, { now: NOW });
+    c.ok("the board's date is the batch (Nov 17), labelled as the batch, not late", iso(viaBoard.at) === "2026-11-17T22:00:00.000Z" && viaBoard.tierLabel === "batch of 8" && iso(viaBoard.targetAt) === "2026-11-09T22:00:00.000Z", `${iso(viaBoard.at)} ${viaBoard.tierLabel}`);
+    const orderOnly = outstandingPromise(base, { now: NOW });
+    c.ok("control: without the batch the order's own date reads (the 'days late' Jordan would have seen)", iso(orderOnly.at) !== iso(viaBoard.at) && !!orderOnly.at && orderOnly.at < NOW, iso(orderOnly.at) ?? "null");
+    const officeWins = outstandingPromise({ ...base, dueOverrideAt: new Date("2026-11-04T14:27:00Z"), batchDue: batch2 }, { now: NOW });
+    c.ok("the office's own date still wins on the board", officeWins.office && iso(officeWins.at) === "2026-11-04T14:27:00.000Z");
+    c.ok("the ordinary job has no batch", !(await batchDuesFor([other.id])).has(other.id));
 
     c.head("4 · a session's videos that arrive later");
     for (let s = 5; s <= 17; s++) await prisma.deliverableOutput.create({ data: { deliverableId: two.d.id, projectId: two.p.id, slot: s, category: "VIDEO" } });
