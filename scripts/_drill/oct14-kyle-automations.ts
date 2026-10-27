@@ -18,7 +18,11 @@
 //   4. The night-before brief: content, one per shoot, the switch, the access
 //      task for Kyle and its close.
 //   5. The promise watch: 3 covered hours before, stage from the PhotoJob,
-//      the evening before, once per promise, a draft and nothing sent.
+//      the evening before, once per promise, nothing sent. CHANGED Oct 27
+//      2026 (Jordan's Loom, 40:34: "only at risk if they're late"): the
+//      heads-up DM stays, but no client draft is written before the promise;
+//      a watch draft written after it still closes on delivery and follows
+//      what is still owed.
 //   6. Slack asks close on evidence and NOT when ambiguous; Jordan's asks do
 //      not expire; the morning digest lists them.
 //   7. AutoHDR mail: newsletters ignored, the API mutes the mail task, stale
@@ -380,12 +384,10 @@ async function main() {
   console.log(`\n--- the watch DM ---\n${wd}\n---`);
   c.ok("…with the stage: raws in, the PhotoJob's stage and finals, the listing, the QC card, not delivered", /raws in \(200\)/.test(wd) && /QC needs a decision, 42 finals/.test(wd) && /no edited photos on the listing yet/.test(wd) && /QC card open/.test(wd) && /not delivered/.test(wd));
   c.ok("…no dashes", !DASH.test(wd));
-  const draft = await prisma.smartTask.findFirst({ where: { taskType: "at_risk_update", projectId: watched.id } });
-  c.ok("an at-risk client update is DRAFTED on Kyle's list", !!draft && draft.status === "OPEN" && draft.assignedKey === "kyle" && /running behind the time we promised \(Thu, Oct 22, 3:00 PM ET\)/.test(draft.description ?? ""), draft?.description ?? "none");
-  const { foreignDates } = await import("@/lib/atRiskUpdates");
-  c.ok("…naming no date but the recorded promise", foreignDates(draft?.description ?? "", [THU(15)]) === null);
+  c.ok("…and NO \"running behind\" client draft before the promise (Oct 27 2026: late only)", (await prisma.smartTask.count({ where: { taskType: "at_risk_update", projectId: watched.id } })) === 0);
+  const { foreignDates, autoDraftAtRiskUpdate } = await import("@/lib/atRiskUpdates");
   await pw.sweepPromiseWatch(setNow(THU(13, 0)));
-  c.ok("…once per job per promise", watchDms().length === 1 && (await prisma.smartTask.count({ where: { taskType: "at_risk_update", projectId: watched.id } })) === 1);
+  c.ok("…once per job per promise", watchDms().length === 1 && (await prisma.smartTask.count({ where: { taskType: "at_risk_update", projectId: watched.id } })) === 0);
   await prisma.project.update({ where: { id: watched.id }, data: { promisedDueAt: THU(17, 30) } });
   await pw.sweepPromiseWatch(setNow(THU(14, 30)));
   c.ok("a moved promise is watched again", watchDms().length === 2);
@@ -399,10 +401,15 @@ async function main() {
   await prisma.project.create({ data: { title: "2 Night Rd, Royersford, PA", clientId: nina.id, status: "EDITING", shootDate: THU(8), promisedDueAt: FRI(9, 0), statusEvidence: ev({}), deliverables: { create: [{ type: "PHOTOS", label: "Photos", quantity: 1 }] } } });
   await pw.sweepPromiseWatch(setNow(THU(19, 0)));
   c.ok("a 9 AM promise first seen at 7 PM: told that evening", dmsTo(S.kyle, /Promise check: 2 Night Rd/).length === 1);
+  // Past the moved promise (5:30 PM), still out: the draft may be written now.
+  const draft = await autoDraftAtRiskUpdate({ projectId: watched.id, promisedAt: THU(17, 30), now: THU(19, 0) });
+  const draftRow = draft.ok ? await prisma.smartTask.findUnique({ where: { id: draft.taskId } }) : null;
+  c.ok("past the promise, a watch draft is written on Kyle's list (never sent)", !!draftRow && draftRow.status === "OPEN" && draftRow.assignedKey === "kyle" && /running behind the time we promised \(Thu, Oct 22, 5:30 PM ET\)/.test(draftRow.description ?? ""), draftRow?.description ?? (draft.ok ? "none" : draft.message));
+  c.ok("…naming no date but the recorded promise", foreignDates(draftRow?.description ?? "", [THU(17, 30)]) === null);
   // Delivered: the draft closes itself.
-  await prisma.project.update({ where: { id: watched.id }, data: { status: "DELIVERED", deliveredAt: THU(16) } });
+  await prisma.project.update({ where: { id: watched.id }, data: { status: "DELIVERED", deliveredAt: THU(19, 2) } });
   await pw.sweepPromiseWatch(setNow(THU(19, 5)));
-  c.ok("the job went out → its watch draft is closed, saying nothing was sent", (await prisma.smartTask.findFirst({ where: { id: draft?.id } }))?.status === "CANCELLED");
+  c.ok("the job went out → its watch draft is closed, saying nothing was sent", (await prisma.smartTask.findFirst({ where: { id: draftRow?.id } }))?.status === "CANCELLED");
   await putSetting("internal_alerts", { coverage: { weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: null }, promiseWatch: { enabled: false } });
   await prisma.project.create({ data: { title: "6 Off St, Royersford, PA", clientId: nina.id, status: "EDITING", shootDate: THU(8), promisedDueAt: FRI(11, 0), statusEvidence: ev({}), deliverables: { create: [{ type: "PHOTOS", label: "Photos", quantity: 1 }] } } });
   await pw.sweepPromiseWatch(setNow(FRI(9, 0)));
@@ -416,15 +423,17 @@ async function main() {
   const partEv = (present: string[], missing: string[]) => ev({ expected: ["Photos", "Floor plan"], present, missing });
   const part = await prisma.project.create({ data: { title: "30 Part St, Royersford, PA", clientId: nina.id, status: "EDITING", shootDate: THU(9), promisedDueAt: FRI(16, 0), statusEvidence: partEv([], ["Photos", "Floor plan"]), deliverables: { create: [{ type: "PHOTOS", label: "Photos", quantity: 1 }, { type: "FLOORPLAN", label: "Floor plan", quantity: 1 }] } } });
   await pw.sweepPromiseWatch(setNow(FRI(13, 0)));
+  c.ok("partial order, 3 covered hours before: the heads-up, no draft yet", dmsTo(S.kyle, /Promise check: 30 Part St/).length === 1 && (await prisma.smartTask.count({ where: { taskType: "at_risk_update", projectId: part.id } })) === 0);
+  await autoDraftAtRiskUpdate({ projectId: part.id, promisedAt: FRI(16, 0), now: setNow(FRI(16, 30)) });
   const partDraft = await prisma.smartTask.findFirst({ where: { taskType: "at_risk_update", projectId: part.id } });
   c.ok("partial order: the draft first names everything owed (the photos and the floor plan)", /the photos and the floor plan are running behind/.test(partDraft?.description ?? ""), partDraft?.description ?? "none");
   await prisma.project.update({ where: { id: part.id }, data: { statusEvidence: partEv(["Photos"], ["Floor plan"]) } });
-  await pw.sweepPromiseWatch(setNow(FRI(13, 5)));
+  await pw.sweepPromiseWatch(setNow(FRI(16, 35)));
   const partNow = await prisma.smartTask.findFirst({ where: { id: partDraft?.id } });
   c.ok("the photos went out: the draft now names only the floor plan, and the summary says the photos are delivered", partNow?.status === "OPEN" && /the floor plan is running behind/.test(partNow.description ?? "") && !/photos/.test(partNow.description ?? "") && /^Still owed: the floor plan, promised by .+ Already delivered: the photos\./.test(partNow.summary ?? ""), `${partNow?.description} | ${partNow?.summary}`);
   await prisma.smartTask.update({ where: { id: partDraft!.id }, data: { description: "Hi Nina, the floor plan is coming tonight, I'll text you when it's on." } });
   await prisma.project.update({ where: { id: part.id }, data: { statusEvidence: partEv(["Photos"], ["Floor plan"]) } });
-  await pw.sweepPromiseWatch(setNow(FRI(13, 10)));
+  await pw.sweepPromiseWatch(setNow(FRI(16, 40)));
   c.ok("…a text Kyle rewrote keeps his words", (await prisma.smartTask.findFirst({ where: { id: partDraft?.id } }))?.description === "Hi Nina, the floor plan is coming tonight, I'll text you when it's on.");
   // The stage line (the watch DM, a "when will it be ready?" reply task): photos out, the floor plan still owed.
   await prisma.photoJob.create({ data: { projectId: part.id, stage: "DELIVERED", finalsCount: 63 } });

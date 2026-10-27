@@ -5,6 +5,8 @@ import {
   MessageSquare, Plus, RefreshCw, Scissors, Send, TrendingUp, Upload, Users, Wallet,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
+// Oct 27 2026 Loom (26:50): a Messages button on the main dashboards.
+import { MessagesButton } from "@/components/comms/MessagesButton";
 import { AutoRefresh } from "@/components/ops/AutoRefresh";
 import { cn } from "@/lib/utils";
 import { etDate, etDateTime, etFullDate, etMinutesOfDay, etMonthDay, etTime } from "@/lib/datetime";
@@ -559,7 +561,7 @@ export async function OwnerHome({ me, includeTest = false, now: at }: {
         eyebrow="Dashboard"
         title={`${minute < 12 * 60 ? "Good morning" : minute < 18 * 60 ? "Good afternoon" : "Good evening"}, ${first}`}
         subtitle={`Business oversight & your work · ${etFullDate(now)} · updated ${etTime(now)} ET`}
-        actions={<PanelButton spec={{ kind: "assign", seed: { title: "" }, heading: "Assign a task" }} className={PRIMARY}><Plus aria-hidden className="size-4" /> Assign task</PanelButton>}
+        actions={<><MessagesButton variant="dashboard" role="OWNER" /><PanelButton spec={{ kind: "assign", seed: { title: "" }, heading: "Assign a task" }} className={PRIMARY}><Plus aria-hidden className="size-4" /> Assign task</PanelButton></>}
       />
       <div className="mx-auto max-w-7xl space-y-5 p-4 pb-16 sm:p-6">
         {includeTest && (

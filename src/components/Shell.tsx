@@ -6,6 +6,7 @@ import { BrandWordmark } from "@/components/Brand";
 import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
 import { NotificationsBell } from "@/components/NotificationsBell";
+import { MessagesButton } from "@/components/comms/MessagesButton";
 import { Sidebar, type ShellUser } from "@/components/Sidebar";
 import { BottomTabBar } from "@/components/BottomTabBar";
 import { FeedbackWidget } from "@/components/feedback/FeedbackWidget";
@@ -186,7 +187,9 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
               <BrandWordmark className="h-4" />
             </span>
           </div>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-1">
+            {/* Oct 27 2026 Loom: the messages icon, beside the bell. */}
+            <MessagesButton variant="header" role={user?.role} />
             <NotificationsBell variant="header" />
           </div>
         </header>

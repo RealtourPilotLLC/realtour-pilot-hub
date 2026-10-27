@@ -30,13 +30,36 @@ export function etEndOfTodayUtc(now = new Date()): Date {
   return new Date(tomorrowStart.getTime() - 1);
 }
 
+/** Last millisecond of TOMORROW in ET: a confirmation's window closes with
+ *  the shoot, and opens the day before (Oct 27 2026). Same DST-safe steps. */
+export function etEndOfTomorrowUtc(now = new Date()): Date {
+  return etEndOfTodayUtc(new Date(etEndOfTodayUtc(now).getTime() + 6 * 3600_000));
+}
+
+/** Pure, for a row already read: is this confirmation's shoot in its Outbox
+ *  window (ahead of us, no later than tomorrow ET)? */
+export function confirmationInWindow(shootDate: Date | null | undefined, now = new Date()): boolean {
+  return !!shootDate && shootDate.getTime() > now.getTime() && shootDate.getTime() <= etEndOfTomorrowUtc(now).getTime();
+}
+
 // Canonical filter. The shape encodes hard-won rules — don't "tidy" them away:
 // · NO assignee filter, ever. Assigning a text to someone must not hide it
 //   from the review surfaces — scoping to kyle+delegates made assigned texts
 //   vanish from every screen (the finding-1 regression).
-// · null dueAt COUNTS. A confirmation on a job with no shoot date yet is real
-//   work (someone has to chase the date), not something to hide until a date
-//   appears.
+// · A CONFIRMATION FOLLOWS THE LIVE SHOOT, not its own dueAt (Jordan, Oct 27
+//   2026 Loom, 39:18: "Hi Georgiana, confirming your upcoming shoot at 2031
+//   Ruth ... This confirmation may be out of date. The appointment was
+//   rescheduled, so this notification should be rescheduled for whenever her
+//   new appointment was scheduled for, or at least a day before, two days
+//   before the appointment"). It is in the Outbox only while the job's shoot
+//   is still ahead and no later than tomorrow (ET): the day before, as the
+//   SOP says, whatever the task row's dueAt still reads. A shoot moved later
+//   takes its confirmation off until the new day before; a shoot with NO date
+//   (postponed) holds it (the rebook task chases the date; lib/tasks also
+//   marks the row held); a shoot already past is no confirmation at all.
+//   This replaces "null dueAt COUNTS" (a dateless confirmation in the Outbox
+//   was a text with no time to confirm, which is what Jordan saw).
+// · A delivery text keeps its dueAt rule (due by end of today, or no date).
 // · projectId is REQUIRED. Both text types always mint with a project, and the
 //   drafts re-render from the project's live data — a projectless row can't
 //   even produce a message.
@@ -52,7 +75,12 @@ export function clientTextWhere(now = new Date(), opts: { excludeClientIds?: str
     status: { notIn: ["COMPLETED", "CANCELLED"] },
     projectId: { not: null },
     AND: [
-      { OR: [{ dueAt: { lte: etEndOfTodayUtc(now) } }, { dueAt: null }] },
+      {
+        OR: [
+          { taskType: "confirmation_text", project: { shootDate: { gt: now, lte: etEndOfTomorrowUtc(now) } } },
+          { taskType: { not: "confirmation_text" }, OR: [{ dueAt: { lte: etEndOfTodayUtc(now) } }, { dueAt: null }] },
+        ],
+      },
       { project: recentProjectWhere() },
       ...(opts.excludeClientIds?.length ? [
         { OR: [{ clientId: null }, { clientId: { notIn: opts.excludeClientIds } }] },

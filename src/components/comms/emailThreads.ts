@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { contentTier } from "@/lib/auth/access";
 import { etDateTime } from "@/lib/datetime";
-import { mailboxOfExternalId } from "@/lib/replyQueue";
+import { mailboxOfExternalId, NOT_CLIENT_LABEL, notClientEmailReason, notClientVerdicts } from "@/lib/replyQueue";
 
 // ---------------------------------------------------------------------------
 // Email tab data for the Communications hub.
@@ -45,6 +45,24 @@ export type EmailThread = {
   replyRef: string | null;
   /** The mailbox that email arrived in (the reply goes out from it). */
   replyMailbox: string | null;
+  /** When they last wrote on this thread (null = only we did): unread is
+   *  "newer than my read mark" (lib/messageReads, Oct 27 2026). */
+  lastInboundISO: string | null;
+  /** Set by the page from the viewer's read marks. */
+  unread?: boolean;
+};
+
+/** An email Messages · Email keeps off the list (Oct 27 2026, "client
+ *  communications only"), one line each, in a fold under the list. */
+export type HiddenEmail = {
+  id: string;
+  from: string;
+  subject: string;
+  atLabel: string;
+  /** why: a rule's label, or the AI check's */
+  why: string;
+  /** true when the AI check hid it (it can be shown again) */
+  byAi: boolean;
 };
 
 /** `gmail-<mailbox>:<gmailMessageId>`, the inbound row's externalId the Gmail
@@ -119,7 +137,10 @@ const WINDOW_DAYS = EMAIL_WINDOW_DAYS;
 const THREAD_CAP = 50;
 const FRESH_MS = 48 * 3600_000;
 
-export async function getEmailThreads(opts: { excludeClientIds?: string[] } = {}): Promise<{ threads: EmailThread[]; fresh: number }> {
+/** How many hidden emails the fold lists (the count says how many in all). */
+const HIDDEN_SHOWN = 60;
+
+export async function getEmailThreads(opts: { excludeClientIds?: string[] } = {}): Promise<{ threads: EmailThread[]; fresh: number; hidden: HiddenEmail[]; hiddenTotal: number }> {
   // Sessionless local dev renders the full owner view — same convention as the
   // dashboard (src/app/page.tsx). contentTier folds app roles (EDITOR,
   // PHOTOGRAPHER, …) onto the CREATIVE/ADMIN/OWNER sensitivity ladder.
@@ -156,12 +177,38 @@ export async function getEmailThreads(opts: { excludeClientIds?: string[] } = {}
     },
   });
 
+  // CLIENT COMMUNICATIONS ONLY (Jordan, Oct 27 2026 Loom, 38:23: "it should
+  // really just be communications with clients ... accepted a Google Meet
+  // invitation ... Core9, your shipment is on the way ... Laura Hayes, top
+  // tier capital program, we don't need that in here"). An email from them
+  // shows only when it is from a saved client and is not what the rules
+  // (replyQueue notClientEmailReason) or the AI check (lib/commsNotClient)
+  // call something else; our own sends show on a client's thread. The rest
+  // folds under the list with the reason, so nothing is lost from sight.
+  const verdicts = await notClientVerdicts(rows.filter((r) => r.direction !== "out" && r.clientId).map((r) => r.id));
+  const hiddenAll: HiddenEmail[] = [];
+  const clientRows = rows.filter((r) => {
+    if (r.direction === "out") return !!r.clientId;
+    const rule = r.clientId ? notClientEmailReason(r) : null;
+    const why = !r.clientId ? "Not from a saved client" : rule ? NOT_CLIENT_LABEL[rule] : verdicts.has(r.id) ? NOT_CLIENT_LABEL.ai : null;
+    if (!why) return true;
+    hiddenAll.push({
+      id: r.id,
+      from: r.contactName || r.clientName || "Unknown sender",
+      subject: oneLine(decodeEntities((r.subject ?? "").trim() || "(no subject)"), 120),
+      atLabel: etDateTime(r.occurredAt),
+      why,
+      byAi: !!r.clientId && !rule && verdicts.has(r.id),
+    });
+    return false;
+  });
+
   // Group into threads: normalized subject + counterpart. Gmail's threadId isn't
   // stored on CommLog, so subject+person is the closest stable stand-in — it
   // correctly merges "Re:"/"Fwd:" chains without gluing two clients' identically
   // titled mail ("Photos ready!") into one thread.
   const buckets = new Map<string, typeof rows>();
-  for (const r of rows) {
+  for (const r of clientRows) {
     const key = emailThreadKey(r);
     const b = buckets.get(key);
     if (b) b.push(r);
@@ -218,8 +265,9 @@ export async function getEmailThreads(opts: { excludeClientIds?: string[] } = {}
       })),
       replyRef: answerable?.id ?? null,
       replyMailbox: answerable ? gmailMessageOfExternalId(answerable.externalId)?.mailbox ?? null : null,
+      lastInboundISO: msgs.find((m) => m.direction !== "out")?.occurredAt.toISOString() ?? null,
     });
   }
 
-  return { threads, fresh: threads.filter((t) => t.fresh).length };
+  return { threads, fresh: threads.filter((t) => t.fresh).length, hidden: hiddenAll.slice(0, HIDDEN_SHOWN), hiddenTotal: hiddenAll.length };
 }

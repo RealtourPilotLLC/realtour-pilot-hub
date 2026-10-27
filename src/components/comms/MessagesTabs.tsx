@@ -24,7 +24,7 @@ export function MessagesTabs({ tab, counts, test = false }: { tab: MessagesTab; 
   const current = tabBarKey(tab);
   return (
     <nav aria-label="Messages views" className="mb-4 flex flex-wrap items-center gap-1.5">
-      {MESSAGES_TABS.map((t) => {
+      {MESSAGES_TABS.filter((t) => t.onBar !== false).map((t) => {
         const Icon = ICON[t.key];
         const active = t.key === current;
         const c = counts[t.key];

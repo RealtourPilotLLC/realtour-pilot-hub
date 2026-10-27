@@ -427,8 +427,15 @@ export async function sweepProgramWatch(now: Date = new Date()): Promise<Program
     if (e.status === "LATE") out.late++;
     else if (e.status === "AT_RISK") out.atRisk++;
     else continue;
-    const level = e.status === "LATE" ? "late" : "risk";
-    const since = level === "late" ? r.promisedAt : e.missed!.by;
+    // LATE ONLY (Jordan, Oct 27 2026 Loom, 40:34: "They should only be at
+    // risk if they're late, not if you think they're going to be late,
+    // because you don't know how much our team can get done"). A missed
+    // milestone ahead of the promise is still counted and still on the
+    // Project Tracker's program watch list; it no longer pings Kyle or
+    // drafts a client update. Only a passed promise does.
+    if (e.status !== "LATE" || r.promisedAt.getTime() > now.getTime()) continue;
+    const level = "late" as const;
+    const since = r.promisedAt;
     if (now.getTime() - since.getTime() > FRESH_HOURS * HOUR) { out.listedOnly++; continue; }
     hits.push({ row: r, level });
   }
@@ -524,13 +531,16 @@ async function closeProgramWatchDrafts(rows: ProgramVideoRow[]): Promise<number>
 
 // ---- for the at-risk list and the exceptions board -----------------------------
 
-/** Program videos at risk or late (promise within the last `lookbackDays`). */
+/** Program videos past their promise and not delivered (promise within the
+ *  last `lookbackDays`). LATE only since Oct 27 2026 (Jordan: "only at risk if
+ *  they're late"): a missed milestone ahead of the promise is the tracker's
+ *  business, not a late promise for Messages or the exceptions board. */
 export async function programAtRiskRows(opts: { now?: Date; lookbackDays?: number; excludeClientIds?: string[] } = {}): Promise<ProgramVideoRow[]> {
   const now = opts.now ?? new Date();
   const floor = now.getTime() - (opts.lookbackDays ?? 7) * DAY;
   const excluded = new Set(opts.excludeClientIds ?? []);
   return (await programVideos({ now })).filter(
-    (r) => !excluded.has(r.clientId) && r.promisedAt && r.promisedAt.getTime() >= floor && (r.evaluation?.status === "AT_RISK" || r.evaluation?.status === "LATE"),
+    (r) => !excluded.has(r.clientId) && r.promisedAt && r.promisedAt.getTime() >= floor && r.promisedAt.getTime() < now.getTime() && r.evaluation?.status === "LATE",
   );
 }
 

@@ -11,12 +11,13 @@ import { loadPhoneDirectory } from "@/lib/queries";
 import { ClientTextsPanel } from "@/components/texts/ClientTextsPanel";
 import { SendAllTexts } from "@/components/tasks/SendAllTexts";
 import { getEmailThreads } from "@/components/comms/emailThreads";
-import { EmailThreadList } from "@/components/comms/EmailThreadList";
+import { EmailThreadList, HiddenEmailFold } from "@/components/comms/EmailThreadList";
 import { TeamMessagesPanel, loadTeamChat } from "@/components/comms/TeamMessagesPanel";
 import { getCurrentUser } from "@/lib/auth/user";
 import { ReplyQueue } from "@/components/comms/ReplyQueue";
 import { MessagesTabs, type TabCount } from "@/components/comms/MessagesTabs";
-import { WaitingOnUs } from "@/components/comms/WaitingOnUs";
+import { textUnreadKey, WaitingOnUs, waitingUnreadKey } from "@/components/comms/WaitingOnUs";
+import { emailReadKey, isUnread, markRead, readMarks, textReadKey, unreadRows, waitingReadKeys } from "@/lib/messageReads";
 import { messagesHref, resolveMessagesTab, TEST_SCOPED_TABS, type MessagesTab } from "@/components/comms/messagesNav";
 import { replyQueue } from "@/lib/replyQueue";
 import { messagesBoard, MESSAGE_BEHIND_HOURS } from "@/lib/opsHome";
@@ -47,15 +48,22 @@ function fmtPhone(p: string) {
 //                  client waiting on a reply, texts and email together,
 //                  oldest first, with Reply and Dismiss (Oct 21 2026: the
 //                  one place a waiting client is cleared); texts from
-//                  numbers we have not saved; new leads; promises at risk;
-//                  folded, the texts that probably need nothing. Its clients
+//                  numbers we have not saved (Not a client, Spam); new
+//                  leads; late promises; folded, the thank-yous. Its clients
 //                  and leads are the same read as the Home summary box.
 //   Email          client email threads from Gmail, newest first, each with
 //                  a reply box that sends into the same Gmail thread (Oct 27
-//                  2026: "I want to be able to respond to emails in the hub")
-//   Team           internal messages by property
+//                  2026: "I want to be able to respond to emails in the hub").
+//                  Client communication only (Oct 27 2026 Loom, 38:23):
+//                  invites, confirmations, shipping, pitches and unsaved
+//                  senders fold under the list.
 //   Outbox         today's drafted confirmation and delivery texts
 //   All            every OpenPhone conversation (was the page's "Inbox")
+// Team (internal messages by property) is off the bar since the Oct 27 Loom:
+// the messages icon beside the bell opens it (?tab=team).
+// UNREAD (Oct 27 2026 Loom, 37:49): every client conversation carries an
+// Unread mark until this person opens it (lib/messageReads); opening a text's
+// reply screen or an email thread moves their mark. "View as" never does.
 // The Texts tab (every unanswered text, a second list of the same waiting
 // clients) is gone from the bar. ?tab=texts&focus=<key> is now the screen a
 // text's Reply opens: that one conversation with a reply ready to write.
@@ -124,6 +132,15 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
   // read, plus the promises at risk that lived on the Tasks page's Replies tab.
   if (tab === "waiting") {
     const behind = board.waiting.filter((w) => w.behind).length;
+    // Our own team's texts are not client communication (Oct 27 2026 Loom,
+    // 38:54): they are Team messages, on the messages icon.
+    const aside = texts.handled.filter((c) => !c.isTeam).map(shown);
+    const lastFromThem = (c: (typeof texts.cards)[number]) => [...c.turns].reverse().find((t) => t.role === "client")?.at ?? c.waitingSince;
+    const [unreadWaiting, unreadTexts] = await Promise.all([
+      unreadRows(me?.id, board.waiting, (w) => waitingReadKeys(w.family, w.group)),
+      unreadRows(me?.id, [...unsavedTexts, ...aside], (c) => [{ key: textReadKey(c.key), at: lastFromThem(c) }]),
+    ]);
+    const unread = new Set<string>([...[...unreadWaiting].map(waitingUnreadKey), ...[...unreadTexts].map(textUnreadKey)]);
     return (
       <div>
         <PageHeader
@@ -139,7 +156,8 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
             includeTest={includeTest}
             excludeClientIds={excludeClientIds}
             showFollowupsLink={!isOwner}
-            texts={{ unsaved: unsavedTexts, aside: texts.handled.map(shown) }}
+            texts={{ unsaved: unsavedTexts, aside }}
+            unread={unread}
           />
         </div>
       </div>
@@ -160,6 +178,8 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
   if (tab === "texts") {
     const all = [...texts.cards, ...texts.handled];
     const match = focus ? all.find((c) => c.key === focus || c.key.slice(2) === focus) ?? null : null;
+    // Opening the conversation reads it (Oct 27 2026); a "view as" preview never moves a mark.
+    if (match && me && !me.impersonating) await markRead(me.id, textReadKey(match.key), now);
     return (
       <div>
         <PageHeader
@@ -212,10 +232,12 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
   // counted once, on Waiting on us.
   if (tab === "email") {
     const read = await getEmailThreads({ excludeClientIds });
+    const marks = await readMarks(me?.id, read.threads.map((t) => emailReadKey(t.key)));
+    const marked = read.threads.map((t) => ({ ...t, unread: isUnread(t.lastInboundISO, marks.get(emailReadKey(t.key))) }));
     // The money rule on client email (audit F7): owner only.
     const threads = isOwner
-      ? read.threads
-      : read.threads.map((t) => ({
+      ? marked
+      : marked.map((t) => ({
           ...t,
           subject: clean(t.subject),
           snippet: clean(t.snippet),
@@ -229,13 +251,16 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
     const focusClient = cut > 0 ? focus.slice(cut + 2) : "";
     const exact = focus ? threads.find((t) => t.key === focus) ?? threads.find((t) => t.lastDirection === "in" && t.key.startsWith(`${focusSubject}::`)) ?? null : null;
     const ofClient = !exact && focusClient ? threads.find((t) => t.lastDirection === "in" && t.key.endsWith(`::${focusClient}`)) ?? threads.find((t) => t.key.endsWith(`::${focusClient}`)) ?? null : null;
-    const match = exact ?? ofClient;
-    const ordered = match ? [match, ...threads.filter((t) => t !== match)] : threads;
+    const found = exact ?? ofClient;
+    // A Reply from Waiting on us opens the thread: that reads it (Oct 27 2026).
+    if (found?.unread && me && !me.impersonating) await markRead(me.id, emailReadKey(found.key), found.lastInboundISO ? new Date(found.lastInboundISO) : now);
+    const match = found ? { ...found, unread: false } : null;
+    const ordered = match ? [match, ...threads.filter((t) => t.key !== match.key)] : threads;
     return (
       <div>
         <PageHeader
           title="Messages"
-          subtitle="Client email from the last 60 days, grouped into threads, newest first. Open a thread to reply."
+          subtitle="Client email from the last 60 days, grouped into threads, newest first. Open a thread to reply. Invites, confirmations, shipping notices and pitches are folded at the bottom."
           actions={<Badge soft="var(--surface-2)">Synced from Gmail</Badge>}
         />
         <div className="p-4 sm:p-6">
@@ -258,6 +283,7 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
           {/* Oct 23 2026 (Jordan): no "Show test records" button; test clients stay hidden. */}
           {includeTest && <p className="mb-3 text-xs text-muted">Showing real and test records</p>}
           <EmailThreadList key={match?.key ?? "all"} threads={ordered} focusKey={match?.key ?? null} nowMs={now.getTime()} />
+          <HiddenEmailFold hidden={isOwner ? read.hidden : read.hidden.map((h) => ({ ...h, subject: clean(h.subject) }))} total={read.hiddenTotal} canUndo={!me?.impersonating} />
         </div>
       </div>
     );
@@ -283,8 +309,8 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
           title="Messages"
           subtitle={
             chat.unreadTotal > 0
-              ? `Team messages by property. ${chat.unreadTotal} conversation${chat.unreadTotal === 1 ? " has" : "s have"} something new.`
-              : "Team messages by property. Pick a job to read and reply."
+              ? `Team messages by property. ${chat.unreadTotal} conversation${chat.unreadTotal === 1 ? " has" : "s have"} something new. This opens from the messages icon beside the bell.`
+              : "Team messages by property. Pick a job to read and reply. This opens from the messages icon beside the bell."
           }
         />
         <div className="p-4 sm:p-6">

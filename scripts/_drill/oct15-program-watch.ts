@@ -12,12 +12,16 @@
 //      8 and the promise; met by any later fact; statuses; the suggested
 //      cause; the client's words (no dashes, no internal words).
 //   2. The sweep, through the promise watch, on a real fortnight (Mon Oct 5
-//      to Mon Oct 19 2026, EDT): a missed milestone tells Kyle ONCE (bell +
-//      Slack) with a drafted client update naming only the promise; twin
-//      sweeps send once; each new miss is told; past the promise is told.
+//      to Mon Oct 19 2026, EDT). LATE ONLY since Oct 27 2026 (Jordan's Loom,
+//      40:34: "They should only be at risk if they're late, not if you think
+//      they're going to be late"): a missed milestone ahead of the promise is
+//      counted and on the tracker, but tells nobody and drafts nothing; past
+//      the promise Kyle is told ONCE (bell + Slack) with a drafted client
+//      update naming only the promise (section 6); twin sweeps send once.
 //   3. Not pinged: a backlog miss older than 48h, a TEST client, a future
 //      shoot, a job on hold; the switch, and the Delivery watch switch.
-//   4. The tracker list, the at-risk list and the exceptions board.
+//   4. The tracker list (behind and late), the late-promises list and the
+//      exceptions board (late only).
 //   5. The late cause: refused when not on the list, saved, shown, cleared.
 //   6. The drafts close themselves once the videos reach the portal.
 //   7. The portal: off by default; stage + "expected by"; a moved date with
@@ -180,29 +184,19 @@ async function main() {
 
   const t2 = await promiseWatch.sweepPromiseWatch(setNow(OCT(8, 17, 30)));
   await Promise.all([promiseWatch.sweepPromiseWatch(OCT(8, 17, 31)), promiseWatch.sweepPromiseWatch(OCT(8, 17, 31))]);
-  const dm1 = dms(/Dana Rivers/);
-  c.ok("Thu 5:30 PM: \"Tip #3\" missed \"editing started\", Kyle is told ONCE (twin sweeps included)", dm1.length === 1 && /Tip #3/.test(dm1[0].text) && !/Tip #2/.test(dm1[0].text), dm1.map((d) => d.text).join(" || "));
-  console.log(`\n--- the DM ---\n${dm1[0]?.text}\n---`);
-  c.ok("…saying what should have happened by when, where it is now, and the likely cause", /editing should have started by Thu, Oct 8, 5:00 PM ET/.test(dm1[0]?.text ?? "") && /footage in, editing not started/.test(dm1[0]?.text ?? "") && /Likely cause: Slow handoff to the editor/.test(dm1[0]?.text ?? ""));
-  c.ok("…with the promise and the tracker link, and no dashes", /Promise Mon, Oct 19, 5:00 PM ET/.test(dm1[0]?.text ?? "") && /\/pipeline#program-watch/.test(dm1[0]?.text ?? "") && !DASH.test(dm1[0]?.text ?? ""));
-  c.ok("the promise watch reports it", !!t2.program && "alerted" in t2.program && t2.program.alerted === 1, JSON.stringify(t2.program));
+  c.ok("Thu 5:30 PM: \"Tip #3\" missed \"editing started\" eleven days before the promise: counted, but NOBODY is told (late only, Oct 27 2026)", dms(/Dana Rivers/).length === 0 && !!t2.program && "atRisk" in t2.program && t2.program.atRisk >= 1 && t2.program.alerted === 0, JSON.stringify(t2.program));
   const bell = await prisma.notification.findMany({ where: { kind: "promise_watch", userKey: `tm:${kyle.id}` } });
-  c.ok("…and Kyle's bell has one row", bell.length === 1, String(bell.length));
+  c.ok("…Kyle's bell has no row", bell.length === 0, String(bell.length));
   const drafts = () => prisma.smartTask.findMany({ where: { taskType: "at_risk_update", projectId: dana.projectId } });
   let d1 = await drafts();
-  c.ok("a client update is DRAFTED on Kyle's list (not sent), about the month's videos", d1.length === 1 && d1[0].status === "OPEN" && d1[0].assignedKey === "kyle" && d1[0].reasonCreated === pw.PROGRAM_WATCH_REASON && /your October videos: your video "Tip #3" is running behind the time we promised \(Mon, Oct 19, 5:00 PM ET\)/.test(d1[0].description ?? ""), d1[0]?.description ?? "none");
-  c.ok("…naming no date but the recorded promise", at.foreignDates(d1[0]?.description ?? "", [promise]) === null);
+  c.ok("…and no client update is drafted before the promise", d1.length === 0, d1.map((t) => t.description).join(" | "));
 
   // Tip #1 passes and goes to the portal; Tip #4 is approved but not released.
   await prisma.reviewSubmission.update({ where: { id: r1.id }, data: { status: "APPROVED", decidedAt: OCT(9, 10), clientReleasedAt: OCT(9, 12) } });
   await prisma.reviewSubmission.update({ where: { id: r4.id }, data: { status: "APPROVED", decidedAt: OCT(14, 9) } });
 
   await promiseWatch.sweepPromiseWatch(setNow(OCT(12, 17, 30)));
-  const dm2 = dms(/Dana Rivers/);
-  c.ok("Mon Oct 12 5:30 PM: \"Tip #2\" missed its first cut, told once; \"Tip #3\" is not told again", dm2.length === 2 && /Tip #2/.test(dm2[1].text) && !/Tip #3/.test(dm2[1].text), dm2[1]?.text);
-  c.ok("…the first cut line and the editing-capacity guess", /the first cut should have been in review by Mon, Oct 12, 5:00 PM ET/.test(dm2[1]?.text ?? "") && /Likely cause: Editing capacity/.test(dm2[1]?.text ?? ""));
-  d1 = await drafts();
-  c.ok("…the month's draft is not written twice", d1.length === 1);
+  c.ok("Mon Oct 12 5:30 PM: \"Tip #2\" missed its first cut, still a week before the promise: nobody told, nothing drafted", dms(/Dana Rivers/).length === 0 && (await drafts()).length === 0);
 
   // =========================================================================
   c.head("3 · What is listed but never pinged");
@@ -234,13 +228,13 @@ async function main() {
   const noTest = await pw.programWatchBoard({ now: OCT(12, 18), includeTest: false });
   c.ok("…and test records hide behind the tracker's own toggle", !noTest.rows.some((r) => r.clientId === tf.clientId));
   const risk = await at.atRiskOutputs(OCT(12, 18));
-  const r2 = risk.find((r) => r.outputId === o2);
-  c.ok("the at-risk list (Tasks, Comms) carries program videos days before the promise, with why", !!r2 && /first cut should have been in review/.test(r2.why ?? "") && r2.owed === `the video "Tip #2"`, JSON.stringify(r2 && { owed: r2.owed, why: r2.why }));
-  c.ok("…matched to the watch's one draft for the month", r2?.taskId === d1[0]?.id);
+  const rRosa = risk.find((r) => r.outputId === rosa.outs[0]);
+  c.ok("the late-promises list (Messages) carries Rosa's video, past its promise, with where it stands", !!rRosa && rRosa.overdue && /past its promise/.test(rRosa.why ?? "") && rRosa.owed === `the video "Tip #1"`, JSON.stringify(rRosa && { owed: rRosa.owed, why: rRosa.why }));
+  c.ok("…and NOT Dana's Tip #2 or Tip #3, behind a milestone but a week before the promise, nor the TEST client's (due Oct 20)", !risk.some((r) => r.outputId === o2 || r.outputId === o3 || r.projectId === tf.projectId), risk.map((r) => `${r.clientName}:${r.owed}`).join(" | "));
   const { opsExceptionsBoard } = await import("@/lib/opsExceptions");
   const ex = await opsExceptionsBoard({ now: OCT(12, 18) });
   const exRows = ex.rows.filter((r) => r.kind === "at-risk-promise");
-  c.ok("the exceptions board names the undrafted program videos (Rosa's, the TEST client's), not Dana's drafted ones", ex.totals["at-risk-promise"].all >= 2 && !exRows.some((r) => /Tip #2|Tip #3/.test(r.why) && /Dana/.test(r.why)), exRows.map((r) => r.why).join(" || "));
+  c.ok("the exceptions board names Rosa's late video only, not Dana's behind ones or the TEST client's", ex.totals["at-risk-promise"].all >= 1 && exRows.some((r) => /Rosa Lee/.test(r.why)) && !exRows.some((r) => /Dana/.test(r.why)), exRows.map((r) => r.why).join(" || "));
 
   // =========================================================================
   c.head("5 · Why it was late: a person's call");
@@ -261,9 +255,18 @@ async function main() {
   c.head("6 · Past the promise, then on the portal");
   // =========================================================================
   await promiseWatch.sweepPromiseWatch(setNow(OCT(19, 17, 30)));
+  await promiseWatch.sweepPromiseWatch(OCT(19, 17, 31));
   const dm3 = dms(/Dana Rivers/);
-  c.ok("Mon Oct 19 5:30 PM: one message, three videos past the promise", dm3.length === 3 && /past its promise/.test(dm3[2].text) && /Tip #2/.test(dm3[2].text) && /Tip #3/.test(dm3[2].text) && /Tip #4/.test(dm3[2].text), dm3[2]?.text);
-  c.ok("…Tip #4, approved five days ago and not on the portal, reads as our review holding it", /Tip #4[^\n]*Likely cause: Waiting on our review/.test(dm3[2]?.text ?? ""));
+  c.ok("Mon Oct 19 5:30 PM, past the promise: Kyle is told ONCE (a second sweep included), one message, three videos", dm3.length === 1 && /past its promise/.test(dm3[0].text) && /Tip #2/.test(dm3[0].text) && /Tip #3/.test(dm3[0].text) && /Tip #4/.test(dm3[0].text), dm3.map((d) => d.text).join(" || "));
+  console.log(`\n--- the DM ---\n${dm3[0]?.text}\n---`);
+  c.ok("…with the promise and the tracker link, and no dashes", /Promise Mon, Oct 19, 5:00 PM ET/.test(dm3[0]?.text ?? "") && /\/pipeline#program-watch/.test(dm3[0]?.text ?? "") && !DASH.test(dm3[0]?.text ?? ""));
+  c.ok("…Tip #4, approved five days ago and not on the portal, reads as our review holding it", /Tip #4[^\n]*Likely cause: Waiting on our review/.test(dm3[0]?.text ?? ""));
+  c.ok("…Kyle's bell has one row", (await prisma.notification.count({ where: { kind: "promise_watch", userKey: `tm:${kyle.id}` } })) === 1);
+  d1 = await drafts();
+  c.ok("NOW a client update is DRAFTED on Kyle's list (not sent), about the month's videos", d1.length === 1 && d1[0].status === "OPEN" && d1[0].assignedKey === "kyle" && d1[0].reasonCreated === pw.PROGRAM_WATCH_REASON && /your October videos: your videos "Tip #2" and "Tip #3" and "Tip #4" are running behind the time we promised \(Mon, Oct 19, 5:00 PM ET\)/.test(d1[0].description ?? ""), d1[0]?.description ?? "none");
+  c.ok("…naming no date but the recorded promise", at.foreignDates(d1[0]?.description ?? "", [promise]) === null);
+  const late19 = await at.atRiskOutputs(OCT(19, 18));
+  c.ok("…and the late-promises list carries the three, matched to that one draft", [o2, o3, o4].every((o) => late19.find((r) => r.outputId === o)?.taskId === d1[0]?.id), late19.map((r) => `${r.owed}:${r.taskId ?? "none"}`).join(" | "));
   // Leo: delivered late a fortnight ago; never pinged.
   // Oct 27 2026 (Jordan's Loom: "if they've been delivered, I don't really want them in here anymore"): off the list too.
   const leo = await programJob("Leo Park", "2026-09", { shootDate: SEP(17, 10), promisedDueAt: OCT(1, 17), qty: 1 });
@@ -283,10 +286,11 @@ async function main() {
   // =========================================================================
   c.head("7 · The switches");
   // =========================================================================
-  await programJob("Sam Ortiz", "2026-10", { shootDate: OCT(12, 10), promisedDueAt: OCT(26, 17), qty: 1, uploadedAt: null });
+  // A video past its promise (the only thing that pings now), no footage in.
+  await programJob("Sam Ortiz", "2026-10", { shootDate: SEP(29, 10), promisedDueAt: OCT(13, 17), qty: 1, uploadedAt: null });
   await pw.saveProgramWatchRules({ alerts: false }, "drill");
   await promiseWatch.sweepPromiseWatch(setNow(OCT(13, 17, 30)));
-  c.ok("program alerts off: a fresh miss is not pinged", dms(/Sam Ortiz/).length === 0);
+  c.ok("program alerts off: a fresh late video is not pinged", dms(/Sam Ortiz/).length === 0);
   await pw.saveProgramWatchRules({ alerts: true }, "drill");
   await putSetting("internal_alerts", { promiseWatch: { enabled: false } });
   const off = await promiseWatch.sweepPromiseWatch(setNow(OCT(13, 18)));

@@ -8,6 +8,10 @@
 //     risk that lived only on the Tasks page's Replies tab;
 //   · then Email, Team, Outbox, All, in that order, each number on its tab and
 //     nowhere else on the page; old tab names still land right;
+//   · CHANGED Oct 27 2026 (Loom, 38:54: team chat is not client
+//     communication): Team is off the tab BAR (the messages icon's "Team
+//     messages" opens it); ?tab=team still renders it. Promises at risk are
+//     "Late promises": only work already past its promise (Loom, 40:34);
 //   · CHANGED Oct 27 2026 (Jordan: "One queue + Gmail draft"): the Texts tab is
 //     off the bar. Waiting on us is the one queue: the unsaved numbers' texts
 //     are on it (and in its number), the thank-yous and team texts folded
@@ -160,8 +164,11 @@ async function main() {
     const pFix = await prisma.project.create({ data: { clientId: fixture.id, title: "Fixture-only property", status: "SCHEDULED", shootDate: ahead(D) } });
     await task({ taskType: "confirmation_text", source: "system", title: "Confirm 40 Tomorrow Way", projectId: pReal.id, clientId: vip.id, dueAt: laterToday });
     await task({ taskType: "confirmation_text", source: "system", title: "Confirm the fixture", projectId: pFix.id, clientId: fixture.id, dueAt: laterToday });
-    // A promise at risk: a job due in six hours, not delivered.
-    await prisma.project.create({ data: { clientId: vip.id, title: "5 Quarry Ln, Town", status: "EDITING", shootDate: ago(D), promisedDueAt: ahead(6 * H) } });
+    // A late promise: a job due six hours ago, not delivered. CHANGED Oct 27
+    // 2026 (Jordan: "only at risk if they're late"): was due in six hours, which
+    // is no longer listed; that one is below, and must not show.
+    await prisma.project.create({ data: { clientId: vip.id, title: "5 Quarry Ln, Town", status: "EDITING", shootDate: ago(D), promisedDueAt: ago(6 * H) } });
+    await prisma.project.create({ data: { clientId: vip.id, title: "9 Hannum Ct, Town", status: "EDITING", shootDate: ago(D), promisedDueAt: ahead(20 * H) } });
     // A Slack to-do, for the Tasks page's ?task= deep link.
     const slackTask = await task({ taskType: "internal_instruction", source: "slack", title: "Check the drone batteries", assignedKey: "kyle" });
 
@@ -191,7 +198,8 @@ async function main() {
     c.ok("…and no Reply still points at the old doors", !hrefs(kWaiting).some((h) => h.startsWith("/tasks?tab=comms") || h.startsWith("/ops/messages") || h === "/communications?tab=replies"));
     c.ok("every lead has View, Handled and Not needed (LoopActions), View opens the lead", elements(kWaiting, "LoopActions").length === kyleBoard.leads.length && elements(kWaiting, "LoopActions").every((l) => String(l.viewHref).startsWith("/tasks?tab=work&type=lead&task=")));
     c.ok("what they sent can be read in the list: the email's text and the VIP's text", kHtml.includes("The kitchen is missing.") && kHtml.includes("Read what they sent") && kHtml.includes('aria-label="VIP client"'));
-    c.ok("promises at risk moved here from the Tasks page's Replies tab (job due in six hours, Draft update)", kHtml.includes('id="at-risk"') && kHtml.includes("Promises at risk") && kHtml.includes("5 Quarry Ln"));
+    c.ok("late promises moved here from the Tasks page's Replies tab (a job due six hours ago, Draft update)", kHtml.includes('id="at-risk"') && kHtml.includes("Late promises") && !kHtml.includes("Promises at risk") && kHtml.includes("5 Quarry Ln"));
+    c.ok("…and a job due tomorrow is NOT there: it is not late (William Hannum's photos, Oct 27 Loom)", !kHtml.includes("9 Hannum Ct"));
     c.ok("Kyle never sees the dollar figure; the sentence stays", !kHtml.includes("$750") && kHtml.includes("[amount] credit applied"));
     // Each number once: the tab carries it; the header and section titles do not.
     const countOf = (html: string, key: string) => html.match(new RegExp(`data-count="${key}"[^>]*>(\\d+)<`))?.[1] ?? null;
@@ -207,7 +215,7 @@ async function main() {
     // numbers): the unsaved numbers' texts are on Waiting on us and in ITS number; team texts and thank-yous are
     // folded there, uncounted. No Texts tab, so no Texts number and nothing counted twice.
     const kUnsaved = kTextsReal.filter((card) => !card.clientId);
-    c.ok("the tab bar: five tabs in order, with counts (waiting clients + leads + texts from unsaved numbers; drafts in the Outbox; no Email number)", tabsIn(kHtml) === "waiting,email,team,outbox,all" && countOf(kHtml, "waiting") === String(kyleBoard.waiting.length + kyleBoard.leads.length + kUnsaved.length) && kUnsaved.length === 1 && countOf(kHtml, "texts") === null && countOf(kHtml, "email") === null && countOf(kHtml, "outbox") === "1", `${countOf(kHtml, "waiting")}/${countOf(kHtml, "outbox")}`);
+    c.ok("the tab bar: four tabs in order (Team is on the messages icon since Oct 27 2026), with counts (waiting clients + leads + texts from unsaved numbers; drafts in the Outbox; no Email number)", tabsIn(kHtml) === "waiting,email,outbox,all" && countOf(kHtml, "waiting") === String(kyleBoard.waiting.length + kyleBoard.leads.length + kUnsaved.length) && kUnsaved.length === 1 && countOf(kHtml, "texts") === null && countOf(kHtml, "email") === null && countOf(kHtml, "outbox") === "1", `${countOf(kHtml, "waiting")}/${countOf(kHtml, "outbox")}`);
     c.ok("…the text walk still holds every unanswered text (the unsaved number and the waiting client too)", kTexts.cards.length === 3 && kTexts.cards.some((card) => !card.isClient) && kTexts.cards.some((card) => card.clientId === vip.id));
     const unsavedRows = elements(kWaiting, "TextRow");
     c.ok("Waiting on us lists the unsaved number's text in its own section, with a Reply to that one conversation and a Dismiss", unsavedRows.length === 1 && (unsavedRows[0].card as { key: string }).key === kUnsaved[0].key && kHtml.includes(`data-waiting-text="${kUnsaved[0].key}"`) && kHtml.includes("Texts from numbers we have not saved") && kHtml.includes("do you shoot condos?") && kHtml.includes(`href="/communications?tab=texts&amp;focus=${encodeURIComponent(kUnsaved[0].key)}"`) && (kHtml.match(/data-waiting-text=/g) ?? []).length === 1, unsavedRows.map((r) => (r.card as { key: string }).key).join());
@@ -230,7 +238,8 @@ async function main() {
     // The tab links, in order, by their data-tab marker (attribute order is React's).
     const tabHrefs = (html: string) => [...html.matchAll(/<a\b[^>]*>/g)].map((m) => m[0]).filter((a) => a.includes("data-tab=")).map((a) => (a.match(/href="([^"]+)"/)?.[1] ?? "").replace(/&amp;/g, "&"));
     // CHANGED Oct 27 2026 (one queue): no Texts tab link.
-    c.ok("…the test view rides along on Waiting on us, Email and Outbox only", tabHrefs(tHtml).join() === "/communications?test=1,/communications?tab=email&test=1,/communications?tab=team,/communications?tab=outbox&test=1,/communications?tab=all" && tabHrefs(kHtml).join() === "/communications,/communications?tab=email,/communications?tab=team,/communications?tab=outbox,/communications?tab=all", tabHrefs(tHtml).join());
+    // CHANGED Oct 27 2026: Team is off the bar (the messages icon opens it).
+    c.ok("…the test view rides along on Waiting on us, Email and Outbox only", tabHrefs(tHtml).join() === "/communications?test=1,/communications?tab=email&test=1,/communications?tab=outbox&test=1,/communications?tab=all" && tabHrefs(kHtml).join() === "/communications,/communications?tab=email,/communications?tab=outbox,/communications?tab=all", tabHrefs(tHtml).join());
     c.ok("only a scalar test=1 turns it on", !(elements(await messages({ searchParams: Promise.resolve({ test: ["1", "1"] as never }) }), "WaitingOnUs")[0]?.board as MessagesBoard).waiting.some((w) => w.group.clientId === fixture.id));
 
     // =====================================================================
@@ -278,7 +287,7 @@ async function main() {
     const outbox = await view({ tab: "outbox" });
     c.ok("Outbox: the drafts and Send all, under the same tab bar", outbox.tab === "outbox" && outbox.title === "Messages" && elements(outbox.tree, "ClientTextsPanel").length === 1 && elements(outbox.tree, "SendAllTexts")[0]?.count === 1);
     const all = await view({ tab: "all" });
-    c.ok("All: every OpenPhone conversation (not connected here, so it says so, with the tabs)", all.tab === "all" && all.title === "Messages" && all.html.includes("Connect OpenPhone") && tabsIn(all.html) === "waiting,email,team,outbox,all");
+    c.ok("All: every OpenPhone conversation (not connected here, so it says so, with the tabs)", all.tab === "all" && all.title === "Messages" && all.html.includes("Connect OpenPhone") && tabsIn(all.html) === "waiting,email,outbox,all");
     const incident = await view({ incident: "unknown-outbox-id" });
     c.ok("a delivery-text check (?incident=) still opens the live list", incident.tab === "all");
     c.ok("the old Inbox name opens All", (await view({ tab: "inbox" })).tab === "all");
