@@ -356,6 +356,35 @@ export async function flagShootIssue(projectId: string, body: string): Promise<{
   return { ok: true };
 }
 
+// A QUESTION BEFORE THE SHOOT, TO KYLE OR JORDAN (Oct 27 2026, Jordan: "the
+// brief has no way to resolve anything"). Access is Kyle's to chase and a
+// listing script is Jordan's, so the brief's prep lines ask the one who owns
+// it: the person's own words, posted on the job's team chat with that person
+// tagged (postProjectMessage: the tag is their task and their bell, exactly
+// as a tag typed in the chat). Only when the person presses Send.
+export async function askAboutShootAction(projectId: string, to: "kyle" | "jordan", body: string): Promise<{ ok: boolean; message: string }> {
+  await requireShootAccess(projectId);
+  const words = (body || "").replace(/\s+/g, " ").trim().slice(0, 1000);
+  if (words.length < 3) return { ok: false, message: "Write the question first." };
+  if (to !== "kyle" && to !== "jordan") return { ok: false, message: "Pick Kyle or Jordan." };
+  let target: { id: string; name: string } | null = null;
+  if (to === "kyle") {
+    const { kyleDesk } = await import("@/lib/kyleNotice");
+    const k = await kyleDesk();
+    target = k ? { id: k.id, name: k.name } : null;
+  } else {
+    const { listAssignees } = await import("@/lib/assignees");
+    const owner = (await listAssignees().catch(() => [])).find((r) => r.kind === "owner");
+    target = owner?.teamMemberId ? { id: owner.teamMemberId, name: owner.name } : null;
+  }
+  if (!target) return { ok: false, message: `${to === "kyle" ? "Kyle" : "Jordan"} isn't on the team list, so nobody would be tagged. Ask in the job chat instead.` };
+  const first = target.name.trim().split(/\s+/)[0] || target.name;
+  const { postProjectMessage } = await import("@/app/projects/messageActions");
+  const r = await postProjectMessage(projectId, null, `@${first} ${words}`, [target.id]);
+  if (r.ok) revalShoot(projectId);
+  return r.ok ? { ok: true, message: `Asked ${first} on the job chat.` } : r;
+}
+
 // §7.8 (Sep 25 2026): a client preference or request heard on site, recorded
 // from the field screen. The same action as the upload page's box — a
 // PROPOSED client fact the office confirms before any editor sees it (see

@@ -9,7 +9,7 @@ import { categoryHandoffAt, handoffEvidence, liveHandoffCategories, type Handoff
 import { isFieldFlag } from "@/lib/debrief";
 import { contentHref } from "@/lib/contentNav";
 import { etDate, etDateTime, etDayBoundsUtc, etDayKey, etDayStartUtc, etFullDate, etMonthKey, etTime } from "@/lib/datetime";
-import { DEV_GROUPS, developmentSeat, readDevelopment, type DevelopmentRead, type DevGroupKey, type DevItemView, type Signal } from "@/lib/teamDevelopment";
+import { DEV_GROUPS, developmentSeat, readDevelopment, type DevelopmentRead, type DevGroupKey, type DevItemView, type Evidence, type Signal } from "@/lib/teamDevelopment";
 import { delegationFor, tasksAssignedTo, type DelegatedTask, type DelegationState } from "@/lib/delegation";
 import { handoffClosedKey, handoffSig, isClosedOut, readClosedHandoffs } from "@/lib/handoffCloseOut";
 import { resolveVideoSpec } from "@/lib/pipeline";
@@ -24,13 +24,13 @@ import { videoTier } from "@/lib/projectStatus";
 //   A  Today at a glance: his shoots today, cuts ready for him, coaching
 //      follow-ups due, urgent assigned work. Each number IS the length of the
 //      list it points at (the drill holds it).
-//   B  My production: his own upcoming visits (brief, shot list, agent
-//      direction, special requests, missing prep, Kyle's confirmation and the
-//      daily brief), then his shoots whose handoff is incomplete, then the
-//      team's (the field creatives he supervises), apart. Capture and upload
-//      come from EVIDENCE only (the field Done, the capture and upload ticks,
-//      the upload page's submit, what Dropbox showed); a visit whose time has
-//      passed with none of it says exactly that.
+//   B  Production: his own upcoming visits (shot list, agent direction,
+//      special requests, Kyle's confirmation, and the shoot-day brief when it
+//      waits for his Got it), then his shoots whose handoff is incomplete, then
+//      the team's (the field creatives he supervises), apart. Capture and
+//      upload come from EVIDENCE only (the field Done, the capture and upload
+//      ticks, the upload page's submit, what Dropbox showed); a visit whose END
+//      has passed with none of it says exactly that, as a handoff to finish.
 //   C  Creative review: cuts ready for him (or nobody's) and review work that
 //      is delayed past the room's cover window. Approve acts on ONE version
 //      through the Review Room's own approveCut; approved goes to Kyle's
@@ -40,7 +40,9 @@ import { videoTier } from "@/lib/projectStatus";
 //   F  Creative preparation: listing and monthly work with the ownership
 //      mode read from the real records (ProgramOwnerAssignment, who wrote the
 //      version, who films the session); deadlines from the shoot or session.
-//   G  Process improvements: SmartTask taskType "process_improvement".
+//   G  Process improvements: recurring friction the hub already measures
+//      (team signals with their counts) and the SmartTasks of taskType
+//      "process_improvement" that track the fixes.
 //   H  Assigned to me and handoffs: the delegation workflow plus his own open
 //      tasks, and the end-of-day check (AppSetting per day per person; a tick
 //      never completes a task).
@@ -68,7 +70,7 @@ export type CreativeCloseoutRecord = { ticks: Partial<Record<CreativeCloseoutKey
 export const IMPROVEMENT_TASK_TYPE = "process_improvement";
 /** Their next step and expected outcome, beside the task (like office_waiting). */
 export const improvementMetaKey = (taskId: string) => `creative_improvement:${taskId}`;
-export type ImprovementMeta = { area: string; nextStep: string | null; outcome: string | null; policy: boolean; at: string; by: string };
+export type ImprovementMeta = { area: string; nextStep: string | null; outcome: string | null; policy: boolean; at: string; by: string; /** the friction row it was started from (Oct 27 2026) */ friction?: string | null };
 export const IMPROVEMENT_AREAS = ["Shot lists", "Uploads and handoffs", "Creative briefs", "Review procedure", "Client direction", "Training materials", "Quality checklists"] as const;
 
 // ---- types --------------------------------------------------------------------------------
@@ -83,6 +85,7 @@ export type ShootRow = {
   street: string;
   clientName: string | null;
   whenISO: string;
+  endISO: string;
   dayKey: string;
   today: boolean;
   whenWords: string;
@@ -92,6 +95,16 @@ export type ShootRow = {
   missing: string[];
   requests: string[];
   links: LinkOut[];
+  /** the visit has begun (filming now, or over) */
+  started: boolean;
+  /** the visit's END has passed with nothing recorded from the field: the handoff is due */
+  over: boolean;
+  /** the row's one status chip (the mockup's pill), or none */
+  status: { label: string; tone: Tone } | null;
+  /** the shoot-day brief is waiting for his Got it (Kyle's desk sees an unconfirmed one): the day and the version shown */
+  briefAck: { day: string; digest: string; again: boolean } | null;
+  /** the upload page, at the part that finishes the handoff */
+  finishHref: string;
 };
 
 export type HandoffRow = {
@@ -110,6 +123,8 @@ export type HandoffRow = {
   links: LinkOut[];
   /** the row as it reads now (lib/handoffCloseOut): a closed-out row comes back when this changes */
   sig: string;
+  /** the upload page, scrolled to what is missing (#capture, #submit) */
+  finishHref: string;
 };
 
 export type CutRow = {
@@ -144,7 +159,11 @@ export const MODE_WORDS: Record<OwnershipMode, string> = {
 export type PrepRow = {
   key: string;
   kind: "listing" | "monthly";
+  /** the listing job (Add input goes to its job chat) */
+  projectId: string | null;
   title: string;
+  /** one grey line: when it is due, and where it stands */
+  detail: string;
   clientName: string | null;
   mode: OwnershipMode;
   writer: string;
@@ -161,6 +180,8 @@ export type PrepRow = {
 
 export type ImprovementRow = {
   taskId: string;
+  /** the friction row it was started from, if any */
+  friction: string | null;
   problem: string;
   area: string | null;
   owner: string;
@@ -170,6 +191,27 @@ export type ImprovementRow = {
   status: string;
   dueISO: string | null;
   mine: boolean;
+};
+
+/**
+ * RECURRING FRICTION (Oct 27 2026, Jordan: "Process improvement - figure out
+ * what needs to go here"). Only what the hub already counts, from the team
+ * signals (KPI evidence, the photo check, reviewer-traced revision causes),
+ * added up across people: never a guess, never a row without its count. Its
+ * one action starts an improvement task he can track (taskId once it exists).
+ */
+export type FrictionRow = {
+  key: string;
+  title: string;
+  evidence: string;
+  count: number;
+  area: (typeof IMPROVEMENT_AREAS)[number];
+  /** the button's words: what the improvement is */
+  action: string;
+  problem: string;
+  nextStep: string;
+  examples: Evidence[];
+  taskId: string | null;
 };
 
 export type AssignedRow = {
@@ -189,6 +231,8 @@ export type AssignedRow = {
   needsVerification: boolean;
   /** created through the delegation workflow (Accept/Update/... apply) */
   delegated: boolean;
+  /** a CP-06 brand confirmation: it closes itself when the editors tap Got it (never by hand) */
+  closesItself: boolean;
   href: string;
 };
 
@@ -214,13 +258,14 @@ export type CreativeDesk = {
   development: boolean;
   unavailable: string[];
   glance: { shoots: number | null; reviews: number | null; followUps: number | null; urgent: number | null; line: string };
-  production: { mine: ShootRow[]; handoffs: HandoffRow[]; team: HandoffRow[]; unavailable: boolean; myShootsHref: string; /** rows he closed out, hidden until something on them changes */ closedOut: number };
+  production: { mine: ShootRow[]; handoffs: HandoffRow[]; team: HandoffRow[]; unavailable: boolean; myShootsHref: string; /** rows he closed out, hidden until something on them changes */ closedOut: number; /** the full view behind the card */ fullHref: string };
   review: { ready: CutRow[]; delayed: CutRow[]; coverHours: number; unavailable: boolean };
   team: { groups: DevGroupView[]; dueIds: string[]; unavailable: string[]; recordsUnavailable: boolean } | null;
   readiness: { items: DevelopmentRead["readiness"]; criteria: DevelopmentRead["criteria"]; people: { id: string; name: string }[]; unavailable: boolean } | null;
   prep: { items: PrepRow[]; unavailable: boolean };
-  improvements: { items: ImprovementRow[]; unavailable: boolean };
-  assigned: { items: AssignedRow[]; unavailable: boolean };
+  improvements: { items: ImprovementRow[]; frictions: FrictionRow[]; unavailable: boolean };
+  /** people: who a task of his can be handed to (Delegate), the team without vendors */
+  assigned: { items: AssignedRow[]; people: { key: string; name: string }[]; unavailable: boolean };
   closeout: { dayKey: string; lines: CloseoutLine[] };
 };
 
@@ -289,10 +334,13 @@ const PROD_SELECT = {
 } satisfies Prisma.ProjectSelect;
 type ProdProject = Prisma.ProjectGetPayload<{ select: typeof PROD_SELECT }>;
 
+/** The full Production view behind the card (Oct 27 2026). */
+export const PRODUCTION_HREF = "/production";
+
 async function readProduction(ctx: Ctx): Promise<CreativeDesk["production"]> {
   const { now, tmId, ex } = ctx;
   const myShootsHref = tmId ? `/shoot?as=${tmId}` : "/shoot";
-  if (!tmId) return { mine: [], handoffs: [], team: [], unavailable: false, myShootsHref, closedOut: 0 };
+  if (!tmId) return { mine: [], handoffs: [], team: [], unavailable: false, myShootsHref, closedOut: 0, fullHref: PRODUCTION_HREF };
   const dayStart = etDayStartUtc(now);
   const today = etDayKey(now);
   const clientScope = ex.length ? { clientId: { notIn: ex } } : {};
@@ -349,15 +397,24 @@ async function readProduction(ctx: Ctx): Promise<CreativeDesk["production"]> {
     const p = byId.get(v.projectId)!;
     const start = v.startAt!;
     const dayKey = etDayKey(start);
+    // FILMING IS NOT A GAP (Jordan, Oct 27 2026: "He's filming it today, so
+    // of course nothing was recorded yet"). The visit is over only at its
+    // END: the appointment's, or, when Aryeo sent none, the end of that day
+    // (a full-day session is never "over" at lunchtime; the next morning an
+    // unrecorded visit is a handoff row).
+    const end = v.endAt && v.endAt.getTime() > start.getTime() ? v.endAt : etDayBoundsUtc(dayKey).end;
+    const started = start.getTime() <= now.getTime();
+    const over = end.getTime() <= now.getTime();
     const acc = parseAccessBrief(v.description);
     const services = apptItems(v.rawJson);
     const live = p.deliverables.filter((d) => !d.notCompletedReason && !d.waivedAt);
     const video = live.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     const chips: Chip[] = [];
-    // Kyle's confirmation (the desk's own rule: the text due in the 3 days before the visit).
+    // Kyle's confirmation (the desk's own rule: the text due in the 3 days
+    // before the visit). None on file is nothing he can act on: no line
+    // (Oct 27 2026, the noise Jordan asked to drop).
     const conf = confirmations.find((t) => t.projectId === p.id && (!t.dueAt || (t.dueAt.getTime() <= start.getTime() && t.dueAt.getTime() >= start.getTime() - 3 * DAY))) ?? null;
-    chips.push(!conf ? { key: "confirm", label: "No confirmation on file", tone: "info" }
-      : conf.status === "COMPLETED" ? { key: "confirm", label: "Confirmation sent", tone: "ok" }
+    if (conf) chips.push(conf.status === "COMPLETED" ? { key: "confirm", label: "Confirmation sent", tone: "ok" }
       : conf.status === "CANCELLED" ? { key: "confirm", label: "Confirmed another way", tone: "ok" }
       : { key: "confirm", label: "Not confirmed yet (Kyle)", tone: "info" });
     // ACCESS IS KYLE'S (Jordan, Oct 26 2026: "no access details are not
@@ -365,20 +422,21 @@ async function readProduction(ctx: Ctx): Promise<CreativeDesk["production"]> {
     // access info"). Kyle's desk and the night-before task chase it; the
     // creative's list says only what is on file, and nothing on a session.
     if (!p.contentMonthId && (acc.lockbox || acc.access || acc.presence)) chips.push({ key: "access", label: "Access noted", tone: "ok" });
+    // THE SHOOT-DAY BRIEF, ONLY WHEN IT NEEDS HIM (Jordan, Oct 27 2026:
+    // "Brief sent, got it to tap - No idea what that is or why it matters").
+    // It matters once: the text went out and Kyle's desk shows the brief as
+    // unconfirmed until he taps Got it. So a sent (or changed) brief for a
+    // visit not yet begun is the row's button, "Mark brief read" (the brief
+    // page's own Got it); a confirmed one is a tick; off, not sent yet or
+    // Kyle's to fix says nothing here. "Shoot brief to read" is gone ("why
+    // does that matter?"): nobody waits on that receipt.
     const b = briefs?.get(v.id) ?? null;
-    chips.push(!b ? { key: "brief", label: "Brief state unknown", tone: "info" }
-      : b.state === "off" ? { key: "brief", label: "Daily brief off", tone: "off" }
-      : b.state === "acknowledged" ? { key: "brief", label: "Brief: you tapped Got it", tone: "ok" }
-      : b.state === "sent" ? { key: "brief", label: "Brief sent, Got it to tap", tone: "todo" }
-      : b.state === "changed" ? { key: "brief", label: "Brief changed, Got it to tap", tone: "todo" }
-      : b.state === "failed" ? { key: "brief", label: "Brief not sent (Kyle)", tone: "info" }
-      : { key: "brief", label: "Brief not sent yet", tone: "info" });
+    const briefWaits = !!b && (b.state === "sent" || b.state === "changed") && !started;
+    if (b?.state === "acknowledged") chips.push({ key: "brief", label: "Brief confirmed", tone: "ok" });
     const read = briefReads.filter((r) => r.projectId === p.id).sort((a, b) => b.readAt.getTime() - a.readAt.getTime())[0] ?? null;
-    chips.push(read ? { key: "read", label: "Shoot brief read", tone: "ok" } : { key: "read", label: "Shoot brief to read", tone: "todo" });
-    if (video) {
-      const shotList = !!p.reelShotList?.trim() || outputs.some((o) => o.projectId === p.id);
-      chips.push(shotList ? { key: "shotlist", label: "Shot list ready", tone: "ok" } : { key: "shotlist", label: "No shot list on the job", tone: "info" });
-    }
+    // A shot list is said when there is one, never when there isn't
+    // (Jordan, Oct 27 2026: "if there is none, then just don't show that").
+    if (video && (!!p.reelShotList?.trim() || outputs.some((o) => o.projectId === p.id))) chips.push({ key: "shotlist", label: "Shot list ready", tone: "ok" });
     if (p.scriptingId) {
       const st = p.scriptingStatus ?? "";
       chips.push(STUDIO_READY.has(st) || !!p.scriptingScript?.trim()
@@ -394,37 +452,62 @@ async function readProduction(ctx: Ctx): Promise<CreativeDesk["production"]> {
       // words are typed at upload exactly as delivered.
       chips.push(p.reelScript?.trim() ? { key: "direction", label: "Script ready", tone: "ok" } : { key: "direction", label: "Script not in yet (Script Writing)", tone: "info" });
     }
-    // The visit's time has passed and the field has recorded nothing: said
-    // as exactly that (never "shot", never "uploaded").
-    if (start.getTime() < now.getTime()) chips.unshift({ key: "field", label: "Nothing recorded from the field yet", tone: "todo" });
+    // The visit is OVER and the field has recorded nothing: said as exactly
+    // that (never "shot", never "uploaded"), with Finish handoff on the row.
+    // While it is still on, nothing is missing yet.
+    if (over) chips.unshift({ key: "field", label: "Nothing recorded from the field yet", tone: "todo" });
     const askRows = asks.filter((a) => a.projectId === p.id);
     const reqs = askRows.map((a) => clean(a.summary?.trim() || a.text, 140));
-    // A special request is in the shoot brief (its must-gets): reading the
-    // brief reviews it. One that came in after his read waits for a re-read.
+    // A special request is in the shoot brief (its must-gets), listed on the
+    // row itself. Said as a count; the brief receipt is no longer chased.
     const unread = askRows.filter((a) => !read || a.askedAt > read.readAt).length;
     if (askRows.length) chips.push(unread === 0 ? { key: "requests", label: `${plural(askRows.length, "special request")}, in the brief you read`, tone: "ok" }
-      : read ? { key: "requests", label: `${plural(unread, "new special request")}: read the brief again`, tone: "todo" }
-      : { key: "requests", label: `${plural(unread, "special request")} in the brief`, tone: "info" });
+      : { key: "requests", label: `${plural(askRows.length, "special request")} in the brief`, tone: "info" });
+    const isToday = dayKey === today;
+    const status: ShootRow["status"] = over ? { label: "Handoff due", tone: "todo" }
+      : started ? { label: "Filming now", tone: "info" }
+      : briefWaits ? { label: b?.state === "changed" ? "Brief changed" : "Brief to confirm", tone: "todo" }
+      : isToday ? { label: "Today", tone: "info" }
+      : null;
     return {
       id: v.id,
       projectId: p.id,
       street: streetOf(p.title),
       clientName: p.client ? clean(p.client.name, 80) : null,
       whenISO: start.toISOString(),
+      endISO: end.toISOString(),
       dayKey,
-      today: dayKey === today,
-      whenWords: `${dayKey === today ? "Today" : etDate(start)} ${etTime(start)}`,
+      today: isToday,
+      whenWords: `${isToday ? "Today" : etDate(start)} ${etTime(start)}`,
       services: services.length ? services.map((s) => clean(s, 60)) : [...new Set(live.map((d) => clean(d.label ?? d.type, 60)))],
       chips,
-      missing: chips.filter((c) => c.tone === "todo").map((c) => c.label),
+      missing: [...(briefWaits ? ["Shoot-day brief to confirm"] : []), ...chips.filter((c) => c.tone === "todo").map((c) => c.label)],
       requests: reqs,
       links: [
         { label: "Open brief", href: `/shoot/${p.id}` },
         { label: "Daily brief", href: `/shoot/brief/${dayKey}` },
         ...(p.scriptingUrl ? [{ label: "Script Studio", href: p.scriptingUrl, external: true }] : []),
       ],
+      started,
+      over,
+      status,
+      // The version to confirm is filled in below (one build per day).
+      briefAck: briefWaits ? { day: dayKey, digest: "", again: b?.state === "changed" } : null,
+      finishHref: `/upload/${p.id}#capture`,
     };
   });
+  // The day's brief as his Got it page builds it: its digest is the version
+  // he confirms (acknowledgeBrief refuses any other). A day that can't be
+  // built keeps no button; the brief page still has its own Got it.
+  const ackDays = [...new Set(mine.filter((s) => s.briefAck).map((s) => s.dayKey))];
+  if (ackDays.length) {
+    const built = await import("@/lib/photographerBrief").then((m) => m.buildBriefDays(ackDays, { now, teamMemberIds: [tmId] })).catch(() => null);
+    for (const s of mine) {
+      if (!s.briefAck) continue;
+      const digest = built?.briefs.find((x) => x.teamMemberId === tmId && x.day === s.dayKey)?.digest ?? "";
+      s.briefAck = /^[a-f0-9]{32}$/.test(digest) ? { ...s.briefAck, digest } : null;
+    }
+  }
 
   // Handoffs: his own visits before today (or today, once the field recorded
   // something) whose handoff is not complete.
@@ -447,7 +530,7 @@ async function readProduction(ctx: Ctx): Promise<CreativeDesk["production"]> {
   const handoffs = open(allHandoffs);
   const teamOpen = open(team ?? []);
   const closedOut = allHandoffs.length - handoffs.length + (team ?? []).length - teamOpen.length;
-  return { mine, handoffs: handoffs.slice(0, 40), team: teamOpen, unavailable: team === null, myShootsHref, closedOut };
+  return { mine, handoffs: handoffs.slice(0, 40), team: teamOpen, unavailable: team === null, myShootsHref, closedOut, fullHref: PRODUCTION_HREF };
 }
 
 async function handoffRows(
@@ -515,6 +598,9 @@ async function handoffRows(
       missing: missingWords,
       exceptions,
       sig: handoffSig({ status, lines, missing: missingWords, exceptions }),
+      // Straight to the part of the upload page that is missing: what was
+      // captured (nothing recorded yet), or the notes and submit (Oct 27 2026).
+      finishHref: `/upload/${p.id}#${anyEvidence ? "submit" : "capture"}`,
       links: [
         { label: open.length ? "Upload" : "Finish handoff", href: `/upload/${p.id}` },
         { label: "Flag an issue", href: `/shoot/${p.id}` },
@@ -640,9 +726,13 @@ async function readPrep(ctx: Ctx, people: { jordan: string; me: string }): Promi
       if (seen.has(a.project.id)) continue;
       seen.add(a.project.id);
       const st = a.project.scriptingStatus ?? "";
+      const deadlineWords = a.startAt ? `Shoot ${etDayKey(a.startAt) === etDayKey(now) ? `today ${etTime(a.startAt)}` : etDateTime(a.startAt)}` : null;
+      const status = st ? `Script ${STUDIO_WORDS[st] ?? st.replace(/_/g, " ")}` : "No script status yet";
       out.push({
         key: `listing:${a.project.id}`,
         kind: "listing",
+        projectId: a.project.id,
+        detail: [deadlineWords, status].filter(Boolean).join(" · "),
         title: `Listing script · ${streetOf(a.project.title)}`,
         clientName: a.project.client ? clean(a.project.client.name, 80) : null,
         mode: "JORDAN_OWNS",
@@ -651,11 +741,12 @@ async function readPrep(ctx: Ctx, people: { jordan: string; me: string }): Promi
         role: "You film it: production input and on-site direction",
         source: "Script Studio (listing scripts are written and approved there)",
         deadlineISO: a.startAt?.toISOString() ?? null,
-        deadlineWords: a.startAt ? `Shoot ${etDayKey(a.startAt) === etDayKey(now) ? `today ${etTime(a.startAt)}` : etDateTime(a.startAt)}` : null,
-        status: st ? `Script ${STUDIO_WORDS[st] ?? st.replace(/_/g, " ")}` : "No script status yet",
+        deadlineWords,
+        status,
+        // Open script: Script Studio when the job links one, else the brief's script part.
         links: [
+          ...(a.project.scriptingUrl ? [{ label: "Open script", href: a.project.scriptingUrl, external: true }] : [{ label: "Open script", href: `/shoot/${a.project.id}#script` }]),
           { label: "Open brief", href: `/shoot/${a.project.id}` },
-          ...(a.project.scriptingUrl ? [{ label: "Script Studio", href: a.project.scriptingUrl, external: true }] : []),
         ],
       });
     }
@@ -720,9 +811,13 @@ async function readPrep(ctx: Ctx, people: { jordan: string; me: string }): Promi
       const deadlineWords = sessionAt ? `Scripts approved by ${etDateTime(deadline!)} (session ${etDate(sessionAt)})` : m?.strategyCallAt && m.strategyCallAt > now ? `Strategy call ${etDateTime(m.strategyCallAt)}` : null;
       const mode: OwnershipMode = ownsScripts ? "JAMES_OWNS" : myDrafts.length ? "JAMES_DRAFTS" : "JORDAN_OWNS";
       const monthLabel = monthName(mk);
+      const status = `${plural(n, "script")} approved for ${monthLabel}`;
       out.push({
         key: `monthly:${e.id}:${mk}`,
         kind: "monthly",
+        // The session's job (Add input goes to its job chat), when it has one.
+        projectId: mySession?.projectId ?? sess[0]?.projectId ?? null,
+        detail: [status, deadlineWords].filter(Boolean).join(" · "),
         title: `Monthly scripts · ${monthLabel}`,
         clientName: client,
         mode,
@@ -736,7 +831,7 @@ async function readPrep(ctx: Ctx, people: { jordan: string; me: string }): Promi
           : mySession ? "The filming session is booked with you" : "Program owners",
         deadlineISO: deadline?.toISOString() ?? null,
         deadlineWords,
-        status: `${plural(n, "script")} approved for ${monthLabel}`,
+        status,
         links: [
           { label: "Scripts", href: contentHref(e.id, { tab: "plan", view: "scripts", month: mk, now }) },
           { label: "Discovery and strategy", href: contentHref(e.id, { tab: "plan", view: "strategy", month: mk, now }) },
@@ -769,6 +864,7 @@ async function readImprovements(ctx: Ctx, roster: Assignee[]): Promise<Improveme
     const owner = roster.find((r) => r.key === (d?.assigneeKey ?? t.assignedKey))?.name ?? (t.assignedKey ? t.assignedKey : "Unassigned");
     return {
       taskId: t.id,
+      friction: meta?.friction ?? null,
       problem: clean(t.summary || t.title, 200),
       area: meta?.area ? clean(meta.area, 40) : null,
       owner: clean(owner, 40),
@@ -780,6 +876,63 @@ async function readImprovements(ctx: Ctx, roster: Assignee[]): Promise<Improveme
       mine: (d?.assigneeKey ?? t.assignedKey) === ctx.myKey,
     };
   });
+}
+
+/**
+ * RECURRING FRICTION, from the team signals the hub already counts (Oct 27
+ * 2026, Jordan: "Process improvement - figure out what needs to go here and
+ * what should be in here"). Coaching (D) is about one person; this is the
+ * same evidence added up across people, as a process to fix: late uploads,
+ * handoffs without instructions, a photo check finding on many shoots, a
+ * revision cause the editors repeat. A row needs at least two counted cases;
+ * a QC pass reopened by a revision stays in coaching (a revision does not
+ * prove QC missed it). Never a number the hub did not count.
+ */
+export function frictionsFrom(signals: Signal[], improvements: ImprovementRow[]): FrictionRow[] {
+  type Kind = { title: (n: number) => string; evidence: (n: number) => string; area: FrictionRow["area"]; action: string; problem: string; nextStep: string };
+  const KPI: Record<string, Kind> = {
+    upload: { title: () => "Late uploads", evidence: (n) => `${plural(n, "late upload")} this KPI period`, area: "Uploads and handoffs", action: "Fix late uploads", problem: "Shoot uploads land after their deadline", nextStep: "Find where the time goes between the visit and the upload, then set the fix with the field team" },
+    handoff: { title: () => "Handoffs without instructions", evidence: (n) => `${plural(n, "handoff")} missing instructions this KPI period`, area: "Uploads and handoffs", action: "Fix handoff notes", problem: "Handoffs reach the editors without their instructions", nextStep: "Make the instructions part of the upload page's submit for the field team" },
+    capture: { title: () => "Capture misses", evidence: (n) => `${n} capture ${n === 1 ? "miss" : "misses"} this KPI period`, area: "Shot lists", action: "Tighten the shot list", problem: "Shots missed or redone after the visit", nextStep: "Add the missed shots to the shot list and the shoot brief" },
+    client: { title: () => "Client direction complaints", evidence: (n) => `${plural(n, "complaint")} this KPI period`, area: "Client direction", action: "Fix client direction", problem: "Clients unhappy with direction on the shoot", nextStep: "Agree what the field team says and does on arrival" },
+  };
+  const groups = new Map<string, { kind: Kind; count: number; people: Set<string>; examples: Evidence[] }>();
+  const add = (key: string, kind: Kind, s: Signal) => {
+    const g = groups.get(key) ?? { kind, count: 0, people: new Set<string>(), examples: [] };
+    g.count += s.count;
+    g.people.add(first(s.personName) || s.personName);
+    g.examples.push(...s.examples);
+    groups.set(key, g);
+  };
+  for (const s of signals) {
+    if (!(s.count > 0)) continue;
+    const parts = s.key.split(":");
+    if (s.group === "FIELD" && parts[2] === "kpi" && KPI[parts[3]]) add(`friction:kpi:${parts[3]}`, KPI[parts[3]], s);
+    else if (s.group === "FIELD" && parts[2] === "photoqc") {
+      const label = s.skill.replace(/^Photo check:\s*/, "");
+      add(`friction:photoqc:${parts.slice(3).join(":")}`, { title: () => `Photo check: ${label}`, evidence: (n) => `Found on ${plural(n, "shoot")} in 30 days`, area: "Quality checklists", action: "Add to the shoot checklist", problem: `The photo check keeps finding "${label}" on shoots`, nextStep: `Add "${label}" to the field checklist and the shoot brief` }, s);
+    } else if (s.group === "EDITOR" && s.key.includes(":recurring:")) {
+      add(`friction:edit:${s.key.split(":recurring:")[1]}`, { title: () => `Repeat revision: ${s.skill}`, evidence: (n) => `${plural(n, "revision")} in 60 days traced to the edit`, area: "Quality checklists", action: "Add to the edit checklist", problem: `Revisions keep coming back for ${s.skill}`, nextStep: `Add ${s.skill} to the editors' check before review` }, s);
+    } else if (s.group === "EDITOR" && s.key.endsWith(":missed")) {
+      add("friction:edit:missed", { title: () => "Fixes that came back unfixed", evidence: (n) => `${n} ${n === 1 ? "fix" : "fixes"} missed in a later version, 60 days`, area: "Review procedure", action: "Fix the revision check", problem: "Asked-for fixes come back unfixed in the next version", nextStep: "Have every revision checked against the earlier notes before it goes back to review" }, s);
+    }
+  }
+  return [...groups]
+    .filter(([, g]) => g.count >= 2)
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 6)
+    .map(([key, g]) => ({
+      key,
+      title: clean(g.kind.title(g.count), 120),
+      evidence: clean(`${g.kind.evidence(g.count)} · ${[...g.people].join(", ")}`, 160),
+      count: g.count,
+      area: g.kind.area,
+      action: g.kind.action,
+      problem: clean(g.kind.problem, 200),
+      nextStep: clean(g.kind.nextStep, 200),
+      examples: g.examples.slice(0, 4),
+      taskId: improvements.find((i) => i.friction === key)?.taskId ?? null,
+    }));
 }
 
 export const STATE_WORDS: Record<DelegationState | "OPEN" | "WAITING", string> = {
@@ -794,15 +947,24 @@ export const STATE_WORDS: Record<DelegationState | "OPEN" | "WAITING", string> =
   WAITING: "Waiting",
 };
 
+/** The first hub page a task's text names, e.g. "(/edit/abc)" or "/content/xyz". */
+const pathIn = (text: string | null | undefined): string | null => {
+  const m = /(?:^|[\s(])(\/(?:content|projects|edit|review|upload|shoot|clients|scripts)\/[A-Za-z0-9_-]+(?:[?#][^\s)]*)?)/.exec(text ?? "");
+  return m ? m[1] : null;
+};
+
 async function readAssigned(ctx: Ctx, roster: Assignee[], exclude: Set<string>): Promise<AssignedRow[]> {
   if (!ctx.myKey) return [];
   const [delegated, own] = await Promise.all([
     tasksAssignedTo(ctx.myKey),
+    // EVERY OPEN TASK OF HIS (Oct 27 2026): his key, or his Team row on a
+    // task with no key (taskAging's rule), whatever engine minted it: brand
+    // updates to confirm, a content program's mid-month check, a tag.
     prisma.smartTask.findMany({
-      where: { assignedKey: ctx.myKey, ...OPEN_TASK, NOT: { taskType: IMPROVEMENT_TASK_TYPE } },
+      where: { OR: [{ assignedKey: ctx.myKey }, ...(ctx.tmId ? [{ assignedKey: null, ownerId: ctx.tmId }] : [])], ...OPEN_TASK, NOT: { taskType: IMPROVEMENT_TASK_TYPE } },
       orderBy: [{ dueAt: { sort: "asc", nulls: "last" } }, { createdAt: "asc" }],
       take: 100,
-      select: { id: true, title: true, summary: true, status: true, dueAt: true, flaggedBy: true, blockedReason: true, projectId: true, clientId: true },
+      select: { id: true, title: true, summary: true, description: true, status: true, dueAt: true, flaggedBy: true, blockedReason: true, projectId: true, clientId: true, dedupeKey: true },
     }),
   ]);
   const extra = await delegationFor(own.map((t) => t.id).filter((id) => !delegated.some((d) => d.taskId === id))).catch(() => new Map<string, DelegatedTask>());
@@ -827,6 +989,7 @@ async function readAssigned(ctx: Ctx, roster: Assignee[], exclude: Set<string>):
       latestUpdate: d.latestUpdate ? clean(d.latestUpdate, 200) : null,
       needsVerification: d.needsVerification,
       delegated: true,
+      closesItself: false,
       href: d.sourceHref && d.sourceHref.startsWith("/") ? d.sourceHref : d.projectId ? `/projects/${d.projectId}` : "/tasks",
     };
   };
@@ -856,7 +1019,10 @@ async function readAssigned(ctx: Ctx, roster: Assignee[], exclude: Set<string>):
       latestUpdate: null,
       needsVerification: false,
       delegated: false,
-      href: t.projectId ? `/projects/${t.projectId}` : "/tasks",
+      closesItself: !!t.dedupeKey?.startsWith("brand-ack:"),
+      // The page the task itself names (a brand update's edit brief, a
+      // program's /content page), else its job, else its client.
+      href: pathIn(t.description) ?? (t.projectId ? `/projects/${t.projectId}` : t.clientId ? `/clients/${t.clientId}` : "/tasks"),
     });
   }
   return [...rows.values()].sort((a, b) => Number(b.urgent) - Number(a.urgent) || (a.dueISO ?? "9").localeCompare(b.dueISO ?? "9"));
@@ -866,7 +1032,7 @@ async function readAssigned(ctx: Ctx, roster: Assignee[], exclude: Set<string>):
 
 export type DeskViewer = { id?: string | null; name?: string | null; email?: string | null; role: string; realRole?: string; teamMemberId: string | null; impersonating?: boolean };
 
-export async function buildCreativeDesk(me: DeskViewer, opts: { now?: Date; includeTest?: boolean; only?: "development" } = {}): Promise<CreativeDesk> {
+export async function buildCreativeDesk(me: DeskViewer, opts: { now?: Date; includeTest?: boolean; only?: "development" | "production" } = {}): Promise<CreativeDesk> {
   const now = opts.now ?? new Date();
   const dayKey = etDayKey(now);
   const unavailable: string[] = [];
@@ -881,16 +1047,21 @@ export async function buildCreativeDesk(me: DeskViewer, opts: { now?: Date; incl
   const ctx: Ctx = { now, tmId: me.teamMemberId, appUserId: me.id ?? null, email: me.email ?? null, ex, myKey };
   const seat = await developmentSeat({ role: me.role, realRole: me.realRole, teamMemberId: me.teamMemberId, impersonating: me.impersonating });
 
-  // /development reads only D, E and G (its own full lists).
+  // /development reads only D, E and G (its own full lists); /production
+  // only B (Oct 27 2026: the full view behind the Production card).
   const devOnly = opts.only === "development";
+  const prodOnly = opts.only === "production";
+  const emptyProduction: CreativeDesk["production"] = { mine: [], handoffs: [], team: [], unavailable: false, myShootsHref: "/shoot", closedOut: 0, fullHref: PRODUCTION_HREF };
   const [production, review, dev, prep, improvements] = await Promise.all([
-    devOnly ? Promise.resolve({ mine: [], handoffs: [], team: [], unavailable: false, myShootsHref: "/shoot", closedOut: 0 }) : readProduction(ctx).catch(warn("your shoots")),
-    devOnly ? Promise.resolve({ ready: [], delayed: [], coverHours: 9, unavailable: false }) : readReview(ctx, !!opts.includeTest).catch(warn("the review queue")),
-    seat ? readDevelopment({ now, excludeClientIds: ex, includeRecent: devOnly, decisionsBy: me.email ? [me.email] : [] }).catch(warn("team development")) : Promise.resolve(null),
-    devOnly ? Promise.resolve([] as PrepRow[]) : readPrep(ctx, { jordan: jordanName, me: first(me.name) || "You" }).catch(warn("creative preparation")),
-    readImprovements(ctx, roster).catch(warn("process improvements")),
+    devOnly ? Promise.resolve(emptyProduction) : readProduction(ctx).catch(warn("your shoots")),
+    devOnly || prodOnly ? Promise.resolve({ ready: [], delayed: [], coverHours: 9, unavailable: false }) : readReview(ctx, !!opts.includeTest).catch(warn("the review queue")),
+    seat && !prodOnly ? readDevelopment({ now, excludeClientIds: ex, includeRecent: devOnly, decisionsBy: me.email ? [me.email] : [] }).catch(warn("team development")) : Promise.resolve(null),
+    devOnly || prodOnly ? Promise.resolve([] as PrepRow[]) : readPrep(ctx, { jordan: jordanName, me: first(me.name) || "You" }).catch(warn("creative preparation")),
+    prodOnly ? Promise.resolve([] as ImprovementRow[]) : readImprovements(ctx, roster).catch(warn("process improvements")),
   ]);
-  const assigned = devOnly ? [] as AssignedRow[] : await readAssigned(ctx, roster, new Set((improvements ?? []).map((i) => i.taskId))).catch(warn("your assigned tasks"));
+  const assigned = devOnly || prodOnly ? [] as AssignedRow[] : await readAssigned(ctx, roster, new Set((improvements ?? []).map((i) => i.taskId))).catch(warn("your assigned tasks"));
+  // G: recurring friction, from the same signals D shows per person.
+  const frictions = dev && improvements ? frictionsFrom(dev.signals, improvements) : [];
 
   // D: three groups, each with its own people, recorded items and signals.
   const team: CreativeDesk["team"] = dev ? {
@@ -967,19 +1138,19 @@ export async function buildCreativeDesk(me: DeskViewer, opts: { now?: Date; incl
     development: seat,
     unavailable,
     glance: { shoots: shootsToday, reviews, followUps: seat ? followUps : null, urgent, line },
-    production: production ?? { mine: [], handoffs: [], team: [], unavailable: true, myShootsHref: me.teamMemberId ? `/shoot?as=${me.teamMemberId}` : "/shoot", closedOut: 0 },
+    production: production ?? { mine: [], handoffs: [], team: [], unavailable: true, myShootsHref: me.teamMemberId ? `/shoot?as=${me.teamMemberId}` : "/shoot", closedOut: 0, fullHref: PRODUCTION_HREF },
     review: review ?? { ready: [], delayed: [], coverHours: 9, unavailable: true },
     team,
     readiness,
     prep: { items: prep ?? [], unavailable: prep === null },
-    improvements: { items: improvements ?? [], unavailable: improvements === null },
-    assigned: { items: assigned ?? [], unavailable: assigned === null },
+    improvements: { items: improvements ?? [], frictions, unavailable: improvements === null },
+    assigned: { items: assigned ?? [], people: roster.filter((r) => r.kind !== "vendor" && r.key !== myKey).map((r) => ({ key: r.key, name: clean(r.name, 60) })), unavailable: assigned === null },
     closeout: { dayKey, lines },
   };
 }
 
 /** The desk for the signed-in creative manager (or the owner previewing him). */
-export async function creativeDeskFor(me: DeskViewer | null, opts: { now?: Date; includeTest?: boolean; only?: "development" } = {}): Promise<CreativeDesk | null> {
+export async function creativeDeskFor(me: DeskViewer | null, opts: { now?: Date; includeTest?: boolean; only?: "development" | "production" } = {}): Promise<CreativeDesk | null> {
   if (!me) return null;
   return buildCreativeDesk(me, opts);
 }

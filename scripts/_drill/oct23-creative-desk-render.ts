@@ -84,6 +84,7 @@ async function main() {
     const { setSession } = await import("@/lib/auth/session");
     const { default: home } = await import("@/app/page");
     const { default: developmentPage } = await import("@/app/development/page");
+    const { default: productionPage } = await import("@/app/production/page");
     const { CreativeDesk } = await import("@/components/creativeDesk/CreativeDesk");
     const { etAt, etDayKey } = await import("@/lib/datetime");
     const T = new Date();
@@ -134,9 +135,11 @@ async function main() {
     const desk = elements(jTree, "CreativeDesk")[0]?.desk as Desk | undefined;
     c.ok("it renders the creative desk, and none of the old cards", !jHtml.startsWith("RENDER FAILED") && !!desk && jHtml.includes("data-creative-desk") && ["HealthStrip", "NeedsAttention", "TodaysShoots", "ShootsInProgress", "KylesDayCard", "ContentActionsCard", "OfficeDesk"].every((n) => !jNames.includes(n)), jHtml.slice(0, 300));
     c.ok("the greeting and the subtitle the mockup names; View my schedule", /Good (morning|afternoon|evening), James/.test(jHtml) && jHtml.includes("Your shoots, creative quality, and team development.") && jHtml.includes('href="/schedule"'));
-    const order = ["glance", "production", "review", "team", "readiness", "prep", "improvements", "assigned", "closeout"].map((s) => jHtml.indexOf(`data-section="${s}"`));
-    c.ok("sections in order: glance, My Production, Creative Review, Team Development (readiness inside), Creative Preparation, Process Improvements, Assigned to Me, End-of-day check", order.every((i) => i > 0) && order.every((i, n) => n === 0 || i > order[n - 1]), JSON.stringify(order));
-    c.ok("the section titles", ["Today at a glance", "My Production", "Creative Review", "Team Development &amp; Quality", "Readiness assessments", "Creative Preparation", "Process Improvements", "Assigned to Me &amp; Handoffs", "End-of-day check"].every((t) => jHtml.includes(t)));
+    // Oct 27 2026 (Jordan: "My Production should just be 'Production'"; Creative Prep "Split it into two:
+    // one for listing scripts and one for monthly content scripts"; Team Development "like the example").
+    const order = ["glance", "production", "review", "team", "readiness", "prep", "prep-monthly", "improvements", "assigned", "closeout"].map((s) => jHtml.indexOf(`data-section="${s}"`));
+    c.ok("sections in order: glance, Production, Creative Review, Team Development (readiness inside), Listing scripts, Monthly content scripts, Process Improvements, Assigned to Me, End-of-day check", order.every((i) => i > 0) && order.every((i, n) => n === 0 || i > order[n - 1]), JSON.stringify(order));
+    c.ok("the section titles", ["Today at a glance", ">Production<", "Creative Review", "Team Development &amp; Quality", "Readiness recommendations", "Listing scripts", "Monthly content scripts", "Process Improvements", "Assigned to Me &amp; Handoffs", "End-of-day check"].every((t) => jHtml.includes(t)) && !jHtml.includes("My Production") && !jHtml.includes("Creative Preparation"));
 
     // =====================================================================
     c.head("§2 · #13 every count is the length of its list");
@@ -146,23 +149,26 @@ async function main() {
     c.ok("…and they are real here: 1 review ready, 1 follow-up due, 1 urgent task", count("glance", "reviews") === "1" && count("glance", "followups") === "1" && count("glance", "urgent") === "1");
     c.ok("sections: the count each one carries is its list's length", !!desk
       && count("section", "review") === String(desk.review.ready.length)
-      && count("section", "improvements") === String(desk.improvements.items.length)
+      && count("section", "improvements") === String(desk.improvements.frictions.length + desk.improvements.items.filter((i) => !i.friction || !desk.improvements.frictions.some((f) => f.key === i.friction)).length)
       && count("section", "assigned") === String(desk.assigned.items.length)
-      && count("section", "prep") === String(desk.prep.items.length)
+      && count("section", "prep") === String(desk.prep.items.filter((p) => p.kind === "listing").length)
+      && count("section", "prep-monthly") === String(desk.prep.items.filter((p) => p.kind === "monthly").length)
       && count("section", "readiness") === String(desk.readiness!.items.length)
       && (jHtml.match(/data-task="/g) ?? []).length === Math.min(desk.assigned.items.length, 5)
-      && (jHtml.match(/data-cut="/g) ?? []).length === desk.review.ready.length + desk.review.delayed.length);
+      && (jHtml.match(/data-cut="/g) ?? []).length === desk.review.ready.length + Math.min(desk.review.delayed.length, 2));
     c.ok("the glance line names what needs him (never 'Nothing needs you' while items exist)", /ready for your review/.test(jHtml) && !/Nothing needs you/.test(jHtml));
     c.ok("an improvement is shown once (G), never again in H", (jHtml.match(new RegExp(`data-improvement="${imp.id}"`, "g")) ?? []).length === 1 && !jHtml.includes(`data-task="${imp.id}"`));
 
     // =====================================================================
     c.head("§3 · the rows say what the mockup says, from the records");
     // =====================================================================
-    c.ok("My Production: his visit with its prep chips and Open brief; the team's shoot apart", jHtml.includes('data-shoot=') && jHtml.includes("Access noted") && jHtml.includes(`href="/shoot/${p1.id}"`) && jHtml.includes("Open brief") && jHtml.includes('data-list="team-handoffs"') && jHtml.includes(`data-handoff="${p2.id}" data-mine="false"`));
-    c.ok("Creative Review: version, editor, Review and Decide; the approval rule in words", jHtml.includes(`data-cut="${cut.id}" data-version="2"`) && jHtml.includes("Version 2 · Kim Miguel") && jHtml.includes("Approval covers that one version and sends it to Kyle") && jHtml.includes("It never delivers to the client"));
-    c.ok("Team Development: three groups, the recorded item with its next step, honest empty groups", ["FIELD", "EDITOR", "QC"].every((g) => jHtml.includes(`data-group="${g}"`)) && jHtml.includes("Next step: Check the next three uploads") && jHtml.includes("Record feedback") && jHtml.includes("No recorded coaching and no quality evidence for editors right now."));
-    c.ok("Readiness: criteria met, his recommendation, Recommend to Jordan; Jordan decides staffing", jHtml.includes(`data-readiness="${assessment.id}"`) && jHtml.includes("1 of 2 criteria met · You recommend: Ready with support") && jHtml.includes("Recommend to Jordan") && jHtml.includes("Jordan makes staffing and pay decisions."));
-    c.ok("Creative Preparation: the listing script's ownership is explicit (Jordan owns)", jHtml.includes(`data-prep="listing:${p1.id}" data-mode="JORDAN_OWNS"`) && jHtml.includes("Writer: Jordan · Approver: Jordan"));
+    // Oct 27 2026: Production shows his first two rows and a button to the full view, where the team's
+    // handoffs he supervises are listed; every row has its actions (Open brief, ask, flag).
+    c.ok("Production: his visit with its prep chips, Open brief, Ask and Flag; the team's handoff counted toward the full view", jHtml.includes('data-shoot=') && jHtml.includes("Access noted") && jHtml.includes(`href="/shoot/${p1.id}"`) && jHtml.includes("Open brief") && jHtml.includes(`data-ask="${p1.id}"`) && jHtml.includes(`href="/shoot/${p1.id}#flag"`) && jHtml.includes('href="/production"') && /data-production-more[^>]*>[^<]*1 team handoff to check in the full view\./.test(jHtml) && !jHtml.includes('data-list="team-handoffs"'));
+    c.ok("Creative Review: version, editor, Review; the approval rule in the mockup's words and the review standards", jHtml.includes(`data-cut="${cut.id}" data-version="2"`) && jHtml.includes("Version 2 · First review · Kim Miguel") && jHtml.includes("Approval sends the verified version to Kyle\u2019s delivery queue, never straight to the client.") && jHtml.includes("Review standards: Sequence · Capture · Color · Audio · Text · AI · Client brief"));
+    c.ok("Team Development: three groups, one row each with its next step and one action, honest empty groups", ["FIELD", "EDITOR", "QC"].every((g) => jHtml.includes(`data-group="${g}"`)) && jHtml.includes("Harrison · Upload timing") && jHtml.includes("Next step: Record the follow-up: Check the next three uploads") && jHtml.includes(">Record follow-up<") && jHtml.includes("Record feedback") && jHtml.includes("No recorded coaching and no quality evidence for editors right now."));
+    c.ok("Readiness recommendations: criteria met, his recommendation, Recommend to Jordan; James assesses, Jordan decides staffing", jHtml.includes(`data-readiness="${assessment.id}"`) && jHtml.includes("1 of 2 criteria met · You recommend: Ready with support") && jHtml.includes("Recommend to Jordan") && jHtml.includes("James assesses readiness. Jordan makes staffing decisions."));
+    c.ok("Listing scripts: the listing script's ownership is explicit (Jordan owns), one line of detail, Add input to Jordan", jHtml.includes(`data-prep="listing:${p1.id}" data-mode="JORDAN_OWNS"`) && jHtml.includes(">Jordan owns<") && jHtml.includes("data-prep-detail") && jHtml.includes('data-ask-to="jordan"') && jHtml.includes(">Add input<"));
     c.ok("Assigned to Me: who assigned, the state, Accept", jHtml.includes(`data-task="${task.id}" data-state="ASSIGNED"`) && jHtml.includes("Awaiting acceptance") && jHtml.includes("From Jordan"));
     c.ok("End-of-day check: the four lines, and the rule that a tick completes nothing", ["My uploads and handoffs complete", "Due reviews handled, or exceptions documented", "Coaching follow-ups recorded", "Blockers have an owner and a next step"].every((w) => jHtml.includes(w)) && jHtml.includes("It never completes a task.") && (jHtml.match(/data-tick="/g) ?? []).length === 4);
     c.ok("no figures and no em dashes anywhere on his page", !/\$\d/.test(jHtml) && !/—/.test(jHtml.slice(jHtml.indexOf("data-creative-desk"))), (jHtml.match(/.{40}(\$\d|—).{40}/) ?? [""])[0]);
@@ -188,7 +194,7 @@ async function main() {
     const deskHtml = jHtml.slice(jHtml.indexOf("data-creative-desk"));
     const sectionsHtml = jHtml.slice(jHtml.indexOf('data-section="production"') - 400);
     c.ok("the glance's four numbers sit two by two on a phone, in one row from sm", /class="grid grid-cols-2 items-center gap-x-3 sm:flex/.test(deskHtml));
-    c.ok("one column on a phone, two from the lg breakpoint (no fixed multi-column grid below lg)", /class="grid items-start gap-4 lg:grid-cols-2"/.test(sectionsHtml) && !/[" ]grid-cols-2/.test(sectionsHtml.replace(/(sm|md|lg):grid-cols-\d/g, "")), (sectionsHtml.match(/class="[^"]*grid-cols[^"]*"/g) ?? []).join(" | "));
+    c.ok("one column on a phone, two from the lg breakpoint (no fixed multi-column grid below lg)", /data-grid="production-review" class="grid gap-4 lg:grid-cols-2"/.test(sectionsHtml) && /data-grid="prep-improvements" class="grid gap-4 lg:grid-cols-2"/.test(sectionsHtml) && !/[" ]grid-cols-2/.test(sectionsHtml.replace(/(sm|md|lg):grid-cols-\d/g, "")), (sectionsHtml.match(/class="[^"]*grid-cols[^"]*"/g) ?? []).join(" | "));
     c.ok("the task table's header shows from md; each row stacks on a phone", /class="hidden grid-cols-\[[^"]*md:grid"/.test(deskHtml) && /data-task="[^"]+"[^>]*class="grid gap-1 px-3 py-2 md:grid-cols/.test(deskHtml));
     c.ok("thumb-sized controls (min-h-11) and no link inside a link", (deskHtml.match(/min-h-11/g) ?? []).length >= 15 && !nestedLink(jHtml));
     c.ok("long words wrap instead of widening the page", (deskHtml.match(/\[overflow-wrap:anywhere\]/g) ?? []).length >= 6 && !/w-\[\d{3,}px\]/.test(deskHtml));
@@ -229,6 +235,12 @@ async function main() {
     await signIn(owner);
     const oDev = ssr(await developmentPage({ searchParams: Promise.resolve({}) }));
     c.ok("…and for the owner", oDev.includes('data-section="team"') && oDev.includes("Readiness assessments"));
+    // Oct 27 2026: /production, the full view behind the Production card.
+    await signIn(kyle);
+    c.ok("/production sends the office home", (await redirectOf(() => productionPage({ searchParams: Promise.resolve({}) }))) === "/");
+    await signIn(james);
+    const prodHtml = ssr(await productionPage({ searchParams: Promise.resolve({}) }));
+    c.ok("/production for James: his shoots, and the team's handoffs he supervises with Check upload and Close out", prodHtml.includes('data-mode="production"') && prodHtml.includes(`href="/shoot/${p1.id}"`) && prodHtml.includes('data-list="team-handoffs"') && prodHtml.includes(`data-handoff="${p2.id}" data-mine="false"`) && prodHtml.includes("Check upload") && prodHtml.includes("Close out") && !prodHtml.includes('data-section="team"') && !prodHtml.includes('data-section="assigned"'), prodHtml.slice(0, 300));
 
     if (process.env.CREATIVE_RENDER_OUT) {
       fs.mkdirSync(process.env.CREATIVE_RENDER_OUT, { recursive: true });

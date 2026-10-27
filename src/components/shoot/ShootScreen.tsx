@@ -85,11 +85,13 @@ export function captureGuideFor(
 const POST_PRODUCTION_TYPES = new Set<string>(["VIRTUAL_STAGING"]);
 
 export function ShootScreen({
-  view, pay, map, briefRead = null, whenText, timing, media, chat = null, backHref = "/shoot", sentStatusKinds = [],
+  view, pay, map, briefRead = null, whenText, timing, media, chat = null, backHref = "/shoot", sentStatusKinds = [], prep = null,
 }: {
   view: ShootView;
   pay: React.ReactNode;
   map: React.ReactNode;
+  /** "Before the shoot" (Oct 27 2026): what the visit still needs, each with its one action. Top of the page. */
+  prep?: React.ReactNode;
   /** "I read this brief" — rendered UNDER the brief it is about (Oct 5). */
   briefRead?: React.ReactNode;
   whenText: string;
@@ -163,6 +165,26 @@ export function ShootScreen({
   }
   const capturedCount = Object.values(captured).filter(Boolean).length;
 
+  const scriptCard = !isVideo ? null
+    : project.reelHook || project.reelScript ? (
+      <ReelScriptCard
+        hook={project.reelHook}
+        script={project.reelScript}
+        song={project.reelSong}
+        shotList={project.reelShotList}
+        updatedAt={project.reelRecipeUpdatedAt}
+        current={project.currentScript ?? null}
+        recordNote={project.scriptConfirmNote}
+      />
+    ) : view.session || !project.scriptExpected ? null : (
+      <div className="rounded-2xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-foreground/85">
+        <span className="font-semibold">No script yet.</span>{" "}
+        {project.currentScript?.status && ["awaiting_review", "generating", "revising", "generating_hooks", "hooks_proposed", "approved"].includes(project.currentScript.status)
+          ? "It is written and waiting on review in Script Writing. It shows up here automatically once it is released to you; check back before you press record, or ask Jordan."
+          : <>This reel&rsquo;s script is written in Script Studio and shows up here automatically once it&rsquo;s ready — check back before you press record, or ask Jordan.</>}
+      </div>
+    );
+
   // Card order = the field flow (July 2026 field-UX audit, Jordan's spec):
   //   get there (map) → get in (access/brief) → shoot (checklist, capture
   //   tools, script) → who it's for (customer, collapsed) → wrap up (editor
@@ -175,8 +197,12 @@ export function ShootScreen({
       <HeaderCard project={project} appointment={appointment} whenText={whenText} timing={timing} onCopy={() => flash("ok", "Address copied")} />
 
       <div className="mt-4 space-y-4">
+        {/* Anchors (Oct 27 2026): the dashboard's rows and the prep card
+            link straight to #prep, #brief, #flag, #script, #brief-read and
+            #job-chat on this page. */}
+        {prep && <div id="prep" className="scroll-mt-20">{prep}</div>}
         {map}
-        <BriefCard view={view} flash={flash} />
+        <div id="brief" className="scroll-mt-20"><BriefCard view={view} flash={flash} /></div>
         <Checklist deliverables={captureables} captured={captured} onToggle={toggleCapture} mustGets={mustGets} agentNotes={agentNotes} staging={stagingOrdered} photoTarget={photoTarget} contentSession={project.contentSession} />
         {view.zillowTourUrl && <ZillowCta url={view.zillowTourUrl} />}
         {/* The locked script from Script Studio — READ-ONLY. Scripts are written
@@ -187,35 +213,17 @@ export function ShootScreen({
             the "No script yet" warning is a listing job's alone, and only one
             whose video takes a script (Oct 26 2026: a standard, agent-intro or
             cinematic video never gets one). */}
-        {isVideo &&
-          (project.reelHook || project.reelScript ? (
-            <ReelScriptCard
-              hook={project.reelHook}
-              script={project.reelScript}
-              song={project.reelSong}
-              shotList={project.reelShotList}
-              updatedAt={project.reelRecipeUpdatedAt}
-              current={project.currentScript ?? null}
-              recordNote={project.scriptConfirmNote}
-            />
-          ) : view.session || !project.scriptExpected ? null : (
-            <div className="rounded-2xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-foreground/85">
-              <span className="font-semibold">No script yet.</span>{" "}
-              {project.currentScript?.status && ["awaiting_review", "generating", "revising", "generating_hooks", "hooks_proposed", "approved"].includes(project.currentScript.status)
-                ? "It is written and waiting on review in Script Writing. It shows up here automatically once it is released to you; check back before you press record, or ask Jordan."
-                : <>This reel&rsquo;s script is written in Script Studio and shows up here automatically once it&rsquo;s ready — check back before you press record, or ask Jordan.</>}
-            </div>
-          ))}
+        {scriptCard && <div id="script" className="scroll-mt-20">{scriptCard}</div>}
         {isVideo && <AocPlaybookCard context="shoot" />}
         <CustomerCard client={client} segment={segment} profile={profile} projectId={project.id} flash={flash} />
         {/* Under everything it refers to: access, checklist, scripts and the
             client's own words are all above it (Oct 5). */}
-        {briefRead}
+        {briefRead && <div id="brief-read" className="scroll-mt-20">{briefRead}</div>}
         <NotesCard projectId={project.id} initial={project.editorBrief ?? ""} flash={flash} contentSession={project.contentSession} />
         {/* The job's own thread (Sep 16, Kyle call) — being tagged on a job
             used to send a photographer here with nothing to read and no way to
             answer. Under the editor notes: same part of the day, wrap-up. */}
-        {chat}
+        {chat && <div id="job-chat" className="scroll-mt-20">{chat}</div>}
         {/* A content session has no listing gallery to show (Oct 5): its
             footage goes to the editor through the upload page. */}
         {(media || !project.contentSession) && <MediaCard media={media} uploaded={project.uploadedAt != null} />}
@@ -757,7 +765,7 @@ function BriefCard({ view, flash }: { view: ShootView; flash: (k: "ok" | "err", 
         <p className="text-xs text-muted-2">+{view.extraAppointments} more visit{view.extraAppointments === 1 ? "" : "s"} on this order.</p>
       )}
 
-      <div className="border-t pt-3">
+      <div id="flag" className="scroll-mt-20 border-t pt-3">
         <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted"><Flag className="size-3.5 text-danger" /> Flag an issue on-site</div>
         <div className="flex gap-2">
           <input

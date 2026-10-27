@@ -152,10 +152,13 @@ async function main() {
     const chip = (k: string) => s1?.chips.find((x) => x.key === k);
     c.ok("his upcoming visit is listed with its time, client and services", !!s1 && s1.street === "11 Upcoming Rd" && s1.clientName === "Real Agent" && s1.services.includes("Premium Reel"), JSON.stringify(s1));
     c.ok("…Kyle's confirmation (the desk's own record): sent", chip("confirm")?.label === "Confirmation sent" && chip("confirm")?.tone === "ok");
-    c.ok("…access from the order, the daily brief's state (switched off here), the shoot brief not yet read", chip("access")?.label === "Access noted" && chip("brief")?.tone === "off" && chip("read")?.label === "Shoot brief to read");
+    // Oct 27 2026 (Jordan: "Brief sent, got it to tap - No idea what that is or why it matters. Shoot
+    // brief to read - why does that matter?"): the daily brief is said only when there is something to
+    // do (Mark brief read) or done (Brief confirmed); switched off, nothing. No "Shoot brief to read".
+    c.ok("…access from the order; the daily brief switched off says nothing; no 'Shoot brief to read' chase", chip("access")?.label === "Access noted" && !chip("brief") && !chip("read") && !s1?.briefAck && !s1?.missing.some((m) => /brief/i.test(m)), JSON.stringify(s1?.chips));
     c.ok("…the agent script from Script Studio, in words (waiting on Jordan's review: missing prep)", chip("direction")?.label === "Agent script waiting on Jordan's review" && chip("direction")?.tone === "todo");
     // Oct 26 2026: a special request is in the shoot brief, so reading the brief reviews it.
-    c.ok("…the special request, carried by the brief to read (not a separate thing to prepare)", s1?.requests.includes("Pool at dusk") === true && chip("requests")?.label === "1 special request in the brief" && chip("requests")?.tone === "info" && s1?.missing.includes("Shoot brief to read") === true && !s1?.missing.some((m) => /special request/.test(m)), JSON.stringify(s1?.chips));
+    c.ok("…the special request, said as in the brief (not a separate thing to prepare)", s1?.requests.includes("Pool at dusk") === true && chip("requests")?.label === "1 special request in the brief" && chip("requests")?.tone === "info" && !s1?.missing.some((m) => /special request|brief to read/i.test(m)), JSON.stringify(s1?.chips));
     c.ok("…actions open the existing pages: Open brief (/shoot/<id>), the daily brief, Script Studio", s1?.links[0]?.href === `/shoot/${p1.id}` && s1?.links.some((l) => l.href === `/shoot/brief/${tomorrowKey}`) === true);
     c.ok("a split job's second visit is upcoming (the first visit's handoff is not this visit's)", mine.some((s) => s.id === v4b.id) && !d.production.handoffs.some((h) => h.projectId === p4.id));
     const h2 = d.production.handoffs.find((h) => h.projectId === p2.id);
@@ -168,11 +171,12 @@ async function main() {
     await prisma.shootBriefRead.create({ data: { projectId: p1.id, readerUserId: james.id, digest: "a".repeat(64), snapshotJson: "[]", readAt: at(-H) } });
     d = await desk();
     let s1r = d.production.mine.find((s) => s.id === v1.id);
-    c.ok("brief read after the request came in: the request reads as reviewed, nothing about it to prepare", s1r?.chips.find((x) => x.key === "read")?.label === "Shoot brief read" && s1r?.chips.find((x) => x.key === "requests")?.label === "1 special request, in the brief you read" && s1r?.chips.find((x) => x.key === "requests")?.tone === "ok" && !s1r?.missing.some((m) => /special request|brief to read/i.test(m)), JSON.stringify(s1r?.chips));
+    c.ok("brief read after the request came in: the request reads as reviewed, nothing about it to prepare", !s1r?.chips.some((x) => x.key === "read") && s1r?.chips.find((x) => x.key === "requests")?.label === "1 special request, in the brief you read" && s1r?.chips.find((x) => x.key === "requests")?.tone === "ok" && !s1r?.missing.some((m) => /special request|brief to read/i.test(m)), JSON.stringify(s1r?.chips));
     await prisma.clientAsk.create({ data: { clientId: client.id, projectId: p1.id, kind: "SPECIAL_REQUEST", medium: "video", text: "Also the fire pit", summary: "Fire pit", source: "text", askedAt: at(-30 * 60_000), state: "OPEN" } });
     d = await desk();
     s1r = d.production.mine.find((s) => s.id === v1.id);
-    c.ok("…a request that came in after his read: read the brief again", s1r?.chips.find((x) => x.key === "requests")?.label === "1 new special request: read the brief again" && s1r?.missing.includes("1 new special request: read the brief again") === true, JSON.stringify(s1r?.chips));
+    // Oct 27 2026: no "read the brief again" chase; the newer request is counted with the rest, in the brief.
+    c.ok("…a request that came in after his read: counted in the brief, never a re-read chase", s1r?.chips.find((x) => x.key === "requests")?.label === "2 special requests in the brief" && s1r?.chips.find((x) => x.key === "requests")?.tone === "info" && !s1r?.missing.some((m) => /special request|brief again/i.test(m)), JSON.stringify(s1r?.chips));
     const pNoAccess = await job("77 No Access Way, Town", { deliverables: { create: [{ type: "PHOTOS", label: "Photos" }, { type: "SOCIAL_REEL", label: "Standard Reel w/ Agent intro", videoStyle: "agent_intro_reel" }] } });
     const vNoAccess = await visit(pNoAccess.id, etAt(day(3), 9), jamesTm.id, { description: desc(null), rawJson: raw(["Photos", "Standard Reel w/ Agent intro"]) });
     const month = await prisma.contentMonth.create({ data: { enrollmentId: (await prisma.contentEnrollment.create({ data: { clientId: client.id, status: "ACTIVE", package: "Accelerator", videosPerMonth: 4, sessionsPerMonth: 1, sessionHours: 2, startedAt: at(-30 * D) } as never })).id, clientId: client.id, monthKey: etDayKey(at(3 * D)).slice(0, 7), videosOwed: 4 } as never });
@@ -201,12 +205,19 @@ async function main() {
     c.ok("…and it is back once the two days are up", d.production.team.some((h) => h.projectId === p5.id));
     c.ok("a bad reason or a stale row is refused", !(await actions.closeOutHandoffAction(p5.id, t5b.sig, "whatever" as never, null)).ok && !(await actions.closeOutHandoffAction("nope", t5b.sig, "outside", null)).ok);
 
-    // Today: the visit time passes and nothing is recorded: still "nothing recorded", not done.
+    // Today: the visit's END passes and nothing is recorded: still "nothing recorded", not done.
+    // Oct 27 2026 (Jordan: "He's filming it today, so of course nothing was recorded yet"): only once
+    // the visit is over; while it is under way the row says Filming now.
     const p6 = await job("66 Today Ct, Town", { deliverables: { create: [{ type: "PHOTOS", label: "Photos" }] } });
-    const v6 = await visit(p6.id, new Date(Math.max(etAt(today, 0, 5).getTime(), T.getTime() - 3 * H)), jamesTm.id);
+    const v6Start = new Date(Math.max(etAt(today, 0, 5).getTime(), T.getTime() - 3 * H));
+    const v6 = await visit(p6.id, v6Start, jamesTm.id, { endAt: new Date(Math.max(v6Start.getTime() + 60_000, Math.min(v6Start.getTime() + 2 * H, T.getTime() - 60_000))) });
+    const p7 = await job("77 Filming Ct, Town", { deliverables: { create: [{ type: "PHOTOS", label: "Photos" }] } });
+    const v7 = await visit(p7.id, new Date(Math.max(etAt(today, 0, 1).getTime(), T.getTime() - 30 * 60_000)), jamesTm.id, { endAt: new Date(T.getTime() + 90 * 60_000) });
     d = await desk();
     const s6 = d.production.mine.find((s) => s.id === v6.id);
-    c.ok("a visit earlier today with nothing recorded stays on today's list, saying 'Nothing recorded from the field yet'", !!s6 && s6.today && s6.chips[0]?.label === "Nothing recorded from the field yet", JSON.stringify(s6?.chips));
+    const s7 = d.production.mine.find((s) => s.id === v7.id);
+    c.ok("a visit earlier today, over, with nothing recorded stays on today's list, saying 'Nothing recorded from the field yet' (Handoff due, Finish handoff)", !!s6 && s6.today && s6.over && s6.chips[0]?.label === "Nothing recorded from the field yet" && s6.status?.label === "Handoff due" && s6.finishHref === `/upload/${p6.id}#capture`, JSON.stringify(s6 && { c: s6.chips, s: s6.status }));
+    c.ok("…a visit under way says Filming now, with no 'Nothing recorded' and nothing missing for it", !!s7 && s7.started && !s7.over && s7.status?.label === "Filming now" && !s7.chips.some((x) => x.key === "field"), JSON.stringify(s7 && { c: s7.chips, s: s7.status }));
     await prisma.appointment.update({ where: { id: v6.id }, data: { completedAt: new Date() } });
     d = await desk();
     c.ok("…once the field records Done, it leaves the upcoming list for the handoff list", !d.production.mine.some((s) => s.id === v6.id) && d.production.handoffs.some((h) => h.projectId === p6.id));

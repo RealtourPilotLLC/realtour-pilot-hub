@@ -45,6 +45,7 @@ import {
 export type CreativeResult = { ok: boolean; message: string };
 
 const ID = /^[a-z0-9]{10,40}$/i;
+const FRICTION_KEY = /^friction:[^\n\r\u0000]{1,200}$/;
 const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
 const PREVIEW = "You're previewing another login. Exit the preview to make changes.";
 
@@ -435,7 +436,7 @@ export async function recommendToJordanAction(id: string): Promise<CreativeResul
 
 // ---- process improvements --------------------------------------------------------------------
 
-export async function addImprovementAction(input: { problem: string; area: string; nextStep?: string | null; outcome?: string | null; policy?: boolean; dueDay?: string | null }): Promise<CreativeResult> {
+export async function addImprovementAction(input: { problem: string; area: string; nextStep?: string | null; outcome?: string | null; policy?: boolean; dueDay?: string | null; friction?: string | null }): Promise<CreativeResult> {
   const s = await seat();
   if (!s.ok) return s;
   const problem = text(input?.problem, 300);
@@ -443,10 +444,18 @@ export async function addImprovementAction(input: { problem: string; area: strin
   const area = (IMPROVEMENT_AREAS as readonly string[]).includes(input.area) ? input.area : null;
   if (!area) return { ok: false, message: "Pick the area." };
   const due = input.dueDay ? dayToDate(input.dueDay) : null;
+  // Started from a recurring-friction row (Oct 27 2026): the row's key rides
+  // along, so the row shows the improvement tracking it and never starts two.
+  const friction = typeof input.friction === "string" && FRICTION_KEY.test(input.friction) ? input.friction : null;
+  if (friction) {
+    const open = await prisma.smartTask.findMany({ where: { taskType: IMPROVEMENT_TASK_TYPE, status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { id: true }, take: 200 });
+    const metas = open.length ? await prisma.appSetting.findMany({ where: { key: { in: open.map((t) => improvementMetaKey(t.id)) } }, select: { value: true } }) : [];
+    if (metas.some((m) => { try { return (JSON.parse(m.value) as ImprovementMeta).friction === friction; } catch { return false; } })) return { ok: true, message: "Already tracked as an improvement." };
+  }
   const roster = await listAssignees().catch(() => []);
   const key = s.me ? viewerAssigneeKey(s.me, roster) : "james";
   const at = new Date().toISOString();
-  const meta: ImprovementMeta = { area, nextStep: text(input.nextStep, 300) || null, outcome: text(input.outcome, 300) || null, policy: !!input.policy, at, by: s.by };
+  const meta: ImprovementMeta = { area, nextStep: text(input.nextStep, 300) || null, outcome: text(input.outcome, 300) || null, policy: !!input.policy, at, by: s.by, friction };
   const task = await prisma.$transaction(async (tx) => {
     const t = await tx.smartTask.create({
       data: { taskType: IMPROVEMENT_TASK_TYPE, source: "manual", status: "OPEN", priority: "MEDIUM", title: `Improve: ${problem}`.slice(0, 140), summary: problem, description: meta.outcome, assignedKey: key, assignedManually: true, dueAt: due, reasonCreated: `Process improvement logged by ${s.by}` },
@@ -538,4 +547,69 @@ export async function escalateCutAction(submissionId: string, why: string): Prom
     note: reason,
   });
   return r.ok ? done("Escalated to Jordan. The version stays in review until a decision is made.") : { ok: false, message: `Could not escalate it: ${r.message}` };
+}
+
+// ---- his own tasks (Oct 27 2026) -------------------------------------------------------------
+
+/**
+ * ONE STEP ON A TASK OF HIS THAT NOBODY DELEGATED (Oct 27 2026: every row on
+ * his dashboard resolves, escalates, responds or delegates). The engines'
+ * tasks routed to the creative manager (a brand update to confirm, a
+ * content program's mid-month check, a tag) have no delegation record, so
+ * Accept and Done are the task list's own status change (setSmartTaskStatus,
+ * every guard it carries: a brand confirmation still closes only on the
+ * editors' Got it). A task on his Team row with no key is claimed first, so
+ * the status change is his.
+ */
+async function myOpenTask(s: Extract<Seat, { ok: true }>, taskId: string) {
+  if (!ID.test(String(taskId))) return { error: "That task id is not valid." } as const;
+  const t = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { id: true, title: true, status: true, assignedKey: true, ownerId: true, delegatedAt: true, description: true } });
+  if (!t || t.status === "COMPLETED" || t.status === "CANCELLED") return { error: "That task is already closed." } as const;
+  const roster = await listAssignees().catch(() => []);
+  const myKey = s.me ? viewerAssigneeKey(s.me, roster) : null;
+  const mine = (!!myKey && t.assignedKey === myKey) || (!t.assignedKey && !!s.me?.teamMemberId && t.ownerId === s.me.teamMemberId);
+  if (!mine && !s.owner) return { error: "That task isn't yours." } as const;
+  if (!t.assignedKey && myKey) await prisma.smartTask.updateMany({ where: { id: t.id, assignedKey: null }, data: { assignedKey: myKey } });
+  return { t, roster, myKey } as const;
+}
+
+export async function myTaskStepAction(taskId: string, step: "start" | "done"): Promise<CreativeResult> {
+  const s = await seat();
+  if (!s.ok) return s;
+  if (step !== "start" && step !== "done") return { ok: false, message: "That step isn't one of the task's." };
+  const got = await myOpenTask(s, taskId);
+  if ("error" in got) return { ok: false, message: got.error ?? "That task isn't available." };
+  await audit(s.by, step === "start" ? "my_task_started" : "my_task_done", got.t.id, { title: got.t.title });
+  const { setSmartTaskStatus } = await import("@/app/actions");
+  const r = await setSmartTaskStatus(got.t.id, step === "start" ? "IN_PROGRESS" : "COMPLETED");
+  if (r && !r.ok) return { ok: false, message: r.message };
+  return done(r?.message ?? (step === "start" ? "Accepted. It shows In progress." : "Done."));
+}
+
+/**
+ * Hand a task of his to Kyle, to Jordan (Escalate) or to someone else on the
+ * team (Delegate), with his reason on the task and his name on its "Flagged
+ * by" line, so it lands at the top of their home (Sep 7: "when I flag
+ * something for someone it should pop up on their home screen at the top").
+ * The reassign is the task list's own (setTaskAssignee: their bell).
+ */
+export async function handMyTaskAction(taskId: string, toKey: string, why: string): Promise<CreativeResult> {
+  const s = await seat();
+  if (!s.ok) return s;
+  const reason = text(why, 600);
+  if (reason.length < 3) return { ok: false, message: "Say what they need to do or decide." };
+  const got = await myOpenTask(s, taskId);
+  if ("error" in got) return { ok: false, message: got.error ?? "That task isn't available." };
+  const to = got.roster.find((r) => r.key === toKey);
+  if (!to || to.kind === "vendor") return { ok: false, message: "Pick someone on the team." };
+  if (to.key === got.myKey) return { ok: false, message: "It is already yours." };
+  await audit(s.by, "my_task_handed", got.t.id, { to: to.key, reason });
+  const { setTaskAssignee } = await import("@/app/actions");
+  await setTaskAssignee(got.t.id, to.key);
+  const stamp = etDateTime(new Date());
+  await prisma.smartTask.update({
+    where: { id: got.t.id },
+    data: { flaggedBy: s.by, flaggedAt: new Date(), description: `${got.t.description ?? ""}\n\nHanded to ${firstName(to.name)} by ${s.by} (${stamp}): ${reason}`.trim().slice(0, 6000) },
+  });
+  return done(`Handed to ${firstName(to.name)}.`);
 }
