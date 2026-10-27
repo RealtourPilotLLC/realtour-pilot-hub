@@ -34,9 +34,7 @@ export async function generateReply(key: string, instruction?: string | null): P
   return draftFor(card, instruction);
 }
 
-// The actual generation, taking a card that's already been loaded. Split out so
-// the batch path can build the queue ONCE instead of re-scanning three weeks of
-// comms for every message it drafts.
+// The actual generation, taking a card that's already been loaded.
 async function draftFor(card: ReplyCard, instruction?: string | null): Promise<DraftResult> {
   const ask = card.lastInbound + " " + (instruction ?? "");
 
@@ -97,41 +95,9 @@ async function draftFor(card: ReplyCard, instruction?: string | null): Promise<D
   }
 }
 
-// Generate drafts for a whole batch of conversations in one go, so Kyle opens
-// the page to a queue that is already written rather than one he has to prompt
-// card by card. Runs them concurrently but in small waves — the AI provider
-// rate-limits, and one 429 shouldn't take the other nine drafts down with it.
-export async function generateAllReplies(
-  keys: string[],
-): Promise<{ ok: boolean; message: string; drafts: Record<string, string> }> {
-  await requireAdmin();
-  const { getSecret } = await import("@/lib/integrations/connections");
-  if (!(await getSecret("ai"))) return { ok: false, message: "Add an AI key in Connections to generate replies.", drafts: {} };
-
-  // ONE queue build for the whole batch.
-  const { replyQueue } = await import("@/lib/replyQueue");
-  const q = await replyQueue();
-  const byKey = new Map([...q.cards, ...q.handled].map((c) => [c.key, c]));
-  const cards = keys.map((k) => byKey.get(k)).filter((c): c is ReplyCard => !!c);
-
-  const drafts: Record<string, string> = {};
-  const WAVE = 4;
-  let failed = 0;
-  for (let i = 0; i < cards.length; i += WAVE) {
-    const wave = cards.slice(i, i + WAVE);
-    const results = await Promise.all(wave.map((c) => draftFor(c).catch(() => null)));
-    results.forEach((r, j) => {
-      if (r?.ok && r.draft) drafts[wave[j].key] = r.draft;
-      else failed++;
-    });
-  }
-  const made = Object.keys(drafts).length;
-  return {
-    ok: made > 0,
-    message: made === 0 ? "Couldn't generate any drafts." : failed ? `Drafted ${made}. ${failed} need a look.` : `Drafted ${made}.`,
-    drafts,
-  };
-}
+// (Oct 27 2026: generateAllReplies, the Texts list's "Draft all", went with
+// that list. Jordan: "One queue". A text is answered one conversation at a
+// time from Messages · Waiting on us, each drafted by generateReply above.)
 
 // Send the reviewed text. A HUMAN clicks this — nothing in the reply queue
 // ever sends on its own, which is the same rule every other client-facing

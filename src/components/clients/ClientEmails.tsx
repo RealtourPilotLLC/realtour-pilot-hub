@@ -2,26 +2,36 @@
 
 import { etMonthDayTime } from "@/lib/datetime";
 import { useEffect, useState, useTransition } from "react";
-import { Loader2, Mail, ChevronDown, ChevronRight, Sparkles, Copy, AlertCircle } from "lucide-react";
+import { Loader2, Mail, ChevronDown, ChevronRight, AlertCircle } from "lucide-react";
 import type { GmailEmail } from "@/lib/integrations/google";
 import { loadClientEmails, draftEmailReply } from "@/app/clients/actions";
 import { loadMailboxGap } from "@/components/clients/mailboxHealth.actions";
+import { EmailReplyBox } from "@/components/comms/EmailReplyBox";
+import { foldOlderEmails, olderEmailsLabel } from "@/components/comms/emailOrder";
 
 // ET, date and time as two calls (see datetime.ts).
 const fmt = (iso: string): string => (iso ? etMonthDayTime(iso) : "");
 
-// Read-only Gmail conversation for a client, lazy-loaded on the client detail
-// page so the page paints instantly. Gives context on what email threads are
-// about (we never send from here — that stays in the mail app).
+// The client's Gmail conversation, lazy-loaded on the client detail page so
+// the page paints instantly. THE page's one email-draft tool (Oct 21 2026,
+// audit F9): "Draft a reply" reads the whole Gmail thread.
+// REPLY IN THE HUB (Jordan, Oct 27 2026: "One queue + Gmail draft. I want to
+// be able to respond to emails in the hub"): that draft is the starting text
+// of the reply box (EmailReplyBox), which sends into the Gmail thread of the
+// client's latest email, to the client's own address, when a person presses
+// Send. Nothing sends on its own.
+// NEWEST FIRST, ONE WEEK OPEN (same day): the newest email is at the top, and
+// anything older than seven days folds under "Show N older emails".
 export function ClientEmails({ clientId }: { clientId: string }) {
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [emails, setEmails] = useState<GmailEmail[]>([]);
+  // When the list was read: the seven-day fold is measured from it (never a
+  // clock read while rendering).
+  const [readAt, setReadAt] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [, start] = useTransition();
-  const [drafting, startDraft] = useTransition();
-  const [draft, setDraft] = useState<{ text?: string; error?: string; note?: string } | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [reload, setReload] = useState(0);
   // Which inbox is NOT being read, if any (§9, Sep 26): this list is live from
   // Gmail, and a mailbox whose token Google refused is skipped silently — so
   // the panel says so rather than implying it saw every inbox.
@@ -32,16 +42,9 @@ export function ClientEmails({ clientId }: { clientId: string }) {
     return () => { alive = false; };
   }, []);
 
-  // The most recent email is unanswered when it came FROM the client (not us).
-  const latest = emails[emails.length - 1];
-  const unanswered = state === "ready" && !!latest && !latest.fromUs;
-
-  const makeDraft = () =>
-    startDraft(async () => {
-      setCopied(false);
-      const r = await draftEmailReply(clientId).catch(() => ({ ok: false as const, message: "Couldn't draft a reply. Try again.", draft: undefined }));
-      setDraft(r.ok ? { text: r.draft, note: r.message } : { error: r.message });
-    });
+  // What a reply answers: the client's newest email, in its own Gmail thread.
+  // The list arrives oldest first (google.clientEmailThreads).
+  const theirs = state === "ready" ? [...emails].reverse().find((e) => !e.fromUs) ?? null : null;
 
   useEffect(() => {
     let alive = true;
@@ -53,6 +56,7 @@ export function ClientEmails({ clientId }: { clientId: string }) {
       if (r.ok) {
         const list = r.emails ?? [];
         setEmails(list);
+        setReadAt(Date.now());
         // Expand the most recent message by default.
         if (list.length) setOpen(new Set([list[list.length - 1].id]));
         setState("ready");
@@ -62,11 +66,45 @@ export function ClientEmails({ clientId }: { clientId: string }) {
       }
     });
     return () => { alive = false; };
-     
-  }, [clientId]);
+
+  }, [clientId, reload]);
 
   const toggle = (id: string) =>
     setOpen((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const { recent, older } = foldOlderEmails(emails, (e) => e.date, readAt);
+
+  const row = (e: GmailEmail) => {
+    const isOpen = open.has(e.id);
+    return (
+      <div key={e.id} data-client-email={e.id} className="border-b border-border last:border-0">
+        <button
+          onClick={() => toggle(e.id)}
+          className="flex w-full items-start gap-2 px-4 py-3 text-left hover:bg-surface-2"
+        >
+          <span className="mt-0.5 text-muted-2">
+            {isOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className={cnDir(e.fromUs)}>{e.fromUs ? "We replied" : e.from}</span>
+              <span className="ml-auto shrink-0 text-[11px] text-muted-2">{fmt(e.date)}</span>
+            </div>
+            <div className="truncate text-sm font-medium">{e.subject || "(no subject)"}</div>
+            {!isOpen && <div className="truncate text-xs text-muted">{e.snippet}</div>}
+          </div>
+        </button>
+        {isOpen && (
+          <div className="px-4 pb-4 pl-10">
+            <p className="whitespace-pre-wrap break-words text-sm text-foreground/90">
+              {e.body || e.snippet || "(no content)"}
+            </p>
+            <div className="mt-2 text-[11px] text-muted-2">via {e.mailbox}</div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <section>
@@ -75,37 +113,16 @@ export function ClientEmails({ clientId }: { clientId: string }) {
         {state === "ready" && emails.length > 0 && (
           <span className="rounded-full bg-surface-2 px-1.5 text-[11px] font-normal text-muted">{emails.length}</span>
         )}
-        {unanswered && (
-          <button
-            onClick={makeDraft}
-            disabled={drafting}
-            title="AI-draft a reply (uses our scheduling availability when they ask)"
-            className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-brand/10 px-2.5 py-1 text-xs font-medium text-brand hover:bg-brand/20 disabled:opacity-60"
-          >
-            {drafting ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />} Draft reply
-          </button>
-        )}
       </h2>
 
-      {draft && (
-        <div className="mb-3 rounded-2xl border border-brand/30 bg-surface p-3">
-          {draft.error ? (
-            <p className="text-xs text-danger">{draft.error}</p>
-          ) : (
-            <>
-              <div className="mb-1.5 flex items-center justify-between gap-2">
-                <span className="text-[11px] font-semibold uppercase tracking-wide text-brand">Suggested reply</span>
-                <button
-                  onClick={() => { navigator.clipboard?.writeText(draft.text ?? ""); setCopied(true); }}
-                  className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-foreground"
-                >
-                  <Copy className="size-3" /> {copied ? "Copied" : "Copy"}
-                </button>
-              </div>
-              <p className="whitespace-pre-wrap break-words text-sm text-foreground/90">{draft.text}</p>
-              <p className="mt-2 text-[10px] text-muted-2">{draft.note ?? "Review before sending. The hub never sends on its own."}</p>
-            </>
-          )}
+      {theirs && (
+        <div className="mb-3">
+          <EmailReplyBox
+            key={`${theirs.mailbox}:${theirs.threadId}`}
+            target={{ kind: "gmail", clientId, mailbox: theirs.mailbox, threadId: theirs.threadId }}
+            draft={() => draftEmailReply(clientId)}
+            onSent={() => setReload((n) => n + 1)}
+          />
         </div>
       )}
 
@@ -132,37 +149,15 @@ export function ClientEmails({ clientId }: { clientId: string }) {
           </div>
         ) : (
           <div className="overflow-hidden rounded-2xl border bg-surface">
-            {emails.map((e) => {
-              const isOpen = open.has(e.id);
-              return (
-                <div key={e.id} className="border-b border-border last:border-0">
-                  <button
-                    onClick={() => toggle(e.id)}
-                    className="flex w-full items-start gap-2 px-4 py-3 text-left hover:bg-surface-2"
-                  >
-                    <span className="mt-0.5 text-muted-2">
-                      {isOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className={cnDir(e.fromUs)}>{e.fromUs ? "We replied" : e.from}</span>
-                        <span className="ml-auto shrink-0 text-[11px] text-muted-2">{fmt(e.date)}</span>
-                      </div>
-                      <div className="truncate text-sm font-medium">{e.subject || "(no subject)"}</div>
-                      {!isOpen && <div className="truncate text-xs text-muted">{e.snippet}</div>}
-                    </div>
-                  </button>
-                  {isOpen && (
-                    <div className="px-4 pb-4 pl-10">
-                      <p className="whitespace-pre-wrap break-words text-sm text-foreground/90">
-                        {e.body || e.snippet || "(no content)"}
-                      </p>
-                      <div className="mt-2 text-[11px] text-muted-2">via {e.mailbox}</div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {recent.map(row)}
+            {older.length > 0 && (
+              <details data-older-emails={older.length} className="group border-t border-border">
+                <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1.5 px-4 text-xs font-medium text-brand">
+                  <ChevronDown aria-hidden className="size-3.5 transition group-open:rotate-180" /> {olderEmailsLabel(older.length)}
+                </summary>
+                <div className="border-t border-border">{older.map(row)}</div>
+              </details>
+            )}
           </div>
         )
       )}

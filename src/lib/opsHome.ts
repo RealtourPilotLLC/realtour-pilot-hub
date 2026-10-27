@@ -139,8 +139,8 @@ async function waitingClients(now: Date, opts: { excludeClientIds?: string[] } =
 }
 
 /** Where a waiting client's Reply goes: that exact thread on Messages
- *  (/communications): a text opens the Texts view with that conversation
- *  open, an email the Email view with that thread open. The same address as
+ *  (/communications): a text opens that conversation's reply screen, an
+ *  email the Email view with that thread and its reply box open. The same address as
  *  Messages' own Waiting on us rows (components/comms/WaitingOnUs
  *  waitingRowReplyHref; the email key is its emailFocusKey). */
 export function waitingClientReplyHref(w: WaitingClient, includeTest = false): string {

@@ -182,6 +182,9 @@ export async function loadClientEmails(
 // Draft an AI reply to a client's most recent EMAIL — reads the whole Gmail
 // thread for context, and when they're asking about availability, pulls real
 // open shoot dates from Aryeo's scheduling calendar so the draft offers them.
+// Oct 27 2026: the draft is the starting text of the reply box under it, which
+// sends into that Gmail thread when a person presses Send (app/emailActions).
+// The drafting itself is lib/emailReplyDraft, shared with Messages · Email.
 export async function draftEmailReply(clientId: string): Promise<ActionResult> {
   await requireAdmin();
   const { getSecret } = await import("@/lib/integrations/connections");
@@ -191,10 +194,7 @@ export async function draftEmailReply(clientId: string): Promise<ActionResult> {
 
   const client = await prisma.client.findUnique({
     where: { id: clientId },
-    select: {
-      name: true, email: true, backupEmail: true, segment: true, socialClient: true, socialPlan: true,
-      projects: { orderBy: { orderedAt: { sort: "desc", nulls: "last" } }, take: 6, select: { title: true, status: true } },
-    },
+    select: { name: true, email: true, backupEmail: true },
   });
   const addrs = [client?.email, client?.backupEmail].filter((e): e is string => Boolean(e));
   if (addrs.length === 0) return { ok: false, message: "No email on file for this client." };
@@ -216,43 +216,8 @@ export async function draftEmailReply(clientId: string): Promise<ActionResult> {
   const lastClient = [...emails].reverse().find((e) => !e.fromUs);
   const lastText = lastClient ? `${lastClient.subject}\n${lastClient.body || lastClient.snippet}` : "";
 
-  // If they're asking when we can shoot, fetch real open dates from Aryeo.
-  let availability: string | null = null;
-  if (/\b(availab|when can|what (day|days|time|times)|schedul|book|come out|opening|calendar|times? work|soonest)\b/i.test(lastText)) {
-    try {
-      const { getSchedulingAvailability } = await import("@/lib/integrations/aryeo");
-      const { etDate } = await import("@/lib/datetime");
-      const slots = await getSchedulingAvailability({ limit: 6 });
-      if (slots?.length) availability = slots.map((s) => etDate(new Date(`${s.date}T12:00:00Z`))).join(", ");
-    } catch {
-      /* draft without availability */
-    }
-  }
-
-  try {
-    const { relevantPolicies } = await import("@/lib/policies");
-    const policies = await relevantPolicies(lastText);
-    const { draftReplyWithContext } = await import("@/lib/integrations/ai");
-    const draft = await draftReplyWithContext({
-      channel: "email",
-      clientName: client?.name,
-      segment: client?.segment ?? null,
-      socialPlan: client?.socialClient ? client?.socialPlan ?? "yes" : null,
-      propertyAddress: client?.projects[0]?.title ?? null,
-      projects: client?.projects ?? [],
-      transcript,
-      availability,
-      policies,
-    });
-    if (/^\s*NO_REPLY_NEEDED\s*$/i.test(draft)) return { ok: false, message: "Looks handled — no reply needed here." };
-    return {
-      ok: true,
-      message: availability ? "Draft ready with our open shoot dates. Review before sending." : "Draft ready. Review before sending.",
-      draft,
-    };
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : "Could not draft a reply." };
-  }
+  const { draftEmailFromTranscript } = await import("@/lib/emailReplyDraft");
+  return draftEmailFromTranscript({ clientId, fallbackName: client?.name ?? null, transcript, lastText });
 }
 
 // ---------------------------------------------------------------------------
