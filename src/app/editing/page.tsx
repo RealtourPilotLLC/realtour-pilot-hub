@@ -261,7 +261,7 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
     workingNow({ now, excludeProjectIds }), editorActivityToday({ now, excludeProjectIds }),
     editingWorkload(workloadRows([...notDone, ...upcomingRows])),
     recentlyRemovedFromQueue(),
-    canRemind ? remindViewsFor(notDone.filter((r) => r.status !== WAITING_ON_FOOTAGE).map((r) => r.id), now).catch(() => new Map<string, RemindView>()) : new Map<string, RemindView>(),
+    canRemind ? remindViewsFor(notDone.filter((r) => r.status !== WAITING_ON_FOOTAGE).map((r) => r.id), now, { audience: "editing" }).catch(() => new Map<string, RemindView>()) : new Map<string, RemindView>(),
   ]);
   const today = editorLines(wn, act, now);
   const capacityNow = Object.values(workload.capacity ?? {}).flatMap((windows) => windows.now);

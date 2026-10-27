@@ -617,7 +617,44 @@ export async function testGmailToken(
   }
 }
 
-type GmailPart = { mimeType?: string; body?: { data?: string; size?: number }; parts?: GmailPart[]; headers?: { name: string; value: string }[] };
+type GmailPart = { mimeType?: string; filename?: string; body?: { data?: string; size?: number }; parts?: GmailPart[]; headers?: { name: string; value: string }[] };
+
+// ---------------------------------------------------------------------------
+// GOOGLE CALENDAR NOTICES ARE NOT CLIENT MAIL (Oct 27 2026). Kristen Pavillard
+// accepted her Oct 29 brand discovery call; Google Calendar mailed the
+// acceptance "from" her address, the inbox read it as her writing to us, and
+// Kyle got a to-do "Prepare for Brand Discovery Call on Oct 29". The call is
+// Jordan's and already has his own meeting_prep task from Calendly, so the
+// notice was a duplicate on the wrong desk (Jordan: "Kyle should not have to
+// do anything with Kristen Pavillard"). Accepted / Declined / Tentative /
+// Invitation / Updated / Canceled notices now create nothing and are not
+// logged as the client's words (the reply walk would read them as waiting on
+// us). A client's own reply on such a thread ("Re: Invitation: ...") is a
+// human email and is handled as before.
+// ---------------------------------------------------------------------------
+const CALENDAR_SUBJECT_RE =
+  /^(?:accepted|declined|tentatively accepted|invitation|updated invitation(?: with note)?|new event|canceled event|cancelled event|event canceled|event cancelled|updated event|proposed new time|invitation from google calendar)(?:\s*\(with note\))?\s*:/i;
+const CALENDAR_SENDER_RE = /calendar-notification@google\.com/i;
+
+function hasCalendarPart(p?: GmailPart): boolean {
+  if (!p) return false;
+  const mime = (p.mimeType ?? "").toLowerCase();
+  if (mime.startsWith("text/calendar") || mime === "application/ics" || /\.ics$/i.test(p.filename ?? "")) return true;
+  return (p.parts ?? []).some(hasCalendarPart);
+}
+
+/** True when an inbound email is an automated calendar notice (an invitation,
+ *  or a guest's accept / decline / tentative reply), not something a person
+ *  wrote. Needs the notice-shaped subject AND proof it came from a calendar:
+ *  Google Calendar's sender address, an attached invite, or Google's own
+ *  footer. A subject alone is never enough ("Invitation: come see the house"). */
+export function isCalendarNotice(m: { subject: string; from?: string; sender?: string; body?: string; calendarPart?: boolean }): boolean {
+  const subject = (m.subject ?? "").trim();
+  const fromCalendar = CALENDAR_SENDER_RE.test(m.from ?? "") || CALENDAR_SENDER_RE.test(m.sender ?? "");
+  if (fromCalendar && !/^(?:re|fwd?)\s*:/i.test(subject)) return true;
+  if (!CALENDAR_SUBJECT_RE.test(subject)) return false;
+  return !!m.calendarPart || /invitation from google calendar|google calendar|invite\.ics|reply for .+@|has (?:accepted|declined|tentatively accepted) this invitation/i.test(m.body ?? "");
+}
 type GmailMsg = { id: string; threadId?: string; snippet?: string; internalDate?: string; payload?: GmailPart };
 type GmailThread = { messages?: GmailMsg[] };
 
@@ -1308,6 +1345,11 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
       // → lead); returns how many tasks it created.
       const handleMessage = async (): Promise<number> => {
         if (!text) return 0;
+
+        // A Google Calendar notice (an accepted / declined invitation) is not
+        // the client writing: no task, no client log (Oct 27 2026, see
+        // isCalendarNotice). Meeting prep comes from Calendly's meeting_prep.
+        if (isCalendarNotice({ subject, from: header(msg, "From"), sender: header(msg, "Sender"), body: fullBody || snippet, calendarPart: hasCalendarPart(msg.payload) })) return 0;
 
         // Luma Visuals = our premium-reel video editor. Only TWO of their emails
         // are work for us: the edit is FINISHED (go download/QC/deliver) or the

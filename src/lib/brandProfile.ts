@@ -35,7 +35,7 @@ import { etDayKey, etHour } from "@/lib/datetime";
 //     → setProfileSlotTx)
 // and every change leaves a ClientBrandChange row. That row is three things at
 // once: the history the three Client columns never had, the editor's banner on
-// /edit/<id> until they press "Got it", and the line on Kyle's confirmation
+// /edit/<id> until they press "Got it", and the line on the creative manager's confirmation
 // task. The editor's Slack DM is the only part behind a switch
 // (`brand_change_alerts`, OFF): it is a message to the team, so until Jordan
 // turns it on the row is stamped alertChannel "pending" and the banner and the
@@ -385,7 +385,7 @@ export async function recordPortalAssetUpload(
  * This files a file ALREADY in their folder as their logo or headshot. The
  * folder is listed here and the file found in it by name — a path from the
  * browser is never trusted — and it is recorded exactly as an upload is: the
- * history row, the editor's banner, Kyle's confirmation task.
+ * history row, the editor's banner, the creative manager's confirmation task.
  */
 export async function claimFolderFileForPortal(viewer: PortalViewer, input: { name: string; kind: string }): Promise<{ ok: boolean; message: string; assetId?: string }> {
   if (!can(viewer, "editBrandProfile")) return { ok: false, message: refusalMessage(viewer, "editBrandProfile") };
@@ -457,7 +457,7 @@ export type AssignedEditor = { key: string; name: string; projectId: string | nu
  *   2. else the in-house editor on a job in production (SHOT…REVISION);
  *   3. else, for a client in the content program, the personal-branding route
  *      (§5: personal branding → Kim) — their next job lands there;
- *   4. else nobody, and Kyle's task says so.
+ *   4. else nobody, and the confirmation task says so.
  * Departed editors are never returned.
  */
 export async function assignedEditorsForClient(clientId: string): Promise<AssignedEditor[]> {
@@ -490,7 +490,7 @@ export async function assignedEditorsForClient(clientId: string): Promise<Assign
   return [...out.values()];
 }
 
-// ---- the alert: Kyle's task always, the editor's message behind the switch ---------------
+// ---- the alert: the creative manager's task always, the editor's message behind the switch ---------------
 
 const ACK_TASK_PREFIX = (clientId: string) => `brand-ack:${clientId}:`;
 /** How far back the catch-up reaches once the switch is turned on. Older
@@ -500,7 +500,7 @@ const BRAND_ALERT_LEASE_MS = 5 * 60_000;
 
 type ChangeRow = { id: string; label: string; kind: string; fromText: string | null; toText: string | null; actorLabel: string | null; source: string; createdAt: Date };
 
-/** One line per change, for Kyle's task and the editor's DM. */
+/** One line per change, for the confirmation task and the editor's DM. */
 export function describeBrandChange(r: Pick<ChangeRow, "label" | "kind" | "fromText" | "toText">): string {
   const q = (s: string) => `“${clip(s.replace(/\s+/g, " "), 90)}”`;
   if (r.kind === "FILE_ADDED") return `${r.label}: new file ${r.toText ? q(r.toText) : ""}`.trim();
@@ -521,9 +521,10 @@ export type BrandAlertOutcome = { claimed: number; channel: string | null; edito
  * atomically (alertedAt null → this call's claim), so two saves racing each
  * other alert every row exactly once. For each batch:
  *   · a TEST client: the rows are stamped `skipped_test` and nothing else
- *     happens (no task on Kyle's real desk, no message);
- *   · Kyle's confirmation task — one OPEN task per client, later changes
- *     appended to it — so the office knows to make sure the editor has it;
+ *     happens (no task on a real desk, no message);
+ *   · the creative manager's confirmation task (Oct 27 2026; it was Kyle's)
+ *     — one OPEN task per client, later changes appended to it — so someone
+ *     makes sure the editor has it;
  *   · the editor's bell + Slack DM when `brand_change_alerts` is on (at most
  *     one DM per client per hour, the notify dedupe); otherwise `pending`.
  */
@@ -563,8 +564,15 @@ async function finishBrandAlertClaim(clientId: string, claim: string, now: Date,
   return { claimed: rows.length, channel, editors: editors.map((e) => e.key), taskId };
 }
 
-/** Kyle's "make sure the editor has it" card: one open card per client, appended to. */
+/** The "make sure the editor has it" card: one open card per client, appended to.
+ *  BRAND UPDATES ARE THE CREATIVE MANAGER'S (Jordan, Oct 27 2026: content
+ *  clients are "the Creative Manager and Jordan", not Kyle). The card goes to
+ *  whoever carries the creativeManager flag (taskRouting.creativeWorkDesk:
+ *  else the owner), and an open card the hub put on someone else's desk moves
+ *  over when the next change is appended. A card a person assigned stays put. */
 async function ensureAckTask(clientId: string, clientName: string, rows: ChangeRow[], editors: AssignedEditor[], alertsOn: boolean, now: Date): Promise<string> {
+  const { creativeWorkDesk, deskFields } = await import("@/lib/taskRouting");
+  const desk = deskFields(await creativeWorkDesk().catch(() => null));
   const who = editors.map((e) => e.name);
   const editorWords = who.length ? who.join(" and ") : null;
   const projectId = editors.find((e) => e.projectId)?.projectId ?? null;
@@ -588,12 +596,13 @@ async function ensureAckTask(clientId: string, clientName: string, rows: ChangeR
     const newRows = rows.filter((r) => untaskedIds.includes(r.id));
     const open = await tx.smartTask.findFirst({
       where: { dedupeKey: { startsWith: ACK_TASK_PREFIX(clientId) }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
-      orderBy: { createdAt: "desc" }, select: { id: true, description: true },
+      orderBy: { createdAt: "desc" }, select: { id: true, description: true, assignedKey: true, assignedManually: true, delegatedAt: true },
     });
     const title = editorWords ? `Confirm ${editorWords} has ${clientName}'s brand update` : `Brand update for ${clientName} — no editor on their work yet`;
     if (open) {
       const description = `${open.description ?? ""}\n\nAlso changed (${at}, by ${by}):\n${newRows.map((r) => `• ${describeBrandChange(r)}`).join("\n")}`.slice(0, 6000);
-      await tx.smartTask.update({ where: { id: open.id }, data: { title, description } });
+      const reroute = !open.assignedManually && !open.delegatedAt && !!desk.assignedKey && open.assignedKey !== desk.assignedKey;
+      await tx.smartTask.update({ where: { id: open.id }, data: { title, description, ...(reroute ? desk : {}) } });
       await tx.clientBrandChange.updateMany({ where: { id: { in: untaskedIds }, taskId: null }, data: { taskId: open.id } });
       return open.id;
     }
@@ -604,7 +613,7 @@ async function ensureAckTask(clientId: string, clientName: string, rows: ChangeR
         description: [`${clientName} changed their brand profile (${at}, by ${by}):`, ...lines, "", how].join("\n").slice(0, 6000),
         reasonCreated: "A brand profile or brand asset changed (CP-06)",
         source: rows.some((r) => r.source === "client_portal") ? "portal" : "content_program",
-        priority: "MEDIUM", dueAt: new Date(now.getTime() + 24 * 3600_000), assignedKey: "kyle",
+        priority: "MEDIUM", dueAt: new Date(now.getTime() + 24 * 3600_000), ...desk,
         clientId, projectId, dedupeKey: `${ACK_TASK_PREFIX(clientId)}${newRows[0]?.id ?? rows[0].id}`,
       },
       select: { id: true },
@@ -681,7 +690,7 @@ export async function sweepBrandChangeAlerts(opts: { now?: Date; limit?: number 
   });
   let rows = 0;
   for (const s of stale) rows += (await alertBrandChanges(s.clientId, { now }).catch(() => ({ claimed: 0 }))).claimed;
-  // A process can die after claiming, after creating Kyle's task, or after a
+  // A process can die after claiming, after creating the confirmation task, or after a
   // provider accepted the message. Reclaim only an expired batch, preserving
   // its original claim and the notification's stable dedupe key.
   const stranded = await prisma.clientBrandChange.findMany({
@@ -792,7 +801,7 @@ export async function pendingBrandChanges(clientId: string, opts: { now?: Date; 
 
 /**
  * A named editor acknowledges only their own change/version receipts. The
- * change-wide compatibility stamp and Kyle's task settle only when all
+ * change-wide compatibility stamp and the confirmation task settle only when all
  * required recipients have acknowledged or received an attributed override.
  */
 export async function acknowledgeBrandChanges(clientId: string, editorKey: string, opts: { now?: Date } = {}): Promise<{ acked: number; tasksClosed: number }> {

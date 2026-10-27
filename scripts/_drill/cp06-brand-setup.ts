@@ -167,6 +167,9 @@ async function main() {
   await saveSecret("dropbox", "drill-refresh-not-a-real-token");
   const kim = await prisma.teamMember.create({ data: { name: "Kim Miguel", email: "kim-drill@example.com", role: "EDITOR", slackId: "U-KIM" }, select: { id: true } });
   await prisma.teamMember.create({ data: { name: "Kyle Drill", email: "kyle-drill@example.com", role: "MANAGER" } });
+  // Oct 27 2026 (Jordan: content clients are "the Creative Manager and Jordan"):
+  // the brand-update confirmation is the creative manager's, read off the flag.
+  await prisma.teamMember.create({ data: { name: "James Drill", email: "james-drill@example.com", role: "MANAGER", creativeManager: true } });
   // Kim has a hub login, so no "send her a login" nudge lands on Jordan's desk mid-drill.
   await prisma.appUser.create({ data: { email: "kim-drill@example.com", name: "Kim", role: "EDITOR", status: "ACTIVE", editorKey: "kim" } });
   const setSwitch = (key: string, enabled: boolean) =>
@@ -201,7 +204,13 @@ async function main() {
     return { clientId: client.id, enrollmentId: e?.id ?? null, projectId, token, viewer: viewer!, tokenViewer: token_!, ownerId: ownerId!, name };
   }
   const changesOf = (clientId: string) => prisma.clientBrandChange.findMany({ where: { clientId }, orderBy: { createdAt: "asc" } });
-  const kyleTasks = (clientId: string) => prisma.smartTask.findMany({ where: { assignedKey: "kyle", dedupeKey: { startsWith: `brand-ack:${clientId}:` } } });
+  // The confirmation task (was Kyle's; the creative manager's since Oct 27 2026). The
+  // name is kept so the assertions below read as before; every row it returns must be James's.
+  const kyleTasks = async (clientId: string) => {
+    const all = await prisma.smartTask.findMany({ where: { dedupeKey: { startsWith: `brand-ack:${clientId}:` } } });
+    if (all.some((t) => t.assignedKey !== "james")) throw new Error(`a brand-ack task is not on the creative manager: ${all.map((t) => t.assignedKey).join(",")}`);
+    return all;
+  };
   const upload = async (auth: { token: string }, file: { name: string; body?: string }, fields: Record<string, string> = {}) => {
     const form = new FormData();
     form.set("token", auth.token);

@@ -177,7 +177,8 @@ async function main() {
   c.head("5 · Waiting rows: no Instructions missing, no Remind photographer");
   // =========================================================================
   const page = fs.readFileSync(path.join(REPO, "src/app/editing/page.tsx"), "utf8");
-  c.ok("the Editing Room reads reminder views only for rows that are not Waiting", page.includes("remindViewsFor(notDone.filter((r) => r.status !== WAITING_ON_FOOTAGE).map((r) => r.id), now)"));
+  c.ok("the Editing Room reads reminder views only for rows that are not Waiting", page.includes("remindViewsFor(notDone.filter((r) => r.status !== WAITING_ON_FOOTAGE).map((r) => r.id), now, { audience: \"editing\" })"));
+  // (Oct 27 2026, task routing: the Editing Room asks as the "editing" audience, shown from the shoot's end; the office desk's default waits for the morning-after ask.)
   const W = await mkJob("40 Waiting Way");
   await prisma.project.update({ where: { id: W }, data: { status: "SCHEDULED", shootDate: et(26, 9), statusEvidence: null } });
   const rw = await rowOf(W);

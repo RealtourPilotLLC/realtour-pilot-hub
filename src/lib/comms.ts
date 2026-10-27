@@ -268,6 +268,14 @@ export async function recordClientCommunication(opts: {
   // A "Liked …" / emoji reaction needs no reply — log nothing, make no task.
   if (isReaction(opts.text)) return { replyTask: false, revision: false, brain: "off" };
   const retry = opts.aiRetry ?? null;
+  // A THANK-YOU OPENS NO REPLY TASK (Oct 27 2026): "Thank you so much!" and
+  // "It went well" each became a to-do on Kyle's Comms. A message that is only
+  // a thank-you or an acknowledgment (replyQueue.isAckOnlyInbound: no
+  // question, no ask, no revision, a signature allowed) is still logged and
+  // still read for revisions, asks and complaints below; it just never opens
+  // or merges into a reply to-do. A thank-you with a request in it does.
+  const { isAckOnlyInbound } = await import("@/lib/replyQueue");
+  const ackOnly = isAckOnlyInbound(opts.text, opts.kind);
 
   const cls = classifyComm(opts.text);
 
@@ -336,7 +344,7 @@ export async function recordClientCommunication(opts: {
   let mergedInto: string | null = null;
   let freshTask = false;
   if (decision) {
-    if (decision.actionable) {
+    if (decision.actionable && !ackOnly) {
       if (decision.mergeIntoTaskId && !checked.issue) {
         // Oct 21 2026: only into the SAME request (tasks.isSameRequest); a
         // different one falls through to its own to-do below.
@@ -363,7 +371,7 @@ export async function recordClientCommunication(opts: {
     }
     // Observability: record what the brain did + any flags, on the chosen order.
     if (effProjectId) {
-      const what = !decision.actionable ? "no action needed" : mergedInto ? "merged into an open to-do" : decision.mergeIntoTaskId && !checked.issue ? "created a to-do (a different request than the open one it named)" : "created a to-do";
+      const what = !decision.actionable ? "no action needed" : ackOnly ? "no to-do (only a thank-you or acknowledgment)" : mergedInto ? "merged into an open to-do" : decision.mergeIntoTaskId && !checked.issue ? "created a to-do (a different request than the open one it named)" : "created a to-do";
       const note = `Smart Brain: ${what} — ${decision.reason}${decision.flags.length ? ` [${decision.flags.join("; ")}]` : ""}`;
       await prisma.activity.create({ data: { projectId: effProjectId, type: "SYSTEM", body: note.slice(0, 300) } }).catch(() => {});
     }
@@ -373,7 +381,7 @@ export async function recordClientCommunication(opts: {
     let aiDetail: string | null = null;
     try {
       const { getSecret } = await import("@/lib/integrations/connections");
-      if (await getSecret("ai")) {
+      if (!ackOnly && (await getSecret("ai"))) {
         const { messageToTodo } = await import("@/lib/integrations/ai");
         const todo = await messageToTodo({
           channel: opts.kind === "email" ? "email" : opts.kind === "text" ? "text" : "call",
@@ -393,7 +401,7 @@ export async function recordClientCommunication(opts: {
     effPropertyAddress = fallbackProject?.title ?? null;
     const noAction = aiTitle != null && /no action needed/i.test(aiTitle);
     fallbackNoAction = noAction;
-    replyTask = noAction
+    replyTask = noAction || ackOnly
       ? false
       : await createCommTask({
           clientId: opts.clientId,

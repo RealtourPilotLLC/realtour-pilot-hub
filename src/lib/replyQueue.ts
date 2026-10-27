@@ -153,11 +153,21 @@ const ACK_WORDS = new Set([
   "are", "truly", "really", "kyle", "jordan", "for", "understanding", "again", "everything",
   "welcome", "no", "nope", "problem", "worries", "np", "hi", "hey", "hello", "guys", "team",
   "all", "set", "done", "sure", "absolutely", "works", "fine", "of", "course",
+  // Oct 27 2026: "It went well" (a client telling us the shoot went fine) sat
+  // on Kyle's Comms as needing a reply.
+  "went", "well", "smoothly", "nicely",
 ]);
 // Unambiguous closing phrases that survive a couple of non-ack words around
 // them ("All good homey 🙏", "You're the man", "Looking forward to Friday").
 const ACK_PHRASE_RE =
-  /\b(will do|sounds (good|great)|no (problem|worries)|all (good|set)|you'?re the (man|best)|looking forward to|see you (then|there|soon)|good luck|have a (good|great)|talk (soon|later))\b/i;
+  /\b(will do|sounds (good|great)|no (problem|worries)|all (good|set)|you'?re the (man|best)|looking forward to|see you (then|there|soon)|good luck|have a (good|great)|talk (soon|later)|(it |that |everything |the shoot )?went (really |so |very )?(well|great|smoothly|perfectly))\b/i;
+// A REQUEST INSIDE A THANK-YOU STILL NEEDS AN ANSWER (Oct 27 2026). The praise
+// rule below read "Thank you so much! Can you also send the floor plan" as a
+// closer (it is short and says "thank"). Any ask phrasing vetoes courtesy, so
+// only thanks, acknowledgments and "it went well" are let go. "No need" is
+// a closer, not an ask.
+const ASK_RE =
+  /\b(?:can|could|would|will) (?:you|u|we|someone|they)\b|\bplease\b|\bpls\b|\bplz\b|(?<!\bno )\bneed(?:s|ed)?\b|\bwant(?:s|ed)?\b|\bwondering\b|\blet (?:me|us) know\b|\bany (?:update|news|word|chance)\b|\bwhen (?:will|can|is|are|do|does|should|would)\b|\bhow (?:do|can|long|much|about)\b|\b(?:send|change|fix|edit|remove|swap|move|reschedule|cancel|resend|redo|reshoot|add)\b|\b(?:question|issue|problem with|missing)\b/i;
 // Short, appreciative, no question in it — "Thank you!!", "These look amazing".
 // PRAISE_ONLY is the classifier's own regex (src/lib/comms.ts), imported rather
 // than copied: three files used to carry their own edition of it.
@@ -186,11 +196,69 @@ export function isCourtesyMessage(text: string): boolean {
   return isCourtesy(text);
 }
 
+// ---------------------------------------------------------------------------
+// A THANK-YOU OPENS NO REPLY TASK (Oct 27 2026). Kyle's Comms carried "Thank
+// you so much!" and "It went well": the AI read them as needing an answer and
+// each became a to-do. The task path now asks this first. It is the walk's
+// own courtesy rule (above), applied to what the client wrote: for an email,
+// the words under the subject with the quoted thread, "Sent from my iPhone"
+// and the signature block taken off. Conservative: a question mark, an ask
+// ("can you", "please", "send", "change"), a revision, a number in the
+// message itself, or anything past a couple of short lines keeps the task.
+// ---------------------------------------------------------------------------
+
+/** One signature line: a name, a title, a brokerage, a phone, an address, a
+ *  link. Short, no question, no ask. */
+function isSignatureLine(line: string): boolean {
+  const l = line.trim();
+  if (!l) return true;
+  if (l.length > 70 || l.includes("?") || ASK_RE.test(l)) return false;
+  if (/^(?:--|__|—|-)\s*$/.test(l)) return true;
+  if (/@|https?:\/\/|www\.|\.com\b|\(\d{3}\)|\d{3}[\s.-]\d{3}[\s.-]\d{4}|\b(?:cell|mobile|office|direct|phone|fax|license|lic\.?|dre)\b/i.test(l)) return true;
+  // A name / title / company: a few words, mostly capitalised, no sentence end.
+  const words = l.replace(/[|•·,&]/g, " ").split(/\s+/).filter(Boolean);
+  if (words.length > 7 || /[.!]\s+\S/.test(l)) return false;
+  const caps = words.filter((w) => /^[A-Z0-9]/.test(w)).length;
+  return caps >= Math.ceil(words.length / 2);
+}
+
+/** True when an inbound message needs no reply at all: a thank-you, an
+ *  acknowledgment, "it went well", an emoji. `kind` "email" reads `text` as
+ *  the Gmail sync writes it ("<subject> — <their words>"). */
+export function isAckOnlyInbound(text: string, kind: "text" | "email" | "missed_call" | "voicemail" | string = "text"): boolean {
+  const raw = (text ?? "").trim();
+  if (!raw) return false; // nothing to judge; the caller's other rules decide
+  if (kind === "missed_call" || kind === "voicemail") return false; // a call is always called back
+  if (isReaction(raw)) return true;
+  if (kind !== "email") return isCourtesy(raw) && !classifyComm(raw).isRevision;
+  const split = raw.indexOf(" — ");
+  const subject = split >= 0 ? raw.slice(0, split) : "";
+  let body = split >= 0 ? raw.slice(split + 3) : raw;
+  if (subject.includes("?")) return false; // the walk's rule: a question in the subject is a question
+  body = stripQuotedReply(body).replace(/\bSent from my (?:iPhone|iPad|Galaxy|Android|mobile device)[\s\S]*$/i, "").trim();
+  if (!body) return false;
+  const lines = body.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  // The message is its first line or two; everything after must read as a
+  // signature. A third line of prose means a real email.
+  for (let k = 1; k <= Math.min(2, lines.length); k++) {
+    const head = lines.slice(0, k).join(" ");
+    const tail = lines.slice(k);
+    if (tail.length > 8) continue;
+    if (!tail.every(isSignatureLine)) continue;
+    // Each line of the message is itself a closer ("Thank you so much!" /
+    // "Have a great day"), never a thank-you riding on a second sentence.
+    const closer = (l: string) => isReaction(l) || (isCourtesy(l) && !/\d/.test(l) && !classifyComm(l).isRevision);
+    if (lines.slice(0, k).every(closer) && closer(head)) return true;
+  }
+  return false;
+}
+
 function isCourtesy(text: string): boolean {
   const t = text.replace(/\s+/g, " ").trim();
   if (!t) return true;
   if (t.includes("?")) return false; // they asked something
   if (t.length > 120) return false; // a real message, whatever it opens with
+  if (ASK_RE.test(t)) return false; // "thanks! can you also…" is an ask (Oct 27 2026)
   const words = t.toLowerCase().replace(/[^a-z']+/g, " ").trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return true; // punctuation/emoji only
   if (words.length <= 10 && words.every((w) => ACK_WORDS.has(w))) return true;

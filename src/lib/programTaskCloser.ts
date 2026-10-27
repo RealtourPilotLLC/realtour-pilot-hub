@@ -17,6 +17,9 @@ import { TASK_DONE_INCLUDING_LEGACY, ANSWER_GAP_TASK_PREFIX } from "@/lib/progra
 //     mid-month check on 2026-10"), programReminders.raiseMidMonthFollowUp.
 //     Janice Pigga booked her October session on Oct 23 and hers stayed open
 //     beside the ones that still mattered (Mike Ciunci, Kristen Pavillard).
+//     Since Oct 27 2026 it is the creative manager's, and it also lets go
+//     when the program had not started (Kristen's: no strategy in her portal
+//     before her Oct 29 discovery call).
 // Erica booked her October session and her "still needs a content session
 // booking" stayed open; three "still needs a planning path" tasks stayed open
 // after each month's route was chosen; Marcee's answer-gap task stayed open
@@ -90,7 +93,20 @@ async function midMonthVerdict(key: string, now: Date, cache: Map<string, { hold
   if (!monthId) return { holds: true, evidence: "the task's key could not be read, so it is left for a person" };
   const hit = cache.get(`mid:${monthId}`);
   if (hit) return hit;
-  const { monthPrimaryAsk } = await import("@/lib/programReminders");
+  const { monthPrimaryAsk, programNotStartedFor, monthlyCalendar, reminderPolicy } = await import("@/lib/programReminders");
+  // NOT BEFORE THE PROGRAM HAS STARTED (Oct 27 2026, Kristen Pavillard): a
+  // check raised before the client's strategy was in their portal, or for a
+  // month whose 15th came before they joined, was never theirs to have.
+  const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { enrollmentId: true, monthKey: true } }).catch(() => null);
+  if (month) {
+    const policy = (await reminderPolicy({ orDefaults: true }).catch(() => null))?.policy ?? null;
+    const notStarted = await programNotStartedFor(month.enrollmentId, policy ? monthlyCalendar(month.monthKey, policy).midMonthAt : null);
+    if (notStarted) {
+      const v = { holds: false, evidence: notStarted };
+      cache.set(`mid:${monthId}`, v);
+      return v;
+    }
+  }
   const ask = await monthPrimaryAsk(monthId, { now });
   const v = { holds: ask.action !== null, evidence: ask.evidence };
   cache.set(`mid:${monthId}`, v);

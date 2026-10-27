@@ -1,7 +1,7 @@
 import "server-only";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
-import { etDayKey, etMonthDayTime, etTime } from "@/lib/datetime";
+import { addBusinessDayKeysET, etAt, etDayKey, etMonthDayTime, etTime } from "@/lib/datetime";
 import { noDashes } from "@/lib/text";
 import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
 import { FLOW_AND_VISION_GAP } from "@/lib/handoff";
@@ -16,6 +16,7 @@ import {
   firstName,
   listWords,
   morningsBefore,
+  NUDGE_HOUR,
   parseClaim,
   readAllMissing,
   streetOf,
@@ -125,11 +126,69 @@ function lastReminder(lock: LockRecord | null, claims: { value: string }[]): Las
 /** What a row needs to draw the button: what is missing, who would be texted, the last reminder. */
 export type RemindView = { missing: string[]; photographer: string | null; last: { atISO: string; words: string } | null };
 
-/** For the Editing Room: the rows missing their video instructions, with their last reminder. Only those come back. */
-export async function remindViewsFor(projectIds: string[], now: Date = new Date()): Promise<Map<string, RemindView>> {
+// ---------------------------------------------------------------------------
+// WHEN A ROW SHOWS (Oct 27 2026). Kyle's desk listed "Missing upload details"
+// for shoots filmed TODAY that were still going on: the photographer had not
+// even left the house. Jordan's order is photographer first, office second:
+//   · nothing before the shoot is over (the last live visit's end: its endAt,
+//     else its start plus its booked length, else two hours), for anyone;
+//   · the Editing Room ("editing") shows the button from the shoot's end, as
+//     the editor waiting on the words may want to press it;
+//   · the office desk ("office", the default: Kyle's Follow-Ups) only once the
+//     photographer has had the morning-after ask (missingInstructions, 10 AM)
+//     and two hours with it, on the first business day after the shoot day.
+//     Still missing then, it is Kyle's to chase.
+// A job with no shoot time on record shows as before (nothing to wait for).
+// ---------------------------------------------------------------------------
+
+/** "office" = Kyle's desk (the default); "editing" = the Editing Room's button. */
+export type RemindAudience = "office" | "editing";
+const DEFAULT_SHOOT_MIN = 120;
+
+type Visit = { status: string | null; startAt: Date | null; endAt: Date | null; durationMin: number | null };
+
+/** When the shoot was over (pure): null = a live visit is still to come or
+ *  under way; undefined = no shoot time on record at all. */
+export function shootOverAt(visits: Visit[], shootDate: Date | null, now: Date, live: (a: { status: string | null; startAt: Date | null }) => boolean): Date | null | undefined {
+  const ends = (start: Date, end: Date | null, min: number | null) => end ?? new Date(start.getTime() + (min && min > 0 ? min : DEFAULT_SHOOT_MIN) * 60_000);
+  if (visits.length === 0) {
+    if (!shootDate) return undefined;
+    const end = ends(shootDate, null, null);
+    return end.getTime() > now.getTime() ? null : end;
+  }
+  const lives = visits.filter(live);
+  if (lives.length === 0) return undefined; // every visit cancelled or postponed: the ask decides, not the clock
+  if (lives.some((v) => v.startAt!.getTime() > now.getTime())) return null;
+  const end = Math.max(...lives.map((v) => ends(v.startAt!, v.endAt, v.durationMin).getTime()));
+  return end > now.getTime() ? null : new Date(end); // still on site
+}
+
+/** When a row may show to `audience` (pure). Null = not yet (the shoot is not over). */
+export function remindShowsFrom(over: Date | null | undefined, audience: RemindAudience): Date | null {
+  if (over === null) return null;
+  if (over === undefined) return new Date(0);
+  if (audience === "editing") return over;
+  // The first business day after the shoot's ET day, two hours after the 10 AM ask.
+  return new Date(Math.max(over.getTime(), etAt(addBusinessDayKeysET(over, 1), NUDGE_HOUR + 2).getTime()));
+}
+
+/** For the Editing Room and the office desk: the rows missing their video
+ *  instructions, with their last reminder. Only those come back, and only
+ *  once the audience should see them (above). */
+export async function remindViewsFor(projectIds: string[], now: Date = new Date(), opts: { audience?: RemindAudience } = {}): Promise<Map<string, RemindView>> {
   const out = new Map<string, RemindView>();
   const gaps = await videoGapsFor(projectIds);
-  const ids = [...gaps.keys()];
+  if (!gaps.size) return out;
+  const audience = opts.audience ?? "office";
+  const { liveAppointment } = await import("@/lib/shootDayText");
+  const visits = await prisma.appointment.findMany({
+    where: { projectId: { in: [...gaps.keys()] } },
+    select: { projectId: true, status: true, startAt: true, endAt: true, durationMin: true },
+  });
+  const ids = [...gaps.keys()].filter((id) => {
+    const from = remindShowsFrom(shootOverAt(visits.filter((v) => v.projectId === id), gaps.get(id)!.job.shootDate, now, liveAppointment), audience);
+    return from !== null && from.getTime() <= now.getTime();
+  });
   if (!ids.length) return out;
   const rows = await prisma.appSetting.findMany({
     where: { OR: [{ key: { in: ids.map(remindLockKey) } }, ...ids.map((id) => ({ key: { startsWith: `${CLAIM_PREFIX}${id}:` } }))] },
