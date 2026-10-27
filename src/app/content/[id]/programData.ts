@@ -59,11 +59,13 @@ export async function loadStrategyTab(enrollmentId: string, month: { id: string;
   const pil: PillarRowUi[] = pillars.map((p) => ({ id: p.id, name: p.name, purpose: p.purpose, focusAreas: p.focusAreas, aliases: p.aliases, status: p.status, emphasis: p.emphasis }));
   const ow: OwnerUi[] = Object.values(owners).map((o) => ({ duty: o.duty, label: o.label, scope: o.scope, appUserId: o.appUserId }));
   // Oct 14 2026: the auto-built creative identity, read-only, with the strategy version it was built from.
-  const enr = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true } });
+  const enr = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true, clientId: true } });
   const ci = creativeIdentityFromOverrides(enr?.overridesJson ?? null);
   const approvedNow = versions.filter((v) => v.status === "APPROVED").sort((a, b) => b.versionNo - a.versionNo)[0] ?? null;
+  // Oct 27 2026: plus the style inspirations the knowledge curator kept from their calls.
+  const styleInspirations = ci && enr ? await import("@/lib/knowledgeCurator").then((m) => m.styleInspirationsFor(enr.clientId)).catch(() => []) : [];
   const creativeIdentity: CreativeIdentityUi | null = ci
-    ? { identity: ci, builtFromVersionNo: versions.find((v) => v.id === ci.strategyVersionId)?.versionNo ?? null, stale: !!approvedNow && approvedNow.id !== ci.strategyVersionId, derivedAt: ci.derivedAt || null }
+    ? { identity: ci, builtFromVersionNo: versions.find((v) => v.id === ci.strategyVersionId)?.versionNo ?? null, stale: !!approvedNow && approvedNow.id !== ci.strategyVersionId, derivedAt: ci.derivedAt || null, styleInspirations }
     : null;
   return {
     discovery, queueActive: queue.active, creativeIdentity, hasApprovedStrategy: !!approvedNow,

@@ -79,7 +79,7 @@ export type CallTranscriptUi = {
   /** "Transcript in from Drive (Gemini notes, Oct 6)" — null when there is none. */
   sourceLine: string | null;
   sourceUrl: string | null;
-  /** "Analyzed Oct 12 — 4 topic proposals · 3 facts to review" */
+  /** "Analyzed Oct 12 — 4 topic proposals · 3 facts noted" */
   resultLine: string | null;
   proposals: number | null;
   /** For "in": why the AUTOMATIC run has not analysed it, in one sentence. */
@@ -225,7 +225,8 @@ export async function loadCallTranscripts(
       proposals = discovery ? r.bankIdeas ?? 0 : r.proposedSelections ?? 0;
       const parts = [discovery ? plural(proposals, "topic idea") + " for the bank" : `${plural(proposals, "topic")} confirmed`];
       if (!discovery && r.keptSelections) parts.push(`${r.keptSelections} already decided, kept`);
-      if (r.facts) parts.push(`${plural(r.facts, "fact")} to review`);
+      // Oct 27 2026: nobody reviews call facts any more; the knowledge curator sorts them (Plan › Knowledge).
+      if (r.facts) parts.push(`${plural(r.facts, "fact")} noted`);
       if (r.proposals) parts.push(plural(r.proposals, "strategy proposal"));
       resultLine = `Analyzed${at ? ` ${etMonthDay(at)}` : ""} — ${parts.join(" · ")}`;
     }

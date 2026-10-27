@@ -116,8 +116,13 @@ export async function loadBrandTab(clientId: string) {
         }
       : null,
   };
+  // Oct 27 2026, Jordan on this list: "This is not something that needs to
+  // reach the editor brief ... The editor needs to know technical stuff about
+  // the edits". It shows what the brief reads (production preferences), less
+  // the shoot-day ones the knowledge curator filed as filming (production.*);
+  // brand and strategy lines stay on the Knowledge view.
   const provenance: ProvenanceUi = facts
-    .filter((f) => f.category === "BRAND_PREFERENCE" || f.category === "PRODUCTION_PREFERENCE" || f.scope === "PROJECT")
+    .filter((f) => f.category === "PRODUCTION_PREFERENCE" && !(f.fieldKey ?? "").startsWith("production."))
     .map((f) => ({ id: f.id, body: f.body, category: f.category, scope: f.scope, source: f.source, projectId: f.projectId, monthId: f.monthId, factDateISO: iso(f.factDate) }));
   // CP-06: every brand change, who made it, and whether the editor has it.
   const changes: BrandChangeUi[] = changeRows.map((c) => ({

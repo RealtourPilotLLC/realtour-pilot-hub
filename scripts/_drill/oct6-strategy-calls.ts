@@ -15,18 +15,24 @@
 //   1  Settings accepts the generic type as STRATEGY_CANDIDATE (the clash rule
 //      for one-type-per-purpose does not apply to it).
 //   2  INGEST (the hourly sync's own path, 30 days back / 14 ahead): a verified
-//      client (John, by email) is filed on October by the sweep; everyone else
-//      (Joe from an address not on file, Lauren, Mike) is a CANDIDATE with NO
-//      review task, NO alias proposal; a known client whose call would plan a
-//      month already over (Kristin, Sep 8) is NOT filed by the sweep — it
-//      waits with her named; a second pass changes nothing.
-//   3  The desk: window, discovery excluded, statuses, suggestions (Joe by
-//      name; never Mike by domain), month default (last 10 days → next month).
+//      client (John, by email) is filed on October by the sweep; Oct 27 2026
+//      (Jordan: "it should be analyzed and assigned automatically") Joe, from
+//      an address not on file, is filed on October by his name (Joe = Joseph,
+//      the only active client with it, callMatchCore); everyone else (Lauren,
+//      Mike) is a CANDIDATE with NO review task, NO alias proposal; a known
+//      client whose call would plan a month already over (Kristin, Sep 8; and
+//      Arielle, Sep 11, found by name) is NOT filed by the sweep; it waits
+//      with them named; a second pass changes nothing.
+//   3  The desk: window, discovery excluded, statuses, Joe assigned by name,
+//      suggestions (never Mike by domain), month default (last 10 days → next
+//      month).
 //   4  ASSIGN Joe → October: record CONFIRMED_BY_STAFF with who/when; the
 //      month's callRecordId, COMPLETED at Sep 24, route CALL; topics and the
 //      booked shoot untouched; the next sync keeps it, even on day-rule edges.
-//   5  UNASSIGN puts Joe's month back EXACTLY; the next sync does not re-file
-//      it by email; assign again.
+//   5  UNASSIGN takes the call off Joe's month (Oct 27 2026: the sweep had
+//      filed it by name, so, as for John filed by email, the month goes back
+//      to having no call); the next sync does not re-file it by email; assign
+//      again.
 //   6  John (auto-filed, written route kept): assigning moves the route to the
 //      call — SCHEDULED at 4 PM ET; unassign → WRITTEN/SKIPPED again; after the
 //      call ends, COMPLETED.
@@ -95,6 +101,9 @@ installNextStubs();
 class Redirect extends Error { constructor(readonly href: string) { super(href); } }
 const navigation = createRequire(__filename)("next/navigation") as { redirect: (href: string) => never };
 navigation.redirect = (href) => { throw new Redirect(href); };
+// Oct 27 2026: Joe's row is now ASSIGNED with a held call, so the desk renders
+// its transcript item (a client component that asks for the router).
+(navigation as unknown as { useRouter: () => unknown }).useRouter = () => ({ refresh() {}, push() {}, replace() {}, back() {}, prefetch() {} });
 
 const fake = makeFakeCalendly({ now: () => now().getTime() });
 const fence = fenceFetch((url, init) => fake.handle(url, init));
@@ -213,7 +222,10 @@ async function main() {
       c.ok("John's cancelled 3 PM booking → recorded CANCELLED, does not hold the month", rjo?.status === "CANCELLED" && (await monthOf(J.monthId))?.callRecordId === rj?.id);
       const jm = await monthOf(J.monthId);
       c.ok("the sweep never changes a route: John's October stays WRITTEN (call shows SCHEDULED)", jm?.planningMode === "WRITTEN" && jm.strategyCallStatus === "SCHEDULED", JSON.stringify(jm));
-      for (const [label, ev] of [["Joe (address not on file)", joe], ["Lauren Spackman (not a client)", lauren], ["Mike Flatley (same company as Joe)", mike], ["Susan (program ENDED)", susan]] as const) {
+      // Oct 27 2026, Jordan: "it should be analyzed and assigned automatically."
+      const xj = await rec(joe);
+      c.ok("Joe (address not on file) → MATCHED to Joseph Sutow by name, MONTHLY_STRATEGY, on October, the reason on the record", xj?.matchState === "MATCHED" && xj.clientId === Jo.clientId && xj.callType === "MONTHLY_STRATEGY" && xj.monthId === Jo.monthId && xj.targetMonthKey === "2026-10" && /name on the booking is theirs/.test(xj.matchNote ?? ""), `${xj?.matchState}/${xj?.callType}/${xj?.targetMonthKey} ${xj?.matchNote}`);
+      for (const [label, ev] of [["Lauren Spackman (not a client)", lauren], ["Mike Flatley (same company as Joe)", mike], ["Susan (program ENDED)", susan]] as const) {
         const x = await rec(ev);
         c.ok(`${label} → CANDIDATE, UNCLASSIFIED, no client, no month`, x?.matchState === "CANDIDATE" && x.callType === "UNCLASSIFIED" && !x.clientId && !x.monthId, `${x?.matchState}/${x?.callType}/${x?.clientId}`);
       }
@@ -225,7 +237,9 @@ async function main() {
       c.ok("outside the window: nothing recorded (30 back, 14 ahead)", !(await rec(tooOld)) && !(await rec(tooFar)));
       c.ok("the discovery booking is still discovery", (await rec(disc))?.callType === "BRAND_DISCOVERY");
       const om = await monthOf(Jo.monthId);
-      c.ok("Joe's month untouched by the candidate", !om?.callRecordId && om?.strategyCallStatus === "COMPLETED" && !om.planningMode);
+      c.ok("Joe's October holds his Sep 24 call, COMPLETED; the route untouched (the sweep never changes a route)", om?.callRecordId === xj?.id && om?.strategyCallStatus === "COMPLETED" && om.strategyCallAt?.toISOString() === edt(9, 24, 10).toISOString() && !om.planningMode, JSON.stringify(om));
+      const xa = await rec(arielle);
+      c.ok("Arielle (Sep 11, found by name) is NOT filed: it would plan September, a month already over", xa?.matchState === "UNMATCHED_INVITEE" && !xa.monthId && !xa.clientId && /already over/.test(JSON.parse(xa.rawJson ?? "{}").identity?.candidates?.[0]?.reason ?? ""), `${xa?.matchState} ${xa?.matchNote}`);
       const n = await prisma.programCallRecord.count();
       const again = await ccr.syncCallRecordsFromCalendly({ now: now(), lookBackDays: 30, lookAheadDays: 14 });
       c.ok("a second pass: no new rows, same states", !("skipped" in again) && again.created === 0 && (await prisma.programCallRecord.count()) === n && (await rec(lauren))?.matchState === "CANDIDATE" && (await rec(john))?.matchState === "MATCHED");
@@ -239,8 +253,8 @@ async function main() {
       const rJoe = await byUri(joe), rJohn = await byUri(john), rLauren = await byUri(lauren), rMike = await byUri(mike), rDisc = await byUri(disc), rOld = await byUri(johnOld), rAr = await byUri(arielle);
       c.ok("the generic type is mapped (no banner)", d.candidateMapped);
       c.ok("discovery calls are not listed", rDisc === null);
-      c.ok("Joe: OPEN, completed, '30 Minute Strategy Call', default month OCTOBER (Sep 24 = last 10 days)", rJoe?.state === "OPEN" && rJoe.status === "completed" && rJoe.eventType === "30 Minute Strategy Call" && rJoe.defaultMonthKey === "2026-10", JSON.stringify(rJoe));
-      c.ok("Joe: suggested Joseph Sutow ('Joe' = Joseph, same last name)", rJoe?.suggestion?.clientId === Jo.clientId, JSON.stringify(rJoe?.suggestion));
+      c.ok("Joe: ASSIGNED automatically to Joseph Sutow, October, completed, '30 Minute Strategy Call' (Sep 24 = last 10 days)", rJoe?.state === "ASSIGNED" && rJoe.assignedBy === "auto" && rJoe.client?.id === Jo.clientId && rJoe.month?.key === "2026-10" && rJoe.status === "completed" && rJoe.eventType === "30 Minute Strategy Call" && rJoe.defaultMonthKey === "2026-10", JSON.stringify(rJoe));
+      c.ok("Joe: the row says how ('Joe' = Joseph, the name on the booking)", /name on the booking is theirs/.test(rJoe?.note ?? ""), rJoe?.note ?? "");
       c.ok("John: ASSIGNED by email, October, scheduled", rJohn?.state === "ASSIGNED" && rJohn.assignedBy === "auto" && rJohn.month?.key === "2026-10" && rJohn.status === "scheduled" && rJohn.client?.id === J.clientId);
       c.ok("John's cancelled booking reads cancelled", rOld?.status === "cancelled");
       c.ok("Lauren: OPEN, no suggestion (nobody enrolled by that name or address)", rLauren?.state === "OPEN" && rLauren.suggestion === null && rLauren.defaultMonthKey === "2026-10");
@@ -255,7 +269,7 @@ async function main() {
       const { StrategyCallsDesk } = await import("@/components/content/StrategyCallsDesk");
       const html = renderToStaticMarkup(createElement(StrategyCallsDesk, { data: JSON.parse(JSON.stringify(d)) }));
       const text = html.replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ");
-      c.ok("the page: Joe's row offers \"Assign to Joseph Sutow · October\" with the suggestion shown", text.includes("Assign to Joseph Sutow · October") && text.includes("Suggested: Joseph Sutow"), text.slice(0, 400));
+      c.ok("the page: Joe's row reads \"Joseph Sutow · October 2026 (matched automatically)\", the reason on hover", text.includes("Joseph Sutow · October 2026 (matched automatically)") && /title="matched automatically: the name on the booking is theirs/.test(html), text.slice(Math.max(0, text.indexOf("Joe Sutow") - 40), text.indexOf("Joe Sutow") + 500));
       c.ok("the page: John's row reads \"John Collins · October 2026 (matched by email)\", times in ET", text.includes("John Collins · October 2026") && text.includes("matched by email") && text.includes("Tue, Oct 6, 4:00 PM ET"), text.slice(0, 600));
       c.ok("the page: two groups, cancelled hidden by default", text.includes("Coming up · next 14 days") && text.includes("Past 30 days") && !text.includes("Cancelled"));
       c.ok("the client picker lists ACTIVE enrollments only (no ended program)", d.clients.some((x) => x.id === Jo.clientId) && !d.clients.some((x) => x.id === ended.id));
@@ -270,6 +284,7 @@ async function main() {
       const s = desk.suggestClient;
       const pool = [{ clientId: "joe", name: "Joseph Sutow", emails: ["jcsutow@gmail.com", "jsutow@garymercerteam.com"] }, { clientId: "kc", name: "Kristin Ciarmella", emails: ["klciarmella@gmail.com"] }];
       c.ok("suggest: an address on file wins", s({ name: "Someone Else", email: "JSUTOW@garymercerteam.com" }, pool)?.clientId === "joe");
+      c.ok("suggest: 'Joe Sutow' is Joseph Sutow (a nickname, same last name)", s({ name: "Joe Sutow", email: "joe@else.example" }, pool)?.clientId === "joe");
       c.ok("suggest: Mike Flatley @garymercerteam.com is NOT Joe", s({ name: "Mike Flatley", email: "mike@garymercerteam.com" }, pool) === null);
       c.ok("suggest: a first name alone is not a match ('Kristin Pavillard')", s({ name: "Kristin Pavillard", email: "k@foxroach.com" }, pool) === null);
       c.ok("suggest: middle initials ignored ('Kristin L. Ciarmella')", s({ name: "Kristin L. Ciarmella", email: "x@y.com" }, pool)?.clientId === "kc");
@@ -312,7 +327,10 @@ async function main() {
       const r = await A.unassignStrategyCallAction(joeRec.id);
       c.ok("unassigned (an ADMIN may)", r.ok, r.message);
       const m = await monthOf(Jo.monthId);
-      c.ok("month: COMPLETED stamp with no time, no route, no call record — as before", m?.strategyCallStatus === joeBefore?.strategyCallStatus && !m?.strategyCallAt && !m?.planningMode && !m?.planningChosenAt && !m?.callRecordId, JSON.stringify(m));
+      // Oct 27 2026: the sweep filed Joe's call by name before anyone assigned
+      // it (its own stamp replaced the bare COMPLETED one), so, as for John
+      // filed by email (section 6), "before" is the month without the call.
+      c.ok("month: no call, no time, no route, no call record (the month without the call the sweep had filed)", m?.strategyCallStatus === "NOT_SCHEDULED" && !m?.strategyCallAt && !m?.planningMode && !m?.planningChosenAt && !m?.callRecordId, JSON.stringify(m));
       const x = await prisma.programCallRecord.findUnique({ where: { id: joeRec.id } });
       c.ok("record: CANDIDATE, UNCLASSIFIED, no client/month", x?.matchState === "CANDIDATE" && x.callType === "UNCLASSIFIED" && !x.clientId && !x.monthId && !x.targetMonthKey);
       // Now Joe's address IS on file — the sweep would match it. A person said no.

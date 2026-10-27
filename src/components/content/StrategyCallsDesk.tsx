@@ -174,7 +174,8 @@ function CallRow({ r, data, assign, unassign, ignore, errors }: { r: DeskRow } &
           <p className="flex flex-wrap items-center gap-1.5">
             <CheckCircle2 className="size-4 text-success" aria-hidden />
             <span><b>{r.client.name}</b> · {monthName(r.month.key)}</span>
-            <span className="text-muted-2">({r.assignedBy === "staff" ? "assigned by staff" : "matched by email"})</span>
+            {/* Oct 27 2026: calls are also filed by name, phone, guest, the calendar and the AI; the reason is on hover. */}
+            <span className="text-muted-2" title={r.assignedBy === "staff" ? undefined : r.note ?? undefined}>({r.assignedBy === "staff" ? "assigned by staff" : /^matched via (email|backupEmail|alias)\b/.test(r.note ?? "") ? "matched by email" : "matched automatically"})</span>
             {r.catchUpNote && <span className="basis-full text-[13px] text-muted">{r.catchUpNote}</span>}
           </p>
         ) : r.state === "IGNORED" ? (

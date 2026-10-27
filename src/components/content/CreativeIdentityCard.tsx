@@ -12,7 +12,11 @@ import type { IdentityItem, StoredCreativeIdentity } from "@/lib/contentPolicy/c
 // (src/lib/creativeIdentity.ts); "Rebuild" runs that again now. Staff only.
 // ---------------------------------------------------------------------------
 
-export type CreativeIdentityUi = { identity: StoredCreativeIdentity; builtFromVersionNo: number | null; stale: boolean; derivedAt: string | null };
+export type CreativeIdentityUi = {
+  identity: StoredCreativeIdentity; builtFromVersionNo: number | null; stale: boolean; derivedAt: string | null;
+  /** Oct 27 2026: the style inspirations the AI kept from their calls (identity.style_inspirations facts). */
+  styleInspirations?: string[];
+};
 
 const HUMOR: Record<string, string> = { none: "None", dry: "Dry", warm: "Warm", playful: "Playful", outrageous: "Outrageous" };
 const COMEDY: Record<string, string> = { no_acting: "No acting", light_bits: "Light bits", full_skits: "Full skits" };
@@ -81,6 +85,7 @@ export function CreativeIdentityCard({ enrollmentId, data, hasApprovedStrategy }
             <Items label="Formats they like" items={ci.formatsLiked} />
             <Items label="Formats they avoid" items={ci.formatsAvoided} />
             <Items label="Filming constraints" items={ci.filmingConstraints} />
+            <Items label="Style inspirations" items={(data?.styleInspirations ?? []).map((text) => ({ text, basis: "stated" as const, source: "their calls" }))} />
           </div>
           <p className="text-xs text-muted-2">&ldquo;They said it&rdquo; is the client&rsquo;s own words; &ldquo;our read&rdquo; is inferred and never treated as a fact.</p>
         </div>

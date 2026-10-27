@@ -123,11 +123,21 @@ export async function creativeIdentityStale(enrollmentId: string): Promise<boole
 export async function sweepCreativeIdentities(opts: { max?: number; budgetMs?: number; minStartMs?: number } = {}): Promise<{ derived: number; failed: number; waiting: number; outOfTime: boolean }> {
   const started = Date.now();
   const deadline = started + (opts.budgetMs ?? 60_000);
-  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", clientSuppliesTopics: false }, select: { id: true, overridesJson: true } });
+  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", clientSuppliesTopics: false }, select: { id: true, clientId: true, overridesJson: true } });
   const approved = live.length ? await prisma.contentStrategyVersion.findMany({ where: { enrollmentId: { in: live.map((e) => e.id) }, status: "APPROVED" }, select: { id: true, enrollmentId: true, versionNo: true } }) : [];
   const newest = new Map<string, { id: string; versionNo: number }>();
   for (const v of approved) { const cur = newest.get(v.enrollmentId); if (!cur || v.versionNo > cur.versionNo) newest.set(v.enrollmentId, v); }
-  const stale = live.filter((e) => { const s = newest.get(e.id); if (!s) return false; const ci = creativeIdentityFromOverrides(e.overridesJson); return !ci || ci.strategyVersionId !== s.id; }).map((e) => e.id);
+  // Oct 27 2026: also stale once the knowledge curator kept something new
+  // about who they are on camera (an identity.* fact newer than the build),
+  // so a style inspiration from a call reaches the identity (Jordan: "that
+  // gets, you know, added to her creative identity").
+  const identityFacts = live.length ? await prisma.clientFact.groupBy({ by: ["clientId"], where: { clientId: { in: live.map((e) => e.clientId) }, status: "ACCEPTED", fieldKey: { startsWith: "identity." } }, _max: { updatedAt: true } }) : [];
+  const identityAt = new Map(identityFacts.map((g) => [g.clientId, g._max.updatedAt?.toISOString() ?? ""]));
+  const stale = live.filter((e) => {
+    const s = newest.get(e.id); if (!s) return false;
+    const ci = creativeIdentityFromOverrides(e.overridesJson);
+    return !ci || ci.strategyVersionId !== s.id || (identityAt.get(e.clientId) ?? "") > (ci.derivedAt || "");
+  }).map((e) => e.id);
   // A client whose last attempt failed waits six hours, so one bad answer is not paid for every quarter hour.
   const recentFail = new Set(stale.length ? (await prisma.programAiRun.findMany({ where: { kind: "creative_identity", status: "FAILED", enrollmentId: { in: stale }, createdAt: { gte: new Date(started - 6 * 3600_000) } }, select: { enrollmentId: true } })).map((r) => r.enrollmentId) : []);
   const due = stale.filter((id) => !recentFail.has(id));

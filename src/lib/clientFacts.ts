@@ -210,7 +210,7 @@ export async function markFactConfidential(id: string, by: string): Promise<{ pr
   return { proposalsRejected: r.count, alreadyConfidential: f.confidential };
 }
 
-export type PromptFact = { id: string; category: FactCategory; body: string; scope: FactScope; factDate: Date | null; source: string; monthId: string | null; projectId: string | null };
+export type PromptFact = { id: string; category: FactCategory; body: string; scope: FactScope; factDate: Date | null; source: string; monthId: string | null; projectId: string | null; fieldKey?: string | null };
 
 /**
  * The ONLY read a generator may use: accepted, AI-allowed, non-confidential
@@ -230,7 +230,7 @@ export async function factsForPrompt(clientId: string, opts: { monthId?: string 
     },
     orderBy: [{ factDate: "desc" }, { createdAt: "desc" }],
     take: opts.take ?? 40,
-    select: { id: true, category: true, body: true, scope: true, factDate: true, source: true, monthId: true, projectId: true },
+    select: { id: true, category: true, body: true, scope: true, factDate: true, source: true, monthId: true, projectId: true, fieldKey: true },
   });
   return rows.map((r) => ({ ...r, category: r.category as FactCategory, scope: r.scope as FactScope }));
 }

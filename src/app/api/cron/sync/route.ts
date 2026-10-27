@@ -412,6 +412,10 @@ export async function GET(req: NextRequest) {
       // bookings part just wrote; sends nothing to a client.
       prep: () => import("@/lib/meetingPrep").then((m) => m.syncMeetingPrep()),
       calendar: () => linkCalendarEvents({ max: 20 }),
+      // Oct 27 2026 (lib/callAutoMatch): calls still waiting for a client are
+      // asked again with the extra signals, Meet calls that never went through
+      // Calendly are found on the calendar, dated one-offs expire. No model.
+      autoMatch: () => import("@/lib/callAutoMatch").then((m) => m.autoMatchCalls()),
       transcripts: () => discoverTranscriptSources({ max: 40 }),
       // Program Gemini docs no record has claimed → the import review queue (rows only, no text, no tasks, no analysis).
       unlinked: () => sweepUnlinkedDriveTranscripts({ sinceDays: 45, max: 10 }),

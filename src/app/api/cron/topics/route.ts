@@ -94,7 +94,21 @@ export async function GET(req: NextRequest) {
     // fact extraction). Behind `transcript_jobs` (a missing row is off).
     transcriptJobs: async () => {
       const { driveTranscriptJobs, TRANSCRIPT_JOBS_PER_TICK, TRANSCRIPT_JOB_MIN_START_MS } = await import("@/lib/transcriptJobs");
-      return driveTranscriptJobs({ max: TRANSCRIPT_JOBS_PER_TICK, budgetMs: budget(), minStartMs: TRANSCRIPT_JOB_MIN_START_MS, leaseBy: "ai-cron" });
+      const jobs = await driveTranscriptJobs({ max: TRANSCRIPT_JOBS_PER_TICK, budgetMs: budget(), minStartMs: TRANSCRIPT_JOB_MIN_START_MS, leaseBy: "ai-cron" });
+      // THE CALLS' FOLLOW-THROUGH (Oct 27 2026, Jordan: "AI should handle
+      // it"), after the calls are read: what a call left is sorted where it
+      // is used (knowledgeCurator), a call nobody could place is put to the
+      // model (callAutoMatch), a client's portal message is read for a
+      // complaint (contentComplaints). Each behind `ai_runs`, each call
+      // started only with time to finish; the model down changes nothing.
+      const [{ sweepKnowledgeCuration }, { aiMatchWaitingCalls, CALL_MATCH_MIN_START_MS }, { sweepMessageComplaints, COMPLAINT_MIN_START_MS }, { isAutomationEnabled }] = await Promise.all([
+        import("@/lib/knowledgeCurator"), import("@/lib/callAutoMatch"), import("@/lib/contentComplaints"), import("@/lib/programAutomation"),
+      ]);
+      const knowledge = await sweepKnowledgeCuration({ max: 2, budgetMs: budget(), minStartMs: 60_000 });
+      const aiOn = await isAutomationEnabled("ai_runs");
+      const callMatch = aiOn ? await aiMatchWaitingCalls({ max: 3, budgetMs: budget(), minStartMs: CALL_MATCH_MIN_START_MS }) : { skipped: "ai_runs is off" };
+      const complaints = aiOn ? await sweepMessageComplaints({ max: 4, budgetMs: budget(), minStartMs: COMPLAINT_MIN_START_MS }) : { skipped: "ai_runs is off" };
+      return { ...(jobs as Record<string, unknown>), knowledge, callMatch, complaints };
     },
     // THE DRAFTING CHAIN (F07/F08, Sep 22 2026): a client's written answers
     // and a reconciled planning call both end in a draft in the review lane.
