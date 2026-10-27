@@ -10,14 +10,14 @@
 // not have to do anything with Kristen Pavillard."
 //
 //   1. the routing table (lib/taskRouting): the creative manager is the flag,
-//      not a name; no flag = the owner; listing scripts = the owner
+//      not a name; no flag = the owner; listing scripts = the creative manager (Loom, Oct 27)
 //   2. a brand update confirmation lands on the creative manager; an open one
 //      still on Kyle moves over on the next change; a hand-picked one stays
 //   3. the 15th's mid-month check lands on the creative manager; none before
 //      the program has started (no strategy yet, or joined after the 15th),
 //      and the hourly closer lets a premature one go
 //   4. Script Studio's script package and the client's response go to the
-//      listing-scripts owner (Jordan), never to Kyle or the shared pile
+//      listing-scripts owner (James since the Loom), never to Kyle or the shared pile
 //   5. a Google Calendar acceptance is not the client writing
 //   6. a thank-you opens no reply task; a thank-you with an ask does
 //   7. reply tasks close on a person's reply after the client's last message
@@ -65,10 +65,13 @@ async function main() {
     // =====================================================================
     c.ok("creative manager = the roster row with the flag (James)", (await routing.creativeManagerDesk())?.id === james.id && (await routing.creativeManagerDesk())?.key === "james");
     c.ok("owner = the OWNER login's roster row (Jordan)", (await routing.ownerDesk())?.id === jordan.id);
-    c.ok("listing scripts = the owner", (await routing.listingScriptsDesk())?.key === "jordan");
+    // Jordan's Loom, Oct 27 2026, 3:51: "I don't need to approve the scripts, James can approve them ... he's the content manager."
+    c.ok("listing scripts = the creative manager (James), since the Loom", (await routing.listingScriptsDesk())?.key === "james");
     c.ok("creative work = the creative manager", (await routing.creativeWorkDesk())?.key === "james");
+    c.ok("the brain's \"Review and action Premium Reel script package\" to-do is a listing-script task; a monthly content script is not", routing.isListingScriptTask("Review and action Premium Reel script package") && routing.isListingScriptTask("Approve the listing script for 7287 PA-873") && !routing.isListingScriptTask("Write November's content scripts") && !routing.isListingScriptTask(null));
     await prisma.teamMember.update({ where: { id: james.id }, data: { creativeManager: false } });
     c.ok("…with nobody carrying the flag, the owner (never Kyle)", (await routing.creativeWorkDesk())?.key === "jordan");
+    c.ok("…and listing scripts fall back to the owner too", (await routing.listingScriptsDesk())?.key === "jordan");
     await prisma.teamMember.update({ where: { id: james.id }, data: { creativeManager: true } });
     c.ok("Kyle is never a routing answer", ![await routing.creativeWorkDesk(), await routing.listingScriptsDesk()].some((d) => d?.id === kyle.id));
 
@@ -149,10 +152,10 @@ async function main() {
       const base = { id: "studio-658", external_id: job.id, status: "awaiting_review" };
       await processScriptingEvent("project.script_generated", { ...base, script_version: { version_number: 3, status: "awaiting_review" } } as never);
       const pkg = await prisma.smartTask.findUnique({ where: { dedupeKey: `scripting-script-${job.id}` } });
-      c.ok("the script package task is Jordan's, not Kyle's", pkg?.assignedKey === "jordan" && pkg.ownerId === jordan.id, `${pkg?.assignedKey}/${pkg?.ownerId}`);
+      c.ok("the script package task is James's (the creative manager, since the Loom), not Kyle's", pkg?.assignedKey === "james" && pkg.ownerId === james.id, `${pkg?.assignedKey}/${pkg?.ownerId}`);
       await processScriptingEvent("project.client_responded", { ...base, status: "revision_requested" } as never);
       const resp = await prisma.smartTask.findUnique({ where: { dedupeKey: `scripting-client-${job.id}` } });
-      c.ok("the client's response is Jordan's too (it used to have nobody, the shared pile Kyle reads)", resp?.assignedKey === "jordan" && resp.ownerId === jordan.id, `${resp?.assignedKey}`);
+      c.ok("the client's response is James's too (it used to have nobody, the shared pile Kyle reads)", resp?.assignedKey === "james" && resp.ownerId === james.id, `${resp?.assignedKey}`);
       // A reopened package that a person had put on Kyle stays his.
       await prisma.smartTask.update({ where: { id: pkg!.id }, data: { status: "COMPLETED", assignedKey: "kyle", ownerId: kyle.id, assignedManually: true } });
       await processScriptingEvent("project.script_generated", { ...base, script_version: { version_number: 4, status: "awaiting_review" } } as never);
@@ -161,7 +164,7 @@ async function main() {
       await prisma.smartTask.update({ where: { id: pkg!.id }, data: { status: "COMPLETED", assignedManually: false } });
       await processScriptingEvent("project.script_generated", { ...base, script_version: { version_number: 5, status: "awaiting_review" } } as never);
       const moved = await prisma.smartTask.findUniqueOrThrow({ where: { id: pkg!.id } });
-      c.ok("reopened: an engine-placed one moves to Jordan", moved.status === "OPEN" && moved.assignedKey === "jordan");
+      c.ok("reopened: an engine-placed one moves to James", moved.status === "OPEN" && moved.assignedKey === "james");
       c.ok("no Kyle name lookup is left in the Studio handler", !/name:\s*\{\s*contains:\s*"Kyle"/.test(read("src/lib/webhooks/scripting.ts")));
     }
 

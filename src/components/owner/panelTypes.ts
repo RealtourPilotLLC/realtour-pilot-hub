@@ -3,6 +3,7 @@
 // may hold a function or a Date.
 import type { AssignSeed, ClientIssueRow, RowAction, Tone } from "@/lib/ownerDashboard";
 import type { DelegatedRow, EmailRow, MeetingRow } from "@/lib/ownerWork";
+import type { BottleneckTopic } from "@/lib/ownerTopicsCore";
 
 export type RosterOption = { key: string; name: string };
 
@@ -29,4 +30,6 @@ export type PanelSpec =
   | { kind: "email"; row: EmailRow }
   | { kind: "issue"; row: ClientIssueRow }
   | { kind: "meeting"; row: MeetingRow }
+  /** a bottleneck topic (Loom, Oct 27 2026): its records, and Review / Delegate / Make it my task / Mark handled / Snooze */
+  | { kind: "topic"; topic: BottleneckTopic; rows: ListRow[] }
   | { kind: "info"; title: string; lines: { label: string; value: string }[] };

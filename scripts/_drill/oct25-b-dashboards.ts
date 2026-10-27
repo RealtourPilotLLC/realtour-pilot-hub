@@ -149,8 +149,9 @@ async function main() {
     const pre = prod.stages.find((s) => s.key === "pre")!;
     const item = (projectId: string) => pre.items.find((i) => i.projectId === projectId);
     c.ok("Harrison's shoot is blocked: he is off that day, and it is Kyle's move", /^Harrison is off that day \(Off /.test(item(off.p.id)?.blocked ?? "") && item(off.p.id)?.owner === "Kyle", JSON.stringify(item(off.p.id)));
-    c.ok("James's shoot is not blocked", item(fine.p.id)?.blocked === null && item(fine.p.id)?.owner === "James");
-    c.ok("Pat's half day is said on the shoot, never a block", item(half.p.id)?.blocked === null && /Pat is off part of that day/.test(item(half.p.id)?.what ?? ""), item(half.p.id)?.what);
+    // Since the Loom (Oct 27 2026, 2:52) pre-production lists what the shoots need, not the shoots: one that can happen is not a to-do.
+    c.ok("James's shoot is not blocked (so it isn't listed)", !item(fine.p.id) && !prod.bottlenecks.some((x) => x.id === `pre:visit:${fine.a.id}`));
+    c.ok("Pat's half day never blocks the shoot (not listed, no bottleneck)", !item(half.p.id) && !prod.bottlenecks.some((x) => x.id === `pre:visit:${half.a.id}`), JSON.stringify(pre.items.map((i) => i.what)));
     c.ok("the stage says 1 blocked, in red (the count is its list's)", pre.headline.n === 1 && pre.headline.words === "blocked" && pre.counts.blocked === pre.items.filter((i) => !!i.blocked).length && pre.tone === "bad", JSON.stringify(pre.headline));
     const b = prod.bottlenecks.find((x) => x.id === `pre:visit:${off.a.id}`);
     c.ok("a bottleneck: reassign or move it, in red, the assign seed going to the office", !!b && b.nextStep === "Reassign the shoot, or move it" && b.tone === "bad" && b.assign.assigneeKey === "kyle" && /^Reassign the shoot: 266 Richard Dr/.test(b.assign.title) && b.issue.includes("but Harrison is off that day"), JSON.stringify(b));

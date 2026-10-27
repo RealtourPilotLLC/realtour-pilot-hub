@@ -206,7 +206,8 @@ async function main() {
     const shoot = b(pNoShooter.id, "pre");
     c.ok("a shoot with no photographer: Assign, to the office (Aryeo holds the booking)", labels(shoot) === "Assign" && (shoot?.actions[0] as { seed?: { assigneeKey?: string } }).seed?.assigneeKey === "kyle" && shoot?.nextStep === "Assign a photographer");
     const scripts = h.bottlenecks.find((x) => x.id === "scripts:listing");
-    c.ok("a premium reel shooting within the day with no script: one row, Jordan's, 'Review today', Review scripts to the job", !!scripts && scripts.owner === "Jordan" && scripts.nextStep === "Review today" && labels(scripts) === "Review scripts" && link(scripts, "Review scripts") === `/projects/${pScript.id}` && scripts.tone === "bad" && /80 Script St: no script yet, shoot /.test(scripts.issue), JSON.stringify(scripts && [scripts.issue, scripts.owner, labels(scripts)]));
+    // Jordan's Loom, Oct 27 2026, 3:51: "James can approve them ... he's the content manager." The row is James's; Jordan asks, he doesn't approve.
+    c.ok("a premium reel shooting within the day with no script: one row, James's, 'Approve today', Request update to James and Open the job", !!scripts && scripts.owner === "James" && scripts.nextStep === "Approve today" && labels(scripts) === "Request update|Open" && ask(scripts)?.seed.assigneeKey === "james" && ask(scripts)?.seed.sourceHref === `/projects/${pScript.id}` && link(scripts, "Open") === `/projects/${pScript.id}` && scripts.tone === "bad" && /80 Script St: no script yet, shoot /.test(scripts.issue), JSON.stringify(scripts && [scripts.issue, scripts.owner, labels(scripts)]));
     c.ok("unowned work still leads (no editor, no photographer), the scripts row next", h.bottlenecks.slice(0, 2).map((x) => x.nextStep).sort().join(",") === "Assign a photographer,Assign an editor" && h.bottlenecks.findIndex((x) => x.id === "scripts:listing") === 2, h.bottlenecks.map((x) => x.id).join(" | "));
     c.ok("nobody reads 'The editor', 'The photographer' or 'Nobody (the office)'", h.bottlenecks.every((x) => !/^The (editor|photographer)$|^Nobody \(the office\)$/.test(x.owner)) && h.stages.every((s) => s.items.every((i) => !/^The (editor|photographer)$|^Nobody \(the office\)$/.test(i.owner))), h.bottlenecks.map((x) => x.owner).join(", "));
     c.ok("every bottleneck has at least one button, at most two", h.bottlenecks.every((x) => x.actions.length >= 1 && x.actions.length <= 2), h.bottlenecks.map((x) => `${x.id}=${labels(x)}`).join(" | "));
@@ -228,7 +229,13 @@ async function main() {
     await premium(pScript2.id);
     h = await od.productionHealth({ now: T, includeTest: true, excludeClientIds: [] });
     const two = h.bottlenecks.find((x) => x.id === "scripts:listing");
-    c.ok("two shoots lacking approved scripts: one row ('2 shoots lack approved scripts'), Review scripts to the Scripts card", /^2 shoots lack approved scripts/.test(two?.issue ?? "") && link(two, "Review scripts") === "#creative", two?.issue);
+    c.ok("two shoots lacking approved scripts: one row ('2 shoots lack approved scripts'), Request update to James and Open to the Scripts card", /^2 shoots lack approved scripts/.test(two?.issue ?? "") && labels(two) === "Request update|Open" && link(two, "Open") === "#creative" && ask(two)?.seed.sourceHref === "/#creative", two?.issue);
+    // The Loom, 0:22: the same work as topics (a count and what it is), the records inside.
+    const topic = (k: string) => h.topics.find((t) => t.key === k);
+    c.ok("topics: one per family, each a count with what it is (\"Videos past due: N projects, oldest X late\")", /^\d+ projects?, oldest \d+ (days?|hours?) late$/.test(topic("videos-late")?.summary ?? "") && topic("videos-late")!.title === "Videos past due" && /^\d+ shoots?, oldest/.test(topic("photos-not-uploaded")?.summary ?? "") && topic("scripts")?.owner === "James", h.topics.map((t) => `${t.title}: ${t.summary}`).join(" | "));
+    c.ok("…every bottleneck record is in exactly one topic (the count is its list)", h.bottlenecks.every((x) => h.topics.filter((t) => t.items.some((i) => i.id === x.id)).length === 1), h.bottlenecks.filter((x) => !h.topics.some((t) => t.items.some((i) => i.id === x.id))).map((x) => x.id).join(", "));
+    c.ok("…a record keeps its own button inside the topic (Remind photographer on the missing upload)", topic("photos-not-uploaded")?.items.some((i) => i.action?.label === "Remind photographer") === true);
+    c.ok("…a topic's Delegate is keyed to the topic, to the right desk (late videos: James)", topic("videos-late")?.delegate.sourceHref === "/#topic-videos-late" && topic("videos-late")?.delegate.assigneeKey === "james");
 
     // =====================================================================
     c.head("§3 · Scripts & creative decisions: stale months gone, Studio's nudges listed");
@@ -268,16 +275,16 @@ async function main() {
     c.ok("…last month with a script still to film (a late session): it stays", /\b1 script to approve\b/.test(mrow(eErica, lastMonth)?.what ?? ""), mrow(eErica, lastMonth)?.what);
     const mActs = mrow(eRick, thisMonth)?.actions ?? [];
     c.ok("…a month row's buttons: its page (link) and Delegate; drafted by James, so 'Others draft'", mActs.length === 2 && mActs[0].kind === "link" && mActs[1].label === "Delegate" && mrow(eRick, thisMonth)?.mode === "drafted" && cd.othersDraft >= 1, `${mActs.map((a) => a.label)} · ${mrow(eRick, thisMonth)?.writer}`);
-    const studioRow = cd.rows.find((r) => r.id === `listing:${pStudio.id}`);
-    c.ok("a Script Studio nudge for Jordan on a job shooting later: listed, with Review script (the job's script) and Done (its task)", !!studioRow && studioRow.taskId === studioTask.id && /The client asked for changes in Script Studio/.test(studioRow.what) && studioRow.actions.map((a) => a.label).join("|") === "Review script|Done" && (studioRow.actions[0] as { href: string }).href === `/projects/${pStudio.id}#script`, JSON.stringify(studioRow && [studioRow.what, studioRow.actions.map((a) => a.label)]));
-    const draftRow = cd.rows.filter((r) => r.id === `listing:${pScript2.id}`);
-    c.ok("…a nudge on a job already listed joins its row (one row, Done closes the nudge)", draftRow.length === 1 && draftRow[0].taskId === draftTask.id && /Draft v1 waiting on your review/.test(draftRow[0].what), JSON.stringify(draftRow.map((r) => [r.what, r.taskId])));
-    const noScriptRow = cd.rows.find((r) => r.id === `listing:${pScript.id}`);
-    c.ok("…a job with no script at all: Write script (to the job) and Delegate", noScriptRow?.actions.map((a) => a.label).join("|") === "Write script|Delegate", noScriptRow?.actions.map((a) => a.label).join("|"));
-    c.ok("no em dash leaks from a Studio task title", !/—/.test(JSON.stringify(cd.rows)), (JSON.stringify(cd.rows).match(/.{30}—.{30}/) ?? [""])[0]);
+    // Since the Loom (Oct 27 2026, 3:51) listing scripts are James's: they leave Jordan's rows for one quiet line whose Open lists them.
+    const fyi = (id: string) => cd.listingFyi?.rows.filter((r) => r.id === id) ?? [];
+    c.ok("a Script Studio nudge on a job shooting later: in the quiet line's list (James's), never a row of Jordan's", fyi(`listing:${pStudio.id}`).length === 1 && /The client asked for changes in Script Studio/.test(fyi(`listing:${pStudio.id}`)[0].title) && fyi(`listing:${pStudio.id}`)[0].href === `/projects/${pStudio.id}#script` && !cd.rows.some((r) => r.kind === "listing"), JSON.stringify(cd.listingFyi));
+    c.ok("…a nudge on a job already listed joins its row (one row)", fyi(`listing:${pScript2.id}`).length === 1 && /Draft v1 waiting for approval/.test(fyi(`listing:${pScript2.id}`)[0].title), JSON.stringify(fyi(`listing:${pScript2.id}`)));
+    c.ok("…a job with no script at all: listed too, and the line says James writes or approves", fyi(`listing:${pScript.id}`).length === 1 && /^James has \d+ listing scripts to write or approve$/.test(cd.listingFyi?.words ?? ""), cd.listingFyi?.words);
+    c.ok("no em dash leaks from a Studio task title", !/—/.test(JSON.stringify([cd.rows, cd.listingFyi])), (JSON.stringify(cd.listingFyi).match(/.{30}—.{30}/) ?? [""])[0]);
+    void draftTask;
     const done = await setSmartTaskStatus(studioTask.id, "COMPLETED");
     cd = await ow.creativeDecisions({ now: T, ownerEmail: OWNER_EMAIL, excludeClientIds: [] });
-    c.ok("Done closes the Studio nudge and the row leaves the list", (done === undefined || done.ok) && (await prisma.smartTask.findUnique({ where: { id: studioTask.id } }))?.status === "COMPLETED" && !cd.rows.some((r) => r.id === `listing:${pStudio.id}`), JSON.stringify(done));
+    c.ok("closing the Studio nudge (James's Done) takes it off the line's list", (done === undefined || done.ok) && (await prisma.smartTask.findUnique({ where: { id: studioTask.id } }))?.status === "COMPLETED" && !fyi(`listing:${pStudio.id}`).length, JSON.stringify(done));
 
     // =====================================================================
     c.head("§4 · Team coverage and Delegated by me: a button on every row");
@@ -332,23 +339,27 @@ async function main() {
     c.ok("Financial Position: a compact strip of the five figures", (strip.match(/data-figure="/g) ?? []).length === 5 && ["cash", "obligations", "collections", "forecast", "profit"].every((k) => strip.includes(`data-figure="${k}"`)), String((strip.match(/data-figure="/g) ?? []).length));
     c.ok("…the rail table and Stripe sit under Details, closed", !!detailsTag && !/\sopen(=|\s|>)/.test(detailsTag) && html.indexOf("data-revenue-month") > detailsAt && html.indexOf("data-stripe-card") > detailsAt && html.indexOf("data-revenue-month") < html.indexOf('data-section="production"'), detailsTag);
     c.ok("…the freshness line stays out, small, above the fold", html.indexOf("data-freshness") > 0 && html.indexOf("data-freshness") < detailsAt && /text-\[11px\][^>]*data-freshness/.test(html));
-    c.ok("the top five rows each show their buttons (data-actions), the first one first", (html.match(/data-bottleneck="[^"]+" data-actions="[^"]+"/g) ?? []).length === 5, String((html.match(/data-bottleneck="[^"]+" data-actions="[^"]+"/g) ?? []).length));
+    // Since the Loom (Oct 27 2026, 0:22): topics, not records; each opens its panel with the records and their buttons.
+    const topicSpecs = (elements(tree, "PanelButton") as { spec: PanelSpec }[]).map((x) => x.spec).filter((x): x is Extract<PanelSpec, { kind: "topic" }> => x.kind === "topic");
+    c.ok("Bottlenecks requiring action: one row per topic (at most six), each opening its panel; no record rows on the card", (html.match(/data-topic="[^"]+"/g) ?? []).length >= 3 && (html.match(/data-topic="[^"]+"/g) ?? []).length <= 6 && !/data-bottleneck="/.test(html) && topicSpecs.length >= 3, String((html.match(/data-topic="[^"]+"/g) ?? []).length));
+    const tPanel = (k: string) => { const s = topicSpecs.find((x) => x.topic.key === k); return s ? ssr(createElement(OwnerShell, { roster: [{ key: "kyle", name: "Kyle" }, { key: "james", name: "James" }], readOnly: false, initial: s }, null)) : ""; };
+    const capPanel = tPanel("photos-not-uploaded");
+    c.ok("a topic panel: the summary, the records with their own buttons, then Review, Delegate, Make it my task, Mark handled, Snooze 7 days", capPanel.includes("data-topic-panel") && /data-row-action="ask"[^>]*>Remind photographer</.test(capPanel) && ["data-topic-review", "data-topic-delegate", "data-topic-mine", "data-topic-handled", "data-topic-snooze"].every((a) => capPanel.includes(a)) && !nestedButton(capPanel), capPanel.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 300));
     // The handled late edit sits below the fold: its row in View all carries the nudge.
     const listSpec = (elements(tree, "ViewAll") as { spec: PanelSpec }[]).map((x) => x.spec).find((x): x is Extract<PanelSpec, { kind: "list" }> => x.kind === "list" && x.title === "Bottlenecks requiring action");
     const lJohn = listSpec?.rows.find((r) => r.id === "editing:video:v-john");
     c.ok("View all: the handled late edit's row carries Request update, the one-press nudge", lJohn?.action?.kind === "nudge" && lJohn.action.label === "Request update" && /James has it/.test(lJohn.sub ?? ""), JSON.stringify(lJohn ?? listSpec?.rows.map((r) => [r.id, r.action?.label]) ?? "no list"));
     const listHtml = ssr(createElement(OwnerShell, { roster: [{ key: "kyle", name: "Kyle" }, { key: "james", name: "James" }], readOnly: false, initial: listSpec ?? null }, null));
     c.ok("…the list panel renders it as a button (data-row-action=\"nudge\"), and Assign only where nothing else fits", /data-row-action="nudge"[^>]*>Request update</.test(listHtml) && /data-row-action="ask"[^>]*>Remind photographer</.test(listHtml), listHtml.slice(listHtml.indexOf("data-panel-list"), listHtml.indexOf("data-panel-list") + 200));
-    const bRaw = sliceOf(html, `data-bottleneck="capture:capture:${pRaw.id}"`);
-    c.ok("…the missing upload's row: Remind photographer", />Remind photographer</.test(bRaw) && /data-row-action="ask"/.test(bRaw), bRaw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 200));
-    const bNoEd = sliceOf(html, `data-bottleneck="editing:unassigned:ex-27"`);
-    c.ok("…no editor: Assign editor links to the job's Team section", bNoEd.includes(`href="/projects/${pNoEditor.id}#team"`) && />Assign editor</.test(bNoEd));
+    void pRaw;
+    const bNoEd = tPanel("unowned");
+    c.ok("…the work-nobody-is-on topic: no editor's record links Assign editor to the job's Team section", bNoEd.includes(`href="/projects/${pNoEditor.id}#team"`) && />Assign editor</.test(bNoEd));
     const team0 = sliceOf(html, 'data-coverage-row="editors"');
     c.ok("Team coverage: each row has its button (editors: Assign editor to the job)", (html.match(/data-coverage-row=/g) ?? []).length >= 4 && team0.includes(`href="/projects/${pNoEditor.id}#team"`), team0.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 200));
     const delegated = sliceOf(html, 'data-section="delegated"');
     c.ok("Delegated by me: every open row has Follow up, a one-press nudge to the person who has it", (delegated.match(/data-delegated-row=/g) ?? []).length >= 2 && (delegated.match(/data-row-action="nudge"/g) ?? []).length >= 2 && />Follow up</.test(delegated), String((delegated.match(/data-row-action="nudge"/g) ?? []).length));
     const creative = sliceOf(html, 'data-section="creative"');
-    c.ok("Scripts & creative decisions: the chips stay; a listing row's buttons (Review script, Done); three rows shown", creative.includes("Jordan owns") && creative.includes("Others draft") && /data-creative-actions="Review script\|Done"/.test(creative) && (creative.match(/data-creative-row=/g) ?? []).length <= 3, String((creative.match(/data-creative-row=/g) ?? []).length));
+    c.ok("Scripts & creative decisions: the chips stay; listing scripts are one quiet line (James's) with Open; three rows shown", creative.includes("Jordan owns") && creative.includes("Others draft") && /data-listing-fyi="\d+"/.test(creative) && /James has \d+ listing scripts? to/.test(creative) && !/data-creative-actions="Review script\|Done"/.test(creative) && (creative.match(/data-creative-row=/g) ?? []).length <= 3, String((creative.match(/data-creative-row=/g) ?? []).length));
     const weekly = sliceOf(html, 'data-section="weekly"');
     const tiles = [...weekly.matchAll(/data-tile="([a-z]+)"/g)].map((m) => m[1]);
     c.ok("Weekly performance: four headline tiles (on-time delivery, revision rate, client replies, upcoming shoots covered)", tiles.join(",") === "ontime,revisions,replies,shoots", tiles.join(","));

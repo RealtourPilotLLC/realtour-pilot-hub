@@ -17,6 +17,7 @@ import {
   clientIssuesSection, financialPosition, productionHealth, teamCoverage, weeklyPerformance,
   type ClientIssues, type FinancialPosition, type Measure, type ProductionHealth, type RowAction, type StageKey, type TeamCoverage, type Tone, type WeeklyPerformance,
 } from "@/lib/ownerDashboard";
+import type { BottleneckTopic } from "@/lib/ownerTopicsCore";
 import {
   creativeDecisions, delegatedByMe, emailNeedingReply, meetingsSection, EMAIL_CLASS_WORDS,
   type CreativeDecisions, type DelegatedByMe, type EmailSection, type Meetings,
@@ -151,7 +152,8 @@ const STAGE_ICON: Record<StageKey, typeof FileText> = { pre: FileText, capture: 
 async function ProductionSection({ p }: { p: Promise<ProductionHealth | null> }) {
   const h = await p;
   if (!h) return <Card title="Production health" id="production"><Unavailable what={["production"]} /></Card>;
-  const shown = h.bottlenecks.slice(0, 5);
+  const shownTopics = h.topics.slice(0, 6);
+  const rowsOf = new Map(await Promise.all(h.topics.map(async (t) => [t.key, await topicRows(t)] as const)));
   const bottleneckRows: ListRow[] = h.bottlenecks.map((b) => ({ id: b.id, title: b.issue, sub: [b.owner, b.handledBy?.words, b.nextStep, b.clientUpdate].filter(Boolean).join(" · "), tone: b.tone, href: b.href, assign: b.taskId ? null : b.assign, action: shellAction(b.actions) }));
   return (
     <Card title="Production health" id="production">
@@ -173,8 +175,8 @@ async function ProductionSection({ p }: { p: Promise<ProductionHealth | null> })
                 <span className="text-[13px] text-muted">{s.unavailable ? "couldn't load" : s.headline.words}</span>
               </span>
               {!s.unavailable && (
-                <span className="text-[11px] leading-snug text-muted">
-                  {[s.counts.overdue ? `${s.counts.overdue} overdue` : null, s.counts.dueSoon ? `${s.counts.dueSoon} due soon` : null, s.counts.blocked ? `${s.counts.blocked} blocked` : null, hoursWords(s.oldestWaitHours) ? `oldest ${hoursWords(s.oldestWaitHours)}` : null, s.nextOwner ? `next: ${s.nextOwner}` : null].filter(Boolean).join(" · ") || "Nothing waiting"}
+                <span className="text-[11px] leading-snug text-muted" data-stage-detail={s.key}>
+                  {s.detail ?? ([s.counts.overdue ? `${s.counts.overdue} overdue` : null, s.counts.dueSoon ? `${s.counts.dueSoon} due soon` : null, s.counts.blocked ? `${s.counts.blocked} blocked` : null, hoursWords(s.oldestWaitHours) ? `oldest ${hoursWords(s.oldestWaitHours)}` : null, s.nextOwner ? `next: ${s.nextOwner}` : null].filter(Boolean).join(" · ") || "Nothing waiting")}
                 </span>
               )}
             </PanelButton>
@@ -183,37 +185,51 @@ async function ProductionSection({ p }: { p: Promise<ProductionHealth | null> })
       </div>
       <p className="mt-2 text-[11px] text-muted" data-punctuality>{h.punctuality}</p>
 
+      {/* TOPICS, NOT RECORDS (Jordan's Loom, Oct 27 2026, 0:22: "I don't
+          really want to see, like, late videos filling this up. I'd rather
+          see like a topic here ... and then I can click on it to view it").
+          One row per topic: what it is and its count; the records, their
+          buttons and his moves open in the panel. Every record stays one
+          press away under "View all". */}
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <h4 className="mr-auto text-base font-semibold">Bottlenecks requiring action</h4>
-        {h.bottlenecks.length > shown.length && <ViewAll n={h.bottlenecks.length} spec={{ kind: "list", title: "Bottlenecks requiring action", rows: bottleneckRows }} />}
+        {h.bottlenecks.length > 0 && <ViewAll n={h.bottlenecks.length} spec={{ kind: "list", title: "Bottlenecks requiring action", subtitle: "Every late, blocked or unowned record, one row each.", rows: bottleneckRows }} />}
       </div>
       <Unavailable what={h.unavailable} />
-      {shown.length === 0 ? (
-        !h.unavailable.length && <p className="mt-2 text-sm text-muted" data-empty="bottlenecks">No late, blocked or unowned work right now.</p>
+      {h.topics.length === 0 ? (
+        !h.unavailable.length && <p className="mt-2 text-sm text-muted" data-empty="bottlenecks">No late, blocked or unowned work, and nothing that keeps coming back, right now.</p>
       ) : (
-        <div className="mt-2 overflow-hidden rounded-xl border border-border" data-bottlenecks={h.bottlenecks.length}>
-          <div className="hidden grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_minmax(0,1.4fr)_minmax(9rem,auto)] gap-3 bg-surface-2/60 px-3 py-2 text-[12px] font-medium text-muted md:grid">
-            <span>Issue</span><span>Owner</span><span>Next step</span><span>Action</span>
-          </div>
-          <ul className="divide-y divide-border">
-            {shown.map((b) => (
-              <li key={b.id} className="grid gap-x-3 gap-y-1 px-3 py-2.5 md:grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_minmax(0,1.4fr)_minmax(9rem,auto)] md:items-center" data-bottleneck={b.id} data-actions={b.actions.map((a) => a.label).join("|")}>
-                <div className="min-w-0">
-                  <p className="flex items-center gap-1.5 text-sm font-medium"><span className={cn("size-2 shrink-0 rounded-full", TONE_DOT[b.tone])} aria-hidden /><Link href={b.href} className="[overflow-wrap:anywhere] hover:underline">{b.issue}</Link></p>
-                  <p className="text-[12px] text-muted">{[b.client, b.commitment, b.clientUpdate].filter(Boolean).join(" · ")}</p>
-                </div>
-                <p className="text-sm"><span className="md:hidden text-muted">Owner: </span>{b.owner}{b.handledBy && <span className="block text-[12px] text-muted">{b.handledBy.words}</span>}</p>
-                <p className="text-sm"><span className="md:hidden text-muted">Next: </span>{b.nextStep}</p>
-                <div className="flex flex-wrap gap-1.5 md:justify-end">
-                  {b.actions.map((a, i) => act(a, i))}
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
+        <ul className="mt-2 divide-y divide-border overflow-hidden rounded-xl border border-border" data-topics={h.topics.length} data-bottlenecks={h.bottlenecks.length}>
+          {shownTopics.map((t) => (
+            <li key={t.key} data-topic={t.key} data-topic-count={t.count}>
+              <PanelButton spec={{ kind: "topic", topic: t, rows: rowsOf.get(t.key) ?? [] }} label={`${t.title}: open`} className="flex min-h-11 w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-surface-2/60">
+                <span className={cn("size-2 shrink-0 rounded-full", TONE_DOT[t.tone])} aria-hidden />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm [overflow-wrap:anywhere]"><b className="font-semibold">{t.title}</b>: {t.summary}</span>
+                  <span className="block text-[12px] text-muted">{[t.handledBy?.words ?? (t.owner ? `Owner ${t.owner}` : null), t.window === "Now" ? null : t.window, t.source === "ai" ? "Grouped by AI" : null].filter(Boolean).join(" · ")}</span>
+                </span>
+                <ArrowRight aria-hidden className="size-4 shrink-0 text-muted" />
+              </PanelButton>
+            </li>
+          ))}
+        </ul>
       )}
+      {h.topics.length > shownTopics.length && (
+        <p className="mt-2 text-[12px] text-muted" data-topics-more>{h.topics.length - shownTopics.length} more: <ViewAll n={h.topics.length} spec={{ kind: "list", title: "Every topic", rows: h.topics.map((t) => ({ id: t.key, title: `${t.title}: ${t.summary}`, sub: t.handledBy?.words ?? (t.owner ? `Owner ${t.owner}` : null), tone: t.tone, open: { kind: "topic" as const, topic: t, rows: rowsOf.get(t.key) ?? [] } })) }} /></p>
+      )}
+      {h.topicsNote && <p className="mt-2 text-[11px] text-muted" data-topics-note>{h.topicsNote}</p>}
     </Card>
   );
+}
+
+/** A topic's records as panel rows; a decision waiting on him opens its task (read here, server side). */
+async function topicRows(t: BottleneckTopic): Promise<ListRow[]> {
+  const ids = t.items.map((i) => i.taskId).filter((x): x is string => !!x);
+  const views = ids.length ? await import("@/lib/delegation").then(async (m) => ({ m, v: await m.delegationFor(ids).catch(() => new Map()) })) : null;
+  return t.items.map((i) => {
+    const v = i.taskId && views ? views.v.get(i.taskId) : null;
+    return { id: i.id, title: i.title, sub: i.sub, tone: i.tone, href: i.href, action: i.action, open: v && views ? { kind: "task" as const, task: { ...v, resurface: views.m.resurfaceOf(v, new Date()) } } : null };
+  });
 }
 
 /** A delegated task's panel, opened by id (the task is read here, server side). */
@@ -354,7 +370,15 @@ async function CreativeSection({ p }: { p: Promise<CreativeDecisions | null> }) 
   return (
     <Card title="Scripts & creative decisions" id="creative" right={c ? <span className="flex flex-wrap gap-1.5 text-[11px] font-semibold"><span className="rounded-md bg-warning/15 px-2 py-1 text-warning">Jordan owns {c.jordanOwns}</span><span className="rounded-md bg-waiting-soft px-2 py-1 text-waiting">Others draft {c.othersDraft}</span>{rows.length > SHOWN && <ViewAll n={rows.length} spec={{ kind: "list", title: "Scripts & creative decisions", rows: all }} />}</span> : undefined}>
       {!c ? <Unavailable what={["scripts"]} /> : <Unavailable what={c.unavailable} />}
-      {c && rows.length === 0 && !c.unavailable.length && <p className="text-sm text-muted" data-empty="creative">No scripts or creative decisions waiting on you.</p>}
+      {c && rows.length === 0 && !c.listingFyi && !c.unavailable.length && <p className="text-sm text-muted" data-empty="creative">No scripts or creative decisions waiting on you.</p>}
+      {/* Listing scripts are James's (the Loom, Oct 27 2026): one quiet line, Open lists them. */}
+      {c?.listingFyi && (
+        <p className="mb-2 flex flex-wrap items-center gap-x-2 text-[13px] text-muted" data-listing-fyi={c.listingFyi.count}>
+          <FileText aria-hidden className="size-4 shrink-0" />
+          <span>{c.listingFyi.words}.</span>
+          <PanelButton spec={{ kind: "list", title: `Listing scripts with ${c.listingFyi.owner}`, subtitle: `${c.listingFyi.owner} writes and approves listing scripts. Nothing here needs you.`, rows: c.listingFyi.rows.map((r) => ({ id: r.id, title: r.title, sub: r.sub, href: r.href, tone: r.tone })) }} className="inline-flex min-h-11 items-center font-medium text-brand hover:underline">Open</PanelButton>
+        </p>
+      )}
       <ul className="space-y-2.5" data-creative={rows.length}>
         {rows.slice(0, SHOWN).map((r) => (
           <li key={r.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-border p-3" data-creative-row={r.kind}>
@@ -381,19 +405,20 @@ async function CreativeSection({ p }: { p: Promise<CreativeDecisions | null> }) 
 async function EmailSectionView({ p }: { p: Promise<EmailSection | null> }) {
   const e = await p;
   const rows = e?.rows ?? [];
-  const all: ListRow[] = rows.map((r) => ({ id: r.key, title: `${r.sender}: ${r.subject}`, sub: [EMAIL_CLASS_WORDS[r.cls], r.handledBy, `waiting since ${etDateTime(r.waitingSinceISO)}`].filter(Boolean).join(" · "), tone: r.cls === "reply" || r.cls === "decide" ? "bad" : "ok", open: { kind: "email", row: r } }));
-  const needYou = rows.filter((r) => r.cls === "reply" || r.cls === "decide");
+  // A DELEGATED EMAIL LEAVES THIS LIST (Jordan's Loom, Oct 27 2026, 6:51:
+  // "email needing my reply should be empty now, because I've delegated all
+  // of these"). It used to fill the card whenever nothing else did; now it is
+  // under Delegated by me, with the assignee's state, and counted here in one
+  // quiet line.
+  const open = rows.filter((r) => r.cls !== "waiting");
+  const delegated = rows.length - open.length;
+  const all: ListRow[] = open.map((r) => ({ id: r.key, title: `${r.sender}: ${r.subject}`, sub: [EMAIL_CLASS_WORDS[r.cls], r.handledBy, `waiting since ${etDateTime(r.waitingSinceISO)}`].filter(Boolean).join(" · "), tone: r.cls === "reply" || r.cls === "decide" ? "bad" : "ok", open: { kind: "email", row: r } }));
   return (
-    <Card title="Email needing my reply" id="email" right={rows.length > 3 ? <ViewAll n={rows.length} spec={{ kind: "list", title: "Email in your inbox waiting on an answer", rows: all }} /> : undefined}>
+    <Card title="Email needing my reply" id="email" right={open.length > 3 ? <ViewAll n={open.length} spec={{ kind: "list", title: "Email in your inbox waiting on an answer", rows: all }} /> : undefined}>
       {!e ? <Unavailable what={["email"]} /> : e.unavailable.length ? <p role="status" data-unavailable className="rounded-lg bg-warning/10 px-3 py-2 text-sm text-warning">{e.note}</p> : null}
-      {e && !e.unavailable.length && (
-        <p className="mb-2 text-[12px] text-muted" data-email-counts={JSON.stringify(e.counts)}>
-          {e.counts.reply} to reply · {e.counts.decide} to decide · {e.counts.team} the team can handle · {e.counts.waiting} waiting on someone else
-        </p>
-      )}
-      {e && !e.unavailable.length && rows.length === 0 && <p className="text-sm text-muted" data-empty="email">No client email in your inbox is waiting on an answer.</p>}
-      <ul className="space-y-2.5" data-email={rows.length}>
-        {(needYou.length ? needYou : rows).slice(0, 3).map((r) => (
+      {e && !e.unavailable.length && open.length === 0 && <p className="text-sm text-muted" data-empty="email">No client email in your inbox is waiting on you.</p>}
+      <ul className="space-y-2.5" data-email={open.length} data-email-counts={e ? JSON.stringify(e.counts) : undefined}>
+        {open.slice(0, 3).map((r) => (
           <li key={r.key} className="grid gap-2 rounded-xl border border-border p-3 sm:grid-cols-[minmax(0,1fr)_auto]" data-email-row={r.cls}>
             <div className="flex min-w-0 gap-2.5">
               <Mail aria-hidden className="mt-0.5 size-5 shrink-0 text-muted" />
@@ -410,6 +435,7 @@ async function EmailSectionView({ p }: { p: Promise<EmailSection | null> }) {
           </li>
         ))}
       </ul>
+      {delegated > 0 && <p className="mt-2 text-[12px] text-muted" data-email-delegated={delegated}>{delegated === 1 ? "1 email" : `${delegated} emails`} handed on: see <a href="#delegated" className="font-medium text-brand hover:underline">Delegated by me</a>.</p>}
     </Card>
   );
 }

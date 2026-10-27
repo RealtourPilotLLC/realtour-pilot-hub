@@ -152,7 +152,8 @@ async function main() {
     c.head("§5 · desktop and phone (#15)");
     // =====================================================================
     c.ok("#15 one column on a phone: the paired sections stack (grid only from lg; Oct 27 2026: each pair the same height), tiles 2-up then 3 then 5", (oHtml.match(/class="grid items-stretch gap-5 lg:grid-cols-2"/g) ?? []).length === 3 && oHtml.includes("grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5") && oHtml.includes("mx-auto max-w-7xl"));
-    c.ok("#15 the bottleneck and table headers hide on a phone and each row labels itself", oHtml.includes("hidden grid-cols-[minmax(0,2.2fr)") || !oHtml.includes("data-bottlenecks"));
+    // Since the Loom (Oct 27 2026) the bottlenecks are one-line topics that wrap, with no table header to hide.
+    c.ok("#15 the bottlenecks are one-line topics that wrap on a phone (no table header), each opening its panel", !oHtml.includes("grid-cols-[minmax(0,2.2fr)") && (!oHtml.includes("data-topics=") || /data-topic="[^"]+"[^>]*>\s*<button[^>]*data-open-panel="topic"/.test(oHtml)));
     c.ok("#15 thumb-sized taps, no link inside a link, no button inside a button", (oHtml.match(/min-h-11/g) ?? []).length >= 8 && !nestedLink(oHtml) && !nestedButton(oHtml), `taps ${(oHtml.match(/min-h-11/g) ?? []).length}`);
     c.ok("long names wrap instead of pushing the page sideways", (oHtml.match(/\[overflow-wrap:anywhere\]/g) ?? []).length >= 5);
     c.ok("no em dashes in the dashboard", !/—/.test(oHtml.slice(oHtml.indexOf("data-owner-dashboard"))), (oHtml.match(/.{40}—.{40}/) ?? [""])[0]);

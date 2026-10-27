@@ -43,6 +43,38 @@ export type MeetingRow = {
   prep: { taskId: string | null; words: string; tone: Tone; owner: string | null; dueISO: string | null; delegated: boolean };
   assignPrep: AssignSeed | null;
   followUp: AssignSeed;
+  /** the meeting brief the panel opens (Loom, Oct 27 2026, 3:22) */
+  brief: MeetingBrief;
+};
+/**
+ * THE MEETING BRIEF (Jordan's Loom, Oct 27 2026, 3:22: "Open brief" should
+ * open the brief for the meeting, not the content program page). Read from
+ * records the hub keeps, each line left out when there is nothing on file:
+ * the program they are on, the last call, the last thing they wrote to us,
+ * the month's topics, what is open on the month, and questions to ask by
+ * call type. Never an invented client fact.
+ */
+export type MeetingBrief = {
+  program: string | null;
+  lastCall: string | null;
+  lastFromClient: string | null;
+  topics: string[];
+  openItems: string[];
+  questions: string[];
+};
+const BRIEF_QUESTIONS: Record<string, string[]> = {
+  MONTHLY_STRATEGY: [
+    "What listings, open houses or events are coming up this month?",
+    "Which of last month's videos did well, and which didn't land?",
+    "Has anything changed in their market or their brand?",
+    "Who is on camera, and which days can they film?",
+  ],
+  BRAND_DISCOVERY: [
+    "Who is their ideal client, and which areas do they farm?",
+    "What makes them different from the other agents there?",
+    "What content have they tried before, and what worked?",
+    "How comfortable are they on camera?",
+  ],
 };
 export type Meetings = {
   calendly: { state: "connected" | "stale" | "not_connected"; words: string };
@@ -108,6 +140,38 @@ export async function meetingsSection(opts: { now?: Date; excludeClientIds?: str
   const views = await delegationFor(tasks.filter((t) => t.delegatedAt).map((t) => t.id)).catch(() => new Map<string, DelegatedTaskView>());
   const typeName = new Map((mappings ?? []).map((m) => [m.eventTypeUri, m.eventName]));
 
+  // The briefs' records, read once for every meeting on the list.
+  const clientIds = [...new Set(rows.map((r) => r.clientId).filter((x): x is string => !!x))];
+  const enrollmentIds = [...new Set(rows.map((r) => r.enrollmentId).filter((x): x is string => !!x))];
+  const monthIds = [...new Set(rows.map((r) => r.monthId).filter((x): x is string => !!x))];
+  const [enrollments, pastCalls, monthTopics, lastIns, actions] = await Promise.all([
+    enrollmentIds.length ? prisma.contentEnrollment.findMany({ where: { id: { in: enrollmentIds } }, select: { id: true, package: true, videosPerMonth: true, status: true, startedAt: true } }).catch(() => []) : [],
+    clientIds.length
+      ? prisma.programCallRecord.findMany({ where: { clientId: { in: clientIds }, status: "COMPLETED", scheduledStart: { lt: now } }, orderBy: { scheduledStart: "desc" }, distinct: ["clientId"], select: { clientId: true, callType: true, scheduledStart: true } }).catch(() => [])
+      : [],
+    monthIds.length ? prisma.contentTopic.findMany({ where: { monthId: { in: monthIds }, status: { notIn: ["REJECTED", "ARCHIVED"] } }, orderBy: { createdAt: "asc" }, take: 300, select: { monthId: true, title: true } }).catch(() => []) : [],
+    clientIds.length
+      ? prisma.commLog.findMany({ where: { clientId: { in: clientIds }, direction: "in", channel: { in: ["text", "email"] } }, orderBy: { occurredAt: "desc" }, distinct: ["clientId"], select: { clientId: true, channel: true, body: true, subject: true, occurredAt: true } }).catch(() => [])
+      : [],
+    enrollmentIds.length ? import("@/lib/contentActions").then((m) => m.monthlyContentActions({ now, excludeClientIds: [...exclude] })).catch(() => null) : null,
+  ]);
+  const enrollmentOf = new Map(enrollments.map((e) => [e.id, e]));
+  const briefOf = (r: (typeof rows)[number], month: string | null | undefined): MeetingBrief => {
+    const e = r.enrollmentId ? enrollmentOf.get(r.enrollmentId) : undefined;
+    const last = r.clientId ? pastCalls.find((c) => c.clientId === r.clientId) : undefined;
+    const said = r.clientId ? lastIns.find((c) => c.clientId === r.clientId) : undefined;
+    const row = e && month ? actions?.rows.find((x) => x.key === `${e.id}:${month}`) : undefined;
+    const text = said ? `${said.subject ? `${said.subject}: ` : ""}${(said.body ?? "").replace(/\s+/g, " ").trim()}` : "";
+    return {
+      program: e ? `${e.package}, ${e.videosPerMonth} videos a month${e.status !== "ACTIVE" ? ` (${e.status.toLowerCase()})` : ""}${e.startedAt ? ` · since ${etMonthDay(e.startedAt)}` : ""}` : null,
+      lastCall: last?.scheduledStart ? `${(CALL_WORDS[last.callType] ?? "Call").replace(/^./, (c) => c.toUpperCase())}, ${etDateTime(last.scheduledStart)}` : null,
+      lastFromClient: said ? `${said.channel === "email" ? "Email" : "Text"} ${etDateTime(said.occurredAt)}: "${text.length > 220 ? `${text.slice(0, 217).trimEnd()}...` : text}"` : null,
+      topics: r.monthId ? monthTopics.filter((t) => t.monthId === r.monthId).map((t) => t.title).slice(0, 8) : [],
+      openItems: row ? row.items.map((i) => i.words) : [],
+      questions: BRIEF_QUESTIONS[r.callType] ?? [],
+    };
+  };
+
   const out: MeetingRow[] = [];
   for (const r of rows) {
     const start = r.scheduledStart!;
@@ -142,6 +206,7 @@ export async function meetingsSection(opts: { now?: Date; excludeClientIds?: str
       prep,
       assignPrep: t && t.status !== "COMPLETED" && t.status !== "CANCELLED" ? { title: `Prepare for ${who}'s ${CALL_WORDS[r.callType] ?? "meeting"}`, sourceTaskId: t.id, dueAt: t.dueAt?.toISOString() ?? null, clientId: r.clientId } : null,
       followUp: { title: `Follow up: ${who}'s ${CALL_WORDS[r.callType] ?? "meeting"} (${etMonthDay(start)})`, outcome: "The decisions from the call written down and sent", dueAt: endOfBusinessDaysET(start, 1).toISOString(), sourceHref: `/content/calls#call-${r.id}-follow-up`, clientId: r.clientId },
+      brief: briefOf(r, month),
     });
   }
   return { calendly, calendarNote, scopeNote, rows: out, unavailable };
@@ -171,7 +236,9 @@ export type CreativeRow = {
   /** The buttons (Oct 27 2026): the first is the primary. */
   actions: RowAction[];
 };
-export type CreativeDecisions = { rows: CreativeRow[]; jordanOwns: number; othersDraft: number; unavailable: string[] };
+/** One quiet line for the listing scripts the creative manager holds (Oct 27 2026); Open lists them. */
+export type ListingFyi = { owner: string; count: number; words: string; rows: { id: string; title: string; sub: string; href: string; tone: Tone }[] };
+export type CreativeDecisions = { rows: CreativeRow[]; jordanOwns: number; othersDraft: number; listingFyi: ListingFyi | null; unavailable: string[] };
 
 const CREATIVE_ITEMS = new Set(["topics", "write", "approve", "changes", "suggestions", "strategy", "proposals", "ideas"]);
 const prevMonthKey = (k: string) => {
@@ -181,9 +248,11 @@ const prevMonthKey = (k: string) => {
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /**
- * LISTING SCRIPTS THAT WAIT ON JORDAN: a premium reel or premium cinematic
- * video shooting by `until` with no script, a draft waiting on his review, or
- * the client's changes. One rule for the Scripts card and the Bottlenecks row.
+ * LISTING SCRIPTS STILL TO WRITE OR APPROVE: a premium reel or premium
+ * cinematic video shooting by `until` with no script, a draft waiting on
+ * review, or the client's changes. One rule for the Scripts card, the
+ * Bottlenecks row and Pre-production. Their approver is the creative manager
+ * (Jordan's Loom, Oct 27 2026), else Jordan.
  */
 type ListingScript = { projectId: string; clientId: string; client: string; street: string; shootISO: string | null; what: string; next: string; hasScript: boolean };
 async function listingScriptsWaiting(now: Date, until: Date, exclude: string[]): Promise<ListingScript[] | null> {
@@ -222,12 +291,117 @@ async function listingScriptsWaiting(now: Date, until: Date, exclude: string[]):
     let what: string | null = null;
     let next = "";
     if (!p.reelScript && !p.scriptingId) { what = "No script yet"; next = "Generate or write the script"; }
-    else if (p.scriptingDraftVersion != null || st === "awaiting_review" || st === "hooks_proposed") { what = `Draft${p.scriptingDraftVersion ? ` v${p.scriptingDraftVersion}` : ""} waiting on your review`; next = "Review the script"; }
+    else if (p.scriptingDraftVersion != null || st === "awaiting_review" || st === "hooks_proposed") { what = `Draft${p.scriptingDraftVersion ? ` v${p.scriptingDraftVersion}` : ""} waiting for approval`; next = "Review the script"; }
     else if (st === "client_revision_requested") { what = "The client asked for changes"; next = "Revise the script"; }
     if (!what) continue;
     out.push({ projectId: p.id, clientId: p.clientId, client: p.client?.name ?? "A client", street: p.title.split(",")[0], shootISO: p.shootDate?.toISOString() ?? null, what, next, hasScript: !!(p.reelScript || p.scriptingId) });
   }
   return out;
+}
+
+/**
+ * WHAT THE SHOOTS AHEAD REQUIRE (Jordan's Loom, Oct 27 2026, 2:52:
+ * "Pre-production should really not say five shoots coming up, it should be
+ * like, hey, we have five scripts that need to be written ... or scripts need
+ * to be approved. I don't care about the shoots coming up, I care about the
+ * stuff coming up that the shoots require."). One row per need: a listing
+ * script for a shoot in the next seven days (lib rule above), and a content
+ * month's scripts (this month and next: to write, or waiting for approval,
+ * never counting a script already filmed). `n` is the number of scripts;
+ * `owner` the person whose move it is (the creative manager for listing
+ * scripts, the month's script owner for content). Null = that source failed.
+ */
+export type ScriptNeed = {
+  id: string;
+  kind: "listing" | "monthly";
+  need: "write" | "approve";
+  n: number;
+  client: string;
+  /** the property, or the client for a content month */
+  street: string;
+  what: string;
+  dueISO: string | null;
+  owner: string;
+  href: string;
+  projectId: string | null;
+};
+export async function scriptNeedsAhead(opts: { now: Date; excludeClientIds: string[]; listingOwner: string }): Promise<{ listing: ScriptNeed[] | null; monthly: ScriptNeed[] | null }> {
+  const { now, excludeClientIds: exclude } = opts;
+  const [listing, monthly] = await Promise.all([
+    listingScriptsWaiting(now, new Date(now.getTime() + 7 * DAY), exclude),
+    (async (): Promise<ScriptNeed[] | null> => {
+      const [{ monthlyContentActions }, { ownersForMany, pairKey }, { readScriptsFilmed }] = await Promise.all([import("@/lib/contentActions"), import("@/lib/programOwners"), import("@/lib/scriptFilmed")]);
+      const content = await monthlyContentActions({ now, excludeClientIds: exclude }).catch(warn("monthly scripts"));
+      if (!content) return null;
+      const thisMonth = etMonthKey(now);
+      const [y, m] = thisMonth.split("-").map(Number);
+      const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+      const rows = content.rows
+        .filter((r) => r.monthKey >= thisMonth && r.monthKey <= nextMonth)
+        .map((r) => ({ ...r, items: r.items.filter((i) => i.key === "write" || i.key === "approve" || i.key === "changes") }))
+        .filter((r) => r.items.length);
+      if (!rows.length) return [];
+      const pairs = rows.map((r) => ({ enrollmentId: r.key.split(":")[0], monthKey: r.key.split(":")[1] }));
+      const months = await prisma.contentMonth.findMany({ where: { OR: pairs.map((p) => ({ enrollmentId: p.enrollmentId, monthKey: p.monthKey })) }, select: { id: true, enrollmentId: true, monthKey: true } });
+      const monthId = (e: string, k: string) => months.find((x) => x.enrollmentId === e && x.monthKey === k)?.id ?? null;
+      const owners = await ownersForMany(pairs.map((p) => ({ enrollmentId: p.enrollmentId, monthId: monthId(p.enrollmentId, p.monthKey) }))).catch(() => null);
+      // Waiting scripts already filmed are not a decision any more (the Scripts card's rule).
+      const scripts = months.length ? await prisma.contentScript.findMany({ where: { monthId: { in: months.map((x) => x.id) }, currentVersionId: { not: null }, historical: false }, select: { id: true, topicId: true, monthId: true, currentVersionId: true } }) : [];
+      const waitingIds = new Set(scripts.length ? (await prisma.contentScriptVersion.findMany({ where: { id: { in: scripts.map((s) => s.currentVersionId!) }, status: { in: ["DRAFT", "INTERNAL_REVIEW"] } }, select: { id: true } })).map((v) => v.id) : []);
+      const waiting = scripts.filter((s) => waitingIds.has(s.currentVersionId!));
+      const filmed = waiting.length ? await readScriptsFilmed(waiting).catch(() => new Map()) : new Map();
+      const firstInt = (s: string) => Number(/\d+/.exec(s)?.[0] ?? 1) || 1;
+      const out: ScriptNeed[] = [];
+      for (const r of rows) {
+        const [enrollmentId, monthKey] = r.key.split(":");
+        const mid = monthId(enrollmentId, monthKey);
+        const owner = owners?.get(pairKey(enrollmentId, mid))?.SCRIPTS;
+        const ownerName = owner && owner.label !== "unassigned" ? firstName(owner.label) : opts.listingOwner;
+        const monthLabel = new Date(`${monthKey}-15T12:00:00Z`).toLocaleDateString("en-US", { month: "long", timeZone: "UTC" });
+        for (const i of r.items) {
+          let n = firstInt(i.words);
+          if (i.key === "approve") {
+            const here = waiting.filter((s) => s.monthId === mid);
+            if (here.length) n = here.filter((s) => !filmed.has(s.id)).length;
+            if (!n) continue;
+          }
+          const need = i.key === "approve" ? "approve" : "write";
+          out.push({
+            id: `month:${r.key}:${i.key}`,
+            kind: "monthly",
+            need,
+            n,
+            client: r.clientName,
+            street: r.clientName,
+            what: `${monthLabel} content: ${need === "approve" ? `${plural(n, "script")} waiting for approval` : i.key === "changes" ? `${plural(n, "script")} to rework (client changes)` : `${plural(n, "script")} to write`}`,
+            dueISO: null,
+            owner: ownerName,
+            href: i.href,
+            projectId: null,
+          });
+        }
+      }
+      return out;
+    })().catch(warn("monthly scripts")),
+  ]);
+  return {
+    listing: listing
+      ? listing.map((p) => ({
+          id: `script:${p.projectId}`,
+          kind: "listing" as const,
+          need: p.hasScript && !/asked for changes/i.test(p.what) ? ("approve" as const) : ("write" as const),
+          n: 1,
+          client: p.client,
+          street: p.street,
+          what: `Listing script: ${p.what.charAt(0).toLowerCase()}${p.what.slice(1)}`,
+          dueISO: p.shootISO,
+          owner: opts.listingOwner,
+          href: `/projects/${p.projectId}${p.hasScript ? "#script" : ""}`,
+          projectId: p.projectId,
+        }))
+      : null,
+    monthly,
+  };
 }
 
 /**
@@ -237,19 +411,24 @@ async function listingScriptsWaiting(now: Date, until: Date, exclude: string[]):
  * day. One row, however many; its button goes to the script (one job) or to
  * the Scripts card (several).
  */
-export async function scriptsBottleneck(opts: { now: Date; excludeClientIds: string[]; ownerName: string }): Promise<{ issue: string; owner: string; nextStep: string; href: string; projectId: string | null; tone: Tone; firstShootISO: string | null } | null> {
-  const waiting = await listingScriptsWaiting(opts.now, endOfBusinessDaysET(opts.now, 1, 23), opts.excludeClientIds);
-  if (!waiting?.length) return null;
+export type ScriptsBottleneck = { issue: string; owner: string; nextStep: string; href: string; projectId: string | null; tone: Tone; firstShootISO: string | null; items: ScriptNeed[] };
+/** From the listing needs (scriptNeedsAhead): the shoots by the end of the next business day. Since the Loom (Oct 27 2026) the owner is the creative manager. */
+export function scriptsBottleneckFrom(listing: ScriptNeed[], opts: { now: Date; ownerName: string }): ScriptsBottleneck | null {
+  const until = endOfBusinessDaysET(opts.now, 1, 23).getTime();
+  const waiting = listing.filter((n) => n.kind === "listing" && !!n.dueISO && Date.parse(n.dueISO) <= until);
+  if (!waiting.length) return null;
   const one = waiting.length === 1 ? waiting[0] : null;
   const first = waiting[0];
+  const bare = (n: ScriptNeed) => n.what.replace(/^Listing script: /, "");
   return {
-    issue: one ? `${one.street}: ${one.what.toLowerCase()}, shoot ${etDateTime(one.shootISO)}` : `${plural(waiting.length, "shoot")} lack approved scripts (first ${first.street}, ${etDateTime(first.shootISO)})`,
+    issue: one ? `${one.street}: ${bare(one)}, shoot ${etDateTime(one.dueISO)}` : `${plural(waiting.length, "shoot")} lack approved scripts (first ${first.street}, ${etDateTime(first.dueISO)})`,
     owner: opts.ownerName,
-    nextStep: "Review today",
-    href: one ? `/projects/${one.projectId}${one.hasScript ? "#script" : ""}` : "#creative",
+    nextStep: "Approve today",
+    href: one ? one.href : "#creative",
     projectId: one?.projectId ?? null,
-    tone: first.shootISO && Date.parse(first.shootISO) - opts.now.getTime() < DAY ? "bad" : "warn",
-    firstShootISO: first.shootISO,
+    tone: first.dueISO && Date.parse(first.dueISO) - opts.now.getTime() < DAY ? "bad" : "warn",
+    firstShootISO: first.dueISO,
+    items: waiting,
   };
 }
 
@@ -369,7 +548,8 @@ export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: s
   const listing = await listingScriptsWaiting(now, new Date(now.getTime() + 7 * DAY), exclude);
   if (!listing) unavailable.push("listing scripts");
   // SCRIPT STUDIO'S OWN NUDGES (Oct 27 2026: the package it generated, and the
-  // client's reply on it, are routed to the listing-scripts owner, Jordan).
+  // client's reply on it, are routed to the listing-scripts owner: James since
+  // the Loom, else Jordan).
   // One per job, keyed by the webhook ("scripting-script-<job>",
   // "scripting-client-<job>"); Done closes it, and the Studio reopens it on
   // its next event.
@@ -416,15 +596,16 @@ export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: s
       ],
     };
   };
+  const listingRows: CreativeRow[] = [];
   for (const p of listing ?? []) {
-    rows.push(listingRow(p, studioByProject.get(p.projectId)?.id ?? null));
+    listingRows.push(listingRow(p, studioByProject.get(p.projectId)?.id ?? null));
     studioByProject.delete(p.projectId);
   }
   // A Studio nudge on a job the 7-day list doesn't hold (shooting later, or the script is in but the client replied).
   for (const [pid, t] of studioByProject) {
     const client = t.dedupeKey?.startsWith("scripting-client-");
     const changes = /changes/i.test(t.title);
-    rows.push(listingRow({
+    listingRows.push(listingRow({
       projectId: pid,
       clientId: t.clientId,
       client: t.project?.client?.name ?? "A client",
@@ -435,8 +616,29 @@ export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: s
       hasScript: true,
     }, t.id));
   }
+  // LISTING SCRIPTS ARE JAMES'S NOW (Jordan's Loom, Oct 27 2026, 3:51: "I
+  // don't need to approve the scripts, James can approve them, I'm not
+  // worried about approving the listing content scripts ... he's the content
+  // manager ... I don't mind reviewing them, I just don't think I really need
+  // to"). With a creative manager on the roster, the listing rows leave this
+  // card for one quiet line ("James has 2 listing scripts to approve") whose
+  // Open lists them; the Studio nudges are routed to him (taskRouting). With
+  // no creative manager they stay Jordan's rows, as before.
+  const cm = listingRows.length ? await prisma.teamMember.findFirst({ where: { active: true, creativeManager: true }, orderBy: { createdAt: "asc" }, select: { name: true } }).catch(() => null) : null;
+  let listingFyi: ListingFyi | null = null;
+  if (cm?.name) {
+    const who = firstName(cm.name);
+    const approve = listingRows.filter((r) => !/No script yet|asked for changes/i.test(r.what)).length;
+    const verb = approve === listingRows.length ? "approve" : approve === 0 ? "write" : "write or approve";
+    listingFyi = {
+      owner: who,
+      count: listingRows.length,
+      words: `${who} has ${plural(listingRows.length, "listing script")} to ${verb}`,
+      rows: listingRows.map((r) => ({ id: r.id, title: r.what, sub: [r.client, r.related].filter(Boolean).join(" · "), href: r.href, tone: r.tone })),
+    };
+  } else rows.push(...listingRows);
   rows.sort((a, b) => Number(b.tone === "bad") - Number(a.tone === "bad") || (a.dueISO ?? "9999").localeCompare(b.dueISO ?? "9999"));
-  return { rows, jordanOwns: rows.filter((r) => r.mode === "jordan").length, othersDraft: rows.filter((r) => r.mode === "drafted").length, unavailable };
+  return { rows, jordanOwns: rows.filter((r) => r.mode === "jordan").length, othersDraft: rows.filter((r) => r.mode === "drafted").length, listingFyi, unavailable };
 }
 
 // =====================================================================================
@@ -469,17 +671,40 @@ export type EmailRow = {
   threadKey: string;
   taskId: string | null;
   assign: AssignSeed;
+  /** Their newest email, and our last reply in the thread (Oct 27 2026, the Loom: "I should see his last email, response"). */
+  lastFromThem: { atISO: string; text: string } | null;
+  lastFromUs: { atISO: string; text: string } | null;
+  /** the conversation, oldest first (the newest ten turns): "Open thread" */
+  thread: EmailTurn[];
+  /** the comms-log row the panel's reply box answers (the newest email they sent); null: Messages only */
+  commLogId: string | null;
+  /** handed to someone (Delegated by me lists it, with their state) */
+  delegated: { taskId: string; assignee: string; state: string; dueISO: string | null } | null;
 };
+export type EmailTurn = { role: "client" | "us"; atISO: string | null; text: string };
 export type EmailSection = { rows: EmailRow[]; counts: Record<EmailClass, number>; connected: boolean | null; note: string; unavailable: string[] };
 
+/**
+ * EMAIL NEEDING MY REPLY. A delegated email leaves his list (Jordan's Loom,
+ * Oct 27 2026, 6:51: "email needing my reply should be empty now, because
+ * I've delegated all of these"): its row is kept as "waiting" (Delegated by me
+ * shows it with the assignee's state) and the card lists only what still
+ * needs him. Who has it is read from the THREAD (lib/emailDelegation), and
+ * from the client's reply to-do only for a delegation made before that (the
+ * to-do changes when the client writes again, which is how a delegated email
+ * came back). Delegate goes to the office (Kyle) by default, due by 5 PM.
+ */
 export async function emailNeedingReply(opts: { now?: Date; excludeClientIds?: string[] } = {}): Promise<EmailSection> {
   const now = opts.now ?? new Date();
-  const [{ unansweredComms }, google, { normalizeSubject }, { waitingReplyHref }, cov] = await Promise.all([
+  const [{ unansweredComms }, google, { normalizeSubject }, { waitingReplyHref }, cov, ed, { listAssignees }, { kylePerson }] = await Promise.all([
     import("@/lib/replyQueue"),
     import("@/lib/integrations/google"),
     import("@/components/comms/emailThreads"),
     import("@/components/comms/messagesNav"),
     import("@/lib/coverage"),
+    import("@/lib/emailDelegation"),
+    import("@/lib/assignees"),
+    import("@/lib/opsHome"),
   ]);
   const [threads, boxes, rules] = await Promise.all([
     unansweredComms({ now, families: ["email"], includeUnmatched: true, includeTeam: false, excludeClientIds: opts.excludeClientIds }).catch(warn("email")),
@@ -491,28 +716,49 @@ export async function emailNeedingReply(opts: { now?: Date; excludeClientIds?: s
   if (!threads) return { rows: [], counts, connected, note: "Email couldn't load. This is not an empty inbox.", unavailable: ["email"] };
   if (connected === false) return { rows: [], counts, connected, note: `Your inbox (${OWNER_MAILBOX}) isn't connected, so the hub can't see email waiting on you.`, unavailable: ["your inbox"] };
   const mine = threads.filter((t) => t.pending.some((m) => (m.mailboxes ?? []).includes(OWNER_MAILBOX)) || (t.inboxes ?? []).includes(OWNER_MAILBOX));
-  // A delegated reply task, or a task keyed to the thread, means someone else has it.
-  const hrefOf = (t: (typeof mine)[number]) => {
-    const latest = t.pending[t.pending.length - 1];
-    return waitingReplyHref("email", `${normalizeSubject(latest?.subject)}::${t.clientId}`);
-  };
-  const keyed = mine.map((t) => `deleg:${hrefOf(t)}`.slice(0, 190));
-  const [keyedTasks, issues] = await Promise.all([
+  const latestOf = (t: (typeof mine)[number]) => t.pending[t.pending.length - 1];
+  // The Messages link (exact), and the delegation key (the same link, kept short enough to key a task).
+  const hrefOf = (t: (typeof mine)[number]) => waitingReplyHref("email", `${normalizeSubject(latestOf(t)?.subject)}::${t.clientId}`);
+  const keyOf = (t: (typeof mine)[number]) => ed.emailThreadHref(latestOf(t)?.subject, t.clientId);
+  const keyed = mine.map((t) => `deleg:${keyOf(t)}`.slice(0, 190));
+  const oldestAt = mine.reduce<number | null>((m, t) => {
+    const at = latestOf(t)?.at?.getTime();
+    return at == null ? m : m == null ? at : Math.min(m, at);
+  }, null);
+  const [keyedTasks, threadTasks, issues, inbound, roster] = await Promise.all([
     keyed.length ? prisma.smartTask.findMany({ where: { dedupeKey: { in: keyed }, delegatedAt: { not: null }, status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { id: true, dedupeKey: true } }).catch(() => []) : Promise.resolve([]),
+    mine.length ? ed.openEmailDelegations(mine.map((t) => t.clientId)).catch(() => []) : Promise.resolve([]),
     prisma.clientIssue.findMany({ where: { dismissedAt: null, state: { in: ["OPEN", "UNRESOLVED"] }, clientId: { in: mine.map((t) => t.clientId).filter((x): x is string => !!x) } }, select: { clientId: true } }).catch(() => []),
+    // The panel's reply box answers the comms-log row of the newest email they sent (Messages' own reply box).
+    oldestAt != null
+      ? prisma.commLog.findMany({ where: { channel: "email", direction: "in", externalId: { startsWith: "gmail-" }, occurredAt: { gte: new Date(oldestAt - 5 * 60_000) } }, select: { id: true, clientId: true, occurredAt: true, subject: true }, orderBy: { occurredAt: "desc" }, take: 400 }).catch(() => [])
+      : Promise.resolve([]),
+    listAssignees().catch(() => []),
   ]);
-  const views = await delegationFor([...mine.map((t) => t.openTaskId).filter((x): x is string => !!x), ...keyedTasks.map((t) => t.id)]).catch(() => new Map<string, DelegatedTaskView>());
+  const views = await delegationFor([...mine.map((t) => t.openTaskId).filter((x): x is string => !!x), ...keyedTasks.map((t) => t.id), ...threadTasks.map((t) => t.id)]).catch(() => new Map<string, DelegatedTaskView>());
   const keyedBy = new Map(keyedTasks.map((t) => [t.dedupeKey, t.id]));
   const complaint = new Set(issues.map((i) => i.clientId));
+  const office = await kylePerson(roster).catch(() => null);
+  const officeKey = office?.key ?? roster.find((a) => a.key === "kyle")?.key ?? null;
+  const due = await ed.replyDueAt(now);
+  const clip = (s: string | null | undefined, n: number) => (s ?? "").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, n);
   const rows: EmailRow[] = [];
   for (const t of mine) {
-    const latest = t.pending[t.pending.length - 1];
+    const latest = latestOf(t);
     const href = hrefOf(t);
-    const delegated = (t.openTaskId ? views.get(t.openTaskId) : undefined) ?? views.get(keyedBy.get(`deleg:${href}`.slice(0, 190)) ?? "");
+    const key = keyOf(t);
+    // Who has it: the thread's own delegation, then the one keyed to its link, then a reply to-do delegated before Oct 27.
+    const byThread = threadTasks.find((d) => ed.threadMatches(d.ref, t.clientId, t.pending.map((m) => m.subject)));
+    const delegated = (byThread ? views.get(byThread.id) : undefined) ?? views.get(keyedBy.get(`deleg:${key}`.slice(0, 190)) ?? "") ?? (t.openTaskId ? views.get(t.openTaskId) : undefined);
     const otherInbox = (t.inboxes ?? []).some((b) => b !== OWNER_MAILBOX);
     const cls: EmailClass = delegated ? "waiting" : t.clientId && complaint.has(t.clientId) ? "decide" : otherInbox ? "team" : "reply";
     counts[cls]++;
     const lastOurs = [...t.turns].reverse().find((x) => x.role === "us");
+    const at = latest?.at?.getTime() ?? null;
+    const sameSender = inbound.filter((r) => (r.clientId ?? null) === (t.clientId ?? null));
+    const commLogId = (at != null ? sameSender.find((r) => Math.abs(r.occurredAt.getTime() - at) < 2 * 60_000) : undefined)?.id
+      ?? sameSender.find((r) => normalizeSubject(r.subject) === normalizeSubject(latest?.subject))?.id
+      ?? null;
     rows.push({
       key: t.key,
       cls,
@@ -530,7 +776,13 @@ export async function emailNeedingReply(opts: { now?: Date; excludeClientIds?: s
       groupKey: t.groupKey,
       threadKey: t.key,
       taskId: t.openTaskId,
-      assign: { title: `Reply to ${t.displayName}: ${latest?.subject?.trim() || "their email"}`.slice(0, 140), outcome: "The client has an answer", sourceTaskId: t.openTaskId, sourceHref: t.openTaskId ? null : href, clientId: t.clientId, projectId: t.projectId },
+      // Keyed to the THREAD (never the client's reply to-do), to the office, by 5 PM (the Loom, 6:00: "should probably automatically be delegated to Kyle").
+      assign: { title: `Reply to ${t.displayName}: ${latest?.subject?.trim() || "their email"}`.slice(0, 140), outcome: "The client has an answer", assigneeKey: officeKey, dueAt: due, sourceTaskId: null, sourceHref: key, clientId: t.clientId, projectId: t.projectId },
+      lastFromThem: latest ? { atISO: latest.at.toISOString(), text: clip(latest.body, 1500) } : null,
+      lastFromUs: lastOurs ? { atISO: lastOurs.at, text: clip(lastOurs.text, 1500) } : null,
+      thread: t.turns.slice(-10).map((x) => ({ role: x.role, atISO: x.at ?? null, text: clip(x.text, 1200) })),
+      commLogId,
+      delegated: delegated ? { taskId: delegated.taskId, assignee: delegated.assigneeName ?? "Someone", state: STATE_WORDS[delegated.state], dueISO: delegated.dueAt } : null,
     });
   }
   const order: Record<EmailClass, number> = { decide: 0, reply: 1, team: 2, waiting: 3 };

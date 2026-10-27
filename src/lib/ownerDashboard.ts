@@ -25,6 +25,8 @@ import { stripeSnapshot, type StripeSnapshot } from "@/lib/integrations/stripe";
 import { feeFrom, RAIL_FEE_CATEGORY, revenueMonth, type RevenueMonth } from "@/lib/revenueMonthCore";
 import { uncountedDepositParts } from "@/lib/financeAuditCore";
 import { getBillingRows } from "@/lib/queries";
+import { orderTopics, topicsFromBottlenecks, type BottleneckTopic, type TopicCat } from "@/lib/ownerTopicsCore";
+import type { ScriptNeed } from "@/lib/ownerWork";
 
 // ---------------------------------------------------------------------------
 // JORDAN'S DASHBOARD, BUSINESS OVERSIGHT (Oct 23 2026, his spec §4 A–D, I).
@@ -351,6 +353,8 @@ export type StageItem = {
   ownerIsOffice?: boolean;
   href: string;
   projectId: string | null;
+  /** pre-production: a script the shoots ahead need (n scripts, to write or to approve) */
+  scripts?: { n: number; need: "write" | "approve"; kind: "listing" | "monthly" } | null;
 };
 export type Stage = {
   key: StageKey;
@@ -360,6 +364,8 @@ export type Stage = {
   oldestWaitHours: number | null;
   nextOwner: string | null;
   headline: { n: number; words: string };
+  /** the tile's small line when the stage says more than its counts (pre-production) */
+  detail?: string | null;
   tone: Tone;
   /** the source could not be read: never shown as an empty stage */
   unavailable: string | null;
@@ -385,11 +391,21 @@ export type Bottleneck = {
   /** The buttons, the right one for the issue (Oct 27 2026: every row read
    *  "Assign"). The first is the primary; at most two. */
   actions: RowAction[];
+  /** the topic family it is counted under on the dashboard (Loom, Oct 27 2026) */
+  topic?: TopicCat | null;
+  /** hours past its promise, when late */
+  lateHours?: number | null;
+  projectId?: string | null;
 };
 
 export type ProductionHealth = {
   stages: Stage[];
+  /** every late, blocked or unowned record, one row each (the "View all" list) */
   bottlenecks: Bottleneck[];
+  /** the same work grouped into topics, plus what keeps coming back (his Loom, Oct 27 2026) */
+  topics: BottleneckTopic[];
+  /** a quiet line when the AI half of the topics is paused (null = running, or never started) */
+  topicsNote: string | null;
   punctuality: string;
   unavailable: string[];
 };
@@ -404,8 +420,28 @@ function stageOf(key: StageKey, items: StageItem[], unavailable: string | null, 
   const byOwner = new Map<string, number>();
   for (const i of items) byOwner.set(i.owner, (byOwner.get(i.owner) ?? 0) + (i.late ? 100 : 1));
   const nextOwner = [...byOwner.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  // PRE-PRODUCTION SAYS WHAT THE SHOOTS NEED (Jordan's Loom, Oct 27 2026,
+  // 2:52: "it should be like, hey, we have five scripts that need to be
+  // written ... or scripts need to be approved. I don't care about the shoots
+  // coming up"). Scripts to write lead, then scripts waiting for approval,
+  // then a shoot nobody can cover; the rest goes on the small line.
+  const scriptsN = (need: "write" | "approve", kind?: "listing" | "monthly") => items.reduce((n, i) => n + (i.scripts && i.scripts.need === need && (!kind || i.scripts.kind === kind) ? i.scripts.n : 0), 0);
+  const toWrite = key === "pre" ? scriptsN("write") : 0;
+  const toApprove = key === "pre" ? scriptsN("approve") : 0;
+  const listingN = key === "pre" ? scriptsN("write", "listing") + scriptsN("approve", "listing") : 0;
+  const monthlyN = key === "pre" ? scriptsN("write", "monthly") + scriptsN("approve", "monthly") : 0;
+  const detail = key !== "pre" || (!toWrite && !toApprove)
+    ? null
+    : [
+        toWrite && toApprove ? `${toApprove} waiting for approval` : null,
+        listingN && monthlyN ? `listing ${listingN}, monthly ${monthlyN}` : listingN ? "listing scripts" : "monthly content",
+        blocked ? `${plural(blocked, "shoot")} blocked` : null,
+        nextOwner ? `next: ${nextOwner}` : null,
+      ].filter(Boolean).join(" · ");
   const headline =
-    key === "pre" ? (blocked ? { n: blocked, words: "blocked" } : { n: items.length, words: items.length === 1 ? "shoot coming up" : "shoots coming up" })
+    key === "pre" ? (toWrite ? { n: toWrite, words: toWrite === 1 ? "script to write" : "scripts to write" }
+      : toApprove ? { n: toApprove, words: toApprove === 1 ? "script waiting for approval" : "scripts waiting for approval" }
+        : blocked ? { n: blocked, words: "blocked" } : { n: 0, words: "nothing needed" })
       : key === "capture" ? { n: items.length, words: "missing upload" }
         : key === "editing" ? (overdue + dueSoon + blocked ? { n: overdue + dueSoon + blocked, words: "at risk" } : { n: items.length, words: "in editing" })
           : key === "review" ? { n: items.length, words: "awaiting review" }
@@ -417,6 +453,7 @@ function stageOf(key: StageKey, items: StageItem[], unavailable: string | null, 
     oldestWaitHours: waits.length ? Math.round(Math.max(...waits)) : null,
     nextOwner,
     headline,
+    detail,
     tone,
   };
 }
@@ -431,7 +468,10 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
   const current = Math.abs(now.getTime() - Date.now()) < 60_000;
 
   const ownerName = firstName(roster.find((a) => a.kind === "owner")?.name ?? "Jordan");
-  const [jobs, video, review, photos, exceptions, visits, kyle, flags, off, cm, scripts] = await Promise.all([
+  // The creative manager: late editing recovery and cut review are his (Jordan, Oct 27 2026: "James is the creative manager"),
+  // and so are listing scripts since the Loom (3:51: "James can approve them").
+  const cmRead = prisma.teamMember.findFirst({ where: { active: true, creativeManager: true }, orderBy: { createdAt: "asc" }, select: { id: true, name: true } }).catch(() => null);
+  const [jobs, video, review, photos, exceptions, visits, kyle, flags, off, cm, needs] = await Promise.all([
     jobsBoard(now, { includeTest: !!opts.includeTest }).catch(warn("shoots board")),
     videoDeliveryBoard(current ? {} : { now }).catch(warn("video board")),
     getReviewQueue({ includeTest: !!opts.includeTest }).catch(warn("review queue")),
@@ -449,10 +489,9 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
     kylePerson(roster).catch(() => null),
     ownerShootIssues(now).catch(warn("shoot issues")),
     timeOffBetween(etDayKey(now), etDayKey(soonEnd)).catch(warn("time off")),
-    // The creative manager: late editing recovery and cut review are his (Jordan, Oct 27 2026: "James is the creative manager").
-    prisma.teamMember.findFirst({ where: { active: true, creativeManager: true }, orderBy: { createdAt: "asc" }, select: { id: true, name: true } }).catch(() => null),
-    // Listing scripts missing or unapproved for a shoot by the end of the next business day (his mockup's third row).
-    import("@/lib/ownerWork").then((m) => m.scriptsBottleneck({ now, excludeClientIds: exclude, ownerName })).catch(warn("listing scripts")),
+    cmRead,
+    // What the shoots ahead need: listing scripts (7 days) and content months' scripts (this month and next).
+    cmRead.then((c) => import("@/lib/ownerWork").then((m) => m.scriptNeedsAhead({ now, excludeClientIds: exclude, listingOwner: c?.name ? firstName(c.name) : ownerName }))).catch(warn("scripts ahead")),
   ]);
   const officeName = kyle?.name ?? "Kyle";
   const officeKey = kyle?.key ?? roster.find((a) => a.key === "kyle")?.key ?? null;
@@ -462,11 +501,35 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
   const excluded = new Set(exclude);
   const unavailable: string[] = [];
 
-  // ---- pre-production: shoots from now to the end of the next business day ----
-  // A shoot on someone who is off that day is blocked (audit, Oct 25 2026:
-  // Harrison's week off with five shoots still on his calendar read "coming
-  // up" in green). The office reassigns or moves it, so it is the office's move.
-  const pre: StageItem[] = (visits ?? []).filter((v): v is typeof v & { startAt: Date } => !!v.startAt).map((v) => {
+  // ---- pre-production: what the shoots ahead need -----------------------------
+  // Since the Loom (Oct 27 2026) the stage lists the scripts the shoots need
+  // (listing scripts for the next 7 days, content months' scripts this month
+  // and next), each one the person's move whose it is, and only the shoots
+  // that cannot happen as booked: nobody on them, or the photographer off
+  // that day (audit, Oct 25 2026: Harrison's week off with five shoots still
+  // on his calendar read "coming up" in green). A shoot that is fine is not
+  // a thing to do, so it is no longer listed.
+  const keyOfFirst = (first: string) => roster.find((a) => firstName(a.name).toLowerCase() === first.toLowerCase())?.key ?? null;
+  const scriptItems: StageItem[] = [...(needs?.listing ?? []), ...(needs?.monthly ?? [])].map((n: ScriptNeed) => ({
+    id: n.id,
+    street: n.street,
+    client: n.client,
+    what: n.kind === "listing" && n.dueISO ? `${n.what}, shoot ${etDateTime(n.dueISO)}` : n.what,
+    dueISO: n.dueISO,
+    late: false,
+    dueSoon: isSoon(n.dueISO),
+    blocked: null,
+    waitingSinceISO: null,
+    owner: n.owner,
+    ownerKey: cmName && n.owner === cmName ? keyOfTm(cm?.id) : keyOfFirst(n.owner),
+    href: n.href,
+    projectId: n.projectId,
+    scripts: { n: n.n, need: n.need, kind: n.kind },
+  }));
+  if (needs && !needs.listing) unavailable.push("listing scripts");
+  if (needs && !needs.monthly) unavailable.push("content scripts");
+  if (!needs) unavailable.push("scripts ahead");
+  const shootItems: StageItem[] = (visits ?? []).filter((v): v is typeof v & { startAt: Date } => !!v.startAt).map((v) => {
     const away = offAt(off ?? [], v.assignedToId, v.startAt);
     const offAll = !!away && away.fraction >= 1;
     return {
@@ -485,6 +548,7 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
       projectId: v.project?.id ?? null,
     };
   });
+  const pre: StageItem[] = [...scriptItems, ...shootItems.filter((i) => !!i.blocked)];
   if (!visits) unavailable.push("upcoming shoots");
   if (!off) unavailable.push("time off");
 
@@ -591,7 +655,7 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
 
   const sortItems = (a: StageItem, b: StageItem) => Number(b.late) - Number(a.late) || Number(!!b.blocked) - Number(!!a.blocked) || (a.dueISO ?? "9999").localeCompare(b.dueISO ?? "9999");
   const stages: Stage[] = [
-    stageOf("pre", pre.sort(sortItems), visits ? null : "Upcoming shoots couldn't load", now),
+    stageOf("pre", pre.sort(sortItems), visits || needs ? null : "Upcoming shoots and scripts couldn't load", now),
     stageOf("capture", capture.sort(sortItems), jobs ? null : "The Shoots board couldn't load", now),
     stageOf("editing", editing.sort(sortItems), (!video || video.unavailable) && !photos ? "The video board and photo queue couldn't load" : null, now),
     stageOf("review", reviewItems.sort(sortItems), !review && !photos ? "The review queue couldn't load" : null, now),
@@ -599,12 +663,27 @@ export async function productionHealth(opts: { now?: Date; includeTest?: boolean
   ];
 
   // ---- bottlenecks requiring action -----------------------------------------
-  const bottlenecks = await bottlenecksFrom({ now, stages, roster, officeName, officeKey, cmKey, ownerEmail: opts.ownerEmail ?? null, flags: flags?.open ?? [], scripts: scripts ?? null });
+  // Listing scripts for a shoot by the end of the next business day: the creative manager's (the Loom, 3:51).
+  const { scriptsBottleneckFrom } = await import("@/lib/ownerWork");
+  const scripts = needs?.listing ? scriptsBottleneckFrom(needs.listing, { now, ownerName: cmName ?? ownerName }) : null;
+  const bottlenecks = await bottlenecksFrom({ now, stages, roster, officeName, officeKey, cmKey, ownerEmail: opts.ownerEmail ?? null, flags: flags?.open ?? [], scripts });
   if (!flags) unavailable.push("shoot issues");
+
+  // ---- the same, as topics, plus what keeps coming back ------------------------
+  // The live work is grouped here, from the rows above, so it shows even when
+  // the recurring-issue reads fail (they only add to it).
+  const ownerChip = roster.find((a) => a.kind === "owner");
+  const desks = { office: { key: officeKey, name: officeName }, cm: { key: cmKey, name: cmName }, owner: { key: ownerChip?.key ?? null, name: ownerName } };
+  const { loadOwnerTopics } = await import("@/lib/ownerTopics");
+  const topicRead = await loadOwnerTopics({ now, bottlenecks, excludeClientIds: exclude, desks }).catch(warn("topics"));
+  if (!topicRead) unavailable.push("recurring issues");
+  else unavailable.push(...topicRead.unavailable);
 
   return {
     stages,
     bottlenecks,
+    topics: topicRead?.topics ?? orderTopics(topicsFromBottlenecks(bottlenecks, desks)),
+    topicsNote: topicRead?.note ?? null,
     punctuality: "Shoot punctuality isn't measured: arrival times aren't recorded as data (the photographer's Arrived text is optional). Delivery timeliness is in the stages above.",
     unavailable,
   };
@@ -615,7 +694,7 @@ type From = "work" | "flag" | "deleg" | "scripts";
 /** Owners that are a tool or a vendor, not a person: the office chases them. */
 const NOT_A_PERSON = new Set(["AutoHDR", "Photo fixes", "Topaz"]);
 
-async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee[]; officeName: string; officeKey: string | null; cmKey: string | null; ownerEmail: string | null; flags: { id: string; client: string; street: string | null; text: string; by: string | null; atISO: string; href: string }[]; scripts?: Awaited<ReturnType<typeof import("@/lib/ownerWork").scriptsBottleneck>> }): Promise<Bottleneck[]> {
+async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee[]; officeName: string; officeKey: string | null; cmKey: string | null; ownerEmail: string | null; flags: { id: string; client: string; street: string | null; text: string; by: string | null; atISO: string; href: string }[]; scripts?: import("@/lib/ownerWork").ScriptsBottleneck | null }): Promise<Bottleneck[]> {
   const { now, stages, roster } = o;
   const keyOfName = (name: string) => roster.find((a) => a.name.toLowerCase() === name.toLowerCase())?.key ?? null;
   type Cand = Bottleneck & { rank: number; from: From; stage: StageKey | null; item: StageItem | null };
@@ -663,6 +742,9 @@ async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee
       },
       taskId: null,
       actions: [],
+      topic: noOwner ? "unowned" : i.blocked && !i.late ? "on-hold" : s.key === "capture" ? "photos-not-uploaded" : isPhotos ? "photos-late" : "videos-late",
+      lateHours: i.late ? lateH : null,
+      projectId: i.projectId,
       rank: (noOwner ? 0 : 10) + (i.late ? 0 : 5),
       from: "work",
       stage: s.key,
@@ -685,13 +767,16 @@ async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee
       assign: { title: `Shoot issue: ${f.street ?? f.client}`, outcome: "Resolved, and the cause recorded", sourceTaskId: f.id },
       taskId: null,
       actions: [],
+      topic: "shoot-flags",
       rank: 3,
       from: "flag",
       stage: null,
       item: null,
     });
   }
-  // Listing scripts his shoots wait on: his own move, one row however many.
+  // Listing scripts the next shoots wait on, one row however many: the
+  // creative manager's move since the Loom (Oct 27 2026, 3:51), so the row
+  // asks him for an update instead of sending Jordan to approve.
   if (o.scripts) {
     const sc = o.scripts;
     cand.push({
@@ -705,9 +790,11 @@ async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee
       clientUpdate: null,
       tone: sc.tone,
       href: sc.href,
-      assign: { title: sc.projectId ? `Listing script: ${sc.issue.split(":")[0]}` : "Listing scripts for the next shoots", outcome: "An approved script before each shoot", projectId: sc.projectId },
+      assign: { title: sc.projectId ? `Listing script: ${sc.issue.split(":")[0]}` : "Listing scripts for the next shoots", outcome: "An approved script before each shoot", projectId: sc.projectId, sourceHref: sc.href.startsWith("/") ? sc.href : "/#creative" },
       taskId: null,
       actions: [],
+      topic: "scripts",
+      projectId: sc.projectId,
       rank: 6, // after work nobody holds, before late work someone holds
       from: "scripts",
       stage: null,
@@ -733,6 +820,7 @@ async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee
       assign: { title: d.title, sourceTaskId: d.taskId, assigneeKey: null },
       taskId: d.taskId,
       actions: [],
+      topic: "decisions",
       rank: -1,
       from: "deleg",
       stage: null,
@@ -796,7 +884,14 @@ async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee
  */
 function bottleneckActions(c: Bottleneck & { from: From; stage: StageKey | null; item: StageItem | null }, k: { officeKey: string | null; cmKey: string | null; ownerKey: string | null; now: Date }): RowAction[] {
   if (c.from === "deleg") return [{ kind: "task", label: "Decide", taskId: c.taskId! }];
-  if (c.from === "scripts") return [{ kind: "link", label: "Review scripts", href: c.href }];
+  if (c.from === "scripts") {
+    // Already asked: nudge whoever has it. Else ask the creative manager (one press), beside the scripts themselves.
+    if (c.handledBy && c.taskId) return [{ kind: "nudge", label: "Request update", taskId: c.taskId }, { kind: "link", label: "Open", href: c.href }];
+    const due = endOfBusinessDaysET(k.now, etMinutesOfDay(k.now) < 17 * 60 ? 0 : 1).toISOString();
+    return k.cmKey && k.cmKey !== k.ownerKey
+      ? [{ kind: "ask", label: "Request update", seed: { ...c.assign, assigneeKey: k.cmKey, dueAt: due } }, { kind: "link", label: "Open", href: c.href }]
+      : [{ kind: "link", label: "Review scripts", href: c.href }];
+  }
   if (c.from === "flag") return [{ kind: "link", label: "Decide", href: c.href }, { kind: "assign", label: "Delegate", seed: c.assign }];
   if (c.handledBy && c.taskId) return [{ kind: "nudge", label: "Request update", taskId: c.taskId }, { kind: "task", label: "Reassign", taskId: c.taskId }];
   const i = c.item!;

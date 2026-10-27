@@ -257,6 +257,13 @@ export async function markCommsHandled(
       const me = await getCurrentUser().catch(() => null);
       for (const t of nowDone) await stampHandledByHand(t.id, me?.name ?? null, me?.email ?? null);
     }
+    // An email handed on (Jordan's Loom, Oct 27 2026) is done when its thread is marked handled.
+    {
+      const { getCurrentUser } = await import("@/lib/auth/user");
+      const me = await getCurrentUser().catch(() => null);
+      const { closeDelegatedEmailTasks } = await import("@/lib/emailDelegation");
+      await closeDelegatedEmailTasks({ clientId, why: "handled", by: me?.name ?? null });
+    }
   } else {
     // THE TICK RESOLVES WHAT THE PERSON WAS LOOKING AT (F10, Sep 20).
     //
