@@ -12,7 +12,7 @@ import { getClientFeedback, getPhotographerFeedback } from "@/lib/review";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { canSeeMoney, homeFor } from "@/lib/auth/access";
-import { etDateTime, etDayStartUtc, etDaysAgo } from "@/lib/datetime";
+import { etDateTime, etDayKey, etDayStartUtc, etDaysAgo } from "@/lib/datetime";
 import { SHOOT_STATUS_META, type ShootStatusKind } from "@/lib/statusTexts";
 import { ShootScreen } from "@/components/shoot/ShootScreen";
 import { ShootPayCard, ShootPayCardSkeleton } from "@/components/shoot/ShootPayCard";
@@ -29,6 +29,7 @@ import type { MonthBriefView } from "@/lib/monthBriefCore";
 import { ScriptView } from "@/components/script/ScriptView";
 import { stripScriptDashes } from "@/lib/contentPolicy/scriptFormat";
 import { ScriptCardTools, ShootScriptsBar } from "@/components/shoot/ShootScriptTools";
+import { ShootPrepCard, type PrepLine } from "@/components/shoot/ShootPrepCard";
 
 export const dynamic = "force-dynamic";
 
@@ -211,9 +212,18 @@ export default async function ShootDetailPage({
           route — the topics, the words the client was shown and the direction
           written with them, and any video with a brief of its own. The same
           readers the editor's page and printed brief use. */}
-      <SessionBriefCard session={view.session} outputs={view.outputBriefs} assets={briefAssets} clientBrief={monthBrief} tools={{ projectId: id, canEdit: scriptsEditable, canText: scriptsEditable && !!view.client.phoneE164, agentFirst: view.client.firstName || "the agent" }} />
+      {(view.session || view.outputBriefs.length > 0 || monthBrief) && (
+        <div id="session" className="scroll-mt-20">
+          <SessionBriefCard session={view.session} outputs={view.outputBriefs} assets={briefAssets} clientBrief={monthBrief} tools={{ projectId: id, canEdit: scriptsEditable, canText: scriptsEditable && !!view.client.phoneE164, agentFirst: view.client.firstName || "the agent" }} />
+        </div>
+      )}
     </>
   );
+  // BEFORE THE SHOOT (Oct 27 2026, Jordan: "the brief has no way to resolve
+  // anything"): today's or a coming visit, what it still needs, each with its
+  // one action. The shoot-day brief's Got it only for the person shooting it.
+  const prepLines = timing === "past" || !view.appointment ? [] : await shootPrepLines(view, canReadBrief ? shooterId : null).catch(() => [] as PrepLine[]);
+  const prep = prepLines.length ? <ShootPrepCard projectId={id} lines={prepLines} readOnly={!!user?.impersonating} /> : null;
   // "I read this brief" sits UNDER what it is about (Oct 5): ShootScreen
   // places it after the access brief, the checklist, the scripts and the
   // client's own words, so the button is pressed after the reading.
@@ -258,7 +268,62 @@ export default async function ShootDetailPage({
   // scoped list. Photographers never carry an ?as= back link (fail-closed).
   const backHref = user?.role !== "PHOTOGRAPHER" && as ? `/shoot?as=${as}` : "/shoot";
 
-  return <ShootScreen view={view} pay={pay} map={map} briefRead={briefRead} whenText={whenText} timing={timing} media={media} chat={chat} backHref={backHref} sentStatusKinds={sentStatusKinds} />;
+  return <ShootScreen view={view} pay={pay} map={map} briefRead={briefRead} whenText={whenText} timing={timing} media={media} chat={chat} backHref={backHref} sentStatusKinds={sentStatusKinds} prep={prep} />;
+}
+
+/**
+ * The prep card's lines (Oct 27 2026). Only what is on the job: the shoot-day
+ * brief waiting for the shooter's Got it (the version his brief page would
+ * show; Kyle's desk waits on it), access (Kyle's to chase, never the
+ * creative's job, Oct 26: so said, with Ask Kyle, not counted as his to
+ * do), the script (Jordan's: Ask Jordan), the shot list when there is one,
+ * and the client's special requests. Reads only.
+ */
+async function shootPrepLines(view: ShootView, shooterId: string | null): Promise<PrepLine[]> {
+  const out: PrepLine[] = [];
+  const a = view.appointment;
+  if (!a) return out;
+  const startMs = a.startISO ? Date.parse(a.startISO) : null;
+  const notStarted = startMs != null && startMs > Date.now();
+  if (shooterId && startMs != null) {
+    const { briefStatusForAppointments, buildBriefDays } = await import("@/lib/photographerBrief");
+    const st = (await briefStatusForAppointments([a.id]).catch(() => null))?.get(a.id) ?? null;
+    if (st?.state === "acknowledged") out.push({ key: "brief", label: "Shoot-day brief confirmed", tone: "ok", action: null });
+    else if (st && (st.state === "sent" || st.state === "changed") && notStarted) {
+      const day = etDayKey(new Date(startMs));
+      const built = await buildBriefDays([day], { teamMemberIds: [shooterId] }).catch(() => null);
+      const digest = built?.briefs.find((b) => b.teamMemberId === shooterId && b.day === day)?.digest ?? "";
+      out.push({
+        key: "brief",
+        label: st.state === "changed" ? "Your shoot-day brief changed. Kyle sees it unconfirmed until you mark it read" : "Kyle sees your shoot-day brief unconfirmed until you mark it read",
+        tone: "todo",
+        action: /^[a-f0-9]{32}$/.test(digest) ? { kind: "ack", day, digest, again: st.state === "changed" } : { kind: "link", label: "Open the day's brief", href: `/shoot/brief/${day}` },
+      });
+    }
+  }
+  if (!view.project.contentSession) {
+    const p = a.parsed;
+    out.push(p?.lockbox || p?.access || p?.presence
+      ? { key: "access", label: "Access noted in the brief", tone: "ok", action: { kind: "link", label: "See access", href: "#brief" } }
+      : { key: "access", label: "No access details on the appointment yet (Kyle chases them)", tone: "info", action: { kind: "ask", label: "Ask Kyle", to: "kyle", placeholder: "e.g. How do I get in? Will anyone be home?" } });
+  }
+  const isVideo = view.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  const scripted = !!(view.project.reelScript || view.project.reelHook);
+  if (view.session) {
+    const n = view.session.topics.filter((t) => !t.filmedElsewhere).length;
+    out.push(n
+      ? { key: "script", label: `${n} ${n === 1 ? "topic" : "topics"} for this session, with their scripts`, tone: "ok", action: { kind: "link", label: "See scripts", href: "#session" } }
+      : { key: "script", label: "No topics chosen for this session yet", tone: "todo", action: { kind: "ask", label: "Ask Jordan", to: "jordan", placeholder: "e.g. Which topics are we filming?" } });
+  } else if (isVideo && scripted) {
+    out.push({ key: "script", label: "Script ready", tone: "ok", action: { kind: "link", label: "See script", href: "#script" } });
+  } else if (isVideo && view.project.scriptExpected) {
+    out.push({ key: "script", label: "Script not in yet (Jordan's, in Script Studio)", tone: "todo", action: { kind: "ask", label: "Ask Jordan", to: "jordan", placeholder: "e.g. Will the script be ready before the shoot?" } });
+  }
+  // The shot list is said when there is one, never when there isn't.
+  if (isVideo && scripted && view.project.reelShotList?.trim()) out.push({ key: "shotlist", label: "Shot list on the job", tone: "ok", action: { kind: "link", label: "See shot list", href: "#script" } });
+  const n = view.specialRequests.length;
+  if (n) out.push({ key: "requests", label: `${n} special ${n === 1 ? "request" : "requests"} from the client`, tone: "info", action: { kind: "link", label: "Read them", href: "#brief" } });
+  return out;
 }
 
 /**

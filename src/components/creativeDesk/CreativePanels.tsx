@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { Check, ExternalLink, Loader2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etDate, etDateTime } from "@/lib/datetime";
-import type { CloseoutLine, CreativeDesk as Desk, CreativeCloseoutKey } from "@/lib/creativeDesk";
+import type { AssignedRow, CloseoutLine, CreativeDesk as Desk, CreativeCloseoutKey, FrictionRow } from "@/lib/creativeDesk";
 import type { DevGroupKey, Evidence } from "@/lib/teamDevelopment";
 import { approveCut } from "@/app/review/actions";
 import {
@@ -15,8 +15,8 @@ import {
 import { HANDOFF_CLOSE_REASONS, type HandoffCloseReason } from "@/lib/handoffCloseOut";
 import {
   addImprovementAction, askJordanImprovementAction, assignPracticeAction, closeOutHandoffAction, creativeCloseoutTickAction, escalateCutAction,
-  finishImprovementAction, recommendToJordanAction, recordFeedbackAction, recordFollowUpAction, saveAssessmentAction,
-  startAssessmentAction, updateImprovementAction, updatePlanAction, verifyImprovementAction,
+  finishImprovementAction, handMyTaskAction, myTaskStepAction, recommendToJordanAction, recordFeedbackAction, recordFollowUpAction,
+  saveAssessmentAction, startAssessmentAction, updateImprovementAction, updatePlanAction, verifyImprovementAction,
 } from "@/app/creativeDeskActions";
 
 // ---------------------------------------------------------------------------
@@ -36,6 +36,7 @@ export type Panel =
   | { kind: "new-readiness" }
   | { kind: "improvement"; id: string }
   | { kind: "new-improvement" }
+  | { kind: "friction"; key: string }
   | { kind: "task"; id: string };
 
 type Result = { ok: boolean; message: string; canApproveAnyway?: boolean };
@@ -264,6 +265,24 @@ function content(panel: Panel, desk: Desk, href: (h: string) => string): { title
     case "new-improvement": {
       return { title: "Log a process improvement", sub: "Shot lists, uploads and handoffs, briefs, review, client direction, training, checklists", body: ro ? <ReadOnlyNote /> : <NewImprovementForm /> };
     }
+    case "friction": {
+      const f = desk.improvements.frictions.find((x) => x.key === panel.key);
+      if (!f) return gone("friction");
+      return {
+        title: f.title,
+        sub: `${f.evidence}. ${f.area}.`,
+        body: (
+          <>
+            <p className="rounded-lg bg-surface-2/70 px-3 py-2 text-[12px] text-muted">Counted by the hub, not a judgment. Look at the examples, then start the improvement: it is tracked here until you finish it with the outcome.</p>
+            <div>
+              <h3 className="mb-1 text-sm font-semibold">Examples</h3>
+              <EvidenceList items={f.examples} href={href} />
+            </div>
+            {ro ? <ReadOnlyNote /> : <NewImprovementForm from={f} />}
+          </>
+        ),
+      };
+    }
     case "task": {
       const t = desk.assigned.items.find((x) => x.taskId === panel.id);
       if (!t) return gone("task");
@@ -279,7 +298,7 @@ function content(panel: Panel, desk: Desk, href: (h: string) => string): { title
               <dt className="text-muted">Blocker</dt><dd>{t.blocker ?? "None"}</dd>
             </dl>
             <Link href={href(t.href)} className="inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline">Open the source <ExternalLink aria-hidden className="size-3.5" /></Link>
-            {ro ? <ReadOnlyNote /> : <TaskControls t={t} />}
+            {ro ? <ReadOnlyNote /> : t.delegated ? <TaskControls t={t} /> : <PlainTaskControls t={t} people={desk.assigned.people} ownerKey={desk.ownerKey} />}
           </>
         ),
       };
@@ -574,22 +593,23 @@ function ImprovementForms({ i }: { i: Desk["improvements"]["items"][number] }) {
 
 const AREAS = ["Shot lists", "Uploads and handoffs", "Creative briefs", "Review procedure", "Client direction", "Training materials", "Quality checklists"];
 
-function NewImprovementForm() {
+/** Log an improvement; from a friction row it starts filled in with what was counted (Oct 27 2026). */
+function NewImprovementForm({ from = null }: { from?: FrictionRow | null }) {
   const { busy, msg, run } = useRun();
   return (
-    <form data-control="new-improvement" onSubmit={(e) => { e.preventDefault(); const f = new FormData(e.currentTarget); run(() => addImprovementAction({ problem: str(f, "problem"), area: str(f, "area"), nextStep: str(f, "next") || null, outcome: str(f, "outcome") || null, policy: f.get("policy") === "on", dueDay: str(f, "day") || null })); }} className="space-y-2">
+    <form data-control="new-improvement" data-friction={from?.key ?? undefined} onSubmit={(e) => { e.preventDefault(); const f = new FormData(e.currentTarget); run(() => addImprovementAction({ problem: str(f, "problem"), area: str(f, "area"), nextStep: str(f, "next") || null, outcome: str(f, "outcome") || null, policy: f.get("policy") === "on", dueDay: str(f, "day") || null, friction: from?.key ?? null })); }} className="space-y-2">
       <label className={LABEL} htmlFor="ni-problem">The problem</label>
-      <textarea id="ni-problem" name="problem" rows={2} className={INPUT} required />
+      <textarea id="ni-problem" name="problem" rows={2} className={INPUT} required defaultValue={from ? `${from.problem} (${from.evidence})` : undefined} />
       <label className={LABEL} htmlFor="ni-area">Area</label>
-      <select id="ni-area" name="area" className={INPUT}>{AREAS.map((a) => <option key={a}>{a}</option>)}</select>
+      <select id="ni-area" name="area" className={INPUT} defaultValue={from?.area}>{AREAS.map((a) => <option key={a}>{a}</option>)}</select>
       <label className={LABEL} htmlFor="ni-next">Next step</label>
-      <input id="ni-next" name="next" className={INPUT} />
+      <input id="ni-next" name="next" className={INPUT} defaultValue={from?.nextStep} />
       <label className={LABEL} htmlFor="ni-outcome">Expected outcome</label>
       <input id="ni-outcome" name="outcome" className={INPUT} />
       <label className={LABEL} htmlFor="ni-day">Due (optional)</label>
       <input id="ni-day" name="day" type="date" className={INPUT} />
       <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" name="policy" className="size-4" /> This changes a policy (Jordan approves it)</label>
-      <Submit busy={busy} primary>Log it</Submit>
+      <Submit busy={busy} primary>{from ? "Start the improvement" : "Log it"}</Submit>
       <Said msg={msg} />
     </form>
   );
@@ -626,6 +646,81 @@ function TaskControls({ t }: { t: Desk["assigned"]["items"][number] }) {
         </div>
       )}
       <Said msg={msg} />
+    </div>
+  );
+}
+
+/**
+ * A task of his that nobody delegated (Oct 27 2026): an engine's brand
+ * update to confirm, a program's mid-month check, a tag. Accept, Done, hand
+ * it to Kyle, escalate it to Jordan, or delegate it to someone on the team,
+ * each with the reason on the task.
+ */
+function PlainTaskControls({ t, people, ownerKey }: { t: AssignedRow; people: { key: string; name: string }[]; ownerKey: string | null }) {
+  const { busy, msg, run } = useRun();
+  const [to, setTo] = useState<string | null>(null);
+  const [words, setWords] = useState("");
+  const kyle = people.find((p) => p.key === "kyle") ?? null;
+  const others = people.filter((p) => p.key !== ownerKey && p.key !== "kyle");
+  const target = to ? people.find((p) => p.key === to) ?? null : null;
+  return (
+    <div className="space-y-2" data-control="my-task">
+      <div className="flex flex-wrap gap-2">
+        {(t.state === "OPEN" || t.state === "WAITING") && <button type="button" disabled={busy} onClick={() => run(() => myTaskStepAction(t.taskId, "start"))} className={PRIMARY}>Accept</button>}
+        {!t.closesItself && <button type="button" disabled={busy} onClick={() => run(() => myTaskStepAction(t.taskId, "done"))} className={QUIET}>Done</button>}
+        {kyle && <button type="button" onClick={() => setTo(kyle.key)} className={QUIET}>Hand to Kyle</button>}
+        {ownerKey && <button type="button" onClick={() => setTo(ownerKey)} className={QUIET}>Escalate to Jordan</button>}
+      </div>
+      {t.closesItself && <p className="text-[12px] text-muted">This closes by itself when every editor on the client taps Got it on the brief (or the office records an override there).</p>}
+      {others.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <label className={LABEL} htmlFor={`dg-${t.taskId}`}>Delegate to</label>
+          <select id={`dg-${t.taskId}`} value={to && to !== ownerKey && to !== "kyle" ? to : ""} onChange={(e) => setTo(e.target.value || null)} className={cn(INPUT, "w-auto min-h-11")}>
+            <option value="">Pick someone</option>
+            {others.map((p) => <option key={p.key} value={p.key}>{p.name}</option>)}
+          </select>
+        </div>
+      )}
+      {target && (
+        <div className="space-y-2">
+          <label className={LABEL} htmlFor={`hw-${t.taskId}`}>{to === ownerKey ? "What Jordan needs to decide" : `What ${target.name.split(" ")[0]} needs to do`}</label>
+          <textarea id={`hw-${t.taskId}`} rows={2} value={words} onChange={(e) => setWords(e.target.value)} className={INPUT} />
+          <button type="button" disabled={busy || words.trim().length < 3} onClick={() => run(() => handMyTaskAction(t.taskId, target.key, words))} className={PRIMARY}>
+            {to === ownerKey ? "Escalate to Jordan" : `Hand to ${target.name.split(" ")[0]}`}
+          </button>
+        </div>
+      )}
+      <Said msg={msg} />
+    </div>
+  );
+}
+
+/**
+ * The Action cell of a row on Assigned to Me (Oct 27 2026): the one step
+ * that moves it, in place (Accept, Done, Update), and More for the rest
+ * (delegate, escalate to Jordan, flag a blocker) in the side panel.
+ */
+export function AssignedAction({ r, href, onOpen, readOnly }: { r: AssignedRow; href: (h: string) => string; onOpen: () => void; readOnly: boolean }) {
+  const { busy, msg, run } = useRun();
+  const W = "w-full md:w-36";
+  let main: React.ReactNode;
+  if (readOnly) main = <button type="button" data-open-panel={`task:${r.taskId}`} onClick={onOpen} className={cn(QUIET, W)}>Open</button>;
+  else if (r.delegated) {
+    main = r.state === "ASSIGNED"
+      ? <button type="button" data-step="accept" disabled={busy} onClick={() => run(() => acceptTaskAction(r.taskId))} className={cn(PRIMARY, W)}>Accept</button>
+      : <button type="button" data-open-panel={`task:${r.taskId}`} onClick={onOpen} className={cn(QUIET, W)}>Update</button>;
+  } else if (r.state === "OPEN" || r.state === "WAITING") {
+    main = <button type="button" data-step="accept" disabled={busy} onClick={() => run(() => myTaskStepAction(r.taskId, "start"))} className={cn(PRIMARY, W)}>Accept</button>;
+  } else if (r.closesItself) {
+    main = <Link href={href(r.href)} className={cn(QUIET, W)}>Check the brief</Link>;
+  } else {
+    main = <button type="button" data-step="done" disabled={busy} onClick={() => run(() => myTaskStepAction(r.taskId, "done"))} className={cn(QUIET, W)}>Done</button>;
+  }
+  return (
+    <div className="flex flex-col items-stretch gap-0.5 md:items-start">
+      {main}
+      {!readOnly && <button type="button" data-open-panel={`task:${r.taskId}`} onClick={onOpen} className="inline-flex min-h-8 items-center text-[12px] font-medium text-muted hover:text-brand">More: delegate, escalate</button>}
+      {msg && <p role={msg.ok ? "status" : "alert"} className={cn("text-[12px]", msg.ok ? "text-success" : "text-danger")}>{msg.message}</p>}
     </div>
   );
 }

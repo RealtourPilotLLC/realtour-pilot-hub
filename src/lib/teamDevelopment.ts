@@ -112,6 +112,9 @@ export type Signal = {
   /** where the numbers came from, in words */
   source: string;
   examples: Evidence[];
+  /** the evidence count behind `detail`, and the same in a few words (Oct 27 2026: the dashboard's one-line rows and Process Improvements) */
+  count: number;
+  countWords: string;
 };
 
 export type ReadinessView = {
@@ -360,6 +363,8 @@ async function fieldSignals(people: DevPerson[], now: Date): Promise<{ signals: 
             skill: g.skill,
             detail: `${plural(rows.length, "entry")} in the KPI evidence this period`,
             source: `KPI evidence, ${period.label}`,
+            count: rows.length,
+            countWords: `${rows.length} this period`,
             examples: rows.slice(0, 4).map((e) => ({ label: clean(`${e.title}${e.detail[0] ? `: ${e.detail[0]}` : ""}`, 160), href: e.projectId ? `/projects/${e.projectId}` : null, at: e.at, source: `field:${p.id}:kpi:${k}` })),
           });
         }
@@ -402,6 +407,8 @@ async function fieldSignals(people: DevPerson[], now: Date): Promise<{ signals: 
           skill: `Photo check: ${clean(label, 80)}`,
           detail: `Found on ${e.jobs.size} shoots in the last 30 days`,
           source: "The free photo check (findings the photographer owns)",
+          count: e.jobs.size,
+          countWords: `${e.jobs.size} shoots in 30 days`,
           examples: [...e.jobs].slice(0, 4).map((jobId) => ({ label: `${streetOf(projectOf.get(jobId)?.title)}: ${clean(e.issue, 120)}`, href: `/ops/photo-delivery/${jobId}`, at: null, source: `field:${p.id}:photoqc:${ruleId}` })),
         });
       }
@@ -429,6 +436,8 @@ async function editorSignals(people: DevPerson[], now: Date, excludeClientIds: s
           skill: `${clean(g.category, 60)} on ${clean(g.product, 60)}`,
           detail: `${g.count} times in 60 days, each traced by a reviewer to the edit`,
           source: "Revision issues with a reviewer-confirmed editing cause",
+          count: g.count,
+          countWords: `${g.count} times in 60 days`,
           examples: g.examples.slice(0, 4).map((x) => ({ label: `${x.street}: ${clean(x.text, 120)}`, href: x.href, at: x.atISO, source: key })),
         });
       }
@@ -439,6 +448,8 @@ async function editorSignals(people: DevPerson[], now: Date, excludeClientIds: s
           skill: "Corrections against earlier feedback",
           detail: `${r.missed.count} of ${r.missed.asked} asks came back unfixed in a later version (60 days)`,
           source: "The reviewer's check of each fix against the earlier notes",
+          count: r.missed.count,
+          countWords: `${r.missed.count} of ${r.missed.asked} unfixed`,
           examples: r.missed.examples.slice(0, 4).map((x) => ({ label: `${x.street}: ${clean(x.text, 120)}`, href: x.href, at: x.atISO, source: key })),
         });
       }
@@ -472,6 +483,8 @@ async function qcSignals(people: DevPerson[], now: Date, excludeClientIds: strin
         skill: "QC passes later reopened by a revision",
         detail: `${reopened.length} of ${mine.length} QC passes in 30 days. A revision does not prove QC missed it: review each example`,
         source: "QC records reopened by a client revision",
+        count: reopened.length,
+        countWords: `${reopened.length} of ${mine.length} passes in 30 days`,
         examples: reopened.slice(0, 4).map((r) => ({ label: `${streetOf(r.project?.title)}${r.revisionReason ? `: ${clean(r.revisionReason, 120)}` : ""}`, href: `/projects/${r.projectId}`, at: r.reopenedByRevisionAt!.toISOString(), source: key })),
       });
     }
