@@ -2821,6 +2821,79 @@ export async function sendQuestionRequestEmail(requestId: string, o: { kind: "fi
 }
 
 /**
+ * ONE TOPIC'S WRITTEN QUESTIONS, EMAILED BY THE OFFICE (Oct 27 2026). A topic
+ * the office put on written answers by hand, with no script to withdraw (so
+ * Send Question Request does not apply), still needs the client told. Same
+ * email as a question request (question_request.v1) and the same one-tap link
+ * straight to that topic's questions, recorded on the month's reminder ledger
+ * as a manual send. One send per interview: running it again sends nothing.
+ * No follow-ups of its own; the month's answers reminder carries on as usual.
+ * Same gates as a person's press: the switch, the rollout scope, the TEST
+ * floor and the send window (outside it, nothing is sent and it says when).
+ */
+export async function sendTopicQuestionsEmail(interviewId: string, by: { email: string; appUserId?: string | null }, opts: { now?: Date } = {}): Promise<QrOutcome> {
+  const now = opts.now ?? new Date();
+  if (!(await isAutomationEnabled(REMINDERS_KEY))) return { reminderId: null, outcome: "suppressed", detail: "reminders are switched off (Settings, Automations)" };
+  const iv = await prisma.contentInterview.findUnique({ where: { id: interviewId }, select: { id: true, status: true, submittedAt: true, topicId: true, monthId: true, enrollmentId: true } });
+  if (!iv) return { reminderId: null, outcome: "skipped", detail: "the interview is not on file" };
+  if (iv.submittedAt || ["SUBMITTED", "SUBMITTED_WITH_GAPS", "SUFFICIENT"].includes(iv.status)) return { reminderId: null, outcome: "skipped", detail: "the client has already sent these answers" };
+  if (iv.status === "ABANDONED") return { reminderId: null, outcome: "skipped", detail: "these questions were set aside" };
+  const [month, topic] = await Promise.all([
+    prisma.contentMonth.findUnique({ where: { id: iv.monthId }, select: { monthKey: true } }),
+    prisma.contentTopic.findUnique({ where: { id: iv.topicId }, select: { title: true } }),
+  ]);
+  if (!month || !topic) return { reminderId: null, outcome: "skipped", detail: "the month or topic is not on file" };
+  const { questionSheets } = await import("@/lib/contentInterview");
+  const sheet = (await questionSheets([{ topicId: iv.topicId, monthId: iv.monthId }])).get(`${iv.topicId}:${iv.monthId}`);
+  const questionCount = sheet?.questions.length ?? 0;
+  if (questionCount === 0) return { reminderId: null, outcome: "skipped", detail: "this topic has no questions for the client to answer" };
+  const e = await enrollmentRowFor(iv.enrollmentId);
+  if (!e) return { reminderId: null, outcome: "skipped", detail: "the program no longer exists" };
+  if (e.status !== "ACTIVE") return { reminderId: null, outcome: "suppressed", detail: `the program is ${e.status.toLowerCase()}` };
+  if (e.accessRevokedAt) return { reminderId: null, outcome: "suppressed", detail: "portal access for this client has been revoked" };
+  const { policy } = await reminderPolicy({ orDefaults: true });
+  const p = policy ?? REMINDER_DEFAULTS;
+  const scope = await freshRollout();
+  if (!scope.rollout) return { reminderId: null, outcome: "skipped", detail: scope.error };
+  const reach = reminderReach(scope.rollout, e, now, p);
+  if (reach && !reach.ok) return { reminderId: null, outcome: "suppressed", detail: reach.reason };
+  const to = await recipientFor(e);
+  if (!to) return { reminderId: null, outcome: "suppressed", detail: "no email address on the portal seat or the client record" };
+  if (isSyntheticClientRow({ id: e.clientId, name: e.client.name }) && !isVerifiedTestDestinationEmail(to.email)) return { reminderId: null, outcome: "suppressed", detail: "a TEST client's real address" };
+  if (!inPolicyWindow(now, p) || !(await clientTextWindowOpen(now))) return { reminderId: null, outcome: "skipped", detail: `outside the send window; try again ${fmtWhenET(nextPolicyWindowOpen(now, p))}` };
+  const template = reminderTemplate(DEFAULT_TEMPLATE_IDS.QUESTION_REQUEST);
+  const leaseBy = `topic-questions:${by.email}:${process.pid}`;
+  let row: { id: string };
+  try {
+    row = await prisma.programReminder.create({
+      data: {
+        enrollmentId: e.id, clientId: e.clientId, monthId: iv.monthId, monthKey: month.monthKey, action: "QUESTION_REQUEST", templateKey: template.id, templateVersion: template.version,
+        channel: "email", toRef: to.email, attempt: 1, state: "PENDING", manual: true, requestedBy: by.email, leaseUntil: new Date(now.getTime() + 5 * 60_000), leaseBy,
+        dedupeKey: `${e.id}:${month.monthKey}:TOPIC_QUESTIONS:${iv.id}`, nextEligibleAt: now, evaluatedStateJson: JSON.stringify({ interviewId: iv.id, topicId: iv.topicId, kind: "topic-questions" }),
+      },
+      select: { id: true },
+    });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") return { reminderId: null, outcome: "duplicate", detail: "these questions were already emailed" };
+    throw err;
+  }
+  const link = await resolvePortalLink(e, to, by.appUserId ?? null, now, { path: PORTAL_LANDING.topicQuestions(iv.id, e.id) });
+  if (!link) {
+    await prisma.programReminder.update({ where: { id: row.id }, data: { state: "SUPPRESSED", suppressionReason: "no_portal_link", leaseUntil: null, leaseBy: null } });
+    return { reminderId: row.id, outcome: "suppressed", detail: "no portal link could be made for this client (no seat, no token)" };
+  }
+  const body = renderReminder(template, {
+    firstName: firstNameOf(e.client.name), month: monthName(month.monthKey), portalLink: link.url, bookCallLink: null, noCallEligible: false, answersStarted: false,
+    sessionNote: null, earliestSession: null, itemCount: 0, titles: [], updatedTitles: [], deadline: null,
+    topicTitle: topic.title, questionCount, followUp: false,
+  });
+  await prisma.programReminder.update({ where: { id: row.id }, data: { state: "QUEUED", evaluatedStateJson: JSON.stringify({ interviewId: iv.id, topicId: iv.topicId, kind: "topic-questions", portalLinkKind: link.kind }) } });
+  const g = await sendGuarded(row.id, { channel: "email", toRef: to.email, body, dedupeKey: programReminderKey("QUESTION_REQUEST", row.id, month.monthKey), clientId: e.clientId, requestedBy: `topic-questions:${by.email}` }, leaseBy, now);
+  if (g.kind === "refused") return g.outcome;
+  return recordSendResult(row.id, g.r, now);
+}
+
+/**
  * ONE send of one ledger row: claim → recheck (still open, program active,
  * scope fresh, an address, the TEST floor; for the automatic follow-up also
  * the snooze and the one-a-day rule) → the window (closed = held, PENDING with
