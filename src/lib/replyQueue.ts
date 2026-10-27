@@ -260,7 +260,10 @@ function isCourtesy(text: string): boolean {
   if (t.length > 120) return false; // a real message, whatever it opens with
   if (ASK_RE.test(t)) return false; // "thanks! can you also…" is an ask (Oct 27 2026)
   const words = t.toLowerCase().replace(/[^a-z']+/g, " ").trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return true; // punctuation/emoji only
+  // Punctuation/emoji only. A bare number is information, not a closer: Tim
+  // Bonner's "+1 (610) 509-1197" (the phone for Harrison) read as a thank-you
+  // and the clean-up would have closed its task (Oct 27 2026).
+  if (words.length === 0) return !/\d/.test(t);
   if (words.length <= 10 && words.every((w) => ACK_WORDS.has(w))) return true;
   // A short message carrying a closing phrase, unless it is also asking for an
   // edit ("Sounds good — can you also swap the cover photo").

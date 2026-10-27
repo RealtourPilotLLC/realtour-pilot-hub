@@ -196,6 +196,7 @@ async function main() {
       c.ok("a thank-you with an ask still needs one", !yes("Thank you so much! Can you also send the floor plan"));
       c.ok("…and the walk agrees (it used to read that as a closer)", !RQ.isCourtesyMessage("Thank you so much! Can you also send the floor plan"));
       c.ok("a thank-you with a question still needs one", !yes("Thanks! What time tomorrow?"));
+      c.ok("a bare phone number is information, not a thank-you (Tim Bonner's)", !yes("+1 (610) 509-1197") && !RQ.isCourtesyMessage("+1 (610) 509-1197") && !yes("4512"));
       c.ok("a thank-you with a revision still needs one", !yes("Thanks, but the kitchen photo is too dark, please brighten it"));
       c.ok("an email thank-you with a second line of real words still needs one", !yes("Re: Photos — Thank you!\nThe twilight shot is missing from the gallery.\nKristen", "email"));
       c.ok("a subject with a question keeps an email open", !yes("Did the video go out? — Thanks!", "email"));
