@@ -1,5 +1,6 @@
 import "server-only";
 import { createHash } from "crypto";
+import { matchBySignals, inviteePhones, VIA_WORDS, type MatchClient, type MatchVia } from "@/lib/callMatchCore";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey } from "@/lib/contentProgram";
 import { etDayKey } from "@/lib/datetime";
@@ -18,7 +19,8 @@ import { strategyGateFor } from "@/lib/strategyGate";
 // The verified chain from a Calendly booking to an analysable transcript:
 //
 //   booking ──(event-type URI → ProgramCalendlyEventMapping)──▶ purpose
-//     └─(invitee email → Client.email / backupEmail / VERIFIED ClientEmailAlias)──▶ client + enrollment
+//     └─(invitee email → Client.email / backupEmail / VERIFIED ClientEmailAlias;
+//        Oct 27 2026: else portal sign-in, calendar guest, phone, unique full name)──▶ client + enrollment
 //         └─(rule: day-of-month → target month | discovery → onboarding)──▶ target
 //             └─(calendar_event.external_id → Google Calendar event)──▶ summary + start + Meet conference id
 //                 └─(Drive "Notes by Gemini" doc: title prefix == summary AND stamp == start, uniquely)──▶ ProgramTranscriptSource
@@ -27,7 +29,8 @@ import { strategyGateFor } from "@/lib/strategyGate";
 // Every link that cannot be VERIFIED stops at a review state (UNMATCHED_INVITEE,
 // AMBIGUOUS_CLIENT, UNMAPPED_TYPE, CANDIDATES, NEEDS_REVIEW) with a SmartTask
 // for Jordan listing the candidates. Nothing here guesses a client from a first
-// name, picks "the newest file", or moves a transcript to a rescheduled
+// name (a FULL name one active client alone has is a match since Oct 27 2026,
+// callMatchCore.ts), picks "the newest file", or moves a transcript to a rescheduled
 // booking. Unrelated bookings (no enabled mapping for their type) never get a
 // row at all — that is what keeps "30 Minute Strategy Call" out of the program.
 // ---------------------------------------------------------------------------
@@ -93,6 +96,9 @@ const readRaw = (s: string | null | undefined): Raw => {
   if (!s) return {};
   try { return JSON.parse(s) as Raw; } catch { return {}; }
 };
+/** The record's match note for an identity: the old "matched via email" wording, or the Oct 27 signal in plain words. */
+const identityNote = (idn: { via: string; evidence?: string }): string =>
+  idn.via in VIA_WORDS ? `matched automatically: ${VIA_WORDS[idn.via as MatchVia]}${idn.evidence ? ` (${idn.evidence})` : ""}` : `matched via ${idn.via}`;
 
 // ---------------------------------------------------------------------------
 // Identity — the only three sources of truth for "this email is this client".
@@ -105,11 +111,41 @@ export type IdentityCandidate = {
   active: boolean;
 };
 export type IdentityResolution =
-  | { state: "MATCHED"; clientId: string; enrollmentId: string; via: "email" | "backupEmail" | "alias" }
+  | { state: "MATCHED"; clientId: string; enrollmentId: string; via: "email" | "backupEmail" | "alias" | MatchVia; evidence?: string }
   | { state: "UNMATCHED_INVITEE"; candidates: IdentityCandidate[] }
   | { state: "AMBIGUOUS_CLIENT"; candidates: IdentityCandidate[] };
 
-export async function resolveInviteeIdentity(email: string | null | undefined, inviteeName?: string | null): Promise<IdentityResolution> {
+/**
+ * The extra signals a booking carries (Oct 27 2026, callMatchCore): the phones
+ * it gave and the calendar event's guests. `nameAllowed: false` turns the
+ * full-name rule off (a booking carrying a portal token that did not verify).
+ */
+export type IdentitySignals = { phones?: string[]; attendeeEmails?: string[]; nameAllowed?: boolean };
+
+/**
+ * Every ACTIVE content client as the matcher sees it: name, phone, the
+ * addresses that already identify them (email, backup, verified aliases) and
+ * their portal sign-ins. One read per pass.
+ */
+export async function loadMatchPool(enrollmentOf?: Map<string, string>): Promise<MatchClient[]> {
+  const active = enrollmentOf ?? new Map((await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true, clientId: true } })).map((x) => [x.clientId, x.id]));
+  const ids = [...active.keys()];
+  if (!ids.length) return [];
+  const [clients, aliases, memberships] = await Promise.all([
+    prisma.client.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, email: true, backupEmail: true, phone: true } }),
+    prisma.clientEmailAlias.findMany({ where: { clientId: { in: ids }, active: true, verifiedAt: { not: null } }, select: { clientId: true, email: true } }),
+    prisma.clientMembership.findMany({ where: { clientId: { in: ids }, revokedAt: null }, select: { clientId: true, clientUserId: true } }),
+  ]);
+  const users = memberships.length ? await prisma.clientUser.findMany({ where: { id: { in: [...new Set(memberships.map((m) => m.clientUserId))] } }, select: { id: true, email: true } }) : [];
+  const userEmail = new Map(users.map((u) => [u.id, u.email.toLowerCase()]));
+  return clients.map((c) => ({
+    clientId: c.id, enrollmentId: active.get(c.id)!, name: c.name, phone: c.phone,
+    emails: [...new Set([c.email, c.backupEmail, ...aliases.filter((a) => a.clientId === c.id).map((a) => a.email)].filter((x): x is string => !!x).map((x) => x.trim().toLowerCase()))],
+    logins: [...new Set(memberships.filter((m) => m.clientId === c.id).map((m) => userEmail.get(m.clientUserId)).filter((x): x is string => !!x))],
+  }));
+}
+
+export async function resolveInviteeIdentity(email: string | null | undefined, inviteeName?: string | null, signals?: IdentitySignals): Promise<IdentityResolution> {
   const e = (email ?? "").trim().toLowerCase();
   // Only an ACTIVE enrollment is a program identity: a booking from a client
   // whose program ENDED (Susan McFadden books the generic call) or is PAUSED
@@ -117,15 +153,15 @@ export async function resolveInviteeIdentity(email: string | null | undefined, i
   const all = await prisma.contentEnrollment.findMany({ select: { id: true, clientId: true, status: true } });
   const enrollmentOf = new Map(all.filter((x) => x.status === "ACTIVE").map((x) => [x.clientId, x.id]));
   const inactiveOf = new Map(all.filter((x) => x.status !== "ACTIVE").map((x) => [x.clientId, x]));
-  if (!e) return { state: "UNMATCHED_INVITEE", candidates: [] };
+  if (!e && !signals) return { state: "UNMATCHED_INVITEE", candidates: [] };
 
-  const [direct, aliases] = await Promise.all([
+  const [direct, aliases] = e ? await Promise.all([
     prisma.client.findMany({
       where: { OR: [{ email: { equals: e, mode: "insensitive" } }, { backupEmail: { equals: e, mode: "insensitive" } }] },
       select: { id: true, name: true, email: true, backupEmail: true },
     }),
     prisma.clientEmailAlias.findMany({ where: { email: e, active: true, verifiedAt: { not: null } }, select: { clientId: true } }),
-  ]);
+  ]) : [[] as { id: string; name: string; email: string | null; backupEmail: string | null }[], [] as { clientId: string }[]];
   const hits = new Map<string, { via: "email" | "backupEmail" | "alias"; name: string }>();
   const inactive: IdentityCandidate[] = [];
   for (const c of direct) {
@@ -149,9 +185,27 @@ export async function resolveInviteeIdentity(email: string | null | undefined, i
       candidates: [...hits.entries()].map(([clientId, h]) => ({ clientId, enrollmentId: enrollmentOf.get(clientId)!, name: h.name, reason: `same address on file (${h.via})`, onFile: true, active: true })),
     };
   }
+  // THE EXTRA SIGNALS (Oct 27 2026, Jordan: "it should be analyzed and
+  // assigned automatically"). Asked only by a caller that passes them (the
+  // hourly sync and the call matcher): portal sign-in, a calendar guest, the
+  // booking's phone, then a full name exactly one active client has. Each
+  // must name ONE client; the evidence is written on the record.
+  const candidates: IdentityCandidate[] = [...inactive];
+  if (signals) {
+    const pool = await loadMatchPool(enrollmentOf);
+    const m = matchBySignals({ inviteeEmail: e || null, inviteeName: inviteeName ?? null, phones: signals.phones ?? [], attendeeEmails: signals.attendeeEmails ?? [] }, pool, { addressOwnedByOther: direct.length > 0 || signals.nameAllowed === false });
+    if (m.state === "MATCHED") return { state: "MATCHED", clientId: m.clientId, enrollmentId: m.enrollmentId, via: m.via, evidence: m.evidence };
+    if (m.state === "AMBIGUOUS") {
+      for (const id of m.clientIds) {
+        const c = pool.find((x) => x.clientId === id);
+        if (c) candidates.push({ clientId: id, enrollmentId: c.enrollmentId, name: c.name, reason: `${m.evidence}, but it fits more than one client`, onFile: false, active: true });
+      }
+      return { state: "UNMATCHED_INVITEE", candidates };
+    }
+  }
+  if (!e) return { state: "UNMATCHED_INVITEE", candidates };
   // No verified identity. Rank candidates for the human — by FULL name only
   // (a first name alone is exactly the guess the spec forbids) — and never act on them.
-  const candidates: IdentityCandidate[] = [...inactive];
   const want = norm(inviteeName ?? "");
   if (want && want.includes(" ")) {
     const clients = await prisma.client.findMany({ where: { id: { in: [...enrollmentOf.keys()] } }, select: { id: true, name: true, email: true, backupEmail: true } });
@@ -305,7 +359,10 @@ async function applyTarget(recordId: string, rules: CallRecordRules): Promise<{ 
     // every pass (so a rule change before the call applies to it).
     const staffDecided = raw.target?.rule === "staff" || (r.matchState === "CONFIRMED_BY_STAFF" && !!r.targetMonthKey);
     const portalDecided = raw.target?.rule === "portal";
-    const locked = staffDecided || portalDecided || r.transcriptState === "CONFIRMED" || r.transcriptState === "ANALYZED";
+    // Oct 27 2026: a follow-up call a curated one-off said would happen plans
+    // the month of the call that agreed it (fileCallAutomatically).
+    const followup = raw.target?.rule === "followup";
+    const locked = staffDecided || portalDecided || followup || r.transcriptState === "CONFIRMED" || r.transcriptState === "ANALYZED";
     const target = r.targetMonthKey && locked
       ? { monthKey: r.targetMonthKey, rule: raw.target?.rule ?? "kept", reason: raw.target?.reason ?? (staffDecided ? "kept (decided by staff)" : "kept (transcript on file)") }
       : targetMonthFor(r.scheduledStart, r.calendlyEventTypeUri, rules);
@@ -537,11 +594,18 @@ async function syncOneBooking(
       ...(rescheduledFromId ? { rescheduledFromId } : {}),
     };
 
+    // Oct 27 2026: the booking's phone and its calendar event's guests
+    // (linkCalendarEvents stored them) are identity signals too (callMatchCore).
+    // A booking that carries a portal token which did NOT verify (forged,
+    // another account's, a stale page) is never filed by the name alone.
+    const unverifiedToken = !portal && !!(await import("@/lib/callBooking")).tokenOfInvitee(invitee);
+    const bookingSignals = { phones: inviteePhones(invitee), attendeeEmails: prevRaw.calendar?.attendees ?? [], nameAllowed: !unverifiedToken };
+
     if (dryRun) {
       if (!existing) out.created++; else out.updated++;
       if (status === "CANCELLED") out.cancelled++;
       if (status === "RESCHEDULED") out.rescheduled++;
-      const idn = staffOwned || portal ? null : await resolveInviteeIdentity(provider.inviteeEmail, provider.inviteeName);
+      const idn = staffOwned || portal ? null : await resolveInviteeIdentity(provider.inviteeEmail, provider.inviteeName, bookingSignals);
       if (portal || idn?.state === "MATCHED") out.matched++; else if (idn) out.review++;
       return null;
     }
@@ -560,25 +624,30 @@ async function syncOneBooking(
       // — unless staff has since retargeted it: a person still wins.
       if (raw.target?.rule !== "staff") raw.target = { rule: "portal", reason: `booked in the portal for ${portal.monthKey}`, monthKey: portal.monthKey };
     } else if (!staffOwned) {
-      let idn = await resolveInviteeIdentity(provider.inviteeEmail, provider.inviteeName);
+      let idn = await resolveInviteeIdentity(provider.inviteeEmail, provider.inviteeName, bookingSignals);
       const wasVerified = existing?.matchState === "MATCHED" && !!existing.clientId;
       // A generic-type call that would plan a month ALREADY OVER is not filed
       // by the sweep, verified address or not: reading September's 30-minute
       // calls into September would rewrite closed months and flip later
       // months' call mode (a held call elsewhere makes the next one optional).
       // It waits on the Strategy calls page with the client named.
-      if (candidateType && idn.state === "MATCHED" && !wasVerified && start) {
+      // Oct 27 2026: the same for ANY type matched by an extra signal (name,
+      // phone, guest, portal sign-in): the 120-day rematch would otherwise
+      // file a September call found by name into September.
+      const bySignal = idn.state === "MATCHED" && idn.via in VIA_WORDS;
+      if ((candidateType || bySignal) && idn.state === "MATCHED" && !wasVerified && start) {
         const planned = targetMonthFor(start, event.event_type ?? null, rules).monthKey;
         if (planned < etMonthKey(now)) {
           const who = await prisma.client.findUnique({ where: { id: idn.clientId }, select: { name: true } });
-          idn = { state: "UNMATCHED_INVITEE", candidates: [{ clientId: idn.clientId, enrollmentId: idn.enrollmentId, name: who?.name ?? "?", reason: `address on file, but the call would plan ${planned}, a month already over — a person decides`, onFile: true, active: true }] };
+          const how = bySignal ? VIA_WORDS[idn.via as MatchVia] : "the address is on file";
+          idn = { state: "UNMATCHED_INVITEE", candidates: [{ clientId: idn.clientId, enrollmentId: idn.enrollmentId, name: who?.name ?? "?", reason: `${how}, but the call would plan ${planned}, a month already over, so a person decides`, onFile: true, active: true }] };
         }
       }
       if (idn.state === "MATCHED") {
         if (wasVerified && existing!.clientId !== idn.clientId) {
           identity = { matchState: "AMBIGUOUS_CLIENT", clientId: existing!.clientId, enrollmentId: existing!.enrollmentId, note: `identity changed: was ${existing!.clientId}, now resolves to ${idn.clientId}`, candidates: [] };
         } else {
-          identity = { matchState: "MATCHED", clientId: idn.clientId, enrollmentId: idn.enrollmentId, note: `matched via ${idn.via}`, candidates: [] };
+          identity = { matchState: "MATCHED", clientId: idn.clientId, enrollmentId: idn.enrollmentId, note: identityNote(idn), candidates: [] };
         }
       } else if (wasVerified) {
         identity = { matchState: "AMBIGUOUS_CLIENT", clientId: existing!.clientId, enrollmentId: existing!.enrollmentId, note: `was matched to ${existing!.clientId}; ${provider.inviteeEmail ?? "the invitee address"} no longer resolves to any enrolled client — kept, needs a look`, candidates: idn.candidates.map((c) => ({ clientId: c.clientId, name: c.name, reason: c.reason })) };
@@ -1112,6 +1181,69 @@ export async function confirmCallRecordClient(recordId: string, clientId: string
   // holds them while the client is in question) run on the very next tick.
   await prisma.programTranscriptJob.updateMany({ where: { callRecordId: recordId, state: "QUEUED" }, data: { nextAttemptAt: null } });
   await reconcileCallReviewTasks();
+}
+
+/**
+ * FILED BY THE MATCHER (Oct 27 2026, Jordan: "it should be analyzed and
+ * assigned automatically"). What a person's "confirm the client" did, done by
+ * the call matcher (callAutoMatch.ts) for a call a signal or the AI placed:
+ * the client and enrollment on the record, MATCHED (not CONFIRMED_BY_STAFF,
+ * so the sweep keeps owning it), the reason on matchNote and raw.identity,
+ * then the same target rules, the same strategy gate, the same past-month
+ * rule for a generic 30-minute booking. `verifyAliasBy`: the AI's match is
+ * made durable by verifying the booking address as the client's alias, so
+ * the hourly sync re-reads the same answer. A record a person decided
+ * (confirmed, ignored, or taken off a client) is never touched.
+ */
+export async function fileCallAutomatically(
+  recordId: string,
+  m: { clientId: string; enrollmentId: string; note: string; verifyAliasBy?: string | null; followup?: { monthKey: string; reason: string } | null },
+  opts: { now?: Date } = {},
+): Promise<{ filed: boolean; why: string; monthKey: string | null }> {
+  const now = opts.now ?? new Date();
+  const r = await prisma.programCallRecord.findUnique({ where: { id: recordId }, select: { id: true, matchState: true, callType: true, rawJson: true, inviteeEmail: true, scheduledStart: true, monthId: true, calendlyEventTypeUri: true } });
+  if (!r) return { filed: false, why: "not on file", monthKey: null };
+  const raw = readRaw(r.rawJson);
+  if (r.matchState === "CONFIRMED_BY_STAFF" || r.matchState === "IGNORED" || (r.matchState === "CANDIDATE" && !!raw.staff?.unassignedAt)) return { filed: false, why: "a person already decided this call", monthKey: null };
+  const rules = await callRecordRules();
+  const generic = r.callType === "UNCLASSIFIED";
+  const callType = generic ? "MONTHLY_STRATEGY" : r.callType;
+  if (m.followup && raw.target?.rule !== "staff" && raw.target?.rule !== "portal") raw.target = { rule: "followup", reason: m.followup.reason, monthKey: m.followup.monthKey };
+  // The sync's own rule: a monthly call that would plan a month already over
+  // is not filed by a sweep (it would rewrite a closed month). Oct 27 2026:
+  // every monthly call, not only the generic type (the matcher now files by
+  // name, phone and guest too).
+  if (callType === "MONTHLY_STRATEGY" && r.scheduledStart && raw.target?.rule !== "followup") {
+    const planned = targetMonthFor(r.scheduledStart, r.calendlyEventTypeUri, rules).monthKey;
+    if (planned < etMonthKey(now)) {
+      const who = await prisma.client.findUnique({ where: { id: m.clientId }, select: { name: true } });
+      const note = `${m.note}; not filed: it would plan ${planned}, a month already over`;
+      raw.identity = { note, candidates: [{ clientId: m.clientId, name: who?.name ?? "?", reason: `${m.note}, but the call would plan ${planned}, a month already over` }] };
+      await prisma.programCallRecord.update({ where: { id: r.id }, data: { rawJson: JSON.stringify(raw), matchNote: note.slice(0, 500) } });
+      return { filed: false, why: `would plan ${planned}, a month already over`, monthKey: null };
+    }
+  }
+  const held = callType === "MONTHLY_STRATEGY" && r.scheduledStart ? await strategyCallHold(m.enrollmentId, r.scheduledStart, { monthId: r.monthId, matchState: r.matchState }) : null;
+  raw.identity = { note: held ?? m.note, candidates: [] };
+  await prisma.programCallRecord.update({
+    where: { id: r.id },
+    data: {
+      clientId: m.clientId, enrollmentId: m.enrollmentId, callType, matchState: held ? "AMBIGUOUS_MONTH" : "MATCHED", matchNote: (held ? `${m.note}; ${held}` : m.note).slice(0, 500),
+      rawJson: JSON.stringify(raw), ...(raw.target?.rule === "followup" && raw.target.monthKey ? { targetMonthKey: raw.target.monthKey } : {}),
+    },
+  });
+  if (m.verifyAliasBy && r.inviteeEmail) {
+    const p = await proposeClientEmailAlias(m.clientId, m.enrollmentId, r.inviteeEmail, "calendly");
+    if (!p.verified) await verifyClientEmailAlias(p.id, m.verifyAliasBy);
+  }
+  if (held) return { filed: false, why: held, monthKey: null };
+  const t = await applyTarget(r.id, rules);
+  for (const id of t.touchedMonthIds) await recalcProgramMonth(id, { now });
+  // Jobs that waited on this call's identity run on the very next tick (as confirmCallRecordClient).
+  await prisma.programTranscriptJob.updateMany({ where: { callRecordId: r.id, state: "QUEUED" }, data: { nextAttemptAt: null } });
+  await reconcileCallReviewTasks();
+  const after = await prisma.programCallRecord.findUnique({ where: { id: r.id }, select: { targetMonthKey: true } });
+  return { filed: true, why: m.note, monthKey: after?.targetMonthKey ?? null };
 }
 
 /**

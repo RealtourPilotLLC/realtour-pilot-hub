@@ -22,7 +22,10 @@
 //       72 weekday hours in the same request — Fri 2:30 pm EDT → Wed 2:30 pm
 //       EST, across the weekend AND the DST change.
 //    4. EMBED refusals with no record: a discovery event, the generic 30-minute
-//       type, another account's token, a forged token; A04 by name alone.
+//       type, another account's token, a forged token. The sweep: since Oct 27
+//       2026 (Jordan: "it should be analyzed and assigned automatically") the
+//       client's full name, held by one active client alone, files the call
+//       (A04 no longer holds), but never a booking whose token did not verify.
 //    5. The hourly sweep after a portal ingest: no duplicate, still MATCHED and
 //       locked; a booking the sweep sees first is filed the same way; staff
 //       retargeting still wins.
@@ -339,13 +342,16 @@ async function main() {
     const r5 = await cb.confirmEmbeddedBooking(vA, { eventUri: "https://evil.example/scheduled_events/abc" });
     c.ok("a URI that is not Calendly's → refused without a read", !r5.ok);
     c.ok("no record was written by any refusal", (await prisma.programCallRecord.count()) === before);
-    // A04, the sweep: the client's FULL name from an unknown address, no token.
+    // The sweep: the client's FULL name from an unknown address, no token.
+    // Oct 27 2026 (Jordan: "it should be analyzed and assigned automatically"):
+    // one active client alone has the name, so it is theirs (callMatchCore);
+    // the old A04 rule "a name match alone never attaches a call" is replaced.
     const byName = fake.bookFromPage(MONTHLY.uri, edt(10, 29, 13).toISOString(), { name: "Jordan Spackman TEST", email: "stranger@else.example", tracking: {} });
     await ccr.syncCallRecordsFromCalendly({ now: now() });
     const rn = await recOf(byName.event.uri);
-    c.ok("A04: a name match alone never attaches a call to a month", rn?.matchState === "UNMATCHED_INVITEE" && rn.monthId === null, `${rn?.matchState}`);
+    c.ok("the sweep: the full name one active client alone has → MATCHED to them, the reason on the record", rn?.matchState === "MATCHED" && rn.clientId === A.clientId && /name on the booking is theirs/.test(rn.matchNote ?? ""), `${rn?.matchState} ${rn?.matchNote}`);
     const rf = await recOf(forged.event.uri);
-    c.ok("the sweep ignores the forged token too", rf?.matchState !== "MATCHED" && rf?.monthId === null, `${rf?.matchState}`);
+    c.ok("the sweep ignores the forged token, and never files it by the same name", rf?.matchState !== "MATCHED" && rf?.monthId === null, `${rf?.matchState}`);
     // Tidy the noise away so later counts are about the journeys.
     for (const e of [disc, thirty, forged, byName]) { fake.cancelFromPage(e.event.uri); }
   }

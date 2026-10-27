@@ -1,28 +1,28 @@
 import Link from "next/link";
-import { PhoneCall } from "lucide-react";
-import { Section } from "@/components/ui/Section";
 import { monthLabel } from "@/lib/contentProgram";
 import { PLAN_VIEWS } from "@/lib/contentNav";
 import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
 import { TopicsPanel } from "@/components/content/TopicsPanel";
 import { ScriptsPanel } from "@/components/content/ScriptsPanel";
 import { StrategyPanel } from "@/components/content/StrategyPanel";
-import { FactsPanel } from "@/components/content/FactsPanel";
-import { StrategyCallCard, NotesCard } from "@/components/content/Workspace";
+import { StrategyCallCard } from "@/components/content/Workspace";
 import { ScriptRequestsPanel } from "@/components/content/ScriptRequestsPanel";
 import { ScriptUploadPanel } from "@/components/content/ScriptUploadPanel";
 import { BulkPlanPanel } from "@/components/content/BulkPlanPanel";
 import { CallSummaryCard } from "@/components/content/TopicBriefFold";
 import { BriefReadOnly } from "@/components/brief/BriefReadOnly";
 import { contentHref } from "@/lib/contentNav";
-import { loadTopicsTab, loadScriptsTab, loadStrategyTab, loadFactsTab, loadCallsTab, loadScriptRequests, loadLegacyNotes } from "../programData";
-import { loadFieldProposals, loadStrategyTargets } from "../workspaceData";
+import { loadTopicsTab, loadScriptsTab, loadStrategyTab, loadScriptRequests, loadLegacyNotes } from "../programData";
+import { loadStrategyTargets } from "../workspaceData";
+import { KnowledgeView, StrategyNotesCard } from "./KnowledgeView";
+import { CallsList } from "./CallsView";
+import { loadCallList } from "@/lib/callList";
 import { MonthHeader, SubNav, type TabCtx } from "./shared";
 
 // ---------------------------------------------------------------------------
 // PLAN (UI-02) — everything that decides WHAT gets filmed: the topics, the
 // scripts, the strategy and pillars, the calls, and what we know about the
-// client (facts, and the field changes a call proposes). One sub-view at a
+// client (what the AI kept from the calls, Oct 27 2026). One sub-view at a
 // time, each paying only for its own queries.
 //
 // Scripts: ScriptsPanel is the ONLY staff approval surface, and it approves a
@@ -30,10 +30,6 @@ import { MonthHeader, SubNav, type TabCtx } from "./shared";
 // sit above it — they used to be visible only inside the Overview's retired
 // script list.
 // ---------------------------------------------------------------------------
-
-const CALL_WORDS: Record<string, string> = { MONTHLY_STRATEGY: "Monthly strategy call", BRAND_DISCOVERY: "Brand discovery call" };
-const fmtWhen = (iso: string | null) =>
-  iso ? new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) + " ET" : "no time";
 
 /**
  * Oct 21 2026 (Jordan: "Since Mike creates his own creatives … so our team can
@@ -133,13 +129,16 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
   }
 
   if (v === "strategy") {
-    const [d, targets] = await Promise.all([
+    const [d, targets, callNotes] = await Promise.all([
       loadStrategyTab(id, month ? { id: month.id, monthKey: month.monthKey, prioritiesJson: month.prioritiesJson, prioritiesSourceRef: month.prioritiesSourceRef } : null),
       loadStrategyTargets(id).catch(() => ({ targets: {}, sections: [], workingVersionNo: null })),
+      // Oct 27 2026: price point, niche … one line each, kept by the knowledge curator.
+      import("@/lib/knowledgeCurator").then((m) => m.strategyNotesFor(client.id)).catch(() => []),
     ]);
     return (
       <div className="space-y-5">
         {sub}
+        <StrategyNotesCard notes={callNotes} />
         <StrategyPanel enrollmentId={id} versions={d.versions} proposals={d.proposals} pillars={d.pillars} owners={d.owners} staff={d.staff} isOwner={ownerEyes} month={d.month} targets={targets.targets} sections={targets.sections} workingVersionNo={targets.workingVersionNo} discovery={d.discovery} queueActive={d.queueActive} creativeIdentity={d.creativeIdentity} hasApprovedStrategy={d.hasApprovedStrategy} />
       </div>
     );
@@ -149,7 +148,7 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
     // Oct 12 2026: each call on the month with its transcript and analysis
     // (callAnalysis.ts) — the card's "Analyze the call" lives on these.
     const [calls, monthCalls, gate] = await Promise.all([
-      loadCallsTab(id),
+      loadCallList(id),
       month ? import("@/lib/callAnalysis").then((m) => m.loadCallTranscripts({ monthId: month.id })).catch(() => []) : Promise.resolve([]),
       // Oct 21 2026: no booking link to hand out before the strategy is in the portal.
       import("@/lib/strategyGate").then((m) => m.strategyGateFor(id)).catch(() => null),
@@ -176,45 +175,23 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
         ) : (
           <p className="text-sm text-muted">No month workspace yet — the call card appears with the month.</p>
         )}
-        <Section icon={PhoneCall} title="Every call on record" count={calls.length} flush
-          action={<Link href="/content/calls" className="inline-flex min-h-9 items-center text-[12px] font-medium text-brand hover:underline">Unmatched calls →</Link>}>
-          <div className="divide-y divide-border">
-            {calls.length === 0 && <p className="px-5 py-3 text-sm text-muted">No call records for this client yet.</p>}
-            {calls.map((c) => (
-              <div key={c.id} className="px-5 py-2.5 text-[13px]">
-                <div className="flex flex-wrap items-center gap-x-2">
-                  <span className="font-medium">{CALL_WORDS[c.callType] ?? c.callType.toLowerCase().replace(/_/g, " ")}</span>
-                  <span className="text-muted">{fmtWhen(c.scheduledStartISO)}</span>
-                  {c.monthKey && <span className="text-[11px] text-muted-2">for {monthLabel(c.monthKey)}</span>}
-                </div>
-                <div className="text-[12px] text-muted">
-                  {c.status.toLowerCase().replace(/_/g, " ")} · transcript {c.transcriptState.toLowerCase().replace(/_/g, " ")}
-                  {c.matchState && c.matchState !== "MATCHED" ? ` · ${c.matchState.toLowerCase().replace(/_/g, " ")}` : ""}
-                </div>
-                {c.lastError && <div className="text-[12px] text-warning">{c.lastError.slice(0, 160)}</div>}
-              </div>
-            ))}
-          </div>
-        </Section>
+        {/* Oct 27 2026: one plain line per call; how it was matched under Details (CallsView). */}
+        <CallsList rows={calls} />
       </div>
     );
   }
 
-  // KNOWLEDGE — facts (with the profile/strategy changes a call proposes) and the legacy notes.
-  const [facts, proposals, notes] = await Promise.all([
-    loadFactsTab(client.id, id),
-    loadFieldProposals(client.id).catch(() => []),
+  // KNOWLEDGE (Oct 27 2026): what the AI kept from the calls, read-only, no
+  // review pile (KnowledgeView, lib/knowledgeCurator). Jordan: "AI should
+  // handle it. And if it can't figure it out, then get rid of it."
+  const [knowledge, notes] = await Promise.all([
+    import("@/lib/knowledgeCurator").then((m) => m.loadKnowledgeView(client.id)),
     loadLegacyNotes(client.id),
   ]);
   return (
     <div className="space-y-5">
       {sub}
-      <FactsPanel clientId={client.id} facts={facts.facts} counts={facts.counts} months={facts.months} projects={facts.projects} fieldProposals={proposals} />
-      {/* Moved here from the old Client file. The customer note itself lives on Brand, beside the profile it describes. */}
-      <div className="max-w-2xl">
-        <p className="mb-2 text-[12px] text-muted-2">Legacy notes — still read by the AI while they migrate to facts.</p>
-        <NotesCard clientId={client.id} notes={notes} />
-      </div>
+      <KnowledgeView data={knowledge} clientId={client.id} notes={notes} />
     </div>
   );
 }

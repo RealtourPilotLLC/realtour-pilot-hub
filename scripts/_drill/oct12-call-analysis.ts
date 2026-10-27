@@ -27,7 +27,9 @@
 //      AI is still waiting in after()), the job is held under the person's
 //      lease, a second click is refused; then the work runs: PROPOSED topics,
 //      PROPOSED facts, analysisRunId, job SUCCEEDED with the run, INGEST done;
-//      the reader says "Analyzed Oct 12 — 2 topics confirmed · 1 fact to review".
+//      the reader says "Analyzed Oct 12 — 2 topics confirmed · 1 fact noted".
+//      (Oct 27 2026: "noted", not "to review"; the knowledge curator sorts call
+//      facts and nobody reviews them.)
 //   7  Re-analyze: a topic staff confirmed stays confirmed, a rejected one stays
 //      rejected; a new run id.
 //   8  The automatic run's reasons, read-only, on Joe's call: both off · AI runs
@@ -280,10 +282,10 @@ async function main() {
       const facts = await prisma.clientFact.findMany({ where: { clientId: J.clientId } });
       c.ok("the fact is PROPOSED for staff review (an attended run never auto-accepts)", facts.length === 1 && facts[0].status === "PROPOSED" && !facts[0].autoAccepted, JSON.stringify(facts.map((f) => [f.status, f.autoAccepted])));
       const after1 = await A.callAnalysisStatusAction(john);
-      c.ok("status: \"Analyzed Oct 12 — 2 topics confirmed · 1 fact to review\", Re-analyze offered", after1.call?.state === "analyzed" && after1.call.resultLine === "Analyzed Oct 12 — 2 topics confirmed · 1 fact to review" && after1.call.canAnalyze, after1.call?.resultLine ?? "");
+      c.ok("status: \"Analyzed Oct 12 — 2 topics confirmed · 1 fact noted\", Re-analyze offered", after1.call?.state === "analyzed" && after1.call.resultLine === "Analyzed Oct 12 — 2 topics confirmed · 1 fact noted" && after1.call.canAnalyze, after1.call?.resultLine ?? "");
       monthCalls = await ca.loadCallTranscripts({ monthId: J.monthId });
       const html = card(monthCalls);
-      c.ok("the card: \"its topics are confirmed on Video Topics\", the result, Re-analyze", html.includes("Strategy call held — its topics are confirmed on Video Topics") && html.includes("Analyzed Oct 12 — 2 topics confirmed · 1 fact to review") && html.includes("Re-analyze") && !html.includes("Analyze the call"), html.slice(0, 500));
+      c.ok("the card: \"its topics are confirmed on Video Topics\", the result, Re-analyze", html.includes("Strategy call held — its topics are confirmed on Video Topics") && html.includes("Analyzed Oct 12 — 2 topics confirmed · 1 fact noted") && html.includes("Re-analyze") && !html.includes("Analyze the call"), html.slice(0, 500));
       const row = await rowOf(J);
       c.ok("the Overview no longer reports the call: evidence \"transcript analysed\", no problem", row.strategyCall.evidence === "transcript analysed" && row.strategyCall.problem === null && !/Transcript in/.test(row.nextAction.text), `${row.strategyCall.evidence} | ${row.nextAction.text}`);
     }

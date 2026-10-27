@@ -113,7 +113,12 @@ export type AiRunKind =
   // (src/lib/scriptWriter): reading the calls for the topic, the topic brief,
   // the five hooks, and the independent creative review. The draft itself and
   // its fix rounds stay script_draft / script_revise.
-  | "script_retrieval" | "script_brief" | "script_hooks" | "script_review";
+  | "script_retrieval" | "script_brief" | "script_hooks" | "script_review"
+  // Oct 27 2026 (Jordan: "AI should handle it"): sorting a client's call
+  // knowledge where it is used (knowledgeCurator.ts), naming the client behind
+  // a call the signals could not place (callAutoMatch.ts), and reading a
+  // client's portal message for a complaint (contentComplaints.ts).
+  | "knowledge_curation" | "call_match" | "complaint_check";
 
 /**
  * The writer's steps that only ever run inside one script's draft or check

@@ -5,6 +5,7 @@ import { etDayKey } from "@/lib/datetime";
 import { isTestClientName } from "@/lib/testClients";
 import { catchUpInto, catchUpMonthName } from "@/lib/catchUp";
 import type { CallTranscriptUi } from "@/lib/callAnalysis";
+import { nameTokens, sameFirstName, GENERIC_DOMAINS } from "@/lib/callMatchCore";
 
 // ---------------------------------------------------------------------------
 // STRATEGY CALLS · LAST 30 DAYS (Oct 6 2026) — the read behind /content/calls.
@@ -15,7 +16,10 @@ import type { CallTranscriptUi } from "@/lib/callAnalysis";
 // and anything staff set aside — never brand-discovery calls (onboarding owns
 // those). For each: who booked, when, the client + month it is filed on, and
 // for an unfiled one a SUGGESTED client. A suggestion is a hint for the
-// person holding the button — nothing here or in the sync acts on it.
+// person holding the button; nothing here acts on it. (Oct 27 2026: the sync
+// itself now files a call by portal sign-in, calendar guest, phone or a unique
+// full name, callMatchCore.ts, so what is left unfiled here is what those and
+// the AI matcher could not place.)
 // ---------------------------------------------------------------------------
 
 export const DESK_LOOK_BACK_DAYS = 30;
@@ -49,21 +53,8 @@ export function monthOptionsFor(start: Date, current?: string | null): string[] 
 }
 
 // ---- suggestion -------------------------------------------------------------
-const norm = (s: string) => s.toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
-/** Meaningful name tokens: no single letters ("John P. Collins" → john collins), no suffixes. */
-const nameTokens = (s: string | null | undefined) => norm(s ?? "").split(" ").filter((t) => t.length > 1 && !["jr", "sr", "ii", "iii", "test"].includes(t));
-const NICK: Record<string, string[]> = {
-  joseph: ["joe", "joey"], john: ["jack", "johnny"], robert: ["bob", "rob", "bobby"], michael: ["mike"], william: ["bill", "will"],
-  james: ["jim", "jimmy"], richard: ["rick", "rich", "dick"], elizabeth: ["liz", "beth"], katherine: ["kate", "kathy", "katie"],
-  christopher: ["chris"], jennifer: ["jen", "jenny"], stephen: ["steve"], steven: ["steve"], thomas: ["tom"], daniel: ["dan"], anthony: ["tony"],
-};
-function sameFirstName(a: string, b: string): boolean {
-  if (a === b) return true;
-  if (a.length >= 3 && b.length >= 3 && (a.startsWith(b) || b.startsWith(a))) return true;
-  return (NICK[a] ?? []).includes(b) || (NICK[b] ?? []).includes(a);
-}
-const GENERIC_DOMAINS = new Set(["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com", "icloud.com", "me.com", "comcast.net", "verizon.net", "live.com", "msn.com"]);
-
+// The name rules live with the call matcher (callMatchCore.ts, Oct 27 2026), so
+// the desk's hint and the automatic match read a name the same way.
 export type SuggestClient = { clientId: string; name: string; emails: string[] };
 export type Suggestion = { clientId: string; name: string; reason: string; score: number };
 
