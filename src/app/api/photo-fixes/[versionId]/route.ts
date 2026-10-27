@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireRole } from "@/lib/auth/guards";
 import { prisma } from "@/lib/prisma";
+import { contentDisposition } from "@/lib/contentDisposition";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,12 +36,12 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ versionId:
   const { get } = await import("@vercel/blob");
   const got = await get(pathname, { access: "private", token }).catch(() => null);
   if (!got || !got.stream) return NextResponse.json({ error: "The stored file could not be read." }, { status: 404 });
-  const name = (v.photo.name || "photo.jpg").replace(/["\\\r\n]/g, "_").replace(/\.[a-z0-9]+$/i, "") + ".jpg";
+  const name = (v.photo.name || "photo.jpg").replace(/\.[a-z0-9]+$/i, "") + ".jpg";
   return new NextResponse(got.stream as unknown as BodyInit, {
     status: 200,
     headers: {
       "Content-Type": "image/jpeg",
-      "Content-Disposition": `attachment; filename="${name}"`,
+      "Content-Disposition": contentDisposition("attachment", name, "photo.jpg"),
       "Cache-Control": "private, no-store",
     },
   });

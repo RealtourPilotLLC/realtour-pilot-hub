@@ -1,5 +1,6 @@
 import "server-only";
 import { NextResponse, type NextRequest } from "next/server";
+import { contentDisposition } from "@/lib/contentDisposition";
 
 // ---------------------------------------------------------------------------
 // STREAM AN UPSTREAM FILE BACK THROUGH A HUB ROUTE: Range and If-Range passed
@@ -54,8 +55,8 @@ export async function relayFile(req: NextRequest, url: string, authorization: st
   out.set("X-Content-Type-Options", "nosniff");
   // Inline so it plays in the tab; the name is the editor's file name, which
   // is already the one the review surfaces show.
-  const safe = (fileName ?? "cut").replace(/["\\\r\n]/g, "");
-  out.set("Content-Disposition", `${asAttachment ? "attachment" : "inline"}; filename="${safe}"`);
+  // Any name, an em dash included (lib/contentDisposition, Oct 27 2026).
+  out.set("Content-Disposition", contentDisposition(asAttachment ? "attachment" : "inline", fileName, "cut"));
   if (!out.has("accept-ranges")) out.set("Accept-Ranges", "bytes");
   return new Response(upstream.body, { status: upstream.status, headers: out });
 }
