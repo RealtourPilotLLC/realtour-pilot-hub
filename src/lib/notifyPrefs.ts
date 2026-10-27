@@ -55,6 +55,10 @@ const KIND_TO_EVENT: Record<string, NotifyEvent> = {
   project_message: "project_message",
   raws_landed: "job_ping",
   revision_raised: "job_ping",
+  // More notes on a revision already open (Oct 26 2026): the same edit-lane
+  // work as the ask it adds to, so it rides the same switch. It used to be
+  // bell-only, so the editor and the creative manager missed added notes.
+  revision_addendum: "job_ping",
   revision_resolved: "job_ping",
   edit_finished: "job_ping",
   edit_assigned: "job_ping",

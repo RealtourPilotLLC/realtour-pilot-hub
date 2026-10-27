@@ -770,6 +770,31 @@ export function channelOfSource(source: string | null | undefined): "email" | "c
 }
 
 /** The channel a revision's source implies, for a caller that did not say. */
+/** A client's revision reaches the creative manager by name (Oct 26 2026, see
+ *  notify.creativeManagerTargets) as well as whoever is editing it. Their rows
+ *  go after the caller's, and the role leaves the broadcast once they exist,
+ *  so the bell shows them one row, not two. */
+async function withCreativeManager(
+  targets: NotifyTarget[],
+  s: { askedBy: string | null; verb: string; where: string; editorKey: string | null; editorWaits: boolean; ask: string; href: string },
+): Promise<NotifyTarget[]> {
+  try {
+    const { creativeManagerTargets } = await import("@/lib/notify");
+    const { editorMeta } = await import("@/lib/editors");
+    const editor = editorMeta(s.editorKey)?.name ?? null;
+    const who = s.editorWaits ? " It waits on creative review before the editor sees it." : editor ? ` ${editor} has it.` : "";
+    // A portal ask opens with its own receipt line ("Video revision requested
+    // from the client portal by … (cut: …, v1):"); the head already says that,
+    // so the quote starts at the client's first note.
+    const bullet = s.ask.indexOf("•");
+    const cm = await creativeManagerTargets({ head: `${s.askedBy ?? "The client"} ${s.verb} ${s.where}.${who}`, ask: bullet >= 0 ? s.ask.slice(bullet) : s.ask, href: s.href });
+    if (!cm.length) return targets;
+    return [...targets.map((t) => (t.userKey ? t : { ...t, roles: t.roles.filter((r) => r !== "CREATIVE_MANAGER") })), ...cm];
+  } catch {
+    return targets;
+  }
+}
+
 function requesterKindOfSource(source: string): RequesterKind {
   const s = (source || "").toLowerCase();
   if (s === "portal") return "CLIENT";
@@ -1122,13 +1147,22 @@ async function runRevisionDetailed(opts: DetailedRevisionOpts, receiptTx?: { db:
         ? (await prisma.deliverableOutput.findUnique({ where: { id: opts.pin.outputId }, select: { ownerKey: true } }).catch(() => null))?.ownerKey ?? null
         : null;
       if (inHouse(owner) && owner !== holder && !editorWaits) targets.push({ roles: ["EDITOR"], userKey: `editor:${owner}`, href: `/edit/${project.id}` });
+      const where = `${project.title.split(",")[0].trim()} · ${opts.pin.videoLabel}`;
       await notifyInApp({
         kind: opts.addendum ? "revision_addendum" : "revision_raised",
-        title: `${opts.addendum ? "More notes" : opts.reopened ? "Reopened for revisions" : "Revision"} — ${project.title.split(",")[0].trim()} · ${opts.pin.videoLabel}`,
+        title: `${opts.addendum ? "More notes" : opts.reopened ? "Reopened for revisions" : "Revision"} — ${where}`,
         // Who asked, in front of what they asked (Sep 28).
         body: clip(askedBy ? `${askedBy}: ${taskNote}` : taskNote, 140),
         href: `/projects/${project.id}`,
-        targets,
+        targets: await withCreativeManager(targets, {
+          askedBy,
+          verb: opts.addendum ? "added notes on" : opts.reopened ? "reopened" : "asked for changes on",
+          where,
+          editorKey: inHouse(owner) ? owner : holder,
+          editorWaits,
+          ask: note,
+          href: `/projects/${project.id}`,
+        }),
         dedupeKey: opts.pin.decisionId
           ? (opts.addendum ? `portal-addendum-${opts.pin.decisionId}-${opts.addendum.n}` : `portal-round-${opts.pin.roundId ?? opts.pin.decisionId}`)
           // A text thread carries many asks: each different ask rings (Oct 14 2026).
@@ -1167,7 +1201,10 @@ async function runRevisionDetailed(opts: DetailedRevisionOpts, receiptTx?: { db:
         title: `Revision — ${project.title.split(",")[0].trim()}`,
         body: clip(askedBy ? `${askedBy}: ${taskNote}` : taskNote, 140),
         href: `/projects/${project.id}`,
-        targets,
+        targets: await withCreativeManager(targets, {
+          askedBy, verb: "asked for changes on", where: project.title.split(",")[0].trim(),
+          editorKey: assignedKey, editorWaits, ask: note, href: `/projects/${project.id}`,
+        }),
         // Day-suffixed: the revision TASK id is stable per project (deduped),
         // so a SECOND round's ping collided with the first and was silently
         // swallowed (audit). Same-day repeats stay quiet via wasAlreadyOpen.
@@ -1236,7 +1273,15 @@ export async function applySavedStaffRevision(briefId: string): Promise<void> {
     if (key && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(key)) targets.push({ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${receipt.projectId}` });
   }
   // notifyInApp already owns per-channel retry/quiet-time/dedupe behavior.
-  await notifyInApp({ kind: "revision_raised", title: `${effects.taskTitle.replace(/^Video revision — /, "Revision — ").split(",")[0].trim()} · ${intake!.videoLabel}`, body: clip(receipt.requestedBy ? `${receipt.requestedBy}: ${effects.taskNote}` : effects.taskNote, 140), href: `/projects/${receipt.projectId}`, targets, dedupeKey: `staff-cut-${receipt.sourceDetail}` });
+  const title = `${effects.taskTitle.replace(/^Video revision — /, "Revision — ").split(",")[0].trim()} · ${intake!.videoLabel}`;
+  await notifyInApp({
+    kind: "revision_raised", title, body: clip(receipt.requestedBy ? `${receipt.requestedBy}: ${effects.taskNote}` : effects.taskNote, 140), href: `/projects/${receipt.projectId}`,
+    targets: await withCreativeManager(targets, {
+      askedBy: receipt.requestedBy?.trim() || null, verb: "asked for changes on", where: title.replace(/^.*?—\s*/, ""),
+      editorKey: effects.outputOwnerKey ?? effects.assignedKey, editorWaits: false, ask: receipt.originalText ?? effects.taskNote, href: `/projects/${receipt.projectId}`,
+    }),
+    dedupeKey: `staff-cut-${receipt.sourceDetail}`,
+  });
   if (!effects.wasAlreadyOpen && !effects.urgentClaimed) {
     const claimed = await prisma.$transaction(async (tx) => {
       await lockAdvisory(tx, `staff-intake:${briefId}`);

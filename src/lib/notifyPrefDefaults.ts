@@ -105,6 +105,7 @@ export const NOTIFY_KIND_LABELS: Record<string, string> = {
   project_message: "job message",
   raws_landed: "raws in",
   revision_raised: "revision",
+  revision_addendum: "more revision notes",
   revision_resolved: "revision back",
   edit_finished: "edit finished",
   edit_assigned: "reassigned",

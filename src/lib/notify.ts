@@ -168,6 +168,29 @@ async function creativeManagerMemberIds(): Promise<Set<string>> {
     return new Set();
   }
 }
+
+/** THE CREATIVE MANAGER HEARS EVERY CLIENT REVISION BY NAME (Oct 26 2026).
+ *  Jordan: "I think James should be pinged as well as Kim. Or whoever is
+ *  editing the project in the future but creative manager should know too."
+ *  A CREATIVE_MANAGER role broadcast only rings the bell (a broadcast never
+ *  reaches Slack or a phone), so a client's revision now carries one row per
+ *  creative manager login, addressed to them by name: their "Job pings"
+ *  switch decides Slack or text, like the editor's own row. The sentence says
+ *  who asked, for which video, who is editing it, and the ask itself; the
+ *  money clamp in notifyInApp scrubs it for them.
+ *
+ *  Empty when no creative manager login resolves: the caller then keeps the
+ *  role on its broadcast, so the bell never goes dark. Append these AFTER the
+ *  caller's existing targets so the dedupe suffixes of those rows stay put. */
+export async function creativeManagerTargets(s: { head: string; ask?: string | null; href: string }): Promise<NotifyTarget[]> {
+  const ids = [...(await creativeManagerMemberIds())];
+  if (!ids.length) return [];
+  const { escapeSlack, clip } = await import("@/lib/text");
+  // The client's own words, money scrubbed here as well as by the clamp.
+  const ask = scrubMoney((s.ask ?? "").replace(/\s+/g, " ").trim());
+  const slackDm = [escapeSlack(s.head), ask ? `> ${escapeSlack(clip(ask, 240))}` : null, `${appBase()}${s.href}`].filter(Boolean).join("\n");
+  return ids.map((id) => ({ roles: ["CREATIVE_MANAGER"], userKey: `tm:${id}`, href: s.href, slackDm }));
+}
 // Saying "the photographer on this job" without hard-coding an id:
 // photographerNotifyTarget() in src/lib/projectPhotographer.ts builds one of
 // these from a projectId (Sep 18, the Review Room's photographer bell).
