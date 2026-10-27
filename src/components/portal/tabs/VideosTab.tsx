@@ -47,6 +47,14 @@ const versionWords = (label: string | null | undefined) => {
 // stands approved or delivered; an open newer version says "Updated version".
 const showsDelivered = (state: ClientVideoState) => state === "APPROVED" || state === "DELIVERED";
 const UPDATED_CHIP = "inline-flex items-center rounded-md bg-brand-soft px-1.5 py-0.5 text-[11px] font-semibold text-brand";
+/** Oct 27 2026 (Jordan: "add a status that shows it was downloaded so they know which ones they have downloaded"). */
+function DownloadedChip({ atISO }: { atISO: string }) {
+  return (
+    <span data-downloaded className="inline-flex items-center gap-0.5 rounded-md bg-success-soft px-1.5 py-0.5 text-[11px] font-semibold text-success">
+      <Download className="size-2.5" aria-hidden /> Downloaded {fmtShort(atISO)}
+    </span>
+  );
+}
 
 export type VideoDetailData = {
   video: {
@@ -119,6 +127,7 @@ function VideoRowV2({ v, to, deadline, previous }: { v: VideoListRow; to: string
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
             <StatusChip word={VIDEO_WORDS[v.state]} />
             {v.updated && <span className={UPDATED_CHIP}>Updated version</span>}
+            {v.downloadedAtISO && <DownloadedChip atISO={v.downloadedAtISO} />}
             {v.kind !== "PROGRAM" && <span className="inline-flex items-center gap-0.5 rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold text-muted"><Tag className="size-2.5" aria-hidden /> {v.kind === "LISTING" ? "Listing video" : v.kind === "EXTRA" ? "Extra" : v.kind.toLowerCase()}</span>}
             {deadline && <span className="text-[11px] font-medium text-foreground/80">Review by {deadline}</span>}
           </div>
@@ -249,6 +258,9 @@ export function LibraryV2({ d, failed, href }: { d: LibraryV2Data | null; failed
 export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
   const hasCut = d.versions.some((v) => v.isCurrent && v.assetUrl);
   const released = !!d.kit && (d.kit.access.download || d.kit.access.captions);
+  // The kit's own client facts (the newer of started and finished), the same rows the list reads.
+  const started = d.kit?.downloadStartedAtISO ?? null, finished = d.kit?.downloadCompletedAtISO ?? null;
+  const downloadedAt = started && finished ? (started > finished ? started : finished) : started ?? finished;
   return (
     <div className="mt-6 space-y-4">
       <Link href={href("videos")} className={cn("inline-flex min-h-11 items-center gap-1 text-xs font-medium text-muted hover:text-foreground", focus)}><ArrowLeft className="size-3.5" aria-hidden /> Content Library</Link>
@@ -257,6 +269,7 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           <StatusChip word={VIDEO_WORDS[d.video.state]} />
           {d.video.updated && <span className={UPDATED_CHIP}>Updated version</span>}
+          {downloadedAt && <DownloadedChip atISO={downloadedAt} />}
           {d.video.kind !== "PROGRAM" && <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold text-muted">{d.video.kind === "LISTING" ? "Listing video, not part of your monthly program" : d.video.kind === "EXTRA" ? "Extra" : d.video.kind.toLowerCase()}</span>}
         </div>
         <div className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-muted-2">

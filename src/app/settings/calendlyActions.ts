@@ -11,8 +11,7 @@ import {
   callRecordRules, CALL_RULES_KEY, DEFAULT_CALL_RULES, type CallRecordRules,
   syncCallRecordsFromCalendly, linkCalendarEvents, discoverTranscriptSources, sweepUnlinkedDriveTranscripts, reconcileCallReviewTasks,
   listCallRecords, callReviewQueue, type CallRecordView,
-  confirmCallRecordClient, ignoreCallRecord, setCallRecordTargetMonth, confirmTranscriptSource, rejectTranscriptSource,
-  verifyClientEmailAlias, dismissClientEmailAlias, attachPastedTranscript,
+  attachPastedTranscript,
 } from "@/lib/contentCallRecords";
 import { transcriptJobsSnapshot, transcriptQueueBatch, transcriptJobHold, enqueueTranscriptJob, isTranscriptJobKind, BACKLOG_FIELD, FIRST_ON_FIELD, INCLUDE_BACKLOG, type TranscriptQueueBatch } from "@/lib/transcriptJobs";
 
@@ -270,37 +269,13 @@ export async function saveCallRules(input: Partial<CallRecordRules>): Promise<R>
   } catch (e) { return fail(e); }
 }
 
-// ---- Review-queue decisions (owner) ----------------------------------------
-export async function confirmCallClient(recordId: string, clientId: string, verifyAlias: boolean): Promise<R> {
-  try { const by = await owner(); await confirmCallRecordClient(recordId, clientId, by, { verifyInviteeEmailAsAlias: verifyAlias }); revalidatePath("/settings"); return { ok: true, message: "Client confirmed — the call is filed and its transcript will be looked for on the next run." }; }
-  catch (e) { return fail(e); }
-}
-export async function ignoreCall(recordId: string, note?: string): Promise<R> {
-  try { const by = await owner(); await ignoreCallRecord(recordId, by, note); revalidatePath("/settings"); return { ok: true, message: "Ignored — it stays on file as unrelated." }; }
-  catch (e) { return fail(e); }
-}
-export async function retargetCall(recordId: string, monthKey: string): Promise<R> {
-  try { const by = await owner(); await setCallRecordTargetMonth(recordId, monthKey, by); revalidatePath("/settings"); return { ok: true, message: `Call now plans ${monthKey}.` }; }
-  catch (e) { return fail(e); }
-}
-export async function confirmTranscript(sourceId: string, recordId: string): Promise<R> {
-  try { const by = await owner(); await confirmTranscriptSource(sourceId, recordId, by); revalidatePath("/settings"); return { ok: true, message: "Transcript attached — INGEST + ANALYZE queued (they run when transcript jobs are switched on)." }; }
-  catch (e) { return fail(e); }
-}
-export async function rejectTranscript(sourceId: string): Promise<R> {
-  try { const by = await owner(); await rejectTranscriptSource(sourceId, by); revalidatePath("/settings"); return { ok: true, message: "Rejected." }; }
-  catch (e) { return fail(e); }
-}
+// ---- Review-queue decisions ------------------------------------------------
+// ONE CALL QUEUE (Jordan, Oct 27 2026: "One of each"). Confirming a call's
+// client, its month, a transcript or an email alias is answered on Content ›
+// Strategy calls (content/calls/actions.ts) only; this panel's copies of those
+// actions went with its fallback queue. Pasting a transcript stays here.
 export async function pasteTranscript(recordId: string, text: string): Promise<R> {
   try { const by = await owner(); await attachPastedTranscript(recordId, text, by, "paste"); revalidatePath("/settings"); return { ok: true, message: "Transcript saved and queued." }; }
-  catch (e) { return fail(e); }
-}
-export async function verifyAlias(aliasId: string): Promise<R> {
-  try { const by = await owner(); await verifyClientEmailAlias(aliasId, by); revalidatePath("/settings"); return { ok: true, message: "Alias verified — bookings from that address now match this client." }; }
-  catch (e) { return fail(e); }
-}
-export async function dismissAlias(aliasId: string): Promise<R> {
-  try { await owner(); await dismissClientEmailAlias(aliasId); revalidatePath("/settings"); return { ok: true, message: "Dismissed." }; }
   catch (e) { return fail(e); }
 }
 /** What a Re-run will actually do, in the driver's own terms. */

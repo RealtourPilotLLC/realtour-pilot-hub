@@ -658,7 +658,34 @@ export type VideoListRow = {
    *  says where it is and when to expect it, or that its date moved and why.
    *  Absent while the portalExpectedBy switch is off. Client words only. */
   expected?: { stage: string; line: string; reason: string | null; movedFrom: string | null; late: boolean } | null;
+  /** Oct 27 2026: when this client last downloaded it (clientDownloadsFor), so the
+   *  list can say "Downloaded". Absent when they never have, or it could not be read. */
+  downloadedAtISO?: string | null;
 };
+
+/**
+ * WHICH VIDEOS THIS CLIENT HAS DOWNLOADED (Jordan, Oct 27 2026: "add a status
+ * that shows it was downloaded so they know which ones they have downloaded").
+ * Read from what the download door already records (postingKit.recordDownload
+ * and recordDownloadCompleted: PortalVisit rows on /portal/download/<videoId>),
+ * the client's own rows only (a staff download on their behalf is not theirs),
+ * anyone on the account or the shared link. The newest row per video, started
+ * or finished, wins. No new column.
+ */
+export async function clientDownloadsFor(enrollmentId: string, videoIds: readonly string[]): Promise<Map<string, Date>> {
+  const out = new Map<string, Date>();
+  if (!videoIds.length) return out;
+  const wanted = new Set(videoIds);
+  const rows = await prisma.portalVisit.findMany({
+    where: { enrollmentId, staffUserId: null, via: { not: "STAFF" }, path: { startsWith: "/portal/download/" } },
+    orderBy: { createdAt: "desc" }, take: 5000, select: { path: true, createdAt: true },
+  });
+  for (const r of rows) {
+    const id = /^\/portal\/download\/([a-z0-9]{10,40})(?:\?|$)/i.exec(r.path)?.[1];
+    if (id && wanted.has(id) && !out.has(id)) out.set(id, r.createdAt);
+  }
+  return out;
+}
 
 export type VideoListPage = {
   rows: VideoListRow[];
@@ -932,6 +959,9 @@ export async function portalVideoList(enrollment: { id: string; clientId: string
     .then((m) => m.portalExpectedFor(rows.map((r) => ({ id: r.id, outputId: outputOf.get(r.id) ?? null, state: r.state }))))
     .catch(() => null);
   if (expected?.size) for (const r of rows) r.expected = expected.get(r.id) ?? null;
+  // Oct 27 2026: "Downloaded" on each video this client has downloaded. A failed read leaves it off.
+  const downloads = await clientDownloadsFor(enrollment.id, rows.map((r) => r.id)).catch(() => null);
+  if (downloads?.size) for (const r of rows) { const at = downloads.get(r.id); if (at) r.downloadedAtISO = at.toISOString(); }
   return { rows, total, page, pages, perPage, years, year, previousTotal, section };
 }
 

@@ -289,8 +289,8 @@ export function isInternalStrategySection(s: { id: string }): boolean {
 /**
  * Release to the portal — only an approved version can be released (since
  * Oct 14 2026 approving releases it too: content/actions.approveStrategy;
- * since Oct 21 2026 only Jordan's approval does, and an admin's approval
- * waits for his Release).
+ * since Oct 27 2026 anyone's approval does, Jordan: "Always release on
+ * approve").
  *
  * NO CONFIDENTIAL-FACT CHECK (Oct 14 2026). Jordan, Oct 13: "Nothing in the
  * content strategy should be confidential. The only thing that should be

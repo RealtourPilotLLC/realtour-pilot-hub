@@ -6,6 +6,7 @@ import {
 import type { ReadOnlyNotice } from "@/lib/portal";
 import { primaryDestOf, type NavItem, type PortalDest } from "@/lib/portalNav";
 import { CountBadge } from "@/components/portal/ui";
+import { LINK_VIEW_ONLY_LINE } from "@/lib/portalWords";
 import { PortalMigrationNotice } from "@/components/portal/PortalMigrationNotice";
 import { cn } from "@/lib/utils";
 
@@ -41,6 +42,8 @@ export type ShellNotices = {
   /** Staff looking through the owner iframe. (Its "preview of the new layout" exit went with the old layout, Oct 6 2026.) */
   staff: { who: string; clientName: string } | null;
   offerSignIn: boolean;
+  /** Oct 27 2026: the shared link of a program someone can sign in to only looks (portalAccess.sharedLinkViewOnly). */
+  linkViewOnly?: boolean;
   viewOnlySeat: boolean;
   /** Oct 6 2026: "we're still moving things over" (lib/portalNotice.ts); null when retired. `tellUsHref` opens Messages prefilled. */
   migrating: { tellUsHref: string } | null;
@@ -164,7 +167,15 @@ function Notices({ n, clientName }: { n: ShellNotices; clientName: string | null
           </div>
         </div>
       )}
-      {n.offerSignIn && (
+      {/* Oct 27 2026 (Jordan: the shared link stops commenting once the client has a sign-in). */}
+      {n.linkViewOnly && (
+        <div data-link-view-only className="mt-5 flex flex-wrap items-center gap-2 rounded-2xl border border-brand/30 bg-brand-soft/40 p-3.5 text-sm">
+          <Eye className="size-4 shrink-0 text-brand" aria-hidden />
+          <span className="min-w-0 flex-1 basis-48 text-xs">This shared link is view-only. {LINK_VIEW_ONLY_LINE}</span>
+          <Link href="/portal/login" className={cn("inline-flex min-h-11 items-center rounded-lg bg-brand-action px-3 text-xs font-semibold text-white", focus)}>Sign in with email</Link>
+        </div>
+      )}
+      {n.offerSignIn && !n.linkViewOnly && (
         <div className="mt-5 flex flex-wrap items-center gap-2 rounded-2xl border border-brand/30 bg-brand-soft/40 p-3.5 text-sm">
           <KeyRound className="size-4 shrink-0 text-brand" aria-hidden />
           <span className="min-w-0 flex-1 basis-48 text-xs">Set up your sign-in: a personal link by email, so this page is yours wherever you open it. This link keeps working too.</span>

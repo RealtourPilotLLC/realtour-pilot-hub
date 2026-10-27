@@ -199,11 +199,12 @@ export async function sessionRequestState(): Promise<{ counts: { status: string;
 export type { AutomationState };
 
 /**
- * LINK-ONLY CLIENTS (Jordan, Oct 21 2026; audit E2b). The shared portal link
- * can still comment and ask for changes. That can be switched off once every
- * client has a sign-in, and this count says when: active, real (not test)
+ * LINK-ONLY CLIENTS (Jordan, Oct 21 2026; audit E2b): active, real (not test)
  * programs whose shared link still opens (not revoked, not expired) and that
- * have no live seat. Display only; nothing here changes what the link may do.
+ * have no live seat. Display only. Since Oct 27 2026 the link of a program
+ * someone can sign in to is view-only on its own (portalAccess.
+ * sharedLinkViewOnly, which also needs email sign-in to work for them), so
+ * these are the clients whose link can still comment and ask for changes.
  */
 export async function linkOnlyClients(now: Date = new Date()): Promise<{ linkOnly: { clientId: string; name: string }[]; active: number }> {
   const enrollments = await prisma.contentEnrollment.findMany({

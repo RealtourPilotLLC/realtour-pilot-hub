@@ -37,9 +37,9 @@ import { FormatSwitch } from "@/components/content/FormatSwitch";
 // C14 (Oct 13 2026, Jordan: simplify the portal): the client sees "Choose
 // this topic" and "Suggest an idea". The filter chips, "Discuss", "Not
 // interested" (and its reason box), the "Scripted, not filmed" swap strip and
-// each topic's "More about this topic" history are hidden — UI only: the
-// server actions and the data behind them are unchanged, and a carried-over
-// script now sits in its month's list like any other chosen topic.
+// each topic's "More about this topic" history are hidden, and a carried-over
+// script now sits in its month's list like any other chosen topic. The swap
+// itself was retired Oct 21 and is deleted (Jordan, Oct 27 2026: "Delete them").
 //
 // UI-01 (Sep 24 2026): `view` splits the one long page for Your Month —
 // "month" is one month's selections (and what carried into it), "bank" is
