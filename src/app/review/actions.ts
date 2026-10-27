@@ -176,6 +176,9 @@ function afterVerdict(work: () => Promise<void>): Promise<void> {
  * is the person's office role, not "every role", so the body (who ruled, what
  * happens next — never money) survives the creatives' body clamp. With no seat
  * named at all the office keeps its old ADMIN broadcast beside Jordan's row.
+ * Oct 27 2026: the role table (notifyRoles.ts) then drops Jordan's verdict
+ * rows (a routine step, not his) and keeps the creative manager's to the bell
+ * (no text); the presser is left out by notifyInApp's actor.
  */
 async function reviewSeatTargets(skip: (string | null | undefined)[], href: string): Promise<NotifyTarget[]> {
   const { reviewerChain } = await import("@/lib/reviewerAssignment");
@@ -1415,6 +1418,8 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
             href,
             targets,
             dedupeKey: `review-approved-${submissionId}`,
+            // Never about your own press (Oct 27 2026, notifyRoles.ts).
+            actorTeamMemberId: ruler?.teamMemberId ?? null,
           });
         },
       },
@@ -1912,6 +1917,8 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
             href: editHref,
             targets,
             dedupeKey: `review-changes-${submissionId}-${lastNoteId}`,
+            // Never about your own press (Oct 27 2026, notifyRoles.ts).
+            actorTeamMemberId: ruler?.teamMemberId ?? null,
           });
         },
       },
@@ -3787,7 +3794,12 @@ async function reviewDeskActor(): Promise<{ ok: true; actor: ReviewDeskActor; of
 async function rulerOf(): Promise<{ teamMemberId: string | null; name: string; userId: string | null } | null> {
   const me = await getCurrentUser().catch(() => null);
   if (!me || me.impersonating) return null;
-  return { teamMemberId: me.teamMemberId, name: (await displayNameFor(me)) ?? me.email, userId: me.id };
+  // The presser's roster row through the login's link, then its editor key,
+  // then the roster row with the login's email (Oct 27 2026): a login with no
+  // link used to read as nobody, so the verdict's bells never left the
+  // presser out and James was told about approvals he made himself.
+  const { authorTeamMemberId } = await import("@/lib/mentions");
+  return { teamMemberId: await authorTeamMemberId(me), name: (await displayNameFor(me)) ?? me.email, userId: me.id };
 }
 
 async function refreshCutPages(submissionId: string): Promise<void> {

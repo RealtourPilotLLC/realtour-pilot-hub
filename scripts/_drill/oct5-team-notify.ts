@@ -272,7 +272,11 @@ async function main() {
     // Jordan's news. Kyle (the office, backup seat) hears when a video is
     // ready to send, or when a cut waits past the cover line, not every cut.
     c.ok("Kyle (the office, backup seat) gets no FYI for a new cut", dms(S.kyle, s0).length === 0, dms(S.kyle, s0).map((m) => m.text).join(" | "));
-    c.ok("Jordan (fallback) still gets his oversight DM", dms(S.jordan, s0).length === 1);
+    // Oct 27 2026 (Jordan: "make sure we are not overloading Kyle, James, and
+    // me with notifications that are not needed"): a cut James reviews is not
+    // Jordan's news any more (notifyRoles.ts, cut_ready owner "theirs"). Until
+    // today this line asserted his oversight DM.
+    c.ok("Jordan (fallback) gets no oversight DM for a cut James reviews", dms(S.jordan, s0).length === 0, dms(S.jordan, s0).map((m) => m.text).join(" | "));
     // Oct 22 2026: the shooter hears once, when the cut is approved.
     c.ok("Harrison (the shooter) is not told about a cut in review (he hears it once approved)", dms(S.harrison, s0).length === 0 && (await prisma.notification.count({ where: { userKey: `tm:${harrison.id}`, kind: "cut_ready" } })) === 0);
   }

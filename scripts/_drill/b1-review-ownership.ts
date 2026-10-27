@@ -328,13 +328,17 @@ async function main() {
   c.ok("…with exactly one SUBMITTED event", e2.length === 1 && e2[0].reason === "SUBMITTED" && e2[0].fromTeamMemberId === null);
   const r2 = await rowsFor(cut2);
   c.ok("James gets his OWN person row (not only an ADMIN bell)", r2.filter((r) => r.userKey === `tm:${james.id}`).length === 1, JSON.stringify(r2));
-  c.ok("Jordan gets ONE oversight row (OWNER only, not assigned work)", r2.filter((r) => !r.userKey && r.audience === JSON.stringify(["OWNER"])).length === 1);
+  // Oct 27 2026 (Jordan: "make sure we are not overloading Kyle, James, and me
+  // with notifications that are not needed"): his oversight copy of a cut
+  // James reviews is gone (notifyRoles.ts, cut_ready owner "theirs"). Until
+  // today these lines asserted ONE oversight row, its DM and its text.
+  c.ok("Jordan gets NO oversight row for a cut James reviews", r2.filter((r) => !r.userKey && r.audience.includes("OWNER")).length === 0, JSON.stringify(r2));
   c.ok("Kyle (the office, backup seat) gets no FYI row for a new cut", r2.filter((r) => r.userKey === `tm:${kyle.id}`).length === 0);
   c.ok("the ADMIN role broadcast is gone — no second bell for the assignee", !r2.some((r) => !r.userKey && r.audience.includes("ADMIN")));
   c.ok("the shooter is not told about a cut in review", !r2.some((r) => r.userKey === `tm:${harrison.id}`));
   // Jordan, Sep 25: all three are told; Kyle's copy names his part in it.
   c.ok("Kyle gets no Slack DM for a new cut", dmsTo(kyle).length === 0, dmsTo(kyle)[0]?.text ?? "none");
-  c.ok("Jordan's oversight DM says James is first and he may approve any time, and his text is queued as before", dmsTo(jordan).length === 1 && /James reviews it first/.test(dmsTo(jordan)[0].text) && /approve it any time/.test(dmsTo(jordan)[0].text) && (await smsFor(jordan)) === jordanSmsBefore + 1, dmsTo(jordan)[0]?.text ?? "none");
+  c.ok("…and no oversight DM or text for him either", dmsTo(jordan).length === 0 && (await smsFor(jordan)) === jordanSmsBefore, dmsTo(jordan)[0]?.text ?? "none");
   // Oct 5 2026: was "bell only — no DM, no text" (the seat default above).
   c.ok("James: ONE Slack DM saying it is waiting on him — and no text", dmsTo(james).length === 1 && /Waiting on you — 12 Owner St/.test(dmsTo(james)[0].text) && (await smsFor(james)) === 0, dmsTo(james).map((m) => m.text).join(" | ") || "none");
   const legsOf = async (tm: { id: string }, cutId: string) => {
@@ -353,7 +357,7 @@ async function main() {
   const cut3 = await mkCut(J2);
   await Promise.all([announce(J2, cut3), announce(J2, cut3), ra.ensureCutReviewer(cut3)]);
   c.ok("a three-way race on entry writes ONE event", (await events(cut3)).length === 1 && (await sub(cut3)).reviewerTeamMemberId === james.id, String((await events(cut3)).length));
-  c.ok("…and one set of rows (2: James, Jordan)", (await rowsFor(cut3)).length === 2, String((await rowsFor(cut3)).length));
+  c.ok("…and one set of rows (1: James; Jordan's oversight row is gone, Oct 27 2026)", (await rowsFor(cut3)).length === 1, String((await rowsFor(cut3)).length));
   c.ok("a notification never moved the cut: still PENDING, still James's", (await sub(cut2)).status === "PENDING" && (await sub(cut2)).reviewerTeamMemberId === james.id);
   const Jshot = await mkJob("13 Shot By James", james.id);
   const cutShot = await mkCut(Jshot);

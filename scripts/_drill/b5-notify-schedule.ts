@@ -416,7 +416,7 @@ async function main() {
   }
 
   // =========================================================================
-  c.head("4 · THE THREE REVIEW SEATS HEAR ABOUT EVERY CUT — AWAY INCLUDED");
+  c.head("4 · THE REVIEW SEATS HEAR ABOUT EVERY CUT — AWAY INCLUDED (Jordan only when it is his, Oct 27 2026)");
   {
     setClock(edt(9, 29, 11));
     await putSetting(ra.awayKey(james.id), { until: edt(10, 30, 0).toISOString(), setBy: "drill", setAt: new Date().toISOString() });
@@ -426,7 +426,11 @@ async function main() {
     const keys = (t ?? []).map((x) => x.userKey ?? `broadcast:${x.roles.join("+")}`);
     c.ok("James (away) gets an FYI person row", keys.includes(`tm:${james.id}`), JSON.stringify(keys));
     c.ok("…whose line says he is away and Kyle has it", /marked away/.test(t?.find((x) => x.userKey === `tm:${james.id}`)?.slackDm ?? "") && /Kyle has it/.test(t?.find((x) => x.userKey === `tm:${james.id}`)?.slackDm ?? ""));
-    c.ok("Kyle gets 'waiting on you', Jordan the owner row — all three hear it", keys.includes(`tm:${kyle.id}`) && keys.includes("broadcast:OWNER") && /Waiting on you/.test(t?.find((x) => x.userKey === `tm:${kyle.id}`)?.slackDm ?? ""));
+    // Oct 27 2026 (Jordan: "make sure we are not overloading Kyle, James, and
+    // me with notifications that are not needed ... I am CEO."): Jordan's
+    // oversight copy of a cut someone else reviews is gone (notifyRoles.ts,
+    // cut_ready owner "theirs"). Until today this line asserted his owner row.
+    c.ok("Kyle gets 'waiting on you'; Jordan gets no oversight row (Oct 27 2026)", keys.includes(`tm:${kyle.id}`) && !keys.includes("broadcast:OWNER") && !keys.includes(`tm:${jordan.id}`) && /Waiting on you/.test(t?.find((x) => x.userKey === `tm:${kyle.id}`)?.slackDm ?? ""), JSON.stringify(keys));
     c.ok("…each exactly once", keys.filter((k) => k === `tm:${james.id}`).length === 1 && keys.filter((k) => k === `tm:${kyle.id}`).length === 1);
     await putSetting(ra.awayKey(james.id), { until: null, setBy: "drill", setAt: new Date().toISOString() });
   }

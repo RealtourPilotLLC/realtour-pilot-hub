@@ -5,6 +5,7 @@ import { getSetting, putSetting, reviewRoomRules } from "@/lib/settings";
 import { firstName, slugForName } from "@/lib/assignees";
 import type { NotifyTarget, Role } from "@/lib/notify";
 import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
+import { seatRoute } from "@/lib/notifyRoles";
 import type {
   ReviewerCandidate,
   ReviewerSeat,
@@ -561,7 +562,10 @@ export async function recordRulingReviewer(
  *      here flips it).
  *   2. Jordan — an OWNER row carrying the oversight sentence (who has it),
  *      through the same bridge and his same saved switch as before, with his
- *      own-upload carve-out kept. When the cut is HIS, it says so.
+ *      own-upload carve-out kept. When the cut is HIS, it says so. Oct 27
+ *      2026: the role table drops the oversight copy while someone else is
+ *      named to review (notifyRoles.ts, cut_ready owner "theirs"), and a cut
+ *      that IS his comes as a row addressed to him by name.
  *   3. the rest of the chain and the office (Kyle) — an FYI person row on their
  *      own switch, which keeps the Slack DM Kyle asked for on Sep 21.
  * The ADMIN role broadcast is dropped: the assignee must not get a second
@@ -584,6 +588,8 @@ export async function reviewAnnounceTargets(input: {
   href: string;
   ownerActed?: boolean;
   at?: Date;
+  /** The cut being announced (Oct 27 2026): left out of the reviewer's pile. */
+  submissionId?: string;
 }): Promise<NotifyTarget[] | null> {
   if (!input.reviewer) return null;
   const { appBase } = await import("@/lib/appUrl");
@@ -591,27 +597,53 @@ export async function reviewAnnounceTargets(input: {
   const link = `${appBase()}${input.href}`;
   const who = firstName(input.reviewer.name);
   const what = `${input.street} (${input.editor}, v${input.round})`;
-  const [owners, office, chain] = await Promise.all([
+  const [owners, office, chain, pile] = await Promise.all([
     ownerTeamMemberIds().catch(() => [] as string[]),
     officeTeamMemberIds().catch(() => [] as string[]),
     reviewerChain(input.at),
+    cutsWaitingOn(input.reviewer.teamMemberId, input.submissionId).catch(() => 0),
   ]);
   const reviewerIsOwner = owners.includes(input.reviewer.teamMemberId);
   const targets: NotifyTarget[] = [];
+  // ONE TEXT PER PILE, NOT PER CUT (Oct 27 2026). Jordan: "make sure we are
+  // not overloading Kyle, James, and me with notifications that are not
+  // needed". James took a text for every cut and every new version (65 in 14
+  // days). Every cut still rings his bell and, by his switch, his Slack; the
+  // TEXT goes only when this cut starts a pile (nothing else waiting on him),
+  // because a second cut adds nothing a text can tell him that the Review Room
+  // he is about to open does not. A cut he leaves waiting is offered to the
+  // backup at the cover line and reaches Jordan past it (reviewCoverSweep).
+  const pileMute = pile > 0 ? { mute: "text" as const } : {};
   if (!reviewerIsOwner) {
     targets.push({
       roles: ANY_ROLE,
       userKey: `tm:${input.reviewer.teamMemberId}`,
       slackDm: `🎬 Waiting on you — ${what}. ${link}`,
+      ...pileMute,
+    });
+  } else {
+    // Jordan IS the reviewer: his row by name, so the role table's "theirs"
+    // (notifyRoles.ts) keeps it while it drops his FYI copy of other people's
+    // cuts. His own upload rings the bell and nothing else.
+    targets.push({
+      roles: ["OWNER"],
+      userKey: `tm:${input.reviewer.teamMemberId}`,
+      slackDm: `🎬 Video in review, waiting on you: ${what}. ${link}`,
+      ...(input.ownerActed ? { mute: "channels" as const } : pileMute),
     });
   }
-  targets.push({
-    roles: ["OWNER"],
-    ownerSms: reviewerIsOwner
-      ? `Video in review — waiting on you: ${what}. ${link}`
-      : `FYI video in review — ${what} · ${who} reviews it first; approve it any time. ${link}`,
-    ...(input.ownerActed ? { ownerActed: true } : {}),
-  });
+  // Jordan's oversight copy of a cut someone else reviews. Since Oct 27 2026
+  // the role table says a cut is his only when it is his (cut_ready owner
+  // "theirs", notifyRoles.ts), so the copy goes out only while that route is
+  // back to "ping". Read here, not left to notifyInApp: the reviewer is named
+  // whatever login role they hold, and the copy must go whoever it is.
+  if (!reviewerIsOwner && seatRoute("cut_ready", "owner") === "ping") {
+    targets.push({
+      roles: ["OWNER"],
+      ownerSms: `FYI video in review — ${what} · ${who} reviews it first; approve it any time. ${link}`,
+      ...(input.ownerActed ? { ownerActed: true } : {}),
+    });
+  }
   const seat = new Map(chain.members.map((m) => [m.teamMemberId, m]));
   // Oct 22 2026 (Jordan approved the alert routing): a cut waiting on review
   // is the creative manager's and Jordan's news, not the office's. Kyle hears
@@ -631,9 +663,24 @@ export async function reviewAnnounceTargets(input: {
       : m?.awayUntil
         ? `Video in review — ${what}. You're marked away, so ${who} has it; approve it or send it back any time. ${link}`
         : `Video in review — ${what}. ${who} reviews it first; if ${who} hasn't got to it, approve it or send it back yourself. ${link}`;
-    targets.push({ roles: ANY_ROLE, userKey: `tm:${id}`, slackDm });
+    // An FYI is never a text (Oct 27 2026): the cut is someone else's.
+    targets.push({ roles: ANY_ROLE, userKey: `tm:${id}`, slackDm, mute: "text" });
   }
   return targets;
+}
+
+/** How many OTHER cuts are waiting on this reviewer right now (pending, in
+ *  review, on a live job). The pile the Oct 27 2026 one-text rule reads. */
+async function cutsWaitingOn(teamMemberId: string, exceptSubmissionId?: string): Promise<number> {
+  return prisma.reviewSubmission.count({
+    where: {
+      status: "PENDING",
+      reviewerTeamMemberId: teamMemberId,
+      project: LIVE_JOB,
+      AND: [IN_REVIEW],
+      ...(exceptSubmissionId ? { id: { not: exceptSubmissionId } } : {}),
+    },
+  });
 }
 
 /** A cut changed hands: tell the new owner (on their own switch) and give the

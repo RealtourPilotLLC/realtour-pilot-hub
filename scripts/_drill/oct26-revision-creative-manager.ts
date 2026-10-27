@@ -108,7 +108,11 @@ async function main() {
   c.ok("Kim's row, addressed to her, links to her edit page", !!kimRow && kimRow.href === `/edit/${M.f.projectId}`, kimRow?.href ?? "none");
   c.ok("James's row, addressed to him by name, links to the job", !!jamesRow && jamesRow.href === `/projects/${M.f.projectId}`, jamesRow?.href ?? "none");
   c.ok("  …titled with the street and the video", /Video 2 of 4/.test(jamesRow?.title ?? ""), jamesRow?.title ?? "");
-  c.ok("the broadcast no longer carries CREATIVE_MANAGER (one row in his bell, not two)", !!broadcast && !JSON.parse(broadcast.audience).includes("CREATIVE_MANAGER") && JSON.parse(broadcast.audience).includes("OWNER"), broadcast?.audience ?? "none");
+  // Oct 27 2026 (Jordan: "Kyle handles comms, delegation, review, delivery,
+  // and coordination ... I am CEO."): a client's revision ask is the office's
+  // and the creative manager's, so notifyRoles.ts drops OWNER from it.
+  c.ok("the broadcast no longer carries CREATIVE_MANAGER (one row in his bell, not two)", !!broadcast && !JSON.parse(broadcast.audience).includes("CREATIVE_MANAGER") && JSON.parse(broadcast.audience).includes("ADMIN"), broadcast?.audience ?? "none");
+  c.ok("  …nor OWNER: a routine revision ask is not the CEO's (Oct 27 2026)", !!broadcast && !JSON.parse(broadcast.audience).includes("OWNER"), broadcast?.audience ?? "none");
   c.ok("  …and the editor's row stays where it was (suffix -1)", kimRow?.dedupeKey === `portal-round-${round.id}-1`, kimRow?.dedupeKey ?? "none");
   const t1 = await texts();
   c.ok("James is texted once (his Job pings switch says text)", t1.length === 1, String(t1.length));

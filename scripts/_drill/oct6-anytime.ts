@@ -242,6 +242,12 @@ async function main() {
     c.ok(`${label}: the URGENT desk-task ping is a DM to Kyle at once`, dms(S.kyle, d0).some((m) => /New on your list \(URGENT\): Scripts not approved before filming/.test(m.text)), dms(S.kyle, d0).map((m) => m.text.slice(0, 80)).join(" | ") || "no DM");
 
     // 6. James's "video in review" — BY TEXT, the leg the texting window held.
+    // Oct 27 2026 (Jordan: "make sure we are not overloading Kyle, James, and
+    // me with notifications that are not needed"): James is texted for the
+    // first cut of a pile only (reviewerAssignment, one text per pile). This
+    // line pins the HOUR rule, so the previous hour's cut is ruled on first
+    // and each hour's cut starts a pile of its own.
+    await prisma.reviewSubmission.updateMany({ where: { status: "PENDING", fileName: { startsWith: "cut-" } }, data: { status: "APPROVED", decidedAt: new Date() } });
     const rv = await mkJob(`${70 + n} Review Row`, { status: "REVIEW", photographerId: harrison.id });
     const cut = await mkCut(rv);
     const j0 = texts.length;

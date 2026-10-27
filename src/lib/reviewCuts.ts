@@ -157,7 +157,7 @@ export async function announceCutInReview(input: {
     // the office broadcast below stands (lib/reviewerAssignment explains each).
     const { reviewAnnounceTargets } = await import("@/lib/reviewerAssignment");
     const assigned = await reviewAnnounceTargets({
-      reviewer: reviewer ?? null, street: input.street, editor, round: input.round, href, ownerActed: input.ownerActed,
+      reviewer: reviewer ?? null, street: input.street, editor, round: input.round, href, ownerActed: input.ownerActed, submissionId: input.submissionId,
     }).catch(() => null);
     // The person who SHOT it hears about it too (Jordan, Sep 18: "I want to be
     // able to share the review room with the photographer who shot the video …
