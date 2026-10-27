@@ -203,8 +203,14 @@ export async function loadStrip(viewer: Viewer): Promise<StripData> {
  * Board columns, in pipeline order. EDITED (gallery landed, QC not started)
  * sits with QC: with QC off it is "landed, waiting for a check". A client's
  * revision waits for a decision like QC findings do (plan 3.3 loop).
+ * WAITING FOR UPLOAD (Jordan, Oct 27 2026: "these aren't in editing yet, so
+ * they shouldn't say they're in editing, they should say waiting for upload,
+ * and then once they go into editing, then they go into editing"): a job in
+ * EDITING whose raws never reached the hub (uploadState.waitingForUploadOf)
+ * has its own first column; the stage itself is unchanged.
  */
 export const QUEUE_COLUMNS: { key: QueueColumnKey; label: string; hint: string; stages: JobStage[] }[] = [
+  { key: "upload", label: WAITING_FOR_UPLOAD, hint: "The raw photos have not reached the hub yet", stages: [] },
   { key: "editing", label: "Editing", hint: "Waiting for AutoHDR's edits", stages: ["EDITING", "EDIT_FAILED"] },
   { key: "qc", label: "Checking", hint: "Edits landed, being checked", stages: ["EDITED", "QC_RUNNING"] },
   { key: "decision", label: "Needs decision", hint: "Issues found, or a client revision", stages: ["QC_REVIEW", "REVISION_REQUESTED"] },
@@ -354,7 +360,7 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
     // A cancelled shoot is not work: the sync stops following it, so the board does too.
     if (p?.status === "CANCELLED") continue;
     const hero = (statsByJob.get(j.id)?.listed ? firstByJob.get(j.id) : undefined) ?? ownHero(j) ?? firstByJob.get(j.id) ?? null;
-    const column = COLUMN_OF.get(j.stage) ?? "editing";
+    const column = waitingUpload.has(j.projectId) ? "upload" : COLUMN_OF.get(j.stage) ?? "editing";
     const delivered = column === "delivered";
     const left = j.slaDueAt ? j.slaDueAt.getTime() - now.getTime() : null;
     const batch = latestBatch.get(j.id);
@@ -505,6 +511,13 @@ async function boardHolding(bases: HoldingBase[]): Promise<Map<string, { holding
     await Promise.all(need.slice(i, i + 4).map(async (b) => gates.set(b.jobId, await deliveryGate(b.jobId, { sync: false }).catch(() => null))));
   }
   const push = { mode: settings.aryeoPush, connected: !!conn?.secretEncrypted, sameDayAuto: false };
+  // Oct 27 2026: a reopened job's card says what the client asked (holding.ts revision line).
+  const revisions = new Map<string, { text: string; from: string }[]>();
+  const reopened = bases.filter((b) => b.stage === "REVISION_REQUESTED");
+  if (reopened.length) {
+    const { revisionRequestsOf } = await import("@/lib/photoDelivery/clientAsked");
+    await Promise.all(reopened.map(async (b) => revisions.set(b.jobId, await revisionRequestsOf({ id: b.jobId, projectId: b.projectId, stage: b.stage, deliveredAt: null }).catch(() => []))));
+  }
   for (const b of bases) {
     const extras = addOns.get(b.projectId) ?? [];
     if (GATE_STAGES.has(b.stage) && !gates.has(b.jobId)) {
@@ -517,6 +530,7 @@ async function boardHolding(bases: HoldingBase[]): Promise<Map<string, { holding
       rawBatches: b.stage === "EDITING" && rawCounts ? rawCounts.get(b.projectId) ?? 0 : b.rawBatches ?? null,
       waitingForVisit: waitingForVisitOf(b.stage, eventsOf.get(b.jobId) ?? []),
       listingUpdates: listingUpdatesOf(editedOf.get(b.jobId) ?? [], b.stage),
+      revisionRequests: revisions.get(b.jobId) ?? null,
       gate,
       gateError: gate || !GATE_STAGES.has(b.stage) ? null : "not read just now",
       push: { ...push, progress: progress(b.jobId) },
@@ -672,6 +686,12 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       .catch(() => null), // null: unreadable (never read as "not uploaded", photo audit M3)
   ]);
   const p4RawById = new Map(p4Raw.map((f) => [f.id, f.rawJson]));
+  // Oct 27 2026: a reopened job says what the client asked (holding.ts revision line); "Check again" can be undone.
+  const clientAskedM = await import("@/lib/photoDelivery/clientAsked");
+  const [revisionRequests, recheckUndo] = await Promise.all([
+    clientAskedM.revisionRequestsOf(job).catch(() => null),
+    readOnly ? null : import("@/lib/photoDelivery/recheckUndo").then((m) => m.recheckUndoOf(job.id)).catch(() => null),
+  ]);
   // Oct 23 2026 (huddle item 12): the uploads that went on to AutoHDR (a batch past WAITING), or a shoot linked by hand.
   const rawsIn = intake ? intake.filter((b) => b.state !== "WAITING").length + (job.autohdrPhotoshootId ? 1 : 0) : null;
   // Oct 15 2026: clutter set aside because the home or the room was not
@@ -979,7 +999,9 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       // Oct 23 2026 (huddle item 12): only uploads that went on to AutoHDR (or a shoot linked by hand) count; files still arriving do not.
       rawBatches: rawsIn,
       photosRead: job.finalsCount,
+      revisionRequests,
     },
+    recheckUndo,
     runs: runViews,
     events: eventViews,
     batches: batchViews,

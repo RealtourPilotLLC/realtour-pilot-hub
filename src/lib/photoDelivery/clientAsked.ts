@@ -452,13 +452,34 @@ export function photosDeliveredAt(job: { stage: string; deliveredAt: Date | null
  * "Client asked for changes after delivery", and the work goes on the
  * delivery owner's list, assigned. The ask itself is filed by the caller
  * (comms, clientAsks.addAskByHand). Never throws.
+ *
+ * ONLY A PHOTO FIX REOPENS (Jordan, Oct 27 2026: "if it's in regard to
+ * something other than photos, then it should not be reopened here. it should
+ * be made a task on Kyle's dashboard"). The words are read first
+ * (afterDeliveryAsk.judgeAfterDeliveryAsk: plain words, then the AI, unsure =
+ * Kyle's task); office work goes on Kyle's list and the photo job stays
+ * delivered. `trusted`: a person said it is about the photos (Add a request
+ * by hand). `judged`: the caller already read it (comms).
  */
-export async function photoAskAfterDelivery(input: { projectId: string; words: string; by: string; askedBy?: string | null; clientId?: string | null }): Promise<{ jobId: string | null; reopened: boolean; taskId: string | null }> {
-  const out = { jobId: null as string | null, reopened: false, taskId: null as string | null };
+export async function photoAskAfterDelivery(input: {
+  projectId: string; words: string; by: string; askedBy?: string | null; clientId?: string | null;
+  trusted?: boolean; judged?: import("./afterDeliveryAsk").AfterDeliveryJudgement | null; askKey?: string | null;
+}): Promise<{ jobId: string | null; reopened: boolean; taskId: string | null; routed?: "office" | "video" }> {
+  const out: { jobId: string | null; reopened: boolean; taskId: string | null; routed?: "office" | "video" } = { jobId: null, reopened: false, taskId: null };
   try {
     const job = await prisma.photoJob.findUnique({ where: { projectId: input.projectId }, select: { id: true, stage: true, deliveredAt: true, stageChangedAt: true } });
     if (!job || !photosDeliveredAt(job)) return out;
     out.jobId = job.id;
+    if (!input.trusted) {
+      const A = await import("./afterDeliveryAsk");
+      const judged = input.judged ?? (await A.judgeAfterDeliveryAsk(input.words));
+      if (judged.kind !== "photo") {
+        const r = await A.routeOfficeAsk({ projectId: input.projectId, jobId: job.id, words: input.words, kind: judged.kind, why: judged.why, askedBy: input.askedBy ?? null, clientId: input.clientId ?? null, askKey: input.askKey ?? null, by: "hub (request after delivery)" });
+        out.taskId = r.taskId;
+        out.routed = judged.kind;
+        return out;
+      }
+    }
     const words = clip(scrubMoney(input.words.replace(/\s+/g, " ").trim()), 240);
     if (job.stage === "DELIVERED" || job.stage === "DELIVERY_MISMATCH") {
       // Oct 22 2026 (photo audit C1): looked at again now, on the open job's
@@ -532,6 +553,31 @@ async function photoChangesTask(input: { projectId: string; jobId: string; words
 }
 
 // ---- the end of a revision (Oct 22 2026, photo audit C1 / H1) -------------------------------------
+
+const HOW: Record<string, string> = { text: "by text", email: "by email", call: "on a call", portal: "on the portal", staff: "added by staff", order_note: "order note", aryeo: "on Aryeo" };
+
+/**
+ * WHAT THE CLIENT ASKED (Oct 27 2026, Jordan on 913 Lakeview: "what is the
+ * request? Where is it? I don't see what the request is"): a reopened job's
+ * open photo requests asked since the photos went out, in the client's words,
+ * with who, how and when. When none is on file, the reopen's own words (the
+ * stage move). Money scrubbed. [] when the job is not reopened.
+ */
+export async function revisionRequestsOf(job: { id: string; projectId: string; stage: string; deliveredAt: Date | null }): Promise<{ text: string; from: string; askId?: string }[]> {
+  if (job.stage !== "REVISION_REQUESTED") return [];
+  const since = job.deliveredAt ?? (await revisionStartOf(job.id));
+  const rows = await prisma.clientAsk.findMany({
+    where: { projectId: job.projectId, kind: "SPECIAL_REQUEST", state: "OPEN", OR: [{ medium: { in: ["photo", "both", "unclear"] } }, { medium: null }], ...(since ? { askedAt: { gte: new Date(since.getTime() - 60_000) } } : {}) },
+    orderBy: { askedAt: "asc" },
+    take: 10,
+    select: { id: true, text: true, source: true, askedBy: true, askedAt: true },
+  });
+  const words = (s: string) => clip(scrubMoney(s.replace(/\s+/g, " ").trim()), 400);
+  if (rows.length) return rows.map((r) => ({ text: words(r.text), from: [r.askedBy ?? "The client", HOW[r.source] ?? r.source, etDateTime(r.askedAt)].filter(Boolean).join(", "), askId: r.id }));
+  const e = await prisma.photoJobEvent.findFirst({ where: { jobId: job.id, action: { contains: "→ REVISION_REQUESTED" } }, orderBy: { at: "desc" }, select: { action: true, actor: true, at: true } });
+  const said = e?.action.match(/Client asked for changes after delivery: (.+)$/)?.[1];
+  return said && e ? [{ text: words(said), from: `${e.actor}, ${etDateTime(e.at)}` }] : [];
+}
 
 /** When the client's latest revision of the photos began (the job's last move into REVISION_REQUESTED), or null. */
 export async function revisionStartOf(jobId: string): Promise<Date | null> {

@@ -2,11 +2,11 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { CheckCircle2, ChevronDown, CircleAlert, Clock, ExternalLink, MessageSquare, Quote, Send, UploadCloud } from "lucide-react";
+import { CheckCircle2, ChevronDown, CircleAlert, Clock, ExternalLink, MessageSquare, Quote, Send, Undo2, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SETTLED_REASON_MIN, holdingFor, type HoldingAction, type HoldingItem } from "@/lib/photoDelivery/holding";
 import {
-  askPhotographerNotesAction, clientAskedAnswerAction, clientAskedDoneAction, confirmAddOnAction, overrideWrapUpAction, releaseHoldAction, requestQcAction, settleRevisionAction, startDeliveryAction, verifyDeliveryAction,
+  askPhotographerNotesAction, clientAskedAnswerAction, clientAskedDoneAction, confirmAddOnAction, overrideWrapUpAction, releaseHoldAction, requestQcAction, settleRevisionAction, startDeliveryAction, undoRecheckAction, verifyDeliveryAction,
 } from "@/app/ops/photo-delivery/actions";
 import { updateOnAryeoAction } from "@/app/ops/photo-delivery/editActions";
 import { useJob } from "./JobContext";
@@ -144,10 +144,19 @@ export function HoldingPanel() {
       case "release":
         return <button type="button" disabled={pending} onClick={() => void run(() => releaseHoldAction(jobId))} className={cls}>{a.label}</button>;
       case "approve":
+        // Oct 27 2026 (Jordan: "approve and upload, or approve and deliver, one or the other"):
+        // beside it, the photos put on the Aryeo listing without the delivery (aryeoPush deliver:false).
         return (
-          <button type="button" disabled={pending} onClick={() => void approve(true, ignored)} className={cls}>
-            <Send aria-hidden className="size-4" /> {a.label}
-          </button>
+          <>
+            <button type="button" disabled={pending} onClick={() => void approve(true, ignored)} className={cls}>
+              <Send aria-hidden className="size-4" /> {a.label}
+            </button>
+            {a.upload && (
+              <button type="button" disabled={pending} onClick={() => void approve(false)} title="Put the photos on the Aryeo listing without delivering them" className={cn(btn, secondary)} data-approve-upload>
+                <UploadCloud aria-hidden className="size-4" /> Approve and upload
+              </button>
+            )}
+          </>
         );
       case "deliver":
         return (
@@ -242,6 +251,15 @@ export function HoldingPanel() {
         </h2>
         {held && <span className="text-[13px] text-muted">{view.items.length === 1 ? "1 thing to settle" : `${view.items.length} things, in order`}</span>}
       </div>
+      {/* Oct 27 2026 (Jordan: "Check again. Oh. Wish I could undo that"): the last press, taken back. */}
+      {!readOnly && data.recheckUndo && (
+        <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-surface-2/60 px-3 py-1.5 text-[13px] text-muted" data-recheck-undo>
+          <span className="min-w-0 flex-1">{data.recheckUndo.words} {data.recheckUndo.ran ? "Undo brings back the earlier check's results." : "It has not run yet."}</span>
+          <button type="button" disabled={pending} onClick={() => void run(() => undoRecheckAction(jobId))} className={cn(btn, secondary, "min-h-9")}>
+            <Undo2 aria-hidden className="size-4" /> Undo
+          </button>
+        </p>
+      )}
       {held ? (
         <ol className="mt-3 divide-y divide-border">
           {view.items.map((it, i) => row(it, i + 1))}

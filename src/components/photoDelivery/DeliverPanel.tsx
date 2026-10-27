@@ -146,7 +146,8 @@ export function DeliverPanel() {
   // What comes next, only when it can be pressed. Kyle approves a job that is
   // Ready to review (or one already marked as delivering whose upload stopped).
   const canGoOn = canStart || stage === "DELIVERING";
-  const approvable = hubOn && pushNext === "approve" && !preparing && !!steps?.listingUrl && (stage === "READY" || stage === "DELIVERING");
+  // Oct 27 2026: a client's revision too (Jordan on 913 Lakeview: "I wish we could just have like an upload, as well").
+  const approvable = hubOn && pushNext === "approve" && !preparing && !!steps?.listingUrl && (stage === "READY" || stage === "DELIVERING" || stage === "REVISION_REQUESTED");
   // VIEW ONLY (Oct 22 2026): no next step to press. Kyle approves and delivers.
   const next: "approve" | "deliver" | "mark" | null = readOnly ? null : hubOn ? (pushNext === "deliver" && canGoOn ? "deliver" : approvable ? "approve" : null) : canStart ? "mark" : null;
   // Approve and deliver needs the checklist (the usual gate); Approve and upload only puts the photos up.

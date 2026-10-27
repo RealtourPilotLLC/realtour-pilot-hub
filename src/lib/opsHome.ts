@@ -296,6 +296,7 @@ async function videoRows(now: Date): Promise<VideoLines> {
 // ---- deliveries -----------------------------------------------------------------------
 
 const PHOTO_NEED: Record<QueueColumnKey, { need: string; label: string }> = {
+  upload: { need: "Waiting for upload", label: "Open" },
   editing: { need: "Waiting on edits", label: "Open" },
   qc: { need: "Being checked", label: "Open" },
   decision: { need: "Needs your decision", label: "Decide" },

@@ -27,7 +27,11 @@ import { RULES_REGISTRY_VERSION } from "./registry";
 //        · warped walls the check saw but nothing could measure → MINOR too
 //          (leaning lines keep their weight: AutoHDR's free Crop & Tilt);
 //        · only the measurement says so → an advisory finding below the
-//          confidence floor (the Low confidence drawer: never blocks).
+//          confidence floor (the Low confidence drawer: never blocks);
+//        · Oct 27 2026: only the measurement says so but the verticals lean
+//          STRONG_LEAN_DEG or more → a full (MAJOR) finding. Jordan on 913
+//          Lakeview, leaning that much from a camera tilted up: "these
+//          shouldn't even have been delivered".
 //   2. THE ORIGINAL (warpCompareOriginal): for a cut-off roof or warped walls,
 //      AutoHDR's free describe is asked about the photo's ORIGINAL (its first
 //      version, before AutoHDR's straightening), not the edit:
@@ -47,6 +51,9 @@ const ROOF_RULE = "PERSP_AUTOHDR_ROOF_PEAKS_CROPPED";
 const ORIGINAL_RULES = [ROOF_RULE, WARP_RULE];
 /** Below the default display floor (0.5): shown in the Low confidence drawer, never blocking. */
 export const ADVISORY_CONFIDENCE = 0.45;
+/** Oct 27 2026: a measured lean this strong (degrees, median over at least 8 long lines) counts in full on its own. */
+export const STRONG_LEAN_DEG = 3;
+const STRONG_LEAN_CONFIDENCE = 0.8;
 const AGREE_CONFIDENCE = 0.85;
 const DISAGREE_CONFIDENCE = 0.55;
 const CONCURRENCY = 2;
@@ -268,19 +275,22 @@ async function reconcile(jobId: string, runId: string, photos: GPhoto[], geo: Re
     const m = geo[p.id]?.m;
     if (!m) continue;
     const mine = findings.filter((f) => f.photoId === p.id);
-    const add = async (ruleId: string, issue: string) => {
+    const add = async (ruleId: string, issue: string, strong = false) => {
       if (mine.some((f) => (ruleId === WARP_RULE ? f.ruleId === WARP_RULE : LEAN_RULES.includes(f.ruleId)) && (f.source !== "CV" || f.contentHash === p.contentHash))) return;
       await prisma.photoQcFinding.create({
         data: {
           qcRunId: runId, jobId, photoId: p.id, ruleId, groupKey: ruleId === WARP_RULE ? "ARCHITECTURE_WARP" : "VERTICALS", pass: "P1_PHOTO", source: "CV", arbitration: "CONFIRMED",
-          specificIssue: issue, explanation: `Only the measured line check saw this (${m.words}); the free photo check did not. Advisory: look at the photo before doing anything.`,
-          severity: "MINOR", confidence: advisory, responsibility: "HUMAN_REVIEW", fixStrategy: "HUMAN_REVIEW", contentHash: p.contentHash, model: "line-geometry", rulesVersion: RULES_REGISTRY_VERSION,
-          coercedJson: JSON.stringify({ measured: "only" }),
+          specificIssue: issue,
+          explanation: strong
+            ? `The measured line check saw a strong lean (${m.words}); the free photo check did not name it. Straighten it in AutoHDR (Crop & Tilt, free) or pick another photo before it goes out.`
+            : `Only the measured line check saw this (${m.words}); the free photo check did not. Advisory: look at the photo before doing anything.`,
+          severity: strong ? "MAJOR" : "MINOR", confidence: strong ? Math.max(STRONG_LEAN_CONFIDENCE, floor) : advisory, responsibility: "HUMAN_REVIEW", fixStrategy: "HUMAN_REVIEW", contentHash: p.contentHash, model: "line-geometry", rulesVersion: RULES_REGISTRY_VERSION,
+          coercedJson: JSON.stringify({ measured: strong ? "only-strong" : "only" }),
         },
       });
     };
     if (m.warped) await add(WARP_RULE, `Measured: ${m.bent} line${m.bent === 1 ? "" : "s"} look bent`);
-    if (m.crooked) await add("PERSP_CROOKED_VERTICALS", `Measured: verticals lean ${m.tilt?.toFixed(1) ?? "?"}°`);
+    if (m.crooked) await add("PERSP_CROOKED_VERTICALS", `Measured: verticals lean ${m.tilt?.toFixed(1) ?? "?"}°`, (m.tilt ?? 0) >= STRONG_LEAN_DEG);
   }
 }
 

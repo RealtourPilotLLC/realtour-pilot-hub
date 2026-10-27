@@ -70,7 +70,7 @@ export type StripData = {
 
 // ---- queue (plan 9.3) ------------------------------------------------------------------
 
-export type QueueColumnKey = "editing" | "qc" | "decision" | "fixing" | "hold" | "ready" | "delivering" | "delivered";
+export type QueueColumnKey = "upload" | "editing" | "qc" | "decision" | "fixing" | "hold" | "ready" | "delivering" | "delivered";
 
 export type FixStatusView = { status: string; label: string; tone: "ok" | "warn" | "danger" | "muted" };
 
@@ -458,6 +458,8 @@ export type JobDetail = {
   aryeoPush: AryeoPushView;
   /** Oct 22 2026: the job's own facts for "What's holding this" (holding.ts holdingFor, with the gate and the live push). */
   holdingBase: HoldingBase;
+  /** Oct 27 2026: the last "Check again" Undo can take back (lib/photoDelivery/recheckUndo), or null. */
+  recheckUndo: { at: string; by: string; ran: boolean; words: string } | null;
   runs: RunView[];
   events: EventView[];
   batches: FixBatchView[];

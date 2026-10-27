@@ -657,6 +657,16 @@ export async function recordClientCommunication(opts: {
         if (!photosDeliveredAt(job)) continue;
         const { createAsk, messageAskKey } = await import("@/lib/clientAsks");
         const who = opts.contactName?.trim() || opts.clientName?.trim() || null;
+        const askKey = messageAskKey(opts.clientId, w.projectId, "SPECIAL_REQUEST", opts.text);
+        // Oct 27 2026 (913 Lakeview, "Upload all ... deliverables to Showcase"):
+        // read first; only a photo fix is filed on the photos and reopens them,
+        // anything else goes on Kyle's list (photoDelivery/afterDeliveryAsk).
+        const { judgeAfterDeliveryAsk } = await import("@/lib/photoDelivery/afterDeliveryAsk");
+        const judged = await judgeAfterDeliveryAsk(w.words);
+        if (judged.kind !== "photo") {
+          await photoAskAfterDelivery({ projectId: w.projectId, words: w.words, by: who ?? "client", askedBy: who, clientId: opts.clientId, judged, askKey });
+          continue;
+        }
         await createAsk({
           clientId: opts.clientId,
           projectId: w.projectId,
@@ -669,10 +679,10 @@ export async function recordClientCommunication(opts: {
           askedBy: who,
           holdsDelivery: true,
           // The key fileAsksFromMessage would use: one row per message and job, whichever files first.
-          dedupeKey: messageAskKey(opts.clientId, w.projectId, "SPECIAL_REQUEST", opts.text),
+          dedupeKey: askKey,
           by: "hub (client text after the photos went out)",
         });
-        await photoAskAfterDelivery({ projectId: w.projectId, words: w.words, by: who ?? "client", askedBy: who, clientId: opts.clientId });
+        await photoAskAfterDelivery({ projectId: w.projectId, words: w.words, by: who ?? "client", askedBy: who, clientId: opts.clientId, judged, askKey });
       }
     } catch (e) {
       console.error("[photo-delivery] filing a client's photo ask after delivery failed", opts.clientId, e);

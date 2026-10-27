@@ -913,7 +913,7 @@ function ActionControl({ a, item, desk, draft }: { a: DeskAction; item: DeskItem
     case "task":
       return (
         <div className="space-y-3">
-          <TaskResolve taskId={a.taskId} nextDay={desk.nextDay.dayKey} allowNewDate={a.allowNewDate} />
+          <TaskResolve taskId={a.taskId} nextDay={desk.nextDay.dayKey} allowNewDate={a.allowNewDate} doneLabel={a.doneLabel} />
           {a.canWait && <WaitOn taskId={a.taskId} creative={desk.people.creative} owner={desk.people.owner} />}
         </div>
       );

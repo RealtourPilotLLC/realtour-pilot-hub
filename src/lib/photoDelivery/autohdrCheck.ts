@@ -69,8 +69,8 @@ const CHECK_RULES = [
 ] as const;
 
 const ALLOWED = new Set<string>(CHECK_RULES);
-/** 2: light + furnished (Oct 14 2026). 3: prep + features, "look for" words, the removable-things rule, warped architecture (Oct 15 2026). 4: floating objects left by the edit (Oct 22 2026). 5: the never and always lists, the shot's view (wide, partial, close-up) for the hero, and what the check learned from the office's calls (Oct 23 2026). */
-export const CHECK_PROMPT_VERSION = 5;
+/** 2: light + furnished (Oct 14 2026). 3: prep + features, "look for" words, the removable-things rule, warped architecture (Oct 15 2026). 4: floating objects left by the edit (Oct 22 2026). 5: the never and always lists, the shot's view (wide, partial, close-up) for the hero, and what the check learned from the office's calls (Oct 23 2026). 6: the house being shot named (its address, the one in the middle), each issue says whose property it is on, and a house shot looking up counts as leaning (Oct 27 2026). */
+export const CHECK_PROMPT_VERSION = 6;
 const PER_PHOTO_TRIES = 3;
 const CONCURRENCY = 4;
 
@@ -128,9 +128,12 @@ export const LOOK_FOR: Partial<Record<(typeof CHECK_RULES)[number], string>> = {
   EXT_LADDERS_TEMP_EQUIPMENT: "a ladder or temporary equipment outside",
   EXT_LOOSE_GARBAGE_DEBRIS: "loose trash, bags or debris on the lawn, driveway or porch",
   EXT_OPEN_GARAGE_DOORS: "a garage door left open",
-  PERSP_CROOKED_VERTICALS: "wall corners or edges leaning instead of straight up and down",
+  // Oct 27 2026 (Jordan on 913 Lakeview: "these photos are terrible, cause
+  // they're leaning so much ... the angle, looking up"): a camera tilted up
+  // makes the walls lean toward each other; that is a lean too.
+  PERSP_CROOKED_VERTICALS: "wall corners or edges leaning instead of straight up and down, or leaning toward each other because the camera was tilted up or down",
   PERSP_LEANING_DOOR_FRAMES: "door frames leaning",
-  PERSP_EXTERIOR_WALLS_LEANING: "the house's corners or walls leaning",
+  PERSP_EXTERIOR_WALLS_LEANING: "the house's corners or walls leaning, or leaning in toward each other because the photo was taken looking up (the house looks like it tips backward)",
   PERSP_CROOKED_HORIZON: "a tilted horizon outside",
   PERSP_AUTOHDR_ROOF_PEAKS_CROPPED: "outside: the top of the roof (peak, ridge or chimney) cut off by the top edge of the photo",
   PERSP_EDIT_WARP: "walls, door frames, windows or cabinets that look bent, curved or wedge-shaped (architecture only, never furniture)",
@@ -179,8 +182,30 @@ export const ISSUE_FAMILY: Readonly<Record<string, string>> = {
 /** The real issue a rule names (its family, or itself). Pure. */
 export const issueFamily = (ruleId: string): string => ISSUE_FAMILY[ruleId] ?? ruleId;
 
-/** The `where` names a neighboring property (the check is told to say so). */
-export const NEIGHBOR_RE = /\bneighbou?r|\bnext[\s-]door\b|\bacross the street\b|\badjacent (?:house|home|property|yard|lot|driveway)\b|\b(?:another|other|different) (?:house|home|property|driveway|yard)\b|\bneighboring\b/i;
+/** The `where` names a neighboring property (the check is told to say so). Oct 27 2026: "the house on the left", "the left house" too (never "the left side of the house"). */
+export const NEIGHBOR_RE = /\bneighbou?r|\bnext[\s-]door\b|\bacross the street\b|\badjacent (?:house|home|property|yard|lot|driveway)\b|\b(?:another|other|different) (?:house|home|property|driveway|yard)\b|\bneighboring\b|\b(?:house|home)s? (?:on|to) the (?:far )?(?:left|right)\b|\b(?:left|right)(?:-hand)? (?:house|home)\b/i;
+
+/** The street number a listing's title starts with ("913 Lakeview Dr, ..." is 913), or null. Pure. */
+export function houseNumberOf(title: string | null | undefined): string | null {
+  return (title ?? "").trim().match(/^(\d{1,6})(?:[A-Za-z]\b|\b)/)?.[1] ?? null;
+}
+
+/**
+ * ANOTHER HOUSE'S NUMBER (Oct 27 2026, Jordan on 913 Lakeview: "crooked
+ * doormat, where? So, bottom left porch of 914 ... that's not the house we were
+ * shooting, we were shooting this one, in the middle"). The `where` names a
+ * house number that is not this listing's own ("porch of 914", "914's
+ * driveway"): it is on a neighbor's property. Pure.
+ */
+export function namesOtherHouse(where: string, own: string | null | undefined): boolean {
+  if (!own || !where) return false;
+  const re = /\b(?:of|at|house|home|number|no\.?|#)\s*#?\s*(\d{2,6})\b(?!\s*(?:%|°|degrees?|o'?clock|ft|feet|inch(?:es)?|px))|\b(\d{2,6})(?:'s)?\s+(?:porch|house|home|driveway|yard|lawn|garage|front door|door|steps|walkway|mailbox|lot)\b/gi;
+  for (const m of where.matchAll(re)) {
+    const n = m[1] ?? m[2];
+    if (n && n !== own) return true;
+  }
+  return false;
+}
 /** A cord that belongs to the house: from a TV, lamp or appliance to the wall, or barely there. */
 export const HOUSE_CORD_RE = /\b(?:tv|television|lamps?|plugged|outlets?|sockets?|walls?|appliances?|fridge|refrigerator|microwave|router|modem|barely|faint|thin|behind|under|utility|power lines?|cable lines?|ceiling|mounted)\b/i;
 /**
@@ -208,12 +233,14 @@ const PREPS = ["staged", "tidy", "lived_in", "cluttered", "empty"];
  * learned from the office's calls (houseRules.lessonPromptLines), said after
  * the house rules (Oct 23 2026).
  */
-export function checkPrompt(off: Set<string> = new Set(), learned: string[] = []): string {
+export function checkPrompt(off: Set<string> = new Set(), learned: string[] = [], subject: { address?: string | null } = {}): string {
   const lines = CHECK_RULES.filter((id) => !off.has(id)).map((id) => `${id}: ${LOOK_FOR[id] ?? ruleById(id)?.shortLabel ?? id.toLowerCase().replace(/_/g, " ")}`);
   const asked = learned.filter((l) => !off.has(l.split(":")[0]));
+  const street = (subject.address ?? "").split(",")[0].trim();
+  const own = houseNumberOf(street);
   return [
     "You are checking a real estate listing photo before it goes to the client.",
-    'Answer ONLY with JSON: {"room":"<room type>","view":"wide|partial|close_up","light":"day|twilight|night","furnished":"empty|sparse|furnished","prep":"staged|tidy|lived_in|cluttered|empty","features":["<from the feature list>"],"issues":[{"id":"<one id from the list>","where":"<short location in the frame>","confidence":<0 to 1>}]}.',
+    'Answer ONLY with JSON: {"room":"<room type>","view":"wide|partial|close_up","light":"day|twilight|night","furnished":"empty|sparse|furnished","prep":"staged|tidy|lived_in|cluttered|empty","features":["<from the feature list>"],"issues":[{"id":"<one id from the list>","where":"<short location in the frame>","property":"this_home|neighbor","confidence":<0 to 1>}]}.',
     'room: the space shown, for example "front exterior", "rear exterior", "kitchen", "living room", "primary bedroom", "bedroom", "primary bathroom", "bathroom", "powder room", "garage", "unfinished basement", "unfinished room". Say primary only for the main suite; say unfinished for bare concrete, exposed framing or a space under construction.',
     "view: wide = the whole house, or the whole room, from a distance; partial = part of the house or room; close_up = a detail such as a front door, a fixture, a sign or a view through a window.",
     "light: twilight = shot at dusk with a sunset or dusk sky and lights on. furnished: for an interior, how much furniture is in the room.",
@@ -221,11 +248,17 @@ export function checkPrompt(off: Set<string> = new Set(), learned: string[] = []
     `features: only these, when this photo shows them: ${CHECK_FEATURES.join(", ")}. shower or tub = it is a main subject of the photo; shower_in_background or tub_in_background = it only shows in the background, partly, or through a doorway.`,
     // Oct 23 2026 (huddle): what is never raised, and what always is.
     "This property only: report things on the home being photographed, its own driveway, yard, porch and curb. Never anything on a neighbor's property: a neighbor's car, a car in another home's driveway, things in a neighbor's yard or on a neighboring house. If something you report is on a neighboring property, say neighbor in where.",
+    // Oct 27 2026 (Jordan on 913 Lakeview: "it's a neighbor's car ... that's not
+    // the property we're shooting ... we were shooting this one, in the middle").
+    `${street ? `The home being photographed is ${street}: the house at that address, usually the one in the middle of the frame.` : "The home being photographed is the house the photo is centered on."} A house beside it or across the street is a neighbor, and so is everything on it or in front of it (its cars, porch, door mat, decor and yard).${own ? ` A house number you can read that is not ${own} is a neighbor's house.` : ""}`,
+    "property: this_home when the problem is on the home being photographed or its own driveway, yard, porch or curb; neighbor when it is on another house or its lot. Lines, light and editing mistakes are always this_home.",
     "Never report cords or cables that belong to the house (a TV, lamp or appliance plugged into the wall, a cord barely visible, utility or cable lines), or signs.",
     "Unfinished spaces (a garage, an unfinished basement or room, a storage, utility or mechanical room): never report clutter, cleaning supplies, tools or stored things there. Trash cans still count.",
     "Clutter and distractions: report only things a photographer could have moved out of the frame, never furniture, decor, appliances or anything built in. In an EMPTY room, any loose item left behind counts. In a home that is lived in or cluttered throughout, rate prep honestly.",
     "Always report, wherever they are on this property: trash or recycling bins; a car in this home's own driveway or in front of it; anything the photographer could have moved before the shot (a crooked door mat, a broom or mop leaning against a door); random clutter in an otherwise clean, finished room.",
     "Lines: report leaning or bent architecture only (walls, door frames, windows, cabinets, the house), never furniture.",
+    // Oct 27 2026 (913 Lakeview went out leaning: "these shouldn't even have been delivered").
+    "A photo taken looking up, so the house's walls lean in toward each other and the house seems to tip backward, is PERSP_EXTERIOR_WALLS_LEANING (inside a room: PERSP_CROOKED_VERTICALS). Report it whenever the lean is easy to see, with confidence 0.8 or more when it is strong.",
     // A check switched off house-wide is never asked about, its explanation included.
     ...(off.has("AIEDIT_FLOATING_OBJECT") ? [] : ["Editing mistakes: look at what every lamp, piece of furniture and decor item rests on. One that floats with nothing under it (a lamp shade with no lamp stand or base), ends in mid-air, or shows twice or as a ghost is AIEDIT_FLOATING_OBJECT, furniture and decor included. Never a pendant, chandelier, sconce, wall shelf or mounted TV."]),
     ...(asked.length ? ["Learned from the office's calls on earlier shoots:", ...asked] : []),
@@ -239,7 +272,8 @@ export function checkPrompt(off: Set<string> = new Set(), learned: string[] = []
 export const VIEWS = ["wide", "partial", "close_up"] as const;
 export type ShotView = (typeof VIEWS)[number];
 
-export type CheckIssue = { ruleId: string; where: string; confidence: number };
+/** property (Oct 27 2026): whose property the check says the issue is on; absent when it did not say. */
+export type CheckIssue = { ruleId: string; where: string; confidence: number; property?: "this_home" | "neighbor" };
 
 /**
  * The free check's room words ("front exterior", "primary bathroom") as the
@@ -314,8 +348,10 @@ type ScreenLesson = { ruleId: string; scope: string; active: boolean };
 /**
  * THE CODE-SIDE SCREEN (Oct 23 2026, huddle item 3): what the model was told
  * never to raise, dropped where its own answer shows it. Pure.
- *   · on a neighbor's property (`where` names it): every check but the photo's
- *     own (reflections, edit mistakes, lines, exposure);
+ *   · on a neighbor's property (`where` names it, the check answered property
+ *     neighbor, or Oct 27 2026 the `where` names a house number other than
+ *     this listing's, `houseNumber`): every check but the photo's own
+ *     (reflections, edit mistakes, lines, exposure);
  *   · a cord that belongs to the house (from a TV, lamp or appliance, barely there);
  *   · clutter in an unfinished space (the room the check named: a garage, an
  *     unfinished basement or room, storage), never an ALWAYS_FLAG check (trash
@@ -326,7 +362,7 @@ type ScreenLesson = { ruleId: string; scope: string; active: boolean };
  *     basement" one in an unfinished space.
  * Then one finding per family (dedupeIssues).
  */
-export function screenIssues(a: Pick<CheckAnswer, "room" | "issues">, opts: { lessons?: ScreenLesson[]; alwaysFlag?: Set<string>; clutter?: (ruleId: string) => boolean } = {}): { kept: CheckIssue[]; dropped: { ruleId: string; why: string }[] } {
+export function screenIssues(a: Pick<CheckAnswer, "room" | "issues">, opts: { lessons?: ScreenLesson[]; alwaysFlag?: Set<string>; clutter?: (ruleId: string) => boolean; houseNumber?: string | null } = {}): { kept: CheckIssue[]; dropped: { ruleId: string; why: string }[] } {
   const always = opts.alwaysFlag ?? new Set<string>();
   const isClutter = opts.clutter ?? ((id: string) => fixClass(id) === "prep");
   const unfinished = UNFINISHED_RE.test(a.room ?? "");
@@ -336,7 +372,7 @@ export function screenIssues(a: Pick<CheckAnswer, "room" | "issues">, opts: { le
   const dropped: { ruleId: string; why: string }[] = [];
   for (const iss of a.issues) {
     const why =
-      !NOT_A_PLACE.test(iss.ruleId) && NEIGHBOR_RE.test(iss.where) ? "on a neighbor's property"
+      !NOT_A_PLACE.test(iss.ruleId) && (NEIGHBOR_RE.test(iss.where) || iss.property === "neighbor" || namesOtherHouse(iss.where, opts.houseNumber)) ? "on a neighbor's property"
       : iss.ruleId === "PREP_LOOSE_CORDS_CABLES" && HOUSE_CORD_RE.test(iss.where) ? "a cord that belongs to the house"
       : unfinished && !always.has(iss.ruleId) && (isClutter(iss.ruleId) || has(iss.ruleId, "unfinished")) ? "in an unfinished space"
       : has(iss.ruleId, "faint") && iss.confidence < 0.75 ? "learned: barely visible"
@@ -363,7 +399,7 @@ export function parseCheckAnswer(text: string, off: Set<string> = new Set()): Ch
   const issues: CheckIssue[] = [];
   const seen = new Set<string>();
   for (const raw of Array.isArray(j.issues) ? j.issues : []) {
-    const r = raw as { id?: unknown; where?: unknown; confidence?: unknown };
+    const r = raw as { id?: unknown; where?: unknown; confidence?: unknown; property?: unknown };
     const id = typeof r.id === "string" ? r.id.trim().toUpperCase() : "";
     if (!ALLOWED.has(id) || off.has(id)) continue;
     const where = typeof r.where === "string" ? r.where.trim().slice(0, 200) : "";
@@ -371,7 +407,8 @@ export function parseCheckAnswer(text: string, off: Set<string> = new Set()): Ch
     if (seen.has(key)) continue;
     seen.add(key);
     const c = typeof r.confidence === "number" && Number.isFinite(r.confidence) ? Math.min(1, Math.max(0, r.confidence)) : 0.6;
-    issues.push({ ruleId: id, where, confidence: c });
+    const prop = typeof r.property === "string" ? r.property.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
+    issues.push({ ruleId: id, where, confidence: c, ...(prop === "neighbor" || prop === "neighbour" ? { property: "neighbor" as const } : prop === "this_home" ? { property: "this_home" as const } : {}) });
   }
   const norm = (v: unknown) => (typeof v === "string" ? v.trim().toLowerCase().replace(/[\s-]+/g, "_") : "");
   const pick = (v: unknown, allowed: string[]) => (allowed.includes(norm(v)) ? norm(v) : null);
@@ -486,20 +523,29 @@ export async function requestFreeRecheck(jobId: string, by: string): Promise<{ o
   // Photos the paid QC never inspected itself are looked at again (the free check's own marks).
   const freeOnly = (await prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE", inspectedHash: { not: null } }, select: { id: true, inspectedHash: true, classifiedHash: true } })).filter((p) => p.classifiedHash !== p.inspectedHash);
   if (freeOnly.length) await prisma.photoAsset.updateMany({ where: { id: { in: freeOnly.map((p) => p.id) } }, data: { inspectedHash: null } });
+  // Oct 27 2026: what was cleared is kept on the request, so Undo can put it back (recheckUndo.ts).
+  const cleared = freeOnly.map((p) => ({ id: p.id, hash: p.inspectedHash }));
   // Photos not matched to AutoHDR yet (a listing replaced in a revision): matched again first (a free read).
   if (job.autohdrPhotoshootId && (await prisma.photoAsset.count({ where: { jobId, status: "ACTIVE", autohdrImageUuid: null } }))) {
     const { linkAutohdrShoot } = await import("./autohdrLink");
     await linkAutohdrShoot(jobId).catch((e) => console.warn("photo delivery: relink before the re-check failed", jobId, (e as Error).message));
   }
-  await logJobEvent(jobId, by.slice(0, 120) || "staff", FREE_RECHECK_ACTION);
-  return { ok: true, message: "The free photo check runs again on the next pass (within about 5 minutes). Nothing is charged." };
+  await logJobEvent(jobId, by.slice(0, 120) || "staff", FREE_RECHECK_ACTION, { cleared });
+  return { ok: true, message: "The free photo check runs again on the next pass (within about 5 minutes). Nothing is charged. You can undo it." };
 }
+
+/** The job event Undo writes (recheckUndo.undoFreeRecheck); a request older than it is not run. */
+export const FREE_RECHECK_UNDONE = "free photo check request undone";
 
 async function jobsToCheck(take: number, afterDelivery: boolean): Promise<string[]> {
   const linked = { some: { status: "ACTIVE", autohdrImageUuid: { not: null } } };
   const weekAgo = new Date(Date.now() - 7 * 86_400_000);
   // A person's "Check again" (requestFreeRecheck), newer than the job's last free check.
-  const asked = await prisma.photoJobEvent.findMany({ where: { action: FREE_RECHECK_ACTION, at: { gte: weekAgo } }, orderBy: { at: "asc" }, select: { jobId: true, at: true }, take: 50 });
+  const asked0 = await prisma.photoJobEvent.findMany({ where: { action: { in: [FREE_RECHECK_ACTION, FREE_RECHECK_UNDONE] }, at: { gte: weekAgo } }, orderBy: { at: "asc" }, select: { jobId: true, at: true, action: true }, take: 100 });
+  // Oct 27 2026: a request undone since (recheckUndo.ts) is not run.
+  const undoneAt = new Map<string, Date>();
+  for (const a of asked0) if (a.action === FREE_RECHECK_UNDONE) undoneAt.set(a.jobId, a.at);
+  const asked = asked0.filter((a) => a.action === FREE_RECHECK_ACTION && !(undoneAt.get(a.jobId) && undoneAt.get(a.jobId)! >= a.at));
   const askedJobs = asked.length
     ? await prisma.photoJob.findMany({
         where: { id: { in: [...new Set(asked.map((a) => a.jobId))] }, stage: { in: [...RECHECK_STAGES] } },
@@ -568,6 +614,8 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
   try {
     const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, stage: true, projectId: true, autohdrPhotoshootId: true, finalsChangedAt: true } });
     if (!job) return { jobId, checked: 0, findings: 0, finished: false };
+    // Oct 27 2026: the house being shot, by its address (the question and the house-number screen).
+    const address = (await prisma.project.findUnique({ where: { id: job.projectId }, select: { title: true } }))?.title ?? null;
     const settings = await photoDeliverySettings();
     const photos: Photo[] = await prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE" }, orderBy: { sequence: "asc" }, select: { id: true, name: true, sourceKind: true, sourceRef: true, autohdrImageUuid: true, contentHash: true, inspectedHash: true } });
     let run = await prisma.photoQcRun.findFirst({ where: { jobId, trigger: "AUTOHDR_CHECK", status: "RUNNING" }, orderBy: { startedAt: "desc" } });
@@ -579,7 +627,8 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
       const unchanged = photos.filter(inspected).map((p) => p.id);
       const carry = <T,>(m: Record<string, T> | undefined) => Object.fromEntries(unchanged.filter((id) => m?.[id] !== undefined).map((id) => [id, m![id]]));
       // A person's "Check again" since the last check (requestFreeRecheck): said so on the run, never read as a changed listing.
-      const asked = (await prisma.photoJobEvent.count({ where: { jobId, action: FREE_RECHECK_ACTION, ...(lastRow ? { at: { gt: lastRow.startedAt } } : {}) } })) > 0;
+      const lastAsk = await prisma.photoJobEvent.findFirst({ where: { jobId, action: { in: [FREE_RECHECK_ACTION, FREE_RECHECK_UNDONE] }, ...(lastRow ? { at: { gt: lastRow.startedAt } } : {}) }, orderBy: { at: "desc" }, select: { action: true } });
+      const asked = lastAsk?.action === FREE_RECHECK_ACTION;
       const start: Progress = { v: CHECK_PROMPT_VERSION, done: {}, errors: {}, skipped: [], kept: unchanged, rooms: carry(last.rooms), light: carry(last.light), furnished: carry(last.furnished), prep: carry(last.prep), features: carry(last.features), view: carry(last.view), geometry: carry(last.geometry), geometryDone: false, ...(asked ? { asked: true } : {}) };
       run = await prisma.photoQcRun.create({
         data: { jobId, trigger: "AUTOHDR_CHECK", status: "RUNNING", shadow: settings.qcShadow, rulesVersion: RULES_REGISTRY_VERSION, promptVersionsJson: JSON.stringify({ autohdrCheck: CHECK_PROMPT_VERSION }), modelsJson: JSON.stringify({ describe: "AutoHDR describe (free)" }), checksJson: JSON.stringify(start) },
@@ -592,7 +641,7 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
     // The house list (switched off, and what the office's calls taught: houseRules.learnedChecks).
     const [house, lessons] = await Promise.all([houseOverrides(), learnedChecks().catch(() => [])]);
     const off = disabledIn(house);
-    const prompt = checkPrompt(off, lessonPromptLines(lessons));
+    const prompt = checkPrompt(off, lessonPromptLines(lessons), { address });
     // Oct 23 2026 (huddle item 4): an issue a person (or the second look, or the
     // home's own prep) already decided on a photo is not raised again by a later
     // check of it; one being fixed is not either. A fixed one that is still
@@ -624,7 +673,7 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
         const parsed = a.text ? parseCheckAnswer(a.text, off) : null;
         if (!parsed) { progress.errors[a.p.id] = (progress.errors[a.p.id] ?? 0) + 1; continue; }
         // Oct 23 2026: the never-list screened in code, one per family, and no repeat of a decided issue.
-        const screen = screenIssues(parsed, { lessons, alwaysFlag: ALWAYS_FLAG });
+        const screen = screenIssues(parsed, { lessons, alwaysFlag: ALWAYS_FLAG, houseNumber: houseNumberOf(address) });
         const issues = screen.kept.filter((i) => !decided.has(`${a.p.id}:${issueFamily(i.ruleId)}`));
         const repeats = screen.kept.filter((i) => !issues.includes(i)).map((i) => ({ ruleId: i.ruleId, why: "already decided on this photo" }));
         if (screen.dropped.length || repeats.length) (progress.screened ??= {})[a.p.id] = [...screen.dropped, ...repeats];

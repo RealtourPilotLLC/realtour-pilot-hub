@@ -641,6 +641,25 @@ export async function requestQcAction(jobId: string): Promise<ActionResult> {
   }
 }
 
+/** Oct 27 2026 (Jordan: "Check again. Oh. Wish I could undo that"): the last Check again taken back (recheckUndo.ts). */
+export async function undoRecheckAction(jobId: string): Promise<ActionResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  if (!ID.test(String(jobId))) return { ok: false, message: "That job id is not valid." };
+  try {
+    const { by } = await actor();
+    const { undoFreeRecheck } = await import("@/lib/photoDelivery/recheckUndo");
+    const r = await undoFreeRecheck(jobId, by);
+    if (r.ok) refresh(jobId);
+    return r;
+  } catch (e) {
+    return failed("undo", e);
+  }
+}
+
 // ---- fixes (plan 8.3, 8.4) ---------------------------------------------------------------------
 
 export async function approveFixesAction(input: { jobId: string; findingIds: string[]; mode: "ALL" | "SELECTED" | "CRITICAL_MAJOR_ONLY" }): Promise<ActionResult> {

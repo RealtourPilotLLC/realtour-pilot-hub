@@ -558,7 +558,8 @@ export async function addAskByHand(input: { projectId: string; text: string; med
   const m = asMedium(input.medium);
   if (r.created && (m === "photo" || m === "both")) {
     const { photoAskAfterDelivery } = await import("@/lib/photoDelivery/clientAsked");
-    const after = await photoAskAfterDelivery({ projectId: input.projectId, words: text, by: input.by, clientId: p.clientId });
+    // Oct 27 2026: a person picked the photos here, so it is not read again (trusted).
+    const after = await photoAskAfterDelivery({ projectId: input.projectId, words: text, by: input.by, clientId: p.clientId, trusted: true });
     if (after.reopened) return { ok: true, message: `Added to ${streetOf(p.title) ?? "the job"}. The photos were already delivered, so the photo job is reopened for it.` };
   }
   return { ok: true, message: `Added to ${streetOf(p.title) ?? "the job"}.` };
