@@ -147,6 +147,16 @@ export async function GET(req: NextRequest) {
     return sweepAutoCaptions({ max: 3, budgetMs: Math.min(budget(), 150_000), minStartMs: CAPTION_DRAFT_MIN_START_MS });
   });
 
+  // RECURRING COMPLAINT THEMES (Jordan's Loom, Oct 27 2026: "Recurring client
+  // complaint: 3 clients in 7 days about bathroom angles"). One fast-model
+  // call a run at most, tagging the week's client messages and Slack not read
+  // yet (lib/complaintThemes). Behind `ai_runs`; skipped while the AI account
+  // refuses or without the time to finish; a failure changes nothing.
+  await step("complaintThemes", async () => {
+    const { runComplaintThemes, THEMES_MIN_START_MS } = await import("@/lib/complaintThemes");
+    return runComplaintThemes({ budgetMs: Math.min(budget(), 70_000), minStartMs: THEMES_MIN_START_MS });
+  });
+
   const order = aiWorkOrder(startedAt);
   out.order = order;
   for (const name of order) await step(name, run[name]);

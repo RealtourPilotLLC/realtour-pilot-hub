@@ -10,7 +10,10 @@ import {
   assignTaskAction, cancelTaskAction, completeTaskAction, reassignTaskAction, requestUpdateAction, returnForChangesAction, updateTaskAction,
 } from "@/app/delegation/actions";
 import { markCommsHandled, setSmartTaskStatus } from "@/app/actions";
+import { draftEmailThreadReply } from "@/app/emailActions";
+import { EmailReplyBox } from "@/components/comms/EmailReplyBox";
 import { closeIssueSignalAction } from "@/app/clients/clientCareActions";
+import { makeOwnerTopicMyTask, setOwnerTopicState } from "@/app/ownerTopicActions";
 import { ROUND_CAUSES } from "@/lib/issueSignalsCore";
 import type { AssignSeed, ClientIssueRow } from "@/lib/ownerDashboard";
 import type { PanelSpec, RosterOption, ShellAction } from "@/components/owner/panelTypes";
@@ -99,7 +102,8 @@ const titleOf = (s: PanelSpec): string =>
         : s.kind === "email" ? `${s.row.sender}: ${s.row.subject}`
           : s.kind === "issue" ? `${s.row.client ?? "A client"}: ${s.row.title}`
             : s.kind === "meeting" ? `${s.row.type} with ${s.row.who}`
-              : s.title;
+              : s.kind === "topic" ? s.topic.title
+                : s.title;
 
 function SidePanel({ spec, onClose }: { spec: PanelSpec; onClose: () => void }) {
   const { readOnly } = useContext(PanelCtx);
@@ -119,6 +123,7 @@ function SidePanel({ spec, onClose }: { spec: PanelSpec; onClose: () => void }) 
           {spec.kind === "email" && <EmailBody spec={spec} />}
           {spec.kind === "issue" && <IssueBody spec={spec} />}
           {spec.kind === "meeting" && <MeetingBody spec={spec} />}
+          {spec.kind === "topic" && <TopicBody spec={spec} />}
           {spec.kind === "info" && (
             <dl className="space-y-3 text-sm">
               {spec.lines.map((l) => (
@@ -298,6 +303,43 @@ function eventWords(e: { kind: string; text?: string | null; from?: string | nul
   }
 }
 
+// ---- a bottleneck topic -------------------------------------------------------------------
+
+/**
+ * ONE TOPIC, OPENED (Jordan's Loom, Oct 27 2026: "I can click on it to view
+ * it"). What it is and how it was counted, the records behind the count with
+ * their own buttons, then his moves: Review (the page where the work is
+ * done), Delegate (the Assign form, keyed to the topic, so a second press
+ * moves the same task; Kyle or James, with a note), Make it my task (his
+ * own list), Mark handled (back only when something new turns up) and
+ * Snooze 7 days.
+ */
+function TopicBody({ spec }: { spec: Extract<PanelSpec, { kind: "topic" }> }) {
+  const t = spec.topic;
+  const { open, readOnly } = useContext(PanelCtx);
+  const { busy, msg, run } = useRun();
+  const lines = spec.rows.map((r) => [r.title, r.sub].filter(Boolean).join(" · "));
+  return (
+    <div className="space-y-4" data-topic-panel={t.key}>
+      <p className="text-sm font-medium" data-topic-summary>{t.summary}</p>
+      <Lines rows={[["Counted", t.window === "Now" ? "Open right now" : t.window], ["Owner", t.owner], ["Delegated", t.handledBy?.words]]} />
+      {t.note && <p className="text-[12px] text-muted" data-topic-note={t.source}>{t.note}</p>}
+      <ListBody spec={{ kind: "list", title: t.title, rows: spec.rows, empty: "Nothing behind this topic any more." }} />
+      {msg?.ok ? <Said msg={msg} /> : (
+        <div className="flex flex-wrap gap-2" data-topic-actions>
+          {t.review && <Link href={t.review.href} className={QUIET} data-topic-review>{t.review.label}</Link>}
+          {t.handledBy && <RowActionButton a={{ kind: "nudge", label: "Request update", taskId: t.handledBy.taskId }} />}
+          {!readOnly && <button type="button" data-topic-delegate onClick={() => open({ kind: "assign", seed: t.delegate, heading: t.handledBy ? "Reassign the topic" : "Delegate the topic" })} className={t.handledBy ? QUIET : PRIMARY}>{t.handledBy ? "Reassign" : "Delegate"}</button>}
+          {!readOnly && <button type="button" data-topic-mine disabled={busy} onClick={() => run(() => makeOwnerTopicMyTask({ key: t.key, title: t.title, summary: t.summary, ids: t.ids, lines }))} className={QUIET}>Make it my task</button>}
+          {!readOnly && <button type="button" data-topic-handled disabled={busy} onClick={() => run(() => setOwnerTopicState({ key: t.key, state: "handled", ids: t.ids }))} className={QUIET}>{busy && <Loader2 aria-hidden className="size-4 animate-spin" />}Mark handled</button>}
+          {!readOnly && <button type="button" data-topic-snooze disabled={busy} onClick={() => run(() => setOwnerTopicState({ key: t.key, state: "snoozed", ids: t.ids }))} className={QUIET}>Snooze 7 days</button>}
+        </div>
+      )}
+      {msg && !msg.ok && <Said msg={msg} />}
+    </div>
+  );
+}
+
 // ---- lists, email, issues, meetings -------------------------------------------------------
 
 function ListBody({ spec }: { spec: Extract<PanelSpec, { kind: "list" }> }) {
@@ -324,31 +366,67 @@ function ListBody({ spec }: { spec: Extract<PanelSpec, { kind: "list" }> }) {
   );
 }
 
+/**
+ * REPLY RIGHT HERE (Jordan's Loom, Oct 27 2026, 4:14: "I should be able to
+ * reply to the email from here ... I should see his last email, response, and
+ * draft a reply, and send it from here, or open it up so I can see the rest of
+ * the thread, and I can either delegate it to Kyle, or ... a button that says
+ * mark as handled"). Their last email and our last reply, then the hub's own
+ * email reply box (Messages' box: the AI draft is only the starting text, and
+ * nothing sends until he presses Send), the whole thread under "Open thread",
+ * Delegate to Kyle, and Mark as handled. A reply sent from Gmail is picked up
+ * by the Sent-folder read and the email leaves the list on its own.
+ */
 function EmailBody({ spec }: { spec: Extract<PanelSpec, { kind: "email" }> }) {
   const r = spec.row;
-  const { open, readOnly } = useContext(PanelCtx);
+  const { open, readOnly, roster } = useContext(PanelCtx);
   const { busy, msg, run } = useRun();
+  const office = r.assign.assigneeKey ? roster.find((p) => p.key === r.assign.assigneeKey)?.name ?? null : null;
+  const where = r.delegated ? `${r.delegated.assignee} has it · ${r.delegated.state.toLowerCase()}` : { reply: "You need to reply", decide: "You need to decide (open complaint)", team: "Also in the office inbox", waiting: "Waiting on someone else" }[r.cls];
   return (
     <div className="space-y-4" data-email-panel={r.key}>
-      <Lines rows={[
-        ["Where it stands", r.handledBy ? `${r.handledBy}` : { reply: "You need to reply", decide: "You need to decide (open complaint)", team: "The team can handle it", waiting: "Waiting on someone else" }[r.cls]],
-        ["From", r.sender],
-        ["Client", r.client],
-        ["Waiting", `${etDateTime(r.waitingSinceISO)}${r.businessHours != null ? ` (${r.businessHours} business hours)` : ""}`],
-        ["Last exchange", r.lastExchange],
-      ]} />
-      {r.summary && <blockquote className="rounded-lg bg-surface-2 px-3 py-2 text-sm">{r.summary}</blockquote>}
+      <p className="text-sm"><b className="font-semibold">{where}</b> · waiting since {etDateTime(r.waitingSinceISO)}{r.businessHours != null ? ` (${r.businessHours} business hours)` : ""}</p>
+      {r.lastFromThem && (
+        <section aria-label="Their last email" data-email-last="them">
+          <h3 className="text-[12px] font-semibold uppercase tracking-wide text-muted">{r.sender} · {etDateTime(r.lastFromThem.atISO)}</h3>
+          <p className="mt-1 whitespace-pre-line rounded-lg bg-surface-2 px-3 py-2 text-sm [overflow-wrap:anywhere]">{r.lastFromThem.text || r.summary}</p>
+        </section>
+      )}
+      <section aria-label="Our last reply" data-email-last="us">
+        <h3 className="text-[12px] font-semibold uppercase tracking-wide text-muted">Our last reply{r.lastFromUs ? ` · ${etDateTime(r.lastFromUs.atISO)}` : ""}</h3>
+        {r.lastFromUs
+          ? <p className="mt-1 line-clamp-6 whitespace-pre-line rounded-lg border border-border px-3 py-2 text-sm text-muted [overflow-wrap:anywhere]">{r.lastFromUs.text}</p>
+          : <p className="mt-1 text-sm text-muted">No reply from us in this thread yet.</p>}
+      </section>
+      {!readOnly && !r.delegated && (
+        r.commLogId
+          ? <div data-control="email-reply"><EmailReplyBox target={{ kind: "log", commLogId: r.commLogId }} draft={() => draftEmailThreadReply({ kind: "log", commLogId: r.commLogId! })} startOpen /></div>
+          : <p className="text-sm text-muted" data-email-messages-only>This email can only be answered in Messages.</p>
+      )}
+      {r.thread.length > 0 && (
+        <details className="rounded-lg border border-border" data-email-thread={r.thread.length}>
+          <summary className="flex min-h-11 cursor-pointer items-center px-3 text-sm font-medium">Open thread ({r.thread.length})</summary>
+          <ol className="space-y-2 border-t border-border px-3 py-2">
+            {r.thread.map((m, i) => (
+              <li key={`${m.atISO}-${i}`} className="text-sm">
+                <p className="text-[12px] text-muted">{m.role === "us" ? "Us" : r.sender}{m.atISO ? ` · ${etDateTime(m.atISO)}` : ""}</p>
+                <p className="whitespace-pre-line [overflow-wrap:anywhere]">{m.text}</p>
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
       <div className="flex flex-wrap gap-2">
-        <Link href={r.replyHref} className={PRIMARY}>Reply in Messages</Link>
-        {!readOnly && <button type="button" onClick={() => open({ kind: "assign", seed: r.assign, heading: "Delegate this email" })} className={QUIET}>Delegate</button>}
+        {!readOnly && !r.delegated && <button type="button" onClick={() => open({ kind: "assign", seed: r.assign, heading: office ? `Delegate to ${office}` : "Delegate this email" })} className={QUIET} data-email-delegate>{office ? `Delegate to ${office}` : "Delegate"}</button>}
         {!readOnly && (
-          <button type="button" disabled={busy} onClick={() => run(() => markCommsHandled(r.clientId, "email", r.clientId ? r.groupKey : undefined, r.clientId ? {} : { threadKey: r.threadKey }))} className={QUIET}>
-            Handled outside the hub
+          <button type="button" disabled={busy} onClick={() => run(() => markCommsHandled(r.clientId, "email", r.clientId ? r.groupKey : undefined, r.clientId ? {} : { threadKey: r.threadKey }))} className={QUIET} data-email-handled>
+            Mark as handled
           </button>
         )}
+        <Link href={r.replyHref} className={QUIET}>Open in Messages</Link>
       </div>
       <Said msg={msg} />
-      <p className="text-[12px] text-muted">A new email from them puts it back on this list.</p>
+      <p className="text-[12px] text-muted">A reply sent from Gmail is picked up on its own. A new email from them puts it back on this list.</p>
     </div>
   );
 }
@@ -454,24 +532,37 @@ function CloseSignal({ row }: { row: ClientIssueRow }) {
   );
 }
 
+/**
+ * THE MEETING BRIEF (Jordan's Loom, Oct 27 2026, 3:22: "Open brief" took him
+ * to the content program page). The panel is the brief: who, when and why,
+ * the client's context from records (program, last call, the last thing they
+ * wrote, the month's topics and open items), what to prepare, and questions
+ * to ask. The program page is one link at the bottom.
+ */
 function MeetingBody({ spec }: { spec: Extract<PanelSpec, { kind: "meeting" }> }) {
   const r = spec.row;
+  const b = r.brief;
   const { open, readOnly } = useContext(PanelCtx);
   const { busy, msg, run } = useRun();
+  const section = (title: string, items: string[], key: string) => items.length > 0 && (
+    <div data-brief={key}><h3 className="text-sm font-semibold">{title}</h3><ul className="mt-1 list-disc space-y-1 pl-5 text-sm">{items.map((p) => <li key={p}>{p}</li>)}</ul></div>
+  );
   return (
     <div className="space-y-4" data-meeting-panel={r.id}>
-      <Lines rows={[["When", `${etDateTime(r.startISO)} ET`], ["Who", r.who], ["Purpose", r.purpose], ["Preparation", r.prep.words]]} />
+      <Lines rows={[["When", `${etDateTime(r.startISO)} ET`], ["Who", r.who], ["Purpose", r.purpose], ["Program", b?.program], ["Last call", b?.lastCall], ["Preparation", r.prep.words]]} />
+      {b?.lastFromClient && <p className="rounded-lg bg-surface-2 px-3 py-2 text-sm [overflow-wrap:anywhere]" data-brief="last-from-client"><span className="block text-[12px] font-semibold text-muted">The last thing they wrote</span>{b.lastFromClient}</p>}
       {r.missing.length > 0 && <p className="text-sm font-medium text-warning">{r.missing.join(" · ")}</p>}
-      {r.points.length > 0 && (
-        <div><h3 className="text-sm font-semibold">Prepare</h3><ul className="mt-1 list-disc space-y-1 pl-5 text-sm">{r.points.map((p) => <li key={p}>{p}</li>)}</ul></div>
-      )}
+      {section("Prepare", r.points, "prepare")}
+      {section("Open on the month", b?.openItems ?? [], "open-items")}
+      {section("The month's topics", b?.topics ?? [], "topics")}
+      {section("Questions to ask", b?.questions ?? [], "questions")}
       <div className="flex flex-wrap gap-2">
-        <Link href={r.href} className={QUIET}>Open meeting brief</Link>
-        {r.joinLink && <a href={r.joinLink} target="_blank" rel="noreferrer" className={QUIET}>Join <ExternalLink aria-hidden className="size-3.5" /></a>}
+        {r.joinLink && <a href={r.joinLink} target="_blank" rel="noreferrer" className={PRIMARY}>Join <ExternalLink aria-hidden className="size-3.5" /></a>}
         {!readOnly && r.prep.taskId && !r.prep.delegated && r.assignPrep && <button type="button" disabled={busy} onClick={() => run(() => setSmartTaskStatus(r.prep.taskId!, "COMPLETED"))} className={PRIMARY}>Mark prep done</button>}
         {!readOnly && r.assignPrep && <button type="button" onClick={() => open({ kind: "assign", seed: r.assignPrep!, heading: "Assign preparation" })} className={QUIET}>Assign preparation</button>}
         {!readOnly && <button type="button" onClick={() => open({ kind: "assign", seed: r.followUp, heading: "Create a follow-up" })} className={QUIET}>Create follow-up</button>}
         <Link href="/content/calls" className={QUIET}>Record notes</Link>
+        <Link href={r.href} className={QUIET} data-brief-program-link>{r.href.startsWith("/content/") ? "Open the program" : "Open the client"}</Link>
       </div>
       <Said msg={msg} />
     </div>

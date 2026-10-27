@@ -191,13 +191,12 @@ export async function processScriptingEvent(
   // the Studio status advances past them — each event used to only re-open the
   // same key, so nothing ever closed these tasks (audit crack #35).
   const street = project.title?.split(",")[0]?.trim() || "a job";
-  // LISTING SCRIPTS ARE JORDAN'S (Oct 27 2026: the owner dashboard lists them
-  // "Writing: Jordan · Approval: Jordan", and Jordan: "Kyle handles comms,
-  // delegation, review, delivery, and coordination"). Both Studio nudges used
-  // to land on Kyle: the package by his roster row, the client's response by
-  // having nobody's name (the shared ops pile is Kyle's list). They now go to
-  // whoever owns listing scripts (taskRouting.listingScriptsDesk). A reopened
-  // task moves over too, unless a person put it on someone on purpose.
+  // LISTING SCRIPTS ARE THE CREATIVE MANAGER'S (Jordan's Loom, Oct 27 2026,
+  // 3:51: "I don't need to approve the scripts, James can approve them";
+  // earlier that day they were routed to Jordan, and before that to Kyle).
+  // Both Studio nudges go to whoever owns listing scripts
+  // (taskRouting.listingScriptsDesk: James, else the owner). A reopened task
+  // moves over too, unless a person put it on someone on purpose.
   const { listingScriptsDesk, deskFields } = await import("@/lib/taskRouting");
   const scriptsDesk = deskFields(await listingScriptsDesk().catch(() => null));
   const reopen = async (key: string) => {

@@ -16,6 +16,7 @@ import { parseAccessBrief, type AccessInfo } from "@/lib/opsDay";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { briefStatusForAppointments, type BriefState } from "@/lib/photographerBrief";
 import { tasksAssignedTo, type DelegatedTask, type DelegationState } from "@/lib/delegation";
+import { emailThreadKey, emailThreadStatus, parseEmailThreadHref, threadMatches } from "@/lib/emailDelegation";
 import { offAt, offWords, timeOffBetween, type TimeOffSpan } from "@/lib/timeOff";
 import { expectedCrons, staleAfterMs, type CronJobHealth } from "@/lib/cronHealth";
 import { scrubMoney } from "@/lib/text";
@@ -1157,10 +1158,58 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     return (at != null ? mine.find((r) => Math.abs(r.occurredAt.getTime() - at) < 2 * 60_000) : null)?.id ?? mine[0]?.id ?? null;
   };
   const replyClients = new Set<string>();
+  // AN EMAIL JORDAN HANDED KYLE (Jordan's Loom, Oct 27 2026, 5:38: "that should
+  // go right to Kyle's dashboard. As a task that he needs to handle, and that
+  // should go to his communications"). It is HIS task, on the conversation's
+  // own row here with the email and Reply (Accept and the rest in the panel),
+  // never a second row under Requests & Follow-Ups. Matched by the thread
+  // (lib/emailDelegation), or by the reply to-do it was delegated on before.
+  const DELEG_WORDS: Record<DelegationState, string> = {
+    ASSIGNED: "Not accepted yet", ACCEPTED: "Accepted", IN_PROGRESS: "In progress", BLOCKED: "Blocked",
+    READY_FOR_VERIFICATION: "Waiting on verification", COMPLETED: "Completed", CANCELLED: "Cancelled",
+  };
+  const emailDelegs = (assigned ?? []).filter((dt) => dt.state !== "COMPLETED" && dt.state !== "CANCELLED");
+  const usedDelegs = new Set<string>();
+  const delegationOf = (family: "phone" | "email", g: (typeof replyGroups)[number][1]) => {
+    if (family !== "email") return null;
+    const hit = emailDelegs.find((dt) => !usedDelegs.has(dt.taskId) && (() => {
+      const ref = parseEmailThreadHref(dt.sourceHref);
+      return ref ? threadMatches(ref, g.clientId || null, g.items.map((m) => m.subject)) : false;
+    })()) ?? (g.openTaskId ? emailDelegs.find((dt) => !usedDelegs.has(dt.taskId) && dt.taskId === g.openTaskId) : undefined);
+    if (hit) usedDelegs.add(hit.taskId);
+    return hit ?? null;
+  };
+  const delegWhen = (iso: string) => (etDayKey(new Date(iso)) === dayKey ? etTime(iso) : `${etDate(iso)} ${etTime(iso)}`);
   for (const [family, g] of replyGroups) {
     if (g.clientId) replyClients.add(g.clientId);
     const latest = g.items[g.items.length - 1];
     const handled: DeskAction = { kind: "handled", threadKey: g.key, family, clientId: g.clientId || null, groupKey: g.groupKey };
+    const dt = delegationOf(family, g);
+    if (dt) {
+      const by = first(dt.assignedBy) || "someone";
+      const firstAt = g.items[0]?.atISO ?? new Date(nowMs - g.oldestHours * HOUR).toISOString();
+      const href = waitingClientReplyHref({ family, group: g, behind: false });
+      const said = latest ? clean(latest.subject ? `${latest.subject}: ${latest.snippet}` : latest.snippet) : "";
+      const reply: DeskAction = { kind: "reply", threadKey: g.key, family, clientId: g.clientId || null, groupKey: g.groupKey, phone: null, href, taskId: g.openTaskId ?? null, commLogId: g.clientId ? replyRefOf(g.clientId, latest?.atISO) : null };
+      const late = dt.dueAt ? Date.parse(dt.dueAt) < nowMs : g.oldestHours >= MESSAGE_BEHIND_HOURS;
+      const dueISO = dt.dueAt ?? new Date(Date.parse(firstAt) + MESSAGE_BEHIND_HOURS * HOUR).toISOString();
+      push({
+        id: `reply:${family}:${g.groupKey}`, section: "comms", tag: /^jordan/i.test(dt.assignedBy ?? "") ? "jordan" : "assigned", state: "now",
+        title: clean(g.clientName),
+        line: [`From ${by}`, DELEG_WORDS[dt.state], dt.dueAt ? `due ${delegWhen(dt.dueAt)}` : null, said ? short(said, 60) : null].filter(Boolean).join(" · "),
+        client: clean(g.clientName),
+        reason: [`${by} handed you this email`, dt.outcome ? `Outcome wanted: ${clean(dt.outcome)}` : null, `Waiting ${businessElapsedWords(firstAt, now)}`, "Sending the reply here completes it"].filter(Boolean).join(" · "),
+        who: "You", dueISO, dueWords: dueWordsFor(dueISO, now), late,
+        rank: late ? RANK.blocker : RANK.today,
+        primary: { label: "Reply", action: reply },
+        actions: [reply, { kind: "delegation", taskId: dt.taskId, state: dt.state, needsVerification: dt.needsVerification }, handled],
+        href,
+        panel: { kind: "thread", client: clean(g.clientName), family, messages: g.items.map((m) => ({ atISO: m.atISO, text: clean(m.subject ? `${m.subject}: ${m.snippet}` : m.snippet) })), holding: g.holding ? clean(g.holding.text) : null, revisionNote: null, alsoAsked: (g.schedulingAsks ?? []).map((x) => clean(x)) },
+        sinceISO: dt.assignedAt ?? firstAt,
+        initials: initialsOf(g.clientName), channel: "Email", elapsed: businessElapsedWords(firstAt, now),
+      });
+      continue;
+    }
     // THANK-YOUS NEED NOTHING (Jordan, Oct 27 2026: "If someone says thank you - no reply is
     // needed. He should also be able to mark it as handled."). A conversation whose waiting
     // messages are all thank-yous or closers is not counted; it waits in a fold with Mark handled.
@@ -1517,8 +1566,41 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     ASSIGNED: "Not accepted yet", ACCEPTED: "Accepted", IN_PROGRESS: "In progress", BLOCKED: "Blocked",
     READY_FOR_VERIFICATION: "Waiting on verification", COMPLETED: "Completed", CANCELLED: "Cancelled",
   };
+  // A delegated email whose conversation the walk above does not list (a sender
+  // with no client record, or answered already from Gmail) is still a Client
+  // Communications row: Reply when they are still waiting, else Mark done.
+  const strayEmails = (assigned ?? []).filter((dt) => dt.state !== "COMPLETED" && dt.state !== "CANCELLED" && !usedDelegs.has(dt.taskId) && !!parseEmailThreadHref(dt.sourceHref));
+  const strayStatus = strayEmails.length
+    ? await emailThreadStatus(strayEmails.map((dt) => parseEmailThreadHref(dt.sourceHref)!), now).catch(warn("delegated email threads"))
+    : null;
+  for (const dt of strayEmails) {
+    const ref = parseEmailThreadHref(dt.sourceHref)!;
+    const st = strayStatus?.get(emailThreadKey(ref)) ?? null;
+    const by = first(dt.assignedBy) || "someone";
+    const action: DeskAction = { kind: "delegation", taskId: dt.taskId, state: dt.state, needsVerification: dt.needsVerification };
+    const reply: DeskAction | null = st?.commLogId && !st.answeredAt ? { kind: "reply", threadKey: "", family: "email", clientId: ref.clientId, groupKey: "", phone: null, href: dt.sourceHref!, taskId: null, commLogId: st.commLogId } : null;
+    const late = !!dt.dueAt && Date.parse(dt.dueAt) < nowMs;
+    usedDelegs.add(dt.taskId);
+    const verify = dt.state === "READY_FOR_VERIFICATION";
+    push({
+      id: `task:${dt.taskId}`, section: "comms", tag: /^jordan/i.test(dt.assignedBy ?? "") ? "jordan" : "assigned", state: verify ? "waiting" : "now",
+      title: clean(dt.title),
+      line: [`From ${by}`, DELEG_WORDS[dt.state], dt.dueAt ? `due ${delegWhen(dt.dueAt)}` : null, st?.answeredAt ? `answered ${etDate(st.answeredAt)} ${etTime(st.answeredAt)}` : null].filter(Boolean).join(" · "),
+      client: null,
+      reason: [`${by} handed you this email`, dt.outcome ? `Outcome wanted: ${clean(dt.outcome)}` : null, st?.answeredAt ? "A reply is in the thread: mark it done if that answered them" : !st ? "The thread couldn't be read: open it in Messages" : null].filter(Boolean).join(" · "),
+      who: verify ? by : "You", dueISO: dt.dueAt, dueWords: dt.dueAt ? dueWordsFor(dt.dueAt, now) : null, late,
+      rank: late ? RANK.overdue : RANK.today,
+      primary: verify ? null : reply ? { label: "Reply", action: reply } : { label: dt.state === "ASSIGNED" && !st?.answeredAt ? "Accept" : "Mark done", action },
+      actions: reply ? [reply, action] : [action, { kind: "link", label: "Open in Messages", href: dt.sourceHref! }],
+      href: dt.sourceHref,
+      panel: { kind: "task", lines: [{ label: "Email", value: clean(dt.title) }, { label: "Assigned by", value: by }, ...(dt.outcome ? [{ label: "Outcome", value: clean(dt.outcome) }] : []), { label: "State", value: DELEG_WORDS[dt.state] }, ...(st?.answeredAt ? [{ label: "Answered", value: etDateTime(st.answeredAt) }] : [])] },
+      sinceISO: dt.assignedAt,
+      channel: "Email",
+    });
+  }
   for (const dt of assigned ?? []) {
     if (dt.state === "COMPLETED" || dt.state === "CANCELLED") continue;
+    if (usedDelegs.has(dt.taskId)) continue; // a delegated email: its conversation's row under Client Communications
     const by = first(dt.assignedBy) || "someone";
     const jordan = /^jordan/i.test(dt.assignedBy ?? "");
     const waitingVerify = dt.state === "READY_FOR_VERIFICATION";

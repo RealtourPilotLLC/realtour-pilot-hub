@@ -104,6 +104,11 @@ export async function sendEmailReply(
       .create({ data: { projectId: task.projectId, type: "SYSTEM", body: `Email reply sent to ${sent.to}: ${text.slice(0, 160)}` } })
       .catch(() => {});
   }
+  // A delegated email on this thread is done too (Oct 27 2026, see sendEmailThreadReply).
+  if (!opts?.keepOpen) {
+    const { closeDelegatedEmailTasks } = await import("@/lib/emailDelegation");
+    await closeDelegatedEmailTasks({ clientId: task.clientId, subject: sent.subject, why: "sent" });
+  }
   revalidatePath("/");
   revalidatePath("/tasks");
   if (task.projectId) revalidatePath(`/projects/${task.projectId}`);
@@ -419,6 +424,13 @@ export async function sendEmailThreadReply(
       data: { status: "COMPLETED", completedAt: new Date() },
     })
     .catch(() => {});
+  // AN EMAIL HANDED ON IS DONE WHEN ITS REPLY GOES (Jordan's Loom, Oct 27 2026:
+  // the email he delegated is Kyle's task, answered from Kyle's dashboard): the
+  // delegated task keyed to this thread closes, with the send as its evidence.
+  {
+    const { closeDelegatedEmailTasks } = await import("@/lib/emailDelegation");
+    await closeDelegatedEmailTasks({ clientId: t.clientId, subject: sent.subject ?? rc.subject, why: "sent", by: actor && !actor.impersonating ? actor.name : null });
+  }
   revalidatePath("/communications");
   revalidatePath("/");
   if (t.clientId) revalidatePath(`/clients/${t.clientId}`);

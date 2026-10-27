@@ -1134,7 +1134,12 @@ export async function createCommTask(opts: {
     key = dedupe([opts.clientId, opts.projectId ?? "noproject", taskType === "todo" ? "brain_todo" : "client_reply", `req:${opts.aiTitle.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()}`]);
     existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
   }
-  const assignee = await brainTaskAssignee();
+  // A listing-script to-do ("Review and action Premium Reel script package")
+  // goes to whoever approves listing scripts: James (Jordan's Loom, Oct 27
+  // 2026, 3:51), never the office's reply pile.
+  const { isListingScriptTask, listingScriptsDesk } = await import("@/lib/taskRouting");
+  const scriptsDesk = taskType === "todo" && isListingScriptTask(opts.aiTitle) ? await listingScriptsDesk().catch(() => null) : null;
+  const assignee = scriptsDesk ? { id: scriptsDesk.id, key: scriptsDesk.key } : await brainTaskAssignee();
   // A row someone dismissed by hand stays dismissed until there is something
   // real to say (Sep 16).
   if (await dismissedAndOnlyCourtesy(existing, opts.snippet ?? opts.aiDetail)) return false;

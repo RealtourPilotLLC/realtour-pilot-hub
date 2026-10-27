@@ -17,7 +17,8 @@ import { slugForName } from "@/lib/assignees";
 //      or the program began after that month's 15th)
 //   "Filmed beyond the plan"                 tasks.fileCapacityReview          creative manager
 //   Script Studio script package / client    webhooks/scripting                listing-scripts owner
-//     response on a listing script                                             (Jordan today)
+//     response on a listing script, and the   tasks.createCommTask (todo)       (the creative manager
+//     brain's "...script package" to-dos                                         since the Loom, 3:51)
 //   overdue program escalations              programReminders.escalate         ESCALATION duty (Jordan), unchanged
 //
 // The creative manager is whoever carries TeamMember.creativeManager (James),
@@ -75,12 +76,21 @@ export async function creativeWorkDesk(): Promise<TaskDesk | null> {
   return (await creativeManagerDesk()) ?? (await ownerDesk());
 }
 
-/** Listing scripts (Script Studio's packages and the client's replies on
- *  them). Jordan writes and approves them today (the owner dashboard's
- *  "Writing: Jordan · Approval: Jordan", ownerWork.ts), so the owner. */
+/** Listing scripts (Script Studio's packages, "Review and action Premium Reel
+ *  script package", and the client's replies on them). The creative manager
+ *  approves them (Jordan's Loom, Oct 27 2026, 3:51: "I don't need to approve
+ *  the scripts, James can approve them ... he's the content manager"), else
+ *  the owner when there is no creative manager. */
 export async function listingScriptsDesk(): Promise<TaskDesk | null> {
-  return ownerDesk();
+  return (await creativeManagerDesk()) ?? (await ownerDesk());
 }
+
+/** A to-do the comms brain filed about a listing script (Script Studio's
+ *  "Review and action Premium Reel script package" email, Oct 27 2026): the
+ *  listing-scripts desk's, not the office's. Monthly content scripts never
+ *  say "reel", "listing" or "script package". */
+export const isListingScriptTask = (title: string | null | undefined): boolean =>
+  /\bscript package\b/i.test(title ?? "") || /\b(reel|listing) script\b/i.test(title ?? "");
 
 /** The fields a task row takes for a desk (both null when nobody resolves). */
 export const deskFields = (d: TaskDesk | null) => ({ assignedKey: d?.key ?? null, ownerId: d?.id ?? null });
