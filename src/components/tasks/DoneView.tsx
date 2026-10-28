@@ -7,7 +7,7 @@ import {
 import { PageHeader } from "@/components/PageHeader";
 import { getTaskHistory, getDeliveryHistory, getShootHistory, type HistoryTask } from "@/lib/queries";
 import { DayRecap } from "@/components/history/DayRecap";
-import { etDayKey, etTime } from "@/lib/datetime";
+import { etDayKey, etFullDate, etTime, etYesterdayKey } from "@/lib/datetime";
 import { taskTypeMeta } from "@/lib/taskSource";
 import { getCurrentUser } from "@/lib/auth/user";
 import { scrubMoney } from "@/lib/text";
@@ -24,12 +24,10 @@ const meta = taskTypeMeta;
 
 function friendlyDay(key: string): string {
   const today = etDayKey(new Date());
-  const yest = etDayKey(new Date(Date.now() - 86_400_000));
   if (key === today) return "Today";
-  if (key === yest) return "Yesterday";
-  // key is YYYY-MM-DD (ET); render without TZ math (it's already an ET calendar day).
-  const [y, m, d] = key.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  // The ET key before today's, not 24 hours ago (clock-change days, Oct 28 2026).
+  if (key === etYesterdayKey()) return "Yesterday";
+  return etFullDate(key); // an ET day key prints as that same day
 }
 
 // ---------------------------------------------------------------------------

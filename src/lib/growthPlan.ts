@@ -41,7 +41,6 @@ export type GrowthPlanResult = { plan: GrowthPlanData | null; builtAt: Date | nu
 
 /** The numbers the plan reasons over — small enough to hash, rich enough to advise on. */
 export async function growthSnapshot() {
-  const yearStart = new Date(new Date().getFullYear(), 0, 1);
   const [bookings, services, spenders, storedMargins, recurring] = await Promise.all([
     bookingTrends(),
     serviceTrends(),

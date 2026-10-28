@@ -12,7 +12,7 @@ import { SegmentBadge } from "@/components/clients/SegmentBadge";
 import { SocialBadge } from "@/components/clients/SocialBadge";
 import { stageMeta } from "@/lib/pipeline";
 import { cn, stripHtml } from "@/lib/utils";
-import { etMonthDayTime } from "@/lib/datetime";
+import { etDayKey, etMonthDayTime, etYesterdayKey } from "@/lib/datetime";
 import { phoneKey } from "@/lib/phoneKey";
 import { sendThreadText, draftThreadReply, uploadCommAttachment } from "@/app/communications/threadActions";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
@@ -53,16 +53,17 @@ function fmtTime(iso: string): string {
 }
 function isOut(d?: string) { return (d || "").toLowerCase().startsWith("out"); }
 // ET calendar day, so the separators match the day the message actually landed.
+// Yesterday is the ET day key before today's (Oct 28 2026), not "24 hours ago",
+// which on the two clock-change days is the wrong day for an hour.
 function dayKey(iso: string): string {
   if (!iso) return "";
-  return new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York" });
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? "" : etDayKey(d);
 }
 function dayLabel(iso: string): string {
   const key = dayKey(iso);
-  const today = dayKey(new Date().toISOString());
-  const yest = dayKey(new Date(Date.now() - 86_400_000).toISOString());
-  if (key === today) return "Today";
-  if (key === yest) return "Yesterday";
+  if (key === etDayKey(new Date())) return "Today";
+  if (key === etYesterdayKey()) return "Yesterday";
   return new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", year: "numeric" });
 }
 

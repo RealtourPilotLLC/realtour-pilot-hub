@@ -4,6 +4,7 @@ import { authEnforced, requireCreativeLead } from "@/lib/auth/guards";
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
+import { etDayKey } from "@/lib/datetime";
 import { getCurrentUser } from "@/lib/auth/user";
 import { notifyInApp } from "@/lib/notify";
 
@@ -617,7 +618,7 @@ export async function shareShootFeedback(projectId: string): Promise<{ ok: boole
     body: "Tap to see what to fix and what to keep doing.",
     href: `/shoot/${projectId}`,
     targets: [{ roles: ["OWNER", "ADMIN", "PHOTOGRAPHER"], userKey: `tm:${memberId}`, href: `/shoot/${projectId}` }],
-    dedupeKey: `fb-share-${projectId}-${now.toISOString().slice(0, 10)}`,
+    dedupeKey: `fb-share-${projectId}-${etDayKey(now)}`, // once per ET day (Oct 28 2026); the UTC date turned at 8 PM ET
   }).catch(() => {});
   refresh(projectId);
   return { ok: true, message: `Texted ${member.name?.split(/\s+/)[0] ?? "them"} the feedback link.` };

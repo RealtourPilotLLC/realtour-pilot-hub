@@ -2,7 +2,7 @@ import "server-only";
 
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
-import { etDayStartUtc, etAddDays } from "@/lib/datetime";
+import { etDayStartPlusUtc } from "@/lib/datetime";
 import { DELIVERABLE_META } from "@/lib/pipeline";
 import { ownsShootWhere } from "@/lib/shoot";
 import type { DeliverableType, ProjectStatus } from "@prisma/client";
@@ -153,7 +153,7 @@ export function ownedBy(memberId: string): Prisma.ProjectWhereInput {
  *  the "Past 7 days" bucket and the history below it. Same arithmetic as
  *  bucketFor's `etDaysAgo(shootDate) <= 7` on the page. */
 export function uploadWindowStart(now = new Date()): Date {
-  return etDayStartUtc(etAddDays(now, -7));
+  return etDayStartPlusUtc(now, -7); // by ET key, never an hour off on a clock-change day (Oct 28 2026)
 }
 
 // Who is looking, and at whose shoots. Resolved by the callers (the /upload

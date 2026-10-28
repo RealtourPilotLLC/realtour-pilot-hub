@@ -1,6 +1,7 @@
 import "server-only";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
+import { etDayKey } from "@/lib/datetime";
 import { createCommTask, mergeIntoExistingTask, closeObsoleteTasks, revisionPriority } from "@/lib/tasks";
 import { checkedCommProject } from "@/lib/commProject";
 import { routeCommTask } from "@/lib/brain";
@@ -1226,7 +1227,7 @@ async function runRevisionDetailed(opts: DetailedRevisionOpts, receiptTx?: { db:
         // Day-suffixed: the revision TASK id is stable per project (deduped),
         // so a SECOND round's ping collided with the first and was silently
         // swallowed (audit). Same-day repeats stay quiet via wasAlreadyOpen.
-        dedupeKey: `rev-${taskId}-${new Date().toISOString().slice(0, 10)}`,
+        dedupeKey: `rev-${taskId}-${etDayKey(new Date())}`, // once per ET day (Oct 28 2026); the UTC date turned at 8 PM ET
       });
     } catch { /* non-fatal */ }
   }
@@ -1559,7 +1560,7 @@ export async function resolveRevision(projectId: string, opts: { includePhotoLan
       title: `Revision resolved — ${(project?.title || "this job").split(",")[0].trim()}`,
       href: `/projects/${projectId}`,
       targets,
-      dedupeKey: `revres-${projectId}-${new Date().toISOString().slice(0, 10)}`,
+      dedupeKey: `revres-${projectId}-${etDayKey(new Date())}`, // once per ET day (Oct 28 2026); the UTC date turned at 8 PM ET
     });
   } catch { /* non-fatal */ }
 }

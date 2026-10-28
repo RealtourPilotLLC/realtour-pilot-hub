@@ -1,6 +1,6 @@
 "use client";
 
-import { etDateTimeYear, etWeekdayDateYear } from "@/lib/datetime";
+import { etDateTimeYear, etFromInputValue, etInputValue, etWeekdayDateYear } from "@/lib/datetime";
 import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
 import { Calendar, Clock, RefreshCw, XCircle, Loader2, AlertTriangle, ChevronDown, ExternalLink } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
@@ -36,13 +36,12 @@ function fmt(d: string | Date | null, withTime = true) {
 }
 
 
-// datetime-local needs "YYYY-MM-DDTHH:mm" in local time.
-function toLocalInput(d: string | Date | null): string {
-  if (!d) return "";
-  const date = new Date(d);
-  const off = date.getTimezoneOffset() * 60000;
-  return new Date(date.getTime() - off).toISOString().slice(0, 16);
-}
+// THE NEW TIME IS EASTERN, WHEREVER THE DEVICE IS (Kyle, Oct 28 2026: "Some
+// tasks/projects show 'today' as the timezone set where the person is, not
+// EST"). The field used to be the device's own clock: from a phone set to
+// another zone a 10 AM shoot opened as some other hour, and the hour typed was
+// booked in that zone. A datetime-local carries no zone, so it is filled and
+// read on the ET wall clock (etInputValue / etFromInputValue).
 
 type AppointmentHold = {
   appointmentId: string; attemptId: string; operation: "reschedule" | "cancel";
@@ -64,7 +63,7 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [showReschedule, setShowReschedule] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
-  const [newStart, setNewStart] = useState(toLocalInput(appt.startAt));
+  const [newStart, setNewStart] = useState(etInputValue(appt.startAt));
   // Unticked by default. Until Sep 24 2026 this box sent a field Aryeo does not
   // recognise and emailed nobody; now it really emails the client (Jordan's
   // call), so it must be a deliberate tick, not something to remember to undo.
@@ -153,7 +152,7 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
         if (r.outcome !== "confirmed" || !r.ok) { hold(operation, r.message); return; }
         clearOwnMarker(attempt);
         const newerInput = startRef.current !== submittedStart || notifyRef.current !== submittedNotify;
-        setMsg({ ok: true, text: `${r.message}${newerInput ? " Your newer local date or email choice is kept and has not been submitted." : ""}` });
+        setMsg({ ok: true, text: `${r.message}${newerInput ? " Your newer date or email choice is kept and has not been submitted." : ""}` });
         if (!newerInput) {
           setShowReschedule(false);
           setConfirmCancel(false);
@@ -164,8 +163,8 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
   };
   const reschedule = () => {
     if (busyRef.current || uncertainRef.current) return;
-    const start = new Date(newStart);
-    if (!Number.isFinite(start.getTime())) { setMsg({ ok: false, text: "Choose a valid date and time. Your input is kept." }); return; }
+    const start = etFromInputValue(newStart);
+    if (!start) { setMsg({ ok: false, text: "Choose a valid date and time. Your input is kept." }); return; }
     const startISO = start.toISOString();
     run("reschedule", () => rescheduleAppointmentAction(appt.id, startISO, notify));
   };
@@ -257,8 +256,8 @@ export function AppointmentManager({ appt }: { appt: ApptView }) {
             <div className="mt-3 space-y-3 rounded-lg border border-border bg-surface-2 p-3">
               <TextField
                 id={`appointment-start-${appt.id}`}
-                label="New date & time"
-                hint="This field uses your device's local time zone. Appointment times above are shown in Eastern time."
+                label="New date & time (Eastern)"
+                hint="Type the time in Eastern time, like every time on this page, wherever you are."
                 type="datetime-local"
                 value={newStart}
                 onChange={(e) => { startRef.current = e.target.value; setNewStart(e.target.value); mirrorInput(); }}

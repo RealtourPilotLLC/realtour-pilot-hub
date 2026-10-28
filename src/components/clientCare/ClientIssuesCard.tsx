@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { createClientIssueAction, dismissClientIssueAction, moveClientIssueAction, updateClientIssueAction } from "@/app/clients/clientCareActions";
 import { COMPLAINT_CAUSES, STATE_WORDS } from "@/lib/clientIssuesCore";
 import type { ClientIssueView } from "@/lib/clientIssues";
+import { etDayKey } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // COMPLAINTS on the client file (Oct 15 2026): what happened, the impact, the
@@ -35,7 +36,8 @@ function OneIssue({ issue, canEdit, projects }: { issue: ClientIssueView; canEdi
   const [correction, setCorrection] = useState(issue.correction ?? "");
   const [processChange, setProcessChange] = useState(issue.processChange ?? "");
   const [ownerName, setOwnerName] = useState(issue.ownerName ?? "");
-  const [due, setDue] = useState(issue.dueAtISO ? issue.dueAtISO.slice(0, 10) : "");
+  // The ET day of the due (Oct 28 2026), not the first ten characters of a UTC stamp.
+  const [due, setDue] = useState(issue.dueAtISO ? etDayKey(new Date(issue.dueAtISO)) : "");
   const [note, setNote] = useState("");
   const run = (fn: () => Promise<{ ok: boolean; message: string }>) =>
     start(async () => {

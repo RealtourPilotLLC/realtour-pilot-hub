@@ -9,7 +9,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
 import { stageMeta } from "@/lib/pipeline";
-import { etDayStartUtc, etAddDays, etFullDate, etTime, etDayKey, isTodayET } from "@/lib/datetime";
+import { etDayStartUtc, etDayStartPlusUtc, etFullDate, etTime, etDayKey, isTodayET } from "@/lib/datetime";
 import { ProjectMap, type MapPin, type MapDay } from "@/components/map/ProjectMap";
 import { hasDroneOps } from "@/components/project/DroneBadge";
 import { ScheduleViewToggle, type ScheduleView } from "@/components/schedule/ScheduleViewToggle";
@@ -30,7 +30,7 @@ const MAP_LOOKBACK_DAYS = 7;
 // ---- List view: appointments grouped by ET day, today onward -----------------
 async function ListView({ excludeClientIds, includeTest, office, tabs }: { excludeClientIds: string[]; includeTest: boolean; office: boolean; tabs: boolean }) {
   const startToday = etDayStartUtc(new Date());
-  const windowEnd = etDayStartUtc(etAddDays(new Date(), WINDOW_DAYS));
+  const windowEnd = etDayStartPlusUtc(new Date(), WINDOW_DAYS); // by ET key (Oct 28 2026)
 
   // Driven off APPOINTMENTS so an order with multiple visits shows each shoot on
   // its own day, with the photographer assigned to that specific appointment.

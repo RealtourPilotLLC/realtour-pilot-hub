@@ -4,11 +4,10 @@ import { PageHeader } from "@/components/PageHeader";
 import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
 import { KpiCards } from "@/components/finance/KpiCards";
 import { peoplePayments, PAYEE_GROUPS, type PayeeRow } from "@/lib/bookkeeping";
-import { etYearStartKey } from "@/lib/datetime";
+import { etDayKey, etYearStartKey } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
 
-const YEAR_START = etYearStartKey(); // ET year — never frozen at a hard-coded 2026 (audit)
 const m0 = (n: number | null | undefined) =>
   n == null ? "—" : `${n < 0 ? "−" : ""}$${Math.abs(Math.round(n)).toLocaleString("en-US")}`;
 const abbr = (n: number) => (Math.abs(n) >= 1000 ? `$${Math.round(n / 1000).toLocaleString("en-US")}k` : `$${Math.round(n)}`);
@@ -31,8 +30,9 @@ const GROUP_META: Record<string, { icon: LucideIcon; color: string }> = {
 // Who you pay — every contractor/editor/vendor, grouped by KIND (creatives,
 // editors, software, staff…) AND by the rail you paid them on.
 export async function PeopleTab({ show }: { show: FinanceTab[] }) {
-  const now = new Date();
-  const endKey = now.toISOString().slice(0, 10);
+  // The ET day and year, read per request (Oct 28 2026; see PersonalTab).
+  const endKey = etDayKey(new Date());
+  const YEAR_START = etYearStartKey();
   const monthKey = endKey.slice(0, 7);
   const data = await peoplePayments(YEAR_START, endKey);
 

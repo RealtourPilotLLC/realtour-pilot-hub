@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { ProjectStatus, type Prisma } from "@prisma/client";
 import { recentProjectWhere, isProjectRecent } from "@/lib/recency";
 import { clientTextWhere, CLIENT_TEXT_TYPES } from "@/lib/clientTexts";
-import { etDayStartUtc, etAddDays, etDayKey } from "@/lib/datetime";
+import { etDayStartUtc, etDayStartPlusUtc, etDayKey } from "@/lib/datetime";
 
 import { getVideoSlaStatus } from "@/lib/projectStatus";
 import type { QcMissBucket } from "@/lib/qc";
@@ -444,7 +444,7 @@ function mapTask(t: RawTask, startToday: Date): BriefTask {
 // Today's to-dos only (overdue rolls into Needs Attention instead).
 export async function getMorningBrief(): Promise<BriefTask[]> {
   const startToday = etDayStartUtc(new Date());
-  const endToday = new Date(etDayStartUtc(etAddDays(new Date(), 1)).getTime() - 1);
+  const endToday = new Date(etDayStartPlusUtc(new Date(), 1).getTime() - 1); // by ET key (Oct 28 2026; see datetime.ts)
 
   const tasks = await prisma.smartTask.findMany({
     where: {
@@ -966,13 +966,15 @@ export async function getShootWindow(opts: { excludeClientIds?: string[] } = {})
   // Day boundaries in EASTERN time (the business runs on ET) so a late-evening
   // shoot doesn't roll into "tomorrow" under UTC.
   const startToday = etDayStartUtc(new Date());
-  const startTomorrow = etDayStartUtc(etAddDays(new Date(), 1));
-  const startDayAfter = etDayStartUtc(etAddDays(new Date(), 2));
+  // By ET day key (Oct 28 2026): now + 24 h is still today in the first hour of
+  // the November change, which made "tomorrow" start at today's midnight.
+  const startTomorrow = etDayStartPlusUtc(new Date(), 1);
+  const startDayAfter = etDayStartPlusUtc(new Date(), 2);
   // The window used to hard-stop at tomorrow, which hid a busy week (9 shoots)
   // behind a "Tomorrow: N" one-liner. It now runs today + the NEXT 7 DAYS so
   // the dashboard's week strip can show the real load; `today`/`tomorrow` keep
   // their original meaning for existing callers (/today's footer count).
-  const endWindow = etDayStartUtc(etAddDays(new Date(), 8));
+  const endWindow = etDayStartPlusUtc(new Date(), 8);
 
   const appts = await prisma.appointment.findMany({
     where: {
@@ -1154,7 +1156,7 @@ export type HistoryDelivery = {
 /** One window instead of "the last N days": [since, until). The day recap
  *  reads the one ET day it summarises (audit A4), not 120 days of rows. */
 export type HistoryWindow = { since?: Date; until?: Date };
-const historySince = (days: number, w: HistoryWindow) => w.since ?? etDayStartUtc(etAddDays(new Date(), -days));
+const historySince = (days: number, w: HistoryWindow) => w.since ?? etDayStartPlusUtc(new Date(), -days);
 
 // Completed tasks over the last N days (newest first), for the history page.
 export async function getTaskHistory(days = 45, opts: TaskClientScope & HistoryWindow = {}): Promise<HistoryTask[]> {

@@ -237,7 +237,7 @@ export async function portalAddComment(auth: PortalAuth, submissionId: string, t
     `${actorLabel(v)}: ${clip(text, 120)}`,
     `/review/${sub.projectId}`,
     // One ping per cut per day — the notes themselves arrive with the request.
-    `portal-note-${submissionId}-${new Date().toISOString().slice(0, 10)}`,
+    `portal-note-${submissionId}-${etDayKey(new Date())}`, // once per ET day (Oct 28 2026); the UTC date turned at 8 PM ET
   );
   return { ok: true, message: "Noted.", id: created.id };
 }

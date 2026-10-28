@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getBillingRows } from "@/lib/queries";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { refinedDeliverableLabel } from "@/lib/pipeline";
-import { etDateTime, etDate, etDayKey, etDayStartUtc, etAddDays, etFullDate, etEndOfDay } from "@/lib/datetime";
+import { etDateTime, etDate, etDayKey, etDayStartUtc, etDayStartPlusUtc, etFullDate, etEndOfDay } from "@/lib/datetime";
 import type { HubTool } from "@/lib/integrations/ai";
 import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
 import { canSeeMoney } from "@/lib/auth/access";
@@ -401,19 +401,22 @@ const MONEY_CATEGORIES = ["pricing", "fee", "financial"];
 const MONEY_BLIND_NOTICE =
   "Figures removed for this viewer's access level. Do not estimate, infer, or reconstruct any amount, price, rate, margin, or balance; if asked for one, say it is not available at their access level.";
 
-// Resolve a range keyword / explicit dates into [startUtc, endUtc).
+// Resolve a range keyword / explicit dates into [startUtc, endUtc). Whole ET
+// days by key (Oct 28 2026): midnight + 24 h is an hour off on the two
+// clock-change days, so "today" ended at 11 PM on the November one.
 function resolveRange(input: { range?: string; from?: string; to?: string }): { start: Date; end: Date; label: string } {
-  const todayStart = etDayStartUtc(new Date());
+  const now = new Date();
+  const todayStart = etDayStartUtc(now);
   if (input.from) {
     const start = etDayStartUtc(new Date(`${input.from}T12:00:00-05:00`));
-    const end = input.to ? etAddDays(etDayStartUtc(new Date(`${input.to}T12:00:00-05:00`)), 1) : etAddDays(start, 1);
+    const end = etDayStartPlusUtc(input.to ? new Date(`${input.to}T12:00:00-05:00`) : start, 1);
     return { start, end, label: `${input.from}${input.to ? ` → ${input.to}` : ""}` };
   }
   switch ((input.range ?? "today").toLowerCase()) {
-    case "tomorrow": return { start: etAddDays(todayStart, 1), end: etAddDays(todayStart, 2), label: "tomorrow" };
-    case "yesterday": return { start: etAddDays(todayStart, -1), end: todayStart, label: "yesterday" };
-    case "week": case "next7": return { start: todayStart, end: etAddDays(todayStart, 7), label: "next 7 days" };
-    default: return { start: todayStart, end: etAddDays(todayStart, 1), label: "today" };
+    case "tomorrow": return { start: etDayStartPlusUtc(now, 1), end: etDayStartPlusUtc(now, 2), label: "tomorrow" };
+    case "yesterday": return { start: etDayStartPlusUtc(now, -1), end: todayStart, label: "yesterday" };
+    case "week": case "next7": return { start: todayStart, end: etDayStartPlusUtc(now, 7), label: "next 7 days" };
+    default: return { start: todayStart, end: etDayStartPlusUtc(now, 1), label: "today" };
   }
 }
 
@@ -668,7 +671,7 @@ export async function execHubTool(
     case "day_summary": {
       const dateStr = typeof input.date === "string" && input.date ? input.date : null;
       const start = dateStr ? etDayStartUtc(new Date(`${dateStr}T12:00:00-05:00`)) : etDayStartUtc(new Date());
-      const end = etAddDays(start, 1);
+      const end = etDayStartPlusUtc(start, 1); // the whole ET day, 23 or 25 hours on a clock-change day
       const [completed, delivered, shoots] = await Promise.all([
         prisma.smartTask.findMany({
           where: { status: "COMPLETED", completedAt: { gte: start, lt: end }, AND: [ownerPrivateScope(ctx)] },
@@ -1114,7 +1117,7 @@ export async function execHubTool(
       let dueAt: Date;
       const dd = typeof input.dueDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(input.dueDate) ? input.dueDate : "";
       if (dd) dueAt = etEndOfDay(dd); // 5pm ET, DST-safe
-      else dueAt = etAddDays(etDayStartUtc(new Date()), 1);
+      else dueAt = etDayStartPlusUtc(new Date(), 1);
 
       // Don't duplicate: if the same assistant to-do (same title, same order) is
       // already open, return it instead of making another.
