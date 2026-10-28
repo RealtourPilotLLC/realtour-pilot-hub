@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { CheckCircle2, ChevronDown, ChevronUp, CircleAlert, Download, ExternalLink, Flag, FlaskConical, Loader2, RefreshCw, Send, ShieldCheck, Truck, UploadCloud } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronUp, CircleAlert, Clock, Download, ExternalLink, Flag, FlaskConical, Loader2, RefreshCw, Send, ShieldCheck, Truck, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etMonthDayTime } from "@/lib/datetime";
 import { CopyButton } from "@/components/ui/CopyButton";
@@ -16,7 +16,7 @@ import { ReadyProgressBar, type ReadyBarState } from "./ReadyProgressBar";
 import { useJob } from "./JobContext";
 import { aryeoPushLine, aryeoPushNext, aryeoPushOn, useAryeoPushActions, useLivePush } from "./AryeoPushControls";
 import { VIEW_ONLY_NOTE } from "./types";
-import { holdingFor } from "@/lib/photoDelivery/holding";
+import { clientRequestLines, holdingFor, photoChecksWaitFor, photoChecksWaitWords } from "@/lib/photoDelivery/holding";
 
 // ---------------------------------------------------------------------------
 // THE DELIVER PANEL (plan 9.6), sticky at the bottom of the job page.
@@ -92,17 +92,29 @@ export function DeliverPanel() {
   const stage = header.stage;
   // The count is the checks that decide; an advisory line (open photo flags)
   // is shown on its own and never counted (Oct 21 2026).
-  const deciding = gate?.checks.filter((c) => !c.advisory) ?? [];
-  const passing = deciding.filter((c) => c.ok).length;
-  const total = deciding.length;
+  // Oct 28 2026 (Kyle on 40 N Perry St: "We don't need those notifications
+  // when the photos are not uploaded yet"): a photo-only check waiting for the
+  // photos is not counted as failing; the bar says it waits. And the client's
+  // requests count as ONE check, "Client requests" (Kyle: "one category/task
+  // for the job"), passing once every one is settled.
+  const reqChecks = gate?.checks.filter((c) => !!c.request) ?? [];
+  const reqOpen = clientRequestLines(reqChecks);
+  const deciding = gate?.checks.filter((c) => !c.advisory && !c.waiting && !c.request) ?? [];
+  const reqCounted = reqChecks.some((c) => !c.advisory) ? 1 : 0;
+  const passing = deciding.filter((c) => c.ok).length + (reqCounted && !reqOpen.some((l) => l.holds) ? 1 : 0);
+  const total = deciding.length + reqCounted;
+  const waitingChecks = gate?.checks.filter((c) => c.waiting) ?? [];
+  const waitWords = photoChecksWaitWords(waitingChecks, { ...data.holdingBase, stage });
   // The flags line by its key: an advisory line can also be a request that does not hold delivery (Oct 21 2026).
   const flags = gate?.checks.find((c) => c.key === "flags" && !c.ok) ?? null;
   const flagWords = flags?.detail ? `${flags.detail[0].toUpperCase()}${flags.detail.slice(1)}` : "Photo flags are open";
   // Oct 21 2026 (859 N Lawrence St): the photographer's wrap-up and what the
   // client asked hold Kyle's delivery too, shadow mode or not.
   // Oct 23 2026: the wrap-up line (askNotes) shows here too, without holding anything.
-  const holds = gate?.checks.filter((c) => c.hold || c.askId || c.askNotes) ?? [];
-  const openHolds = holds.filter((c) => c.hold && !c.ok);
+  // Oct 28 2026: the client's requests are one line here (settled at the top, in Client requests).
+  const holds = gate?.checks.filter((c) => (c.hold || c.askId || c.askNotes) && !c.request) ?? [];
+  const reqSettled = reqChecks.filter((c) => c.ok);
+  const openHolds = [...holds.filter((c) => c.hold && !c.ok), ...reqOpen.filter((l) => l.holds)];
   const canStage = START_FROM.has(stage);
   const canStart = !!gate && canStage && gate.canDeliver;
   const startWhy = !gate
@@ -167,6 +179,8 @@ export function DeliverPanel() {
   const holding = holdingFor({ ...data.holdingBase, stage, gate, gateError: data.gateError, push });
   const firstHold = delivered ? null : holding.items[0] ?? null;
   if (firstHold) lines.push({ text: `${firstHold.text}${holding.items.length > 1 ? ` (+${holding.items.length - 1} more, listed at the top)` : ""}`, tone: firstHold.waitingOn === "Waiting on Kyle" ? "warn" : "muted" });
+  // Oct 28 2026 (Kyle): "say plainly that they wait for the upload".
+  if (waitWords && !delivered) lines.push({ text: waitWords, tone: "muted" });
   if (pushLine) lines.push(pushLine);
   else if (hubOn && push.sameDayAuto && !delivered) lines.push({ text: "Same-day order: the hub approves and delivers it by itself once every check passes.", tone: "muted" });
   if (why && !(delivered && pushLine)) lines.push({ text: why, tone: delivered ? "good" : "muted" });
@@ -398,7 +412,17 @@ export function DeliverPanel() {
               <p className="mt-1 text-[13px] text-warning">{data.gateError ?? "The checklist could not be read."}</p>
             ) : (
               <ul className="mt-1.5 space-y-1 text-sm">
-                {gate.checks.filter((c) => !c.advisory && !c.hold).map((c) => (
+                {gate.checks.filter((c) => !c.advisory && !c.hold && !c.request).map((c) =>
+                  c.waiting ? (
+                    // Oct 28 2026: needs the photos; not a thing to do yet.
+                    <li key={c.key} className="flex items-start gap-2 text-muted" data-check-waiting={c.key}>
+                      <Clock aria-hidden className="mt-0.5 size-4 shrink-0" />
+                      <span>
+                        <span className="sr-only">Waiting: </span>
+                        {c.label} <span>(waits for {photoChecksWaitFor({ ...data.holdingBase, stage })})</span>
+                      </span>
+                    </li>
+                  ) : (
                   <li key={c.key} className="flex items-start gap-2">
                     {c.ok ? <CheckCircle2 aria-hidden className="mt-0.5 size-4 shrink-0 text-success" /> : <CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />}
                     <span>
@@ -407,7 +431,8 @@ export function DeliverPanel() {
                       {c.detail && <span className="text-muted"> ({c.detail})</span>}
                     </span>
                   </li>
-                ))}
+                  ),
+                )}
               </ul>
             )}
             {/* Open photo flags (Oct 21 2026): Kyle sees them here and on the
@@ -423,10 +448,40 @@ export function DeliverPanel() {
                 </span>
               </p>
             )}
-            {holds.length > 0 && !delivered && (
+            {(holds.length > 0 || reqChecks.length > 0) && !delivered && (
               <div className="mt-3">
                 <h3 className="text-sm font-semibold">Before the photos go out</h3>
                 <ul className="mt-1.5 space-y-2 text-sm">
+                  {/* Oct 28 2026 (Kyle): the client's requests, one line here; each is settled once, at the top (Client requests). */}
+                  {reqChecks.length > 0 && (
+                    <li className="flex items-start gap-2" data-deliver-client-requests={reqOpen.length}>
+                      {reqOpen.length ? (
+                        <CircleAlert aria-hidden className={cn("mt-0.5 size-4 shrink-0", reqOpen.some((l) => l.holds) ? "text-danger" : "text-warning")} />
+                      ) : (
+                        <CheckCircle2 aria-hidden className="mt-0.5 size-4 shrink-0 text-success" />
+                      )}
+                      <span className="min-w-0 flex-1">
+                        <span className={cn(reqOpen.length > 0 && "font-medium")}>{reqOpen.length ? `Client requests: ${reqOpen.length} to settle` : "Client requests settled"}</span>
+                        <span className="block break-words text-[12px] text-muted">
+                          {reqOpen.length ? reqOpen.map((l) => l.text.replace(/\.$/, "")).join("; ") : reqSettled.map((c) => `${c.label}${c.detail ? ` (${c.detail})` : ""}`).join("; ")}
+                        </span>
+                        {reqOpen.length > 0 && (
+                          <span className="mt-1 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpen(false);
+                                document.getElementById("pd-special-requests")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                              }}
+                              className={cn(cardBtn, secondary)}
+                            >
+                              {readOnly ? "See them at the top" : "Settle them at the top"}
+                            </button>
+                          </span>
+                        )}
+                      </span>
+                    </li>
+                  )}
                   {holds.map((c) => (
                     <li key={c.key} className="flex items-start gap-2">
                       {c.ok ? <CheckCircle2 aria-hidden className="mt-0.5 size-4 shrink-0 text-success" /> : <CircleAlert aria-hidden className={cn("mt-0.5 size-4 shrink-0", c.hold ? "text-danger" : "text-warning")} />}

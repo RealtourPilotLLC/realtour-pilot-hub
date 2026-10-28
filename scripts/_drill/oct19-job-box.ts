@@ -249,8 +249,10 @@ async function main() {
   c.ok("…the hold on the photos is released", (await ca.openAsksHolding(job.id, "photo")).length === 0 && (await ca.openAsksHolding(job.id, "video")).length === 1);
   delete process.env.AUTH_ENFORCE;
 
-  c.ok("the photo job page and the editor brief carry the box (the photo asks card replaced)",
-    /loadBeforeYouSend\(h\.projectId, "photo"\)/.test(fs.readFileSync("src/app/ops/photo-delivery/[jobId]/page.tsx", "utf8")) && /<BeforeYouSendView data=\{box\.data\} medium="photo"/.test(fs.readFileSync("src/app/ops/photo-delivery/[jobId]/page.tsx", "utf8")) && !/OpenClientAsksCard/.test(fs.readFileSync("src/app/ops/photo-delivery/[jobId]/page.tsx", "utf8")) &&
+  // Oct 28 2026 (Kyle: "Virtual staging is also showing twice"): on the photo job page the box keeps the shoot's flags
+  // and the job's notes; the client's requests, the order note and the add-ons are the page's one Client requests item.
+  c.ok("the photo job page and the editor brief carry the box (the photo asks card replaced; on the photo page its requests are the Client requests item)",
+    /loadBeforeYouSend\(h\.projectId, "photo"\)/.test(fs.readFileSync("src/app/ops/photo-delivery/[jobId]/page.tsx", "utf8")) && /<BeforeYouSendView\s+data=\{\{ \.\.\.box\.data, requests: \[\][^\n]*\}\}\s+medium="photo"/.test(fs.readFileSync("src/app/ops/photo-delivery/[jobId]/page.tsx", "utf8")) && !/OpenClientAsksCard/.test(fs.readFileSync("src/app/ops/photo-delivery/[jobId]/page.tsx", "utf8")) &&
     /loadBeforeYouSend\(project\.id, "video"\)/.test(fs.readFileSync("src/app/edit/[id]/page.tsx", "utf8")) && /medium="video" canCheck=\{beforeYouSend\.canCheck\} hideNotes \/>/.test(fs.readFileSync("src/app/edit/[id]/page.tsx", "utf8")));
 
   // Oct 20 2026 (audit A2): a Request typed in the job page's composer is the

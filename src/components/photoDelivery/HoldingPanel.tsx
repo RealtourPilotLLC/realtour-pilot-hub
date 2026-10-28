@@ -1,16 +1,18 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { CheckCircle2, ChevronDown, CircleAlert, Clock, ExternalLink, MessageSquare, Quote, Send, Undo2, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { SETTLED_REASON_MIN, holdingFor, type HoldingAction, type HoldingItem } from "@/lib/photoDelivery/holding";
+import { SETTLED_REASON_MIN, holdingFor, type HoldingAction, type HoldingItem, type RequestLine } from "@/lib/photoDelivery/holding";
+import { OPEN_ADDON_STEPS } from "@/lib/photoDelivery/addOnSteps";
 import {
-  askPhotographerNotesAction, clientAskedAnswerAction, clientAskedDoneAction, confirmAddOnAction, overrideWrapUpAction, releaseHoldAction, requestQcAction, settleRevisionAction, startDeliveryAction, undoRecheckAction, verifyDeliveryAction,
+  askPhotographerNotesAction, clientAskedAnswerAction, clientAskedDoneAction, confirmAddOnAction, overrideWrapUpAction, releaseHoldAction, requestQcAction, settleClientRequestAction, settleRevisionAction, startDeliveryAction, undoRecheckAction, verifyDeliveryAction,
 } from "@/app/ops/photo-delivery/actions";
 import { updateOnAryeoAction } from "@/app/ops/photo-delivery/editActions";
 import { useJob } from "./JobContext";
 import { useAryeoPushActions } from "./AryeoPushControls";
+import { AddOnSteps } from "./AddOnSteps";
 
 // ---------------------------------------------------------------------------
 // WHAT'S HOLDING THIS (Oct 22 2026), at the top of the job page.
@@ -26,6 +28,17 @@ import { useAryeoPushActions } from "./AryeoPushControls";
 // to send" with the button. What is open but does not hold Kyle's approval
 // (photo flags, shadow-mode checks) folds away under the list.
 // View only (the creative manager): the same list, no buttons.
+//
+// Oct 28 2026 (Kyle on 40 N Perry St): "Virtual staging is also showing
+// twice, as it was in the order instructions and texted to us. If it's the
+// same request, then it should be combined into one and if it's multiple
+// requests then it should be in one category/task for the job (Client
+// Requests)". Every client request is ONE "Client requests" item here
+// (holding.clientRequestLines): the same request from several places is one
+// line listing them, each different request its own line with its own button;
+// an add-on's line carries its three steps (AddOnSteps). The Special requests
+// card above this panel is gone. And before the photos are uploaded, the
+// checks that need photos are not listed; the photos line says they wait.
 // ---------------------------------------------------------------------------
 
 const btn = "inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg px-3 text-[13px] font-semibold disabled:cursor-not-allowed disabled:opacity-50";
@@ -40,6 +53,13 @@ export function HoldingPanel() {
     [data.holdingBase, data.header.stage, data.gate, data.gateError, data.aryeoPush],
   );
   const { approve, deliver } = useAryeoPushActions();
+  // The send confirmation opens an add-on's steps here (AryeoPushControls, OPEN_ADDON_STEPS).
+  const [openSteps, setOpenSteps] = useState<string | null>(null);
+  useEffect(() => {
+    const onOpen = (e: Event) => setOpenSteps(String((e as CustomEvent).detail ?? ""));
+    window.addEventListener(OPEN_ADDON_STEPS, onOpen);
+    return () => window.removeEventListener(OPEN_ADDON_STEPS, onOpen);
+  }, []);
   const ignored = data.gate?.ignored ?? null;
   const delivered = data.header.stage === "DELIVERED";
   if (delivered && !view.items.length) return null;
@@ -48,27 +68,29 @@ export function HoldingPanel() {
     setTab(tab);
     document.getElementById(`pd-tab-${tab}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
-  const confirmAddOn = async (key: string, label: string) => {
+  const confirmAddOn = async (key: string, label: string, askIds: string[] = []) => {
     const note = await ask({
       title: `${label}?`,
-      description: "Only once it is really on the photos. Write what was added and on which photos (for example: lot lines drawn on photos 1 to 4 from the plat). It goes on the job's activity.",
+      description: `Only once it is really on the photos. Write what was added and on which photos (for example: lot lines drawn on photos 1 to 4 from the plat). It goes on the job's activity.${askIds.length ? " The client's request for it is marked done with it." : ""}`,
       required: true,
       minLength: 5,
       confirmLabel: label,
     });
     if (note === null) return;
-    await run(() => confirmAddOnAction(jobId, key, note));
+    // Oct 28 2026: the same request asked again (a text, an order note) is settled with the add-on.
+    await run(() => (askIds.length ? settleClientRequestAction(jobId, { addOn: key, askIds, how: "done", note }) : confirmAddOnAction(jobId, key, note)));
   };
-  const answer = async (askId: string) => {
+  const answer = async (askId: string, askIds: string[] = []) => {
     const note = await ask({
       title: "Answer this request",
-      description: "Not doing it as asked? Write what you told the client, or why it stays as it is. It goes on the job's timeline.",
+      description: `Not doing it as asked? Write what you told the client, or why it stays as it is. It goes on the job's timeline.${askIds.length > 1 ? ` It answers the request everywhere it was asked (${askIds.length}).` : ""}`,
       required: true,
       minLength: 5,
       confirmLabel: "Save the answer",
     });
-    if (note !== null) await run(() => clientAskedAnswerAction(jobId, askId, note));
+    if (note !== null) await run(() => (askIds.length > 1 ? settleClientRequestAction(jobId, { askIds, how: "answered", note }) : clientAskedAnswerAction(jobId, askId, note)));
   };
+  const done = (askId: string, askIds: string[] = []) => run(() => (askIds.length > 1 ? settleClientRequestAction(jobId, { askIds, how: "done" }) : clientAskedDoneAction(jobId, askId)));
   const withoutWrapUp = async () => {
     const reason = await ask({
       title: "Let the photos go out without the wrap-up?",
@@ -128,17 +150,17 @@ export function HoldingPanel() {
         return <button type="button" onClick={() => openTab(a.tab)} className={cls}>{a.label}</button>;
       case "addon":
         return (
-          <button type="button" disabled={pending} onClick={() => void confirmAddOn(a.addOn, a.label)} className={cls}>
+          <button type="button" disabled={pending} onClick={() => void confirmAddOn(a.addOn, a.label, a.askIds)} className={cls}>
             <CheckCircle2 aria-hidden className="size-4" /> {a.label}
           </button>
         );
       case "ask":
         return (
           <>
-            <button type="button" disabled={pending} onClick={() => void run(() => clientAskedDoneAction(jobId, a.askId))} className={cls}>
+            <button type="button" disabled={pending} onClick={() => void done(a.askId, a.askIds)} className={cls}>
               <CheckCircle2 aria-hidden className="size-4" /> {a.label}
             </button>
-            <button type="button" disabled={pending} onClick={() => void answer(a.askId)} className={cn(btn, secondary)}>Answer with a note</button>
+            <button type="button" disabled={pending} onClick={() => void answer(a.askId, a.askIds)} className={cn(btn, secondary)}>Answer with a note</button>
           </>
         );
       case "release":
@@ -188,7 +210,70 @@ export function HoldingPanel() {
     }
   };
 
-  const row = (it: HoldingItem, n: number | null) => (
+  const quotesOf = (quotes: { from: string; text: string }[]) =>
+    quotes.length > 0 && (
+      <ul className="mt-1.5 space-y-1" aria-label="In the agent's words">
+        {quotes.map((q, i) => (
+          <li key={i} className="flex gap-2 rounded-lg border border-border bg-surface-2/50 px-2.5 py-1.5 text-[13px]">
+            <Quote aria-hidden className="mt-0.5 size-3.5 shrink-0 text-muted" />
+            <span className="min-w-0">
+              <span className="break-words">{q.text}</span>
+              <span className="block text-[12px] text-muted">{q.from}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    );
+
+  // Oct 28 2026 (Kyle): one line of the Client requests item: the request once, where it was asked, its own button.
+  const requestLine = (l: RequestLine) => (
+    <li key={l.key} className="min-w-0 rounded-xl border border-border bg-surface-2/30 p-2.5" data-request-line={l.addOn ?? (l.askIds.length ? "ask" : "unread")} data-sources={l.sources.length}>
+      <p className="break-words text-sm font-medium">{l.text}</p>
+      {l.sources.length > 0 && (
+        <p className="mt-0.5 break-words text-[12px] text-muted" data-request-sources>
+          {l.sources.length > 1 ? `Asked in ${l.sources.length} places: ` : "From: "}
+          {l.sources.join(" · ")}
+        </p>
+      )}
+      {(l.detail || !l.holds) && (
+        <p className="mt-0.5 break-words text-[12px] text-muted">
+          {[l.detail, l.holds ? null : readOnly ? "Doesn't hold Kyle's approval" : "Doesn't hold your approval"].filter(Boolean).join(" · ")}
+        </p>
+      )}
+      {quotesOf(l.quotes)}
+      {l.said && (
+        <details className="mt-1.5">
+          <summary className="cursor-pointer py-1 text-[12px] font-medium text-brand">Everything they said</summary>
+          <p className="mt-1 whitespace-pre-wrap break-words rounded-lg border border-border bg-surface-2/50 px-2.5 py-1.5 text-[13px]">{l.said.text}</p>
+          <p className="mt-0.5 text-[12px] text-muted">{l.said.from}</p>
+        </details>
+      )}
+      {!readOnly && l.action && <div className="mt-2 flex flex-wrap gap-2">{action(l.action)}</div>}
+      {l.addOn && !readOnly && !delivered && <AddOnSteps addOn={l.addOn} need={l.text} open={openSteps === l.addOn} onOpen={(v) => setOpenSteps(v ? l.addOn : null)} />}
+    </li>
+  );
+
+  const row = (it: HoldingItem, n: number | null) =>
+    it.requests ? (
+      // The job's one Client requests item (the send confirmation scrolls here: #pd-special-requests).
+      <li key={it.key} id="pd-special-requests" className="flex scroll-mt-24 items-start gap-3 py-3 first:pt-0 last:pb-0" data-holding={it.kind} data-client-requests>
+        {n != null ? (
+          <span aria-hidden className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-warning-soft text-[12px] font-semibold text-warning">{n}</span>
+        ) : (
+          <CircleAlert aria-hidden className="mt-0.5 size-5 shrink-0 text-muted" />
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="flex flex-wrap items-baseline gap-x-2 text-sm font-semibold">
+            Client requests
+            <span className="text-[12px] font-normal text-muted">{it.requests.length === 1 ? "1 request" : `${it.requests.length} requests`}</span>
+          </p>
+          <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[12px] text-muted">
+            <span className="inline-flex items-center gap-1"><Clock aria-hidden className="size-3" /> {it.waitingOn}</span>
+          </p>
+          <ul className="mt-2 space-y-2">{it.requests.map(requestLine)}</ul>
+        </div>
+      </li>
+    ) : (
     <li key={it.key} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0" data-holding={it.kind}>
       {n != null ? (
         <span aria-hidden className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-warning-soft text-[12px] font-semibold text-warning">{n}</span>
@@ -201,19 +286,7 @@ export function HoldingPanel() {
           <span className="inline-flex items-center gap-1"><Clock aria-hidden className="size-3" /> {it.waitingOn}</span>
           {it.detail && <span className="break-words">· {it.detail}</span>}
         </p>
-        {it.quotes.length > 0 && (
-          <ul className="mt-1.5 space-y-1" aria-label="In the agent's words">
-            {it.quotes.map((q, i) => (
-              <li key={i} className="flex gap-2 rounded-lg border border-border bg-surface-2/50 px-2.5 py-1.5 text-[13px]">
-                <Quote aria-hidden className="mt-0.5 size-3.5 shrink-0 text-muted" />
-                <span className="min-w-0">
-                  <span className="break-words">{q.text}</span>
-                  <span className="block text-[12px] text-muted">{q.from}</span>
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
+        {quotesOf(it.quotes)}
         {/* Oct 22 2026: the client's whole message behind a summarised request. */}
         {it.said && (
           <details className="mt-1.5">

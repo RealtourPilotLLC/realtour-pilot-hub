@@ -113,6 +113,31 @@ export function versionCarries(work: AddOnWork, v: { label: string; source: stri
 
 export const ADD_ON_BY_KEY = new Map(ADD_ON_WORK.map((w) => [w.key, w]));
 
+/**
+ * Oct 28 2026 (Kyle on 40 N Perry St: "Virtual staging is also showing twice,
+ * as it was in the order instructions and texted to us. If it's the same
+ * request, then it should be combined into one"). Is a client's request (a
+ * text, an email, an order note) the add-on itself, asked again? Only when it
+ * names the add-on (staging, lot lines, a plat) and every other sentence in it
+ * is about the same work or is a greeting: "Please stage the living room and
+ * the den" is the staging; "Stage the den. And remove the trash cans" is not
+ * (the trash cans would vanish under the staging line). The furniture words
+ * alone never make it staging ("remove the furniture in photo 3"). Pure.
+ */
+const NAMES_ADD_ON: Record<AddOnKey, RegExp> = {
+  lot_lines: /\b(lot|property|parcel|boundary)[\s-]*lines?\b|\bplats?\b/i,
+  virtual_staging: /\b(virtual(?:ly)?|digital(?:ly)?)[\s-]*stag|\bstag(?:e|ed|ing)\b/i,
+};
+const GREETING = /^(hi|hey|hello|thanks|thank you|thx|ty|cheers|best|regards)\b[\s\w,!.]{0,30}$/i;
+export function sameRequestAsAddOn(key: string, text: string): boolean {
+  const work = ADD_ON_BY_KEY.get(key as AddOnKey);
+  const names = NAMES_ADD_ON[key as AddOnKey];
+  if (!work || !names) return false;
+  const sentences = (text ?? "").replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter((s) => s && !GREETING.test(s));
+  if (!sentences.some((s) => names.test(s))) return false;
+  return sentences.every((s) => names.test(s) || work.words.test(s) || work.product.test(s));
+}
+
 /** The action prefix of Kyle's "Lot lines added" on the job's activity (the record the checklist reads). */
 export const ADD_ON_CONFIRM_ACTION = "add-on confirmed";
 /** How long the note with a confirmation must be. */

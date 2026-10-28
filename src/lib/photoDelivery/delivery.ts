@@ -75,7 +75,28 @@ export type GateCheck = {
    */
   hubHold?: boolean;
   askNotes?: boolean;
+  /**
+   * Oct 28 2026 (Kyle on 40 N Perry St: "We don't need those notifications
+   * when the photos are not uploaded yet"): a check that can only run on the
+   * photos, on a job that has none yet. Still open (`ok` false, so the hub's
+   * own delivery never passes it), but not a thing to do: the lists leave it
+   * out and the Deliver bar's count does not count it; they say it waits for
+   * the upload (holding.photoChecksWaitWords).
+   */
+  waiting?: boolean;
+  /**
+   * Oct 28 2026 (Kyle: "if it's the same request, then it should be combined
+   * into one and if it's multiple requests then it should be in one
+   * category/task for the job (Client Requests)"): a client's request about
+   * the photos (an add-on on the order, an order note, a text, an email, a
+   * call), shown in the ONE "Client requests" item (holding.clientRequestLines).
+   * `what`: what it asks; `from`: where it came from ("Text from Ashley, Oct
+   * 26"); `sameAs`: the add-on line (its key) this request only asks for
+   * again, so the two read as one line (addOns.sameRequestAsAddOn).
+   */
+  request?: GateRequest;
 };
+export type GateRequest = { what: string; from: string; sameAs?: string | null };
 /** The add-on behind a gate line: its key (the confirm button), the order line, the agent's words, and how it was cleared. */
 export type GateAddOn = {
   key: string;
@@ -157,8 +178,16 @@ export async function deliveryGate(jobId: string, opts: { sync?: boolean } = {})
     // Oct 22 2026 (Jordan, 58 Recreation Dr): lot lines, virtual staging: add-on
     // work on the order holds delivery until it is confirmed added (addOns.ts),
     // listed between the two (the order of holding.ts HOLDING_ORDER).
-    ...(await askedChecks(job, sync).then(async (asked) => [...asked.filter((c) => c.key === "wrapup"), ...(await addOnChecks(job)), ...asked.filter((c) => c.key !== "wrapup")])),
+    ...(await requestChecks(job, sync)),
   ];
+  // Oct 28 2026 (Kyle on 40 N Perry St: "We don't need those notifications
+  // when the photos are not uploaded yet"): before the job has any photos, the
+  // checks that can only run on photos (full-size files, the photo check
+  // covering every photo, the gallery and room checks) wait for them. They
+  // stay open, so nothing is delivered on them, but they are not things to do.
+  if (photos.length === 0 && PRE_PHOTO_STAGES.has(job.stage)) {
+    for (const c of checks) if (!c.ok && PHOTO_ONLY_CHECKS.has(c.key)) c.waiting = true;
+  }
   // An overridden line is a person's call, and a person-only line is Kyle's to
   // approve: neither ever counts for the hub's own delivery. Nor does a line
   // that only informs Kyle but holds the hub (hubHold: the wrap-up, Oct 23 2026).
@@ -185,6 +214,38 @@ export async function deliveryGate(jobId: string, opts: { sync?: boolean } = {})
   };
 }
 
+/** The checks that can only run on the photos, and the stages a job can be in before it has any (Oct 28 2026). */
+const PHOTO_ONLY_CHECKS = new Set(["files", "qc", "gallery", "rooms"]);
+const PRE_PHOTO_STAGES = new Set(["EDITING", "EDIT_FAILED", "ON_HOLD"]);
+
+/**
+ * The wrap-up line, the add-on lines and what the client asked, in the order
+ * holding.ts HOLDING_ORDER shows them. Oct 28 2026 (Kyle on 40 N Perry St:
+ * "Virtual staging is also showing twice, as it was in the order instructions
+ * and texted to us"): a request that only asks for an add-on on the order
+ * again points at it (`request.sameAs`), so the job's Client requests show
+ * the two as one line. Each stays its own line here: settling the add-on
+ * settles the request with it (actions.settleClientRequestAction). A question
+ * for the office (more staging than ordered: scope or price) is never the
+ * add-on; it stays its own line, settled with the client.
+ */
+async function requestChecks(job: { id: string; projectId: string | null; stage: string }, sync: boolean): Promise<GateCheck[]> {
+  const words = new Map<string, string | null>();
+  const asked = await askedChecks(job, sync, words);
+  const addOns = await addOnChecks(job);
+  const withAddOn = addOns.filter((a) => a.addOn);
+  if (withAddOn.length) {
+    const { sameRequestAsAddOn } = await import("./addOns");
+    for (const c of asked) {
+      if (!c.askId || !c.request || words.get(c.askId) === null) continue;
+      const said = words.get(c.askId) ?? "";
+      const a = withAddOn.find((x) => sameRequestAsAddOn(x.addOn!.key, c.request!.what) || sameRequestAsAddOn(x.addOn!.key, said));
+      if (a) c.request.sameAs = a.key;
+    }
+  }
+  return [...asked.filter((c) => c.key === "wrapup"), ...addOns, ...asked.filter((c) => c.key !== "wrapup")];
+}
+
 /**
  * One HOLD line per add-on on the order (addOns.ts): "Lot Lines needed" with
  * the agent's words, until a photo carries the work or Kyle confirms it by
@@ -209,9 +270,10 @@ async function addOnChecks(job: { id: string; projectId: string | null }): Promi
             : `confirmed by ${a.cleared.by ?? "staff"}${a.cleared.note ? `: ${a.cleared.note}` : ""}`
         : `Ordered: ${a.ordered}`,
       addOn: { key: a.key, need: a.need, done: a.done, ordered: a.ordered, quotes: a.quotes, cleared: a.cleared },
+      request: { what: a.need, from: `On the order: ${a.ordered}` },
     }));
   } catch {
-    return [{ key: "addons", label: "Add-on work on the order (lot lines, virtual staging)", ok: false, hold: true, personOnly: true, detail: "could not be read just now, it is read again on the next pass" }];
+    return [{ key: "addons", label: "Add-on work on the order (lot lines, virtual staging)", ok: false, hold: true, personOnly: true, detail: "could not be read just now, it is read again on the next pass", request: { what: "Add-on work on the order", from: "The order" } }];
   }
 }
 
@@ -220,7 +282,8 @@ async function addOnChecks(job: { id: string; projectId: string | null }): Promi
  * read that fails is an open hold, never a pass: the hub's own delivery must
  * not go out on a check it couldn't make (the same rule as uploadCheck).
  */
-async function askedChecks(job: { id: string; projectId: string | null; stage: string }, sync = true): Promise<GateCheck[]> {
+/** `words` (Oct 28 2026): filled with each request's full words, null for a question for the office. */
+async function askedChecks(job: { id: string; projectId: string | null; stage: string }, sync = true, words?: Map<string, string | null>): Promise<GateCheck[]> {
   if (!job.projectId) return [];
   const projectId = job.projectId;
   const m = await import("./clientAsked");
@@ -260,10 +323,15 @@ async function askedChecks(job: { id: string; projectId: string | null; stage: s
     // tick off, before the photos go out (never after).
     if (sync && !["DELIVERED", "DELIVERING"].includes(job.stage)) await m.syncPhotoAsks(projectId);
     for (const it of await m.clientAskedItems(projectId)) {
-      lines.push({ key: `ask:${it.id}`, label: it.label, ok: false, hold: it.holds, advisory: !it.holds, askId: it.id, detail: it.detail, waitingOn: it.waitingOn, doneLabel: it.doneLabel, said: it.said });
+      // Oct 28 2026: the client's requests (not the photographer's wrap-up) go in the job's one Client requests item.
+      words?.set(it.id, it.office ? null : it.words);
+      lines.push({
+        key: `ask:${it.id}`, label: it.label, ok: false, hold: it.holds, advisory: !it.holds, askId: it.id, detail: it.detail, waitingOn: it.waitingOn, doneLabel: it.doneLabel, said: it.said,
+        ...(it.fromWrapUp ? {} : { request: { what: it.what, from: it.from } }),
+      });
     }
   } catch {
-    lines.push({ key: "asks", label: "What the client asked", ok: false, hold: true, detail: "could not be read just now, it is read again on the next pass" });
+    lines.push({ key: "asks", label: "What the client asked", ok: false, hold: true, detail: "could not be read just now, it is read again on the next pass", request: { what: "What the client asked", from: "Texts, emails and order notes" } });
   }
   return lines;
 }

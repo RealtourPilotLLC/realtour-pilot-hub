@@ -3,7 +3,7 @@ import "server-only";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { clip, scrubMoney } from "@/lib/text";
-import { etDateTime } from "@/lib/datetime";
+import { etDateTime, etMonthDay } from "@/lib/datetime";
 import { logJobEvent, setStage } from "./jobState";
 import { ignoredSummaryLine, photoNumbers, type IgnoredGroup } from "./careRules";
 import { PHOTO_OFFICE_KEY_PREFIX } from "@/lib/itemMedium";
@@ -290,6 +290,14 @@ export type ClientAskedItem = {
   doneLabel: string;
   /** The client's full words, when the line is a summary of them ("Everything they said"). */
   said: { from: string; text: string } | null;
+  /**
+   * Oct 28 2026 (Kyle: every client request in ONE "Client requests" item,
+   * the same request from several places one line): what it asks, without the
+   * "Client asked:" lead, and where it came from in a few words ("Order note",
+   * "Text from Ashley, Oct 26"), the words the add-on's quotes use.
+   */
+  what: string;
+  from: string;
 };
 
 /**
@@ -344,9 +352,15 @@ export async function clientAskedItems(projectId: string): Promise<ClientAskedIt
           : `${r.askedBy ?? "The client"}, ${sourceWords(r.source).toLowerCase()}, ${etDateTime(r.askedAt)}`;
       // The client's own words in full, when the line is a summary of them.
       const said = !fromWrapUp && r.summary?.trim() && !norm(what).includes(norm(words)) ? { from: detail, text: words } : null;
+      const from = fromWrapUp
+        ? `${firstName(r.askedBy) ? `${firstName(r.askedBy)}'s` : "The photographer's"} wrap-up`
+        : r.source === "order_note"
+          ? "Order note"
+          : `${sourceWords(r.source)} from ${firstName(r.askedBy) ?? "the client"}, ${etMonthDay(r.askedAt)}`;
       return {
         id: r.id, source: r.source, label, detail, words, numbers, fromWrapUp, holds: r.holdsDelivery, askedAtISO: r.askedAt.toISOString(),
         office, medium: r.medium, waitingOn: office ? "Waiting on Jordan or Kyle" : "Waiting on Kyle", doneLabel: office ? "Settled with the client" : "Done (fixed)", said,
+        what: `${clip(what, 200)}${which}`, from,
       };
     });
 }

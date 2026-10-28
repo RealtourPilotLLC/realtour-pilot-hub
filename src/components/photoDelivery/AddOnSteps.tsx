@@ -1,93 +1,33 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, CircleAlert, Download, ImagePlus, ListChecks, Loader2, Quote } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { CheckCircle2, Download, ImagePlus, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { addPhotosAction } from "@/app/ops/photo-delivery/fileActions";
-import { OPEN_ADDON_STEPS, addOnConfirmLines, pairFinished } from "@/lib/photoDelivery/addOnSteps";
+import { pairFinished } from "@/lib/photoDelivery/addOnSteps";
 import { PhotoImg } from "./PhotoImg";
 import { photoTitle, useJob } from "./JobContext";
 import { uploadPhotoFile } from "./PhotoFiles";
-import type { GateCheckView } from "./types";
 
 // ---------------------------------------------------------------------------
-// SPECIAL REQUESTS, AT THE TOP OF THE JOB (Oct 23 2026, Jordan and Kyle's
-// huddle, item 7). What the client ordered or asked beyond the photos: lot
-// lines and virtual staging (the delivery checklist's add-on lines, counted by
-// stagingCount.ts: done, or not done yet) and the client's open requests
-// about the photos. Kept short: one line each.
-//
-// An add-on not done shows three steps, all on this page:
+// ADD-ON WORK NOT DONE YET: THREE STEPS ON THE JOB PAGE (Oct 23 2026, Jordan
+// and Kyle's huddle, item 7). Lot lines or virtual staging on the order:
 //   1 · Select photos for it (tick them here),
 //   2 · Download them (one file each, never a zip; the page's own download),
 //   3 · Upload the finished versions: the page's Add photos, as NEW photos,
 //       each next to its original (the originals stay). The new photo carries
 //       the work's label, so its hold ("Virtual Staging needed") clears.
-// The confirmation before Approve and deliver lists the same lines
-// (AryeoPushControls, addOnSteps.addOnConfirmLines) and sends Kyle here when
-// one is not done. View only: the lines, no steps.
+// Oct 28 2026: the steps sit under the add-on's line in the job's one Client
+// requests item (HoldingPanel); the Special requests card that held them is
+// gone (Kyle: the same request showed twice). The office's only.
 // ---------------------------------------------------------------------------
 
 const btn = "inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-3 text-[13px] font-medium hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50";
 
-export function SpecialRequests() {
-  const { data, readOnly } = useJob();
-  const checks = data.gate?.checks ?? [];
-  const addOns = checks.filter((c) => !!c.addOn);
-  const asks = checks.filter((c) => !!c.askId && !c.ok);
-  const lines = useMemo(() => addOnConfirmLines(addOns), [addOns]);
-  const [open, setOpen] = useState<string | null>(null);
-  useEffect(() => {
-    const onOpen = (e: Event) => setOpen(String((e as CustomEvent).detail ?? ""));
-    window.addEventListener(OPEN_ADDON_STEPS, onOpen);
-    return () => window.removeEventListener(OPEN_ADDON_STEPS, onOpen);
-  }, []);
-  if (!addOns.length && !asks.length) return null;
-  const delivered = data.header.stage === "DELIVERED";
-  return (
-    <section id="pd-special-requests" aria-labelledby="pd-special-h" className="panel-shadow scroll-mt-24 rounded-2xl border border-border bg-surface p-4" data-special-requests>
-      <h2 id="pd-special-h" className="flex items-center gap-2 text-base font-semibold">
-        <ListChecks aria-hidden className="size-5 text-brand" /> Special requests
-      </h2>
-      <ul className="mt-2 divide-y divide-border">
-        {addOns.map((c) => {
-          const l = lines.find((x) => x.key === c.addOn!.key)!;
-          const quote = c.addOn!.quotes[0];
-          return (
-            <li key={c.key} className="py-2.5 first:pt-1 last:pb-0" data-addon-line={c.addOn!.key} data-done={l.done ? "yes" : "no"}>
-              <p className="flex flex-wrap items-center gap-2 text-sm">
-                {l.done ? <CheckCircle2 aria-hidden className="size-4 shrink-0 text-success" /> : <CircleAlert aria-hidden className="size-4 shrink-0 text-warning" />}
-                <span className={cn("font-medium", !l.done && "text-warning")}>{l.words}</span>
-              </p>
-              {quote && (
-                <p className="mt-1 flex gap-1.5 pl-6 text-[13px] text-muted">
-                  <Quote aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-                  <span className="min-w-0 break-words">{quote.text} <span className="text-[12px]">({quote.from})</span></span>
-                </p>
-              )}
-              {!l.done && !readOnly && !delivered && <AddOnSteps line={c} open={open === c.addOn!.key} onOpen={(v) => setOpen(v ? c.addOn!.key : null)} />}
-            </li>
-          );
-        })}
-        {asks.map((c) => (
-          <li key={c.key} className="flex items-start gap-2 py-2.5 text-sm first:pt-1 last:pb-0" data-ask-line>
-            <CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />
-            <span className="min-w-0 break-words">
-              {c.label}
-              <span className="block text-[12px] text-muted">Settle it under What&rsquo;s holding this (Done, or Answer with a note).</span>
-            </span>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-/** The three steps for add-on work not done yet: select, download, upload the finished versions next to the originals. */
-function AddOnSteps({ line, open, onOpen }: { line: GateCheckView; open: boolean; onOpen: (v: boolean) => void }) {
+/** `addOn`: the add-on's key; `need`: "Virtual Staging needed". */
+export function AddOnSteps({ addOn, need, open, onOpen }: { addOn: string; need: string; open: boolean; onOpen: (v: boolean) => void }) {
   const { data, jobId, run, confirm, notify, pending } = useJob();
-  const key = line.addOn!.key;
-  const name = line.addOn!.need.replace(/\s+needed$/i, "");
+  const name = need.replace(/\s+needed\.?$/i, "");
   const active = useMemo(() => data.photos.filter((p) => p.status === "ACTIVE"), [data.photos]);
   const [picked, setPicked] = useState<string[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
@@ -130,12 +70,15 @@ function AddOnSteps({ line, open, onOpen }: { line: GateCheckView; open: boolean
     if (failed.length) notify("err", failed.slice(0, 2).join(" "));
     if (stored.length) {
       setBusy("Adding them next to the originals…");
-      await run(() => addPhotosAction({ jobId, files: stored, addOn: key, nextTo: pairs }));
+      await run(() => addPhotosAction({ jobId, files: stored, addOn, nextTo: pairs }));
     }
     setBusy(null);
   };
+  if (!active.length) {
+    return <p className="mt-1.5 text-[12px] text-muted" data-addon-steps={addOn}>Once the photos are in, select the ones for {name} here, download them, and upload the finished versions.</p>;
+  }
   return (
-    <div className="mt-2 pl-6" data-addon-steps={key}>
+    <div className="mt-2" data-addon-steps={addOn}>
       <div className="flex flex-wrap gap-2">
         <button type="button" className={cn(btn, open && "border-brand/60 bg-brand-soft")} onClick={() => onOpen(!open)} aria-expanded={open}>
           1 · Select photos for it{picked.length ? ` (${picked.length})` : ""}
