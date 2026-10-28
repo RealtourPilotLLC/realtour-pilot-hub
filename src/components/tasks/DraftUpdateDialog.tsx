@@ -16,10 +16,13 @@ import { ModalDialog } from "@/components/ui/ModalDialog";
 export function DraftUpdateDialog({
   projectId,
   outputId,
+  outputIds = null,
   label,
 }: {
   projectId: string;
   outputId: string | null;
+  /** a job's several late videos: one update for all of them (Oct 28 2026) */
+  outputIds?: string[] | null;
   /** "His and hers (video 2) — 812 Linden Ave", for the dialog heading */
   label: string;
 }) {
@@ -91,7 +94,7 @@ export function DraftUpdateDialog({
                 start(async () => {
                   setCopied(false);
                   try {
-                    const r = await draftAtRiskUpdateAction({ projectId, outputId, mode, when }).catch(() => ({ ok: false, message: "Could not draft — try again." }));
+                    const r = await draftAtRiskUpdateAction({ projectId, outputId, outputIds, mode, when }).catch(() => ({ ok: false, message: "Could not draft — try again." }));
                     setRes(r);
                   } finally {
                     submitting.current = false;

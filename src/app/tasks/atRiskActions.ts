@@ -21,6 +21,8 @@ function etLocal(v: string): Date | null {
 export async function draftAtRiskUpdateAction(input: {
   projectId: string;
   outputId: string | null;
+  /** a job's several late videos, drafted as one update (Oct 28 2026) */
+  outputIds?: string[] | null;
   mode: "newTime" | "confirmBy";
   /** datetime-local value, Eastern */
   when: string;
@@ -34,6 +36,7 @@ export async function draftAtRiskUpdateAction(input: {
     const r = await draftAtRiskUpdate({
       projectId: input.projectId,
       outputId: input.outputId,
+      outputIds: Array.isArray(input.outputIds) ? input.outputIds.filter((x): x is string => typeof x === "string").slice(0, 50) : null,
       newTime: input.mode === "newTime" ? when : null,
       confirmBy: input.mode === "confirmBy" ? when : null,
       actor: me?.name ?? me?.email ?? "the office",

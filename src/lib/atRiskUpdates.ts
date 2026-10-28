@@ -165,17 +165,26 @@ export async function atRiskOutputs(now: Date = new Date(), opts: { excludeClien
     else rows.push(next);
   }
   if (rows.length) {
-    // A program video is also covered by the watch's one draft for its month's
-    // job (keyed on the job and the promise, not the video).
+    // A row is also covered by its JOB's one draft, keyed on the job and the
+    // promise, not the video: the watch's draft for a program month, and since
+    // Oct 28 2026 the one update a person drafts for a job's late videos
+    // together (groupAtRiskRows below).
     const jobKey = (r: AtRiskRow) => atRiskTaskKey({ outputId: null, projectId: r.projectId, promisedAt: r.promisedAt });
-    const keys = [...new Set([...rows.map(atRiskTaskKey), ...rows.filter((r) => r.why).map(jobKey)])];
+    const keys = [...new Set([...rows.map(atRiskTaskKey), ...rows.map(jobKey)])];
     const tasks = await prisma.smartTask.findMany({
       where: { dedupeKey: { in: keys }, status: { notIn: ["CANCELLED"] } },
       select: { id: true, dedupeKey: true, status: true },
     });
+    // The job's draft is keyed on its EARLIEST promise, so a video due later
+    // on the same job is covered by it too.
+    const jobTask = new Map<string, string>();
     for (const r of rows) {
-      const t = tasks.find((x) => x.dedupeKey === atRiskTaskKey(r)) ?? (r.why ? tasks.find((x) => x.dedupeKey === jobKey(r)) : undefined);
-      r.taskId = t?.id ?? null;
+      const t = tasks.find((x) => x.dedupeKey === jobKey(r));
+      if (t && !jobTask.has(r.projectId)) jobTask.set(r.projectId, t.id);
+    }
+    for (const r of rows) {
+      const t = tasks.find((x) => x.dedupeKey === atRiskTaskKey(r));
+      r.taskId = t?.id ?? jobTask.get(r.projectId) ?? null;
     }
   }
   return rows.sort((a, b) => a.promisedAt.getTime() - b.promisedAt.getTime());
@@ -199,11 +208,72 @@ function row(now: Date, r: Omit<AtRiskRow, "key" | "street" | "overdue" | "hours
   };
 }
 
+// ---- one job, one update ------------------------------------------------------
+//
+// LATE PROMISES BY JOB (Jordan, Oct 28 2026, on John Collins's four October
+// videos, each its own row and its own Draft update: "since this was for the
+// same shoot - it could all be in one late promise message update"). A job's
+// late things are one row and one update; a job with one late thing reads
+// exactly as before.
+
+export type AtRiskGroup = {
+  /** the single row's key, or `job:<projectId>` for a job with several */
+  key: string;
+  projectId: string;
+  clientId: string;
+  clientName: string;
+  street: string;
+  rows: AtRiskRow[];
+  /** the earliest promise in the group: the one the update names */
+  promisedAt: Date;
+  overdue: boolean;
+  /** "the video", or 'the 4 videos "A", "B", "C" and "D"' */
+  owed: string;
+  taskId: string | null;
+};
+
+const andList = (xs: string[]) => (xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
+
+/** The owed things of one job, in one phrase. Pure. */
+export function owedTogether(list: { owed: string }[]): string {
+  if (list.length === 1) return list[0].owed;
+  // A video reads `the video "X"` (program), `X (video 2)`, `video 2` or `the video`.
+  const isVideo = (o: string) => /^the video\b|\(video \d+\)$|^video \d+$/.test(o);
+  if (!list.every((r) => isVideo(r.owed))) return andList(list.map((r) => r.owed));
+  const titles = list.map((r) => /^the video "(.*)"$/.exec(r.owed)?.[1] ?? /^(.*) \(video \d+\)$/.exec(r.owed)?.[1] ?? null);
+  return titles.every((t) => t !== null) ? `the ${list.length} videos ${andList(titles.map((t) => `"${t}"`))}` : `the ${list.length} videos`;
+}
+
+/** Late rows, one group per job, in promise order. Pure. */
+export function groupAtRiskRows(rows: AtRiskRow[]): AtRiskGroup[] {
+  const byJob = new Map<string, AtRiskRow[]>();
+  for (const r of rows) byJob.set(r.projectId, [...(byJob.get(r.projectId) ?? []), r]);
+  return [...byJob.values()]
+    .map((list) => {
+      const first = list.reduce((a, b) => (b.promisedAt < a.promisedAt ? b : a));
+      return {
+        key: list.length === 1 ? first.key : `job:${first.projectId}`,
+        projectId: first.projectId,
+        clientId: first.clientId,
+        clientName: first.clientName,
+        street: first.street,
+        rows: list,
+        promisedAt: first.promisedAt,
+        overdue: list.some((r) => r.overdue),
+        owed: owedTogether(list),
+        taskId: list.find((r) => r.taskId)?.taskId ?? null,
+      };
+    })
+    .sort((a, b) => a.promisedAt.getTime() - b.promisedAt.getTime());
+}
+
 // ---- the draft --------------------------------------------------------------
 
 export type AtRiskDraftInput = {
   projectId: string;
   outputId?: string | null;
+  /** several late videos of ONE job, drafted as one update (Oct 28 2026) */
+  outputIds?: string[] | null;
   /** the delivery time the office has CONFIRMED — the client may be told it */
   newTime?: Date | null;
   /** the time by which the office will confirm one — nothing else is promised */
@@ -274,8 +344,22 @@ export async function draftAtRiskUpdate(input: AtRiskDraftInput): Promise<AtRisk
   if (when.getTime() <= now.getTime()) return { ok: false, message: "That time has already passed — type a time that is still ahead." };
 
   const rows = await atRiskOutputs(now);
-  const r = rows.find((x) => x.projectId === input.projectId && (x.outputId ?? null) === (input.outputId ?? null));
+  // A job's several late videos: one update, on the job's one task (the key the
+  // watch uses too). Any that stopped being late since the page loaded drop out.
+  const wanted = input.outputIds ?? [];
+  const group = wanted.length > 1
+    ? groupAtRiskRows(rows.filter((x) => x.projectId === input.projectId && !!x.outputId && wanted.includes(x.outputId)))[0] ?? null
+    : null;
+  let r: AtRiskRow | null;
+  if (group && group.rows.length > 1) {
+    const first = group.rows.find((x) => x.promisedAt.getTime() === group.promisedAt.getTime())!;
+    r = { ...first, outputId: null, owed: group.owed, overdue: group.overdue };
+  } else {
+    const outputId = group?.rows[0]?.outputId ?? input.outputId ?? null;
+    r = rows.find((x) => x.projectId === input.projectId && (x.outputId ?? null) === outputId) ?? null;
+  }
   if (!r) return { ok: false, message: "That promise is not late (delivered, waived, or its time has not passed yet), so there is nothing to draft." };
+  const promises = group && group.rows.length > 1 ? group.rows.map((x) => x.promisedAt) : [r.promisedAt];
 
   const instruction = atRiskInstruction({ ...r, newTime: hasNew ? when : null, confirmBy: hasConfirm ? when : null });
   let draft: string;
@@ -290,7 +374,7 @@ export async function draftAtRiskUpdate(input: AtRiskDraftInput): Promise<AtRisk
     return { ok: false, message: e instanceof Error ? e.message : "The draft could not be written — try again." };
   }
   if (!draft || /^NO_REPLY_NEEDED$/i.test(draft)) return { ok: false, message: "The model returned nothing usable — try again." };
-  const foreign = foreignDates(draft, [r.promisedAt, when]);
+  const foreign = foreignDates(draft, [...promises, when]);
   const dateWarning = foreign ? `The draft mentions ${foreign} — check every date against the promise and the time you typed before sending.` : null;
 
   const kyle = await prisma.teamMember
@@ -352,21 +436,22 @@ export async function atRiskExceptionRows(opts: { now?: Date; cap: number; exclu
   total: { all: number; high: number };
 }> {
   const now = opts.now ?? new Date();
-  const undrafted = (await atRiskOutputs(now, { excludeClientIds: opts.excludeClientIds })).filter((r) => !r.taskId);
+  // One row per job (Oct 28 2026), the same grouping as Messages' Late promises.
+  const undrafted = groupAtRiskRows((await atRiskOutputs(now, { excludeClientIds: opts.excludeClientIds })).filter((r) => !r.taskId));
   const rows = undrafted.slice(0, opts.cap).map((r) => ({
     id: `at-risk:${r.key}`,
     kind: "at-risk-promise" as const,
     severity: r.overdue ? ("high" as const) : ("medium" as const),
     title: r.street,
-    why: r.why
-      ? `${r.owed} (${r.clientName}): ${r.why}. Due ${promiseWords(r.promisedAt)}; the client has not been updated`.slice(0, 220)
-      : `${r.owed} was promised by ${promiseWords(r.promisedAt)} and the client has not been updated`,
+    why: r.rows[0].why
+      ? `${r.owed} (${r.clientName}): ${r.rows[0].why}. Due ${promiseWords(r.promisedAt)}; the client has not been updated`.slice(0, 220)
+      : `${r.owed} ${r.rows.length > 1 ? "were" : "was"} promised by ${promiseWords(r.promisedAt)} and the client has not been updated`,
     owner: "Kyle",
     // Oct 27 2026: every row here is past its promise (atRiskOutputs), so the
     // "Nh left" wording is gone and the section is "Late promises".
     nextAction: "Draft an update from Messages (Late promises) and send it",
     href: "/tasks?tab=comms#at-risk",
-    ageDays: r.overdue ? Math.floor(-r.hoursLeft / 24) : 0,
+    ageDays: r.overdue ? Math.floor(-Math.min(...r.rows.map((x) => x.hoursLeft)) / 24) : 0,
   }));
   return { rows, total: { all: undrafted.length, high: undrafted.filter((r) => r.overdue).length } };
 }
