@@ -90,11 +90,12 @@ function TextRow({ card, test, unread = false, unsaved = false }: { card: ReplyC
           {card.lastInbound && <p className="mt-0.5 truncate text-[13px] text-muted">&ldquo;{card.lastInbound}&rdquo;</p>}
         </div>
         <Link href={messagesHref("texts", { focus: card.key, test })} className="inline-flex min-h-11 shrink-0 items-center rounded-lg bg-brand-action px-3 text-sm font-semibold text-white hover:opacity-90">Reply</Link>
-        {unsaved && card.key.startsWith("p:") ? (
-          <UnsavedNumberActions threadKey={card.key} />
-        ) : (
-          <CommsDismissButton threadKey={card.key} family={card.family} clientId={card.clientId} />
-        )}
+        {/* Every row can be dismissed (Jordan, Oct 28 2026, on Melissa Fanelli's
+            text: "I need a way to dismiss"): an unsaved number may still be a
+            client, so Dismiss clears this one without muting the number; Not a
+            client and Spam stay beside it for the numbers that are neither. */}
+        <CommsDismissButton threadKey={card.key} family={card.family} clientId={card.clientId} />
+        {unsaved && card.key.startsWith("p:") && <UnsavedNumberActions threadKey={card.key} />}
       </div>
     </li>
   );
