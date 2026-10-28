@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -546,6 +546,8 @@ export function AddTaskButton({ people, me, readOnly = false, initialOpen = fals
   const [open, setOpen] = useState(initialOpen);
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+  // In place until mounted (a server render has no <body> to portal to).
+  const portal = (node: ReactNode) => (mounted ? createPortal(node, document.body) : node);
   const { busy, msg, run, setMsg } = useRun();
   const [title, setTitle] = useState("");
   const [who, setWho] = useState(me ?? "kyle");
@@ -561,7 +563,7 @@ export function AddTaskButton({ people, me, readOnly = false, initialOpen = fals
       <button type="button" onClick={() => setOpen(true)} disabled={readOnly} data-add-task className={PRIMARY} title={readOnly ? "Read-only preview" : undefined}>
         <Plus aria-hidden className="size-4" /> Add task
       </button>
-      {open && mounted && createPortal(
+      {open && portal(
         <div className="fixed inset-0 z-50 flex justify-end" data-add-task-panel>
           <button type="button" aria-label="Close" onClick={close} className="absolute inset-0 bg-black/30" />
           <aside role="dialog" aria-modal="true" aria-labelledby="add-task-title" className="relative flex h-full w-full max-w-md flex-col gap-3 overflow-y-auto border-l border-border bg-surface p-4 shadow-xl">
@@ -591,7 +593,6 @@ export function AddTaskButton({ people, me, readOnly = false, initialOpen = fals
             )}
           </aside>
         </div>,
-        document.body,
       )}
     </>
   );
