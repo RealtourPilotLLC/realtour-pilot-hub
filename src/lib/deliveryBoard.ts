@@ -1,7 +1,7 @@
 import "server-only";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { etDayKey, etAddDays, etDayStartUtc, etAt, addBusinessDayKeysET, isWeekdayET } from "@/lib/datetime";
+import { etDayKey, etAddDays, etDayStartUtc, etAt, etTomorrowKey, addBusinessDayKeysET, isWeekdayET } from "@/lib/datetime";
 // §3's revision clock is 24–48 hours of WEEKDAY time — the one implementation
 // of that convention (A52). Light: prisma, the program's date helpers.
 import { addWeekdayHoursET } from "@/lib/programMonths";
@@ -1199,7 +1199,7 @@ function blockerFor(
 export async function deliveryBoard(opts: { includeTest?: boolean; excludeClientIds?: string[] } = {}): Promise<DeliveryBoard> {
   const now = new Date();
   const todayKey = etDayKey(now);
-  const tomorrowKey = etDayKey(etAddDays(now, 1));
+  const tomorrowKey = etTomorrowKey(now); // by key, not now + 24 h (clock-change days, Oct 28 2026)
   const excludedClientIds = opts.excludeClientIds ?? (opts.includeTest === false
     ? await syntheticClientIds()
     : []);

@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etDayStartUtc, etYearStartKey } from "@/lib/datetime";
+import { etDayStartUtc, etMonthKey, etYearStartKey } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // ONE WINDOW RULE FOR THE STRIPE RAIL (Oct 20 2026, audit G9).
@@ -768,7 +768,7 @@ export async function cardPaydowns(startKey: string, endKey: string): Promise<{
     : /credit one/i.test(n) ? "Credit One"
     : "Other cards";
   const byCard: Record<string, { sum: number; count: number }> = {};
-  const monthKey = new Date().toISOString().slice(0, 7);
+  const monthKey = etMonthKey(); // this ET month (Oct 28 2026); the rows' dates are calendar days
   let total = 0, thisMonth = 0, fromBusiness = 0, fromPersonal = 0;
   for (const r of rows) {
     total += r.amount;

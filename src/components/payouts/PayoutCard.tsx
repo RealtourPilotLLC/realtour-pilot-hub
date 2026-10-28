@@ -349,7 +349,9 @@ function AdjustmentForm({ memberId, defaultDateISO, busy, run }: { memberId: str
   const add = () => {
     const amt = parseMoney(amount);
     if (!label.trim() || amt == null || amt === 0) return;
-    run(() => addAdjustment(memberId, label.trim(), amt, new Date(date + "T12:00:00").toISOString()));
+    // Noon UTC, the same calendar day in every US zone and on the server; a bare
+    // "T12:00:00" was the device's own noon (Oct 28 2026).
+    run(() => addAdjustment(memberId, label.trim(), amt, new Date(date + "T12:00:00Z").toISOString()));
     setLabel(""); setAmount("");
   };
   return (

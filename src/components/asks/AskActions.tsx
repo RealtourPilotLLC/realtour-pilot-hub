@@ -27,7 +27,8 @@ export function AskActions({
   id: string;
   kind: "SPECIAL_REQUEST" | "SCHEDULING";
   holdsDelivery: boolean;
-  state: "OPEN" | "DONE" | "CONFIRMED" | "NOT_NEEDED";
+  /** FUTURE: kept for the client's next project (Oct 28 2026); Reopen undoes that. */
+  state: "OPEN" | "DONE" | "CONFIRMED" | "NOT_NEEDED" | "FUTURE";
   /** For an ask on no job yet: the client's jobs in flight to put it on. */
   jobChoices?: { id: string; label: string }[];
 }) {

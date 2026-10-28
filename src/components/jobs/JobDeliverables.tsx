@@ -11,6 +11,8 @@ import { SendVideo } from "@/components/videoDelivery/SendVideo";
 import { PushControls } from "@/components/videoDelivery/PushControls";
 import { RerunTopaz } from "@/components/ops/RerunTopaz";
 import { isOffice } from "@/lib/auth/access";
+import { NotForThisProject, SavedRequestList, UndoPlacementButton } from "@/components/requests/RequestPlacement";
+import type { MoveChoice, SavedRequestView, TakenOffView } from "@/lib/requestPlacement";
 
 // ---------------------------------------------------------------------------
 // ONE PAGE PER SHOOT: the Photos card and the Video card (Oct 19 2026), at the
@@ -30,21 +32,36 @@ import { isOffice } from "@/lib/auth/access";
 // at the shoot and the notes, from the job's "Before you send" read
 // (lib/jobChecks, not a second query). A flag or note that applies to both
 // shows once, under the cards. One "Checked" per card confirms its requests.
+//
+// NOT FOR THIS PROJECT (Kyle, Oct 28 2026, lib/requestPlacement): each request
+// also has "Not for this project" (move it to another of the client's open
+// projects, keep it for their next project, or not a request). What was taken
+// off this job in the last week is listed under the cards with its Undo, and a
+// request kept for a future project is offered here when this job was booked
+// after it was kept.
 // ---------------------------------------------------------------------------
 
-export type JobDeliverablesData = { data: JobDeliverables; photo: JobChecks; video: JobChecks; canCheck: boolean };
+/** Where this job's requests can go, what was taken off it, and the saved requests it is offered. */
+export type JobPlacement = { street: string; clientName: string | null; choices: MoveChoice[]; takenOff: TakenOffView[]; offers: SavedRequestView[] };
+export type JobDeliverablesData = { data: JobDeliverables; photo: JobChecks; video: JobChecks; canCheck: boolean; placement?: JobPlacement | null };
 
 export async function loadJobDeliverables(projectId: string, now: Date = new Date()): Promise<JobDeliverablesData | null> {
-  const [data, photo, video] = await Promise.all([
+  const [data, photo, video, placement] = await Promise.all([
     jobDeliverables(projectId, now).catch((e: unknown) => {
       console.error("[job-deliverables] read failed", projectId, e);
       return null;
     }),
     loadBeforeYouSend(projectId, "photo"),
     loadBeforeYouSend(projectId, "video"),
+    import("@/lib/requestPlacement")
+      .then((m) => m.placementForProject(projectId))
+      .catch((e: unknown) => {
+        console.error("[job-deliverables] request placement read failed", projectId, e);
+        return null;
+      }),
   ]);
   if (!data) return null;
-  return { data, photo: photo.data, video: video.data, canCheck: photo.canCheck };
+  return { data, photo: photo.data, video: video.data, canCheck: photo.canCheck, placement };
 }
 
 export async function JobDeliverablesSection({ projectId }: { projectId: string }) {
@@ -82,7 +99,7 @@ function Steps({ steps, label }: { steps: StageStep[]; label: string }) {
 
 const OWNER_CLASS = "inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium";
 
-function Requests({ medium, checks, canCheck }: { medium: "photo" | "video"; checks: JobChecks; canCheck: boolean }) {
+function Requests({ medium, checks, canCheck, placement }: { medium: "photo" | "video"; checks: JobChecks; canCheck: boolean; placement?: JobPlacement | null }) {
   const thing = medium === "photo" ? "the photos" : "the video";
   if (!checks.requests.length) {
     return checks.checked ? (
@@ -118,6 +135,12 @@ function Requests({ medium, checks, canCheck }: { medium: "photo" | "video"; che
                 <summary className="cursor-pointer font-medium text-brand">The client&rsquo;s words</summary>
                 <p className="mt-1 whitespace-pre-wrap rounded-lg bg-surface px-2 py-1.5 text-[13px] text-foreground/85">{r.text}</p>
               </details>
+            )}
+            {canCheck && (
+              <NotForThisProject
+                askId={r.id}
+                context={placement ? { fromProjectId: checks.projectId, street: placement.street, clientName: placement.clientName, choices: placement.choices } : null}
+              />
             )}
           </li>
         ))}
@@ -242,12 +265,14 @@ function split<T>(photo: T[], video: T[], key: (x: T) => string): { both: T[]; p
   return { both: photo.filter((x) => inVideo.has(key(x))), photoOnly: photo.filter((x) => !inVideo.has(key(x))), videoOnly: video.filter((x) => !inPhoto.has(key(x))) };
 }
 
-export function JobDeliverablesView({ data, photo, video, canCheck }: JobDeliverablesData) {
+export function JobDeliverablesView({ data, photo, video, canCheck, placement = null }: JobDeliverablesData) {
   const p = data.photos;
   const v = data.video;
   const flags = split(photo.flags, video.flags, (f) => f.id);
   const notes = split(photo.notes, video.notes, (n) => `${n.label}|${n.text}`);
-  const anything = p.ordered || v.ordered || photo.requests.length || video.requests.length || photo.flags.length || video.flags.length;
+  const offers = canCheck ? placement?.offers ?? [] : [];
+  const takenOff = placement?.takenOff ?? [];
+  const anything = p.ordered || v.ordered || photo.requests.length || video.requests.length || photo.flags.length || video.flags.length || offers.length || takenOff.length;
   if (!anything) return null;
   const owners = photo.owners ?? video.owners;
   return (
@@ -294,7 +319,7 @@ export function JobDeliverablesView({ data, photo, video, canCheck }: JobDeliver
           ) : (
             <p className="text-sm text-muted">No photos on this job.</p>
           )}
-          <Requests medium="photo" checks={photo} canCheck={canCheck} />
+          <Requests medium="photo" checks={photo} canCheck={canCheck} placement={placement} />
           <FlagList flags={flags.photoOnly} />
           <NoteList notes={notes.photoOnly} />
         </Card>
@@ -318,7 +343,7 @@ export function JobDeliverablesView({ data, photo, video, canCheck }: JobDeliver
           ) : (
             <p className="text-sm text-muted">No video on this job.</p>
           )}
-          <Requests medium="video" checks={video} canCheck={canCheck} />
+          <Requests medium="video" checks={video} canCheck={canCheck} placement={placement} />
           <FlagList flags={flags.videoOnly} />
           <NoteList notes={notes.videoOnly} />
         </Card>
@@ -327,6 +352,41 @@ export function JobDeliverablesView({ data, photo, video, canCheck }: JobDeliver
         <div className="space-y-3 rounded-2xl border border-border bg-surface px-4 py-3" data-job-shared>
           <FlagList flags={flags.both} title="Flagged at the shoot (photos and video)" />
           <NoteList notes={notes.both} title="Notes on this job" />
+        </div>
+      )}
+      <RequestPlacementPanel placement={placement} offers={offers} takenOff={takenOff} projectId={photo.projectId || video.projectId} canCheck={canCheck} />
+    </div>
+  );
+}
+
+/** Saved requests offered to this job, and what was taken off it this week (each with Undo). */
+function RequestPlacementPanel({ placement, offers, takenOff, projectId, canCheck }: { placement: JobPlacement | null; offers: SavedRequestView[]; takenOff: TakenOffView[]; projectId: string; canCheck: boolean }) {
+  if (!placement || (!offers.length && !takenOff.length)) return null;
+  return (
+    <div className="space-y-3 rounded-2xl border border-border bg-surface px-4 py-3" data-request-placement>
+      {offers.length > 0 && (
+        <div className="space-y-2" data-saved-offers>
+          <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
+            <MessageSquareWarning aria-hidden className="size-3.5 text-warning" /> Saved for {placement.clientName ?? "this client"}&rsquo;s next project
+          </p>
+          <p className="text-xs text-muted">Kept from an earlier project for later. Put {offers.length === 1 ? "it" : "each"} on this project if it is for this one.</p>
+          <SavedRequestList items={offers} projectId={projectId} street={placement.street} canAct={canCheck} />
+        </div>
+      )}
+      {takenOff.length > 0 && (
+        <div className="space-y-1.5" data-taken-off>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">Taken off this project</p>
+          <ul className="space-y-1.5">
+            {takenOff.map((t) => (
+              <li key={t.askId} data-taken-off-row={t.askId} className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-lg bg-surface-2 px-3 py-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm text-foreground [overflow-wrap:anywhere]">{t.summary}</p>
+                  <p className="text-xs text-muted [overflow-wrap:anywhere]">{t.line}</p>
+                </div>
+                {canCheck && t.canUndo && <UndoPlacementButton askId={t.askId} />}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </div>

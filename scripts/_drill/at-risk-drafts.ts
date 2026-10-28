@@ -31,6 +31,11 @@
 //      the real total); the drafted one leaves it, and one still ahead of its
 //      promise is not there at all. Kyle's digest lines carry the rows with
 //      his name and the unanswered counts.
+//   9. ONE JOB, ONE UPDATE (Jordan, Oct 28 2026, John Collins's four late
+//      October videos: "it could all be in one late promise message update").
+//      Three late videos of one job are one group, one board row, one draft
+//      naming all three, on ONE task keyed on the job; every video then shows
+//      that task. A job with one late video reads exactly as before.
 // ---------------------------------------------------------------------------
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -216,6 +221,42 @@ async function main() {
   c.ok("Kyle's digest names the at-risk row with its link", lines.some((l) => /5 Quarry Ln/.test(l) && l.includes("https://hub.invalid/tasks?tab=comms#at-risk")), lines.join(" ⏎ "));
   c.ok("…heads the section with his count", lines.some((l) => /^\*Exceptions\* \(\d+ for you/.test(l)), lines[0] ?? "");
   c.ok("…and the unanswered counts from the same walk the Comms tab reads", lines.some((l) => /Unanswered: 1 text, 0 emails → https:\/\/hub\.invalid\/tasks\?tab=comms/.test(l)), lines.join(" ⏎ "));
+
+  // =========================================================================
+  c.head("9 · One job's late videos: one row, one update (Oct 28 2026)");
+  // =========================================================================
+  const john = await prisma.client.create({ data: { name: "John Collins", email: "john@clients.invalid" }, select: { id: true } });
+  const month = await prisma.project.create({ data: { title: "October 2026 videos, Malvern, PA", clientId: john.id, status: "EDITING", addressLine: "October 2026 videos" }, select: { id: true } });
+  const DUE_A = new RealDate(NOW - 30 * HOUR);
+  const DUE_B = new RealDate(NOW - 8 * HOUR);
+  const v1 = await video(month.id, 1, { promisedAt: DUE_A, title: "Market update" });
+  const v2 = await video(month.id, 2, { promisedAt: DUE_A, title: "Neighborhood tour" });
+  const v3 = await video(month.id, 3, { promisedAt: DUE_B, title: "First-time buyers" });
+  const nowRows = await at.atRiskOutputs(new RealDate(NOW));
+  const groups = at.groupAtRiskRows(nowRows);
+  const g = groups.find((x) => x.projectId === month.id);
+  c.ok("three late videos of one job are ONE group", !!g && g.rows.length === 3 && groups.filter((x) => x.projectId === month.id).length === 1, `${g?.rows.length}`);
+  c.ok("…named together by their titles", g?.owed === 'the 3 videos "Market update", "Neighborhood tour" and "First-time buyers"', g?.owed);
+  c.ok("…carrying the earliest promise", g?.promisedAt.getTime() === DUE_A.getTime());
+  c.ok("a job with one late video is still its own single row", groups.some((x) => x.projectId === lateJob.id && x.rows.length === 1 && x.key === outLate.id));
+  const board9 = await opsExceptionsBoard({ now: new RealDate(NOW) });
+  c.ok("the exceptions board carries the job ONCE", board9.rows.filter((r) => r.kind === "at-risk-promise" && r.title === "October 2026 videos").length === 1, board9.rows.filter((r) => r.kind === "at-risk-promise").map((r) => r.title).join(" | "));
+  reply = "Hi John, a quick update on your October videos: they are running behind. We'll confirm the exact delivery time by Wed, Oct 7 at 3:00 PM. Sorry for the change.";
+  const before9 = asked.length;
+  const d9 = await at.draftAtRiskUpdate({ projectId: month.id, outputIds: [v1.id, v2.id, v3.id], actor: "Kyle", confirmBy: CONFIRM });
+  c.ok("one draft for the three", d9.ok && asked.length === before9 + 1, d9.ok ? d9.draft.slice(0, 50) : d9.message);
+  const instr9 = /WHAT WE WANT TO SAY[^"]*"""\n([\s\S]*?)\n"""/.exec(asked[asked.length - 1] ?? "")?.[1] ?? "";
+  c.ok("the model is told about all three videos", /Market update/.test(instr9) && /Neighborhood tour/.test(instr9) && /First-time buyers/.test(instr9), instr9.slice(0, 160));
+  c.ok("a clean draft that names only the confirm-by date carries no warning", d9.ok && d9.dateWarning === null, d9.ok ? String(d9.dateWarning) : "");
+  const jobTask9 = await prisma.smartTask.findUnique({ where: { dedupeKey: `at-risk:${month.id}:${DUE_A.toISOString()}` } });
+  c.ok("ONE task, keyed on the job and its earliest promise", !!jobTask9 && (await prisma.smartTask.count({ where: { taskType: "at_risk_update", projectId: month.id } })) === 1, jobTask9?.dedupeKey ?? "none");
+  const after9 = (await at.atRiskOutputs(new RealDate(NOW))).filter((r) => r.projectId === month.id);
+  c.ok("every one of the three now shows that task (the later-due one too)", after9.length === 3 && after9.every((r) => r.taskId === jobTask9?.id), after9.map((r) => r.taskId).join(","));
+  const board9b = await opsExceptionsBoard({ now: new RealDate(NOW) });
+  c.ok("…and the job leaves the exceptions board", !board9b.rows.some((r) => r.kind === "at-risk-promise" && r.title === "October 2026 videos"));
+  const again9 = await at.draftAtRiskUpdate({ projectId: month.id, outputIds: [v1.id, v2.id, v3.id], actor: "Kyle", newTime: NEWTIME });
+  c.ok("drafting again updates the same task", again9.ok && !again9.created && (await prisma.smartTask.count({ where: { taskType: "at_risk_update", projectId: month.id } })) === 1);
+  c.ok("nothing sent: still no outbox row", (await prisma.outboxMessage.count()) === 0);
 
   c.summary();
   quiet.restore();

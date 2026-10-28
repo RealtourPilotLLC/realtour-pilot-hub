@@ -72,8 +72,10 @@ export const etFullDate = (d?: Date | string | null) => { const x = toDate(d); r
 
 // ET calendar-day key "YYYY-MM-DD" (DST-safe via Intl) — for comparing/bucketing.
 export const etDayKey = (d: Date): string => fmt(d, { year: "numeric", month: "2-digit", day: "2-digit" }, "en-CA");
-export function etDaysAgo(d: Date): number {
-  const today = Date.parse(etDayKey(new Date()) + "T00:00:00Z");
+// `now` is optional so a build that pins its clock (the desk, a drill) counts
+// ET calendar days from that instant (Oct 28 2026).
+export function etDaysAgo(d: Date, now: Date = new Date()): number {
+  const today = Date.parse(etDayKey(now) + "T00:00:00Z");
   const day = Date.parse(etDayKey(d) + "T00:00:00Z");
   return Math.round((today - day) / 86400000); // +past, -future, 0 today
 }
@@ -176,6 +178,53 @@ function etWallMinute(d: Date): string {
   const g = (t: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === t)?.value ?? "00";
   return `${g("year")}-${g("month")}-${g("day")}T${g("hour") === "24" ? "00" : g("hour")}:${g("minute")}`;
 }
+
+// ---------------------------------------------------------------------------
+// EASTERN WHEREVER THE VIEWER IS (Kyle, Oct 28 2026: "Some tasks/projects show
+// 'today' as the timezone set where the person is, not EST"). A browser's own
+// calendar is its device's zone, and the server's is UTC; neither is the
+// business's. These three are the shared answers for what was being worked out
+// by hand: the day after or before an ET day, and the ET wall clock in a
+// datetime-local input (which carries no zone, so the browser fills it in its own).
+// ---------------------------------------------------------------------------
+
+/** The ET day key `days` calendar days after `dayKey` (before, when negative).
+ *  Arithmetic on the key at noon UTC, so no clock change can move it: "now
+ *  minus 24 hours" lands on the same day for the last hour of the 25-hour fall
+ *  day, and two days back in the first hour after the spring change. */
+export function etDayKeyPlus(dayKey: string, days: number): string {
+  const [y, m, d] = dayKey.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days, 12)).toISOString().slice(0, 10);
+}
+/** Midnight ET, `days` ET days after the day of `d`, as an instant (for DB
+ *  ranges). `etDayStartUtc(etAddDays(d, n))` is the same thing except in the
+ *  first hour of the November change, when now + 24 h is still today. */
+export const etDayStartPlusUtc = (d: Date, days: number) => etAt(etDayKeyPlus(etDayKey(d), days), 0);
+/** Tomorrow's ET day key. */
+export const etTomorrowKey = (now: Date = new Date()) => etDayKeyPlus(etDayKey(now), 1);
+/** Yesterday's ET day key. */
+export const etYesterdayKey = (now: Date = new Date()) => etDayKeyPlus(etDayKey(now), -1);
+
+/** An instant as a datetime-local input's value on the ET wall clock: "2026-10-28T14:30". */
+export function etInputValue(d: Date | string | null | undefined): string {
+  const x = toDate(d);
+  return x ? etWallMinute(x) : "";
+}
+/** A datetime-local value ("2026-10-28T14:30") read as ET wall clock; null when it is not one. */
+export function etFromInputValue(v: string | null | undefined): Date | null {
+  const m = /^((\d{4})-(\d{2})-(\d{2}))T(\d{2}):(\d{2})$/.exec((v ?? "").trim());
+  if (!m) return null;
+  const [y, mo, day, h, min] = [m[2], m[3], m[4], m[5], m[6]].map(Number);
+  const cal = new Date(Date.UTC(y, mo - 1, day));
+  // A day or time that does not exist (Feb 30, 25:00) is not quietly rolled over.
+  if (cal.getUTCMonth() !== mo - 1 || cal.getUTCDate() !== day || h > 23 || min > 59) return null;
+  const d = etAt(m[1], h, min);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/** Midnight ET on Jan 1 of the ET year of `now`, as an instant (year-to-date
+ *  windows over timestamps; `new Date(y, 0, 1)` on Vercel is 7 PM ET on Dec 31). */
+export const etYearStartUtc = (now: Date = new Date()) => etAt(`${etDayKey(now).slice(0, 4)}-01-01`, 0);
 
 /** End of the working day (5pm ET) — the default when a due date has no time. */
 export const etEndOfDay = (dayKey: string) => etAt(dayKey, 17);

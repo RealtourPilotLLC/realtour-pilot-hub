@@ -51,6 +51,7 @@ export function EditorCutPanel({
   notes,
   ownNotes = [],
   issues = [],
+  removed = [],
   canFix,
   viewerName,
   player = true,
@@ -75,7 +76,11 @@ export function EditorCutPanel({
   /** The editor's own notes for the reviewer: shown apart, never as fixes (Oct 15 2026). */
   ownNotes?: CutNote[];
   /** The reviewer's notes on this video still to fix (or marked fixed, waiting on the reviewer): under the player, each time plays its moment. */
-  issues?: { id: string; state: string; text: string; timeSec: number | null; by: string | null; round: number | null; askWho?: string | null }[];
+  issues?: { id: string; state: string; text: string; timeSec: number | null; by: string | null; round: number | null; askWho?: string | null; changed?: string | null }[];
+  /** Notes on this video a person deleted or took off the list after the
+   *  editor had them (Oct 28 2026, lib/noteEdits): one plain line each, so
+   *  "note 2" vanishing is never a mystery. */
+  removed?: { id: string; line: string }[];
   /** Oct 27 2026 (Jordan: "an ask a question button ... about a specific
    *  revision"): a small Ask a question on each note, for the editor. */
   ask?: boolean;
@@ -259,6 +264,9 @@ export function EditorCutPanel({
                   ) : null}
                   <span className="min-w-0 flex-1 pt-2">
                     <span className={cn("whitespace-pre-wrap", done && "text-muted")}>{i.text}</span>
+                    {/* WHAT CHANGED (Oct 28 2026): a note edited or reworded
+                        after the editor had it says so, in one line. */}
+                    {i.changed && <span className="mt-0.5 block text-[12px] text-warning" data-note-changed>{i.changed}</span>}
                     <span className="mt-0.5 block text-[11px] text-muted-2">
                       {i.by ? `${i.by.split(/\s+/)[0]}` : "The reviewer"}{i.round ? ` · on version ${i.round}` : ""} ·{" "}
                       <span className={done ? "text-brand" : "font-semibold text-danger"}>{done ? "marked fixed, the reviewer checks it" : "to fix"}</span>
@@ -272,6 +280,14 @@ export function EditorCutPanel({
           {canFix && <p className="mt-2 text-[11px] text-muted-2">When you upload the next version, the final check asks which of these you fixed.</p>}
         </div>
       )}
+      {removed.length > 0 && (
+        <div className="border-b border-border px-4 py-3 sm:px-5" data-notes-removed>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-2">Taken off your list</p>
+          <ul className="mt-1.5 space-y-1">
+            {removed.map((r) => <li key={r.id} className="text-[13px] text-muted">{r.line}</li>)}
+          </ul>
+        </div>
+      )}
       {notes.length > 0 && (
         <EditFeedback notes={notes} canFix={canFix} viewerName={viewerName} embedded onSeek={assetUrl && player ? seek : undefined} />
       )}
@@ -281,7 +297,7 @@ export function EditorCutPanel({
           <EditFeedback notes={ownNotes} canFix={false} viewerName={viewerName} embedded onSeek={assetUrl && player ? seek : undefined} />
         </div>
       )}
-      {issues.length === 0 && notes.length === 0 && (
+      {issues.length === 0 && notes.length === 0 && removed.length === 0 && (
         <p className="px-4 py-3 text-sm text-muted sm:px-5">
           {withdrawn
             ? "This version was withdrawn. It is kept here as history. Upload a replacement below."

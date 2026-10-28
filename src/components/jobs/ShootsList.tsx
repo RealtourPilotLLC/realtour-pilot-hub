@@ -2,6 +2,9 @@ import Link from "next/link";
 import { ChevronRight, CircleAlert, MessageSquareText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { projectPiecesOf, type DeliverExtra, type ProjectPiece, type ShootRow, type StageTone } from "@/lib/jobsBoard";
+import type { RequestCardView, SavedRequestView } from "@/lib/requestPlacement";
+import { RequestQuickActions, SavedRequestList } from "@/components/requests/RequestPlacement";
+import { RequestOwnerPicker } from "./RequestOwnerPicker";
 
 // ---------------------------------------------------------------------------
 // THE PROJECTS LIST (/jobs; "Shoots" until Oct 27 2026). Jordan's Loom, Oct 27
@@ -18,7 +21,45 @@ import { projectPiecesOf, type DeliverExtra, type ProjectPiece, type ShootRow, t
 // holds the job and the client's open requests follow as plain sentences,
 // only when there are any. Monthly content sits under its own heading after
 // the listing jobs, as on Jordan's approved plan.
+//
+// THE REQUESTS TAB SHOWS THE REQUESTS (Kyle, Oct 28 2026: "It would be nice
+// to have the client's requests included in this page rather than having to
+// open the project page to view it"). With `requests` (the page passes them on
+// that tab), each job lists its open requests under its count: the request in
+// plain words, who has it, who asked, how and when, the client's words
+// folded, and the job page's own presses (Checked, Not for this project, the
+// owner picker when it needs one). A request kept for the client's next
+// project is offered on a job booked after it (`offers`).
 // ---------------------------------------------------------------------------
+
+/** The Requests tab's extras, by project id. */
+export type ShootsListRequests = { cards: Record<string, RequestCardView[]>; offers: Record<string, SavedRequestView[]>; canAct: boolean };
+
+function RequestCards({ cards, canAct }: { cards: RequestCardView[]; canAct: boolean }) {
+  return (
+    <ul className="mt-2 space-y-2" data-request-cards>
+      {cards.map((c) => (
+        <li key={c.id} data-request-card={c.id} className="min-w-0 space-y-1.5 rounded-lg bg-surface-2 px-3 py-2">
+          <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+            <p className="min-w-0 flex-1 text-sm font-medium text-foreground [overflow-wrap:anywhere]">{c.summary}</p>
+            <span data-request-for className={cn("inline-flex max-w-full items-center rounded-full px-2 py-0.5 text-xs font-medium [overflow-wrap:anywhere]", c.needsOwner ? "bg-warning/15 text-warning ring-1 ring-warning/30" : "bg-surface text-foreground ring-1 ring-border")}>
+              {c.forLine}
+            </span>
+          </div>
+          <p className="text-xs text-muted [overflow-wrap:anywhere]">{c.fromLine}</p>
+          {c.text.trim() && c.text.trim() !== c.summary.trim() && (
+            <details className="text-xs">
+              <summary className="cursor-pointer py-1 font-medium text-brand">The client&rsquo;s words</summary>
+              <p className="mt-1 whitespace-pre-wrap rounded-lg bg-surface px-2 py-1.5 text-[13px] text-foreground/85 [overflow-wrap:anywhere]">{c.text}</p>
+            </details>
+          )}
+          {canAct && c.needsOwner && <RequestOwnerPicker askId={c.id} />}
+          {canAct && <RequestQuickActions askId={c.id} />}
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 const DOT: Record<StageTone, string> = {
   done: "bg-success",
@@ -60,7 +101,7 @@ function dueLine(r: ShootRow): string {
   return `Due ${r.dueWords}`;
 }
 
-function Row({ r, extra }: { r: ShootRow; extra?: DeliverExtra | null }) {
+function Row({ r, extra, requests }: { r: ShootRow; extra?: DeliverExtra | null; requests?: ShootsListRequests | null }) {
   const pieces = r.pieces ?? projectPiecesOf(r, { extra });
   const each = pieces.flatMap((p) => p.each ?? []);
   const asks = requestsLine(r.requests);
@@ -106,11 +147,21 @@ function Row({ r, extra }: { r: ShootRow; extra?: DeliverExtra | null }) {
           <span>{asks}</span>
         </p>
       )}
+      {requests && (requests.cards[r.projectId]?.length ?? 0) > 0 && <RequestCards cards={requests.cards[r.projectId]} canAct={requests.canAct} />}
+      {requests && (requests.offers[r.projectId]?.length ?? 0) > 0 && (
+        <div className="mt-2 space-y-1.5" data-saved-offers>
+          <p className="flex items-start gap-2 text-sm text-foreground/80">
+            <MessageSquareText aria-hidden className="mt-0.5 size-4 shrink-0 text-muted" />
+            <span>Saved for {r.client ?? "this client"}&rsquo;s next project: is it for this one?</span>
+          </p>
+          <SavedRequestList items={requests.offers[r.projectId]} projectId={r.projectId} street={r.street.split(",")[0].trim()} canAct={requests.canAct} />
+        </div>
+      )}
     </li>
   );
 }
 
-export function ShootsList({ rows, empty, extras = null }: { rows: ShootRow[]; empty: string; extras?: Record<string, DeliverExtra> | null }) {
+export function ShootsList({ rows, empty, extras = null, requests = null }: { rows: ShootRow[]; empty: string; extras?: Record<string, DeliverExtra> | null; requests?: ShootsListRequests | null }) {
   if (!rows.length) {
     return <p className="rounded-xl border border-border bg-surface px-4 py-6 text-sm text-muted">{empty}</p>;
   }
@@ -120,7 +171,7 @@ export function ShootsList({ rows, empty, extras = null }: { rows: ShootRow[]; e
     <div className="overflow-hidden rounded-xl border border-border bg-surface" data-shoots-list>
       {listing.length > 0 && (
         <ul className="divide-y divide-border" aria-label="Projects">
-          {listing.map((r) => <Row key={r.projectId} r={r} extra={extras?.[r.projectId]} />)}
+          {listing.map((r) => <Row key={r.projectId} r={r} extra={extras?.[r.projectId]} requests={requests} />)}
         </ul>
       )}
       {monthly.length > 0 && (
@@ -129,7 +180,7 @@ export function ShootsList({ rows, empty, extras = null }: { rows: ShootRow[]; e
             Monthly content
           </p>
           <ul className="divide-y divide-border" aria-label="Monthly content">
-            {monthly.map((r) => <Row key={r.projectId} r={r} extra={extras?.[r.projectId]} />)}
+            {monthly.map((r) => <Row key={r.projectId} r={r} extra={extras?.[r.projectId]} requests={requests} />)}
           </ul>
         </>
       )}

@@ -20,7 +20,7 @@ import { Aryeo } from "@/lib/integrations/aryeo";
 import { getSecret } from "@/lib/integrations/connections";
 import { noteRevisionLanesClosed, resolveRevisionForTask, resolveRevisionWholeJob } from "@/lib/comms";
 import { closeObsoleteTasks, CLOSED_BY_HAND, qcGateComplete, reopenedForCategories, qcCategoryOfRow } from "@/lib/tasks";
-import { etEndOfDay } from "@/lib/datetime";
+import { etDateTime, etEndOfDay } from "@/lib/datetime";
 import { DISMISS_REASONS, DISMISSED_PREFIX, LEAD_DISMISS_REASONS, type DismissReason, type LeadDismissReason } from "@/lib/triage";
 
 export type ApptResult = { ok: boolean; message: string; outcome?: "confirmed" | "refused" | "unknown" };
@@ -122,7 +122,8 @@ export async function rescheduleAppointmentAction(
     data: {
       projectId: appt.projectId,
       type: ActivityType.SYSTEM,
-      body: `Appointment rescheduled to ${start.toLocaleString()}${notifyCustomer ? " (customer notified)" : ""}.`,
+      // ET, not the server's UTC (Oct 28 2026): "10/29/2026, 2:00:00 PM" was a 10 AM shoot.
+      body: `Appointment rescheduled to ${etDateTime(start)} ET${notifyCustomer ? " (customer notified)" : ""}.`,
     },
   });
   revalidatePath(`/projects/${appt.projectId}`);

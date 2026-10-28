@@ -1,5 +1,4 @@
 import { PDFDocument, StandardFonts, rgb, PDFFont, PDFPage } from "pdf-lib";
-import { format } from "date-fns";
 import { DELIVERABLE_META, DELIVERABLE_STATUS_META } from "@/lib/pipeline";
 import type { FullProject } from "@/lib/queries";
 import { ActivityType } from "@prisma/client";
@@ -7,7 +6,7 @@ import { isFieldFlag } from "@/lib/debrief";
 import { creativeCustomerNote } from "@/lib/clientNotes";
 import { musicPickLine, readMusicPick } from "@/lib/musicPick";
 import { EXPORT_SPEC, EXPORT_SPEC_LINES } from "@/lib/videoStyles";
-import { etDate } from "@/lib/datetime";
+import { etDate, etTime, etWeekdayDateYear } from "@/lib/datetime";
 import type { FilmingBrief, OutputBrief, ScriptDirection } from "@/lib/deliverableOutputs";
 import type { BrandBrief } from "@/lib/brandProfile";
 import { isAccessNote } from "@/lib/specialRequests";
@@ -160,8 +159,10 @@ export async function buildEditorBriefPdf(
   };
   fact("Client", `${project.client.name}${project.client.company ? ` · ${project.client.company}` : ""}`);
   if (project.packageName) fact("Package", project.packageName);
-  if (project.shootDate) fact("Shoot date", format(project.shootDate, "EEE, MMM d yyyy · h:mm a"));
-  if (project.deliveryDue) fact("Delivery due", format(project.deliveryDue, "EEE, MMM d yyyy"));
+  // Eastern (Oct 28 2026): date-fns format() printed the server's UTC, so a 9 AM
+  // shoot read "1:00 PM" on the printed brief.
+  if (project.shootDate) fact("Shoot date", `${etWeekdayDateYear(project.shootDate)} · ${etTime(project.shootDate)} ET`);
+  if (project.deliveryDue) fact("Delivery due", etWeekdayDateYear(project.deliveryDue));
   if (project.squareFeet) fact("Size", `${project.squareFeet.toLocaleString()} sq ft`);
 
   // ---- Deliverables -----------------------------------------------------

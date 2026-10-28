@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etAt, etDayKey } from "@/lib/datetime";
+import { etAt, etDayKey, etTomorrowKey } from "@/lib/datetime";
 import type { PortalSlotDay } from "@/lib/portal";
 
 // ---------------------------------------------------------------------------
@@ -447,7 +447,7 @@ export function preparationHold(
   now: Date,
 ): PreparationHold | null {
   if (!preparation?.earliest || !preparation.anchor || preparation.windowWaived || preparation.anchor.kind === "CLIENT_PLANNED") return null;
-  if (etDayKey(preparation.earliest) <= etDayKey(new Date(now.getTime() + 86_400_000))) return null;
+  if (etDayKey(preparation.earliest) <= etTomorrowKey(now)) return null; // tomorrow by ET key (Oct 28 2026)
   return {
     earliestISO: preparation.earliest.toISOString(),
     windowHours: preparation.windowHours,

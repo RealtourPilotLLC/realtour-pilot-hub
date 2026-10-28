@@ -4,10 +4,12 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { PageHeader } from "@/components/PageHeader";
 import { ShootsScheduleTabs } from "@/components/jobs/ShootsScheduleTabs";
 import { canAccess } from "@/lib/auth/access";
-import { ShootsList } from "@/components/jobs/ShootsList";
+import { ShootsList, type ShootsListRequests } from "@/components/jobs/ShootsList";
+import { PlacementUndoHost } from "@/components/requests/RequestPlacement";
 import { ProgramVideoWatch, type WatchViewRow } from "@/components/tracker/ProgramVideoWatch";
 import { SHOOT_FILTERS, filterShootRows, shootsBoard, type ShootFilter } from "@/lib/jobsBoard";
 import { PROJECTS_LABEL } from "@/lib/sidebarNavigation";
+import type { SavedRequestView } from "@/lib/requestPlacement";
 import type { Metadata } from "next";
 
 export const dynamic = "force-dynamic";
@@ -34,7 +36,10 @@ export const metadata: Metadata = { title: PROJECTS_LABEL };
 // days' delivered too), Review & deliver (Oct 27 2026: every job shot and
 // not yet delivered, with the floor plan and 3D tour states and anything
 // missing; Kyle's Review & Deliver card opens it, ?f=deliver or ?view=deliver).
-// The
+// Requests (Kyle, Oct 28 2026) lists each job's open requests themselves,
+// with Checked and Not for this project (lib/requestPlacement), and a job
+// booked after a request was kept for the client's next project is on it too,
+// with that request offered. The
 // program videos' milestones (ProgramVideoWatch, which lived on the old
 // Project Tracker) sit under the list on Open and Monthly. /pipeline (the old
 // Project Tracker) redirects here, so the program alerts' link still lands.
@@ -80,6 +85,24 @@ async function programWatch(now: Date, includeTest: boolean): Promise<{ rows: Wa
   }
 }
 
+/** The Requests tab's extras: each job's open requests and the saved ones it is offered; the presses for those who may check requests (as "Checked" on the job page). */
+async function requestsTab(projectIds: string[], offers: Map<string, SavedRequestView[]>, me: Awaited<ReturnType<typeof getCurrentUser>> | null): Promise<ShootsListRequests | null> {
+  try {
+    const [{ openRequestCards }, { canRuleOnCuts }, { authEnforced }] = await Promise.all([import("@/lib/requestPlacement"), import("@/lib/reviewerAssignment"), import("@/lib/auth/guards")]);
+    const cards = await openRequestCards(projectIds);
+    const canAct = me ? (await canRuleOnCuts(me)).ok : !authEnforced();
+    return {
+      cards: Object.fromEntries(cards),
+      offers: Object.fromEntries(projectIds.map((id) => [id, offers.get(id) ?? []])),
+      canAct,
+    };
+  } catch (e) {
+    // The counts still show; the requests themselves are on each job's page.
+    console.error("[projects] requests tab read failed", e);
+    return null;
+  }
+}
+
 export default async function ShootsPage({ searchParams }: { searchParams: Promise<{ f?: string; view?: string; test?: string }> }) {
   await requirePageAccess("pipeline");
   const sp = await searchParams;
@@ -105,9 +128,19 @@ export default async function ShootsPage({ searchParams }: { searchParams: Promi
     return s ? `/jobs?${s}` : "/jobs";
   };
   const rows = board?.rows ?? [];
-  const shown = filterShootRows(rows, f);
+  // Requests kept for a client's next project, offered on a job booked after (one probe when there are none).
+  const offers = await import("@/lib/requestPlacement")
+    .then((m) => m.savedOffersForProjectIds(rows.filter((r) => !r.delivered).map((r) => r.projectId)))
+    .catch((e: unknown) => {
+      console.error("[projects] saved requests read failed", e);
+      return new Map<string, SavedRequestView[]>();
+    });
+  const offered = (r: (typeof rows)[number]) => !r.delivered && (offers.get(r.projectId)?.length ?? 0) > 0;
+  const pick = (key: ShootFilter) => (key === "requests" ? rows.filter((r) => filterShootRows([r], key).length > 0 || offered(r)) : filterShootRows(rows, key));
+  const shown = pick(f);
   const counts = board?.counts;
-  const tally = Object.fromEntries(SHOOT_FILTERS.map((x) => [x.key, filterShootRows(rows, x.key).length])) as Record<ShootFilter, number>;
+  const tally = Object.fromEntries(SHOOT_FILTERS.map((x) => [x.key, pick(x.key).length])) as Record<ShootFilter, number>;
+  const requests = f === "requests" && board ? await requestsTab(shown.map((r) => r.projectId), offers, me) : null;
   const subtitle = counts
     ? `${counts.late} late · ${counts.dueToday} due today · ${counts.dueTomorrow} due tomorrow · ${counts.total} in progress${includeTest ? " · test records shown" : ""}`
     : "The list could not be read just now.";
@@ -141,8 +174,10 @@ export default async function ShootsPage({ searchParams }: { searchParams: Promi
         </nav>
         {f === "today" && <p className="text-xs text-muted">Due today, with the late ones first.</p>}
         {f === "deliver" && <p className="text-xs text-muted">Every job shot and not delivered yet. A row opens the job.</p>}
+        {/* A request checked or taken off here leaves the list at once: its Undo waits in this bar. */}
+        {requests?.canAct && <PlacementUndoHost />}
         {board ? (
-          <ShootsList rows={shown} empty={EMPTY[f]} />
+          <ShootsList rows={shown} empty={EMPTY[f]} requests={requests} />
         ) : (
           <p role="alert" className="rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
             The projects list could not be read just now, so nothing here is a count of zero. Reload in a minute.

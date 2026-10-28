@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { MessageSquare, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -73,13 +73,41 @@ export function messagesFallbackHref(role: string | null | undefined): string | 
   return null;
 }
 
+/** The panel's width (w-64), clamped to the window on a phone. */
+const PANEL_W = 256;
+
 export function MessagesButton({ variant, role }: { variant: "header" | "sidebar" | "dashboard"; role?: string | null }) {
   const [counts, setCounts] = useState<Counts | null>(null);
   const [open, setOpen] = useState(false);
+  const [place, setPlace] = useState<CSSProperties | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => subscribe(setCounts), []);
+
+  // WHERE THE PANEL GOES (Jordan, Oct 28 2026: "when clicking messages it gets
+  // half hidden"). The sidebar and the page header both have backdrop blur, a
+  // stacking context: an inline panel there sat under the page (the 256px
+  // panel is wider than the sidebar). Every variant now portals to <body>,
+  // placed from the button: upward from the sidebar footer, down from the
+  // dashboard button, kept inside the window.
+  useEffect(() => {
+    if (!open) return;
+    const at = () => {
+      const r = wrapRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const w = Math.min(PANEL_W, window.innerWidth - 16);
+      const left = Math.max(8, Math.min(variant === "sidebar" ? r.left : r.right - w, window.innerWidth - w - 8));
+      setPlace(variant === "sidebar" ? { left, bottom: window.innerHeight - r.top + 6, width: w } : { left, top: r.bottom + 4, width: w });
+    };
+    at();
+    window.addEventListener("resize", at);
+    window.addEventListener("scroll", at, true);
+    return () => {
+      window.removeEventListener("resize", at);
+      window.removeEventListener("scroll", at, true);
+    };
+  }, [open, variant]);
 
   useEffect(() => {
     if (!open) return;
@@ -161,25 +189,20 @@ export function MessagesButton({ variant, role }: { variant: "header" | "sidebar
       ref={panelRef}
       role="menu"
       aria-label="Messages"
-      className={cn(
-        "w-64 rounded-xl border border-border bg-surface p-1.5 shadow-xl",
-        variant === "header"
-          ? "fixed right-2 top-14 z-[1400]" // above the drawer (z-1300), like the bell's panel
-          : variant === "sidebar"
-            ? "absolute bottom-20 left-2 z-50" // opens upward from the sidebar footer
-            : "absolute right-0 top-full z-50 mt-1",
-      )}
+      // z-[1400]: above the mobile drawer (z-1300), like the bell's panel.
+      className={cn("fixed z-[1400] w-64 rounded-xl border border-border bg-surface p-1.5 shadow-xl", variant === "header" && "right-2 top-14")}
+      style={variant === "header" ? undefined : place ?? { visibility: "hidden" }}
     >
       {row(clientsHref, MessageSquare, "Client messages", clients)}
       {row(teamHref, Users, "Team messages", team)}
     </div>
   );
   return (
-    <div ref={wrapRef} className={variant === "sidebar" ? undefined : "relative"}>
+    <div ref={wrapRef} className="relative">
       <button type="button" onClick={() => setOpen((v) => !v)} aria-label={label} title={label} aria-expanded={open} aria-haspopup="menu" data-messages-button={variant} className={faceClass}>
         {face}
       </button>
-      {variant === "header" ? (open ? createPortal(panel, document.body) : null) : panel}
+      {open ? createPortal(panel, document.body) : null}
     </div>
   );
 }

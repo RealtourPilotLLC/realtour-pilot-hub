@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { etMonthKey } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // THE CLIENT VIDEO LIBRARY (Jordan, Aug 28): every content-program video a
@@ -446,7 +447,8 @@ export type LibraryCheckResult = { months: number; checked: number; short: numbe
 
 const VISIBLE_STATUSES = new Set(["CLIENT_REVIEW", "APPROVED", "DELIVERED"]);
 const monthKeyBack = (now: Date, n: number) => {
-  const [y, m] = now.toISOString().slice(0, 7).split("-").map(Number);
+  // Program months are ET months (Oct 28 2026); the UTC month turned at 8 PM ET on the last day.
+  const [y, m] = etMonthKey(now).split("-").map(Number);
   const d = new Date(Date.UTC(y, m - 1 - n, 15));
   return d.toISOString().slice(0, 7);
 };

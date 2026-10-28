@@ -305,8 +305,18 @@ async function attributedNoteLines(noteIds: string[], lead: string, enrollmentCl
   });
   const [names, visitors] = await Promise.all([authorNames(notes), linkVisitorsFor(notes.map((n) => n.enrollmentId))]);
   const clientName = enrollmentClientName || "Client";
+  // OUR WORDING, THE CLIENT'S BESIDE IT (Oct 28 2026, Review Room note edits):
+  // a note the office reworded before it was sent goes to the editor in their
+  // wording with the client's own words beside it. The client's row is never
+  // rewritten (lib/noteEdits.rewordClientNote).
+  const { pendingClientRewords } = await import("@/lib/noteEdits");
+  const { correctedClientLine } = await import("@/lib/noteEditCore");
+  const reworded = await pendingClientRewords(notes.map((n) => n.id)).catch(() => new Map<string, { words: string; by: string }>());
   return attributeLines(
-    notes.map((n) => ({ text: `${fmtT(n.timeSec)}${n.body}`, author: staffViewLabel(n, names, clientName, visitors.get(n.id) ?? null) })),
+    notes.map((n) => {
+      const r = reworded.get(n.id);
+      return { text: `${fmtT(n.timeSec)}${r ? correctedClientLine(r.words, n.body, r.by) : n.body}`, author: staffViewLabel(n, names, clientName, visitors.get(n.id) ?? null) };
+    }),
     lead,
   );
 }

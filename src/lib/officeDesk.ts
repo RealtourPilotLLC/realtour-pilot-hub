@@ -26,7 +26,7 @@ import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import { OFFICE_TASK_KEY_PREFIX } from "@/lib/photoDelivery/afterDeliveryAsk";
 import { listAssignees, viewerAssigneeKey, type Assignee } from "@/lib/assignees";
 import { syntheticClientIds } from "@/lib/syntheticClients";
-import { etAt, etDate, etDateTime, etDayBoundsUtc, etDayKey, etDayStartUtc, etFullDate, etTime } from "@/lib/datetime";
+import { etAt, etDate, etDateTime, etDayBoundsUtc, etDayKey, etDayStartUtc, etDaysAgo, etFullDate, etTime } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // KYLE'S DESK, revision 2 (Oct 23 2026, evening). Jordan: "For Kyle I feel
@@ -178,6 +178,8 @@ export type DeskAction =
   | { kind: "follow-up"; clientId: string | null; projectId: string | null; title: string }
   | { kind: "task"; taskId: string; allowNewDate: boolean; canWait: boolean; doneLabel?: string }
   | { kind: "ask"; askId: string; askKind: "SPECIAL_REQUEST" | "SCHEDULING" }
+  /** Disregard a lead (Oct 28 2026): the Tasks board's own Spam / Not a lead, on the dashboard too */
+  | { kind: "lead-disregard"; taskId: string; phoneLead: boolean }
   | { kind: "remind"; projectId: string; street: string; view: RemindView }
   /** the confirmation text (the template, through the outbox), or "confirmed another way" */
   | { kind: "confirm"; taskId: string }
@@ -775,7 +777,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
         OR: [{ assignedKey: null }, ...kyleTask],
         ...clientScope,
       },
-      select: { id: true, title: true, createdAt: true, dueAt: true, summary: true },
+      select: { id: true, title: true, createdAt: true, dueAt: true, summary: true, sourceDetail: true },
       orderBy: { createdAt: "asc" },
       take: 50,
     }).catch(warn("leads")),
@@ -1321,9 +1323,11 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       title: clean(l.title), line: "New lead", client: null,
       reason: `New lead, waiting since ${etDateTime(l.createdAt)}${l.summary ? `: ${clean(short(l.summary, 200))}` : ""}`, who: "You",
       dueISO, dueWords: dueWordsFor(dueISO, now), late: behind, rank: behind ? RANK.overdue : RANK.today,
+      // Disregard beside Handle lead (Kyle, Oct 26 2026: "a lot of them are spam"), and the full page
+      // is the lead's own task (its reply draft and its thread), not the whole inbox (Oct 28 2026).
       primary: { label: "Handle lead", action: { kind: "task", taskId: l.id, allowNewDate: true, canWait: false } },
-      actions: [{ kind: "task", taskId: l.id, allowNewDate: true, canWait: false }],
-      href: "/communications",
+      actions: [{ kind: "task", taskId: l.id, allowNewDate: true, canWait: false }, { kind: "lead-disregard", taskId: l.id, phoneLead: !!l.sourceDetail?.startsWith("phone:") }],
+      href: `/tasks?task=${l.id}`,
       panel: { kind: "task", lines: [{ label: "Lead", value: clean(l.title) }, ...(l.summary ? [{ label: "Notes", value: clean(short(l.summary, 300)) }] : [])] },
       sinceISO: l.createdAt.toISOString(), initials: /^[A-Z]/.test(name) ? initialsOf(name) : "NL", channel: "Lead", elapsed: businessElapsedWords(l.createdAt.toISOString(), now),
     });
@@ -1555,7 +1559,9 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       title: clean(t.title),
       line: back ? `Waiting on ${w!.who} · Follow up now` : [jordan ? "From Jordan" : t.kind, t.projectTitle ? streetOf(clean(t.projectTitle)) : null].filter(Boolean).join(" · "),
       client: null,
-      reason: back ? `You were waiting on ${waitingWords(w!)} until ${etDateTime(w!.followUpAt)}${w!.note ? `: ${clean(w!.note)}` : ""}` : [jordan ? "From Jordan" : t.kind, earlier ? `${plural(t.daysPast, "day")} past its date` : "due today", t.pushes ? `pushed ${plural(t.pushes, "time")}` : null].filter(Boolean).join(" · "),
+      // "N days past its date" counts ET calendar days (Oct 28 2026, Kyle: "today" must be EST):
+      // whole 24-hour blocks said "0 days past its date" at 12:30 AM for last night's 9 PM task.
+      reason: back ? `You were waiting on ${waitingWords(w!)} until ${etDateTime(w!.followUpAt)}${w!.note ? `: ${clean(w!.note)}` : ""}` : [jordan ? "From Jordan" : t.kind, earlier ? `${plural(Math.max(1, etDaysAgo(new Date(t.chaseISO), now)), "day")} past its date` : "due today", t.pushes ? `pushed ${plural(t.pushes, "time")}` : null].filter(Boolean).join(" · "),
       who: back ? w!.who : "You", dueISO: t.chaseISO, dueWords: dueWordsFor(t.chaseISO, now), late: earlier || Date.parse(t.chaseISO) < nowMs,
       rank: back || earlier ? RANK.overdue : RANK.today,
       primary: { label: tp.label, action: tp.action },
@@ -1590,7 +1596,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     push({
       id: `task:${dt.taskId}`, section: "comms", tag: /^jordan/i.test(dt.assignedBy ?? "") ? "jordan" : "assigned", state: verify ? "waiting" : "now",
       title: clean(dt.title),
-      line: [`From ${by}`, DELEG_WORDS[dt.state], dt.dueAt ? `due ${delegWhen(dt.dueAt)}` : null, st?.answeredAt ? `answered ${etDate(st.answeredAt)} ${etTime(st.answeredAt)}` : null].filter(Boolean).join(" · "),
+      line: [`From ${by}`, verify ? `waiting on ${by} to verify` : DELEG_WORDS[dt.state], dt.dueAt ? `due ${delegWhen(dt.dueAt)}` : null, st?.answeredAt ? `answered ${etDate(st.answeredAt)} ${etTime(st.answeredAt)}` : null].filter(Boolean).join(" · "),
       client: null,
       reason: [`${by} handed you this email`, dt.outcome ? `Outcome wanted: ${clean(dt.outcome)}` : null, st?.answeredAt ? "A reply is in the thread: mark it done if that answered them" : !st ? "The thread couldn't be read: open it in Messages" : null].filter(Boolean).join(" · "),
       who: verify ? by : "You", dueISO: dt.dueAt, dueWords: dt.dueAt ? dueWordsFor(dt.dueAt, now) : null, late,
@@ -1615,7 +1621,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       id: `task:${dt.taskId}`, section: "followups", tag: jordan ? "jordan" : "assigned",
       state: waitingVerify ? "waiting" : "now",
       title: clean(dt.title),
-      line: [STATE_WORDS[dt.state], dt.blocker ? `blocked: ${clean(short(dt.blocker, 50))}` : null, dt.dueAt ? `due ${etDayKey(new Date(dt.dueAt)) === dayKey ? etTime(dt.dueAt) : `${etDate(dt.dueAt)} ${etTime(dt.dueAt)}`}` : null].filter(Boolean).join(" · "),
+      // Waiting on the person who assigned it: the row names them (its button still opens Update and Escalate).
+      line: [waitingVerify ? `Waiting on ${by} to verify` : STATE_WORDS[dt.state], dt.blocker ? `blocked: ${clean(short(dt.blocker, 50))}` : null, dt.dueAt ? `due ${etDayKey(new Date(dt.dueAt)) === dayKey ? etTime(dt.dueAt) : `${etDate(dt.dueAt)} ${etTime(dt.dueAt)}`}` : null].filter(Boolean).join(" · "),
       reason: [`Assigned by ${by}`, dt.outcome ? `Outcome wanted: ${clean(dt.outcome)}` : null, dt.latestUpdate ? `Latest: ${clean(dt.latestUpdate)}` : null, dt.nextStep ? `Next: ${clean(dt.nextStep)}` : null].filter(Boolean).join(" · "),
       client: null, who: waitingVerify ? by : "You", dueISO: dt.dueAt, dueWords: dt.dueAt ? dueWordsFor(dt.dueAt, now) : null, late,
       rank: dt.state === "ASSIGNED" || dt.state === "BLOCKED" ? RANK.today : late ? RANK.overdue : RANK.routine,
@@ -1631,7 +1638,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     const chase = [t.dueAt, t.followUpAt].filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
     const w = waitingNotes.get(t.id);
     const jordan = fromJordan(t);
-    const base = { section: "followups" as const, tag: (jordan ? "jordan" : "task") as DeskTag, href: t.projectId ? `/projects/${t.projectId}` : "/tasks", sinceISO: t.createdAt.toISOString(), client: null };
+    // A task with no job opens itself on Tasks (?task= opens its row), never the whole board (Oct 28 2026).
+    const base = { section: "followups" as const, tag: (jordan ? "jordan" : "task") as DeskTag, href: t.projectId ? `/projects/${t.projectId}` : `/tasks?task=${t.id}`, sinceISO: t.createdAt.toISOString(), client: null };
     const lines = taskLines({ title: t.title, projectTitle: t.project?.title ?? null }, w);
     if (!chase) {
       // No date at all: nobody would ever come back to it. A recent one is
@@ -2052,6 +2060,7 @@ export function actionLabel(a: DeskAction): string {
     case "follow-up": return "Create follow-up";
     case "task": return "Mark done";
     case "ask": return a.askKind === "SCHEDULING" ? "Answer" : "Check request";
+    case "lead-disregard": return "Disregard";
     case "remind": return "Remind";
     case "confirm": return "Confirm";
     case "brief-send": return a.resend ? "Resend brief" : "Send brief";

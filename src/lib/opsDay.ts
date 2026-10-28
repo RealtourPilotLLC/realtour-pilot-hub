@@ -17,7 +17,7 @@ import { videoStatesFor, videoReviewBoard, type ProjectVideoState, type VideoCut
 import { readyToSend, type ReadyBoard } from "@/lib/readyToSend";
 import { syntheticClientIds } from "@/lib/syntheticClients";
 import { taskClientScopeWhere, type TaskClientScope } from "@/lib/taskClientScope";
-import { etAddDays, etDayBoundsUtc, etDayKey } from "@/lib/datetime";
+import { etDayBoundsUtc, etDayKey, etDayKeyPlus } from "@/lib/datetime";
 import { isOutsideEditor } from "@/lib/editors";
 
 // ---------------------------------------------------------------------------
@@ -32,7 +32,7 @@ function etDayWindow(offsetDays: number): { start: Date; end: Date; key: string 
   // ET midnight to ET midnight, from datetime.ts (Oct 21 2026, audit H15):
   // the local copy resolved the offset at the day's noon, so on the two
   // changeover days its start sat an hour off (the old "known accepted edge").
-  const key = etDayKey(etAddDays(new Date(), offsetDays));
+  const key = etDayKeyPlus(etDayKey(new Date()), offsetDays); // by key, not by 24-hour steps (Oct 28 2026)
   return { ...etDayBoundsUtc(key), key };
 }
 

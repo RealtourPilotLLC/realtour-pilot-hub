@@ -2,6 +2,7 @@ import "server-only";
 
 import { prisma } from "@/lib/prisma";
 import { cashBalanceOf } from "@/lib/bankBalance";
+import { etDayKey, etYearStartKey } from "@/lib/datetime";
 import type { HubTool } from "@/lib/integrations/ai";
 
 // ---------------------------------------------------------------------------
@@ -12,8 +13,9 @@ import type { HubTool } from "@/lib/integrations/ai";
 // ---------------------------------------------------------------------------
 
 const D = (s: unknown, fallback: string) => (typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : fallback);
-const yearStart = () => `${new Date().getUTCFullYear()}-01-01`;
-const today = () => new Date().toISOString().slice(0, 10);
+// The advisor's "today" and "this year" are the ET calendar's (Oct 28 2026), not UTC's.
+const yearStart = () => etYearStartKey();
+const today = () => etDayKey(new Date());
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
 export const FINANCE_TOOLS: HubTool[] = [
@@ -234,7 +236,7 @@ export async function execFinanceTool(name: string, input: Record<string, unknow
       const rows = jp.jobs.filter((j) => j.costComplete).sort((a, b) => b.margin - a.margin);
       const slim = (r: (typeof rows)[number]) => ({
         job: r.title, client: r.client, photographer: r.photographer,
-        date: r.shootDate?.toISOString().slice(0, 10) ?? null,
+        date: r.shootDate ? etDayKey(r.shootDate) : null, // the shoot's ET day, not its UTC one
         revenue: r2(r.revenue), photographer_cost: r2(r.photographerCost), editing_cost: r2(r.editingCost),
         margin: r2(r.margin), margin_pct: r.marginPct, cost_complete: r.costComplete,
       });
@@ -297,10 +299,11 @@ export async function execFinanceTool(name: string, input: Record<string, unknow
     }
     case "get_budget": {
       const { personalTruth } = await import("@/lib/financeCategories");
-      const now = new Date();
-      const monthKey = now.toISOString().slice(0, 7);
-      const threeBack = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 3, 1)).toISOString().slice(0, 10);
-      const monthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0));
+      const todayKey = today();
+      const monthKey = todayKey.slice(0, 7);
+      const [y, mo, dd] = todayKey.split("-").map(Number);
+      const threeBack = new Date(Date.UTC(y, mo - 1 - 3, 1)).toISOString().slice(0, 10);
+      const monthEnd = new Date(Date.UTC(y, mo, 0));
       const [targets, monthData, trailing] = await Promise.all([
         prisma.budgetTarget.findMany({ orderBy: { monthlyTarget: "desc" } }),
         personalTruth(`${monthKey}-01`, today()),
@@ -308,7 +311,7 @@ export async function execFinanceTool(name: string, input: Record<string, unknow
       ]);
       const actualBy = Object.fromEntries(monthData.byBucket.map((b) => [b.bucket, b.amount]));
       const avgBy = Object.fromEntries(trailing.byBucket.map((b) => [b.bucket, b.amount / 3]));
-      const dayOfMonth = now.getUTCDate();
+      const dayOfMonth = dd;
       const daysInMonth = monthEnd.getUTCDate();
       return {
         month: monthKey, day_of_month: dayOfMonth, days_in_month: daysInMonth,

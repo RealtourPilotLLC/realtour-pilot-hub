@@ -691,8 +691,21 @@ export type CutNote = {
   ask: boolean;
   /** Written by the editor themselves: a note for the reviewer, never a fix they owe (Oct 15 2026). */
   fromEditor?: boolean;
-  replies: { id: string; body: string; authorName: string | null; createdAt: string }[];
+  replies: { id: string; body: string; authorName: string | null; createdAt: string; canChange?: boolean; edits?: CutNoteEdit[] }[];
+  // ---- EDIT AND DELETE (Jordan, Oct 28 2026), filled by noteEdits.decorateCutNotes ----
+  /** This viewer may edit or delete it (its author, or the owner, the office, the creative manager). */
+  canChange?: boolean;
+  /** The editor already has it: the cut was sent back with it. */
+  sent?: boolean;
+  /** Who has the job's video work, for the confirm words ("Kim already has this note"). */
+  editorName?: string | null;
+  /** The editor marked it fixed. */
+  wasFixed?: boolean;
+  /** Its earlier words, oldest first: staff see "edited" with them. */
+  edits?: CutNoteEdit[];
 };
+
+export type CutNoteEdit = { before: string; after: string; by: string; atISO: string };
 
 export type CutWorkspace = {
   projectId: string;

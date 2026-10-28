@@ -3,11 +3,10 @@ import { PageHeader } from "@/components/PageHeader";
 import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
 import { KpiCards } from "@/components/finance/KpiCards";
 import { personalTruth } from "@/lib/financeCategories";
-import { etYearStartKey } from "@/lib/datetime";
+import { etDayKey, etYearStartKey } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
 
-const YEAR_START = etYearStartKey(); // ET year — never frozen at a hard-coded 2026 (audit)
 const m0 = (n: number | null | undefined) =>
   n == null ? "—" : `${n < 0 ? "−" : ""}$${Math.abs(Math.round(n)).toLocaleString("en-US")}`;
 const MONTH_LABEL = (key: string) => new Date(`${key}-01T12:00:00Z`).toLocaleString("en-US", { month: "short", timeZone: "UTC" });
@@ -19,8 +18,11 @@ const colorAt = (i: number) => PALETTE_CYCLE[i % PALETTE_CYCLE.length];
 // Personal spending — now reading the SAME audited bank-truth engine as the
 // Categories tab (all accounts + Venmo + cards), not just QBO owner draws.
 export async function PersonalTab({ show }: { show: FinanceTab[] }) {
+  // The ET day and year, read per request (Oct 28 2026): the UTC date turned
+  // over at 8 PM ET, and a module-level year froze for the life of the server.
   const now = new Date();
-  const endKey = now.toISOString().slice(0, 10);
+  const endKey = etDayKey(now);
+  const YEAR_START = etYearStartKey();
   const monthKey = endKey.slice(0, 7);
   const data = await personalTruth(YEAR_START, endKey);
   // This-month view for the KPI drill-in (same engine, month-bounded).

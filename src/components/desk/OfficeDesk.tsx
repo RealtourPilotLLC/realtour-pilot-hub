@@ -14,8 +14,10 @@ import { PushControls } from "@/components/videoDelivery/PushControls";
 import { NotTold } from "@/components/ops/NotTold";
 import { RerunTopaz } from "@/components/ops/RerunTopaz";
 import { AskQuickActions } from "@/components/home/AskQuickActions";
+import { PlacementUndoHost } from "@/components/requests/RequestPlacement";
 import { RemindPhotographerButton } from "@/components/editing/RemindPhotographer";
 import { EmailReplyBox } from "@/components/comms/EmailReplyBox";
+import { LeadDisregardButton } from "@/components/tasks/ChecklistButtons";
 import { draftEmailThreadReply } from "@/app/emailActions";
 import {
   BriefSend, CloseoutTick, ConfirmControls, DelegationControls, DraftReply, FinishDay, FollowUpCreate, HandOn, MarkDelivered, MarkHandled, PhotoApprove, PRIMARY, QUIET, ReplyBox, RevisionDecide, TaskResolve, WaitOn,
@@ -68,7 +70,9 @@ const TAG: Record<DeskTag, { label: string; cls: string }> = {
 const ROWS_SHOWN = 3;
 const ACTIVITY_SHOWN = 5;
 const SOLID = new Set<DeskAction["kind"]>(["photo-approve", "video-send", "video-push", "reply", "program-reply", "confirm", "revision-decide"]);
-type Focus = "follow-up" | "handled" | null;
+/** A row link that opens the side panel on one control first (Create follow-up, Mark handled, Disregard). */
+type Focus = "follow-up" | "handled" | "disregard" | null;
+const FOCUS_KIND: Record<Exclude<Focus, null>, DeskAction["kind"]> = { "follow-up": "follow-up", handled: "handled", disregard: "lead-disregard" };
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 /** The side panel's own views that are not one row: the briefs, Prepare <Day>, Review & finish day. */
 type Special = "special:briefs" | "special:prepare" | "special:finish";
@@ -104,6 +108,8 @@ export function OfficeDesk({ desk, includeTest = false, initialOpen = null, init
 
   return (
     <div data-office-desk data-readonly={desk.readOnly ? "true" : "false"} className="space-y-4">
+      {/* A request's "Not for this project" (Oct 28 2026) takes its row off the desk; its Undo waits here. */}
+      {!desk.readOnly && <PlacementUndoHost />}
       {desk.readOnly && (
         <p role="status" className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-2.5 text-sm">
           Preview: read-only. The buttons are off while you view as {desk.person}.
@@ -273,12 +279,26 @@ function ViewAll({ shown, total, onClick }: { shown: number; total: number; onCl
   );
 }
 
-function RowButton({ i, onOpen }: { i: DeskItem; onOpen: (i: DeskItem) => void }) {
-  if (!i.primary) return null;
-  const solid = SOLID.has(i.primary.action.kind) || i.late || i.rank === 0;
+/**
+ * EVERY ROW HAS A BUTTON (Jordan, Oct 28 2026: "make sure every task and
+ * assignment has an actionable button"). A row with its own primary says what
+ * it does. A row whose move is someone else's (waiting on James, AutoHDR,
+ * CubiCasa, a verification) still opens its quick actions: Follow up on a task,
+ * a reminder or an assignment (Mark done, a new date, Waiting on, Update,
+ * Delegate), the floor plan's own Mark delivered, else Open. The line beside it
+ * names who it waits on.
+ */
+function rowButtonLabel(i: DeskItem): { label: string; solid: boolean } {
+  if (i.primary) return { label: i.primary.label, solid: SOLID.has(i.primary.action.kind) || i.late || i.rank === 0 };
+  const plan = i.actions.find((a): a is Extract<DeskAction, { kind: "mark-delivered" }> => a.kind === "mark-delivered");
+  return { label: i.actions.some((a) => a.kind === "task" || a.kind === "remind" || a.kind === "delegation") ? "Follow up" : plan ? plan.label : "Open", solid: false };
+}
+
+function RowButton({ i, onOpen, small = false }: { i: DeskItem; onOpen: (i: DeskItem) => void; small?: boolean }) {
+  const { label, solid } = rowButtonLabel(i);
   return (
-    <button type="button" onClick={() => onOpen(i)} data-open-panel={i.id} className={cn(solid ? PRIMARY : QUIET, "shrink-0 sm:min-w-28")}>
-      {i.primary.label}
+    <button type="button" onClick={() => onOpen(i)} data-open-panel={i.id} className={cn(solid ? PRIMARY : QUIET, "shrink-0", small ? "font-medium" : "sm:min-w-28")}>
+      {label}
     </button>
   );
 }
@@ -324,16 +344,18 @@ function ReviewDeliver({ s, onOpen, readOnly, href }: { s: DeskSection; onOpen: 
             {/* The full status page: every job in review and delivery, each piece's state and what is missing. */}
             <Link href={href} data-view-deliveries className="inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline">View all deliveries <ArrowRight aria-hidden className="size-3.5" /></Link>
             {s.waiting.length > 0 && (
-              <details className="group ml-auto min-w-0 basis-full sm:basis-auto" data-awaiting>
+              <details className="group ml-auto min-w-0 basis-full sm:basis-auto sm:open:basis-full" data-awaiting>
                 <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-1 text-sm text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
                   {s.waiting.length} awaiting files <ChevronDown aria-hidden className="size-4 transition-transform group-open:rotate-180" />
                 </summary>
-                <ul className="mt-1 space-y-1.5 text-[13px]">
+                {/* Each with its own button (Oct 28 2026): Open, or the floor plan's Mark delivered. */}
+                <ul className="mt-1 divide-y divide-border text-[13px]">
                   {s.waiting.map((i) => (
-                    <li key={i.id} data-desk-item={i.id} data-state="waiting">
-                      <button type="button" onClick={() => onOpen(i)} className="min-h-9 text-left hover:underline">
+                    <li key={i.id} data-desk-item={i.id} data-state="waiting" className="flex items-center gap-2 py-1.5">
+                      <button type="button" onClick={() => onOpen(i)} className="min-h-9 min-w-0 flex-1 text-left [overflow-wrap:anywhere] hover:underline">
                         <span className="font-medium">{i.title}</span> <span className="text-muted">· {i.line}{i.dueWords ? ` · ${i.dueWords}` : ""}</span>
                       </button>
+                      <RowButton i={i} onOpen={onOpen} small />
                     </li>
                   ))}
                 </ul>
@@ -405,6 +427,10 @@ function Communications({ s, onOpen, fresh }: { s: DeskSection; onOpen: (i: Desk
                   {i.actions.some((a) => a.kind === "handled") && (
                     <button type="button" onClick={() => onOpen(i, "handled")} data-mark-handled-row={i.id} className="min-h-9 text-[13px] text-muted underline-offset-2 hover:text-foreground hover:underline">Mark handled</button>
                   )}
+                  {/* A lead that is spam (Kyle, Oct 26 2026: "a lot of them are spam"), on the dashboard too. */}
+                  {i.actions.some((a) => a.kind === "lead-disregard") && (
+                    <button type="button" onClick={() => onOpen(i, "disregard")} data-disregard-row={i.id} className="min-h-9 text-[13px] text-muted underline-offset-2 hover:text-foreground hover:underline">Disregard</button>
+                  )}
                 </span>
               </li>
             ))}
@@ -413,6 +439,27 @@ function Communications({ s, onOpen, fresh }: { s: DeskSection; onOpen: (i: Desk
         </>
       )}
       {thanks}
+      {/* An email he answered, waiting on whoever handed it to him to verify (Oct 28 2026):
+          it was in the data and never on the card. Folded, each with its button (Follow up:
+          Update, Escalate). */}
+      {s.waiting.length > 0 && (
+        <details className="group mt-2 rounded-lg bg-surface-2/50 px-3" data-waiting>
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1 text-sm text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
+            <span className="flex-1">{s.waiting.length} waiting on others</span> <ChevronDown aria-hidden className="size-4 transition-transform group-open:rotate-180" />
+          </summary>
+          <ul className="divide-y divide-border">
+            {s.waiting.map((i) => (
+              <li key={i.id} data-desk-item={i.id} data-state="waiting" className="flex items-center gap-3 py-2">
+                <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 text-left">
+                  <span className="block text-sm font-medium [overflow-wrap:anywhere]">{i.title}</span>
+                  <span className="block text-[13px] text-muted [overflow-wrap:anywhere]">{[i.channel, i.line].filter(Boolean).join(" · ")}</span>
+                </button>
+                <RowButton i={i} onOpen={onOpen} small />
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
       {s.now.length > 0 && <div className="mt-3">{upToDate}</div>}
     </Card>
   );
@@ -440,7 +487,8 @@ function Shoots({ s, onOpen, initialDay, includeTest, briefs, onBriefs }: { s: D
         </button>
         <span className="min-w-0 sm:w-56">
           {i.chip && <span data-chip className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[12px] font-medium", CHIP_TONE[i.chip.tone])}>{i.chip.tone === "ok" ? <CheckCircle2 aria-hidden className="size-3.5" /> : i.chip.tone === "muted" ? null : <Clock aria-hidden className="size-3.5" />}{i.chip.label}</span>}
-          <span className="mt-0.5 block text-[12px] text-muted">{i.state === "now" ? i.line : v ? [v.confirmation.words, ...(v.over ? [] : [v.brief.words])].join(" · ") : i.line}</span>
+          {/* A shoot under way or done says so once (Kyle, Oct 28 2026: "Shot" chip, then "Shot" again under it). */}
+          {sub(i, v) && <span className="mt-0.5 block text-[12px] text-muted" data-shoot-sub>{sub(i, v)}</span>}
         </span>
         <RowButton i={i} onOpen={onOpen} />
       </li>
@@ -476,6 +524,13 @@ function Shoots({ s, onOpen, initialDay, includeTest, briefs, onBriefs }: { s: D
 }
 
 const timeOf = (i: DeskItem) => (i.panel.kind === "visit" ? i.panel.visit.timeISO : i.dueISO);
+/** The line under a shoot's chip: what needs Kyle, else the confirmation and the brief. Nothing once
+ *  the shoot has started: the chip already says "On site" or "Shot", and the brief no longer matters. */
+const sub = (i: DeskItem, v: PrepVisit | null): string | null => {
+  // confirmation "na" = the shoot has started (its words are "On site now" / "Shot", the chip's own).
+  const words = i.state === "now" ? i.line : v ? (v.confirmation.state === "na" ? "" : [v.confirmation.words, v.brief.words].join(" · ")) : i.line;
+  return words && words !== i.chip?.label ? words : null;
+};
 
 function FollowUps({ s, onOpen, backlog, includeTest }: { s: DeskSection; onOpen: (i: DeskItem, f?: Focus) => void; backlog: Desk["backlog"]; includeTest: boolean }) {
   const [all, setAll] = useState(false);
@@ -604,7 +659,7 @@ function SidePanel({ item, special, focus, fallbackTitle, desk, includeTest, dra
 }) {
   const title = special === "special:briefs" ? "Photographer briefs" : special === "special:prepare" ? `Prepare ${desk.nextDay.dayName}` : special === "special:finish" ? "Review & finish day" : item?.title ?? fallbackTitle ?? "Done";
   const actions = item ? item.actions.filter((a) => !(item.panel.kind === "visit" && a.kind === "ask")) : [];
-  const first = focus === "follow-up" ? "follow-up" : focus === "handled" ? "handled" : null;
+  const first = focus ? FOCUS_KIND[focus] : null;
   const ordered = first ? [...actions.filter((a) => a.kind === first), ...actions.filter((a) => a.kind !== first)] : actions;
   const visit = item?.panel.kind === "visit" ? item.panel.visit : null;
   // Every row can be handed on: Delegate, or Escalate to Jordan (a delegated task has its own Escalate).
@@ -919,6 +974,9 @@ function ActionControl({ a, item, desk, draft }: { a: DeskAction; item: DeskItem
       );
     case "ask":
       return <AskQuickActions id={a.askId} askKind={a.askKind} />;
+    case "lead-disregard":
+      // The Tasks board's own Disregard (Spam mutes the sender; Not a lead closes just this one).
+      return <div className="flex flex-wrap items-center gap-2" data-control="lead-disregard"><LeadDisregardButton taskId={a.taskId} phoneLead={a.phoneLead} className={QUIET} /></div>;
     case "remind":
       return <RemindPhotographerButton projectId={a.projectId} street={a.street} view={a.view} showMissing />;
     case "confirm":

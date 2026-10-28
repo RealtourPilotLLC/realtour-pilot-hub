@@ -13,6 +13,7 @@ import { isMonthlyContentJob } from "@/lib/pipeline";
 import { parseEvidence, type UnitTallyView } from "@/lib/statusEvidence";
 import { reviewRoomRules } from "@/lib/settings";
 import { holdStands, loadWaitingHolds, releaseWaitingHold } from "@/lib/queueWaiting";
+import { etMonthDay } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // Smart project-status engine.
@@ -653,7 +654,8 @@ export function computeStatus(sig: StatusSignals): StatusResult {
 
   // Video SLA: a missing video is only a problem once its production window
   // (shoot date + standard/premium SLA) has passed. Before that, it's on-track.
-  const fmtDate = (dt: Date) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  // ET, not the server's UTC (Oct 28 2026): a due after 8 PM ET printed as the next day.
+  const fmtDate = (dt: Date) => etMonthDay(dt);
   let videoDue: Date | null = null;
   let videoOverdue = false;
   // Only when content has actually started going out (photos/other media present)
@@ -1653,7 +1655,7 @@ export async function syncProjectStatuses(
     if (p.statusPinnedAt) {
       if (final !== p.status) {
         const wouldBe = STATUS_WORD[final] ?? final;
-        evidence.reason = `Status pinned by the office on ${STATUS_WORD[p.status] ?? p.status} (${p.statusPinnedAt.toLocaleDateString("en-US", { month: "short", day: "numeric" })}); on its own the hub would read ${wouldBe} — ${evidence.reason}`;
+        evidence.reason = `Status pinned by the office on ${STATUS_WORD[p.status] ?? p.status} (${etMonthDay(p.statusPinnedAt)}); on its own the hub would read ${wouldBe} — ${evidence.reason}`;
       }
       final = p.status;
     }

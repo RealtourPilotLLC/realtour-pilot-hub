@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { etDayKey } from "@/lib/datetime";
 import { getSecret } from "./connections";
 import { cleanText, clip, stripQuotedReply } from "@/lib/text";
 import { originOrBase } from "@/lib/appUrl";
@@ -1723,7 +1724,7 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
               title: `New lead — ${name || email}`,
               href: "/queue",
               targets: [{ roles: ["OWNER", "ADMIN"] }],
-              dedupeKey: `lead-em-${email}-${new Date().toISOString().slice(0, 10)}`,
+              dedupeKey: `lead-em-${email}-${etDayKey(new Date())}`, // once per ET day (Oct 28 2026); the UTC date turned at 8 PM ET
             });
           } catch { /* never break the scan on a notify failure */ }
           return 1;

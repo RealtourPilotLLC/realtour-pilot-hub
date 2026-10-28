@@ -65,7 +65,8 @@ import { authEnforcedNow } from "@/lib/auth/enforced";
 // ---------------------------------------------------------------------------
 
 export type AskKind = "SPECIAL_REQUEST" | "SCHEDULING";
-export type AskState = "OPEN" | "DONE" | "CONFIRMED" | "NOT_NEEDED";
+/** FUTURE (Oct 28 2026, lib/requestPlacement): taken off a project and kept on the client for their next one; on no project. */
+export type AskState = "OPEN" | "DONE" | "CONFIRMED" | "NOT_NEEDED" | "FUTURE";
 export type AskMediumValue = "video" | "photo" | "both" | "unclear";
 /** "wrapup" (Oct 21 2026): the photographer's removal notes, filed by Photo Delivery (photoDelivery/clientAsked) so they are ticked off like a request; never on the boards.
  *  Photo Delivery also files the order's photo notes again under "order_note" (dedupe key "photo-order-note:…"), for the photo job only. */
@@ -480,6 +481,17 @@ export async function markNotNeeded(id: string, by: string, reason?: string | nu
 
 /** Back on the list (a mistaken press). */
 export async function reopenAsk(id: string, by: string): Promise<AskResult> {
+  // A request set aside with "Not for this project" (Oct 28 2026) is put back
+  // by its own Undo, which restores its project and its brief lines too.
+  const placed = await prisma.clientAsk.findUnique({ where: { id }, select: { projectId: true, state: true, historyJson: true } });
+  if (placed?.historyJson?.includes('"placed":')) {
+    const { undoable, parseHistory } = await import("@/lib/requestPlacementCore");
+    if (undoable(parseHistory(placed.historyJson), { projectId: placed.projectId, state: placed.state })) {
+      const { undoRequestPlacement } = await import("@/lib/requestPlacement");
+      const u = await undoRequestPlacement({ askId: id, by });
+      return { ok: u.ok, message: u.message };
+    }
+  }
   const r = await move(id, ["DONE", "CONFIRMED", "NOT_NEEDED"], "OPEN", by, { doneAt: null, doneBy: null, confirmedAt: null, confirmedBy: null, confirmNote: null }, "reopened");
   return r.ok ? { ok: true, message: r.message === "Saved." ? "Back on the list." : r.message } : r;
 }
@@ -717,6 +729,10 @@ export async function fileAsksFromMessage(input: {
       for (const x of keys) if (hit.has(x.key)) kindsFiled.add(x.k);
     }
     const groups = new Map<string, { projectId: string | null; kind: AskKind; texts: string[]; summaries: string[]; media: Set<AskMediumValue> }>();
+    // NOT FOR THIS PROJECT (Oct 28 2026, lib/requestPlacement): words a person
+    // took off a job ("Not for this project") are not filed on that job again.
+    const placement = await import("@/lib/requestPlacement");
+    const takenOff = await placement.takenOffWords(input.clientId).catch(() => new Map<string, string[]>());
     for (const a of input.asks) {
       const words = (a.text || "").trim() || clip(input.message, 600);
       if (isAccessNote(words) || isAccessNote(a.summary)) { out.skipped.push(`access note: ${clip(words, 60)}`); continue; }
@@ -750,6 +766,7 @@ export async function fileAsksFromMessage(input: {
         if (!projectId && !anyInFlight) { out.skipped.push(`no job in flight: ${clip(words, 60)}`); continue; }
         // No clear job, and the client has exactly one in flight: that one.
         if (!projectId && inFlight.length === 1) projectId = inFlight[0].id;
+        if (placement.repeatsTakenOff(takenOff, projectId, [words, a.summary])) { out.skipped.push(`taken off this job before (not for this project): ${clip(words, 60)}`); continue; }
       }
       const key = `${projectId ?? "-"}|${a.kind}`;
       const g = groups.get(key) ?? { projectId, kind: a.kind, texts: [], summaries: [], media: new Set<AskMediumValue>() };
@@ -1275,7 +1292,9 @@ function viewOf(r: AskRow, now: Date, projects: Map<string, ProjectBits>, client
         ? `Not needed (${r.doneBy ?? "someone"}${r.doneAt ? `, ${etDateTime(r.doneAt)}` : ""})${r.confirmNote ? `: ${r.confirmNote}` : ""}`
         : r.state === "DONE"
           ? `Done by ${r.doneBy ?? "someone"}${r.doneAt ? `, ${etDateTime(r.doneAt)}` : ""}`
-          : null;
+          : r.state === "FUTURE"
+            ? "Kept for the client's next project"
+            : null;
   const open = r.state === "OPEN";
   return {
     id: r.id,

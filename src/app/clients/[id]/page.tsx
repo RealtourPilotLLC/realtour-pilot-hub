@@ -3,8 +3,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
   Mail, Phone, Building2, IdCard, Package, DollarSign,
-  Activity as ActivityIcon, Star, ArrowRight, Camera, Users, Sparkles,
+  Activity as ActivityIcon, Star, ArrowRight, Camera, Users, Sparkles, CalendarClock,
 } from "lucide-react";
+import { PlacementUndoHost, SavedRequestList } from "@/components/requests/RequestPlacement";
 import { BackLink } from "@/components/ui/BackLink";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge, ink } from "@/components/ui/Badge";
@@ -131,6 +132,17 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
       ])
     : [null, null, []];
 
+  // Oct 28 2026 (Kyle, lib/requestPlacement): requests taken off a project they
+  // were not for and kept for this client's next one. They wait here and on
+  // the next project booked; whoever may check requests puts one on a project
+  // or sets it aside. A failed read shows no card.
+  const [saved, canPlaceSaved] = seesCare
+    ? await Promise.all([
+        import("@/lib/requestPlacement").then((m) => m.savedRequestsForClient(client.id)).catch(() => null),
+        me ? import("@/lib/reviewerAssignment").then((m) => m.canRuleOnCuts(me)).then((r) => r.ok).catch(() => false) : Promise.resolve(!authEnforced()),
+      ])
+    : [null, false];
+
   return (
     <div>
       <div className="border-b border-border px-4 py-4 sm:px-6">
@@ -224,6 +236,24 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
           {/* §7.8: what photographers reported, waiting on the office. */}
           {fieldReports.length > 0 && <FieldReportsCard reports={fieldReports} canDecide={canEditPrefs || (me?.realRole === "CREATIVE_MANAGER" && !me.impersonating)} />}
 
+          {/* Outside the card: the last saved request put on a project takes the card with it, not its Undo. */}
+          {canPlaceSaved && <PlacementUndoHost />}
+          {saved && saved.saved.length > 0 && (
+            <section data-saved-for-later className="min-w-0 rounded-xl border border-border bg-surface p-4">
+              <h2 className="flex items-center gap-2 text-sm font-semibold"><CalendarClock className="size-4 text-muted" /> Saved for {client.name}&rsquo;s next project</h2>
+              <p className="mb-3 mt-1 text-xs text-muted">Requests taken off a project they were not for. Each is offered on the next project booked. Put it on an open project here, or set it aside.</p>
+              <SavedRequestList items={saved.saved} choices={saved.choices} canAct={canPlaceSaved} />
+            </section>
+          )}
+          {/* The brain files a request on no project when the client has several in flight; Kyle's list
+              sends him here to pick the one it is for (there was no picker on this page before). */}
+          {saved && saved.loose.length > 0 && (
+            <section data-requests-no-project className="min-w-0 rounded-xl border border-warning/40 bg-surface p-4">
+              <h2 className="flex items-center gap-2 text-sm font-semibold"><CalendarClock className="size-4 text-warning" /> Requests on no project yet</h2>
+              <p className="mb-3 mt-1 text-xs text-muted">{client.name} has more than one project open, so the hub did not guess. Put each on the project it is for, or set it aside.</p>
+              <SavedRequestList items={saved.loose} choices={saved.choices} canAct={canPlaceSaved} />
+            </section>
+          )}
           {seesCare && <ClientIssuesCard clientId={client.id} issues={complaints} canEdit={canEditPrefs} projects={client.projects.map((p) => ({ id: p.id, title: p.title }))} />}
           {entitlements && <EntitlementsCard summary={entitlements} canEdit={canEditPrefs} />}
           {enrollment && creativeGuard && <CreativeGuardEditor enrollmentId={enrollment.id} guard={creativeGuard} canEdit={canEditGuard} />}
