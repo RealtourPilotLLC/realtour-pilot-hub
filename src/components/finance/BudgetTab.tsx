@@ -3,6 +3,7 @@ import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
 import { BudgetScreen, type BudgetRow } from "@/components/finance/BudgetScreen";
 import { personalTruth, categoryBreakdown } from "@/lib/financeCategories";
 import { prisma } from "@/lib/prisma";
+import { etDayKey } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
 
@@ -10,10 +11,11 @@ export const dynamic = "force-dynamic";
 // audited ledger as everything else. The AI Advisor can set and rebalance the
 // targets (set_budget tool); the owner can edit any number inline.
 export async function BudgetTab({ show }: { show: FinanceTab[] }) {
-  const now = new Date();
-  const todayKey = now.toISOString().slice(0, 10);
+  // The ET day and month (Oct 28 2026), not the server's UTC ones.
+  const todayKey = etDayKey(new Date());
   const monthKey = todayKey.slice(0, 7);
-  const threeBack = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 3, 1)).toISOString().slice(0, 10);
+  const [y, mo, dd] = todayKey.split("-").map(Number);
+  const threeBack = new Date(Date.UTC(y, mo - 1 - 3, 1)).toISOString().slice(0, 10);
 
   const [targets, monthData, trailing, breakdown] = await Promise.all([
     prisma.budgetTarget.findMany({ orderBy: { monthlyTarget: "desc" } }),
@@ -22,7 +24,7 @@ export async function BudgetTab({ show }: { show: FinanceTab[] }) {
     // The full category roster (business + personal) for the drill-in's
     // recategorize dropdowns — a mis-tagged business charge gets moved OUT of
     // the personal budget from right here.
-    categoryBreakdown(`${now.getUTCFullYear()}-01-01`, `${now.getUTCFullYear()}-12-31`),
+    categoryBreakdown(`${y}-01-01`, `${y}-12-31`),
   ]);
   const allCategories = [
     ...breakdown.business.map((r) => ({ category: r.category, kind: "BUSINESS" })),
@@ -31,8 +33,8 @@ export async function BudgetTab({ show }: { show: FinanceTab[] }) {
   const actualBy = Object.fromEntries(monthData.byBucket.map((b) => [b.bucket, b.amount]));
   const avgBy = Object.fromEntries(trailing.byBucket.map((b) => [b.bucket, b.amount / 3]));
 
-  const dayOfMonth = now.getUTCDate();
-  const daysInMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
+  const dayOfMonth = dd;
+  const daysInMonth = new Date(Date.UTC(y, mo, 0)).getUTCDate();
 
   const rows: BudgetRow[] = targets.map((t) => ({
     category: t.category,

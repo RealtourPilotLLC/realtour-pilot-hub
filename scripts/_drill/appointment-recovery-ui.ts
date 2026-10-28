@@ -5,6 +5,7 @@ import { isValidElement } from "react";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { fenceFetch, makeChecker } from "./_harness";
+import { etAt } from "../../src/lib/datetime";
 import type { ApptResult } from "../../src/app/actions";
 import type { ApptView } from "../../src/components/project/AppointmentManager";
 type Props = Record<string, unknown>;
@@ -61,14 +62,14 @@ async function main() {
   const fresh = async (id: string) => { card.stop(); current = { ...appt, id }; card = mountHooks(() => AppointmentManager({ appt: current })); card.render(); await Promise.resolve(); };
   try {
     card.render(); await Promise.resolve(); click("Reschedule");
-    c.ok("fresh appointment keeps notification unticked and exact readable context", checkbox().checked === false && contains(card.render(), appt.title!) && dateField().hint === "This field uses your device's local time zone. Appointment times above are shown in Eastern time.");
+    c.ok("fresh appointment keeps notification unticked and exact readable context", checkbox().checked === false && contains(card.render(), appt.title!) && dateField().hint === "Type the time in Eastern time, like every time on this page, wherever you are." && dateField().value === "2026-10-01T11:00");
     typeDate("2026-10-02T12:30"); tick(true);
     const confirm = button("Confirm reschedule"); (confirm.onClick as () => void)(); (confirm.onClick as () => void)();
-    c.ok("same-tick confirm starts one unchanged exact appointment/time/notify payload", writes.length === 1 && writes[0].id === appt.id && writes[0].date === new Date("2026-10-02T12:30").toISOString() && writes[0].notify === true);
+    c.ok("same-tick confirm starts one unchanged exact appointment/time/notify payload", writes.length === 1 && writes[0].id === appt.id && writes[0].date === etAt("2026-10-02", 12, 30).toISOString() && writes[0].notify === true);
     typeDate("2026-10-03T14:45"); tick(false);
     c.ok("pending mutation controls freeze while native newer input stays editable", button("Confirm reschedule").disabled === true && button("Reschedule").disabled === true && dateField().value === "2026-10-03T14:45" && checkbox().checked === false);
     response.resolve({ ok: true, message: "Appointment rescheduled.", outcome: "confirmed" });
-    await until(() => contains(card.render(), "Your newer local date"));
+    await until(() => contains(card.render(), "Your newer date or email choice is kept"));
     c.ok("confirmed older request preserves newer draft visibly and clears only its own marker", dateField().value === "2026-10-03T14:45" && checkbox().checked === false && button("Confirm reschedule").disabled === false && !storage.has(key()));
     response = deferred(); click("Confirm reschedule"); typeDate("2026-10-04T09:15"); tick(true);
     response.reject(new Error("isolated lost post-provider response")); await until(() => contains(card.render(), "appointment change is unconfirmed"));
@@ -109,7 +110,7 @@ async function main() {
     finally { crypto.randomUUID = uuid; }
     c.ok("failed ID preparation cannot strand busy or invent an unknown provider write", contains(card.render(), "could not be prepared") && button("Confirm reschedule").disabled === false && writes.length === beforePrep && !storage.has(key()) && dateField().value === "2026-10-08T10:00");
     click("Confirm reschedule"); response.resolve({ ok: true, message: "Prepared retry confirmed.", outcome: "confirmed" }); await until(() => contains(card.render(), "Prepared retry confirmed."));
-    c.ok("deliberate valid retry after local preparation refusal retains exact original conversion", writes.length === beforePrep + 1 && writes.at(-1)?.date === new Date("2026-10-08T10:00").toISOString() && !storage.has(key()));
+    c.ok("deliberate valid retry after local preparation refusal retains exact original conversion", writes.length === beforePrep + 1 && writes.at(-1)?.date === etAt("2026-10-08", 10, 0).toISOString() && !storage.has(key()));
     card.stop(); current = { ...appt, id: "appointment-prehydrate-input" };
     const recovered = { appointmentId: current.id, attemptId: randomUUID(), operation: "reschedule", draft: { start: "2026-10-09T10:00", notify: false } }; storage.set(key(), JSON.stringify(recovered));
     card = mountHooks(() => AppointmentManager({ appt: current })); card.render(); click("Reschedule"); typeDate("2026-10-10T11:45"); tick(true); const beforeHydrate = writes.length; click("Confirm reschedule"); await Promise.resolve();

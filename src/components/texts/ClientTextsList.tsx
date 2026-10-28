@@ -10,6 +10,7 @@ import {
 import { setSmartTaskStatus } from "@/app/actions";
 import { sendDraftText } from "@/app/tasks/sendAllActions";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
+import { etMonthDay, etTime, isTodayET } from "@/lib/datetime";
 
 // The /texts review list. Every row is a drafted client text: review the message,
 // tap Send (the SAME server actions the /today cards used — a human tap is the
@@ -35,10 +36,10 @@ function dueLabel(row: ClientTextRow): { text: string; danger: boolean } {
   if (row.overdue) return { text: "overdue", danger: true };
   if (!row.dueAt) return { text: "", danger: false };
   const d = new Date(row.dueAt);
-  const isToday = d.getTime() - Date.now() < 24 * 3600_000;
-  const t = d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
-  const day = d.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
-  return { text: isToday ? `by ${t}` : day, danger: false };
+  // "by 3 PM" means TODAY, Eastern (Oct 28 2026, Kyle: "today" must be EST).
+  // It used to be "within 24 hours", so tomorrow morning's text read "by 9 AM"
+  // as if it were due today.
+  return { text: isTodayET(d) ? `by ${etTime(d)}` : etMonthDay(d), danger: false };
 }
 
 // Same color language as the Today feed (Kyle's feedback — Done and Send were

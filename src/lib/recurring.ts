@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etDayKey } from "@/lib/datetime";
+import { etDayKey, etYearStartKey } from "@/lib/datetime";
 import { isRetainerSession } from "@/lib/packageNames";
 
 // ---------------------------------------------------------------------------
@@ -95,7 +95,9 @@ function matchClient(qboName: string, clients: { id: string; name: string }[]): 
 }
 
 export async function recurringRevenue(): Promise<RecurringRevenue> {
-  const yearStart = new Date(new Date().getFullYear(), 0, 1);
+  // The ET year (Oct 28 2026), at UTC midnight like the books' calendar-day txnDates
+  // (the Overview tab's convention); the server's own year turned at 7 PM ET on Dec 31.
+  const yearStart = new Date(`${etYearStartKey()}T00:00:00Z`);
   const since = new Date(Date.now() - 800 * DAY);
 
   const [txns, clients] = await Promise.all([

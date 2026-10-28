@@ -5,7 +5,7 @@ import { getSecret, markSynced, markError } from "./connections";
 import type { DeliverableType, Prisma, ProjectStatus } from "@prisma/client";
 import type { NotifyTarget } from "@/lib/notify";
 import { streetOf } from "@/lib/delivery";
-import { etAt, etDayKey } from "@/lib/datetime";
+import { etAt, etDayKey, etTomorrowKey } from "@/lib/datetime";
 import { loadRemovedClients, removedMatch } from "@/lib/removedClients";
 
 // ---------------------------------------------------------------------------
@@ -432,7 +432,7 @@ export type AryeoSlotDay = { date: string; slots: string[]; slotUsers?: Record<s
 export function availabilityFromDay(from: Date | null | undefined, now: number = Date.now()): string | null {
   if (!from || Number.isNaN(from.getTime())) return null;
   const day = etDayKey(from);
-  return day > etDayKey(new Date(now + 86_400_000)) ? day : null;
+  return day > etTomorrowKey(new Date(now)) ? day : null; // tomorrow by ET key, not now + 24 h (Oct 28 2026)
 }
 
 /**

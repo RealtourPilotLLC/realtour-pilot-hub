@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { CHECKLIST_PATH } from "@/lib/homeAnchors";
 import { requireTaskAccess } from "@/lib/auth/guards";
 import { prisma } from "@/lib/prisma";
-import { etAddDays, etDayKey } from "@/lib/datetime";
+import { etDayKey, etDayKeyPlus } from "@/lib/datetime";
 import { parseTaskDeadlineDate } from "@/lib/taskDeadline";
 import { MAX_PUSH_DAYS, PUSH_ACTION, PUSHES_BEFORE_FLAG, chaseDate } from "@/lib/taskAging";
 
@@ -33,7 +33,7 @@ export async function pushOldItem(taskId: string, day: string): Promise<{ ok: bo
   const now = new Date();
   const today = etDayKey(now);
   if (day <= today) return { ok: false, message: "Pick a day after today." };
-  if (day > etDayKey(etAddDays(now, MAX_PUSH_DAYS))) return { ok: false, message: `Pick a day within ${MAX_PUSH_DAYS} days.` };
+  if (day > etDayKeyPlus(today, MAX_PUSH_DAYS)) return { ok: false, message: `Pick a day within ${MAX_PUSH_DAYS} days.` };
 
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);

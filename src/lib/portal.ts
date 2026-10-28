@@ -423,19 +423,9 @@ export async function scriptForEnrollment(enrollmentId: string, scriptId: string
 // held costs nothing if the call moves. And the month is EXPLICIT: the
 // client picks which program month the session is for (a request made in
 // late September may be October's), so the gate, the capacity and the
-// request all belong to that month.
+// request all belong to that month. (Its local-clock addBusinessDays helper,
+// unused, was removed Oct 28 2026: business days are datetime.ts's ET ones.)
 // ---------------------------------------------------------------------------
-
-export function addBusinessDays(from: Date, n: number): Date {
-  const d = new Date(from);
-  let left = n;
-  while (left > 0) {
-    d.setDate(d.getDate() + 1);
-    const dow = d.getDay();
-    if (dow !== 0 && dow !== 6) left--;
-  }
-  return d;
-}
 
 export type PortalSlotDay = {
   date: string;

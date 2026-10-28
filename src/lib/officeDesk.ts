@@ -26,7 +26,7 @@ import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import { OFFICE_TASK_KEY_PREFIX } from "@/lib/photoDelivery/afterDeliveryAsk";
 import { listAssignees, viewerAssigneeKey, type Assignee } from "@/lib/assignees";
 import { syntheticClientIds } from "@/lib/syntheticClients";
-import { etAt, etDate, etDateTime, etDayBoundsUtc, etDayKey, etDayStartUtc, etFullDate, etTime } from "@/lib/datetime";
+import { etAt, etDate, etDateTime, etDayBoundsUtc, etDayKey, etDayStartUtc, etDaysAgo, etFullDate, etTime } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // KYLE'S DESK, revision 2 (Oct 23 2026, evening). Jordan: "For Kyle I feel
@@ -1555,7 +1555,9 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       title: clean(t.title),
       line: back ? `Waiting on ${w!.who} · Follow up now` : [jordan ? "From Jordan" : t.kind, t.projectTitle ? streetOf(clean(t.projectTitle)) : null].filter(Boolean).join(" · "),
       client: null,
-      reason: back ? `You were waiting on ${waitingWords(w!)} until ${etDateTime(w!.followUpAt)}${w!.note ? `: ${clean(w!.note)}` : ""}` : [jordan ? "From Jordan" : t.kind, earlier ? `${plural(t.daysPast, "day")} past its date` : "due today", t.pushes ? `pushed ${plural(t.pushes, "time")}` : null].filter(Boolean).join(" · "),
+      // "N days past its date" counts ET calendar days (Oct 28 2026, Kyle: "today" must be EST):
+      // whole 24-hour blocks said "0 days past its date" at 12:30 AM for last night's 9 PM task.
+      reason: back ? `You were waiting on ${waitingWords(w!)} until ${etDateTime(w!.followUpAt)}${w!.note ? `: ${clean(w!.note)}` : ""}` : [jordan ? "From Jordan" : t.kind, earlier ? `${plural(Math.max(1, etDaysAgo(new Date(t.chaseISO), now)), "day")} past its date` : "due today", t.pushes ? `pushed ${plural(t.pushes, "time")}` : null].filter(Boolean).join(" · "),
       who: back ? w!.who : "You", dueISO: t.chaseISO, dueWords: dueWordsFor(t.chaseISO, now), late: earlier || Date.parse(t.chaseISO) < nowMs,
       rank: back || earlier ? RANK.overdue : RANK.today,
       primary: { label: tp.label, action: tp.action },

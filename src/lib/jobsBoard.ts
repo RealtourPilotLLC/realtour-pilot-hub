@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etAddDays, etDateTime, etDayKey, etMonthDay, etTime, etWeekday } from "@/lib/datetime";
+import { etDateTime, etDayKey, etMonthDay, etTime, etTomorrowKey, etWeekday } from "@/lib/datetime";
 import { WAITING_FOR_UPLOAD } from "@/lib/photoDelivery/holding";
 import { BATCH_TIER_LABEL } from "@/lib/bulkBatchCore";
 
@@ -644,7 +644,7 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
   }
 
   const todayKey = etDayKey(now);
-  const tomorrowKey = etDayKey(etAddDays(now, 1));
+  const tomorrowKey = etTomorrowKey(now); // the next ET day by key, not now + 24 h (clock-change days, Oct 28 2026)
   const weekEnd = now.getTime() + 7 * DAY;
   const rows: (ShootRow & { _rank: number; _sort: number })[] = [];
   for (const j of jobs) {

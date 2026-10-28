@@ -5,7 +5,7 @@ import { QC_LABEL, QC_FAILURE_MODES, VIP_EXTRA_PASS, TYPE_CATEGORY_LABEL, qcCate
 import crypto from "crypto";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { type ChecklistItem, parseChecklist, serializeChecklist, checklistComplete } from "@/lib/checklist";
-import { addBusinessDaysET, endOfBusinessDaysET, etAt, etDateTime, etDayKey, etDayStartUtc } from "@/lib/datetime";
+import { addBusinessDaysET, endOfBusinessDaysET, etAt, etDateTime, etDayKey, etDayStartUtc, etDaysAgo } from "@/lib/datetime";
 import { premiumDueFrom, businessDayEndHour, endOfDaysET, cappedByPromise, livePromise, targetAtFor, TIERS, type PromiseRules, type TierKey } from "@/lib/turnaround";
 import { slugForName } from "@/lib/assignees";
 import { BRACKET_RATIO, photoTargetFor } from "@/lib/culling";
@@ -348,7 +348,6 @@ export function computePriority(opts: {
   now?: Date;
 }): Priority {
   const now = opts.now ?? new Date();
-  const startToday = new Date(now.toDateString()).getTime();
   if (opts.dueAt) {
     const diff = opts.dueAt.getTime() - now.getTime();
     if (diff < 0) return "URGENT"; // overdue
@@ -356,7 +355,10 @@ export function computePriority(opts: {
     if (diff < DAY) return "HIGH";
   }
   if (opts.shootDate) {
-    const days = Math.floor((opts.shootDate.getTime() - startToday) / DAY);
+    // ET calendar days, not the server's (Oct 28 2026, Kyle: "today" must be
+    // EST): `new Date(now.toDateString())` was UTC midnight on Vercel, so from
+    // 8 PM ET a shoot the day after tomorrow already counted as "tomorrow".
+    const days = -etDaysAgo(opts.shootDate, now); // ET days from today: 0 today, 1 tomorrow
     if (days >= 0 && days <= 1) return "URGENT"; // shoot today/tomorrow
     if (days > 1 && days <= 3) return "HIGH"; // within 72h
   }

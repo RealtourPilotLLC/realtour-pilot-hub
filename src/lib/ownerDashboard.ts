@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { cashBalanceOf, postedBesideCash } from "@/lib/bankBalance";
 import { usd0Signed } from "@/lib/money";
 import { noDashes } from "@/lib/text";
-import { endOfBusinessDaysET, etDate, etDateTime, etDayKey, etMinutesOfDay, etMonthDay, etTime } from "@/lib/datetime";
+import { endOfBusinessDaysET, etDate, etDateTime, etDayKey, etDayKeyPlus, etMinutesOfDay, etMonthDay, etTime } from "@/lib/datetime";
 import { listAssignees, firstName, type Assignee } from "@/lib/assignees";
 import { syntheticClientIds } from "@/lib/syntheticClients";
 import { openDelegations, resurfaceOf, type DelegatedTaskView } from "@/lib/delegation";
@@ -1207,7 +1207,7 @@ export async function teamCoverage(opts: { now?: Date; includeTest?: boolean; ro
   const now = opts.now ?? new Date();
   const roster = opts.roster ?? (await listAssignees());
   const todayKey = etDayKey(now);
-  const weekKey = etDayKey(new Date(now.getTime() + 7 * DAY));
+  const weekKey = etDayKeyPlus(todayKey, 7); // seven ET days on, by key (Oct 28 2026)
   const unavailable: string[] = [];
   const { reviewRoomRules, editorRouting } = await import("@/lib/settings");
   const [delegations, kyle, rules, routing, managers, off, owners, booked] = await Promise.all([
