@@ -13,7 +13,7 @@ import { HubEditPanel, StraightenButtons } from "./EditTools";
 import { EditMenu } from "./EditMenu";
 import { DownloadLinks, ReplaceWithUpload } from "./PhotoFiles";
 import { photoTitle, useJob } from "./JobContext";
-import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, SEVERITY_ORDER, photoSrc } from "./format";
+import { RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, SEVERITY_ORDER, decidedLine, photoSrc } from "./format";
 import { loadVersionsAction, restoreVersionAction } from "@/app/ops/photo-delivery/actions";
 import type { FindingView, PhotoView, VersionView } from "./types";
 
@@ -261,13 +261,7 @@ export function Lightbox() {
                     {f.explanation && <p className="mt-0.5 break-words text-[13px] text-muted">{f.explanation}</p>}
                     {f.locationText && <p className="text-[13px] text-muted">Where: {f.locationText}</p>}
                     {f.photoIds.length > 1 && <p className="text-[12px] text-muted">Also on {f.photoIds.length - 1} other photo{f.photoIds.length === 2 ? "" : "s"}.</p>}
-                    {f.status !== "OPEN" && (
-                      <p className="mt-0.5 text-[12px] text-muted">
-                        {FINDING_STATUS_LABEL[f.status] ?? f.status}
-                        {f.decidedBy ? ` by ${f.decidedBy}` : ""}
-                        {f.statusReason ? `: ${f.statusReason}` : ""}
-                      </p>
-                    )}
+                    {f.status !== "OPEN" && <p className="mt-0.5 text-[12px] text-muted">{decidedLine(f, etMonthDayTime)}</p>}
                     <FindingActions findings={[f]} className="mt-2" />
                     <StraightenButtons findings={[f]} className="mt-1.5" />
                   </li>

@@ -72,6 +72,16 @@ export async function decideFindingsAction(input: { jobId: string; findingIds: s
     const { by } = await actor();
     const r = await decideFindings({ jobId: input.jobId, findingIds: Array.isArray(input.findingIds) ? input.findingIds : [], status: input.status, reason: typeof input.reason === "string" ? input.reason : null, by });
     if (r.ok) refresh(input.jobId);
+    // Oct 28 2026 (fixedInAutohdr.ts): fixed in AutoHDR's own editor, so the hub
+    // reads AutoHDR's current versions again (free), after the answer.
+    if (r.ok && input.status === "FIXED_IN_AUTOHDR") {
+      const jobId = input.jobId;
+      const go = async () => {
+        const { syncHeads } = await import("@/lib/photoDelivery/versions");
+        await syncHeads(jobId, { by }).catch(() => null);
+      };
+      try { after(go); } catch { void go().catch(() => {}); }
+    }
     return { ok: r.ok, message: r.message };
   } catch (e) {
     return failed("decision", e);
