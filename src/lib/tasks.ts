@@ -3625,7 +3625,7 @@ export async function reassignVideoCard(
  * ::int4 casts at the call site are load-bearing, because Prisma sends a JS
  * number as a bigint and Postgres has no pg_advisory_xact_lock(bigint, bigint).)
  */
-function editCardLockKey(taskId: string): [number, number] {
+export function editCardLockKey(taskId: string): [number, number] {
   const fnv = (seed: number): number => {
     let h = seed;
     for (let i = 0; i < taskId.length; i++) {

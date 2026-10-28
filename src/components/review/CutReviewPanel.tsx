@@ -18,6 +18,7 @@ import { reviewStage, verifiedFixIds } from "@/lib/reviewStage";
 import { reviewActionReceipt, reviewRetryBlocked, type UnknownReviewRead } from "@/lib/reviewActionReceipt";
 import { ModalDialog } from "@/components/ui/ModalDialog";
 import { addReceipt, dropDraft, keepDraft, readDraft, updateReceipt } from "./verdictReceiptStore";
+import { DeletedNotes, NoteEditControls, NoteEditHistory, type DeletedNote } from "./NoteEditControls";
 
 // ---------------------------------------------------------------------------
 // The Review Room's cut workspace panel (client): the submitted video with
@@ -105,6 +106,7 @@ export function CutReviewPanel({
   sendOffer = null,
   wrongFile = null,
   spellingNote = null,
+  deletedNotes = [],
 }: {
   projectId: string;
   submission: CutSubmission;
@@ -160,6 +162,8 @@ export function CutReviewPanel({
    * switch is on). Approve is never held by it.
    */
   spellingNote?: React.ReactNode;
+  /** Notes deleted from this version lately, with Undo while it is open (Jordan, Oct 28 2026). */
+  deletedNotes?: DeletedNote[];
 }) {
   const router = useRouter();
   // Words this reviewer left on this cut when a verdict they pressed did not go
@@ -660,7 +664,7 @@ export function CutReviewPanel({
                   key={c.label}
                   onClick={() => setChoice(i)}
                   className={cn(
-                    "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium",
+                    "inline-flex min-h-11 items-center gap-1 rounded-full border px-3 py-1 text-xs font-medium",
                     i === choice ? "border-brand bg-brand-action text-white" : "border-border bg-surface hover:bg-surface-2",
                   )}
                 >
@@ -733,12 +737,13 @@ export function CutReviewPanel({
                   <button
                     onClick={() => seek(n.timeSec!)}
                     disabled={!src}
-                    className="mt-0.5 shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums hover:bg-border disabled:opacity-60"
+                    title="Jump the player to this moment"
+                    className="-my-2.5 inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg bg-surface-2 px-1.5 text-[11px] font-semibold tabular-nums hover:bg-border disabled:opacity-60"
                   >
                     {fmtClock(n.timeSec)}
                   </button>
                 ) : (
-                  <span className="mt-0.5 shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[11px] tabular-nums text-muted-2">—:—</span>
+                  <span className="mt-0.5 min-w-11 shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-center text-[11px] tabular-nums text-muted-2">—:—</span>
                 )}
                 <span
                   className={cn("mt-1.5 size-2 shrink-0 rounded-full", STATUS_DOT[n.status] ?? "bg-brand")}
@@ -751,7 +756,8 @@ export function CutReviewPanel({
                 )}
                 <button
                   onClick={() => setOpenId((v) => (v === n.id ? null : n.id))}
-                  className="min-w-0 flex-1 text-left text-sm text-foreground/90"
+                  aria-expanded={open?.id === n.id}
+                  className="min-w-0 flex-1 break-words text-left text-sm text-foreground/90"
                 >
                   {n.body}
                   <span className="ml-2 text-xs text-muted-2">
@@ -774,6 +780,9 @@ export function CutReviewPanel({
                   <span className="mt-1 block text-sm text-muted">
                     {byLine(n.authorName ?? "Someone", n.createdAt)}
                     {statusLine(n) ? ` · ${statusLine(n)}` : ""}
+                    {n.edits?.length ? " · edited" : ""}
+                    {/* Where Edit and Delete are (Oct 28 2026): one tap opens the note. */}
+                    {n.canChange && open?.id !== n.id && <span className="text-brand"> · Edit or delete</span>}
                   </span>
                 </button>
                 {/* Resolve / reopen are the office's (setCutNoteStatus keeps
@@ -785,8 +794,9 @@ export function CutReviewPanel({
                   <button
                     onClick={() => run(() => setCutNoteStatus(n.id, "RESOLVED"))}
                     disabled={pending || needsReload}
-                    title="Resolve — this is handled"
-                    className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-muted-2 hover:bg-success/10 hover:text-success"
+                    title="Resolve: this is handled"
+                    aria-label="Resolve: this is handled"
+                    className="inline-flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-2 hover:bg-success/10 hover:text-success"
                   >
                     <Check className="size-4" />
                   </button>
@@ -795,7 +805,8 @@ export function CutReviewPanel({
                     onClick={() => run(() => setCutNoteStatus(n.id, "OPEN"))}
                     disabled={pending || needsReload}
                     title="Reopen"
-                    className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-muted-2 hover:bg-surface-2 hover:text-foreground"
+                    aria-label="Reopen"
+                    className="inline-flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-2 hover:bg-surface-2 hover:text-foreground"
                   >
                     <RotateCcw className="size-4" />
                   </button>
@@ -804,14 +815,21 @@ export function CutReviewPanel({
 
               {open?.id === n.id && (
                 <div className="mt-2 space-y-2 border-l-2 border-border pl-4">
+                  {/* EDIT AND DELETE (Jordan, Oct 28 2026): the note's author,
+                      the office, the creative manager or the owner. The earlier
+                      words stay visible to everyone who can read the note. */}
+                  <NoteEditHistory edits={n.edits} />
+                  <NoteEditControls note={n} onChanged={(m) => setMsg(m)} />
                   {n.replies.map((r) => (
                     <div key={r.id} className="flex items-start gap-1.5 text-sm">
                       <CornerDownRight className="mt-0.5 size-3.5 shrink-0 text-muted-2" />
-                      <div>
+                      <div className="min-w-0 flex-1">
                         <span className="text-xs font-medium text-muted">{r.authorName ?? "Someone"}: </span>
-                        <span className="text-foreground/85">{r.body}</span>
+                        <span className="break-words text-foreground/85">{r.body}</span>
                         {/* Replies carry their time too (gap 3). */}
-                        <span className="ml-1.5 text-sm text-muted">{whenET(r.createdAt)}</span>
+                        <span className="ml-1.5 text-sm text-muted">{whenET(r.createdAt)}{r.edits?.length ? " · edited" : ""}</span>
+                        <NoteEditHistory edits={r.edits} />
+                        <NoteEditControls note={{ id: r.id, body: r.body, canChange: r.canChange }} label="reply" onChanged={(m) => setMsg(m)} />
                       </div>
                     </div>
                   ))}
@@ -827,7 +845,7 @@ export function CutReviewPanel({
                     <button
                       onClick={() => run(() => replyCutNote(n.id, reply), () => { if (currentDraft.current.reply === reply) { currentDraft.current.reply = ""; setReply(""); } else setMsg((message) => `${message ?? "The submitted reply was recorded."} Newer reply edits are still unsent.`); })}
                       disabled={pending || needsReload || !reply.trim()}
-                      className="inline-flex min-h-9 shrink-0 items-center gap-1 rounded-lg bg-surface-2 px-2.5 py-1.5 text-xs font-medium text-muted hover:text-foreground disabled:opacity-50"
+                      className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg bg-surface-2 px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground disabled:opacity-50"
                     >
                       <Send className="size-3.5" /> Send
                     </button>
@@ -838,6 +856,7 @@ export function CutReviewPanel({
           ))}
         </div>
       )}
+      <DeletedNotes notes={deletedNotes} />
     </div>
   );
 }

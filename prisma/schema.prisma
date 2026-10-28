@@ -1720,6 +1720,36 @@ model MediaNote {
   @@index([photographerId, status])
 }
 
+// A NOTE CHANGED AFTER IT WAS WRITTEN (Jordan, Oct 28 2026: "we need to be
+// able to delete revision notes in the review room and also edit them"). One
+// row per change: an edit keeps the words before and after (staff see
+// "edited" with the earlier version), a delete keeps the whole note and its
+// replies so Undo can put it back with the same id (lib/noteEdits). A client's
+// portal note is never rewritten: staff hold it back from the editor or change
+// what the editor gets, and the client's own words stay on their row.
+// Additive: nothing older reads or writes it.
+model NoteChange {
+  id           String    @id @default(cuid())
+  noteKind     String // MEDIA_NOTE | PORTAL_COMMENT
+  noteId       String
+  projectId    String
+  submissionId String? // the cut the note is on
+  action       String // EDITED | DELETED | HELD_BACK | REWORDED | REMOVED
+  beforeBody   String?
+  afterBody    String?
+  snapshotJson String? // DELETED / REMOVED: what Undo puts back
+  afterSend    Boolean   @default(false) // the editor already had it
+  actorName    String
+  actorUserId  String?
+  at           DateTime  @default(now())
+  undoneAt     DateTime?
+  undoneBy     String?
+
+  @@index([noteKind, noteId])
+  @@index([projectId, at])
+  @@index([submissionId])
+}
+
 // One submitted cut awaiting the owner's verdict in the Review Room. Created
 // when an editor hits "Done — send to review": we scan the project's FINAL
 // Dropbox folder for the newest video, mint a direct streaming link, and park
