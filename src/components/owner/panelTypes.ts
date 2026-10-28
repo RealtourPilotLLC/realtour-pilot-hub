@@ -21,6 +21,8 @@ export type ListRow = {
   action?: ShellAction | null;
   /** clicking the row opens this panel instead of following href */
   open?: PanelSpec | null;
+  /** the words on the row's Open button when it has no action of its own ("Decide"); "Open" when unset */
+  openLabel?: string | null;
 };
 
 export type PanelSpec =

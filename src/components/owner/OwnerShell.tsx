@@ -358,7 +358,14 @@ function ListBody({ spec }: { spec: Extract<PanelSpec, { kind: "list" }> }) {
               </p>
               {r.sub && <p className="text-[13px] text-muted">{r.sub}</p>}
             </div>
-            {r.action ? <RowActionButton a={r.action} /> : r.assign && !readOnly && <button type="button" onClick={() => open({ kind: "assign", seed: r.assign! })} className={QUIET}>Assign</button>}
+            {/* EVERY ROW HAS A BUTTON (Jordan, Oct 28 2026: "make sure every task
+                and assignment has an actionable button"). The row's own action,
+                else Assign, else Open: its panel (the task, the email) or its exact
+                page. Only a plain fact (time off) has none. */}
+            {r.action ? <RowActionButton a={r.action} />
+              : r.assign && !readOnly ? <button type="button" onClick={() => open({ kind: "assign", seed: r.assign! })} className={QUIET}>Assign</button>
+                : r.open ? <button type="button" onClick={() => open(r.open!)} className={QUIET} data-row-open>{r.openLabel ?? "Open"}</button>
+                  : r.href ? <Link href={r.href} className={QUIET} data-row-open>{r.openLabel ?? "Open"}</Link> : null}
           </li>
         ))}
       </ul>
