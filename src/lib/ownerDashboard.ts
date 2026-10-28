@@ -816,7 +816,8 @@ async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee
       nextStep: r.kind === "recommended" ? "Decide who takes it" : "Your decision",
       clientUpdate: null,
       tone: "bad",
-      href: d.sourceHref ?? "/",
+      // No record behind it: the task's own row on Tasks, never back to this dashboard (Oct 28 2026).
+      href: d.sourceHref ?? `/tasks?task=${d.taskId}`,
       assign: { title: d.title, sourceTaskId: d.taskId, assigneeKey: null },
       taskId: d.taskId,
       actions: [],
