@@ -14,6 +14,7 @@ import { PushControls } from "@/components/videoDelivery/PushControls";
 import { NotTold } from "@/components/ops/NotTold";
 import { RerunTopaz } from "@/components/ops/RerunTopaz";
 import { AskQuickActions } from "@/components/home/AskQuickActions";
+import { PlacementUndoHost } from "@/components/requests/RequestPlacement";
 import { RemindPhotographerButton } from "@/components/editing/RemindPhotographer";
 import { EmailReplyBox } from "@/components/comms/EmailReplyBox";
 import { LeadDisregardButton } from "@/components/tasks/ChecklistButtons";
@@ -107,6 +108,8 @@ export function OfficeDesk({ desk, includeTest = false, initialOpen = null, init
 
   return (
     <div data-office-desk data-readonly={desk.readOnly ? "true" : "false"} className="space-y-4">
+      {/* A request's "Not for this project" (Oct 28 2026) takes its row off the desk; its Undo waits here. */}
+      {!desk.readOnly && <PlacementUndoHost />}
       {desk.readOnly && (
         <p role="status" className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-2.5 text-sm">
           Preview: read-only. The buttons are off while you view as {desk.person}.

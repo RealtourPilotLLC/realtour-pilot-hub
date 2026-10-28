@@ -574,7 +574,11 @@ export async function recordClientCommunication(opts: {
         // put the same ask on 811 Little Shiloh Rd's brief twice, 9 s apart.
         const body = `Client request (${opts.source ?? "comms"}): ${clip(opts.text, 280)}`;
         const already = await prisma.activity.findFirst({ where: { projectId: anchorProjectId, type: "SPECIAL_REQUEST", body, createdAt: { gte: new Date(Date.now() - 14 * 86_400_000) } }, select: { id: true } });
-        if (!already) await prisma.activity.create({ data: { projectId: anchorProjectId, type: "SPECIAL_REQUEST", body } });
+        // Oct 28 2026 (lib/requestPlacement): a request a person took off this
+        // job ("Not for this project") does not come back on its brief when the
+        // same message is read again.
+        const takenOff = !already && !!opts.clientId && (await import("@/lib/requestPlacement").then((m) => m.messageTakenOff(opts.clientId!, anchorProjectId!, opts.text)).catch(() => false));
+        if (!already && !takenOff) await prisma.activity.create({ data: { projectId: anchorProjectId, type: "SPECIAL_REQUEST", body } });
       }
       // A SONG FOR A VIDEO STILL BEING MADE (Oct 16 2026): Georgiana's
       // SoundCloud link "for the 2625 Wassergass rd listing" reached nobody's

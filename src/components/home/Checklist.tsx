@@ -13,6 +13,7 @@ import type { BehindState } from "@/lib/behindAlert";
 import { HandledButton } from "@/components/tasks/ChecklistButtons";
 import { OldItemActions } from "@/components/home/OldItemActions";
 import { AskQuickActions, ReopenAskButton } from "@/components/home/AskQuickActions";
+import { PlacementUndoHost } from "@/components/requests/RequestPlacement";
 import { AddAskForm } from "@/components/asks/AddAskForm";
 
 // ---------------------------------------------------------------------------
@@ -249,6 +250,8 @@ export function DailyChecklist({ list, includeTest = false, minDay, maxDay }: { 
   return (
     <section id="checklist" aria-labelledby="checklist-title" className="scroll-mt-32 space-y-2.5 md:scroll-mt-28">
       <Aliases group="checklist" />
+      {/* A request's "Not for this project" (Oct 28 2026) takes its row off the list; its Undo waits here. */}
+      <PlacementUndoHost />
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 px-1">
         <h2 id="checklist-title" className="text-base font-semibold">Today&rsquo;s checklist</h2>
         <p className="text-sm text-muted">{list.stillOpen.total} still open · {list.done.length} done today</p>
