@@ -93,7 +93,8 @@ import { refinedDeliverableLabel, isMonthlyContentJob, videoTypeLabel } from "@/
 import { stripMoneySentences } from "@/lib/text";
 import { prisma } from "@/lib/prisma";
 // Who ruled on each version, and when (Review Room attribution, Sep 28).
-import { officeReopenOf, verdictLine, verdictOf } from "@/lib/reviewAttribution";
+import { officeReopenOf, verdictLine, verdictOf, whenET } from "@/lib/reviewAttribution";
+import { editorChangeLine } from "@/lib/noteEditCore";
 import { ActivityType } from "@prisma/client";
 import { formatDistanceToNow } from "date-fns";
 import { BriefReadOnly } from "@/components/brief/BriefReadOnly";
@@ -256,7 +257,14 @@ export default async function EditBriefPage({
   const editorScope = editorScopeOf(viewer);
   // Fail CLOSED for an editor whose scope can't resolve — a null scope meant
   // "all lanes" and leaked every editor's notes to a keyless EDITOR login (audit).
-  const feedbackRead = getEditorFeedback(id, isOwnerAdmin ? null : editorScope ?? "__none__").catch(() => []);
+  // Oct 28 2026 (Review Room note edits): each note says what this viewer may
+  // change (an editor their own notes for the reviewer) and its earlier words.
+  const feedbackRead = getEditorFeedback(id, isOwnerAdmin ? null : editorScope ?? "__none__")
+    .then(async (notes) => {
+      const { decorateCutNotes, noteChangerForViewer } = await import("@/lib/noteEdits");
+      return decorateCutNotes(notes, await noteChangerForViewer()).catch(() => notes);
+    })
+    .catch(() => []);
   // The client's change requests, itemised. Money-scrubbed unless a LIVE
   // owner/admin is looking — this is the client's raw wording and they do talk
   // price, so the gate is the strict one the revision asks use (an unknown or
@@ -526,6 +534,18 @@ export default async function EditBriefPage({
   // The reviewer's notes on this video that are still to fix (or marked fixed, waiting on the reviewer).
   const issuesFor = (s: (typeof submissions)[number]) =>
     quality.issues.filter((issue) => !issue.duplicateOfId && ["OPEN", "REOPENED", "ADDRESSED"].includes(issue.state) && (issue.cutKey ? issue.cutKey === cutKeyOf(s) : issue.raisedOnSubmissionId === s.id));
+  // WHAT CHANGED ON A NOTE THE EDITOR HAS (Oct 28 2026, lib/noteEdits): an
+  // edited or reworded item carries one line; a deleted or removed one is
+  // listed apart for a week, so a vanished "note 2" is never a mystery.
+  const noteChangeLine = (i: (typeof quality.issues)[number]): string | null =>
+    i.noteChange && (i.noteChange.kind === "EDITED" || i.noteChange.kind === "REWORDED")
+      ? `${editorChangeLine({ action: i.noteChange.kind, by: i.noteChange.by, timeSec: i.timeSec, before: i.noteChange.before, after: i.noteChange.after })} ${whenET(i.noteChange.atISO)}.`
+      : null;
+  const weekAgo = Date.now() - 7 * 86_400_000;
+  const removedFor = (s: (typeof submissions)[number]) =>
+    quality.issues
+      .filter((i) => i.state === "NOT_APPLICABLE" && (i.noteChange?.kind === "DELETED" || i.noteChange?.kind === "REMOVED") && Date.parse(i.noteChange.atISO) > weekAgo && (i.cutKey ? i.cutKey === cutKeyOf(s) : i.raisedOnSubmissionId === s.id))
+      .map((i) => ({ id: i.id, line: `${editorChangeLine({ action: i.noteChange!.kind as "DELETED" | "REMOVED", by: i.noteChange!.by, timeSec: i.timeSec, before: i.summary || i.text, after: null })} ${whenET(i.noteChange!.atISO)}.` }));
   const activeNotes = activeSub ? notesFor(activeSub) : [];
   // EVERY bounced cut gets its own panel, not just the active one — a link
   // that says "cut 3 of 16" has to land on cut 3 even when cut 1 is the one
@@ -1537,7 +1557,8 @@ export default async function EditBriefPage({
       finalFolderUrl={finalUrl}
       notes={notesFor(s)}
       ownNotes={ownNotesFor(s)}
-      issues={issuesFor(s).map((i) => ({ id: i.id, state: i.state, text: i.summary || i.text, timeSec: i.timeSec, by: i.raisedByName, round: i.raisedOnRound, askWho: askOn ? askWhoOf(i) : null }))}
+      issues={issuesFor(s).map((i) => ({ id: i.id, state: i.state, text: i.summary || i.text, timeSec: i.timeSec, by: i.raisedByName, round: i.raisedOnRound, askWho: askOn ? askWhoOf(i) : null, changed: noteChangeLine(i) }))}
+      removed={removedFor(s)}
       canFix={!isOwnerAdmin}
       viewerName={viewer?.name}
       player={s.id === playerSubId}
