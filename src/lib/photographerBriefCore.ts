@@ -445,11 +445,39 @@ export type BriefChange = { appointmentId: string; street: string; words: string
 
 const streetOfAddr = (addr: string) => addr.split(",")[0].trim() || addr;
 
+/** A quoted line inside a change, at most this long (the page has the whole of it). */
+const CHANGE_QUOTE_CHARS = 100;
+const quoted = (x: string) => `"${clip(x, CHANGE_QUOTE_CHARS).replace(/\.$/, "")}"`;
+const REQ_KIND: Record<string, string> = { must: "must-get", leave: "leave-out", req: "request" };
+
+/**
+ * One list's change in words: what was added and what was removed, each quoted
+ * (Oct 28 2026: James got "825 State St requests changed" and could not see
+ * what). `kindOf` names an item ("request", "must-get"); null when nothing was
+ * added or removed (only the order moved).
+ */
+function listChanges(street: string, before: string[], after: string[], kindOf: (x: string) => { kind: string; text: string }): string[] | null {
+  const added = after.filter((x) => !before.includes(x)).map(kindOf);
+  const removed = before.filter((x) => !after.includes(x)).map(kindOf);
+  if (!added.length && !removed.length) return null;
+  return [
+    ...added.map((x) => `${street}: new ${x.kind} ${quoted(x.text)}`),
+    ...removed.map((x) => `${street}: ${x.kind} removed ${quoted(x.text)}`),
+  ];
+}
+
+const reqKind = (x: string) => {
+  const i = x.indexOf(":");
+  const kind = i > 0 ? REQ_KIND[x.slice(0, i)] : undefined;
+  return kind ? { kind, text: x.slice(i + 1) } : { kind: "request", text: x };
+};
+
 /**
  * What changed between the brief that went (or was acknowledged) and now, in
- * plain words, one line per change. A change to a shoot that had already
- * started (before and after) is listed with startedBefore so callers can leave
- * it out: nobody needs a new brief for a visit already under way. Pure.
+ * plain words, one line per change: the new request itself, the new time, the
+ * new contact, never just "requests changed". A change to a shoot that had
+ * already started (before and after) is listed with startedBefore so callers
+ * can leave it out: nobody needs a new brief for a visit already under way. Pure.
  */
 export function changesBetween(before: MaterialSnapshot, after: MaterialSnapshot, now: Date): BriefChange[] {
   const out: BriefChange[] = [];
@@ -472,10 +500,11 @@ export function changesBetween(before: MaterialSnapshot, after: MaterialSnapshot
     const past = started(s.t) && started(o.t);
     if (o.t !== s.t) out.push({ appointmentId: s.a, street, words: `${street} is now at ${whenWords(s.t, o.t)} (was ${etTime(new Date(o.t))})`, startedBefore: past });
     if (o.addr !== s.addr) out.push({ appointmentId: s.a, street, words: `${streetOfAddr(o.addr)} address is now ${s.addr}`, startedBefore: past });
-    if (!same(o.svc, s.svc)) out.push({ appointmentId: s.a, street, words: `${street} services changed`, startedBefore: past });
-    if (!same(o.acc, s.acc)) out.push({ appointmentId: s.a, street, words: `${street} access changed`, startedBefore: past });
-    if (o.con !== s.con) out.push({ appointmentId: s.a, street, words: `${street} on-site contact changed`, startedBefore: past });
-    if (!same(o.req, s.req)) out.push({ appointmentId: s.a, street, words: `${street} requests changed`, startedBefore: past });
+    const push = (words: string) => out.push({ appointmentId: s.a, street, words, startedBefore: past });
+    if (!same(o.svc, s.svc)) (listChanges(street, o.svc, s.svc, (x) => ({ kind: "service", text: x })) ?? [`${street} services changed`]).forEach(push);
+    if (!same(o.acc, s.acc)) (listChanges(street, o.acc, s.acc, (x) => ({ kind: "access note", text: x })) ?? [`${street} access changed`]).forEach(push);
+    if (o.con !== s.con) push(s.con ? `${street}: on-site contact is now ${s.con}${o.con ? ` (was ${o.con})` : ""}` : `${street}: no on-site contact now (was ${o.con})`);
+    if (!same(o.req, s.req)) (listChanges(street, o.req, s.req, reqKind) ?? [`${street} requests changed`]).forEach(push);
   }
   for (const o of before) {
     if (cur.has(o.a)) continue;

@@ -79,11 +79,11 @@ export default async function ShootBriefPage({ params, searchParams }: { params:
       <PageHeader eyebrow="Field" title={title} subtitle={preview ? `${name ? `${name}'s brief. ` : ""}Read only: only the photographer can tap Got it.` : "Everything for your shoots that day. Read it, then tap Got it at the bottom."} />
       <div className="mx-auto max-w-2xl space-y-4 px-4 py-5 sm:px-6">
         {v.status && (
-          <p className={`rounded-xl border px-3 py-2 text-sm ${v.ackHolds ? "border-success/30 bg-success/10 text-success" : v.changesSinceAck.length ? "border-warning/30 bg-warning/10" : "border-border bg-surface"}`}>
+          <p className={`rounded-xl border px-3 py-2 text-sm ${v.ackHolds ? "border-success/30 bg-success/10 text-success" : v.changed.length ? "border-warning/30 bg-warning/10" : "border-border bg-surface"}`}>
             {v.ackHolds && v.record?.ack
               ? `Got it, ${etDateTime(v.record.ack.at)}. Nothing has changed since.`
-              : v.changesSinceAck.length
-                ? `Changed since your Got it: ${v.changesSinceAck.join("; ")}. Please read it again and tap Got it.`
+              : v.changed.length
+                ? `${v.record?.ack ? `Changed since your Got it at ${etDateTime(v.record.ack.at)}` : `This brief changed after it was sent ${v.record?.firstSentAt ? etDateTime(v.record.firstSentAt) : ""}`.trim()}. What changed is below and marked on the shoot. Please read it again and tap Got it.`
                 : v.record?.firstSentAt
                   ? `Sent ${etDateTime(v.record.firstSentAt)}.`
                   : v.status.state === "off"
@@ -91,13 +91,36 @@ export default async function ShootBriefPage({ params, searchParams }: { params:
                     : v.status.why ?? ""}
           </p>
         )}
+        {v.changed.length > 0 && (
+          <div className="rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-sm" data-brief-changes>
+            <div className="text-[11px] font-bold uppercase tracking-wider text-warning">What changed</div>
+            <ul className="mt-1 list-disc space-y-0.5 pl-5">
+              {v.changed.map((c, k) => <li key={k}>{c.at ? <span className="text-muted">{etTime(new Date(c.at))}: </span> : null}{c.words}</li>)}
+            </ul>
+          </div>
+        )}
+        {v.confirmedUpdates.length > 0 && (
+          <details className="rounded-xl border border-border px-3 py-2 text-[13px] text-muted">
+            <summary className="cursor-pointer">Changes already confirmed with Got it ({v.confirmedUpdates.length})</summary>
+            <ul className="mt-1 list-disc space-y-0.5 pl-5">
+              {v.confirmedUpdates.map((c, k) => <li key={k}>{c.at ? `${etTime(new Date(c.at))}: ` : ""}{c.words}</li>)}
+            </ul>
+          </details>
+        )}
         {!shoots.length && <p className="text-sm text-muted">No shoots on {dayWords(day)}.</p>}
         {shoots.map((s, i) => {
           const e = extras[i];
           const mapsHref = `https://maps.google.com/?q=${encodeURIComponent(s.address)}`;
           const tel = s.contact?.match(/\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/)?.[0]?.replace(/\D/g, "") ?? null;
+          const changedHere = v.changed.filter((c) => c.appointmentId === s.appointmentId);
           return (
             <Section key={s.appointmentId} icon={ClipboardCheck} title={`${i + 1}. ${s.time}, ${s.street}`} count={s.visit ? `visit ${s.visit.n} of ${s.visit.of}` : undefined} bodyClassName="space-y-3 text-sm leading-relaxed">
+              {changedHere.length > 0 && (
+                <div className="rounded-lg border border-warning/30 bg-warning/10 px-2 py-1.5" data-shoot-changed={s.appointmentId}>
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-warning">Changed on this shoot</div>
+                  <ul className="list-disc pl-5">{changedHere.map((c, k) => <li key={k}>{c.words}</li>)}</ul>
+                </div>
+              )}
               <p className="flex items-start gap-2"><MapPin className="mt-0.5 size-4 shrink-0 text-muted" /><a className="underline underline-offset-2" href={mapsHref} target="_blank" rel="noreferrer">{s.address}</a></p>
               <div>
                 <div className="text-[11px] font-bold uppercase tracking-wider text-brand">Services this visit</div>

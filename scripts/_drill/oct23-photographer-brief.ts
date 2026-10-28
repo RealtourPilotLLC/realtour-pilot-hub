@@ -134,6 +134,22 @@ async function main() {
     c.ok("a visit's services are its own Aryeo items: size bands dropped, a real sub-title kept, fees and cancelled lines out",
       JSON.stringify(core.visitServices(raw, null)) === '["Social Influencer","Agent on Camera: Intro Only"]', JSON.stringify(core.visitServices(raw, null)));
     c.ok("…read from the brief's own block when the payload has none", JSON.stringify(core.visitServices(null, "Order Items Serviced By This Appointment:\n - (1x) Zillow Showcase 3D Tour Add-on: 0 - 1,999 Sq. Ft.\n - (2x) Twilight: \n\nOrder Notes:\nn/a")) === '["Zillow Showcase 3D Tour Add-on","2 x Twilight"]');
+    {
+      const at = "2026-10-26T15:00:00.000Z";
+      const shoot = { a: "a1", p: "p1", t: at, addr: "825 State St, Lancaster", svc: ["Listing Photography"], acc: ["Lockbox 1234"], con: "Ashley (717) 555-0100", req: ["req:Client note: logo on every video."] };
+      const after = { ...shoot, svc: ["Listing Photography", "Drone Photos"], acc: [], con: "Mark (717) 555-0199", req: [...shoot.req, "req:Produce reel styled after shared Instagram with selling experience talking points.", "leave:No drone over the neighbor."] };
+      const words = core.changesBetween([shoot], [after], new Date("2026-10-25T12:00:00Z")).map((x) => x.words);
+      c.ok("change words say WHAT changed (Oct 28: \"825 State St requests changed\" told James nothing)", JSON.stringify(words) === JSON.stringify([
+        '825 State St: new service "Drone Photos"',
+        '825 State St: access note removed "Lockbox 1234"',
+        "825 State St: on-site contact is now Mark (717) 555-0199 (was Ashley (717) 555-0100)",
+        '825 State St: new request "Produce reel styled after shared Instagram with selling experience talking points"',
+        '825 State St: new leave-out "No drone over the neighbor"',
+      ]), JSON.stringify(words));
+      const long = "x ".repeat(200);
+      const clipped = core.changesBetween([shoot], [{ ...shoot, req: [...shoot.req, `req:${long}`] }], new Date("2026-10-25T12:00:00Z"))[0]?.words ?? "";
+      c.ok("…a long request is clipped in the change line (the page shows it whole)", clipped.length < 130 && clipped.endsWith('…"'), clipped);
+    }
     c.ok("request kinds by their own words", core.requestKind("Please make sure to capture the finished basement.") === "must" && core.requestKind("Don't forget the pool.") === "must" && core.requestKind("No drone, the HOA said no.") === "leave" && core.requestKind("Skip the garage.") === "leave" && core.requestKind("The seller prefers warm tones.") === "request");
     c.ok("who is there, as a sentence", core.presenceWords("Agent") === "Agent will be there" && core.presenceWords("Vacant") === "Vacant, nobody will be there" && core.presenceWords("The seller will be home until noon") === "Who's there: The seller will be home until noon");
 
@@ -383,7 +399,9 @@ async function main() {
       upd.length === 1 && upd[0].body.startsWith(`${HUB_SMS_PREFIX}: Harrison, your Mon Oct 26 brief changed. 266 Richard Dr is now at 12:00 PM (was 11:00 AM).`) && upd[0].body.includes("1) 12:00 PM, 266 Richard Dr, Allentown.") && upd[0].body.includes(`Please open it and tap Got it again: ${appBase()}/shoot/brief/2026-10-26`) && !DASH.test(upd[0].body), upd.map((t) => t.body).join(" | "));
     const s10 = (await status([richardA.id, cliffV2.id])).get(richardA.id);
     c.ok("status: changed (sent again, awaiting a new Got it), the old ackAt kept", s10?.state === "changed" && /Waiting for Harrison's new Got it/.test(s10?.why ?? "") && Math.abs(Date.parse(s10?.ackAt ?? "") - FRI(19, 12).getTime()) < 60_000, JSON.stringify(s10));
-    c.ok("the page shows what changed since his Got it, and the button again", (await (async () => { await signIn(harrisonLogin); return render("2026-10-26"); })()).includes("Changed since your Got it: 266 Richard Dr is now at 12:00 PM (was 11:00 AM)."));
+    const page10 = await (async () => { await signIn(harrisonLogin); return render("2026-10-26"); })();
+    c.ok("the page shows what changed since his Got it, and the button again", page10.includes("Changed since your Got it at") && /data-brief-changes[\s\S]*266 Richard Dr is now at 12:00 PM \(was 11:00 AM\)/.test(page10) && page10.includes(">Got it (the updated brief)<"), page10.slice(0, 600));
+    c.ok("…and marks it on the shoot that changed, not on the other one", new RegExp(`data-shoot-changed="${richardA.id}"[\\s\\S]*266 Richard Dr is now at 12:00 PM`).test(page10) && !page10.includes(`data-shoot-changed="${cliffV2.id}"`));
     await pb.sweepPhotographerBriefs(SAT(11, 10));
     c.ok("the next tick does not send it again", toHarrison().length === n10 + 1);
     const b10 = (await pb.buildBriefDays(["2026-10-26"], { teamMemberIds: [harrison.id] })).briefs[0];
@@ -398,7 +416,9 @@ async function main() {
     const n10b = toHarrison().length;
     await pb.sweepPhotographerBriefs(SAT(12, 1));
     const upd2 = toHarrison().slice(n10b);
-    c.ok("a new pre-shoot request: an updated brief, the request under Must get", upd2.length === 1 && upd2[0].body.includes("266 Richard Dr requests changed") && upd2[0].body.includes("Must get: Please get twilight shots of the pool."), upd2.map((t) => t.body).join(" | "));
+    c.ok("a new pre-shoot request: an updated brief, the request under Must get", upd2.length === 1 && upd2[0].body.includes('266 Richard Dr: new must-get "Please get twilight shots of the pool"') && upd2[0].body.includes("Must get: Please get twilight shots of the pool."), upd2.map((t) => t.body).join(" | "));
+    const page10b = await (async () => { await signIn(harrisonLogin); return render("2026-10-26"); })();
+    c.ok("…the page names the new request itself (Oct 28: James saw only \"requests changed\")", /data-brief-changes[\s\S]*266 Richard Dr: new must-get &quot;Please get twilight shots of the pool&quot;/.test(page10b), page10b.slice(0, 600));
     c.ok("…and the Got it no longer holds", (await status([richardA.id])).get(richardA.id)?.state === "changed");
 
     // A reassignment: visit 2 of Cliff Ln goes to James.
@@ -430,6 +450,18 @@ async function main() {
     refuse.delete("6105550177");
     await pb.sweepPhotographerBriefs(setNow(SAT(14, 20)));
     c.ok("15 minutes on, the cause fixed: it goes, and reads 'sent'", texts.filter((t) => t.to === "6105550177").length === 1 && (await status([samA.id])).get(samA.id)?.state === "sent");
+
+    // Oct 28 2026 (James, Ashley Brunner's 3 PM): an update BEFORE any Got it. The
+    // dashboard said "Brief changed"; the page only said "Sent" and never what.
+    await prisma.activity.create({ data: { projectId: samJob.id, type: "SPECIAL_REQUEST", body: "Please get a photo of the new roof.", authorId: kyleTm.id, createdAt: SAT(14, 25) } });
+    await pb.sweepPhotographerBriefs(setNow(SAT(14, 30)));
+    const samUpd = texts.filter((t) => t.to === "6105550177").slice(1);
+    c.ok("Sam's update names the new request, not \"requests changed\"", samUpd.length === 1 && samUpd[0].body.includes('3 Refused Rd: new must-get "Please get a photo of the new roof"') && !samUpd[0].body.includes("requests changed"), samUpd.map((t) => t.body).join(" | "));
+    await signIn(kyle);
+    const samPage = await render("2026-10-26", sam.id);
+    c.ok("…his page (no Got it yet) says it changed after it was sent and lists the change with the time it went", samPage.includes("This brief changed after it was sent") && /data-brief-changes[\s\S]*2:30 PM: <\/span>3 Refused Rd: new must-get &quot;Please get a photo of the new roof&quot;/.test(samPage), samPage.slice(0, 900));
+    c.ok("…and marks it on the shoot", new RegExp(`data-shoot-changed="${samA.id}"[\\s\\S]*new must-get`).test(samPage));
+    c.ok("…the status reads changed, saying what", (await status([samA.id])).get(samA.id)?.state === "changed" && /new must-get "Please get a photo of the new roof"/.test((await status([samA.id])).get(samA.id)?.why ?? ""));
 
     // =====================================================================
     c.head("12 · Send brief now: who may press");

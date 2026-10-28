@@ -619,8 +619,34 @@ export async function briefPageView(teamMemberId: string, day: string, now: Date
   const status = b
     ? briefStateOf({ enabled: settings.enabled, record, current: b.material, firstShootAt: b.firstShootAt, dueAt: briefDueAt(day, settings), now, blocker: null, name: b.name })
     : null;
-  const changes = record?.ack && b ? liveChanges(record.ack.snapshot, b.material, now).map((c) => c.words) : [];
-  return { brief: b, record, status, settings, changesSinceAck: changes, ackHolds: !!b && ackHolds(record, b.material, now) };
+  const holds = !!b && ackHolds(record, b.material, now);
+  // WHAT CHANGED (Oct 28 2026: James saw "Brief changed" for Ashley Brunner's 3 PM
+  // and the page only said "Sent"). Before any Got it: every update texted since
+  // the first brief, plus what changed since the last text. After a Got it that no
+  // longer holds: exactly what changed since he confirmed. An update kept only
+  // its words, so its shoot is the one whose street the words name.
+  const shootOf = (words: string) => b?.shoots.find((s) => words.includes(s.street))?.appointmentId ?? null;
+  const updates = (record?.sends ?? [])
+    .filter((s) => s.kind === "update" && s.outcome !== "failed")
+    .flatMap((s) => (s.changes ?? []).map((words) => ({ at: s.at as string | null, words, appointmentId: shootOf(words) })));
+  const live = (from: MaterialSnapshot | undefined) =>
+    from && b ? liveChanges(from, b.material, now).map((c) => ({ at: null as string | null, words: c.words, appointmentId: c.appointmentId as string | null })) : [];
+  const changed = !b || holds
+    ? []
+    : record?.ack
+      ? live(record.ack.snapshot)
+      : [...updates, ...live(record?.sent?.snapshot)];
+  return {
+    brief: b,
+    record,
+    status,
+    settings,
+    ackHolds: holds,
+    /** what to read again before Got it (empty when the Got it holds) */
+    changed,
+    /** the updates already confirmed with a Got it, for the record */
+    confirmedUpdates: holds ? updates : [],
+  };
 }
 
 /** For the shoot-day special-request text: the creative's brief for that day went, so the requests were in it. */
