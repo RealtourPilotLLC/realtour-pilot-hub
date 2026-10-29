@@ -7,6 +7,7 @@ import { homeFor } from "@/lib/auth/access";
 import { GlobalStrip } from "@/components/photoDelivery/GlobalStrip";
 import { QueueFilters } from "@/components/photoDelivery/QueueFilters";
 import { QueueBoard, QueueTable } from "@/components/photoDelivery/QueueBoard";
+import { AutoRefresh } from "@/components/ops/AutoRefresh";
 import { plural, queueHref } from "@/components/photoDelivery/format";
 import { loadQueue, loadStrip, loadViewer } from "./data";
 
@@ -94,7 +95,11 @@ export default async function PhotoDeliveryQueuePage({ searchParams }: { searchP
             ) : view === "table" ? (
               <QueueTable data={queue} />
             ) : (
-              <QueueBoard data={queue} />
+              <>
+                {/* Oct 29 2026: an empty stage has no column, so the board re-reads itself to show one the moment a job lands in it. */}
+                <AutoRefresh seconds={60} />
+                <QueueBoard data={queue} />
+              </>
             )}
           </>
         )}

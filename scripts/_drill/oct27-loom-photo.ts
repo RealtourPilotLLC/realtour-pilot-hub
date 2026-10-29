@@ -261,9 +261,10 @@ async function main() {
     const bh = html(createElement(QueueBoard, { data: q6 }));
     const sections = [...bh.matchAll(/<section\b[^>]*data-column="([a-z]+)"[^>]*>/g)].map((m) => ({ key: m[1], tag: m[0] }));
     const emptyKeys: string[] = q6.columns.filter((col) => col.cards.length === 0).map((col) => col.key);
-    c.ok("every column is drawn, in order", sections.map((s) => s.key).join() === q6.columns.map((x) => x.key).join(), sections.map((s) => s.key).join());
-    c.ok("an empty column folds to a narrow strip on a computer (its name runs down the strip)", emptyKeys.length > 0 && sections.filter((s) => emptyKeys.includes(s.key)).every((s) => /data-empty=""/.test(s.tag) && /lg:w-11/.test(s.tag)) && /lg:\[writing-mode:vertical-rl\]/.test(bh), emptyKeys.join());
-    c.ok("…a column with jobs keeps its full width", sections.filter((s) => !emptyKeys.includes(s.key)).every((s) => !/data-empty/.test(s.tag) && /lg:min-w-\[15rem\]/.test(s.tag)));
+    // Oct 29 2026 (Jordan: "Maybe they are just hidden when there is nothing in that status?"): an empty stage has no column.
+    c.ok("only the columns with jobs are drawn, in order", sections.map((s) => s.key).join() === q6.columns.filter((x) => x.cards.length > 0).map((x) => x.key).join(), sections.map((s) => s.key).join());
+    c.ok("…an empty stage has no column at all, not a folded strip", emptyKeys.length > 0 && emptyKeys.every((k) => !sections.some((s) => s.key === k)) && !/writing-mode:vertical-rl/.test(bh) && !/data-empty/.test(bh), emptyKeys.join());
+    c.ok("…a column with jobs keeps its full width", sections.length > 0 && sections.every((s) => /lg:min-w-\[15rem\]/.test(s.tag)));
 
     // ======================================================================
     c.head("7 · Undo Check again");
