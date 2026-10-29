@@ -1104,6 +1104,134 @@ export const LENS_THRESHOLDS = {
   alignMin: 0.5,
 } as const;
 
+/** A camera turned left or right in a straight-on shot (turnedCamera). Calibrated Oct 29 2026 on 631 room photos from 17 jobs (9 turned, every one looked at). */
+export const TURN_THRESHOLDS = {
+  /** Lines at least this share of the width, within this many degrees of level, are measured. */
+  minLen: 0.15,
+  maxDeg: 4,
+  /** Counted: at least this long, this far from mid height, sloping between these degrees. */
+  useLen: 0.2,
+  offMid: 0.2,
+  minDeg: 0.4,
+  slopeMax: 2.5,
+  /** The verticals turned more than this: the picture is rotated (notLevel), not turned. */
+  maxRoll: 0.3,
+  /** Fitted: lines this far from mid height or more, and this far inside the frame's top and bottom; two lines this close in height and slope over the same stretch are one edge. */
+  nearMid: 0.1,
+  edge: 0.05,
+  twinDy: 0.02,
+  twinDeg: 0.3,
+  /** A fitted line runs at least this much (share of the width) inside the middle band, mid ± midBand, within fitDeg of level. */
+  midBand: 0.15,
+  midOverlap: 0.1,
+  fitDeg: 3,
+  /** Eye level (where the fit's slope is zero) inside these heights... */
+  eyeMin: 0.3,
+  eyeMax: 0.75,
+  /** ...and the fit leaves at most this share of the lines' tilt unexplained. */
+  maxUnexplained: 0.35,
+  /** One side only (all above or all below eye level): at least this many lines... */
+  oneSideMin: 2,
+  /** ...or one ceiling line: this long, reaching this far either side of the middle with its own middle this near the photo's, sloping at least this much. */
+  ceilingLen: 0.3,
+  ceilingSpan: 0.1,
+  ceilingCentre: 0.1,
+  ceilingDeg: 0.5,
+} as const;
+
+export type TurnedCamera = {
+  /** Which way the camera was turned (the side the back wall's lines run toward). */
+  side: "left" | "right";
+  /** The median slope of the counted lines, degrees. */
+  deg: number;
+  lines: number;
+  /** Lines both above and below eye level agree (the clearest kind). */
+  both: boolean;
+};
+
+/**
+ * Oct 29 2026, Jordan: "it also should look for when the camera is turned
+ * left and right, not just rotated ... When a single-point perspective is
+ * shot, the back wall line where the wall and ceiling meet should be
+ * straight." Facing a wall square on, its top and bottom lines run level.
+ * Turn the camera a little and they run toward a point far off to that side:
+ * each line tips in proportion to its distance from eye level, the ceiling
+ * line and the floor line OPPOSITE ways, while the verticals stay plumb. A
+ * rotated picture (notLevel) slopes them all the same way and tips the
+ * verticals with them.
+ *   · fitted: lines across the middle of the frame (the wall faced), near
+ *     level (fitDeg), clear of mid height (nearMid) and of the frame's edge;
+ *     slope against height, weighted by length; eye level is where the fitted
+ *     slope is zero, and it must sit in the room's middle (eyeMin..eyeMax)
+ *     with little of the lines' tilt left over (maxUnexplained);
+ *   · counted: long lines (useLen) well off eye level (offMid), sloping
+ *     minDeg to slopeMax degrees the way the fit says; steeper is a room
+ *     shot into a corner on purpose, whose lines run to two points (the
+ *     ceiling lines either side of the corner slope opposite ways at the
+ *     same height, which no single turn explains);
+ *   · turned: counted lines above AND below eye level; or one side only
+ *     (the floor line hidden by furniture) while the verticals are measured
+ *     plumb (maxRoll), with two counted lines or the back wall's ceiling line
+ *     on its own (long, centred, sloping ceilingDeg), and no long level line
+ *     across the middle on the other side (a tub edge that is not square to
+ *     the wall under a level shower rod).
+ * Pure.
+ */
+export function turnedCamera(b: Pick<LensBow, "across" | "roll">, t: typeof TURN_THRESHOLDS = TURN_THRESHOLDS): TurnedCamera | null {
+  if (b.roll != null && Math.abs(b.roll) > t.maxRoll) return null;
+  // One edge seen twice (both sides of a thin trim): keep the longer. Never the frame's own top or bottom rows (the lens bends them most).
+  const lines: AcrossLine[] = [];
+  // Only lines across the middle of the frame, where the wall the camera faces is (a counter or washer along a side wall, or a
+  // toilet tank close by, is not), and within fitDeg of level.
+  const middle = (x: AcrossLine) => Math.min(x.x1, 0.5 + t.midBand) - Math.max(x.x0, 0.5 - t.midBand) >= t.midOverlap;
+  for (const x of [...(b.across ?? [])].filter((x) => Math.abs(x.y - 0.5) >= t.nearMid && Math.abs(x.y - 0.5) <= 0.5 - t.edge && Math.abs(x.deg) <= t.fitDeg && middle(x)).sort((p, q) => q.len - p.len)) {
+    const twin = lines.some((y) => Math.abs(y.y - x.y) <= t.twinDy && Math.abs(y.deg - x.deg) <= t.twinDeg && Math.min(y.x1, x.x1) - Math.max(y.x0, x.x0) > 0.5 * Math.min(y.x1 - y.x0, x.x1 - x.x0));
+    if (!twin) lines.push(x);
+  }
+  if (!lines.length) return null;
+  // Slope against height, weighted by length: a turn tips each line in proportion to its distance from eye level.
+  let sw = 0, sx = 0, sxx = 0, sd = 0, sxd = 0, sdd = 0;
+  for (const x of lines) {
+    const u = x.y - 0.5;
+    sw += x.len; sx += x.len * u; sxx += x.len * u * u; sd += x.len * x.deg; sxd += x.len * u * x.deg; sdd += x.len * x.deg * x.deg;
+  }
+  if (!sdd) return null;
+  const judge = (kappa: number, a: number, eye: number, both: boolean): TurnedCamera | null => {
+    if (!kappa || eye < t.eyeMin || eye > t.eyeMax) return null;
+    let res = 0;
+    for (const x of lines) res += x.len * (x.deg - a - kappa * (x.y - 0.5)) ** 2;
+    if (res / sdd > t.maxUnexplained) return null;
+    // The lines that carry it: long, sloping the way the fit says, well away from eye level.
+    const carry = lines.filter((x) => x.len >= t.useLen && Math.abs(x.y - eye) >= t.offMid && Math.abs(x.deg) >= t.minDeg && Math.abs(x.deg) <= t.slopeMax && Math.sign(x.deg) === Math.sign(a + kappa * (x.y - 0.5)));
+    const above = carry.some((x) => x.y < eye), below = carry.some((x) => x.y > eye);
+    if (both && !(above && below)) return null;
+    // One side only: a rotation looks the same unless the verticals are measured plumb. Two lines, or the
+    // back wall's ceiling line on its own: long, across the middle, above eye level, sloping clearly.
+    if (!both) {
+      if (b.roll == null || !carry.length) return null;
+      const ceiling = carry.length === 1 && carry[0].y < eye && carry[0].len >= t.ceilingLen && carry[0].x0 <= 0.5 - t.ceilingSpan && carry[0].x1 >= 0.5 + t.ceilingSpan && Math.abs((carry[0].x0 + carry[0].x1) / 2 - 0.5) <= t.ceilingCentre && Math.abs(carry[0].deg) >= t.ceilingDeg;
+      if (carry.length < t.oneSideMin && !ceiling) return null;
+      // A long level line across the middle on the other side of eye level says the camera faced the wall square
+      // (a shower rod level over a tub edge that slopes: the tub is not square, the camera is).
+      const up = carry[0].y < eye;
+      if (lines.some((x) => x.len >= t.useLen && Math.abs(x.y - eye) >= t.offMid && (x.y < eye) !== up && Math.abs(x.deg) < t.minDeg / 2)) return null;
+    }
+    // Above eye level, falling to the right = running toward the right: the camera turned right.
+    const degs = carry.map((x) => Math.abs(x.deg)).sort((p, q) => p - q);
+    return { side: kappa < 0 ? "right" : "left", deg: degs[Math.floor(degs.length / 2)], lines: carry.length, both };
+  };
+  // Lines above and below eye level: eye level is where the fitted slope is zero.
+  const den = sw * sxx - sx * sx;
+  if (den > 0) {
+    const kappa = (sw * sxd - sx * sd) / den;
+    const a = (sd - kappa * sx) / sw;
+    const two = kappa ? judge(kappa, a, 0.5 - a / kappa, true) : null;
+    if (two) return two;
+  }
+  // One side only says nothing about where eye level is: taken at mid height.
+  return sxx ? judge(sxd / sxx, 0, 0.5, false) : null;
+}
+
 /** Long lines as point lists in image coordinates (every other point), both directions. */
 function plumbLines(l: Uint8Array, w: number, h: number): { x: number[]; y: number[]; len: number; dir: "v" | "h" }[] {
   const out: { x: number[]; y: number[]; len: number; dir: "v" | "h" }[] = [];
@@ -1150,7 +1278,14 @@ export type LensBow = {
   curve: number[];
   /** Long near-horizontal lines: slope in degrees (positive: falls to the right), height and length as shares. */
   level: { deg: number; y: number; len: number }[];
+  /** Near-level lines for the turned-camera measure (turnedCamera): shorter ones too, with where they run, the bow taken out. */
+  across: AcrossLine[];
+  /** How far the long verticals are turned, in degrees (positive: the picture turned clockwise, a top leaning right); null under 3 lines. */
+  roll: number | null;
 };
+
+/** A near-level line: slope in degrees (positive: falls to the right), its height, where it starts and ends across, its length; shares of the frame. */
+export type AcrossLine = { deg: number; y: number; x0: number; x1: number; len: number };
 
 const K_GRID = (() => {
   const T = LENS_THRESHOLDS;
@@ -1187,7 +1322,33 @@ export function lensBow(l: Uint8Array, w: number, h: number): LensBow {
       const n = L.x.length;
       return { deg: Math.round(((Math.atan2(L.y[n - 1] - L.y[0], L.x[n - 1] - L.x[0]) * 180) / Math.PI) * 100) / 100, y: Math.round(((L.y[0] + L.y[n - 1]) / 2 / h) * 100) / 100, len: Math.round((L.len / w) * 100) / 100 };
     });
-  return { lines: lines.length, k: e0 ? K_GRID[best] : 0, gain: e0 ? Math.round((1 - curve[best] / e0) * 100) / 100 : 0, curve, level };
+  const k = e0 ? K_GRID[best] : 0;
+  const r2 = (n: number) => Math.round(n * 1000) / 1000;
+  // Near-level lines, the photo's own bow taken out, each slope a least-squares fit (a few degrees: a line on a far wall).
+  const across: AcrossLine[] = [];
+  for (const L of lines) {
+    if (L.dir !== "h" || L.len < TURN_THRESHOLDS.minLen * w) continue;
+    const n = L.x.length;
+    let sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (let i = 0; i < n; i++) {
+      const u = (L.x[i] - cx) / R, v = (L.y[i] - cy) / R;
+      const s = 1 / (1 + k * (u * u + v * v));
+      const x = u * s * R, y = v * s * R;
+      sx += x; sy += y; sxx += x * x; sxy += x * y;
+    }
+    const den = n * sxx - sx * sx;
+    if (!den) continue;
+    const deg = (Math.atan((n * sxy - sx * sy) / den) * 180) / Math.PI;
+    if (Math.abs(deg) > TURN_THRESHOLDS.maxDeg) continue;
+    across.push({ deg: Math.round(deg * 100) / 100, y: r2((sy / n + cy) / h), x0: r2(L.x[0] / w), x1: r2(L.x[n - 1] / w), len: r2(L.len / w) });
+  }
+  // The verticals' own turn: a picture turned clockwise tips every top to the right.
+  const vs = lines.filter((L) => L.dir === "v").map((L) => {
+    const n = L.x.length;
+    return { v: (Math.atan2(L.x[0] - L.x[n - 1], L.y[n - 1] - L.y[0]) * 180) / Math.PI, w: L.len };
+  });
+  const roll = vs.length >= 3 ? weightedMedian(vs) : null;
+  return { lines: lines.length, k, gain: e0 ? Math.round((1 - curve[best] / e0) * 100) / 100 : 0, curve, level, across, roll: roll == null ? null : Math.round(roll * 100) / 100 };
 }
 
 /** How much straighter this photo's lines get with the bow k taken out (negative: worse). Pure. */
@@ -1210,14 +1371,36 @@ export function editBowVerdict(edit: Pick<LensBow, "k" | "gain" | "lines">, came
 }
 
 /** Horizontal lines that should be level and slope one way (a turned camera). null = level, or too few lines to say. Pure. */
-export function notLevel(level: LensBow["level"]): { deg: number; lines: number } | null {
+export function notLevel(level: LensBow["level"]): { deg: number; lines: number; both: boolean } | null {
   const T = LENS_THRESHOLDS;
-  const off = level.filter((x) => Math.abs(x.deg) >= T.levelMinDeg && Math.abs(x.deg) <= T.levelMaxDeg && Math.abs(x.y - 0.5) >= T.levelOffMid && x.len >= T.levelMinLen);
+  // Oct 29 2026 (calibrating turnedCamera): never the frame's own top or bottom rows, where a shower rod or the photo's edge measured sloping.
+  const off = level.filter((x) => Math.abs(x.deg) >= T.levelMinDeg && Math.abs(x.deg) <= T.levelMaxDeg && Math.abs(x.y - 0.5) >= T.levelOffMid && Math.abs(x.y - 0.5) <= 0.5 - TURN_THRESHOLDS.edge && x.len >= T.levelMinLen);
   const down = off.filter((x) => x.deg > 0), up = off.filter((x) => x.deg < 0);
   const [one, other] = down.length >= up.length ? [down, up] : [up, down];
   if (one.length < T.levelMinLines || other.length) return null;
   const degs = one.map((x) => Math.abs(x.deg)).sort((a, b) => a - b);
-  return { deg: degs[Math.floor(degs.length / 2)], lines: one.length };
+  return { deg: degs[Math.floor(degs.length / 2)], lines: one.length, both: one.some((x) => x.y < 0.5) && one.some((x) => x.y > 0.5) };
+}
+
+export type LevelVerdict = ({ kind: "turned" } & TurnedCamera) | { kind: "rotated"; deg: number; lines: number };
+
+/**
+ * Lines that should run level and do not, and why (Oct 29 2026): the camera
+ * turned left or right (turnedCamera), or the picture rotated (notLevel). A
+ * rotation tips the verticals with the horizontals, or slopes lines above and
+ * below eye level alike; lines sloping on one side only while the verticals
+ * stand plumb are no rotation (AutoHDR straightens the verticals on every
+ * upload), and when they are not clearly a turn either (a room shot from an
+ * angle on purpose) nothing is said. Pure.
+ */
+export function levelVerdict(b: Pick<LensBow, "level" | "across" | "roll">): LevelVerdict | null {
+  const turned = turnedCamera(b);
+  if (turned) return { kind: "turned", ...turned };
+  const rot = notLevel(b.level);
+  if (!rot) return null;
+  const plumb = b.roll != null && Math.abs(b.roll) <= TURN_THRESHOLDS.maxRoll;
+  if (plumb && !rot.both) return null;
+  return { kind: "rotated", deg: rot.deg, lines: rot.lines };
 }
 
 // The camera frame and the edit, compared by their edges (exposure-free: each

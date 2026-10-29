@@ -5,7 +5,7 @@ import { photoDeliverySettings } from "./settings";
 import { logJobEvent } from "./jobState";
 import { AUTOHDR_FREE_FIX, jsonFrom, refreshVerdict } from "./fixPolicy";
 import { readProgress, type Progress } from "./autohdrCheck";
-import { alignFrame, editBowVerdict, geometryWords, LENS_THRESHOLDS, lensBow, lineGeometry, lumaOf, notLevel, roofHeadroom, type LensBow, type LineGeometry } from "./qc/cv";
+import { alignFrame, editBowVerdict, geometryWords, LENS_THRESHOLDS, lensBow, levelVerdict, lineGeometry, lumaOf, roofHeadroom, type LensBow, type LineGeometry } from "./qc/cv";
 import { RULES_REGISTRY_VERSION, ruleById } from "./registry";
 
 // ---------------------------------------------------------------------------
@@ -17,7 +17,7 @@ import { RULES_REGISTRY_VERSION, ruleById } from "./registry";
 //
 //   1. THE MEASUREMENT (warpCv): every photo's lines (qc/cv.ts): leaning
 //      verticals (lineGeometry), and since Oct 29 2026 horizontal lines that
-//      should be level (lensBow / notLevel) and the edit's own lens bow.
+//      should be level (lensBow / levelVerdict) and the edit's own lens bow.
 //      Only from bytes the hub can read for free: a kept version copy, the
 //      Aryeo listing image, a Dropbox file, or an AutoHDR photo the hub
 //      already bought. A photo that would cost a credit to download is not
@@ -35,7 +35,11 @@ import { RULES_REGISTRY_VERSION, ruleById } from "./registry";
 //          the horizontal lines. Id like it to pick up horizontal lines that
 //          are not level"): horizontal lines off level inside a room, measured
 //          alone → a MINOR finding that shows (never blocks); with the check
-//          too → MAJOR.
+//          too → MAJOR. Jordan, the same day: "it also should look for when
+//          the camera is turned left and right, not just rotated" (a room
+//          shot straight on whose back wall's ceiling and floor lines slope
+//          opposite ways, cv.turnedCamera): the same finding, saying which
+//          way, with a fix that is not Crop & Tilt (turning cannot level both).
 //      The old bent-line measure no longer raises warps on its own (Jordan,
 //      Oct 29 2026: "it's saying there is warping, but there isn't"): it bent
 //      on things that are curved (drone horizons, road lines, a fridge handle).
@@ -77,15 +81,18 @@ const AGREE_CONFIDENCE = 0.85;
 const DISAGREE_CONFIDENCE = 0.55;
 /** Seen by a measurement alone, shown (above the default floor) but minor. */
 const SHOWN_MINOR_CONFIDENCE = 0.65;
+/** Oct 29 2026: a camera turned left or right in a straight-on room shot. Crop & Tilt cannot fix it. */
+export const TURN_FIX = "Crop & Tilt will not fix this: turning the photo levels one of the back wall's lines and tips the other. Fix the horizontal perspective in Lightroom (Transform, Horizontal) and put it in with Replace with an upload, or use another photo of this room. Coaching for the photographer: face the back wall square on, so its ceiling line runs level in the viewfinder.";
 const CONCURRENCY = 2;
 
 /**
  * What is kept per photo in the run's checksJson.geometry. m.k / m.gain: the
  * edit's lens bow; m.hl: long horizontal lines measured, m.lv: their slope
- * when they are off level (null: level). cam: the camera-frame comparison.
+ * when they are off level (null: level), m.turn: the way the camera was turned
+ * when that is why (cv.levelVerdict). cam: the camera-frame comparison.
  */
 export type StoredGeometry = {
-  m?: { lines: number; tilt: number | null; bent: number; bow: number; crooked: boolean; warped: boolean; words: string; k?: number; gain?: number; hl?: number; lv?: number | null; lvn?: number };
+  m?: { lines: number; tilt: number | null; bent: number; bow: number; crooked: boolean; warped: boolean; words: string; k?: number; gain?: number; hl?: number; lv?: number | null; lvn?: number; turn?: "left" | "right" };
   skipped?: string;
   cam?: StoredCamera;
 };
@@ -174,12 +181,14 @@ export async function freeBytesOf(p: GPhoto): Promise<{ bytes: Buffer } | { skip
 }
 
 const compact = (g: LineGeometry, b: LensBow): NonNullable<StoredGeometry["m"]> => {
-  const lv = notLevel(b.level);
-  return { lines: g.verticalLines, tilt: g.tiltDeg, bent: g.bentLines, bow: g.maxBowPx, crooked: g.crooked, warped: g.warped, words: geometryWords(g), k: b.k, gain: b.gain, hl: b.level.length, lv: lv?.deg ?? null, lvn: lv?.lines ?? 0 };
+  const lv = levelVerdict(b);
+  return { lines: g.verticalLines, tilt: g.tiltDeg, bent: g.bentLines, bow: g.maxBowPx, crooked: g.crooked, warped: g.warped, words: geometryWords(g), k: b.k, gain: b.gain, hl: b.level.length, lv: lv?.deg ?? null, lvn: lv?.lines ?? 0, ...(lv?.kind === "turned" ? { turn: lv.side } : {}) };
 };
 
 /** The level measurement in plain words. Pure. */
 export function levelWords(m: NonNullable<StoredGeometry["m"]>): string {
+  // Turned left: the back wall's lines run toward a point off the left side, the ceiling line down to it and the floor line up to it.
+  if (m.lv != null && m.turn) return `the back wall's ceiling line runs downhill to the ${m.turn} and its floor line downhill to the ${m.turn === "left" ? "right" : "left"} (${m.lv.toFixed(1)}°), so the camera was turned a little to the ${m.turn}`;
   return m.lv != null ? `${m.lvn} long horizontal line${m.lvn === 1 ? "" : "s"} slope ${m.lv.toFixed(1)}° the same way` : `${m.hl ?? 0} long horizontal line${m.hl === 1 ? "" : "s"} measured, level`;
 }
 
@@ -190,7 +199,7 @@ export const bowsAlone = (m: StoredGeometry["m"]): boolean => !!m && (m.k ?? 0) 
 export function measuredVerdict(ruleId: string, g: StoredGeometry | undefined): "agree" | "disagree" | "unmeasured" {
   if (!g?.m) return "unmeasured";
   if (LEAN_RULES.includes(ruleId)) return g.m.lines < 8 ? "unmeasured" : g.m.crooked ? "agree" : "disagree";
-  if (ruleId === LEVEL_RULE) return g.m.hl == null || g.m.hl < 2 ? "unmeasured" : g.m.lv != null ? "agree" : "disagree";
+  if (ruleId === LEVEL_RULE) return g.m.lv != null ? "agree" : g.m.hl == null || g.m.hl < 2 ? "unmeasured" : "disagree";
   return "unmeasured";
 }
 
@@ -320,7 +329,8 @@ async function reconcile(jobId: string, runId: string, photos: GPhoto[], geo: Re
     const words = g?.m ? (level ? levelWords(g.m) : g.m.words) : "";
     if (v === "agree") {
       // Oct 29 2026: a back wall measured off level is the registry's MAJOR ("the back wall is visibly not level").
-      await prisma.photoQcFinding.update({ where: { id: f.id }, data: { ...(level && f.severity === "MINOR" ? { severity: "MAJOR" } : {}), confidence: Math.max(f.confidence, AGREE_CONFIDENCE), explanation: `${f.explanation} Measured too: ${words}.`.slice(0, 1000), coercedJson: JSON.stringify({ ...c, measured: "agree" }) } });
+      // A turned camera: Crop & Tilt (the rule's usual fix) cannot level it.
+      await prisma.photoQcFinding.update({ where: { id: f.id }, data: { ...(level && f.severity === "MINOR" ? { severity: "MAJOR" } : {}), ...(level && g?.m?.turn ? { recommendedAction: TURN_FIX } : {}), confidence: Math.max(f.confidence, AGREE_CONFIDENCE), explanation: `${f.explanation} Measured too: ${words}.`.slice(0, 1000), coercedJson: JSON.stringify({ ...c, measured: "agree" }) } });
     } else if (v === "disagree") {
       await prisma.photoQcFinding.update({ where: { id: f.id }, data: { severity: "MINOR", confidence: Math.min(f.confidence, DISAGREE_CONFIDENCE), explanation: `${f.explanation} The measured lines look ${level ? "level" : "straight"} (${words}), so this counts as minor: look before deciding.`.slice(0, 1000), coercedJson: JSON.stringify({ ...c, measured: "disagree" }) } });
     } else {
@@ -342,20 +352,22 @@ async function reconcile(jobId: string, runId: string, photos: GPhoto[], geo: Re
           qcRunId: runId, jobId, photoId: p.id, ruleId, groupKey: level ? "HORIZONTAL_PERSPECTIVE" : "VERTICALS", pass: "P1_PHOTO", source: "CV", arbitration: "CONFIRMED",
           specificIssue: issue,
           explanation: level
-            ? `The measured line check saw horizontal lines that should be level sloping (${levelWords(m)}); the free photo check did not name it. Level it in AutoHDR (Crop & Tilt, free) if it shows.`
+            ? m.turn
+              ? `The measured line check saw a room shot straight on with the camera turned: ${levelWords(m)}. The free photo check did not name it. Look at the back wall; if it shows, fix it as suggested (not Crop & Tilt).`
+              : `The measured line check saw horizontal lines that should be level sloping (${levelWords(m)}); the free photo check did not name it. Level it in AutoHDR (Crop & Tilt, free) if it shows.`
             : strong
               ? `The measured line check saw a strong lean (${m.words}); the free photo check did not name it. Straighten it in AutoHDR (Crop & Tilt, free) or pick another photo before it goes out.`
               : `Only the measured line check saw this (${m.words}); the free photo check did not. Advisory: look at the photo before doing anything.`,
           // Oct 29 2026: an off-level room is shown (above the floor) but minor; a lean on the measurement alone stays advisory unless strong.
           severity: strong ? "MAJOR" : "MINOR", confidence: strong ? Math.max(STRONG_LEAN_CONFIDENCE, floor) : level ? Math.max(SHOWN_MINOR_CONFIDENCE, floor) : advisory,
-          responsibility: level ? "EDITOR" : "HUMAN_REVIEW", fixStrategy: "HUMAN_REVIEW", recommendedAction: level ? AUTOHDR_FREE_FIX[LEVEL_RULE] ?? null : null, contentHash: p.contentHash, model: "line-geometry", rulesVersion: RULES_REGISTRY_VERSION,
-          coercedJson: JSON.stringify({ measured: strong ? "only-strong" : "only" }),
+          responsibility: level ? "EDITOR" : "HUMAN_REVIEW", fixStrategy: "HUMAN_REVIEW", recommendedAction: level ? (m.turn ? TURN_FIX : AUTOHDR_FREE_FIX[LEVEL_RULE] ?? null) : null, contentHash: p.contentHash, model: "line-geometry", rulesVersion: RULES_REGISTRY_VERSION,
+          coercedJson: JSON.stringify({ measured: strong ? "only-strong" : "only", ...(level && m.turn ? { turned: m.turn } : {}) }),
         },
       });
     };
     if (m.crooked) await add("PERSP_CROOKED_VERTICALS", `Measured: verticals lean ${m.tilt?.toFixed(1) ?? "?"}°`, (m.tilt ?? 0) >= STRONG_LEAN_DEG);
     // Inside a room only: outside, a sloping street, roof or deck reads as off level.
-    if (m.lv != null && isInterior(p)) await add(LEVEL_RULE, `Measured: horizontal lines slope ${m.lv.toFixed(1)}°`);
+    if (m.lv != null && isInterior(p)) await add(LEVEL_RULE, m.turn ? `Measured: the camera was turned a little to the ${m.turn} (the back wall's lines slope ${m.lv.toFixed(1)}°)` : `Measured: horizontal lines slope ${m.lv.toFixed(1)}°`);
   }
 }
 

@@ -125,7 +125,7 @@ async function main() {
     const off = lv(IMG.offLevel);
     c.ok("the camera rolled: the ceiling line and the baseboard slope the same way, 1.2°", !!off && Math.abs(off.deg - 1.2) < 0.15 && off.lines >= cv.LENS_THRESHOLDS.levelMinLines, JSON.stringify(off));
     c.ok("level lines: nothing", lv(IMG.level) === null);
-    c.ok("a wall shot at an angle (lines meeting in the distance): perspective, not off level", lv(IMG.perspective) === null, JSON.stringify(bow(IMG.perspective).level));
+    c.ok("the ceiling line and the baseboard meeting off to one side: not a rotation (a turned camera, oct29-photo-yaw)", lv(IMG.perspective) === null, JSON.stringify(bow(IMG.perspective).level));
     c.ok("never a slope steeper than 2.5° (a staircase, a roof line)", cv.notLevel([{ deg: 4, y: 0.1, len: 0.8 }, { deg: 4, y: 0.9, len: 0.8 }]) === null);
     c.ok("never lines near the middle of the photo (the horizon of the room bends least)", cv.notLevel([{ deg: 1, y: 0.45, len: 0.8 }, { deg: 1, y: 0.55, len: 0.8 }]) === null);
     c.ok("the same scene across exposures; another shot is not", cv.sameScene(L(IMG.straight), L(exposed(IMG.straight, 0.35))) >= cv.LENS_THRESHOLDS.sameScene && cv.sameScene(L(IMG.straight), L(IMG.other)) < cv.LENS_THRESHOLDS.sameScene);

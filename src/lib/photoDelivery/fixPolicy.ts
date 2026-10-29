@@ -63,7 +63,7 @@ export const AUTOHDR_FREE_FIX: Record<string, string> = {
   PERSP_EXTERIOR_WALLS_LEANING: VERTICALS_HOW,
   PERSP_CROOKED_HORIZON: "Level it in AutoHDR with Crop & Tilt. Free.",
   // Oct 29 2026 (Jordan: "Id like it to pick up horizontal lines that are not level or perfectly horizontal").
-  PERSP_HORIZONTAL_DISTORTION: "Level it in AutoHDR with Crop & Tilt: turn it until the lines on the wall it faces run level. Free.",
+  PERSP_HORIZONTAL_DISTORTION: "Level it in AutoHDR with Crop & Tilt: turn it until the lines on the wall it faces run level. Free. If that wall's top and bottom lines slope opposite ways (the camera was turned left or right, not tilted), turning will not level both: fix the horizontal perspective in Lightroom and put it in with Replace with an upload, or use another photo.",
   PERSP_AUTOHDR_ROOF_PEAKS_CROPPED: "AutoHDR's straightening cut off the top of the house. Open this photo in AutoHDR and turn Perspective Off on THIS photo (free; the account's Perspective Correction switch only changes new uploads, never photos already edited), then press Check AutoHDR for changes here: the hub and the Aryeo folder take the new version. Compare it in the photo's Versions. If the original photo has no room above the roof either, only a reshoot fixes it.",
   // Oct 15 2026: warped architecture. An AI re-edit does not straighten lines
   // (first live run); AutoHDR's own editor can undo its straightening. Oct 29
