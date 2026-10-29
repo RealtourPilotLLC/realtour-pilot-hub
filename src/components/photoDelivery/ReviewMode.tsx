@@ -12,7 +12,7 @@ import { FixCartPanel } from "./FixCartPanel";
 import { EditMenu } from "./EditMenu";
 import { JobProvider, photoTitle, useJob } from "./JobContext";
 import { PhotoFacts, sortFindings } from "./Lightbox";
-import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, intakeLine } from "./format";
+import { RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, findingStatusLabel, intakeLine } from "./format";
 import { ViewOnlyNote } from "./GlobalStrip";
 import type { JobDetail, Viewer } from "./types";
 
@@ -278,7 +278,7 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
                         <span className={cn("rounded-full px-1.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset", SEVERITY_CLASS[f.severity])}>{SEVERITY_LABEL[f.severity]}</span>
                         <span className="text-sm font-medium">{f.ruleLabel || f.specificIssue}</span>
                         {selected.has(f.id) && f.status === "OPEN" && <span className="rounded-full bg-brand-soft px-2 py-0.5 text-[11px] font-semibold">In cart</span>}
-                        {f.status !== "OPEN" && <span className="text-[12px] text-muted">{FINDING_STATUS_LABEL[f.status] ?? f.status}</span>}
+                        {f.status !== "OPEN" && <span className="text-[12px] text-muted">{findingStatusLabel(f)}</span>}
                       </button>
                       <p className="mt-1 break-words text-[13px]">{f.specificIssue}</p>
                       <p className="text-[12px] text-muted">

@@ -14,6 +14,7 @@ import { getCutWorkspace, nextCutToReview } from "@/lib/reviewRoom";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { editorMeta } from "@/lib/editors";
 import { CutReviewPanel } from "@/components/review/CutReviewPanel";
+import { ClientNoteControls } from "@/components/review/ClientNoteControls";
 import { SpellingFlagsNote } from "@/components/review/SpellingFlags";
 import { spellingViewFor } from "@/lib/videoAnalysisCore";
 import { VerdictReceipts } from "@/components/review/VerdictReceipts";
@@ -170,6 +171,20 @@ export default async function CutReviewPage({
           .catch(() => [])
       : [];
   const takeBack = active ? (cutFlags.find((f) => f.submissionId === active.id) ?? null) : null;
+  // EDIT AND DELETE (Jordan, Oct 28 2026: "we need to be able to delete
+  // revision notes in the review room and also edit them"). Each note says
+  // what THIS viewer may change, by the rule the actions enforce
+  // (lib/noteEdits); the cut's recently deleted notes come with Undo; the
+  // client's notes carry what our team changed on their way to the editor.
+  const noteEdits = await import("@/lib/noteEdits");
+  const changer = await noteEdits.noteChangerForViewer().catch(() => null);
+  const cutNotes = await noteEdits.decorateCutNotes(w.notes, changer).catch(() => w.notes);
+  const deletedNotes = active ? await noteEdits.deletedNotesOn(active.id, changer, me && !me.impersonating ? me.id : null).catch(() => []) : [];
+  const { mayCorrectClientNote } = await import("@/lib/noteEditCore");
+  const canCorrectClient = !shotThis && mayCorrectClientNote(changer);
+  const clientChanges = canCorrectClient
+    ? await noteEdits.clientNoteChangesFor(clientNoteGroups.flatMap((g) => g.notes.map((n) => n.id))).catch(() => new Map())
+    : new Map();
   // WHERE A VERDICT TAKES THE REVIEWER (Oct 5): named now, so the move happens
   // on the click instead of after the server answers. Only when there is a
   // verdict to give. Test clients only from a test job, like the Room's index.
@@ -454,7 +469,8 @@ export default async function CutReviewPage({
                 key={active.id}
                 projectId={w.projectId}
                 submission={active}
-                notes={w.notes}
+                notes={cutNotes}
+                deletedNotes={deletedNotes}
                 editorLabel={editorLabel}
                 takeBack={takeBack}
                 cutLabel={slotLabel(active) ?? active.fileName ?? "this cut"}
@@ -652,6 +668,9 @@ export default async function CutReviewPage({
                             {/* Keyed on the resolve stamp, like the portal (review, Sep 28). */}
                             {clientNoteStatusWords(n)}
                           </p>
+                          {/* Our side of the client's note (Oct 28 2026): held back,
+                              reworded or taken off the editor's list, never their words. */}
+                          {canCorrectClient && <ClientNoteControls id={n.id} status={n.status} change={clientChanges.get(n.id) ?? null} editorName={editorLabel === "the editor" ? null : editorLabel} />}
                           {n.replies.length > 0 && (
                             <ul className="mt-1 space-y-1 border-l-2 border-border pl-3">
                               {n.replies.map((r) => (

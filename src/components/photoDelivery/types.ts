@@ -304,6 +304,14 @@ export type GateCheckView = {
   /** Oct 23 2026 (huddle item 9): the hub's own delivery waits for it, Kyle never does (the wrap-up); `askNotes`: offer "Ask the photographer for notes". */
   hubHold?: boolean;
   askNotes?: boolean;
+  /** Oct 22 2026 (a client-asked line): who answers it, the settle button's words, and the client's full words. */
+  waitingOn?: string;
+  doneLabel?: string;
+  said?: { from: string; text: string } | null;
+  /** Oct 28 2026 (delivery.ts): a photo-only check on a job with no photos yet; it waits for the upload, never a thing to do. */
+  waiting?: boolean;
+  /** Oct 28 2026 (delivery.ts): a client's request, shown in the job's one Client requests item (holding.clientRequestLines). */
+  request?: { what: string; from: string; sameAs?: string | null };
 };
 export type AddOnView = {
   key: string;

@@ -941,7 +941,16 @@ export type IssueView = {
   /** The cause is a reviewer's verdict on a version; another editor's isn't
    *  theirs to read (§8.4). True = the viewer is not shown it. */
   causeHidden: boolean;
+  /** THE LAST CHANGE TO ITS NOTE (Oct 28 2026, lib/noteEdits): the note was
+   *  edited, deleted, reworded or taken off the list by a person. Shown to the
+   *  editor too (it is what they are told, never a verdict on their work). */
+  noteChange: { kind: "EDITED" | "DELETED" | "REWORDED" | "REMOVED"; by: string; atISO: string; before: string | null; after: string | null } | null;
 };
+
+const NOTE_CHANGE_KINDS: Record<string, "EDITED" | "DELETED" | "REWORDED" | "REMOVED"> = {
+  NOTE_EDITED: "EDITED", NOTE_DELETED: "DELETED", NOTE_REWORDED: "REWORDED", NOTE_REMOVED: "REMOVED",
+};
+const NOTE_CHANGE_RESETS = new Set(["NOTE_RESTORED", "NOTE_REWORD_UNDONE"]);
 
 /** Every issue on the job, by project — NOT by editor key, which is what hid a
  *  reassigned editor's inherited notes (getEditorFeedback filters by the key
@@ -1007,6 +1016,14 @@ export async function issuesForProject(projectId: string, opts: { scrub: boolean
       imported: r.imported,
       createdAtISO: r.createdAt.toISOString(),
       events: redact ? [] : (byIssue.get(r.id) ?? []).map((e) => ({ kind: e.kind, from: e.fromValue, to: e.toValue, actorName: e.actorName, note: opts.scrub && e.note ? stripMoneySentences(e.note) || null : e.note, atISO: e.at.toISOString() })),
+      noteChange: (() => {
+        const last = (byIssue.get(r.id) ?? []).filter((e) => NOTE_CHANGE_KINDS[e.kind] || NOTE_CHANGE_RESETS.has(e.kind)).at(-1);
+        if (!last || !NOTE_CHANGE_KINDS[last.kind]) return null;
+        const kind = NOTE_CHANGE_KINDS[last.kind];
+        // An edit's event carries the words; a delete's carries the states.
+        const words = kind === "EDITED" || kind === "REWORDED";
+        return { kind, by: last.actorName, atISO: last.at.toISOString(), before: words ? clean(last.fromValue) : null, after: words ? clean(last.toValue) : null };
+      })(),
     };
   });
 }

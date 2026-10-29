@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowUpRight, CalendarClock, Check, ExternalLink, Loader2, Mail, Plus, RotateCcw, Send, UserRoundPlus, X } from "lucide-react";
@@ -538,9 +539,15 @@ export function MarkHandled({ threadKey, family, clientId, groupKey }: { threadK
 
 /** "+ Add task" (Jordan's mockup): a task for Kyle himself (the Tasks page's own
  *  add), or assigned to someone else through delegation. Its own small panel;
- *  off in the owner's preview. */
+ *  off in the owner's preview. The panel is portaled to <body>: the button sits
+ *  in the page header, whose backdrop blur makes a `fixed` child hang off the
+ *  header instead of the window (Kyle, Oct 28 2026: "it shows up at the header"). */
 export function AddTaskButton({ people, me, readOnly = false, initialOpen = false }: { people: { key: string; name: string }[]; me: string | null; readOnly?: boolean; initialOpen?: boolean }) {
   const [open, setOpen] = useState(initialOpen);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  // In place until mounted (a server render has no <body> to portal to).
+  const portal = (node: ReactNode) => (mounted ? createPortal(node, document.body) : node);
   const { busy, msg, run, setMsg } = useRun();
   const [title, setTitle] = useState("");
   const [who, setWho] = useState(me ?? "kyle");
@@ -556,7 +563,7 @@ export function AddTaskButton({ people, me, readOnly = false, initialOpen = fals
       <button type="button" onClick={() => setOpen(true)} disabled={readOnly} data-add-task className={PRIMARY} title={readOnly ? "Read-only preview" : undefined}>
         <Plus aria-hidden className="size-4" /> Add task
       </button>
-      {open && (
+      {open && portal(
         <div className="fixed inset-0 z-50 flex justify-end" data-add-task-panel>
           <button type="button" aria-label="Close" onClick={close} className="absolute inset-0 bg-black/30" />
           <aside role="dialog" aria-modal="true" aria-labelledby="add-task-title" className="relative flex h-full w-full max-w-md flex-col gap-3 overflow-y-auto border-l border-border bg-surface p-4 shadow-xl">
@@ -585,7 +592,7 @@ export function AddTaskButton({ people, me, readOnly = false, initialOpen = fals
               </>
             )}
           </aside>
-        </div>
+        </div>,
       )}
     </>
   );

@@ -18,6 +18,7 @@ import {
   type ClientIssues, type FinancialPosition, type Measure, type ProductionHealth, type RowAction, type StageKey, type TeamCoverage, type Tone, type WeeklyPerformance,
 } from "@/lib/ownerDashboard";
 import type { BottleneckTopic } from "@/lib/ownerTopicsCore";
+import type { DelegatedTaskView } from "@/lib/delegation";
 import {
   creativeDecisions, delegatedByMe, emailNeedingReply, meetingsSection, EMAIL_CLASS_WORDS,
   type CreativeDecisions, type DelegatedByMe, type EmailSection, type Meetings,
@@ -154,7 +155,13 @@ async function ProductionSection({ p }: { p: Promise<ProductionHealth | null> })
   if (!h) return <Card title="Production health" id="production"><Unavailable what={["production"]} /></Card>;
   const shownTopics = h.topics.slice(0, 6);
   const rowsOf = new Map(await Promise.all(h.topics.map(async (t) => [t.key, await topicRows(t)] as const)));
-  const bottleneckRows: ListRow[] = h.bottlenecks.map((b) => ({ id: b.id, title: b.issue, sub: [b.owner, b.handledBy?.words, b.nextStep, b.clientUpdate].filter(Boolean).join(" · "), tone: b.tone, href: b.href, assign: b.taskId ? null : b.assign, action: shellAction(b.actions) }));
+  // A row whose only button is its task (an escalation: "Decide") opens that
+  // task's panel right in the list, not a link away (Oct 28 2026).
+  const panels = await taskPanels(h.bottlenecks.filter((b) => !shellAction(b.actions)).map((b) => b.taskId));
+  const bottleneckRows: ListRow[] = h.bottlenecks.map((b) => {
+    const open = b.taskId ? panels.get(b.taskId) ?? null : null;
+    return { id: b.id, title: b.issue, sub: [b.owner, b.handledBy?.words, b.nextStep, b.clientUpdate].filter(Boolean).join(" · "), tone: b.tone, href: b.href, assign: b.taskId ? null : b.assign, action: shellAction(b.actions), open, openLabel: open ? b.actions.find((a) => a.kind === "task")?.label ?? null : null };
+  });
   return (
     <Card title="Production health" id="production">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -232,11 +239,22 @@ async function topicRows(t: BottleneckTopic): Promise<ListRow[]> {
   });
 }
 
+/** Delegated tasks' panels by id, read here (server side), so a list row can open its task in place. */
+async function taskPanels(ids: (string | null | undefined)[]): Promise<Map<string, PanelSpec>> {
+  const want = [...new Set(ids.filter((x): x is string => !!x))];
+  if (!want.length) return new Map();
+  const { delegationFor, resurfaceOf } = await import("@/lib/delegation");
+  const views = await delegationFor(want).catch(() => new Map<string, DelegatedTaskView>());
+  const now = new Date();
+  return new Map([...views].map(([id, v]) => [id, { kind: "task" as const, task: { ...v, resurface: resurfaceOf(v, now) } }]));
+}
+
 /** A delegated task's panel, opened by id (the task is read here, server side). */
 async function TaskOpen({ taskId, label, className = "w-full" }: { taskId: string; label: string; className?: string }) {
   const { delegationFor, resurfaceOf } = await import("@/lib/delegation");
   const v = (await delegationFor([taskId]).catch(() => new Map())).get(taskId);
-  if (!v) return <Link href="/" className={cn(QUIET, className)}>{label}</Link>;
+  // Not readable as a delegation just now: the task's own row on Tasks, never back to this page (Oct 28 2026).
+  if (!v) return <Link href={`/tasks?task=${encodeURIComponent(taskId)}`} className={cn(QUIET, className)}>{label}</Link>;
   return <PanelButton spec={{ kind: "task", task: { ...v, resurface: resurfaceOf(v, new Date()) } }} className={cn(QUIET, className)}>{label}</PanelButton>;
 }
 
@@ -291,8 +309,13 @@ async function ClientIssuesSection({ p }: { p: Promise<ClientIssues | null> }) {
 async function TeamSection({ p, nowMs }: { p: Promise<TeamCoverage | null>; nowMs: number }) {
   const t = await p;
   if (!t) return <Card title="Team coverage" id="team"><Unavailable what={["team coverage"]} /></Card>;
+  // Each assignment opens its own task (see it, ask for an update, reassign),
+  // not a line of text (Jordan, Oct 28 2026: "make sure every task and
+  // assignment has an actionable button").
+  const { resurfaceOf } = await import("@/lib/delegation");
+  const now = new Date(nowMs);
   const workload: ListRow[] = [
-    ...Object.values(t.byPerson).flat().map((d) => ({ id: d.taskId, title: `${d.assigneeName ?? "Nobody"}: ${d.title}`, sub: [d.state === "ASSIGNED" ? "Awaiting acceptance" : d.state.toLowerCase().replace(/_/g, " "), d.dueAt ? `due ${etDateTime(d.dueAt)}` : null, d.assignedBy ? `from ${d.assignedBy}` : null].filter(Boolean).join(" · "), tone: (d.dueAt && Date.parse(d.dueAt) < nowMs ? "bad" : d.state === "ASSIGNED" ? "warn" : "ok") as Tone })),
+    ...Object.values(t.byPerson).flat().map((d) => ({ id: d.taskId, title: `${d.assigneeName ?? "Nobody"}: ${d.title}`, sub: [d.state === "ASSIGNED" ? "Awaiting acceptance" : d.state.toLowerCase().replace(/_/g, " "), d.dueAt ? `due ${etDateTime(d.dueAt)}` : null, d.assignedBy ? `from ${d.assignedBy}` : null].filter(Boolean).join(" · "), tone: (d.dueAt && Date.parse(d.dueAt) < nowMs ? "bad" : d.state === "ASSIGNED" ? "warn" : "ok") as Tone, open: { kind: "task" as const, task: { ...d, resurface: resurfaceOf(d, now) } } })),
     ...t.unassigned.map((u) => ({ id: `un:${u.what}`, title: `${u.count} ${u.what.charAt(0).toLowerCase()}${u.what.slice(1)}`, sub: u.what.includes(" while off") ? "Booked on someone who is off" : "Unassigned", tone: "bad" as Tone, href: u.href })),
     ...t.timeOff.map((o, i) => ({ id: `off:${i}`, title: `${o.name}: ${o.words}`, sub: "Time off", tone: "warn" as Tone })),
   ];

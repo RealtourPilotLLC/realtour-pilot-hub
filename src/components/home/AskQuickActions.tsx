@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Check, Loader2, RotateCcw, X } from "lucide-react";
 import { confirmAskAction, doneAskAction, notNeededAskAction, reopenAskAction, type AskActionResult } from "@/app/ops/requests/actions";
+import { NotForThisProject } from "@/components/requests/RequestPlacement";
 
 // One tap on a client ask from Kyle's checklist (Oct 19 2026). The server
 // actions are the Special requests and Scheduling screens' own (they guard
@@ -11,8 +12,12 @@ import { confirmAskAction, doneAskAction, notNeededAskAction, reopenAskAction, t
 //   · a special request: Checked (looked at on the finished work; releases a
 //     delivery hold) or Not needed;
 //   · a scheduling ask: Done or Not needed.
-// A note on a Checked, or putting an ask on a different job, stays on the
-// job's own page (Review Room, photo job), which carries the full card.
+// A note on a Checked stays on the job's own page (Review Room, photo job),
+// which carries the full card. A special request also has "Not for this
+// project" (Kyle, Oct 28 2026, lib/requestPlacement): move it to another of
+// the client's open projects, keep it for their next one, or not a request;
+// the row leaves the list, and its Undo waits in the page's bar
+// (PlacementUndoHost, mounted by the checklist and the desk).
 
 const BTN = "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg border px-3 text-sm font-medium disabled:opacity-60";
 
@@ -20,6 +25,7 @@ export function AskQuickActions({ id, askKind }: { id: string; askKind: "SPECIAL
   const router = useRouter();
   const [busy, start] = useTransition();
   const [msg, setMsg] = useState<AskActionResult | null>(null);
+  const [off, setOff] = useState(false);
   const run = (fn: () => Promise<AskActionResult>) =>
     start(async () => {
       const r = await fn().catch(() => ({ ok: false, message: "That didn't go through. Reload the page and try again." }));
@@ -29,18 +35,23 @@ export function AskQuickActions({ id, askKind }: { id: string; askKind: "SPECIAL
   if (msg?.ok) return <p role="status" className="text-sm font-medium text-success">{msg.message || "Saved."}</p>;
   const primary = askKind === "SPECIAL_REQUEST" ? "Checked" : "Done";
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => run(() => (askKind === "SPECIAL_REQUEST" ? confirmAskAction(id) : doneAskAction(id)))}
-        className={`${BTN} border-success/40 bg-success/10 text-success hover:bg-success/20`}
-      >
-        {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />} {primary}
-      </button>
-      <button type="button" disabled={busy} onClick={() => run(() => notNeededAskAction(id))} className={`${BTN} border-border text-muted hover:bg-surface-2 hover:text-foreground`}>
-        <X aria-hidden className="size-4" /> Not needed
-      </button>
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
+      {!off && (
+        <>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => run(() => (askKind === "SPECIAL_REQUEST" ? confirmAskAction(id) : doneAskAction(id)))}
+            className={`${BTN} border-success/40 bg-success/10 text-success hover:bg-success/20`}
+          >
+            {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />} {primary}
+          </button>
+          <button type="button" disabled={busy} onClick={() => run(() => notNeededAskAction(id))} className={`${BTN} border-border text-muted hover:bg-surface-2 hover:text-foreground`}>
+            <X aria-hidden className="size-4" /> Not needed
+          </button>
+        </>
+      )}
+      {askKind === "SPECIAL_REQUEST" && <NotForThisProject askId={id} refresh={false} onChange={setOff} />}
       {msg && !msg.ok && <p role="alert" className="w-full text-sm text-danger">{msg.message}</p>}
     </div>
   );

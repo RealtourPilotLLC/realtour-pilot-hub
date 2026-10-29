@@ -1,20 +1,24 @@
 "use client";
 
-import { Ban, Camera, ChevronDown, CircleSlash, EyeOff, Hand, Undo2, UserRound, Wrench } from "lucide-react";
+import { Ban, Camera, CheckCircle2, ChevronDown, CircleSlash, EyeOff, Hand, Undo2, UserRound, Wrench } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { isFixedInAutohdr } from "@/lib/photoDelivery/fixedInAutohdr";
 import { useJob } from "./JobContext";
-import { HUMAN_CALL_LABEL, UNDOABLE } from "./format";
+import { HUMAN_CALL_LABEL, isUndoable } from "./format";
 import type { FindingView } from "./types";
 
 // ---------------------------------------------------------------------------
-// The per-issue (or per-group) decision buttons, plan 8.3 and 9.4. Three in
-// sight: Fix (add to the Fix Cart, only when there is a fix), Not worth
-// fixing, Not there. The rest sit under "More": Send to editor, Reshoot (a
+// The per-issue (or per-group) decision buttons, plan 8.3 and 9.4. In sight:
+// Fix (add to the Fix Cart, only when there is a fix), Not worth fixing, Not
+// there, and Fixed in AutoHDR (Oct 28 2026, Kyle: he fixes some himself in
+// AutoHDR's editor; it records the issue as fixed, by him, now, with Undo:
+// fixedInAutohdr.ts). The rest sit under "More": Send to editor, Reshoot (a
 // recommendation only), Override, and the owner's Stop flagging this.
 // A group-level decision applies to every open finding in the group (plan
-// 7.5). Decided findings offer Undo instead. Findings already in a fix
-// (approved, running, fixed) show no buttons: a click never pulls a finding
-// out of a running fix.
+// 7.5). Decided findings offer Undo instead (and Fixed in AutoHDR, so a "Not
+// there" that was really a fix is put right in one tap). Findings in the
+// hub's own fix (approved, running, fixed) show no buttons: a click never
+// pulls a finding out of a running fix.
 // ---------------------------------------------------------------------------
 
 const btn =
@@ -22,7 +26,7 @@ const btn =
 
 /** What to do instead when Fix is not offered (huddle finding 6: the reason and the next step, on screen, not in a tooltip). */
 const NEXT_STEP: Record<string, string> = {
-  "permanent-feature": "Next: Send to editor (under More), or fix it by hand in AutoHDR.",
+  "permanent-feature": "Next: Send to editor (under More), or fix it by hand in AutoHDR, then press Fixed in AutoHDR.",
   privacy: "Next: leave the photo out, or Send to editor (under More) to blur it.",
   "color-truth": "Next: compare it with the original, then Not there, or Send to editor (under More).",
   reshoot: "Next: Reshoot (under More, a recommendation only), or Not worth fixing.",
@@ -35,8 +39,23 @@ export function FindingActions({ findings, className, showFix = true }: { findin
   const { data, decide, addToCart, cartLineByFinding, queued, pending, viewer, stopFlagging, readOnly } = useJob();
   const ruleIds = [...new Set(findings.map((f) => f.ruleId))];
   const open = findings.filter((f) => f.status === "OPEN");
-  const undoable = findings.filter((f) => UNDOABLE.has(f.status));
-  const inFix = findings.filter((f) => f.status === "APPROVED_FIX" || f.status === "FIXING" || f.status === "FIXED");
+  // Oct 28 2026: a person's "Fixed in AutoHDR" is undoable; the hub's own fix is not (restore the photo's earlier version instead).
+  const undoable = findings.filter((f) => isUndoable(f));
+  const inFix = findings.filter((f) => (f.status === "APPROVED_FIX" || f.status === "FIXING" || f.status === "FIXED") && !isFixedInAutohdr(f));
+  // Only on a job whose photos are in AutoHDR (the hub reads the fix back from there).
+  const inAutohdr = !!data.header.autohdrPhotoshootId || data.photos.some((p) => p.sourceKind === "AUTOHDR");
+  const fixedThere = (list: FindingView[], label = "Fixed in AutoHDR") => (
+    <button
+      type="button"
+      className={btn}
+      disabled={pending}
+      onClick={() => void decide(list, "FIXED_IN_AUTOHDR")}
+      title="You fixed it yourself in AutoHDR's editor. It counts as fixed, with your name and the time; Undo puts it back. The hub then reads AutoHDR's latest version of the photo."
+      data-fixed-in-autohdr
+    >
+      <CheckCircle2 aria-hidden className="size-3.5" /> {label}
+    </button>
+  );
   // Huddle finding 5: why the automatic plan fixed or skipped it.
   const notes = [...new Set(findings.map((f) => f.planNote).filter((x): x is string => !!x))];
   const planLine = notes.length === 1 ? <p className="w-full text-[12px] text-muted">Automatic plan: {notes[0]}</p> : null;
@@ -50,7 +69,7 @@ export function FindingActions({ findings, className, showFix = true }: { findin
   // VIEW ONLY (Oct 22 2026): keep, fix, ignore and every other call on a
   // finding is the office's. A viewer reads where it stands, no buttons.
   if (readOnly) {
-    const fixing = inFix.length > 0 ? (inFix.every((f) => f.status === "FIXED") ? "Fixed." : "Fix running.") : null;
+    const fixing = inFix.length > 0 ? (inFix.every((f) => f.status === "FIXED") ? "Fixed." : "Fix running.") : findings.some((f) => isFixedInAutohdr(f)) ? "Fixed in AutoHDR." : null;
     if (!asked && !planLine && !fixing) return null;
     return (
       <div className={cn("flex flex-wrap gap-1.5", className)}>
@@ -78,12 +97,15 @@ export function FindingActions({ findings, className, showFix = true }: { findin
     );
   }
   if (!open.length) {
+    // Oct 28 2026 (Kyle's "Not there: Fixed with autohdr"): a call that was really a fix in AutoHDR, put right in one tap.
+    const notFixed = undoable.filter((f) => !isFixedInAutohdr(f));
     return (
       <div className={cn("flex flex-wrap gap-1.5", className)}>
         {askedLine}
         <button type="button" className={btn} disabled={pending} onClick={() => void decide(undoable, "OPEN")}>
           <Undo2 aria-hidden className="size-3.5" /> Undo
         </button>
+        {inAutohdr && notFixed.length > 0 && fixedThere(notFixed, "It was fixed in AutoHDR")}
         {planLine}
       </div>
     );
@@ -114,9 +136,7 @@ export function FindingActions({ findings, className, showFix = true }: { findin
     : damage
       ? "An earlier AI fix changed this photo. Next: open the photo, compare the Versions and Restore the one before the fix."
       : humanWhy === "autohdr-editor"
-        ? humanLine?.howTo
-          ? `Free in AutoHDR's editor: ${humanLine.howTo}`
-          : HUMAN_CALL_LABEL["autohdr-editor"]
+        ? `${humanLine?.howTo ? `Free in AutoHDR's editor: ${humanLine.howTo}` : HUMAN_CALL_LABEL["autohdr-editor"]} Then press Fixed in AutoHDR.`
         : humanWhy
           ? `${HUMAN_CALL_LABEL[humanWhy]} ${NEXT_STEP[humanWhy] ?? ""}`.trim()
           : !data.cart
@@ -149,6 +169,7 @@ export function FindingActions({ findings, className, showFix = true }: { findin
       <button type="button" className={btn} disabled={pending} onClick={() => void decide(open, "FALSE_POSITIVE")} title="The check got it wrong: it is not in the photo. After several of these, the hub fixes this only when the check is very sure.">
         <CircleSlash aria-hidden className="size-3.5" /> Not there
       </button>
+      {inAutohdr && fixedThere(open, `Fixed in AutoHDR${suffix}`)}
       {undoable.length > 0 && (
         <button type="button" className={btn} disabled={pending} onClick={() => void decide(undoable, "OPEN")} title="Reopen the decided ones in this group">
           <Undo2 aria-hidden className="size-3.5" /> Undo {undoable.length}

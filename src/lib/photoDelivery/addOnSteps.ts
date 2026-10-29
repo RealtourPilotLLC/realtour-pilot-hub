@@ -15,7 +15,7 @@
 // originals), and the hold clears by the version label it writes.
 // ---------------------------------------------------------------------------
 
-/** The browser event the send confirmation raises to open an add-on's steps on the Special requests card. */
+/** The browser event the send confirmation raises to open an add-on's steps (Oct 28 2026: under its line in the job's Client requests item, HoldingPanel; the Special requests card is gone). */
 export const OPEN_ADDON_STEPS = "pd-open-addon-steps";
 
 /** The add-on part of a checklist line (delivery.ts GateCheck). */

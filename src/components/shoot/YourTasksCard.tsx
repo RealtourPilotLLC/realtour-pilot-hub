@@ -9,10 +9,10 @@ import { etDateTime } from "@/lib/datetime";
 import { setSmartTaskStatus } from "@/app/actions";
 import type { PhotographerTaskRow } from "@/lib/shoot";
 
-// "Your tasks" — the photographer's own open task rows on My Shoots (mention
+// "Your tasks": the photographer's own open task rows on My Shoots (mention
 // pings, callbacks, work moved onto their plate). Rows arrive already
 // creative-safe from listPhotographerTasks (money-scrubbed, no description /
-// sourceDetail), so this card only renders and completes — the check button
+// sourceDetail), so this card only renders and completes: the Done button
 // reuses setSmartTaskStatus, whose requireTaskAccess admits the assignee.
 // Mobile-first: it lives above the calendar on a phone in the field.
 
@@ -30,6 +30,9 @@ export function YourTasksCard({ tasks, readOnly }: {
   // behind the action drops the row from the server payload for real.
   const [done, setDone] = useState<Set<string>>(new Set());
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Why a Done didn't take (a brand confirmation still waiting on editors, a
+  // delivery card that moved): said under that row, never silently struck.
+  const [said, setSaid] = useState<Record<string, string>>({});
   const [, start] = useTransition();
   // EVERY hook runs before the empty-list return below. A photographer whose
   // last task closes goes 1 row -> 0 rows inside one mount, and a hook placed
@@ -42,13 +45,19 @@ export function YourTasksCard({ tasks, readOnly }: {
   const complete = (id: string) => {
     setDone((s) => new Set(s).add(id));
     setBusyId(id);
+    setSaid((m) => { const n = { ...m }; delete n[id]; return n; });
+    const undo = (why: string) => {
+      setDone((s) => { const n = new Set(s); n.delete(id); return n; });
+      setSaid((m) => ({ ...m, [id]: why }));
+    };
     start(async () => {
       try {
-        await setSmartTaskStatus(id, "COMPLETED");
-        router.refresh();
+        const r = await setSmartTaskStatus(id, "COMPLETED");
+        if (r && !r.ok) undo(r.message);
+        else router.refresh();
       } catch {
-        // The guard said no (or the network dropped) — un-strike the row.
-        setDone((s) => { const n = new Set(s); n.delete(id); return n; });
+        // The guard said no (or the network dropped): un-strike the row.
+        undo("That didn't save. Try again.");
       } finally {
         setBusyId(null);
       }
@@ -68,23 +77,7 @@ export function YourTasksCard({ tasks, readOnly }: {
           const noteHref = t.summary?.match(NOTE_LINK)?.[1] ?? null;
           const summaryText = noteHref ? (t.summary ?? "").replace(NOTE_LINK, "").trim() : t.summary;
           return (
-            <li key={t.id} className="flex items-start gap-2.5">
-              {!readOnly && (
-                <button
-                  onClick={() => complete(t.id)}
-                  disabled={isDone}
-                  aria-label={`Mark “${t.title}” done`}
-                  title="Mark done"
-                  className={cn(
-                    "mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border transition-colors",
-                    isDone
-                      ? "border-success-action bg-success-action text-white"
-                      : "border-border text-transparent hover:border-success hover:text-success",
-                  )}
-                >
-                  {busyId === t.id ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3" />}
-                </button>
-              )}
+            <li key={t.id} className="flex items-start gap-2.5" data-your-task={t.id}>
               <div className="min-w-0 flex-1">
                 <p className={cn("text-sm font-medium leading-snug", isDone && "text-muted line-through")}>
                   {t.title}
@@ -127,7 +120,30 @@ export function YourTasksCard({ tasks, readOnly }: {
                     </Link>
                   )}
                 </div>
+                {said[t.id] && <p role="status" className="mt-1 text-xs text-danger" data-task-said>{said[t.id]}</p>}
               </div>
+              {/* A REAL DONE BUTTON (Jordan, Oct 28 2026: "make sure every task and
+                  assignment has an actionable button"). It was a 20px empty
+                  circle a thumb in the field could miss: now a labelled 44px
+                  button on the right. */}
+              {!readOnly && (
+                <button
+                  type="button"
+                  onClick={() => complete(t.id)}
+                  disabled={isDone}
+                  aria-label={`Mark “${t.title}” done`}
+                  data-task-done={t.id}
+                  className={cn(
+                    "inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg border px-3 text-sm font-medium transition-colors",
+                    isDone
+                      ? "border-success-action bg-success-action text-white"
+                      : "border-border text-foreground hover:border-success hover:text-success",
+                  )}
+                >
+                  {busyId === t.id ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />}
+                  Done
+                </button>
+              )}
             </li>
           );
         })}

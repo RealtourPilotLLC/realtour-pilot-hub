@@ -138,6 +138,9 @@ async function main() {
   // The client's asks (the photographer's wrap-up notes are filed as asks too, source "wrapup": not counted here).
   const openAsks = (projectId: string) => prisma.clientAsk.findMany({ where: { projectId, state: "OPEN", kind: "SPECIAL_REQUEST", source: { in: ["text", "email", "call", "staff"] } }, orderBy: { askedAt: "asc" } });
   const issuesOf = (briefId: string) => prisma.revisionIssue.count({ where: { sourceId: { startsWith: `${briefId}:` } } });
+  // Oct 28 2026 (Kyle: every client request in ONE "Client requests" item): a request's panel line is a line of that item.
+  type View = ReturnType<typeof H.holdingFor>;
+  const lineOf = (v: View, askId: string | undefined) => v.items.flatMap((x) => x.requests ?? []).find((l) => !!askId && l.askIds.includes(askId));
   const holdingOf = async (jobId: string, projectId: string) => {
     const gate = await delivery.deliveryGate(jobId);
     const stage = (await prisma.photoJob.findUniqueOrThrow({ where: { id: jobId } })).stage;
@@ -215,7 +218,7 @@ async function main() {
   const hB = await holdingOf(L.job.id, L.project.id);
   const lineB = hB.gate.checks.find((x) => x.askId === office?.id);
   c.ok("'What's holding this': 'Question for Jordan or Kyle: …', waiting on Jordan or Kyle, settled not 'fixed'", !!lineB && /^Question for Jordan or Kyle: Virtually stage the upper patio \(photo 38\)\./.test(lineB.label) && lineB.hold === true && lineB.waitingOn === "Waiting on Jordan or Kyle" && lineB.doneLabel === "Settled with the client", lineB?.label);
-  const viewB = hB.view.items.find((x) => x.key === `ask:${office?.id}`);
+  const viewB = lineOf(hB.view, office?.id);
   c.ok("…the panel line says who answers it, and its button", !!viewB && viewB.waitingOn === "Waiting on Jordan or Kyle" && viewB.action?.kind === "ask" && viewB.action.label === "Settled with the client");
   c.ok("…with everything they said", !!viewB?.said && viewB.said.text.includes("virtually stage the upper patio"));
   c.ok("the timeline says where it went", !!(await prisma.activity.findFirst({ where: { projectId: L.project.id, body: { contains: "about the photos went to the photo job" } } })));
@@ -271,7 +274,7 @@ async function main() {
   const asksX = await openAsks(X.project.id);
   c.ok("the photo job: one ask, 'Restage photo 11 …', with everything they said; not filed twice", asksX.length === 1 && asksX[0].medium === "photo" && /^Restage photo 11 with a small dining table/.test(asksX[0].summary ?? "") && asksX[0].text === mixed, asksX.map((a) => a.summary).join(" | "));
   const hX = await holdingOf(X.job.id, X.project.id);
-  const viewX = hX.view.items.find((x) => x.key === `ask:${asksX[0]?.id}`);
+  const viewX = lineOf(hX.view, asksX[0]?.id);
   c.ok("…'Client asked: Restage photo 11 …' waiting on Kyle, Done (fixed), and 'Everything they said' holds the whole message", !!viewX && /^Client asked: Restage photo 11/.test(viewX.text) && viewX.waitingOn === "Waiting on Kyle" && viewX.action?.kind === "ask" && viewX.action.label === "Done (fixed)" && viewX.said?.text === mixed);
   c.ok("…and the photos reopen for it", (await prisma.photoJob.findUniqueOrThrow({ where: { id: X.job.id } })).stage === "REVISION_REQUESTED");
 
@@ -288,7 +291,8 @@ async function main() {
   const asksR = await openAsks(R.project.id);
   c.ok("an office question (scope or price) on the photo job, for Jordan or Kyle", asksR.length === 1 && (asksR[0].dedupeKey ?? "").startsWith(`${M.PHOTO_OFFICE_KEY_PREFIX}${R.project.id}:12`) && /Not on the order/.test(asksR[0].summary ?? ""), asksR.map((a) => `${a.dedupeKey} ${a.summary}`).join(" | "));
   const hR = await holdingOf(R.job.id, R.project.id);
-  c.ok("…'Question for Jordan or Kyle', waiting on Jordan or Kyle", hR.view.items.some((x) => x.key === `ask:${asksR[0]?.id}` && /^Question for Jordan or Kyle:/.test(x.text) && x.waitingOn === "Waiting on Jordan or Kyle"));
+  const lineR = lineOf(hR.view, asksR[0]?.id);
+  c.ok("…'Question for Jordan or Kyle', waiting on Jordan or Kyle", !!lineR && /^Question for Jordan or Kyle:/.test(lineR.text) && lineR.waitingOn === "Waiting on Jordan or Kyle");
 
   // =========================================================================
   c.head("5 · an unclear ask: never takes over the video card; shown in both places, labelled");
@@ -310,7 +314,7 @@ async function main() {
   const asksU = await openAsks(U.project.id);
   c.ok("the photo side: the same item, labelled, never dropped", asksU.length === 1 && asksU[0].medium === "unclear" && (asksU[0].dedupeKey ?? "").startsWith(M.PHOTO_SHARED_KEY_PREFIX));
   const hU = await holdingOf(U.job.id, U.project.id);
-  c.ok("…'Client asked (not clear if photos or video): Brighten it a bit'", hU.view.items.some((x) => x.key === `ask:${asksU[0]?.id}` && /^Client asked \(not clear if photos or video\): Brighten it a bit/.test(x.text)));
+  c.ok("…'Client asked (not clear if photos or video): Brighten it a bit'", /^Client asked \(not clear if photos or video\): Brighten it a bit/.test(lineOf(hU.view, asksU[0]?.id)?.text ?? ""));
 
   // =========================================================================
   c.head("6 · a video-only order: every word is the video's ('the picture is shaky')");

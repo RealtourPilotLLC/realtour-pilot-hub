@@ -2,6 +2,7 @@ import "server-only";
 import path from "path";
 import { randomBytes } from "crypto";
 import { prisma } from "@/lib/prisma";
+import { etDayKey } from "@/lib/datetime";
 import { STORAGE_PREFIX, withinStorage } from "@/lib/storage";
 import { dropboxDownload, dropboxUpload } from "@/lib/integrations/dropbox";
 import { brandFolderPath, ensureClientBrandFolder } from "@/lib/clientFolders";
@@ -112,7 +113,7 @@ async function bellOffice(m: MonthRow, what: string): Promise<void> {
       title: `Creative brief — ${client?.name ?? "a client"}`,
       body: `${monthName(m.monthKey)}: ${what}`,
       href, targets,
-      dedupeKey: `content-brief-${m.id}-${new Date().toISOString().slice(0, 10)}`,
+      dedupeKey: `content-brief-${m.id}-${etDayKey(new Date())}`, // once per ET day (Oct 28 2026); the UTC date turned at 8 PM ET
     });
   } catch { /* the bell is best-effort; the brief is on the client file either way */ }
 }

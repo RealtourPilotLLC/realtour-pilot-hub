@@ -9,7 +9,7 @@ import { PhotoImg } from "./PhotoImg";
 import { FindingActions } from "./FindingActions";
 import { StraightenButtons } from "./EditTools";
 import { photoTitle, useJob } from "./JobContext";
-import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, groupFindings, isQueuedGroup, plural, type FindingGroup } from "./format";
+import { RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, decidedLine, findingStatusLabel, groupFindings, isQueuedGroup, plural, type FindingGroup } from "./format";
 import type { FindingView } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -24,10 +24,11 @@ import type { FindingView } from "./types";
 
 const LIVE = new Set(["OPEN", "APPROVED_FIX", "FIXING"]);
 
-function StatusChip({ status }: { status: string }) {
+function StatusChip({ f }: { f: { status: string; statusReason?: string | null } }) {
+  const status = f.status;
   if (status === "OPEN") return null;
   const tone = status === "FIXED" || status === "FALSE_POSITIVE" ? "text-success" : status === "APPROVED_FIX" || status === "FIXING" ? "text-brand" : "text-muted";
-  return <span className={cn("text-[12px] font-medium", tone)}>{FINDING_STATUS_LABEL[status] ?? status}</span>;
+  return <span className={cn("text-[12px] font-medium", tone)}>{findingStatusLabel(f)}</span>;
 }
 
 function GroupCard({ g, low = false }: { g: FindingGroup; low?: boolean }) {
@@ -47,7 +48,7 @@ function GroupCard({ g, low = false }: { g: FindingGroup; low?: boolean }) {
         )}
         {g.findings.some((f) => f.isPermanentFeature) && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[12px] text-muted">Permanent feature</span>}
         {g.holds && <span className="rounded-full bg-danger-action px-2 py-0.5 text-[12px] font-semibold text-white">Holds delivery</span>}
-        {g.sharedStatus && <StatusChip status={g.sharedStatus} />}
+        {g.sharedStatus && <StatusChip f={g.findings.every((f) => findingStatusLabel(f) === findingStatusLabel(first)) ? first : { status: g.sharedStatus }} />}
       </div>
       <p className="mt-1 text-[13px] text-muted">
         {low && "Unsure · "}
@@ -100,12 +101,7 @@ function GroupCard({ g, low = false }: { g: FindingGroup; low?: boolean }) {
         </details>
       )}
       {single && first.status !== "OPEN" && (first.statusReason || first.decidedBy) && (
-        <p className="mt-1.5 text-[13px] text-muted">
-          {FINDING_STATUS_LABEL[first.status] ?? first.status}
-          {first.decidedBy ? ` by ${first.decidedBy}` : ""}
-          {first.decidedAt ? `, ${etMonthDayTime(first.decidedAt)}` : ""}
-          {first.statusReason ? `: ${first.statusReason}` : ""}
-        </p>
+        <p className="mt-1.5 text-[13px] text-muted">{decidedLine(first, etMonthDayTime)}</p>
       )}
       <FindingActions findings={g.findings} className="mt-2.5" />
       <StraightenButtons findings={g.findings} className="mt-1.5" />
@@ -121,7 +117,7 @@ function FindingRow({ f }: { f: FindingView }) {
       <div className="flex flex-wrap items-center gap-1.5">
         <span className={cn("rounded-full px-1.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset", SEVERITY_CLASS[f.severity])}>{SEVERITY_LABEL[f.severity]}</span>
         {p && <span className="font-medium">{photoTitle(p)} · {p.roomLabel}</span>}
-        <StatusChip status={f.status} />
+        <StatusChip f={f} />
       </div>
       <p className="mt-0.5 break-words">{f.specificIssue}</p>
       {f.statusReason && <p className="text-muted">{f.statusReason}</p>}

@@ -4,15 +4,17 @@ import { useState } from "react";
 import { Lightbulb, Loader2, RefreshCw, ArrowUpRight, PackagePlus, Megaphone, Target, Wrench } from "lucide-react";
 import { refreshGrowthPlanAction } from "@/app/trends/advisorActions";
 import type { GrowthPlanData } from "@/lib/growthPlan";
+import { etDaysAgo } from "@/lib/datetime";
 
 // The one card on /trends that says what to DO. Everything above it reports.
 
 type Props = { plan: GrowthPlanData | null; builtAt: string | null; stale: boolean };
 
+// ET calendar days (Oct 28 2026, Kyle: "today" must be EST), not 24-hour
+// blocks: a plan built at 11 PM read "built today" the next morning.
 const when = (iso: string | null) => {
   if (!iso) return null;
-  const d = new Date(iso);
-  const days = Math.floor((Date.now() - d.getTime()) / 86_400_000);
+  const days = etDaysAgo(new Date(iso));
   if (days <= 0) return "built today";
   if (days === 1) return "built yesterday";
   return `built ${days} days ago`;

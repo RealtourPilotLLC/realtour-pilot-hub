@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { jobProfitability, videoEditingCost } from "@/lib/jobProfit";
 import { deliverablesForTitle, isPayExcludedItem, loadManualProductMap } from "@/lib/integrations/aryeo";
 import { canonicalPackage } from "@/lib/packageNames";
+import { etYearStartUtc } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // MARGIN BY PACKAGE — what each product actually earns after the people who
@@ -259,7 +260,7 @@ const dayKey = (d: Date) => d.toISOString().slice(0, 10);
 /** Run the engine and persist the result. Cron-only — never call from a page. */
 export async function rebuildPackageMargins(): Promise<{ built: boolean; jobs: number; error?: string }> {
   const now = new Date();
-  const start = new Date(now.getFullYear(), 0, 1);
+  const start = etYearStartUtc(now); // Jan 1 ET (Oct 28 2026), not the server's UTC Jan 1
   try {
     const data = await packageMargins(start, now);
     await prisma.marginSnapshot.upsert({

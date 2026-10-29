@@ -8,6 +8,7 @@ import { MentionTextarea } from "@/components/mentions/MentionTextarea";
 import { replyCutNote, setCutNoteStatus } from "@/app/review/actions";
 import type { CutNote } from "@/lib/reviewRoom";
 import { byLine, statusLine, whenET } from "@/lib/reviewAttribution";
+import { NoteEditControls, NoteEditHistory } from "@/components/review/NoteEditControls";
 
 // ---------------------------------------------------------------------------
 // The EDITOR's receiving end of the Review Room — rendered on their /edit/[id]
@@ -142,6 +143,8 @@ export function EditFeedback({
                 <span className="mt-0.5 block text-[11px] text-muted-2">
                   {byLine(n.authorName ?? "The reviewer", n.createdAt)}
                   {statusLine(n) ? ` · ${statusLine(n)}` : ""}
+                  {n.edits?.length ? " · edited" : ""}
+                  {n.canChange && openId !== n.id && <span className="text-brand"> · Edit or delete</span>}
                 </span>
               </button>
               {canFix && n.status === "OPEN" && n.kind === "fix" && (
@@ -157,13 +160,19 @@ export function EditFeedback({
 
             {openId === n.id && (
               <div className="mt-2 space-y-2 border-l-2 border-border pl-4">
+                {/* Oct 28 2026: the earlier words, and Edit / Delete for the
+                    note's author (an editor's own notes for the reviewer). */}
+                <NoteEditHistory edits={n.edits} />
+                <NoteEditControls note={n} />
                 {n.replies.map((r) => (
                   <div key={r.id} className="flex items-start gap-1.5 text-sm">
                     <CornerDownRight className="mt-0.5 size-3.5 shrink-0 text-muted-2" />
-                    <div>
+                    <div className="min-w-0 flex-1">
                       <span className="text-xs font-medium text-muted">{r.authorName ?? "Someone"}: </span>
-                      <span className="text-foreground/85">{r.body}</span>
-                      <span className="ml-1.5 text-[10px] text-muted-2">{whenET(r.createdAt)}</span>
+                      <span className="break-words text-foreground/85">{r.body}</span>
+                      <span className="ml-1.5 text-[11px] text-muted-2">{whenET(r.createdAt)}{r.edits?.length ? " · edited" : ""}</span>
+                      <NoteEditHistory edits={r.edits} />
+                      <NoteEditControls note={{ id: r.id, body: r.body, canChange: r.canChange }} label="reply" />
                     </div>
                   </div>
                 ))}

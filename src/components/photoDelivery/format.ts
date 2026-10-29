@@ -7,6 +7,7 @@
 
 import type { FindingView, GroupMeta, IntakeView, Severity } from "./types";
 import { etTime } from "@/lib/datetime";
+import { FIXED_IN_AUTOHDR, isFixedInAutohdr } from "@/lib/photoDelivery/fixedInAutohdr";
 
 export const SEVERITY_ORDER: Record<Severity, number> = { CRITICAL: 3, MAJOR: 2, MINOR: 1 };
 
@@ -61,6 +62,29 @@ export const FINDING_STATUS_LABEL: Record<string, string> = {
 
 /** Human decisions a person can undo (back to OPEN). */
 export const UNDOABLE = new Set(["IGNORED", "OVERRIDDEN", "SENT_TO_EDITOR", "RESHOOT_REQUESTED", "FALSE_POSITIVE"]);
+
+/** UNDOABLE, plus an issue a person marked fixed in AutoHDR (Oct 28 2026, fixedInAutohdr.ts). */
+export function isUndoable(f: { status: string; statusReason?: string | null }): boolean {
+  return UNDOABLE.has(f.status) || isFixedInAutohdr(f);
+}
+
+/** The issue's outcome in a few words: "Fixed in AutoHDR" for a person's own fix there, else FINDING_STATUS_LABEL. */
+export function findingStatusLabel(f: { status: string; statusReason?: string | null }): string {
+  return isFixedInAutohdr(f) ? FIXED_IN_AUTOHDR : FINDING_STATUS_LABEL[f.status] ?? f.status;
+}
+
+/**
+ * "Fixed in AutoHDR by Kyle Smith, Oct 28, 3:04 PM", "Not there by Kyle
+ * Smith: the check got it wrong": the outcome, who, when and why, the reason
+ * left off when it only repeats the outcome. Null for an open issue.
+ */
+export function decidedLine(f: { status: string; statusReason?: string | null; decidedBy?: string | null; decidedAt?: string | null }, when: (iso: string) => string): string | null {
+  if (f.status === "OPEN") return null;
+  const label = findingStatusLabel(f);
+  const raw = (f.statusReason ?? "").trim();
+  const reason = raw.toLowerCase().startsWith(label.toLowerCase()) ? raw.slice(label.length).replace(/^[:.\s]+/, "").trim() : raw;
+  return `${label}${f.decidedBy ? ` by ${f.decidedBy}` : ""}${f.decidedAt ? `, ${when(f.decidedAt)}` : ""}${reason ? `: ${reason}` : ""}`;
+}
 
 export const VERDICT_LABEL: Record<string, string> = {
   PASS: "Pass",

@@ -4,7 +4,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { requirePageAccess } from "@/lib/auth/guards";
 import { homeFor } from "@/lib/auth/access";
 import { getCurrentUser } from "@/lib/auth/user";
-import { etAddDays, etDayKey, etFullDate, etTime } from "@/lib/datetime";
+import { etDayKey, etDayKeyPlus, etFullDate, etTime, etTomorrowKey } from "@/lib/datetime";
 import { AutoRefresh } from "@/components/ops/AutoRefresh";
 import { syntheticClientIds } from "@/lib/syntheticClients";
 import { homeRecordHref } from "@/lib/homeRecordScope";
@@ -61,8 +61,10 @@ export default async function YourListPage(props: { searchParams?: Promise<{ tes
     behindState(now).catch((e: unknown): BehindState | null => { console.warn("behindState failed", (e as Error).message); return null; }),
   ]);
   // A New date is a day after today, at most MAX_PUSH_DAYS out (the action checks too).
-  const minDay = etDayKey(etAddDays(now, 1));
-  const maxDay = etDayKey(etAddDays(now, MAX_PUSH_DAYS));
+  // Calendar arithmetic on the ET key (Oct 28 2026): now + 24 h is still today
+  // for the last hour of the 25-hour day in November.
+  const minDay = etTomorrowKey(now);
+  const maxDay = etDayKeyPlus(etDayKey(now), MAX_PUSH_DAYS);
   const mine = !forOps || viewerIsOps;
   return (
     <div>

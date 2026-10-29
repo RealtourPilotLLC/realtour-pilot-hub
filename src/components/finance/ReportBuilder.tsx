@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { etDayKey } from "@/lib/datetime";
 import { useRouter } from "next/navigation";
 import { FileText, Loader2, Trash2 } from "lucide-react";
 import { generateReportAction, deleteReportAction } from "@/app/sales/advisorActions";
@@ -17,13 +18,15 @@ const TYPES = [
   { key: "custom", label: "Custom (describe it below)" },
 ];
 
+// Today, this month and last month are the ET calendar's (Oct 28 2026): the UTC
+// date the presets used turned into tomorrow at 8 PM ET, and on the last
+// evening of a month "This month" became next month.
 function ranges(): { label: string; start: string; end: string }[] {
-  const now = new Date();
-  const y = now.getUTCFullYear();
-  const today = now.toISOString().slice(0, 10);
+  const today = etDayKey(new Date());
+  const [y, mo] = today.split("-").map(Number);
   const mStart = `${today.slice(0, 7)}-01`;
-  const lm = new Date(Date.UTC(y, now.getUTCMonth() - 1, 1));
-  const lmEnd = new Date(Date.UTC(y, now.getUTCMonth(), 0));
+  const lm = new Date(Date.UTC(y, mo - 2, 1));
+  const lmEnd = new Date(Date.UTC(y, mo - 1, 0));
   return [
     { label: "Year to date", start: `${y}-01-01`, end: today },
     { label: "This month", start: mStart, end: today },

@@ -10,7 +10,6 @@ import { CoveragePanel } from "./CoveragePanel";
 import { Lightbox } from "./Lightbox";
 import { DeliverPanel } from "./DeliverPanel";
 import { HoldingPanel } from "./HoldingPanel";
-import { SpecialRequests } from "./SpecialRequests";
 import type { JobDetail, Viewer } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -35,10 +34,11 @@ export function JobWorkspace({ data, viewer, initialTab, initialPhoto, history, 
   const tab = initialTab === "files" ? "activity" : initialTab === "cart" && viewer.readOnly ? "issues" : initialTab;
   return (
     <JobProvider data={data} viewer={viewer} mode="workspace" initialTab={tab} initialPhoto={initialPhoto}>
-      {/* Oct 22 2026: what holds this job, first (HoldingPanel). */}
+      {/* Oct 22 2026: what holds this job, first (HoldingPanel). Oct 28 2026 (Kyle: the same
+          request showed twice): the Special requests card that stood above it is gone; every
+          client request (lot lines, staging, what the client asked) is ONE "Client requests"
+          item in it, each request once, with the add-on's steps under its line. */}
       <div className="mb-4 space-y-4">
-        {/* Oct 23 2026 (huddle item 7): the special requests first: lot lines, staging, what the client asked. */}
-        <SpecialRequests />
         <HoldingPanel />
         {lead}
       </div>

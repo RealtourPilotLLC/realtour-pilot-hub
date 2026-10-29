@@ -1,6 +1,7 @@
 import "server-only";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
+import { etDayKey } from "@/lib/datetime";
 import { createCommTask, mergeIntoExistingTask, closeObsoleteTasks, revisionPriority } from "@/lib/tasks";
 import { checkedCommProject } from "@/lib/commProject";
 import { routeCommTask } from "@/lib/brain";
@@ -573,7 +574,11 @@ export async function recordClientCommunication(opts: {
         // put the same ask on 811 Little Shiloh Rd's brief twice, 9 s apart.
         const body = `Client request (${opts.source ?? "comms"}): ${clip(opts.text, 280)}`;
         const already = await prisma.activity.findFirst({ where: { projectId: anchorProjectId, type: "SPECIAL_REQUEST", body, createdAt: { gte: new Date(Date.now() - 14 * 86_400_000) } }, select: { id: true } });
-        if (!already) await prisma.activity.create({ data: { projectId: anchorProjectId, type: "SPECIAL_REQUEST", body } });
+        // Oct 28 2026 (lib/requestPlacement): a request a person took off this
+        // job ("Not for this project") does not come back on its brief when the
+        // same message is read again.
+        const takenOff = !already && !!opts.clientId && (await import("@/lib/requestPlacement").then((m) => m.messageTakenOff(opts.clientId!, anchorProjectId!, opts.text)).catch(() => false));
+        if (!already && !takenOff) await prisma.activity.create({ data: { projectId: anchorProjectId, type: "SPECIAL_REQUEST", body } });
       }
       // A SONG FOR A VIDEO STILL BEING MADE (Oct 16 2026): Georgiana's
       // SoundCloud link "for the 2625 Wassergass rd listing" reached nobody's
@@ -1226,7 +1231,7 @@ async function runRevisionDetailed(opts: DetailedRevisionOpts, receiptTx?: { db:
         // Day-suffixed: the revision TASK id is stable per project (deduped),
         // so a SECOND round's ping collided with the first and was silently
         // swallowed (audit). Same-day repeats stay quiet via wasAlreadyOpen.
-        dedupeKey: `rev-${taskId}-${new Date().toISOString().slice(0, 10)}`,
+        dedupeKey: `rev-${taskId}-${etDayKey(new Date())}`, // once per ET day (Oct 28 2026); the UTC date turned at 8 PM ET
       });
     } catch { /* non-fatal */ }
   }
@@ -1559,7 +1564,7 @@ export async function resolveRevision(projectId: string, opts: { includePhotoLan
       title: `Revision resolved — ${(project?.title || "this job").split(",")[0].trim()}`,
       href: `/projects/${projectId}`,
       targets,
-      dedupeKey: `revres-${projectId}-${new Date().toISOString().slice(0, 10)}`,
+      dedupeKey: `revres-${projectId}-${etDayKey(new Date())}`, // once per ET day (Oct 28 2026); the UTC date turned at 8 PM ET
     });
   } catch { /* non-fatal */ }
 }

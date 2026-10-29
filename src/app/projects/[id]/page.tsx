@@ -299,6 +299,39 @@ export default async function ProjectPage({
     { label: "Final Video", url: dropboxWebUrl(folders.finalVideo) },
   ];
 
+  // The activity feed, newest first; what is older than 10 days folds (below).
+  const olderThan = Date.now() - 10 * 24 * 60 * 60_000;
+  const recentActivities = project.activities.filter((a) => a.createdAt.getTime() >= olderThan);
+  const olderActivities = project.activities.filter((a) => a.createdAt.getTime() < olderThan);
+  const activityRow = (a: (typeof project.activities)[number]) => {
+    const meta = ACTIVITY_ICON[a.type] ?? ACTIVITY_ICON.NOTE;
+    const Icon = meta.icon;
+    // The feed replays the OpenPhone/Gmail thread verbatim, which is
+    // where per-product pricing actually reaches this page — "$50
+    // per room", "exterior only would be $200". Redacting the figure
+    // keeps the conversation Kyle needs.
+    const body = scrub(a.body);
+    return (
+      <li key={a.id} className="flex gap-3">
+        <span
+          className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full"
+          style={{ backgroundColor: `${meta.color}1a`, color: ink(meta.color) }}
+        >
+          <Icon className="size-3.5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className={body ? "text-sm text-foreground/90" : "text-sm italic text-muted"}>
+            {body || HELD_BACK}
+          </div>
+          <div className="mt-0.5 text-xs text-muted">
+            {a.author?.name ?? "System"} ·{" "}
+            {formatDistanceToNow(a.createdAt, { addSuffix: true })}
+          </div>
+        </div>
+      </li>
+    );
+  };
+
   return (
     <div className="mx-auto max-w-6xl p-4 sm:p-6">
       {/* In-app this walks the history (BackLink); a cold open — a Slack or
@@ -880,36 +913,28 @@ export default async function ProjectPage({
           {/* Activity */}
           <Section icon={History} title="Activity & notes" bodyClassName="space-y-4">
             <ActivityComposer projectId={project.id} readOnly={!!viewer?.impersonating} />
-            <ol className="space-y-3">
-              {project.activities.map((a) => {
-                const meta = ACTIVITY_ICON[a.type] ?? ACTIVITY_ICON.NOTE;
-                const Icon = meta.icon;
-                // The feed replays the OpenPhone/Gmail thread verbatim, which is
-                // where per-product pricing actually reaches this page — "$50
-                // per room", "exterior only would be $200". Redacting the figure
-                // keeps the conversation Kyle needs.
-                const body = scrub(a.body);
-                return (
-                  <li key={a.id} className="flex gap-3">
-                    <span
-                      className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full"
-                      style={{ backgroundColor: `${meta.color}1a`, color: ink(meta.color) }}
-                    >
-                      <Icon className="size-3.5" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className={body ? "text-sm text-foreground/90" : "text-sm italic text-muted"}>
-                        {body || HELD_BACK}
-                      </div>
-                      <div className="mt-0.5 text-xs text-muted">
-                        {a.author?.name ?? "System"} ·{" "}
-                        {formatDistanceToNow(a.createdAt, { addSuffix: true })}
-                      </div>
-                    </div>
-                  </li>
-                );
-              })}
-            </ol>
+            {/* OLDER THAN 10 DAYS, FOLDED (Jordan, Oct 28 2026: "any communications
+                older than 10 days should be collapsed. Like georgiana, she has so
+                many messages in her job page you have to scroll a lot"). The feed
+                is newest first, so the recent part stays open on top. */}
+            {recentActivities.length > 0 ? (
+              <ol className="space-y-3">
+                {recentActivities.map(activityRow)}
+              </ol>
+            ) : olderActivities.length > 0 ? (
+              <p className="text-sm text-muted">Nothing in the last 10 days.</p>
+            ) : null}
+            {olderActivities.length > 0 && (
+              <details className="group rounded-lg border border-border" data-older-activity={olderActivities.length}>
+                <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-sm text-muted hover:text-foreground">
+                  <ChevronDown aria-hidden className="size-4 shrink-0 transition-transform group-open:rotate-180" />
+                  Earlier, more than 10 days ago ({olderActivities.length})
+                </summary>
+                <ol className="space-y-3 border-t border-border p-3">
+                  {olderActivities.map(activityRow)}
+                </ol>
+              </details>
+            )}
             {project.activities.length >= ACTIVITY_SHOWN && (
               <p className="text-xs text-muted">The newest {ACTIVITY_SHOWN} are shown.</p>
             )}

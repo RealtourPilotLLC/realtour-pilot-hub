@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { etDayKey } from "@/lib/datetime";
 import { phoneKey, callTranscriptText, openPhoneRequestAuthorized, ourOpenPhoneNumberKeys, type OpTranscriptLine } from "@/lib/integrations/openphone";
 import { resolveClientByPhones, resolveSenderName, findActiveProjectByText, findClientProjectByText } from "@/lib/contacts";
 import { recordClientCommunication } from "@/lib/comms";
@@ -1147,7 +1148,7 @@ export async function upsertPhoneLeadTask(opts: {
       title: `New lead — ${who}`,
       href: "/queue",
       targets: [{ roles: ["OWNER", "ADMIN"] }],
-      dedupeKey: `lead-op-${opts.phone}-${new Date().toISOString().slice(0, 10)}`,
+      dedupeKey: `lead-op-${opts.phone}-${etDayKey(new Date())}`, // once per ET day (Oct 28 2026); the UTC date turned at 8 PM ET
     });
   } catch { /* never break lead capture on a notify failure */ }
 }

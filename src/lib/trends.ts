@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etDayKey, etDayStartUtc } from "@/lib/datetime";
+import { etDayKey, etDayStartUtc, etYearStartUtc } from "@/lib/datetime";
 import { DELIVERABLE_META } from "@/lib/pipeline";
 import { canonicalPackage } from "@/lib/packageNames";
 import type { DeliverableType } from "@prisma/client";
@@ -390,7 +390,8 @@ export async function serviceTrends(): Promise<{
   totalOrders: number;
   exactRevenue: boolean;
 }> {
-  const yearStart = new Date(new Date().getFullYear(), 0, 1);
+  // Jan 1 ET (Oct 28 2026): `new Date(year, 0, 1)` on the server is UTC midnight, 7 PM ET on Dec 31.
+  const yearStart = etYearStartUtc();
   const projects = await prisma.project.findMany({
     where: { orderedAt: { gte: new Date(Date.now() - 800 * DAY) } },
     select: {
@@ -596,7 +597,7 @@ export async function topSpenders(limit = 20): Promise<{
   concentrationTop10: number;
   ytdTotal: number;
 }> {
-  const yearStart = new Date(new Date().getFullYear(), 0, 1);
+  const yearStart = etYearStartUtc(); // Jan 1 ET (Oct 28 2026)
   const projects = await prisma.project.findMany({
     where: { orderedAt: { not: null }, clientId: { not: undefined } },
     select: {

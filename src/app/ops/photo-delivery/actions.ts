@@ -72,6 +72,16 @@ export async function decideFindingsAction(input: { jobId: string; findingIds: s
     const { by } = await actor();
     const r = await decideFindings({ jobId: input.jobId, findingIds: Array.isArray(input.findingIds) ? input.findingIds : [], status: input.status, reason: typeof input.reason === "string" ? input.reason : null, by });
     if (r.ok) refresh(input.jobId);
+    // Oct 28 2026 (fixedInAutohdr.ts): fixed in AutoHDR's own editor, so the hub
+    // reads AutoHDR's current versions again (free), after the answer.
+    if (r.ok && input.status === "FIXED_IN_AUTOHDR") {
+      const jobId = input.jobId;
+      const go = async () => {
+        const { syncHeads } = await import("@/lib/photoDelivery/versions");
+        await syncHeads(jobId, { by }).catch(() => null);
+      };
+      try { after(go); } catch { void go().catch(() => {}); }
+    }
     return { ok: r.ok, message: r.message };
   } catch (e) {
     return failed("decision", e);
@@ -138,6 +148,56 @@ export async function confirmAddOnAction(jobId: string, addOn: string, note: str
     return r;
   } catch (e) {
     return failed("confirm the add-on", e);
+  }
+}
+
+/**
+ * Oct 28 2026 (Kyle on 40 N Perry St: "If it's the same request, then it
+ * should be combined into one"): one line of the job's Client requests
+ * (holding.clientRequestLines) settles every place it was asked at once. With
+ * `addOn`: the add-on is confirmed with the note first (as "Lot lines added"
+ * always is), then each request that only asked for it again is marked done.
+ * Without: each request is Done, or answered with the note. Stops at the
+ * first that fails and says so.
+ */
+export async function settleClientRequestAction(jobId: string, input: { askIds: string[]; how: "done" | "answered"; note?: string | null; addOn?: string | null }): Promise<ActionResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  const askIds = Array.isArray(input?.askIds) ? [...new Set(input.askIds.map(String))] : [];
+  const addOn = input?.addOn ? String(input.addOn) : null;
+  const how = input?.how === "answered" ? "answered" : "done";
+  const note = typeof input?.note === "string" ? input.note : "";
+  if (!ID.test(String(jobId)) || askIds.length > 20 || askIds.some((id) => !ID.test(id)) || (addOn && !/^[a-z_]{3,40}$/.test(addOn)) || (!addOn && !askIds.length)) {
+    return { ok: false, message: "That request is not valid." };
+  }
+  try {
+    const { by } = await actor();
+    let message = "";
+    if (addOn) {
+      const { confirmAddOn } = await import("@/lib/photoDelivery/addOns");
+      const r = await confirmAddOn(jobId, addOn, note, by);
+      if (!r.ok) return r;
+      message = r.message;
+    }
+    const { settleClientAsked } = await import("@/lib/photoDelivery/clientAsked");
+    let settled = 0;
+    for (const askId of askIds) {
+      const r = await settleClientAsked({ jobId, askId, how: addOn ? "done" : how, note: addOn ? `Done with the add-on: ${note}` : note, by });
+      if (!r.ok) {
+        if (addOn || settled) refresh(jobId);
+        return { ok: false, message: `${message ? `${message} ` : ""}${settled ? `${settled} of ${askIds.length} marked. ` : ""}${r.message}`.trim() };
+      }
+      settled++;
+    }
+    refresh(jobId);
+    const what = how === "answered" && !addOn ? "Answered and set aside" : "Marked done";
+    const asks = settled ? (addOn ? ` The client's request for it is marked done too.` : settled > 1 ? `${what}, everywhere it was asked (${settled}).` : `${what}.`) : "";
+    return { ok: true, message: `${message}${asks}`.trim() };
+  } catch (e) {
+    return failed("settle the request", e);
   }
 }
 

@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { CheckCircle2, Undo2, Loader2, ChevronDown, X } from "lucide-react";
 import { restoreOwnerTodo } from "@/app/day/actions";
-import { etDayKey } from "@/lib/datetime";
+import { etDayKey, etYesterdayKey } from "@/lib/datetime";
 
 // WHAT YOU FINISHED — and the way back out of it.
 //
@@ -28,7 +28,7 @@ export type FinishedRow = {
 const dayLabel = (d: Date | null) => {
   if (!d) return "";
   const today = etDayKey(new Date());
-  const yest = etDayKey(new Date(Date.now() - 86_400_000));
+  const yest = etYesterdayKey(); // the ET key before today's, not 24 hours ago (clock-change days, Oct 28 2026)
   const k = etDayKey(d);
   if (k === today) return "Today";
   if (k === yest) return "Yesterday";
