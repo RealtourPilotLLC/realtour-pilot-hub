@@ -401,6 +401,46 @@ async function main() {
     c.ok("all held for creative review: one plain line naming James, and no upload button anywhere above the row",
       text(fixHeld).includes("1 note is with James for a creative review. You'll get it here once they've turned it into changes.") && text(header(johnHeld)).includes("with James for a creative review") && !fixHeld.includes("data-upload-trigger") && !actions(johnHeld).includes("data-upload-trigger") && !text(johnHeld).includes("Client feels it is flat"), text(fixHeld).slice(0, 300));
 
+    // =======================================================================
+    c.head("§10 · their editing preferences, sorted (Oct 29 2026)");
+    // =======================================================================
+    // Jordan: "The working preferences shown in the editor brief should only
+    // be editing related ... summarized and organized and shown in full."
+    // A sort on file (lib/workingPrefs) replaces the keyword reading: only the
+    // editing group, under its topics, every line whole.
+    const wp = await import("@/lib/workingPrefs");
+    const longLine = "Open every video on her logo animation over the brand green #0B3D2E, hold it for two seconds, then cut straight to her on camera; end on the same logo with her phone number 610-555-0142 and website danamaple.example, never a stock end card, and keep the lower thirds in Lora.";
+    const writeSort = async (hash: string) => prisma.appSetting.upsert({
+      where: { key: `working_prefs:${shell.clientId}` },
+      create: { key: `working_prefs:${shell.clientId}`, value: "" },
+      update: {},
+    }).then(() => prisma.appSetting.update({ where: { key: `working_prefs:${shell.clientId}` }, data: { value: JSON.stringify({
+      v: 1, hash, at: new Date().toISOString(), by: "drill", model: "drill",
+      editing: [
+        { topic: "Branding and contact details", text: longLine },
+        { topic: "Colors and fonts", text: "Fonts: Montserrat and Lora." },
+        { topic: "Branding and contact details", text: "Add her animated logo at the end of every video." },
+      ],
+      shooting: [{ text: "Capture a shot from the front of the living room looking straight toward the back of the home." }],
+      communication: [{ text: "Text her, never call, between 9 AM and 1 PM on weekdays." }],
+      other: [{ text: "Her sellers page is danamaple.example/sellers." }],
+    }) } }));
+    const src0 = await wp.workingPrefSources(shell.clientId);
+    c.ok("the sort reads the customer note whole and leaves our fee out", src0.sources.some((x) => x.text.includes("Always add her animated logo at the end.")) && !JSON.stringify(src0.sources).includes("$175"), JSON.stringify(src0.sources).slice(0, 300));
+    c.ok("before any sort: stale, and the brief keeps the keyword reading", (await wp.sortedWorkingPrefs(shell.clientId)).state === "stale" && block(make1, /data-their-words/).includes('data-prefs-sorted="no"'));
+    await writeSort(src0.hash);
+    c.ok("with the sort on file: ready", (await wp.sortedWorkingPrefs(shell.clientId)).state === "ready");
+    const kimSorted = await view("Kim", monthly.id, { output: outs[0].id });
+    const words = block(block(kimSorted, new RegExp(`<article[^>]*id="brief-${outs[0].id}"`)), /data-their-words/);
+    c.ok("the brief says \"Their editing preferences\" (theirs wins), sorted", words.includes('data-prefs-sorted="yes"') && text(words).includes("Their editing preferences") && text(words).includes("theirs wins"), text(words).slice(0, 200));
+    c.ok("under their topics, in order: Branding and contact details, then Colors and fonts", [...words.matchAll(/data-edit-topic="([^"]+)"/g)].map((m) => m[1]).join(" | ") === "Branding and contact details | Colors and fonts");
+    c.ok("every line whole, the long one too (no 220-character cut)", text(words).includes(longLine) && text(words).includes("Add her animated logo at the end of every video."), String(text(words).length));
+    c.ok("nothing about the shoot, the schedule or anything else reaches the editor", !text(kimSorted).includes("front of the living room") && !text(kimSorted).includes("never call") && !text(kimSorted).includes("sellers page"));
+    c.ok("the order note for this job still shows beside them", text(words).includes("Please keep her on the left third."));
+    c.ok("the Agent Profile card does not list them a second time", count(text(kimSorted), "Add her animated logo at the end of every video.") === 1 && !text(kimSorted).includes("Always add her animated logo at the end."));
+    await prisma.client.update({ where: { id: shell.clientId }, data: { clientPreferences: "Prefers drafts by Thursday." } });
+    c.ok("a note changes: stale again, and the brief keeps showing the last sort meanwhile", (await wp.sortedWorkingPrefs(shell.clientId)).state === "stale" && block(await view("Kim", monthly.id, { output: outs[0].id }), /data-their-words/).includes('data-prefs-sorted="yes"'));
+
     c.ok("nothing was sent: no outbox rows", (await prisma.outboxMessage.count()) === 0);
     c.summary();
   } finally {

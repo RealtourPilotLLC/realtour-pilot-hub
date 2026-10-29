@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { after } from "next/server";
 import {
   Mail, Phone, Building2, IdCard, Package, DollarSign,
   Activity as ActivityIcon, Star, ArrowRight, Camera, Users, Sparkles, CalendarClock,
@@ -13,6 +14,7 @@ import { SegmentBadge } from "@/components/clients/SegmentBadge";
 import { SocialBadge } from "@/components/clients/SocialBadge";
 import { ClientWorkspace } from "@/components/clients/ClientWorkspace";
 import { AgentProfile } from "@/components/clients/AgentProfile";
+import { WorkingPrefsCard } from "@/components/clients/WorkingPrefsCard";
 import { ClientChat } from "@/components/clients/ClientChat";
 import { ClientEmails } from "@/components/clients/ClientEmails";
 import { ClientTodos } from "@/components/clients/ClientTodos";
@@ -63,6 +65,13 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
   // draft" tab, and the last-inbound read that fed it, are gone.
 
   const enrollment = await prisma.contentEnrollment.findUnique({ where: { clientId: client.id }, select: { id: true, overridesJson: true } }).catch(() => null);
+
+  // WORKING PREFERENCES, ORGANIZED (Oct 29 2026): the sorted read; a stale one is redone after this response.
+  const workingPrefs = await import("@/lib/workingPrefs").then((m) => m.sortedWorkingPrefs(client.id)).catch(() => null);
+  if (workingPrefs?.state === "stale") {
+    const clientId = client.id;
+    try { after(() => import("@/lib/workingPrefs").then((m) => m.buildSortedWorkingPrefs(clientId, "client-page")).catch(() => null)); } catch { /* the nightly sweep sorts it */ }
+  }
 
   // Who may flip the per-client notification switches. Same shape as the other
   // owner/admin gates on this hub: middleware already keeps creatives off
@@ -346,6 +355,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
 
         {/* SIDEBAR: agent profile + workspace + open to-dos */}
         <div className="space-y-6">
+          {workingPrefs && <WorkingPrefsCard prefs={workingPrefs.prefs} state={workingPrefs.state} />}
           <AgentProfile
             clientId={client.id}
             clientPreferences={client.clientPreferences ?? ""}

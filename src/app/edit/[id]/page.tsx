@@ -21,6 +21,7 @@ import { BackLink } from "@/components/ui/BackLink";
 import { queueReturnHref } from "@/lib/editingQueueUrl";
 import { Section } from "@/components/ui/Section";
 import { linkify } from "@/components/ui/Markdown";
+import { editingByTopic } from "@/lib/workingPrefsCore";
 import { Button } from "@/components/ui/Action";
 import { getProject, getTeam } from "@/lib/queries";
 import { getCurrentUser } from "@/lib/auth/user";
@@ -1516,16 +1517,31 @@ export default async function EditBriefPage({
         now,
       })
     : [];
+  // THEIR EDITING PREFERENCES, SORTED (Oct 29 2026, Jordan: "The working
+  // preferences shown in the editor brief should only be editing related,
+  // not shooting related or communication related or anything else"; and
+  // "summarized and organized and shown in full"). lib/workingPrefs reads all
+  // five places a preference lives, merges and sorts them; the brief shows
+  // the editing group only, under its topics, never cut short. A sort that is
+  // stale is redone after this response; the older sort shows meanwhile. A
+  // client never sorted yet falls back to the keyword reading below.
+  const sortedPrefs = await import("@/lib/workingPrefs").then((m) => m.sortedWorkingPrefs(project.client.id)).catch(() => null);
+  if (sortedPrefs?.state === "stale") {
+    const clientId = project.client.id;
+    try { after(() => import("@/lib/workingPrefs").then((m) => m.buildSortedWorkingPrefs(clientId, "editor-brief")).catch(() => null)); } catch { /* outside a request: the nightly sweep sorts it */ }
+  }
+  const editTopics = sortedPrefs?.prefs ? editingByTopic(sortedPrefs.prefs, (t) => scrub(t)) : null;
   // ONLY THE TECHNICAL PREFERENCES (lib/editorPrefs): the edit, never the shoot or the relationship.
-  const techTheirPrefs = technicalLines(showTheirPrefs);
-  const techCustomerNote = customerNoteLines.filter(isTechnicalPreference);
-  const techConfirmed = [
+  const techTheirPrefs = editTopics ? null : technicalLines(showTheirPrefs);
+  const techCustomerNote = editTopics ? [] : customerNoteLines.filter(isTechnicalPreference);
+  const techConfirmed = editTopics ? [] : [
     ...(brandBrief?.productionDefaults ?? []).filter(isTechnicalDefault).map((d) => `${d.name}: ${d.text}`),
     ...(brandBrief?.acceptedPreferences ?? []).filter(isTechnicalPreference),
   ];
   // Their video style is whole in the brand card (brandWords), not here too.
-  const hasTechWords = !!(techTheirPrefs || showOrderNote || techConfirmed.length || techCustomerNote.length);
-  const agentForEditor = agent ? { ...agent, style: { ...agent.style, preferences: agent.style.preferences.filter((p) => isTechnicalPreference(p.text)) } } : null;
+  const hasTechWords = !!(editTopics?.length || techTheirPrefs || showOrderNote || techConfirmed.length || techCustomerNote.length);
+  // The sorted list already carries the working profile's edit notes, so the Agent Profile card does not repeat them.
+  const agentForEditor = agent ? { ...agent, style: { ...agent.style, preferences: editTopics ? [] : agent.style.preferences.filter((p) => isTechnicalPreference(p.text)) } } : null;
   // The client's asks, each with its request, so a question names the one it is about.
   const askRows = (tasks: typeof videoRevisionTasks) =>
     tasks.flatMap((t) =>
@@ -2389,8 +2405,13 @@ export default async function EditBriefPage({
                 {/* Their own words about the EDIT only (lib/editorPrefs): where
                     they differ from the house style, theirs wins. */}
                 {hasTechWords && (
-                  <div className="space-y-3 border-t border-border pt-3 text-sm leading-relaxed first:border-t-0 first:pt-0" data-their-words>
-                    <p className="font-medium">In their words <span className="font-normal text-muted">· where this differs from the house style, theirs wins</span></p>
+                  <div className="space-y-3 border-t border-border pt-3 text-sm leading-relaxed first:border-t-0 first:pt-0" data-their-words data-prefs-sorted={editTopics ? "yes" : "no"}>
+                    <p className="font-medium">{editTopics ? "Their editing preferences" : "In their words"} <span className="font-normal text-muted">· where this differs from the house style, theirs wins</span></p>
+                    {editTopics?.map((g) => (
+                      <div key={g.topic} data-edit-topic={g.topic}><p className={LABEL}>{g.topic}</p>
+                        <ul className="mt-0.5 list-disc space-y-0.5 pl-4 text-foreground/90">{g.lines.map((t, i) => <li key={i} className="whitespace-pre-wrap break-words">{linkify(t)}</li>)}</ul>
+                      </div>
+                    ))}
                     {techTheirPrefs && <div><p className={LABEL}>About the edit (their portal)</p><p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{techTheirPrefs}</p></div>}
                     {showOrderNote && <div><p className={LABEL}>On this order</p><p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{showOrderNote}</p></div>}
                     {techCustomerNote.length > 0 && (

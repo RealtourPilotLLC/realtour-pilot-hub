@@ -45,6 +45,14 @@ export async function GET(req: NextRequest) {
     return rebuildAllShootFocusSummaries();
   }, { maxMs: 60_000 });
 
+  // Sort the working preferences of clients with recent or upcoming jobs whose
+  // notes changed (lib/workingPrefs, Oct 29 2026), so an editor's brief and
+  // the client page read a current sort instead of waiting for one.
+  await step("workingPrefs", async () => {
+    const { refreshSortedWorkingPrefs } = await import("@/lib/workingPrefs");
+    return refreshSortedWorkingPrefs(15, 40_000);
+  }, { maxMs: 45_000 });
+
   await finish();
   return NextResponse.json({ ok: true, ...out });
 }
