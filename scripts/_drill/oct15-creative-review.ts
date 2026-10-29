@@ -229,6 +229,39 @@ async function main() {
     c.ok("the editor does not see the open question", (await getRevisionBriefs(Q.projectId, true)).at(-1)!.questions.length === 0);
     nextQuestions = [];
 
+    // THE EDITOR'S CALL (Jordan, Oct 29 2026, 265 Mill Rd: "I would rather this
+    // just goes straight to the editor I shouldn't have to choose the music or
+    // dictate the flow"). Tim's two questions, word for word.
+    const TIM_FLOW = "V1: Client wants a logical walkthrough flow but didn't specify the preferred room order. Jordan — can you confirm the intended sequence (e.g., exterior → entry → main floor → upstairs, etc.) before the recut begins?";
+    const TIM_MUSIC = "V1: Client asked for more upbeat music but didn't name a track or genre. Jordan — please select or approve a replacement track before the editor swaps it.";
+    c.ok("the room order and the track are the editor's call", core.editorsCall(TIM_FLOW) && core.editorsCall(TIM_MUSIC));
+    c.ok("a name, a reference to find, footage, a phone number and new work still need an answer",
+      !core.editorsCall("V1 (agent-info reel): Who is Samantha? Can someone pull the exact reel we made for her so the editor can match the style/format precisely?") &&
+      !core.editorsCall("V1: No footage has been uploaded yet for the second video.") &&
+      !core.editorsCall("Which phone number: the office line or her cell?") &&
+      !core.editorsCall("V1: Should the agent's name be spelled Jon or John in the intro?") &&
+      !core.editorsCall("Creative review (Jordan): Client also mentioned needing a reel, a reel was not part of this job. Is this a new order?"));
+    c.ok("the editor reads it as theirs, with nobody named", core.editorCallWords(TIM_MUSIC) === "V1: Client asked for more upbeat music but didn't name a track or genre. Your call." && !/Jordan/.test(core.editorCallWords(TIM_FLOW)));
+    const T2 = await mk("Tim Flow TEST");
+    nextItems = [
+      item({ area: "Cuts & content", ask: "Recut the video so the rooms follow a logical walkthrough flow", kind: "CORRECTION", quote: "it's not edited in a logical flow" }),
+      item({ area: "Music & sound", ask: "Replace the music with a more upbeat track", kind: "REFINEMENT", quote: "the music choice is kind of boring" }),
+    ];
+    nextQuestions = [TIM_FLOW, TIM_MUSIC];
+    await raiseRevision({ projectId: T2.projectId, clientId: T2.f.clientId, clientName: T2.f.clientName, note: "it's not edited in a logical flow. also, the music choice is kind of boring", source: "openphone", threadRef: "op-tim-1", requestedBy: { name: "Tim", kind: "TEXT" } });
+    const bt = await latestBrief(T2.projectId);
+    c.ok("Tim's ask goes straight to the editor: no creative review, no task for Jordan", core.creativeReviewOf(bt.itemsJson) === null && !(await crTask(bt.id)), bt.itemsJson ?? "");
+    const timView = (await getRevisionBriefs(T2.projectId, true)).at(-1)!;
+    c.ok("the editor sees both changes and both choices as theirs", (await prisma.revisionIssue.count({ where: { projectId: T2.projectId } })) === 2 && timView.questions.length === 0 && timView.editorCalls?.length === 2 && timView.editorCalls.every((q) => q.endsWith("Your call.")));
+    const T3 = await mk("Mixed Questions TEST");
+    nextQuestions = [TIM_MUSIC, "V1: Should the agent's name be spelled Jon or John in the intro?"];
+    await raiseRevision({ projectId: T3.projectId, clientId: T3.f.clientId, clientName: T3.f.clientName, note: "more upbeat music, and fix my name", source: "openphone", threadRef: "op-tim-2", requestedBy: { name: "Tess", kind: "TEXT" } });
+    const b3 = await latestBrief(T3.projectId);
+    const cr3 = core.creativeReviewOf(b3.itemsJson);
+    c.ok("a real question still waits on the reviewer, the music does not", cr3?.state === "OPEN" && cr3.questions.length === 1 && /spelled/.test(cr3.questions[0]) && (JSON.parse(b3.itemsJson ?? "{}") as { editorCalls?: string[] }).editorCalls?.length === 1);
+    c.ok("the brief prompt hands creative choices to the editor", /THE EDITOR MAKES THE CREATIVE CHOICES/.test(briefPrompts.at(-1) ?? "") && /Never a creative choice the client left open/.test(read("src/lib/revisionBrief.ts")));
+    nextQuestions = [];
+
     // A reviewer reopens a creative ask a version claimed fixed.
     const { reopenIssue } = await import("@/lib/revisionIssues");
     const sub2 = await prisma.reviewSubmission.create({ data: { projectId: X.projectId, deliverableId: X.f.deliverableId!, slot: 1, round: 2, status: "PENDING", source: "upload", fileName: "reel-1-v2.mov", submittedByKey: "kim" } });

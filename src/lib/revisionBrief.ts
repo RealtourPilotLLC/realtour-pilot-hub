@@ -10,7 +10,7 @@ import { lockAdvisory } from "@/lib/dbLocks";
 // dynamically below so this module's import graph does not change.
 import type { DueSource, ReopenedClock } from "@/lib/deliveryBoard";
 import { isRequesterKind, type Requester } from "@/lib/reviewAttribution";
-import { ITEM_KINDS, REASON_WORDS, creativeReviewOf, heldPlaceholder, kindOf, type CreativeReviewState, type ItemKind } from "@/lib/creativeReviewCore";
+import { ITEM_KINDS, REASON_WORDS, allNewWork, creativeReviewOf, heldPlaceholder, kindOf, type CreativeReviewState, type ItemKind } from "@/lib/creativeReviewCore";
 import { ITEM_MEDIA, isPhotoOnly, labelWorkOrder, type ItemMedium } from "@/lib/itemMedium";
 
 // ---------------------------------------------------------------------------
@@ -161,7 +161,7 @@ const SCHEMA = {
     },
     questions: {
       type: "array",
-      description: "Anything too vague to start on that somebody has to answer before the work can start. Start each one with what it is about: the photo (\"Photo 38: ...\") or the video (\"V1: ...\"). Questions about the video go to creative review (Jordan); questions about the photos go to the photo desk. Empty if the ask is clear.",
+      description: "Only what nobody in the edit can decide and somebody has to answer before the work can start: a name or spelling, a fact about the house, footage or a reference that has to be found, something only the client can say. Never a creative choice the client left open (which track, the room order, the pacing, the transitions, the look): that is the editor's call, so write it into the item instead. Start each one with what it is about: the photo (\"Photo 38: ...\") or the video (\"V1: ...\"). Questions about the video go to creative review (Jordan); questions about the photos go to the photo desk. Empty if the ask is clear.",
       items: { type: "string" },
     },
   },
@@ -185,7 +185,8 @@ RULES
 10. SAY WHICH VIDEO. When the job has more than one video you are given the list, each with a reference code and its current file name. Match each item to the video(s) the client was talking about and put those codes in "videos" with scope "named". Use "all" only when they plainly meant every one of them. If they never said, scope is "unknown" — an item on the wrong video is worse than one nobody has placed.
 11. NEVER STATE PROPERTY FACTS. Lot lines, property or boundary lines, acreage, easements and survey measurements come only from a recorded plat or survey the client supplies. Never state, estimate or describe where a boundary runs. If the client asks for lot lines or a boundary drawn, the item says to draw them from the plat or survey they send, and that document goes under what the client is sending.
 12. SAY WHAT KIND OF ASK EACH ITEM IS (kind): CORRECTION, REFINEMENT, DIRECTION_UNCLEAR or SCOPE. When the client says they can't tell what is wrong, or names a feeling and not a change, it is DIRECTION_UNCLEAR, however strongly they feel it.
-13. SAY WHAT EACH ITEM IS ABOUT (medium). Many jobs have photos as well as a video, and one message can be about both. A change to a photo (a photo number like "pic 11" or "photo 38", virtual staging, twilight, lot lines, a floor plan, retouching) is "photo", even when the job has one video: it goes to the photo desk, never to the video editor, so never put a photo item on a video. Virtual staging of a photo the client did not order is new work: kind SCOPE, medium "photo".`;
+13. SAY WHAT EACH ITEM IS ABOUT (medium). Many jobs have photos as well as a video, and one message can be about both. A change to a photo (a photo number like "pic 11" or "photo 38", virtual staging, twilight, lot lines, a floor plan, retouching) is "photo", even when the job has one video: it goes to the photo desk, never to the video editor, so never put a photo item on a video. Virtual staging of a photo the client did not order is new work: kind SCOPE, medium "photo".
+14. THE EDITOR MAKES THE CREATIVE CHOICES. When the client names a change but not the exact choice ("more upbeat music", "a logical flow", "faster"), the item gives the choice to the editor: "Replace the music with a more upbeat track (editor's pick)", "Recut in a natural walkthrough order: outside, entry, main floor, upstairs (editor's call on the details)". Never turn such a choice into a question for Jordan.`;
 
 // The client's ask can be long (a 20-minute call). Give the model plenty of
 // room but keep a hard ceiling so one runaway transcript can't blow the request.
@@ -383,7 +384,7 @@ export function outstandingReason(items: ScopedItem[], total: number): string {
 // turn the URGENT revision into what it actually is — a client question for
 // Kyle. The brief stays: the analyser's reading is the audit trail, and the
 // client's words are still on the job.
-async function standDownNonRevision(briefId: string): Promise<void> {
+async function standDownNonRevision(briefId: string, opts: { newWork?: boolean } = {}): Promise<void> {
   try {
     const brief = await prisma.revisionBrief.findUnique({
       where: { id: briefId },
@@ -404,16 +405,27 @@ async function standDownNonRevision(briefId: string): Promise<void> {
 
     // The work becomes a reply, not an edit: same row (so nothing is lost from
     // anyone's board), new type, normal priority, due like any other reply.
+    // Oct 29 2026 (4008 Oakland Rd): every item new work (a new order, a
+    // reshoot, a video the job never had) is the office's to book or quote.
     await prisma.smartTask.update({
       where: { id: task.id },
-      data: {
-        taskType: "client_reply",
-        title: `Client question — ${street}`.slice(0, 120),
-        summary: `${brief.headline ?? "The client asked a question rather than requesting changes"} — answer them; there is nothing to re-edit.`.slice(0, 500),
-        priority: "HIGH",
-        assignedKey: "kyle",
-        reasonCreated: "Read as a revision, but the request contains no edits — re-filed as a client question",
-      },
+      data: opts.newWork
+        ? {
+            taskType: "client_reply",
+            title: `New request — ${street}`.slice(0, 120),
+            summary: `${brief.headline ?? "The client asked for new work"}: new work, not a change to what was delivered. Book or quote it, or answer them; there is nothing to re-edit.`.slice(0, 500),
+            priority: "HIGH",
+            assignedKey: "kyle",
+            reasonCreated: "Read as a revision, but everything asked for is new work — re-filed for the office",
+          }
+        : {
+            taskType: "client_reply",
+            title: `Client question — ${street}`.slice(0, 120),
+            summary: `${brief.headline ?? "The client asked a question rather than requesting changes"} — answer them; there is nothing to re-edit.`.slice(0, 500),
+            priority: "HIGH",
+            assignedKey: "kyle",
+            reasonCreated: "Read as a revision, but the request contains no edits — re-filed as a client question",
+          },
     });
     // The card just left the editor for Kyle's desk, so an editor who held the
     // job only through this ask — and had pressed Start — is not on it any
@@ -440,7 +452,9 @@ async function standDownNonRevision(briefId: string): Promise<void> {
         data: {
           projectId: brief.projectId,
           type: "SYSTEM",
-          body: "Client message contained no edit requests — job returned to Delivered and the message re-filed as a question to answer.",
+          body: opts.newWork
+            ? "Client message asked only for new work (a new order or a reshoot) — job returned to Delivered and the message re-filed for the office."
+            : "Client message contained no edit requests — job returned to Delivered and the message re-filed as a question to answer.",
         },
       }).catch(() => {});
       // Run the same close sweep a real DELIVERED transition runs, or the QC
@@ -976,6 +990,16 @@ async function analyzeBriefOnce(briefId: string, ctx?: AnalyzeCtx): Promise<bool
     // on that verdict, so a delivered job sat in REVISION with an URGENT
     // overdue task and a card reading "Still owed: nothing" (Jordan, Sep 7).
     if (analysis.items.length === 0) await standDownNonRevision(briefId);
+    // ONLY NEW WORK IS NOT A REVISION EITHER (Oct 29 2026, 4008 Oakland Rd: a
+    // reel the job never had, a new order). Every item SCOPE: the office books
+    // or quotes it, so no creative review and no editor issue is filed from
+    // it. New photo work keeps its own road: routePhotoPart already makes it
+    // a question for Jordan or Kyle on the photo job (itemMedium
+    // isOfficeQuestion, Oct 22), holding the photos.
+    else if (allNewWork(analysis.items) && !analysis.items.some(isPhotoOnly)) {
+      await standDownNonRevision(briefId, { newWork: true });
+      return true;
+    }
     await routeToCreativeReview(briefId);
     await ingestBriefIssues(briefId);
     await routePhotoPart(briefId);
@@ -1009,6 +1033,8 @@ export type BriefView = {
   keep: string[];
   references: { what: string; where: string }[];
   questions: string[];
+  /** Oct 29 2026: choices the client left open that are the editor's to make ("Your call."), creativeReviewCore.editorsCall. */
+  editorCalls?: string[];
   done: string[];
   /** slot key → the video's name, so an item scoped to a cut can print
    *  "Video 2 of 4" instead of a cuid the editor has never seen. */
@@ -1097,6 +1123,7 @@ export async function getRevisionBriefs(projectId: string, scrub: boolean): Prom
         .map((r2) => ({ what: clean(r2.what) ?? "", where: clean(r2.where) ?? "" }))
         .filter((r2) => r2.what),
       questions: (parsed.questions ?? []).map((s) => clean(s)).filter((s): s is string => !!s),
+      editorCalls: ((parsed as { editorCalls?: string[] }).editorCalls ?? []).map((s) => clean(s)).filter((s): s is string => !!s),
       done,
       cutNames,
       requestedBy: r.requestedBy ?? null,

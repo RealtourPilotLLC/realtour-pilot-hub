@@ -6,6 +6,8 @@ import { CheckSquare, Loader2, Mail, Maximize2, MessageSquare, Phone, Hash, Squa
 import { etDateTime } from "@/lib/datetime";
 import { getTaskConversation, type SourceMessage } from "@/app/queue/fullViewActions";
 import type { QueueTask } from "@/components/queue/TaskCard";
+import { OlderFold } from "@/components/comms/OlderFold";
+import { splitRecent } from "@/lib/recentWindow";
 
 // "Full view" for a task — a reading surface. The card keeps things scannable;
 // this modal shows EVERYTHING: the complete summary + message text (nothing
@@ -25,6 +27,8 @@ export function TaskFullView({ task, editorView }: { task: QueueTask; editorView
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [conv, setConv] = useState<SourceMessage[] | null>(null);
+  // When the conversation arrived: the seven-day fold counts back from it (lib/recentWindow).
+  const [convAt, setConvAt] = useState(0);
   const [note, setNote] = useState<string | null>(null);
   const [canSee, setCanSee] = useState(false);
 
@@ -43,6 +47,7 @@ export function TaskFullView({ task, editorView }: { task: QueueTask; editorView
         }
         setCanSee(!!r.canSeeConversation);
         setConv(r.conversation ?? null);
+        setConvAt(Date.now());
         setNote(r.note ?? null);
       })
       .catch(() => {
@@ -129,22 +134,37 @@ export function TaskFullView({ task, editorView }: { task: QueueTask; editorView
                   {loading ? (
                     <p className="flex items-center gap-2 text-xs text-muted"><Loader2 className="size-3.5 animate-spin" /> Pulling the thread…</p>
                   ) : conv && conv.length > 0 ? (
-                    <ul className="space-y-2">
-                      {conv.map((m, i) => {
-                        const Icon = CHANNEL_ICON[m.channel] ?? MessageSquare;
-                        return (
-                          <li key={i} className={`rounded-xl border p-2.5 text-sm ${m.fromUs ? "border-brand/25 bg-brand/5" : "border-border bg-surface-2/40"}`}>
-                            <div className="mb-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-2">
-                              <Icon className="size-3" />
-                              <span className="font-medium text-muted">{m.fromUs ? "Us" : m.from}</span>
-                              <span>· {etDateTime(new Date(m.date))}</span>
-                            </div>
-                            {m.subject && <p className="text-xs font-medium text-foreground/80">{m.subject}</p>}
-                            <p className="whitespace-pre-line break-words text-foreground/85">{m.body}</p>
-                          </li>
-                        );
-                      })}
-                    </ul>
+                    // The last seven days open, the rest folded (Jordan and James,
+                    // Oct 29 2026: a client's message history overwhelmed the
+                    // review; lib/recentWindow). The thread reads oldest first,
+                    // so the fold sits above the recent messages.
+                    (() => {
+                      const { recent, older } = splitRecent(conv, (m) => m.date, new Date(convAt));
+                      const list = (rows: SourceMessage[]) => (
+                        <ul className="space-y-2">
+                          {rows.map((m, i) => {
+                            const Icon = CHANNEL_ICON[m.channel] ?? MessageSquare;
+                            return (
+                              <li key={`${m.date}-${i}`} className={`rounded-xl border p-2.5 text-sm ${m.fromUs ? "border-brand/25 bg-brand/5" : "border-border bg-surface-2/40"}`}>
+                                <div className="mb-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-2">
+                                  <Icon className="size-3" />
+                                  <span className="font-medium text-muted">{m.fromUs ? "Us" : m.from}</span>
+                                  <span>· {etDateTime(new Date(m.date))}</span>
+                                </div>
+                                {m.subject && <p className="text-xs font-medium text-foreground/80">{m.subject}</p>}
+                                <p className="whitespace-pre-line break-words text-foreground/85">{m.body}</p>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      );
+                      return (
+                        <div className="space-y-2">
+                          <OlderFold count={older.length} noun="message">{list(older)}</OlderFold>
+                          {list(recent)}
+                        </div>
+                      );
+                    })()
                   ) : (
                     <p className="text-xs text-muted-2">{note ?? "No conversation on record."}</p>
                   )}

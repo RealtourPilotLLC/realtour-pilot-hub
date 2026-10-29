@@ -289,7 +289,7 @@ async function main() {
     editorBrief: "x",
     force: true,
     cullingConfirmed: true,
-    videoInstructions: "COLOR PROFILE: iPhone\nVISION FOR THE EDIT\nfast cuts",
+    videoInstructions: "COLOR PROFILE: iPhone\nVISION FOR THE EDIT\nfast cuts, open on the office sign",
     filmedTopicIds: [f.topicIds[0], f.topicIds[1]],
     topicNotes: notes,
     extraTopics: [{ key: "k1", title: EXTRA_TITLE, note: "kitchen" }],
@@ -712,7 +712,7 @@ async function main() {
   const f10 = await month("Unplanned", { topics: [] });
   const noNote = await finalizeUpload(f10.projectId!, {
     editorBrief: "x", force: true, cullingConfirmed: true,
-    videoInstructions: "COLOR PROFILE: iPhone\nVISION FOR THE EDIT\nfast cuts", filmedTopicIds: [],
+    videoInstructions: "COLOR PROFILE: iPhone\nVISION FOR THE EDIT\nfast cuts, open on the office sign", filmedTopicIds: [],
     extraTopics: [{ key: "u1", title: "Neighborhood coffee" }],
   });
   c.ok("an off-script video without direction is held before the filming report", !!noNote.blocked && /note for every extra video/.test(noNote.blocked)
@@ -721,7 +721,7 @@ async function main() {
     editorBrief: "x",
     force: true,
     cullingConfirmed: true,
-    videoInstructions: "COLOR PROFILE: iPhone\nVISION FOR THE EDIT\nfast cuts",
+    videoInstructions: "COLOR PROFILE: iPhone\nVISION FOR THE EDIT\nfast cuts, open on the office sign",
     filmedTopicIds: [],
     extraTopics: [{ key: "u1", title: "Kitchen reveal", note: "the island shot" }, { key: "u2", title: "Neighborhood coffee", note: "include the storefront arrival" }],
   });

@@ -2,10 +2,11 @@ import "server-only";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
-  CREATIVE_AREAS, REASON_WORDS, changeLines, creativeReviewOf, isItemKind, kindOf, soundsUnclear,
+  CREATIVE_AREAS, REASON_WORDS, changeLines, creativeReviewOf, isItemKind, kindOf, soundsUnclear, splitEditorCalls,
   type CreativeReviewReason, type CreativeReviewState, type ItemKind,
 } from "@/lib/creativeReviewCore";
 import { isPhotoOnly, itemMediumOf, mediumLabel, mediumOfItem } from "@/lib/itemMedium";
+import { dismissedReason, isDismissedSummary } from "@/lib/triage";
 
 // ---------------------------------------------------------------------------
 // THE CREATIVE REVIEW LANE, SERVER HALF (Oct 15 2026). The vocabulary and the
@@ -44,7 +45,7 @@ type BriefItem = {
   /** Oct 22 2026 (lib/itemMedium): a photo item is the photo job's, never held here. */
   medium?: string;
 };
-type ItemsDoc = { items?: BriefItem[]; keep?: string[]; references?: unknown[]; questions?: string[]; photoQuestions?: string[]; creativeReview?: CreativeReviewState; [k: string]: unknown };
+type ItemsDoc = { items?: BriefItem[]; keep?: string[]; references?: unknown[]; questions?: string[]; photoQuestions?: string[]; editorCalls?: string[]; creativeReview?: CreativeReviewState; [k: string]: unknown };
 
 const parseDoc = (s: string | null | undefined): ItemsDoc => {
   if (!s) return {};
@@ -126,22 +127,37 @@ async function route(briefId: string, now: Date): Promise<CreativeReviewState | 
   // opens a card in the Video Review Room (Joe Sutow's "virtually stage the
   // upper patio, pic 38" did). Both / unclear items stay, labelled.
   const videoItems = items.filter((it) => !isPhotoOnly(it));
-  const questions = (doc.questions ?? []).map((q) => String(q).trim()).filter(Boolean);
-  if (videoItems.length === 0 && questions.length === 0 && doc.creativeReview?.state !== "OPEN") return null;
+  const asked = (doc.questions ?? []).map((q) => String(q).trim()).filter(Boolean);
+  if (videoItems.length === 0 && asked.length === 0 && doc.creativeReview?.state !== "OPEN") return null;
+  // THE EDITOR'S CALL (Jordan, Oct 29 2026: "I shouldn't have to choose the
+  // music or dictate the flow"; creativeReviewCore.editorsCall). A question
+  // about a choice that is the editor's craft goes on the work order as theirs
+  // and never opens creative review; only the rest wait on the reviewer.
+  const split = splitEditorCalls(asked);
+  const questions = split.needAnswer;
+  const editorCalls = [...new Set([...(doc.editorCalls ?? []), ...split.editorCalls])];
+  const callsDoc = editorCalls.length ? { questions, editorCalls } : { questions };
 
   const owed = await owedKeysOf(brief.projectId);
+  // NO VIDEO, NO CREATIVE REVIEW (Oct 29 2026, 4008 Oakland Rd; Jordan: "Why
+  // is this coming up? I don't think it's needed"). A job that owes no video
+  // has nothing for a creative reviewer to direct: a photos-only job's
+  // questions ("a reel was not part of this job. Is this a new order?") are
+  // the office's, and its "Overall direction" is never a second round. The
+  // kinds are still written; nothing is held and no card opens.
+  const noVideo = owed.length === 0;
   const reasons = new Set<CreativeReviewReason>();
   const held = new Set<string>();
   for (const it of items) {
     it.kind = kindOf(it);
-    if (it.kind === "DIRECTION_UNCLEAR" && !isPhotoOnly(it)) { held.add(it.id); reasons.add("UNCLEAR"); }
+    if (!noVideo && it.kind === "DIRECTION_UNCLEAR" && !isPhotoOnly(it)) { held.add(it.id); reasons.add("UNCLEAR"); }
   }
-  if (questions.length) reasons.add("QUESTIONS");
+  if (questions.length && !noVideo) reasons.add("QUESTIONS");
 
   // THE SAME PART OF THE SAME VIDEO, AGAIN. An earlier client ask in this area
   // on this video was already changed (addressed, verified, or reopened) and
   // the client is back on it: a creative problem, not an editing one.
-  const repeatCandidates = videoItems.filter((it) => !held.has(it.id) && CREATIVE_AREAS.includes(it.area) && it.kind !== "CORRECTION" && it.kind !== "SCOPE");
+  const repeatCandidates = noVideo ? [] : videoItems.filter((it) => !held.has(it.id) && CREATIVE_AREAS.includes(it.area) && it.kind !== "CORRECTION" && it.kind !== "SCOPE");
   if (repeatCandidates.length) {
     const prior = await prisma.revisionIssue.findMany({
       where: {
@@ -160,21 +176,33 @@ async function route(briefId: string, now: Date): Promise<CreativeReviewState | 
 
   // ROUND TWO WANTS A NEW DIRECTION. An "Overall direction" item on a video
   // the client has already asked to change once.
-  const direction = videoItems.filter((it) => !held.has(it.id) && it.area === "Overall direction");
+  const direction = noVideo ? [] : videoItems.filter((it) => !held.has(it.id) && it.area === "Overall direction");
   if (direction.length) {
     const round = brief.roundId ? await prisma.contentRevisionRound.findUnique({ where: { id: brief.roundId }, select: { ordinal: true } }).catch(() => null) : null;
     const earlier = await prisma.revisionBrief.findMany({
       where: { projectId: brief.projectId, id: { not: brief.id }, createdAt: { lt: brief.createdAt }, source: { notIn: [...STAFF_SOURCES] } },
       select: { outputId: true, itemsJson: true },
     });
+    // A SECOND ROUND NEEDS A FIRST VERSION (Oct 29 2026, 4008 Oakland Rd): an
+    // earlier ask on the job is not a round on a video nobody has made yet.
+    // The video must have had a version before this ask (any cut but an
+    // upload in progress or withdrawn); a portal round 2 always has.
+    const { NOT_A_CUT, slotKeyOf } = await import("@/lib/reviewCuts");
+    const priorCuts = await prisma.reviewSubmission.findMany({
+      where: { projectId: brief.projectId, createdAt: { lt: brief.createdAt }, status: { notIn: [...NOT_A_CUT] } },
+      select: { deliverableId: true, slot: true },
+    });
+    const cutKeys = new Set(priorCuts.filter((c) => c.deliverableId).map((c) => slotKeyOf(c.deliverableId!, c.slot)));
+    const legacyCut = priorCuts.some((c) => !c.deliverableId);
     for (const it of direction) {
       const keys = itemKeys(it, owed);
-      const again = (round?.ordinal ?? 0) >= 2 || earlier.some((e) => {
+      const hadVersion = keys.length ? keys.some((k) => cutKeys.has(k)) || (legacyCut && owed.length <= 1) : priorCuts.length > 0;
+      const again = (round?.ordinal ?? 0) >= 2 || (hadVersion && earlier.some((e) => {
         if (brief.outputId && e.outputId === brief.outputId) return true;
         const theirs = (parseDoc(e.itemsJson).items ?? []).flatMap((x) => itemKeys(x as BriefItem, owed));
         if (keys.length === 0) return owed.length <= 1;
         return theirs.some((k) => keys.includes(k)) || (theirs.length === 0 && owed.length <= 1);
-      });
+      }));
       if (again) { held.add(it.id); reasons.add("ROUND_TWO_DIRECTION"); }
     }
   }
@@ -184,7 +212,7 @@ async function route(briefId: string, now: Date): Promise<CreativeReviewState | 
     // Kinds only. A brief that was held before and no longer needs it (a
     // re-read) gives the editor their card back.
     const wasOpen = doc.creativeReview?.state === "OPEN" ? doc.creativeReview : null;
-    const next: ItemsDoc = { ...doc, items };
+    const next: ItemsDoc = { ...doc, items, ...callsDoc };
     delete next.creativeReview;
     await prisma.revisionBrief.update({ where: { id: brief.id }, data: { itemsJson: JSON.stringify(next) } });
     if (wasOpen) await releaseHold(brief.taskId);
@@ -255,7 +283,7 @@ async function route(briefId: string, now: Date): Promise<CreativeReviewState | 
     state: "OPEN", taskId, reviewerKey: reviewer.key, reviewerName: reviewer.name, reasons: [...reasons],
     heldItemIds: [...held], questions, taskHeld, openedAt: doc.creativeReview?.openedAt ?? now.toISOString(),
   };
-  await prisma.revisionBrief.update({ where: { id: brief.id }, data: { itemsJson: JSON.stringify({ ...doc, items, creativeReview: state }) } });
+  await prisma.revisionBrief.update({ where: { id: brief.id }, data: { itemsJson: JSON.stringify({ ...doc, items, ...callsDoc, creativeReview: state }) } });
 
   // The editor's revision card waits only when there is nothing else on it.
   if (taskHeld && brief.taskId) {
@@ -430,8 +458,16 @@ async function settledWhy(task: { id: string; dedupeKey: string | null; projectI
   const brief = await prisma.revisionBrief.findUnique({ where: { id: briefId }, select: { id: true, projectId: true, taskId: true, submissionId: true, outputId: true, createdAt: true, itemsJson: true } });
   if (!brief || creativeReviewOf(brief.itemsJson)?.state !== "OPEN") return null;
   if (brief.taskId) {
-    const rev = await prisma.smartTask.findUnique({ where: { id: brief.taskId }, select: { taskType: true, status: true } });
+    const rev = await prisma.smartTask.findUnique({ where: { id: brief.taskId }, select: { taskType: true, status: true, summary: true } });
     if (rev?.taskType === "revision" && rev.status === "COMPLETED") return { why: "its revision was completed", briefId };
+    // Oct 29 2026 (4008 Oakland Rd): Kyle dismissed the revision as not needed
+    // and both creative reviews filed on it stayed open on Jordan's list. Only
+    // a person's dismissal counts: a card the lane merged into another one is
+    // CANCELLED too, and its ask lives on in that card.
+    if (rev?.taskType === "revision" && rev.status === "CANCELLED" && isDismissedSummary(rev.summary)) {
+      const reason = dismissedReason(rev.summary);
+      return { why: `its revision was dismissed${reason ? ` (${reason})` : ""}`, briefId };
+    }
   }
   let newer: { round: number } | null = null;
   if (brief.submissionId) {

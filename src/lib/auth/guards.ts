@@ -271,12 +271,43 @@ export async function requireTaskAccess(taskId: string): Promise<void> {
     // One resolution, shared with the job predicate above (Sep 16) so a task
     // guard and a job guard can never drift into disagreeing about who this is.
     const myKeys = await addressableKeys(u);
-    if (myKeys.size > 0) {
-      const t = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { assignedKey: true } });
-      if (t?.assignedKey && myKeys.has(t.assignedKey)) return;
-    }
+    const t = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { assignedKey: true, delegatedBy: true } });
+    if (myKeys.size > 0 && t?.assignedKey && myKeys.has(t.assignedKey)) return;
+    if (u.realRole === "CREATIVE_MANAGER" && t && (await creativeLeadReaches(t, u.email))) return;
   }
   throw new Error("You don't have access to do that.");
+}
+
+// THE CREATIVE MANAGER'S REACH ON A TASK HE DOESN'T HOLD (James call, Oct 28
+// 2026: on Joe Sutow's 893 S Matlack job, Complete and the owner picker on
+// Kim's revision and @mention cards answered "The status change was not
+// confirmed. Reload…": this guard refused him and the browser hides a refused
+// action's words). His own work, plus the work of the crew he manages (the
+// editors' and the photographers' tasks) and anything he assigned himself
+// (only the assigner verifies a delegated task, lib/delegation). The office's
+// own tasks (Kyle's, Jordan's, nobody's yet) stay the office's: "doesn't need
+// the same tasks as Kyle" (Oct 21 2026). Send to Jordan covers those.
+const CREW_EDITOR_KEYS = new Set(["kim", "john", "remar", "creative_director", "external_agency", "cliffside_cuts", "luma"]);
+
+/** Is this task's holder on the creative crew (an editor, an outside editing shop, a photographer)? */
+export async function crewKeys(): Promise<Set<string>> {
+  const { prisma } = await import("@/lib/prisma");
+  const shooters = await prisma.teamMember.findMany({ where: { active: true, role: "PHOTOGRAPHER" }, select: { name: true } }).catch(() => []);
+  const keys = new Set(CREW_EDITOR_KEYS);
+  // Jordan's roster row is a photographer too; he is the owner, never "crew".
+  for (const s of shooters) if (!/^jordan\b/i.test(s.name.trim())) keys.add(slugForName(s.name));
+  keys.delete("");
+  return keys;
+}
+
+/** Pure: the rule above, given the crew. */
+export function creativeLeadReachesTask(t: { assignedKey: string | null; delegatedBy: string | null }, email: string | null | undefined, crew: Set<string>): boolean {
+  if (t.delegatedBy && email && t.delegatedBy.toLowerCase() === email.toLowerCase()) return true;
+  return !!t.assignedKey && crew.has(t.assignedKey);
+}
+
+export async function creativeLeadReaches(t: { assignedKey: string | null; delegatedBy: string | null }, email: string | null | undefined): Promise<boolean> {
+  return creativeLeadReachesTask(t, email, await crewKeys());
 }
 
 // Owner/admin, OR the photographer assigned to this shoot. Used by the field

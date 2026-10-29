@@ -17,9 +17,13 @@ import { AskQuickActions } from "@/components/home/AskQuickActions";
 import { PlacementUndoHost } from "@/components/requests/RequestPlacement";
 import { RemindPhotographerButton } from "@/components/editing/RemindPhotographer";
 import { EmailReplyBox } from "@/components/comms/EmailReplyBox";
+import { OlderFold } from "@/components/comms/OlderFold";
+import { splitRecent } from "@/lib/recentWindow";
 import { LeadDisregardButton } from "@/components/tasks/ChecklistButtons";
 import { draftEmailThreadReply } from "@/app/emailActions";
 import { ComplaintsCard } from "@/components/clientCare/ComplaintsCard";
+import { SendToJordan } from "@/components/delegation/SendToJordan";
+import { HandledToday } from "@/components/comms/HandledUndo";
 import {
   BriefSend, CloseoutTick, ConfirmControls, DelegationControls, DraftReply, FinishDay, FollowUpCreate, HandOn, MarkDelivered, MarkHandled, PhotoApprove, PRIMARY, QUIET, ReplyBox, RevisionDecide, TaskResolve, WaitOn,
 } from "@/components/desk/DeskControls";
@@ -144,7 +148,7 @@ export function OfficeDesk({ desk, includeTest = false, initialOpen = null, init
       {/* Equal-height cards in each pair (the mockup); one column on a phone. */}
       <div className="grid items-stretch gap-4 lg:grid-cols-2" data-desk-grid>
         <ReviewDeliver s={sec("deliver")} onOpen={show} readOnly={desk.readOnly} href={desk.deliverHref} />
-        <Communications s={sec("comms")} onOpen={show} fresh={desk.commsFresh} />
+        <Communications s={sec("comms")} onOpen={show} fresh={desk.commsFresh} readOnly={desk.readOnly} />
         <ComplaintsCard readOnly={desk.readOnly} className="lg:col-span-2" />
         <Shoots s={sec("shoots")} onOpen={show} initialDay={initialDay} includeTest={includeTest} briefs={desk.briefsPending} onBriefs={() => special("special:briefs")} />
         <FollowUps s={sec("followups")} onOpen={show} backlog={desk.backlog} includeTest={includeTest} />
@@ -385,7 +389,7 @@ function GroupHead({ children }: { children: ReactNode }) {
   return <h3 className="mt-1 text-[12px] font-semibold uppercase tracking-wide text-muted">{children}</h3>;
 }
 
-function Communications({ s, onOpen, fresh }: { s: DeskSection; onOpen: (i: DeskItem, f?: Focus) => void; fresh: boolean }) {
+function Communications({ s, onOpen, fresh, readOnly = false }: { s: DeskSection; onOpen: (i: DeskItem, f?: Focus) => void; fresh: boolean; readOnly?: boolean }) {
   const [all, setAll] = useState(false);
   const rows = all ? s.now : s.now.slice(0, ROWS_SHOWN);
   const upToDate = fresh && s.count != null && <p className="flex items-center gap-2 rounded-lg bg-success/10 px-3 py-2.5 text-sm" data-up-to-date><CheckCircle2 aria-hidden className="size-5 text-success" /> Other conversations are up to date.</p>;
@@ -463,6 +467,8 @@ function Communications({ s, onOpen, fresh }: { s: DeskSection; onOpen: (i: Desk
           </ul>
         </details>
       )}
+      {/* Reopen a Mark handled (Kyle, Oct 29 2026: pressed by mistake). */}
+      {!readOnly && <HandledToday className="mt-2" />}
       {s.now.length > 0 && <div className="mt-3">{upToDate}</div>}
     </Card>
   );
@@ -666,7 +672,7 @@ function SidePanel({ item, special, focus, fallbackTitle, desk, includeTest, dra
   const ordered = first ? [...actions.filter((a) => a.kind === first), ...actions.filter((a) => a.kind !== first)] : actions;
   const visit = item?.panel.kind === "visit" ? item.panel.visit : null;
   // Every row can be handed on: Delegate, or Escalate to Jordan (a delegated task has its own Escalate).
-  const handOn = !!item && !desk.readOnly && !item.actions.some((a) => a.kind === "delegation") && desk.delegates.length > 0;
+  const handOn = !!item && !desk.readOnly && !item.handedTo && !item.actions.some((a) => a.kind === "delegation") && desk.delegates.length > 0;
   return (
     <div className="fixed inset-0 z-50 flex justify-end" data-side-panel={special ?? item?.id ?? "gone"}>
       <button type="button" aria-label="Close the panel" onClick={onClose} className="absolute inset-0 bg-black/30" />
@@ -687,7 +693,7 @@ function SidePanel({ item, special, focus, fallbackTitle, desk, includeTest, dra
             ) : (
               <>
                 <p className="text-sm">{item.reason}</p>
-                <PanelBody item={item} readOnly={desk.readOnly} />
+                <PanelBody item={item} readOnly={desk.readOnly} nowISO={desk.nowISO} />
                 {desk.readOnly ? (
                   <p className="rounded-lg bg-surface-2 px-3 py-2 text-sm text-muted">Preview: read-only. Actions are off.</p>
                 ) : (
@@ -698,9 +704,16 @@ function SidePanel({ item, special, focus, fallbackTitle, desk, includeTest, dra
                     )}
                   </div>
                 )}
+                {/* A row handed TO him has no Hand it on (Kyle, Oct 29 2026: "it had no option to send
+                    it over to you"): Send to Jordan escalates that task (lib/sendToJordan). */}
+                {item && !desk.readOnly && !handOn && (() => {
+                  const d = item.actions.find((a): a is Extract<DeskAction, { kind: "delegation" }> => a.kind === "delegation");
+                  return d ? <SendToJordan title={`${item.title}: ${item.line}`.slice(0, 120)} taskId={d.taskId} href={item.href} /> : null;
+                })()}
                 {handOn && (
                   <HandOn
                     taskId={taskIdOf(item)}
+                    rowId={item.id}
                     title={`${item.title}: ${item.line}`.slice(0, 140)}
                     href={item.href}
                     projectId={item.panel.kind === "job" ? item.panel.projectId : item.panel.kind === "visit" ? item.panel.visit.projectId : null}
@@ -796,7 +809,7 @@ function FinishPanel({ desk }: { desk: Desk }) {
   );
 }
 
-function PanelBody({ item, readOnly }: { item: DeskItem; readOnly: boolean }) {
+function PanelBody({ item, readOnly, nowISO }: { item: DeskItem; readOnly: boolean; nowISO: string }) {
   const p = item.panel;
   if (p.kind === "job") {
     return (
@@ -826,16 +839,22 @@ function PanelBody({ item, readOnly }: { item: DeskItem; readOnly: boolean }) {
     );
   }
   if (p.kind === "thread") {
+    // The last seven days open, the rest folded above them (Oct 29 2026, lib/recentWindow).
+    const { recent, older } = splitRecent(p.messages, (m) => m.atISO, new Date(nowISO));
+    const list = (rows: typeof p.messages) => (
+      <ol className="space-y-1.5">
+        {rows.map((m, n) => (
+          <li key={`${m.atISO}-${n}`} className="rounded-lg bg-surface-2/60 px-3 py-2 text-sm [overflow-wrap:anywhere]">
+            <span className="block text-[11px] text-muted">{etDateTime(m.atISO)}</span>
+            {m.text}
+          </li>
+        ))}
+      </ol>
+    );
     return (
       <div className="space-y-2" data-panel="thread">
-        <ol className="space-y-1.5">
-          {p.messages.map((m, n) => (
-            <li key={n} className="rounded-lg bg-surface-2/60 px-3 py-2 text-sm [overflow-wrap:anywhere]">
-              <span className="block text-[11px] text-muted">{etDateTime(m.atISO)}</span>
-              {m.text}
-            </li>
-          ))}
-        </ol>
+        <OlderFold count={older.length} noun="message">{list(older)}</OlderFold>
+        {list(recent)}
         {p.alsoAsked.length > 0 && <p className="text-sm" data-also-asked>They also asked: {p.alsoAsked.join("; ")}</p>}
         {p.holding && <p className="text-[12px] text-muted">Your last word: &ldquo;{p.holding}&rdquo; (a holding line is not an answer)</p>}
         {p.revisionNote && <p className="rounded-lg bg-warning/10 px-3 py-2 text-sm text-warning" data-revision-note>{p.revisionNote}</p>}

@@ -81,6 +81,15 @@ export function kindOf(item: { kind?: unknown; ask?: string | null; quote?: stri
   return isItemKind(item.kind) ? item.kind : "CORRECTION";
 }
 
+/**
+ * Every item is new work (Oct 29 2026, 4008 Oakland Rd): a new order, a
+ * reshoot, a video the job never had. Nothing on the delivered work changes,
+ * so it is the office's to book or quote, not a revision. Pure.
+ */
+export function allNewWork(items: readonly { kind?: unknown; ask?: string | null; quote?: string | null; detail?: string | null }[]): boolean {
+  return items.length > 0 && items.every((it) => kindOf(it) === "SCOPE");
+}
+
 /** Only a SUGGESTION for the issue ledger: a person confirms the cause. */
 export function causeSuggestionFor(kind: string | null | undefined): "EDITOR_ERROR" | "CLIENT_CHANGE" | "NEW_SCOPE" | null {
   switch (kind) {
@@ -130,6 +139,45 @@ export function creativeReviewOf(itemsJson: string | null | undefined): Creative
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// THE EDITOR'S CALL (Jordan, Oct 29 2026, on 265 Mill Rd: "I would rather
+// this just goes straight to the editor I shouldn't have to choose the music
+// or dictate the flow"). Tim asked for "a logical flow" and "more upbeat"
+// music; the analyser asked Jordan which room order and which track, and the
+// open questions sent it to creative review. A choice the client left open
+// that is the editor's craft (the track, the room order, the pacing, the
+// transitions, the look) is the editor's to make: it goes on the work order
+// as theirs, never to the reviewer. Only a question nobody in the edit can
+// answer (a name or spelling, a fact about the house, footage or a reference
+// that has to be found, something the client must say, new work) still waits
+// on the reviewer.
+// ---------------------------------------------------------------------------
+
+const EDITORS_CRAFT = /\b(?:music|song|track|soundtrack|audio|beat|tempo|upbeat|genre|order|sequence|flow|walk-?through|pacing|pace|speed|faster|slower|transitions?|effects?|style|look|colou?r|grad(?:e|ing)|font|b-?roll|shots?|clips?|takes?|intro|outro|ending|opening|length|duration|trim)\b/i;
+const NEEDS_AN_ANSWER = /\b(?:spell(?:ing|ed)?|phone|e-?mail|website|price|pricing|logo|licen[cs]e|brokerage|new order|never ordered|not (?:part of|ordered)|upload(?:ed)?|footage|raw files?|pull|which (?:video|property|house|listing)|square (?:foot|feet|footage)|sq\.? ?ft|who is|(?:agent|client|seller|their|his|her)'?s? name|confirm with (?:the )?(?:client|seller|agent)|ask (?:the )?(?:client|seller|agent)|reference (?:video|reel)|example)\b/i;
+
+/** Is this open question a creative choice the editor makes (not one only the reviewer or the client can answer)? Pure. */
+export function editorsCall(question: string | null | undefined): boolean {
+  const t = (question ?? "").replace(/\s+/g, " ").trim();
+  return !!t && EDITORS_CRAFT.test(t) && !NEEDS_AN_ANSWER.test(t);
+}
+
+/** The question as the editor reads it: the sentences asking the reviewer dropped, "Your call." added. Pure. */
+export function editorCallWords(question: string): string {
+  const t = question.replace(/\s+/g, " ").trim();
+  const kept = t.split(/(?<=[.?!])\s+/).filter((s) => !/\b(?:Jordan|James|creative review|reviewer)\b/i.test(s));
+  const base = (kept.length ? kept.join(" ") : t).replace(/[.?!\s]+$/, "");
+  return `${base}. Your call.`;
+}
+
+/** Split a work order's open questions: the editor's calls (in their words) and the ones that still need an answer. Pure. */
+export function splitEditorCalls(questions: readonly string[]): { editorCalls: string[]; needAnswer: string[] } {
+  const editorCalls: string[] = [];
+  const needAnswer: string[] = [];
+  for (const q of questions) (editorsCall(q) ? editorCalls.push(editorCallWords(q)) : needAnswer.push(q));
+  return { editorCalls, needAnswer };
 }
 
 /** The words the editor sees in place of a held item. */

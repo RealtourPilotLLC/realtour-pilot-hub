@@ -389,10 +389,22 @@ const FIXED_BY_HAND = /\bfixed (?:it |them )?(?:with|in|on|through) auto ?hdr\b|
 export async function learnedRules(now = new Date()): Promise<Map<string, RuleLearning>> {
   const rows = await prisma.photoQcFinding.findMany({
     where: { decidedAt: { gte: new Date(now.getTime() - LEARN_DAYS * 86_400_000) }, status: { in: ["IGNORED", "FALSE_POSITIVE", "APPROVED_FIX", "FIXING", "FIXED"] }, source: { not: "ADDON" } },
-    select: { ruleId: true, status: true, decidedBy: true, statusReason: true },
+    select: { id: true, ruleId: true, status: true, decidedBy: true, statusReason: true },
   });
+  // Oct 29 2026 (lib/qcCoaching): a coaching reviewer's "the check was wrong"
+  // is a "Not there" too, once per finding, in place of that finding's own call.
+  const wrong = await import("@/lib/qcCoaching")
+    .then((m) => m.checkWasWrong(new Date(now.getTime() - LEARN_DAYS * 86_400_000)))
+    .catch(() => new Map<string, string>());
   const out = new Map<string, RuleLearning>();
+  const blank = (ruleId: string): RuleLearning => ({ ruleId, notThere: 0, notWorth: 0, wanted: 0, skip: false, strict: false });
+  for (const [, ruleId] of wrong) {
+    const l = out.get(ruleId) ?? blank(ruleId);
+    l.notThere++;
+    out.set(ruleId, l);
+  }
   for (const r of rows) {
+    if (wrong.has(r.id)) continue;
     if (!r.decidedBy || SYSTEM_DECIDER.test(r.decidedBy)) continue;
     if (/^Skipped all findings/i.test(r.statusReason ?? "")) continue;
     const l = out.get(r.ruleId) ?? { ruleId: r.ruleId, notThere: 0, notWorth: 0, wanted: 0, skip: false, strict: false };

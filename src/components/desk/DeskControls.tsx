@@ -10,7 +10,8 @@ import { sendThreadText } from "@/app/communications/threadActions";
 import { createManualTask, dismissTask, draftTaskReply, markCommsHandled, sendConfirmationText } from "@/app/actions";
 import { pushOldItem } from "@/app/ops/old/actions";
 import { generateReply, sendReply } from "@/app/communications/replyActions";
-import { sendEmailReply } from "@/app/emailActions";
+import { resolveEmailRecipient, sendEmailReply } from "@/app/emailActions";
+import { recipientWords } from "@/lib/emailRecipients";
 import { postProgramMessageAction } from "@/app/content/[id]/workspaceActions";
 import { acceptTaskAction, assignTaskAction, completeTaskAction, escalateTaskAction, flagBlockerAction, submitForVerificationAction, updateTaskAction } from "@/app/delegation/actions";
 import { sendPhotographerBriefNow } from "@/app/shoot/brief/actions";
@@ -20,6 +21,8 @@ import {
 } from "@/app/deskActions";
 import type { CheckKey, DeskAction, RevisionChoice } from "@/lib/officeDesk";
 import { etDateTime } from "@/lib/datetime";
+import { deskRowHref } from "@/lib/deskHandOff";
+import { flashHandled } from "@/components/comms/HandledUndo";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -251,6 +254,17 @@ export function DraftReply({ mode, threadKey, taskId, enrollmentId, initialDraft
   const [drafting, setDrafting] = useState(false);
   const [note, setNote] = useState<string | null>(initialDraft ? "Draft ready. Read it before sending." : null);
   const asked = useRef(false);
+  // Oct 29 2026 (Kyle): an email reply goes to everyone on the email (Reply
+  // all, never us); the box says who before Send, and the send is pinned to it.
+  const [emailTo, setEmailTo] = useState<{ pin: string; words: string } | null>(null);
+  useEffect(() => {
+    if (mode !== "email" || !taskId) return;
+    let alive = true;
+    resolveEmailRecipient(taskId)
+      .then((r) => { if (alive && r.ok && r.to) setEmailTo({ pin: r.to, words: recipientWords({ to: r.to, alsoTo: r.alsoTo, cc: r.cc }) }); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [mode, taskId]);
   const draft = async () => {
     setDrafting(true);
     setNote("Writing a draft…");
@@ -276,7 +290,7 @@ export function DraftReply({ mode, threadKey, taskId, enrollmentId, initialDraft
   const send = () => run(async () => {
     const body = text.trim();
     if (mode === "text" && threadKey) return sendReply(threadKey, body, mintIntent()).then((r) => ({ ok: r.ok, message: r.ok ? "Sent. It leaves the list once the reply is logged." : r.message }));
-    if (mode === "email" && taskId) return sendEmailReply(taskId, body).then((r) => ({ ok: r.ok, message: r.message }));
+    if (mode === "email" && taskId) return sendEmailReply(taskId, body, emailTo ? { expectedTo: emailTo.pin } : undefined).then((r) => ({ ok: r.ok, message: r.message }));
     if (mode === "program" && enrollmentId) return postProgramMessageAction(enrollmentId, body, null);
     return { ok: false, message: "This conversation can only be answered in Messages." };
   });
@@ -292,6 +306,7 @@ export function DraftReply({ mode, threadKey, taskId, enrollmentId, initialDraft
         className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-brand"
         placeholder={drafting ? "Writing a draft…" : "Write the reply"}
       />
+      {mode === "email" && emailTo && <p className="text-[12px] text-muted [overflow-wrap:anywhere]" data-email-to>To {emailTo.words}</p>}
       {note && <p className="text-[12px] text-muted" data-draft-note>{note}</p>}
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" disabled={busy || drafting || !text.trim()} onClick={send} className={PRIMARY}>
@@ -484,16 +499,17 @@ export function TaskResolve({ taskId, nextDay, allowNewDate = true, doneLabel = 
 
 /** Delegate (to James, Jordan, an editor, a photographer) or Escalate to Jordan,
  *  through the delegation build (one canonical task; the person is told in
- *  the hub). A row with no task of its own gets one, linked back to it. */
-export function HandOn({ taskId, title, href, projectId, clientId, delegates, ownerKey, ownerName }: {
-  taskId: string | null; title: string; href: string | null; projectId: string | null; clientId: string | null;
+ *  the hub). A row with no task of its own gets one, linked back to it, the
+ *  row's id on the link so the desk knows that row went (lib/deskHandOff). */
+export function HandOn({ taskId, rowId, title, href, projectId, clientId, delegates, ownerKey, ownerName }: {
+  taskId: string | null; rowId?: string | null; title: string; href: string | null; projectId: string | null; clientId: string | null;
   delegates: { key: string; name: string }[]; ownerKey: string | null; ownerName: string;
 }) {
   const { busy, msg, run } = useRun();
   const [who, setWho] = useState(delegates[0]?.key ?? "");
   const [note, setNote] = useState("");
   if (msg?.ok) return <Said msg={msg} />;
-  const send = (to: string) => run(() => assignTaskAction({ title, assigneeKey: to, sourceTaskId: taskId ?? undefined, sourceHref: taskId ? undefined : href ?? undefined, projectId: projectId ?? undefined, clientId: clientId ?? undefined, note: note || undefined, outcome: note || undefined }));
+  const send = (to: string) => run(() => assignTaskAction({ title, assigneeKey: to, sourceTaskId: taskId ?? undefined, sourceHref: taskId || !href ? undefined : rowId ? deskRowHref(href, rowId) : href, projectId: projectId ?? undefined, clientId: clientId ?? undefined, note: note || undefined, outcome: note || undefined }));
   return (
     <fieldset className="space-y-2 rounded-lg border border-border p-3" data-control="hand-on">
       <legend className="px-1 text-sm font-semibold">Hand it on</legend>
@@ -520,18 +536,29 @@ export function HandOn({ taskId, title, href, projectId, clientId, delegates, ow
  *  a cut point: a new message from them is waiting again). */
 export function MarkHandled({ threadKey, family, clientId, groupKey }: { threadKey: string; family: "phone" | "email"; clientId: string | null; groupKey: string }) {
   const { busy, msg, run } = useRun();
+  // On a phone the first tap asks again (Kyle, Oct 29 2026: pressed by mistake while taking a screenshot).
+  const [arming, setArming] = useState<string | null>(null);
   if (msg?.ok) return <Said msg={msg} />;
-  const press = (reason: "no reply needed" | "answered elsewhere") =>
+  const press = (reason: "no reply needed" | "answered elsewhere") => {
+    if (arming !== reason && typeof window !== "undefined" && window.matchMedia?.("(max-width: 639px)").matches) {
+      setArming(reason);
+      setTimeout(() => setArming((cur) => (cur === reason ? null : cur)), 4000);
+      return;
+    }
+    setArming(null);
     run(async () => {
       const r = await markCommsHandled(clientId, family, groupKey, { threadKey, reason });
-      return { ok: r.ok, message: r.ok ? (r.message ?? "Marked handled. It has left the list.") : r.message ?? "That didn't go through. Try again." };
+      const words = r.ok ? (r.message ?? "Marked handled. It has left the list.") : r.message ?? "That didn't go through. Try again.";
+      if (r.ok) flashHandled(r.undoId, words);
+      return { ok: r.ok, message: r.ok && r.undoId ? `${words} Undo it from the notice, or from Handled today.` : words };
     });
+  };
   return (
     <div className="flex flex-wrap items-center gap-2" data-control="handled">
       <button type="button" disabled={busy} onClick={() => press("no reply needed")} className={QUIET} data-mark-handled>
-        {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />} Mark handled: no reply needed
+        {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />} {arming === "no reply needed" ? "Tap again: no reply needed" : "Mark handled: no reply needed"}
       </button>
-      <button type="button" disabled={busy} onClick={() => press("answered elsewhere")} className={QUIET}>Answered elsewhere</button>
+      <button type="button" disabled={busy} onClick={() => press("answered elsewhere")} className={QUIET}>{arming === "answered elsewhere" ? "Tap again: answered elsewhere" : "Answered elsewhere"}</button>
       <Said msg={msg} />
     </div>
   );

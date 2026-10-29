@@ -99,6 +99,22 @@ export async function reassignTaskAction(taskId: string, assigneeKey: string): P
   return run((a) => reassignTask(a, String(taskId ?? ""), String(assigneeKey ?? "")));
 }
 
+/** Send to Jordan (James call, Oct 28 2026): one way up from any card (lib/sendToJordan). */
+export async function sendToJordanAction(input: { title: string; why: string; href?: string | null; taskId?: string | null; projectId?: string | null; clientId?: string | null }): Promise<Out> {
+  if (!input || typeof input !== "object") return { ok: false, message: "Nothing to send." };
+  const { sendToJordan } = await import("@/lib/sendToJordan");
+  const { safeHref } = await import("@/lib/delegation");
+  const id = (v: unknown) => (typeof v === "string" && /^[a-z0-9]{10,40}$/i.test(v) ? v : null);
+  return run((a) => sendToJordan(a, {
+    title: String(input.title ?? ""),
+    why: String(input.why ?? ""),
+    href: safeHref(input.href ? String(input.href) : null),
+    taskId: id(input.taskId),
+    projectId: id(input.projectId),
+    clientId: id(input.clientId),
+  }));
+}
+
 // ---- the assigner's side, beyond the shared eight ------------------------------------
 
 /** "Request update" / "Follow up": a ping to the assignee, at most hourly. */

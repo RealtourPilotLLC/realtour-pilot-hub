@@ -23,6 +23,7 @@ export function ClientTodos({ todos }: { todos: ClientTodo[] }) {
   const [items, setItems] = useState(todos);
   const router = useRouter();
   const [pendingId, setPendingId] = useState<string | null>(null);
+  const [refused, setRefused] = useState<{ id: string; text: string } | null>(null);
   const [, start] = useTransition();
 
   if (items.length === 0) return null;
@@ -30,9 +31,12 @@ export function ClientTodos({ todos }: { todos: ClientTodo[] }) {
   const complete = (id: string) => {
     setPendingId(id);
     start(async () => {
-      await setSmartTaskStatus(id, "COMPLETED");
-      setItems((cur) => cur.filter((t) => t.id !== id));
+      // A refusal (a task that isn't this login's) says so and keeps the row (Oct 29 2026).
+      const r = await setSmartTaskStatus(id, "COMPLETED").catch(() => ({ ok: false, message: "That didn't save. Try again." }));
       setPendingId(null);
+      if (r && !r.ok) { setRefused({ id, text: r.message }); return; }
+      setRefused(null);
+      setItems((cur) => cur.filter((t) => t.id !== id));
       router.refresh();
     });
   };
@@ -68,6 +72,7 @@ export function ClientTodos({ todos }: { todos: ClientTodo[] }) {
                     </Link>
                   )}
                 </div>
+                {refused?.id === t.id && <p role="alert" className="mt-1 text-[12px] text-danger">{refused.text}</p>}
               </div>
             </div>
           </div>

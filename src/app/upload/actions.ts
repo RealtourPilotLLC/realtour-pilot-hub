@@ -827,6 +827,12 @@ export async function finalizeUpload(
               : `Add the vision and the edit style for ${name}. Each video gets its own instructions.`,
           };
         }
+        // Oct 29 2026 (lib/editingDirection): a later video's vision says something too. Words it already had are not re-judged.
+        if (r.shape === "full" && !r.own?.trim() && !instructionsInDropbox) {
+          const { editingDirectionProblem } = await import("@/lib/editingDirection");
+          const problem = editingDirectionProblem(own, { name });
+          if (problem) return { blocked: problem };
+        }
       }
     }
     if (firstVideoGate && !spec.minimalReel && !prior.videoInstructions && !instructionsInDropbox) {
@@ -853,6 +859,16 @@ export async function finalizeUpload(
             ? "The agent's intro script can't be left blank — type it exactly as it was delivered on camera."
             : "Video instructions are required: the flow and your vision for the edit. Skipped or light instructions count against your KPI.",
         };
+      }
+      // WORDS THAT SAY SOMETHING (Oct 29 2026, Jordan and James: "Harrison's
+      // editor notes could amount to 'standard edit'"; lib/editingDirection).
+      // "Standard edit", "N/A" or "Cinematic" is typed, but tells the editor
+      // nothing. An agent-intro reel's intro script is its requirement (above),
+      // so its optional notes are not judged.
+      if (spec.fullBrief || !spec.requireIntro) {
+        const { editingDirectionProblem } = await import("@/lib/editingDirection");
+        const problem = editingDirectionProblem(data.videoInstructions);
+        if (problem) return { blocked: problem };
       }
       // Agent-intro packages: the INTRO SCRIPT itself is the requirement (a
       // filled notes box alone isn't enough). Key absent = pre-update tab —

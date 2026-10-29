@@ -299,8 +299,11 @@ async function main() {
     c.ok("Cliff Ln: only this visit's services (the 3D tour), not the order's Social Influencer", cliffLine.includes("Services: Zillow Showcase 3D Tour Add-on.") && !cliffLine.includes("Social Influencer"), cliffLine);
     c.ok("Cliff Ln: this visit's requests (made since visit 1), the client's must-get included", cliffLine.includes("For the second visit: interiors and agent on camera") && cliffLine.includes("Must get: Client: Please make sure to capture the finished basement this time"), cliffLine);
     c.ok("Cliff Ln: never visit 1's 'Exteriors only' or its pool request, never the post-delivery lamp revision", !/Exteriors only|pool from the deck|lamp/i.test(cliffLine), cliffLine);
-    c.ok("…the text says the earlier visit's notes are on the page", cliffLine.includes("Notes from the earlier visit are on the brief page"));
-    c.ok("Richard Dr: services, access (lockbox, who's there), contact, and the exclusion", richardLine.includes("Services: Social Influencer.") && richardLine.includes("Access: Lockbox or door code: 4417; Agent will be there.") && richardLine.includes("Contact: Nick Valudes (717) 575-8139.") && richardLine.includes("Leave out: Do not shoot the neighbor's yard, keep it tight."), richardLine);
+    // Oct 29 2026 (James's 907-character brief never arrived): a day this long keeps every
+    // must-get and leave-out and leaves the contact and the earlier-visit line to the page.
+    c.ok(`a long day stays under ${core.BRIEF_TEXT_MAX} characters, every request still in the text`, body.length <= core.BRIEF_TEXT_MAX && !body.includes("more on the brief page"), String(body.length));
+    c.ok("…the contacts and the earlier visit's notes are left to the page", !body.includes("Contact: ") && !cliffLine.includes("Notes from the earlier visit"), body);
+    c.ok("Richard Dr: services, access (lockbox, who's there), and the exclusion", richardLine.includes("Services: Social Influencer.") && richardLine.includes("Access: Lockbox or door code: 4417; Agent will be there.") && richardLine.includes("Leave out: Do not shoot the neighbor's yard, keep it tight."), richardLine);
     c.ok("ends with the full-brief link", body.trim().endsWith(`\n\nFull brief, then tap Got it:\n${appBase()}/shoot/brief/2026-10-26`), body.slice(-90));
     c.ok("no em or en dashes (the special instructions had one)", !DASH.test(body) && !texts.some((t) => DASH.test(t.body)));
     const outRows = await prisma.outboxMessage.findMany({ orderBy: { createdAt: "asc" } });
@@ -396,8 +399,9 @@ async function main() {
     await pb.sweepPhotographerBriefs(SAT(11, 1));
     const upd = toHarrison().slice(n10);
     console.log(`\n--- the update ---\n${upd[0]?.body}\n---`);
-    c.ok("ONE updated brief, leading with what changed, asking for Got it again",
-      upd.length === 1 && upd[0].body.startsWith(`${HUB_SMS_PREFIX}: Harrison, your Mon Oct 26 brief changed\n\nWhat changed: 266 Richard Dr is now at 12:00 PM (was 11:00 AM).\n\n`) && upd[0].body.includes("\n\n1) 12:00 PM, 266 Richard Dr, Allentown\n") && upd[0].body.includes(`Please open it and tap Got it again:\n${appBase()}/shoot/brief/2026-10-26`) && !DASH.test(upd[0].body), upd.map((t) => t.body).join(" | "));
+    // Oct 29 (James's call): the update is the change and the link, short enough to arrive; the day is on the page.
+    c.ok("ONE updated brief: what changed and the link, asking for Got it again (no repeat of the day)",
+      upd.length === 1 && upd[0].body === `${HUB_SMS_PREFIX}: Harrison, your Mon Oct 26 brief changed\n\nWhat changed: 266 Richard Dr is now at 12:00 PM (was 11:00 AM).\n\nPlease open it and tap Got it again:\n${appBase()}/shoot/brief/2026-10-26` && !upd[0].body.includes("1) 12:00 PM") && !DASH.test(upd[0].body), upd.map((t) => t.body).join(" | "));
     const s10 = (await status([richardA.id, cliffV2.id])).get(richardA.id);
     c.ok("status: changed (sent again, awaiting a new Got it), the old ackAt kept", s10?.state === "changed" && /Waiting for Harrison's new Got it/.test(s10?.why ?? "") && Math.abs(Date.parse(s10?.ackAt ?? "") - FRI(19, 12).getTime()) < 60_000, JSON.stringify(s10));
     const page10 = await (async () => { await signIn(harrisonLogin); return render("2026-10-26"); })();
@@ -417,7 +421,7 @@ async function main() {
     const n10b = toHarrison().length;
     await pb.sweepPhotographerBriefs(SAT(12, 1));
     const upd2 = toHarrison().slice(n10b);
-    c.ok("a new pre-shoot request: an updated brief, the request under Must get", upd2.length === 1 && upd2[0].body.includes('266 Richard Dr: new must-get "Please get twilight shots of the pool"') && upd2[0].body.includes("Must get: Please get twilight shots of the pool."), upd2.map((t) => t.body).join(" | "));
+    c.ok("a new pre-shoot request: an updated brief, the request under Must get", upd2.length === 1 && upd2[0].body.includes('What changed: 266 Richard Dr: new must-get "Please get twilight shots of the pool".') && upd2[0].body.length <= core.BRIEF_TEXT_MAX, upd2.map((t) => t.body).join(" | "));
     const page10b = await (async () => { await signIn(harrisonLogin); return render("2026-10-26"); })();
     c.ok("…the page names the new request itself (Oct 28: James saw only \"requests changed\")", /data-brief-changes[\s\S]*266 Richard Dr: new must-get &quot;Please get twilight shots of the pool&quot;/.test(page10b), page10b.slice(0, 600));
     c.ok("…and the Got it no longer holds", (await status([richardA.id])).get(richardA.id)?.state === "changed");

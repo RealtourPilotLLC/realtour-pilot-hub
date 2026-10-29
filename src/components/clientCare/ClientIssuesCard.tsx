@@ -28,7 +28,7 @@ const TONE: Record<string, string> = {
   UNRESOLVED: "bg-danger/10 text-danger",
 };
 
-function OneIssue({ issue, canEdit, projects }: { issue: ClientIssueView; canEdit: boolean; projects: { id: string; title: string }[] }) {
+function OneIssue({ issue, canEdit, projects, sendUp = false }: { issue: ClientIssueView; canEdit: boolean; projects: { id: string; title: string }[]; sendUp?: boolean }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -58,7 +58,7 @@ function OneIssue({ issue, canEdit, projects }: { issue: ClientIssueView; canEdi
       </div>
       {/* Oct 29 2026: the plan (summary, steps, preferences, KPI) for the people who work complaints; everyone else reads the words. */}
       {canEdit ? (
-        <div className="mt-1.5"><ComplaintPlan issueId={issue.id} compact fallbackWords={issue.summary ?? issue.whatHappened} /></div>
+        <div className="mt-1.5"><ComplaintPlan issueId={issue.id} compact fallbackWords={issue.summary ?? issue.whatHappened} sendUp={sendUp} /></div>
       ) : (
         <p className="mt-1 whitespace-pre-wrap text-foreground/90 [overflow-wrap:anywhere]">{issue.summary ?? issue.whatHappened}</p>
       )}
@@ -119,7 +119,7 @@ function OneIssue({ issue, canEdit, projects }: { issue: ClientIssueView; canEdi
 // they should automatically be recorded"): `addManually` turns the form into
 // a quiet secondary "Add one manually" link under the list, for the rare one
 // that came some other way. Without it (the client file) nothing changes.
-export function ClientIssuesCard({ clientId, issues, canEdit, projects, addManually = false }: { clientId: string; issues: ClientIssueView[]; canEdit: boolean; projects: { id: string; title: string }[]; addManually?: boolean }) {
+export function ClientIssuesCard({ clientId, issues, canEdit, projects, addManually = false, sendUp = false }: { clientId: string; issues: ClientIssueView[]; canEdit: boolean; projects: { id: string; title: string }[]; addManually?: boolean; sendUp?: boolean }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -132,7 +132,7 @@ export function ClientIssuesCard({ clientId, issues, canEdit, projects, addManua
   return (
     <Section icon={MessageSquareWarning} title="Complaints" count={open ? `${open} open` : null} tone={open ? "warning" : "default"}>
       {issues.length === 0 ? <p className="text-sm text-muted">None on record.</p> : (
-        <ul className="space-y-2 text-sm">{issues.map((i) => <OneIssue key={i.id} issue={i} canEdit={canEdit} projects={projects} />)}</ul>
+        <ul className="space-y-2 text-sm">{issues.map((i) => <OneIssue key={i.id} issue={i} canEdit={canEdit} projects={projects} sendUp={sendUp} />)}</ul>
       )}
       {canEdit && (
         <details className={cn("mt-3 text-sm", !addManually && "rounded-lg border border-border px-3 py-2")}>

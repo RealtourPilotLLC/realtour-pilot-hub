@@ -10,6 +10,7 @@ import {
   assignTaskAction, cancelTaskAction, completeTaskAction, reassignTaskAction, requestUpdateAction, returnForChangesAction, updateTaskAction,
 } from "@/app/delegation/actions";
 import { markCommsHandled, setSmartTaskStatus } from "@/app/actions";
+import { flashHandled } from "@/components/comms/HandledUndo";
 import { draftEmailThreadReply } from "@/app/emailActions";
 import { EmailReplyBox } from "@/components/comms/EmailReplyBox";
 import { closeIssueSignalAction } from "@/app/clients/clientCareActions";
@@ -428,7 +429,7 @@ function EmailBody({ spec }: { spec: Extract<PanelSpec, { kind: "email" }> }) {
       <div className="flex flex-wrap gap-2">
         {!readOnly && !r.delegated && <button type="button" onClick={() => open({ kind: "assign", seed: r.assign, heading: office ? `Delegate to ${office}` : "Delegate this email" })} className={QUIET} data-email-delegate>{office ? `Delegate to ${office}` : "Delegate"}</button>}
         {!readOnly && (
-          <button type="button" disabled={busy} onClick={() => run(() => markCommsHandled(r.clientId, "email", r.clientId ? r.groupKey : undefined, r.clientId ? {} : { threadKey: r.threadKey }))} className={QUIET} data-email-handled>
+          <button type="button" disabled={busy} onClick={() => run(async () => { const x = await markCommsHandled(r.clientId, "email", r.clientId ? r.groupKey : undefined, r.clientId ? {} : { threadKey: r.threadKey }); if (x.ok) flashHandled(x.undoId, x.message ?? "Marked handled."); return x; })} className={QUIET} data-email-handled>
             Mark as handled
           </button>
         )}

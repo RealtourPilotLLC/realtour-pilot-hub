@@ -426,7 +426,8 @@ async function main() {
     c.ok("resolveStaffTab('portal') for a non-owner is the overview, not the preview", resolveStaffTab("portal", null, false).tab === "overview" && !resolveStaffTab("portal", null, false).preview);
     const pv = read("src/app/content/[id]/preview/page.tsx");
     const pg = read("src/app/content/[id]/page.tsx");
-    c.ok("the preview page gates on canPreviewPortal and redirects outside any try; the warning moved with it", /if \(!canOpenPortal\(me, authEnforced\(\)\)\) redirect\(/.test(pv) && !/\btry\s*\{/.test(pv) && /on behalf of/.test(pv) && /<iframe/.test(pv));
+    // Oct 29 2026: the creative manager may look too (canViewPortal); the link itself stays canOpenPortal's.
+    c.ok("the preview page gates on canViewPortal and redirects outside any try; the warning moved with it", /if \(!canViewPortal\(me, authEnforced\(\)\)\) redirect\(/.test(pv) && !/\btry\s*\{/.test(pv) && /on behalf of/.test(pv) && /<iframe/.test(pv));
     c.ok("the client file redirects old keys outside any try, and no longer embeds the portal", /if \(nav\.redirect\) redirect\(contentHref\(/.test(pg) && !/\btry\s*\{/.test(pg) && !/<iframe/.test(pg));
   }
 

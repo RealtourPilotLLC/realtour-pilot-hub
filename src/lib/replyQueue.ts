@@ -158,11 +158,24 @@ const ACK_WORDS = new Set([
   // Oct 27 2026: "It went well" (a client telling us the shoot went fine) sat
   // on Kyle's Comms as needing a reply.
   "went", "well", "smoothly", "nicely",
+  // Oct 29 2026 (Jordan and James: a client's "okay" read as unanswered or as
+  // a QC problem reopened): the other ways a client says "okay". Words that
+  // make an instruction together stay out ("Update it", "Copy me", "Do that").
+  "that's", "it's", "understood", "noted", "gotcha", "alright", "alrighty",
+  "okie", "okey", "kk", "roger", "lovely",
 ]);
 // Unambiguous closing phrases that survive a couple of non-ack words around
 // them ("All good homey 🙏", "You're the man", "Looking forward to Friday").
 const ACK_PHRASE_RE =
   /\b(will do|sounds (good|great)|no (problem|worries)|all (good|set)|you'?re the (man|best)|looking forward to|see you (then|there|soon)|good luck|have a (good|great)|talk (soon|later)|(it |that |everything |the shoot )?went (really |so |very )?(well|great|smoothly|perfectly))\b/i;
+// Oct 29 2026: more ways to say "okay". Each counts only when every other word
+// beside it is an acknowledgment too: "Got it, thanks!" closes a thread; "Got
+// it, update the cover photo" and "Got it, but the kitchen is still dark" don't.
+const ACK_PHRASE_STRICT_SRC =
+  "\\b(?:(?:that )?works for me|that works|makes sense(?: to me)?|copy that|got it|understood|noted|ok(?:ay)?,? (?:great|perfect|cool|thanks?|thank you|sounds good|got it|will do)|thanks? (?:you )?for (?:the |your )?(?:update|info|information|heads[- ]up|confirmation|confirming|letting (?:me|us) know))\\b";
+const ACK_PHRASE_STRICT_RE = new RegExp(ACK_PHRASE_STRICT_SRC, "i");
+const ACK_PHRASE_STRICT_ALL = new RegExp(ACK_PHRASE_STRICT_SRC, "gi");
+const wordsOf = (s: string): string[] => s.toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[^a-z']+/g, " ").trim().split(/\s+/).filter(Boolean);
 // A REQUEST INSIDE A THANK-YOU STILL NEEDS AN ANSWER (Oct 27 2026). The praise
 // rule below read "Thank you so much! Can you also send the floor plan" as a
 // closer (it is short and says "thank"). Any ask phrasing vetoes courtesy, so
@@ -271,7 +284,7 @@ function isCourtesy(text: string): boolean {
   if (t.includes("?")) return false; // they asked something
   if (t.length > 120) return false; // a real message, whatever it opens with
   if (ASK_RE.test(t)) return false; // "thanks! can you also…" is an ask (Oct 27 2026)
-  const words = t.toLowerCase().replace(/[^a-z']+/g, " ").trim().split(/\s+/).filter(Boolean);
+  const words = wordsOf(t);
   // Punctuation/emoji only. A bare number is information, not a closer: Tim
   // Bonner's "+1 (610) 509-1197" (the phone for Harrison) read as a thank-you
   // and the clean-up would have closed its task (Oct 27 2026).
@@ -286,6 +299,7 @@ function isCourtesy(text: string): boolean {
   // A see-you closer counts only beside a thank-you ("See you on the 12th"
   // alone is a plan; "Thanks! See you on the 12th" is a sign-off).
   if (plain.length <= 80 && (ACK_PHRASE_RE.test(plain) || (seeYou && PRAISE_ONLY.test(plain))) && !classifyComm(t).isRevision) return true;
+  if (plain.length <= 80 && ACK_PHRASE_STRICT_RE.test(plain) && wordsOf(plain.replace(ACK_PHRASE_STRICT_ALL, " ")).every((w) => ACK_WORDS.has(w)) && !classifyComm(t).isRevision) return true;
   if (plain.length <= 60 && PRAISE_ONLY.test(plain) && !classifyComm(t).isRevision) return true;
   return false;
 }

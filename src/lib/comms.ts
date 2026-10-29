@@ -272,9 +272,16 @@ export async function recordClientCommunication(opts: {
   // A THANK-YOU OPENS NO REPLY TASK (Oct 27 2026): "Thank you so much!" and
   // "It went well" each became a to-do on Kyle's Comms. A message that is only
   // a thank-you or an acknowledgment (replyQueue.isAckOnlyInbound: no
-  // question, no ask, no revision, a signature allowed) is still logged and
-  // still read for revisions, asks and complaints below; it just never opens
-  // or merges into a reply to-do. A thank-you with a request in it does.
+  // question, no ask, no revision, a signature allowed) is still logged; it
+  // never opens or merges into a reply to-do. A thank-you with a request in it
+  // does.
+  // AN "OKAY" REOPENS NOTHING EITHER (Jordan and James, Oct 29 2026: a
+  // client's "okay" read as an unanswered message or a QC problem reopened).
+  // The AI reads the whole recent conversation, so an "okay" under our "we'll
+  // redo the kitchen" came back as a revision (reopening the job and its QC
+  // pass) or as the earlier ask filed again. An acknowledgment now files no
+  // revision, no ask, no photo request and no shoot note: whatever it agrees
+  // to was already asked, and is already ours. A complaint is still read.
   const { isAckOnlyInbound } = await import("@/lib/replyQueue");
   const ackOnly = isAckOnlyInbound(opts.text, opts.kind);
 
@@ -372,7 +379,7 @@ export async function recordClientCommunication(opts: {
     }
     // Observability: record what the brain did + any flags, on the chosen order.
     if (effProjectId) {
-      const what = !decision.actionable ? "no action needed" : ackOnly ? "no to-do (only a thank-you or acknowledgment)" : mergedInto ? "merged into an open to-do" : decision.mergeIntoTaskId && !checked.issue ? "created a to-do (a different request than the open one it named)" : "created a to-do";
+      const what = !decision.actionable ? "no action needed" : ackOnly ? `no to-do (only a thank-you or acknowledgment${decision.isRevisionRequest || decision.asks?.length ? "; nothing reopened or filed from it" : ""})` : mergedInto ? "merged into an open to-do" : decision.mergeIntoTaskId && !checked.issue ? "created a to-do (a different request than the open one it named)" : "created a to-do";
       const note = `Smart Brain: ${what} — ${decision.reason}${decision.flags.length ? ` [${decision.flags.join("; ")}]` : ""}`;
       await prisma.activity.create({ data: { projectId: effProjectId, type: "SYSTEM", body: note.slice(0, 300) } }).catch(() => {});
     }
@@ -426,7 +433,7 @@ export async function recordClientCommunication(opts: {
   // to-do it just opened is closed with a note, and a photographer shooting it
   // within 24 hours hears it once. Keyed per message; best-effort.
   let shootNoteFiled = false;
-  if (decision?.actionable && effProjectId && !checked.issue && opts.clientId) {
+  if (decision?.actionable && !ackOnly && effProjectId && !checked.issue && opts.clientId) {
     const { fileClientShootNote } = await import("@/lib/shootNotes");
     const r = await fileClientShootNote({
       clientId: opts.clientId, projectId: effProjectId, text: opts.text, source: opts.source ?? "comms",
@@ -468,7 +475,8 @@ export async function recordClientCommunication(opts: {
   // Whether this is a real revision request: trust the Smart Brain (it can tell a
   // booking/scheduling/pricing message from an actual "redo the delivered work"
   // ask); fall back to the keyword classifier only when the brain is unavailable.
-  const revisionSignal = decision ? decision.isRevisionRequest : cls.isRevision;
+  // An acknowledgment is never a revision (Oct 29 2026, above).
+  const revisionSignal = ackOnly ? false : decision ? decision.isRevisionRequest : cls.isRevision;
   const negativeWords = !!effProjectId && isNegativeSentiment(opts.text);
 
   // ONE re-anchor, read by BOTH gates below. A client message anchored to a
@@ -542,6 +550,42 @@ export async function recordClientCommunication(opts: {
   }
 
   let revision = false;
+  // NOTHING ON THE JOB TO REVISE (Oct 29 2026, 4008 Oakland Rd, lib/
+  // revisionTarget): an ask about a video on a job that had none, or a
+  // reshoot on a job delivered months ago, is new work, not a revision. The
+  // delivered job keeps a line saying so; the words go on the client's
+  // not-yet-delivered job at that street when there is one, and the office
+  // has the message as a to-do (the brain's, or one made here). Nor do the
+  // photos of that job reopen for it (the photo step below).
+  let newWorkOn: string | null = null;
+  if (revisionSignal && anchorProjectId && !retry?.firstPass.revision && anchorStatus && DELIVERED_ISH.has(anchorStatus)) {
+    const { revisionTargetFor } = await import("@/lib/revisionTarget");
+    const target = await revisionTargetFor(anchorProjectId, askMedium(opts.text));
+    if (!target.revise) {
+      newWorkOn = anchorProjectId;
+      const street = (anchorAddress ?? "this job").split(",")[0].trim();
+      await prisma.activity.create({
+        data: {
+          projectId: anchorProjectId,
+          type: "SYSTEM",
+          body: `Not filed as a revision on ${street}: ${target.why}.${target.sibling ? ` The words went on ${target.sibling.title.split(",")[0].trim()}, the job that is not delivered yet.` : ""} The office has it as a to-do.`.slice(0, 500),
+        },
+      }).catch(() => {});
+      if (!replyTask && !ackOnly && opts.clientId) {
+        replyTask = await createCommTask({
+          clientId: opts.clientId, clientName: opts.clientName, contactName: opts.contactName ?? null,
+          projectId: target.sibling?.id ?? null, propertyAddress: target.sibling?.title ?? anchorAddress,
+          kind: opts.kind === "email" ? "text" : opts.kind,
+          snippet: opts.text, source: opts.source,
+          aiTitle: `New request — ${street}`, aiDetail: `Not a change to what was delivered: ${target.why}. Book or quote it, or answer them.`,
+          threadRef: opts.threadRef ?? null,
+        }).catch(() => false);
+      }
+      anchorProjectId = target.sibling?.id ?? null;
+      anchorStatus = null;
+      anchorAddress = target.sibling?.title ?? null;
+    }
+  }
   // A second read never raises the revision the first one already raised.
   if (revisionSignal && anchorProjectId && !retry?.firstPass.revision) {
     if (anchorStatus && DELIVERED_ISH.has(anchorStatus)) {
@@ -603,7 +647,10 @@ export async function recordClientCommunication(opts: {
   if (opts.clientId) {
     const channel = opts.kind === "email" ? "email" : opts.kind === "text" ? "text" : "call";
     try {
-      if (decision && Array.isArray(decision.asks) && decision.asks.length) {
+      // An acknowledgment files no ask (Oct 29 2026): the ask it agrees to is already filed.
+      if (ackOnly) {
+        /* nothing to file */
+      } else if (decision && Array.isArray(decision.asks) && decision.asks.length) {
         const { fileAsksFromMessage } = await import("@/lib/clientAsks");
         await fileAsksFromMessage({
           clientId: opts.clientId,
@@ -636,7 +683,7 @@ export async function recordClientCommunication(opts: {
   // "Client asked: ..." and holds the next delivery until it is done), the
   // photo job reopens as "Client asked for changes after delivery", and the
   // work goes on the delivery owner's list, assigned (photoDelivery/clientAsked).
-  if (opts.clientId && !checked.issue) {
+  if (opts.clientId && !checked.issue && !ackOnly) {
     try {
       const channel = opts.kind === "email" ? "email" : opts.kind === "text" ? "text" : "call";
       const photoAsks = (decision?.asks ?? []).filter((a) => a.kind === "SPECIAL_REQUEST" && (a.medium === "photo" || a.medium === "both"));
@@ -648,7 +695,7 @@ export async function recordClientCommunication(opts: {
             : [];
       const done = new Set<string>();
       for (const w of wanted) {
-        if (!w.projectId || done.has(w.projectId)) continue;
+        if (!w.projectId || done.has(w.projectId) || w.projectId === newWorkOn) continue;
         done.add(w.projectId);
         // Oct 22 2026: the revision raised for this message already split it,
         // and its photo part is on the photo job (lib/briefPhotoAsks): the

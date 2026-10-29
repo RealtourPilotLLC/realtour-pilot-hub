@@ -562,24 +562,33 @@ export async function completeStep(actor: Actor, stepId: string, note?: string |
   return { ok: true, message: "Done.", issueId: step.issueId };
 }
 
-/** Take a step off the plan: its open task is cancelled (the assigner or the owner may), else it is just removed. */
+/**
+ * Take a step off the plan: its open task is cancelled, else it is just
+ * removed. Any lead on the complaint may (Kyle, Oct 29 2026: "Remove button
+ * is not working"; the steps the hub set up for Jordan were refused to him as
+ * "Only the person who assigned it can cancel it"). A task that was never
+ * delegated (a hub to-do the step points at) stays as it is: only the step
+ * leaves the plan.
+ */
 export async function removeStep(actor: Actor, stepId: string, why: string): Promise<Result & { issueId?: string }> {
   const reason = clip(why, 300);
   if (reason.length < 3) return { ok: false, message: "Say why it isn't needed." };
   const step = await prisma.clientIssueStep.findUnique({ where: { id: stepId } });
   if (!step || step.removedAt) return { ok: false, message: "That step is gone." };
+  let leftList = false;
   if (step.taskId) {
-    const t = await prisma.smartTask.findUnique({ where: { id: step.taskId }, select: { status: true } });
-    if (t && !["COMPLETED", "CANCELLED"].includes(t.status)) {
+    const t = await prisma.smartTask.findUnique({ where: { id: step.taskId }, select: { status: true, delegatedAt: true } });
+    if (t && !["COMPLETED", "CANCELLED"].includes(t.status) && t.delegatedAt) {
       const { cancelTask } = await import("@/lib/delegation");
-      const r = await cancelTask(actor, step.taskId, reason);
-      if (!r.ok) return { ok: false, message: r.message };
+      const r = await cancelTask(actor, step.taskId, reason, { planStep: true });
+      if (!r.ok) return { ok: false, message: r.message, issueId: step.issueId };
+      leftList = true;
     }
   }
   await prisma.clientIssueStep.update({ where: { id: stepId }, data: { removedAt: new Date(), removedBy: actor.name, doneNote: reason } });
   const issue = await prisma.clientIssue.findUnique({ where: { id: step.issueId }, select: { historyJson: true } });
   if (issue) await prisma.clientIssue.update({ where: { id: step.issueId }, data: { historyJson: pushHistory(issue.historyJson, actor.name, `Step removed (${reason}): ${step.text}`) } });
-  return { ok: true, message: "Removed from the plan and from their list.", issueId: step.issueId };
+  return { ok: true, message: leftList ? `Removed from the plan and from ${step.ownerName ?? "their"}${step.ownerName ? "'s" : ""} list.` : "Removed from the plan.", issueId: step.issueId };
 }
 
 /** The steps still open on a complaint ("Mark corrected" waits for these). */

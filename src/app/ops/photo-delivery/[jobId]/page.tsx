@@ -18,6 +18,7 @@ import { CoachingCard } from "@/components/photoDelivery/CoachingCard";
 import { PrepModeControl } from "@/components/photoDelivery/PrepModeControl";
 import { BeforeYouSendView, loadBeforeYouSend } from "@/components/jobs/BeforeYouSend";
 import { loadJobDetail, loadStrip, loadViewer } from "../data";
+import { SendToJordan } from "@/components/delegation/SendToJordan";
 
 export const dynamic = "force-dynamic";
 
@@ -72,7 +73,11 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
         title={h.street}
         subtitle={[h.clientName ?? "No client", h.cityLine].filter(Boolean).join(" · ")}
         sticky="desktop"
-        actions={<JobHeaderActions jobId={h.id} stage={h.stage} autohdr={!!h.autohdrPhotoshootId || data.photos.some((p) => p.sourceKind === "AUTOHDR")} readOnly={readOnly} />}
+        actions={<>
+          <JobHeaderActions jobId={h.id} stage={h.stage} autohdr={!!h.autohdrPhotoshootId || data.photos.some((p) => p.sourceKind === "AUTOHDR")} readOnly={readOnly} />
+          {/* Send to Jordan for the leads, James's view-only login too (James call, Oct 28 2026). */}
+          {(viewer.role === "ADMIN" || viewer.role === "CREATIVE_MANAGER") && <SendToJordan title={`${h.street} · Photos`} href={`/ops/photo-delivery/${h.id}`} projectId={h.projectId} />}
+        </>}
       />
       <div className="mx-auto max-w-[120rem] space-y-4 p-4 pb-0 sm:p-6 sm:pb-0">
         <GlobalStrip strip={strip} current="job" />

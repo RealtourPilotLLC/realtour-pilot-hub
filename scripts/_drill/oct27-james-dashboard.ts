@@ -144,6 +144,7 @@ async function fixture(): Promise<Desk> {
       ],
       handoffs: [],
       team: [teamHandoff("p-cedar", "29 Cedar Ln"), teamHandoff("p-pine", "26 Pine Rd")],
+      teamUpcoming: [],
       unavailable: false, myShootsHref: "/shoot?as=jamestm", closedOut: 0, fullHref: "/production",
     },
     review: { ready: [], delayed: [], coverHours: 9, unavailable: false },
@@ -187,7 +188,7 @@ async function partA(c: ReturnType<typeof makeChecker>) {
   // A brief Kyle waits on, a visit over with nothing recorded, an own handoff.
   const v = structuredClone(base);
   v.production.mine[0] = { ...v.production.mine[0], over: true, started: true, status: { label: "Handoff due", tone: "todo" }, chips: [chip("field", "Nothing recorded from the field yet", "todo"), ...v.production.mine[0].chips], missing: ["Nothing recorded from the field yet"] };
-  v.production.mine[1] = { ...v.production.mine[1], briefAck: { day: "2026-10-28", digest: DIGEST, again: false }, status: { label: "Brief to confirm", tone: "todo" }, missing: ["Shoot-day brief to confirm"] };
+  v.production.mine[1] = { ...v.production.mine[1], briefAck: { day: "2026-10-28", digest: DIGEST, again: false, changes: [] }, status: { label: "Brief to confirm", tone: "todo" }, missing: ["Shoot-day brief to confirm"] };
   const own: HandoffRow = { ...teamHandoff("p-oak", "12 Oak Ln"), mine: true, photographer: "James Livingston", status: "Upload started, not submitted", finishHref: "/upload/p-oak#submit" };
   v.production.handoffs = [own];
   const vHtml = render(v);
@@ -198,6 +199,26 @@ async function partA(c: ReturnType<typeof makeChecker>) {
   const full = render(v, "production");
   const perry = block(full, 'data-shoot="a-maple"', "li");
   c.ok("the full view lists every shoot of his; the brief Kyle waits on is one button, Mark brief read (the version shown)", count(full, /<li data-shoot="/g) === 7 && perry.includes('data-brief-ack="2026-10-28"') && perry.includes(">Mark brief read<") && perry.includes('data-status="Brief to confirm"') && perry.includes('href="/shoot/p-maple"'));
+  // James's call (Oct 2026): a changed brief shows WHAT changed, its Got it under it; none on record opens the day's brief.
+  const ch = structuredClone(v);
+  ch.production.mine[1] = { ...ch.production.mine[1], briefAck: { day: "2026-10-28", digest: DIGEST, again: true, changes: ['40 Maple Ave: request changed from "Lights on" to "Lights on in every room, blinds open"'] }, status: { label: "Brief changed", tone: "todo" } };
+  ch.production.mine[2] = { ...ch.production.mine[2], briefAck: { day: "2026-10-28", digest: DIGEST, again: true, changes: [] }, status: { label: "Brief changed", tone: "todo" } };
+  const chFull = render(ch, "production");
+  const chMaple = block(chFull, 'data-shoot="a-maple"', "li");
+  const box = block(chMaple, 'data-brief-changes="a-maple"', "div");
+  c.ok("a changed brief lists what changed (before and after) on the row, and its Mark changed brief read sits under it", box.includes("What changed") && box.includes("request changed from &quot;Lights on&quot; to &quot;Lights on in every room, blinds open&quot;") && box.includes('data-brief-ack="2026-10-28"') && box.includes(">Mark changed brief read<") && count(chMaple, /data-brief-ack=/g) === 1, chMaple.slice(0, 900));
+  const chCherry = block(chFull, 'data-shoot="a-cherry"', "li");
+  c.ok("…a change with no words on record is never confirmed blind: See what changed, to the day's brief", chCherry.includes('data-primary="see-changes"') && chCherry.includes('href="/shoot/brief/2026-10-28"') && !chCherry.includes("data-brief-ack"), chCherry.slice(0, 700));
+  // Harrison's Firethorn shoot (Oct 28, 2 PM; the call was at 1:30): the team's shoots from today on.
+  const tu = structuredClone(v);
+  tu.production.teamUpcoming = [
+    { id: "a-fire", projectId: "p-fire", photographer: "Harrison Wells", street: "512 Firethorn Rd", clientName: "Mike Sample", whenISO: "2026-10-27T18:00:00.000Z", whenWords: "Today 2:00 PM", today: true, started: false, services: ["Essentials Package"], brief: chip("brief", "Brief sent, no Got it yet", "info"), href: "/shoot/p-fire" },
+  ];
+  const tuFull = render(tu, "production");
+  const fire = block(tuFull, 'data-team-shoot="a-fire"', "li");
+  c.ok("the full view lists the team's shoots from today on (Harrison's 2 PM Firethorn), with his brief and Open shoot", tuFull.includes('data-section="team-shoots"') && fire.includes("Harrison · 512 Firethorn Rd") && fire.includes("Today 2:00 PM") && fire.includes("Brief sent, no Got it yet") && fire.includes('href="/shoot/p-fire"') && tuFull.includes('href="/schedule"'), fire.slice(0, 600));
+  const tuHome = block(render(tu), 'data-section="production"', "section");
+  c.ok("…and the dashboard's Production card counts them toward the full view", tuHome.includes("1 team shoot this week"), tuHome.slice(-500));
   c.ok("…the team's handoffs he supervises (Check upload, Close out), and the way back", full.includes('data-list="team-handoffs"') && count(full, /data-handoff="p-(cedar|pine)" data-mine="false"/g) === 2 && full.includes("Check upload") && full.includes("Close out") && full.includes("Back to the dashboard") && !full.includes('data-section="team"') && !full.includes('data-section="assigned"'));
 
   // =====================================================================
@@ -285,13 +306,13 @@ async function partA(c: ReturnType<typeof makeChecker>) {
   const aHtml = block(render(a), 'data-section="assigned"', "section");
   const cell = (id: string) => block(aHtml, `data-task="${id}"`, "li");
   c.ok("a delegated task waiting: Accept, in place", cell("t-del").includes('data-step="accept"') && cell("t-del").includes("Awaiting acceptance") && cell("t-del").includes("From Jordan"));
-  c.ok("a routed brand update and a program's mid-month check: Accept; the brand update says it closes itself", cell("t-brand").includes('data-step="accept"') && cell("t-brand").includes("Closes when the editors tap Got it") && cell("t-mid").includes('data-step="accept"') && cell("t-mid").includes('href="/content/enr-nora"'));
-  c.ok("in progress: Done; a brand update in progress: Check the brief (it closes on the editors' Got it, never by hand)", cell("t-prog").includes('data-step="done"') && cell("t-brand2").includes(">Check the brief<") && cell("t-brand2").includes('href="/edit/p-own"') && !cell("t-brand2").includes('data-step="done"'));
+  c.ok("a routed brand update and a program's mid-month check: Accept; the brand update says it closes itself", cell("t-brand").includes('data-step="accept"') && cell("t-brand").includes("Closes by itself once the editor works from the brief") && cell("t-mid").includes('data-step="accept"') && cell("t-mid").includes('href="/content/enr-nora"'));
+  c.ok("in progress: Done; a brand update in progress: Check the brief (it closes on the editor's Got it or their work from the brief, never by hand)", cell("t-prog").includes('data-step="done"') && cell("t-brand2").includes(">Check the brief<") && cell("t-brand2").includes('href="/edit/p-own"') && !cell("t-brand2").includes('data-step="done"'));
   c.ok("every row also opens More: delegate, escalate", ["t-del", "t-brand", "t-mid", "t-prog", "t-brand2"].every((id) => cell(id).includes(`data-open-panel="task:${id}"`) && cell(id).includes("More: delegate, escalate")));
   const tp = render(a, "home", { kind: "task", id: "t-mid" });
   c.ok("a routed task's panel: Accept, Done, Hand to Kyle, Escalate to Jordan, Delegate to someone on the team", ['data-control="my-task"', ">Accept<", ">Done<", ">Hand to Kyle<", ">Escalate to Jordan<", "Delegate to", ">Harrison Wells<", ">Kim Miguel<"].every((w) => tp.includes(w)), tp.slice(tp.indexOf("data-side-panel"), tp.indexOf("data-side-panel") + 300));
   const bp = render(a, "home", { kind: "task", id: "t-brand" });
-  c.ok("…a brand update's panel has no Done, and says how it closes", bp.includes('data-control="my-task"') && !/>Done</.test(bp.slice(bp.indexOf('data-control="my-task"'))) && bp.includes("This closes by itself when every editor on the client taps Got it"));
+  c.ok("…a brand update's panel has no Done, and says how it closes", bp.includes('data-control="my-task"') && !/>Done</.test(bp.slice(bp.indexOf('data-control="my-task"'))) && bp.includes("This closes by itself when the editor taps Got it on the brief or works from it"));
   const dp = render(a, "home", { kind: "task", id: "t-del" });
   c.ok("…a delegated task keeps the delegation steps", ["Accept", "Update", "Flag blocker", "Complete", "Escalate"].every((w) => dp.includes(`>${w}</button>`)));
 
@@ -323,6 +344,9 @@ async function partA(c: ReturnType<typeof makeChecker>) {
   c.ok("the shoot-day brief: Mark brief read with that day's version", line("brief").includes('data-brief-ack="2026-10-28"') && line("brief").includes(">Mark brief read<"));
   c.ok("access missing is Kyle's to chase (said, not counted as James's): Ask Kyle on the job; the script: Ask Jordan", line("access").includes('data-tone="info"') && line("access").includes('data-ask-to="kyle"') && line("access").includes(">Ask Kyle<") && line("script").includes('data-ask-to="jordan"'));
   c.ok("special requests link to where they are on the page; the card closes with Ask Kyle or Jordan and Flag a problem", line("requests").includes('href="#brief"') && card.includes('data-ask-to="choose"') && card.includes(">Ask Kyle or Jordan<") && card.includes('href="#flag"'));
+  const changedCard = flat(createElement(ShootPrepCard, { projectId: "p-maple", lines: [{ key: "brief", label: "Your shoot-day brief changed. Kyle sees it unconfirmed until you mark it read", tone: "todo" as const, detail: { title: "What changed", lines: ['825 Cherry St: new request "Produce reel styled after shared Instagram"'] }, action: { kind: "ack" as const, day: "2026-10-28", digest: DIGEST, again: true } }], readOnly: false }));
+  const cl = block(changedCard, 'data-prep-line="brief"', "li");
+  c.ok("the shoot screen: a changed brief says what changed before its Mark changed brief read", cl.includes('data-prep-detail="brief"') && cl.includes("825 Cherry St: new request") && cl.indexOf("data-prep-detail") < cl.indexOf("data-brief-ack") && cl.includes(">Mark changed brief read<"), cl.slice(0, 700));
   const cardRo = flat(createElement(ShootPrepCard, { projectId: "p-maple", lines, readOnly: true }));
   c.ok("in a preview: the lines and links, no ask, no Mark brief read", !cardRo.includes("data-ask") && !cardRo.includes("data-brief-ack") && cardRo.includes('href="#brief"'));
 }

@@ -73,7 +73,8 @@ export type Evidence = { label: string; href: string | null; at: string | null; 
 export type DevLogKind =
   | "created" | "feedback" | "evidence" | "plan" | "practice" | "practice_recommended"
   | "follow_up_set" | "follow_up" | "verified" | "closed";
-export type DevLog = { at: string; by: string; kind: DevLogKind; note?: string | null; result?: string | null };
+/** `notice`: the bell row that told the person (Oct 29 2026, lib/coachingNotice); `told`: how it reached them, in words, filled on read. */
+export type DevLog = { at: string; by: string; kind: DevLogKind; note?: string | null; result?: string | null; notice?: string | null; told?: string | null };
 export type Criterion = { key: string; label: string; source: "kpi" | "james"; covers: string | null; met: "yes" | "no" | "unknown"; evidence: string | null };
 
 export type DevPerson = { id: string; name: string; group: DevGroupKey; editorKey: string | null; key: string | null };
@@ -115,6 +116,25 @@ export type Signal = {
   /** the evidence count behind `detail`, and the same in a few words (Oct 27 2026: the dashboard's one-line rows and Process Improvements) */
   count: number;
   countWords: string;
+  /** Oct 29 2026 (lib/qcCoaching): photo check findings at the property nobody has confirmed yet. Not evidence until someone does. */
+  needsLook?: boolean;
+  /** the photo check findings behind the row, each with the call on it (the panel's Photographer's to fix / Not an issue) */
+  findings?: SignalFinding[];
+  /** how often people called this check "not an issue" */
+  tally?: string | null;
+};
+
+export type SignalFinding = {
+  id: string;
+  jobId: string;
+  photoId: string | null;
+  street: string;
+  issue: string;
+  atISO: string;
+  /** a person's call on it as coaching evidence (qc_coach:<id>), or the photo desk's words that settled it */
+  call: { verdict: "coach" | "not_theirs" | "wrong"; by: string; atISO: string; reason: string | null } | null;
+  state: "counts" | "needs_look";
+  why: string;
 };
 
 export type ReadinessView = {
@@ -257,7 +277,10 @@ export async function readDevelopmentItems(now: Date, opts: { includeRecent?: bo
     orderBy: [{ followUpAt: { sort: "asc", nulls: "last" } }, { createdAt: "asc" }],
     take: 300,
   });
-  return rows.map((r) => itemView(r, now));
+  const views = rows.map((r) => itemView(r, now));
+  // How each note reached the person (Oct 29 2026): "Harrison was texted at 5:12 PM".
+  await import("@/lib/coachingNotice").then((m) => m.attachToldWords(views, new Date())).catch((e: unknown) => console.warn("teamDevelopment: notice words failed", (e as Error)?.message));
+  return views;
 }
 
 // ---- readiness -----------------------------------------------------------------------
@@ -386,30 +409,80 @@ async function fieldSignals(people: DevPerson[], now: Date): Promise<{ signals: 
     const jobs = projects.length ? await prisma.photoJob.findMany({ where: { projectId: { in: projects.map((p) => p.id) } }, select: { id: true, projectId: true } }) : [];
     const findings = jobs.length ? await prisma.photoQcFinding.findMany({
       where: { jobId: { in: jobs.map((j) => j.id) }, responsibility: "PHOTOGRAPHER", confidence: { gte: settings.displayConfidenceFloor }, status: { notIn: ["FALSE_POSITIVE", "OVERRIDDEN", "SUPERSEDED"] }, OR: [{ decidedBy: null }, { decidedBy: { notIn: gated } }] },
-      select: { ruleId: true, jobId: true, specificIssue: true },
+      select: { id: true, ruleId: true, jobId: true, photoId: true, specificIssue: true, status: true, decidedBy: true, statusReason: true, createdAt: true },
+      orderBy: { createdAt: "desc" },
     }) : [];
     const projectOf = new Map(jobs.map((j) => [j.id, projects.find((p) => p.id === j.projectId)!]));
+    // Oct 29 2026 (Jordan's call table, lib/qcCoaching): what is at the
+    // property (a neighbor's car, a bin, a cord, staging) is evidence only
+    // once a person says it was the photographer's to fix; anything a person
+    // called "not an issue" is out. The rest waits on its own row, "to
+    // confirm", which is never evidence: no coaching item can be made from it
+    // (creativeDeskActions) and Process Improvements never counts it (its key
+    // is photoqc-look, not photoqc).
+    const { coachCalls, coachState, coachTally, tallyWords } = await import("@/lib/qcCoaching");
+    const [calls, tally] = await Promise.all([coachCalls(findings.map((f) => f.id)), coachTally(now)]);
+    type Bucket = { jobs: Set<string>; rows: SignalFinding[]; confirmed: number };
+    const sigFinding = (f: (typeof findings)[number], state: SignalFinding["state"], why: string): SignalFinding => {
+      const c = calls.get(f.id) ?? null;
+      return {
+        id: f.id, jobId: f.jobId, photoId: f.photoId, street: streetOf(projectOf.get(f.jobId)?.title), issue: clean(f.specificIssue, 140), atISO: f.createdAt.toISOString(),
+        call: c ? { verdict: c.verdict, by: clean(c.by, 60), atISO: c.at, reason: c.reason ? clean(c.reason, 200) : null } : null, state, why: clean(why, 160),
+      };
+    };
     for (const p of people) {
-      const byRule = new Map<string, { jobs: Set<string>; issue: string }>();
+      const counted = new Map<string, Bucket>();
+      const toLook = new Map<string, Bucket>();
       for (const f of findings) {
         if (projectOf.get(f.jobId)?.photographerId !== p.id) continue;
-        const e = byRule.get(f.ruleId) ?? { jobs: new Set<string>(), issue: f.specificIssue };
+        const call = calls.get(f.id) ?? null;
+        const s = coachState(f, call, tally);
+        if (s.state === "dismissed") continue;
+        const into = s.state === "counts" ? counted : toLook;
+        const e = into.get(f.ruleId) ?? { jobs: new Set<string>(), rows: [], confirmed: 0 };
         e.jobs.add(f.jobId);
-        byRule.set(f.ruleId, e);
+        e.rows.push(sigFinding(f, s.state, s.why));
+        if (call?.verdict === "coach") e.confirmed++;
+        into.set(f.ruleId, e);
       }
-      for (const [ruleId, e] of [...byRule].filter(([, x]) => x.jobs.size >= 2).sort((a, b) => b[1].jobs.size - a[1].jobs.size).slice(0, 3)) {
-        const label = ruleById(ruleId)?.shortLabel ?? ruleId;
+      const labelOf = (ruleId: string) => clean(ruleById(ruleId)?.shortLabel ?? ruleId, 80);
+      const exampleOf = (key: string) => (r: SignalFinding): Evidence => ({ label: `${r.street}: ${r.issue}`, href: `/ops/photo-delivery/${r.jobId}${r.photoId ? `?photo=${r.photoId}` : ""}`, at: r.atISO, source: key });
+      const firstPerJob = (rows: SignalFinding[]) => rows.filter((r, i) => rows.findIndex((x) => x.jobId === r.jobId) === i);
+      // A check a person confirmed is a row even on one shoot; otherwise 2+ shoots, as before.
+      for (const [ruleId, e] of [...counted].filter(([, x]) => x.jobs.size >= 2 || x.confirmed > 0).sort((a, b) => b[1].jobs.size - a[1].jobs.size).slice(0, 3)) {
+        const key = `field:${p.id}:photoqc:${ruleId}`;
+        const confirmedWords = e.confirmed ? `, ${e.confirmed} confirmed by a person` : "";
         out.push({
-          key: `field:${p.id}:photoqc:${ruleId}`,
+          key,
           group: "FIELD",
           personId: p.id,
           personName: p.name,
-          skill: `Photo check: ${clean(label, 80)}`,
-          detail: `Found on ${e.jobs.size} shoots in the last 30 days`,
+          skill: `Photo check: ${labelOf(ruleId)}`,
+          detail: `Found on ${e.jobs.size} ${e.jobs.size === 1 ? "shoot" : "shoots"} in the last 30 days${confirmedWords}`,
           source: "The free photo check (findings the photographer owns)",
           count: e.jobs.size,
-          countWords: `${e.jobs.size} shoots in 30 days`,
-          examples: [...e.jobs].slice(0, 4).map((jobId) => ({ label: `${streetOf(projectOf.get(jobId)?.title)}: ${clean(e.issue, 120)}`, href: `/ops/photo-delivery/${jobId}`, at: null, source: `field:${p.id}:photoqc:${ruleId}` })),
+          countWords: `${e.jobs.size} ${e.jobs.size === 1 ? "shoot" : "shoots"} in 30 days`,
+          examples: firstPerJob(e.rows).slice(0, 4).map(exampleOf(key)),
+          findings: e.rows.slice(0, 12),
+          tally: tallyWords(tally.get(ruleId)),
+        });
+      }
+      for (const [ruleId, e] of [...toLook].filter(([r, x]) => x.jobs.size + (counted.get(r)?.jobs.size ?? 0) >= 2).sort((a, b) => b[1].jobs.size - a[1].jobs.size).slice(0, 3)) {
+        const key = `field:${p.id}:photoqc-look:${ruleId}`;
+        out.push({
+          key,
+          group: "FIELD",
+          personId: p.id,
+          personName: p.name,
+          skill: `Photo check to confirm: ${labelOf(ruleId)}`,
+          detail: `Found on ${e.jobs.size} ${e.jobs.size === 1 ? "shoot" : "shoots"} in the last 30 days. None counts until someone says it was the photographer's to fix`,
+          source: "The free photo check: what is at the property (cars, bins, objects, staging) needs a person's look first",
+          count: e.jobs.size,
+          countWords: `${e.jobs.size} to confirm`,
+          examples: firstPerJob(e.rows).slice(0, 4).map(exampleOf(key)),
+          needsLook: true,
+          findings: e.rows.slice(0, 12),
+          tally: tallyWords(tally.get(ruleId)),
         });
       }
     }

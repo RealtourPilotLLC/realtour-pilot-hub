@@ -74,6 +74,7 @@ import { PortalCard, Fold, StatusChip } from "@/components/upload/portalUi";
 import { AddedAtShoot } from "@/app/upload/[id]/AddedAtShoot";
 import type { ShootAddOn } from "@/app/upload/shootAddOns";
 import { emptySong, songLines, songOfText, songProblem, SONG_LINE_RE, type SongRequest } from "@/lib/songRequest";
+import { DIRECTION_PROMPTS, SESSION_DIRECTION_PROMPTS, editingDirectionProblem, withStarter } from "@/lib/editingDirection";
 import {
   BASE_SERVICES, SERVICE_KEYS, SERVICE_LABEL, contributionState, coveredByJobHandoff, halfOfService, halvesToSubmit, serviceOfAddonItem, serviceOfType,
   type Contribution, type ServiceKey, type SharedNote,
@@ -1264,6 +1265,10 @@ export function UploadPortal({
     return [
       !st?.color ? `pick the color profile for ${name}` : null,
       v.shape === "full" && !st?.sections.vision.trim() ? `the vision for ${name}` : null,
+      // Oct 29 2026 (lib/editingDirection): typed, but nothing specific ("Standard edit"), as the server asks.
+      v.shape === "full" && st?.sections.vision.trim() && !dropboxInstructions
+        ? editingDirectionProblem([st.sections.vision, st.sections.mustShow, st.sections.avoid, st.sections.realtor, st.sections.additional].join("\n"), { name })?.replace(/\.$/, "") ?? null
+        : null,
       v.shape === "full" && !st?.style ? `pick an edit style for ${name}` : null,
       v.shape === "agent_intro" && !st?.sections.intro.trim() ? `the agent's intro script for ${name}` : null,
     ].filter((x): x is string => !!x);
@@ -1713,6 +1718,7 @@ export function UploadPortal({
       if (fullFields && !vidSections.vision.trim()) vm.push("the vision for the edit");
       if (fullFields && effectiveStyle === null) vm.push("pick an edit style");
       if (notesRequired && !vidSections.editNotes.trim()) vm.push("your editing instructions for the editor");
+      if (directionProblem) vm.push(directionProblem.replace(/\.$/, ""));
     }
     // R02: a content session whose topic list did not load can't hand the
     // video over — it would go without a filming report (no list, no ticks).
@@ -2185,6 +2191,17 @@ export function UploadPortal({
   // premium brief with no vision and no style. A hint, never a block: the
   // required fields above are the block. Not on a plain social reel (it needs
   // no brief), a held video, or words already handed in.
+  // WORDS THAT SAY SOMETHING (Oct 29 2026, Jordan and James: "Harrison's
+  // editor notes could amount to 'standard edit'"; lib/editingDirection). The
+  // required box typed with nothing specific ("Standard edit", "N/A") holds
+  // the video half, as the server's gate does; said under the box as it is
+  // typed, and in the submit's list. The files are never held.
+  const directionKey: VidKey | null = fullFields ? "vision" : notesRequired ? "editNotes" : null;
+  const directionProblem = (() => {
+    if (!directionKey || !videoShown || !videoLive || firstHeld || hadPriorBrief || dropboxInstructions) return null;
+    if (!vidSections[directionKey].trim()) return null; // the empty box has its own "required" line
+    return editingDirectionProblem(vidInstructions);
+  })();
   const lightHint = (() => {
     if (!videoShown || !videoLive || firstHeld || spec.minimalReel || hadPriorBrief || dropboxInstructions) return null;
     const own = vidInstructions.trim();
@@ -3879,6 +3896,27 @@ export function UploadPortal({
                         placeholder={copy?.placeholder ?? s.placeholder}
                         className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
                       />
+                      {/* Oct 29 2026 (lib/editingDirection): one tap starts a line the editor can use. */}
+                      {s.key === directionKey && !hadPriorBrief && (
+                        <div data-direction-prompts className="mt-1.5 flex flex-wrap gap-1.5">
+                          {(contentSession ? SESSION_DIRECTION_PROMPTS : DIRECTION_PROMPTS).map((pr) => (
+                            <button
+                              key={pr.key}
+                              type="button"
+                              onClick={() => setVidSections((v) => ({ ...v, [s.key]: withStarter(v[s.key], pr.starter) }))}
+                              className="min-h-9 rounded-lg border border-border bg-surface px-2.5 text-[13px] font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+                            >
+                              + {pr.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {s.key === directionKey && directionProblem && (
+                        <p data-direction-problem role="status" className="mt-1.5 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[13px]">
+                          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />
+                          <span>{directionProblem} The video can&apos;t be handed in until it does.</span>
+                        </p>
+                      )}
                     </div>
                   );
                 };
@@ -3904,7 +3942,7 @@ export function UploadPortal({
               })()}
 
               {/* Oct 27 2026: light instructions said before the submit (the KPI's own rule). */}
-              {lightHint && (
+              {lightHint && !directionProblem && (
                 <p data-light-instructions role="status" className="mt-2 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[13px]">
                   <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />
                   <span><span className="font-semibold">These instructions are light:</span> {lightHint}. Light instructions count against your KPI.</span>

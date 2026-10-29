@@ -187,7 +187,50 @@ const TASK_STATUSES = new Set([
 // "spam" additionally MUTES the number so the same blaster doesn't need a tick
 // a day. A teammate's number can never be muted — their texts are how the
 // field talks to the office.
+//
+// Oct 29 2026 (Kyle: "I clicked on marked as handled on this task by mistake"):
+// every tick is bracketed by lib/handledUndo, so it comes back with an
+// `undoId` the screen offers as Undo (and Handled today as Reopen). A spam
+// tick also mutes the number; that is undone from the muted-numbers fold.
 export async function markCommsHandled(
+  clientId: string | null,
+  family: "phone" | "email" = "phone",
+  groupKey?: string,
+  opts: { threadKey?: string | null; reason?: string | null } = {},
+): Promise<{ ok: boolean; message?: string; undoId?: string }> {
+  try { await requireAdmin(); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "Admins only." }; }
+  const { handledBefore, handledAfter } = await import("@/lib/handledUndo");
+  const input = { clientId, family, groupKey: groupKey ?? null, threadKey: opts.threadKey ?? null, reason: opts.reason ?? null };
+  const before = await handledBefore(input).catch(() => null);
+  const r = await markCommsHandledNow(clientId, family, groupKey, opts);
+  if (!r.ok || !before || (opts.reason ?? "").trim() === "spam") return r;
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const undoId = await handledAfter(before, { name: me?.name || me?.email || null }).catch(() => null);
+  return undoId ? { ...r, undoId } : r;
+}
+
+/** Undo a Mark handled (the toast's Undo, Handled today's Reopen): lib/handledUndo. */
+export async function undoCommsHandled(undoId: string): Promise<{ ok: boolean; message: string }> {
+  try { await requireAdmin(); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "Admins only." }; }
+  if (!/^[a-z0-9]{8,40}$/.test(String(undoId ?? ""))) return { ok: false, message: "That can't be reopened." };
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const { undoHandled } = await import("@/lib/handledUndo");
+  const r = await undoHandled(undoId, { name: me?.name || null, email: me?.email ?? null });
+  if (r.ok) for (const p of ["/", "/communications", "/tasks", "/ops"]) revalidatePath(p);
+  return r;
+}
+
+/** Conversations marked handled today (ET), still handled: the Handled today fold. */
+export async function handledTodayAction(): Promise<{ ok: boolean; rows: import("@/lib/handledUndo").HandledRow[] }> {
+  try { await requireAdmin(); } catch { return { ok: false, rows: [] }; }
+  const { recentHandled } = await import("@/lib/handledUndo");
+  const { etDayStartUtc } = await import("@/lib/datetime");
+  return { ok: true, rows: await recentHandled(etDayStartUtc(new Date())).catch(() => []) };
+}
+
+async function markCommsHandledNow(
   clientId: string | null,
   family: "phone" | "email" = "phone",
   groupKey?: string,
@@ -651,10 +694,27 @@ async function closeEditCardWork(projectId: string, editorKey: string, what: (by
 // "waiting on the editor" is exactly what an active editor is doing.
 const CARD_PAUSES_WORK = new Set(["OPEN", "WAITING_CLIENT", "WAITING_PHOTOGRAPHER", "WAITING_VENDOR", "WAITING_JORDAN", "BLOCKED"]);
 
+/**
+ * A refused task change, in words (James call, Oct 28 2026: Complete and the
+ * owner picker on 893 S Matlack said "The status change was not confirmed.
+ * Reload…"). A guard's throw reaches the browser with its message hidden, so
+ * the card could only guess; the refusal is RETURNED instead, naming whose
+ * task it is and the way forward.
+ */
+async function taskRefusal(taskId: string, e: unknown): Promise<{ ok: false; message: string }> {
+  const why = e instanceof Error ? e.message : "";
+  if (!/have access/i.test(why)) return { ok: false, message: why || "That change was refused. Nothing was changed." };
+  const t = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { assignedKey: true } }).catch(() => null);
+  const { listAssignees } = await import("@/lib/assignees");
+  const holder = t?.assignedKey ? (await listAssignees().catch(() => [])).find((a) => a.key === t.assignedKey)?.name ?? t.assignedKey : null;
+  return { ok: false, message: `${holder ? `This task is ${holder}'s` : "This task is the office's"}, so it can't be completed or moved from your login. Nothing was changed. Use Send to Jordan if it needs a decision.` };
+}
+
 export async function setSmartTaskStatus(taskId: string, status: string): Promise<{ ok: boolean; message: string } | undefined> {
   // Owner/admin, or the editor this task is delegated to — editors must be able
-  // to complete their own queue work (audit crack #28).
-  await requireTaskAccess(taskId);
+  // to complete their own queue work (audit crack #28). The creative manager:
+  // his own, his crew's and what he assigned (guards.creativeLeadReaches).
+  try { await requireTaskAccess(taskId); } catch (e) { return taskRefusal(taskId, e); }
   if (!TASK_STATUSES.has(status)) return; // never write a free-form status
   // Read BEFORE the write: a QC close has to carry the closed-by-hand marker in
   // the SAME update, or the hourly reconciler wins the race and reopens it.
@@ -883,6 +943,9 @@ export async function setSmartTaskStatus(taskId: string, status: string): Promis
   revalidatePath("/history");
   // Photographers complete their assigned tasks from the My Shoots card.
   revalidatePath("/shoot");
+  // The dashboards and the task board show the same card (Oct 29 2026).
+  revalidatePath("/");
+  revalidatePath("/tasks");
   if (t?.projectId) revalidatePath(`/projects/${t.projectId}`);
 }
 
@@ -1072,16 +1135,18 @@ export async function listTaskPingTargets(): Promise<{ id: string; name: string 
 
 // Delegate a task to an editor (or clear it back to "Needs you"). Pass "" / "kyle"
 // to un-delegate. Keys validated against the editor roster (src/lib/editors.ts).
-export async function setTaskAssignee(taskId: string, key: string) {
+export async function setTaskAssignee(taskId: string, key: string): Promise<{ ok: boolean; message: string } | undefined> {
   // Owner/admin, or the editor this task is currently assigned to (so an editor
-  // can hand a task back to Kyle) — audit crack #28.
-  await requireTaskAccess(taskId);
+  // can hand a task back to Kyle) — audit crack #28. The creative manager: his
+  // own, his crew's and what he assigned (guards.creativeLeadReaches). A
+  // refusal comes back in words (taskRefusal), never as a hidden throw.
+  try { await requireTaskAccess(taskId); } catch (e) { return taskRefusal(taskId, e); }
   const { listAssignees, slugForName } = await import("@/lib/assignees");
   const roster = await listAssignees();
   const validKeys = new Set(roster.map((a) => a.key));
   const assignedKey = key && validKeys.has(key) ? key : null;
   const prev = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { assignedKey: true, taskType: true, projectId: true } });
-  if (!prev) return;
+  if (!prev) return { ok: false, message: "That task no longer exists." };
   // A VIDEO card (the edit card, or a video-lane revision) takes the job's
   // saved editor with it (tasks.reassignVideoCard, Oct 5 2026): otherwise a
   // job hand-picked for Kim went straight back to her the moment John's card
@@ -1094,7 +1159,7 @@ export async function setTaskAssignee(taskId: string, key: string) {
         data: { assignedKey },
         select: { projectId: true, title: true },
       }));
-  if (!t) return;
+  if (!t) return { ok: false, message: "That task no longer exists." };
   // THE WORK FOLLOWS THE CARD (§7.1, O09/A58). Moving a job's edit card — or
   // its video-lane revision — off an editor ends their stretch on it now, as
   // the Editing Room's own reassign does, recorded as whoever moved it. The
@@ -1164,7 +1229,13 @@ export async function setTaskAssignee(taskId: string, key: string) {
     } catch { /* notification is best-effort — the assignment itself stands */ }
   }
   revalidatePath("/queue");
+  // The dashboards and the task board carry the same card (Oct 29 2026): the
+  // owner picker there snapped back until a reload.
+  revalidatePath("/");
+  revalidatePath("/tasks");
   if (t.projectId) revalidatePath(`/projects/${t.projectId}`);
+  const toName = assignedKey ? roster.find((a) => a.key === assignedKey)?.name ?? assignedKey : null;
+  return { ok: true, message: toName ? `Moved to ${toName}.` : "Unassigned." };
 }
 
 /** What an edit card's chip says about the job's editing (§7.1, A64). */

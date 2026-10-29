@@ -19,6 +19,9 @@ import { closingNote } from "@/lib/programTaskCloser";
 //                                their last email (any of our inboxes)
 //   Chase CubiCasa floor plan    the floor plan is on the Aryeo listing, or every
 //   (vendor-chase-…-floorplan)   floor plan the job owes is marked Done in the hub
+//   Confirm <editor> has <client>'s  nothing on it is for an editor (shoot details) or
+//   brand update (brand-ack:…)        an editor worked from the brief since the change
+//                                     (lib/brandAckEvidence, Oct 29 2026)
 //
 // It never guesses:
 //   · a task a person assigned by hand (assignedManually), delegated, or
@@ -55,7 +58,7 @@ const etWhen = (d: Date) =>
 export type EvidenceVerdict = {
   taskId: string;
   title: string;
-  kind: "reply" | "floorplan";
+  kind: "reply" | "floorplan" | "brand";
   /** what proves it, in words (null = keep it open) */
   evidence: string | null;
   /** why it stays open, when it does */
@@ -193,7 +196,9 @@ export async function applyVerdicts(verdicts: EvidenceVerdict[], now = new Date(
 /** THE HOURLY PASS (cron/sync "taskEvidence"). `dryRun` reports and writes nothing. */
 export async function sweepTaskEvidence(opts: { dryRun?: boolean; now?: Date } = {}): Promise<{ checked: number; closed: number; verdicts: EvidenceVerdict[] }> {
   const now = opts.now ?? new Date();
-  const verdicts = [...(await replyVerdicts({ now })), ...(await floorPlanVerdicts())];
+  // Brand-update cards (Oct 29 2026, lib/brandAckEvidence): the editor has worked from the brief since the change.
+  const { brandAckVerdicts } = await import("@/lib/brandAckEvidence");
+  const verdicts = [...(await replyVerdicts({ now })), ...(await floorPlanVerdicts()), ...(await brandAckVerdicts())];
   const closed = opts.dryRun ? 0 : await applyVerdicts(verdicts, now);
   return { checked: verdicts.length, closed, verdicts };
 }

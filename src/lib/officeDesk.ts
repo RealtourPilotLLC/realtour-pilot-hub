@@ -15,7 +15,8 @@ import { remindViewsFor, REMIND_GAP_MS, type RemindView } from "@/lib/remindPhot
 import { parseAccessBrief, type AccessInfo } from "@/lib/opsDay";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { briefStatusForAppointments, type BriefState } from "@/lib/photographerBrief";
-import { tasksAssignedTo, type DelegatedTask, type DelegationState } from "@/lib/delegation";
+import { tasksAssignedTo, tasksDelegatedByAny, type DelegatedTask, type DelegationState } from "@/lib/delegation";
+import { handOffFor } from "@/lib/deskHandOff";
 import { emailThreadKey, emailThreadStatus, parseEmailThreadHref, threadMatches } from "@/lib/emailDelegation";
 import { offAt, offWords, timeOffBetween, type TimeOffSpan } from "@/lib/timeOff";
 import { expectedCrons, staleAfterMs, type CronJobHealth } from "@/lib/cronHealth";
@@ -310,6 +311,8 @@ export type DeskItem = {
   elapsed?: string;
   /** Today's Shoots: the prep chip */
   chip?: { label: string; tone: "ok" | "warn" | "bad" | "muted" };
+  /** handed on from this desk (lib/deskHandOff): waiting on that person, no second Hand it on */
+  handedTo?: { taskId: string; name: string; state: string } | null;
 };
 
 export type DeskSection = {
@@ -542,6 +545,8 @@ export function briefOffer(o: { state: BriefState | "unknown"; sent: boolean; st
     // "Not sent before the day's first shoot": a later visit that day still needs it.
     return /before the day's first shoot/i.test(o.why ?? "") ? { problem: "Brief not sent yet", waiting: false, send: o.sent ? "resend" : "send" } : { problem: null, waiting: false, send: null };
   }
+  // The text never reached their phone (photographerBrief.briefDelivery): a person calls or sends it again.
+  if (o.why && /^Not delivered:/.test(o.why)) return { problem: o.why.replace(/\.$/, ""), waiting: false, send: "resend" };
   // sent or changed: waiting on the photographer's Got it until the briefing build says it needs a person.
   const urgent = !!o.why && /First shoot|not acknowledged/i.test(o.why);
   if (urgent) return { problem: o.state === "changed" ? "Instructions changed and no new Got it yet" : "No Got it from the photographer yet", waiting: false, send: "resend" };
@@ -791,6 +796,11 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
     specialRequestsBoard(now, { countsOnly: true }).catch(warn("special requests")),
   ]);
   const assigned: DelegatedTask[] | null = await tasksAssignedTo(opts.person.key ?? "kyle").catch(warn("assigned tasks"));
+  // What this desk's person handed on, by every login they sign in with (lib/deskHandOff).
+  const myLogins = opts.person.teamMemberId
+    ? (await prisma.appUser.findMany({ where: { teamMemberId: opts.person.teamMemberId }, select: { email: true } }).catch(() => [])).map((u) => u.email)
+    : [];
+  const handed = await tasksDelegatedByAny([...myLogins, me?.email ?? ""], { now }).catch(warn("handed on"));
   const creativeName = first(creative?.name) || "James";
   const ownerName = first(owner?.name) || "Jordan";
   // Delegate and Escalate (Oct 27 2026): the team by assignment key, never a vendor or Kyle himself.
@@ -1824,6 +1834,22 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   // =====================================================================
   // THE SECTIONS, THE INTERRUPTIONS, THE DAILY CHECKS
   // =====================================================================
+  // HANDED ON IS OFF THE DESK (Kyle, Oct 29 2026: "I delegated this task to Jordan but it's
+  // still showing up"). A row with no task of its own that this person handed on waits on
+  // whoever has it, out of the count; it stays on their list. Cancelled, it comes back.
+  for (const i of items) {
+    if (i.state !== "now") continue;
+    const h = handOffFor(i, handed ?? []);
+    if (!h) continue;
+    const name = first(h.assigneeName) || "someone";
+    const words = h.state === "COMPLETED" ? `${name} marked it done` : DELEG_WORDS[h.state];
+    Object.assign(i, {
+      state: "waiting", who: name, late: false, primary: null, rank: RANK.housekeeping,
+      line: [`Handed to ${name}`, words, i.line].filter(Boolean).join(" · "),
+      reason: [`You handed this to ${name}${h.assignedAt ? ` ${delegWhen(h.assignedAt)}` : ""}`, h.outcome ? `Outcome wanted: ${clean(h.outcome)}` : null, `It is on ${name}'s list and off yours`, i.reason].filter(Boolean).join(" · "),
+      handedTo: { taskId: h.taskId, name, state: h.state },
+    } satisfies Partial<DeskItem>);
+  }
   const seen = new Set<string>();
   const unique = items.filter((i) => (seen.has(i.id) ? false : (seen.add(i.id), true)));
   const unavailableBy: Record<DeskSectionKey, string[]> = {

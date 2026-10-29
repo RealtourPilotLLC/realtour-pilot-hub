@@ -101,10 +101,28 @@ export type ShootRow = {
   over: boolean;
   /** the row's one status chip (the mockup's pill), or none */
   status: { label: string; tone: Tone } | null;
-  /** the shoot-day brief is waiting for his Got it (Kyle's desk sees an unconfirmed one): the day and the version shown */
-  briefAck: { day: string; digest: string; again: boolean } | null;
+  /** the shoot-day brief is waiting for his Got it (Kyle's desk sees an unconfirmed one): the day, the version shown and, when it changed, what changed */
+  briefAck: { day: string; digest: string; again: boolean; changes: string[] } | null;
   /** the upload page, at the part that finishes the handoff */
   finishHref: string;
+};
+
+/** A field teammate's visit from today on (James's call, Oct 2026: Harrison's
+ *  Firethorn shoot was on the Schedule but not on his team overview). */
+export type TeamShootRow = {
+  id: string;
+  projectId: string;
+  photographer: string;
+  street: string;
+  clientName: string | null;
+  whenISO: string;
+  whenWords: string;
+  today: boolean;
+  started: boolean;
+  services: string[];
+  /** the photographer's shoot-day brief, when it says something (confirmed, waiting, changed, not sent) */
+  brief: Chip | null;
+  href: string;
 };
 
 export type HandoffRow = {
@@ -258,7 +276,7 @@ export type CreativeDesk = {
   development: boolean;
   unavailable: string[];
   glance: { shoots: number | null; reviews: number | null; followUps: number | null; urgent: number | null; line: string };
-  production: { mine: ShootRow[]; handoffs: HandoffRow[]; team: HandoffRow[]; unavailable: boolean; myShootsHref: string; /** rows he closed out, hidden until something on them changes */ closedOut: number; /** the full view behind the card */ fullHref: string };
+  production: { mine: ShootRow[]; handoffs: HandoffRow[]; team: HandoffRow[]; /** the field team's shoots from today through the week ahead */ teamUpcoming: TeamShootRow[]; unavailable: boolean; myShootsHref: string; /** rows he closed out, hidden until something on them changes */ closedOut: number; /** the full view behind the card */ fullHref: string };
   review: { ready: CutRow[]; delayed: CutRow[]; coverHours: number; unavailable: boolean };
   team: { groups: DevGroupView[]; dueIds: string[]; unavailable: string[]; recordsUnavailable: boolean } | null;
   readiness: { items: DevelopmentRead["readiness"]; criteria: DevelopmentRead["criteria"]; people: { id: string; name: string }[]; unavailable: boolean } | null;
@@ -340,7 +358,7 @@ export const PRODUCTION_HREF = "/production";
 async function readProduction(ctx: Ctx): Promise<CreativeDesk["production"]> {
   const { now, tmId, ex } = ctx;
   const myShootsHref = tmId ? `/shoot?as=${tmId}` : "/shoot";
-  if (!tmId) return { mine: [], handoffs: [], team: [], unavailable: false, myShootsHref, closedOut: 0, fullHref: PRODUCTION_HREF };
+  if (!tmId) return { mine: [], handoffs: [], team: [], teamUpcoming: [], unavailable: false, myShootsHref, closedOut: 0, fullHref: PRODUCTION_HREF };
   const dayStart = etDayStartUtc(now);
   const today = etDayKey(now);
   const clientScope = ex.length ? { clientId: { notIn: ex } } : {};
@@ -492,20 +510,27 @@ async function readProduction(ctx: Ctx): Promise<CreativeDesk["production"]> {
       over,
       status,
       // The version to confirm is filled in below (one build per day).
-      briefAck: briefWaits ? { day: dayKey, digest: "", again: b?.state === "changed" } : null,
+      briefAck: briefWaits ? { day: dayKey, digest: "", again: b?.state === "changed", changes: [] } : null,
       finishHref: `/upload/${p.id}#capture`,
     };
   });
   // The day's brief as his Got it page builds it: its digest is the version
   // he confirms (acknowledgeBrief refuses any other). A day that can't be
   // built keeps no button; the brief page still has its own Got it.
+  // A changed brief carries WHAT changed (James's call, Oct 2026: "The 825
+  // State Street card said the brief changed, but neither of you could
+  // identify what changed after opening it"): the row lists it beside the
+  // button. A change with no words on record is opened on the day's brief
+  // page instead (CreativeDesk), never confirmed blind.
   const ackDays = [...new Set(mine.filter((s) => s.briefAck).map((s) => s.dayKey))];
   if (ackDays.length) {
-    const built = await import("@/lib/photographerBrief").then((m) => m.buildBriefDays(ackDays, { now, teamMemberIds: [tmId] })).catch(() => null);
+    const pb = await import("@/lib/photographerBrief");
+    const views = await pb.briefAckViews(tmId, ackDays, now).catch(() => null);
     for (const s of mine) {
       if (!s.briefAck) continue;
-      const digest = built?.briefs.find((x) => x.teamMemberId === tmId && x.day === s.dayKey)?.digest ?? "";
-      s.briefAck = /^[a-f0-9]{32}$/.test(digest) ? { ...s.briefAck, digest } : null;
+      const v = views?.get(s.dayKey);
+      const digest = v?.digest ?? "";
+      s.briefAck = /^[a-f0-9]{32}$/.test(digest) ? { ...s.briefAck, digest, changes: s.briefAck.again && v ? pb.changesForShoot(v.changed, s.id) : [] } : null;
     }
   }
 
@@ -521,8 +546,13 @@ async function readProduction(ctx: Ctx): Promise<CreativeDesk["production"]> {
   });
   const allHandoffs = await handoffRows(handedProjects, visits, drafts, ctx, true);
 
-  // The team he supervises: the other field creatives' last two weeks.
-  const team = await readTeamHandoffs(ctx).catch((e: unknown) => { console.warn("creativeDesk: team handoffs failed", (e as Error).message); return null; });
+  // The team he supervises: the other field creatives' last two weeks, and
+  // their shoots from today on (Harrison's Firethorn shoot, on the Schedule but
+  // not here, because this list only ever held handoffs).
+  const [team, teamUpcoming] = await Promise.all([
+    readTeamHandoffs(ctx).catch((e: unknown) => { console.warn("creativeDesk: team handoffs failed", (e as Error).message); return null; }),
+    readTeamUpcoming(ctx).catch((e: unknown) => { console.warn("creativeDesk: team shoots failed", (e as Error).message); return null; }),
+  ]);
   // The rows he closed out (lib/handoffCloseOut), while they read as they did then.
   const closedRow = ctx.myKey ? await prisma.appSetting.findUnique({ where: { key: handoffClosedKey(ctx.myKey) }, select: { value: true } }).catch(() => null) : null;
   const closed = readClosedHandoffs(closedRow?.value);
@@ -530,7 +560,7 @@ async function readProduction(ctx: Ctx): Promise<CreativeDesk["production"]> {
   const handoffs = open(allHandoffs);
   const teamOpen = open(team ?? []);
   const closedOut = allHandoffs.length - handoffs.length + (team ?? []).length - teamOpen.length;
-  return { mine, handoffs: handoffs.slice(0, 40), team: teamOpen, unavailable: team === null, myShootsHref, closedOut, fullHref: PRODUCTION_HREF };
+  return { mine, handoffs: handoffs.slice(0, 40), team: teamOpen, teamUpcoming: teamUpcoming ?? [], unavailable: team === null || teamUpcoming === null, myShootsHref, closedOut, fullHref: PRODUCTION_HREF };
 }
 
 async function handoffRows(
@@ -638,6 +668,73 @@ async function readTeamHandoffs(ctx: Ctx): Promise<HandoffRow[]> {
   ]);
   const rows = await handoffRows(projects, visits, drafts, ctx, false);
   return rows.sort((a, b) => (a.visitISO ?? "").localeCompare(b.visitISO ?? "")).slice(0, 60);
+}
+
+/**
+ * THE FIELD TEAM'S SHOOTS FROM TODAY ON (James's call, Oct 2026: "Harrison's
+ * Mike/Firethorn appointment appeared in Schedule but not James's team-shoot
+ * overview"). The overview only ever listed past visits with a handoff still
+ * open, so a teammate's shoot later that day (Firethorn, 2 PM on Oct 28, the
+ * call was at 1:30) was nowhere on it. The same visits the Schedule shows (not
+ * cancelled, the job not cancelled), for the same field team as the handoff
+ * list, today through the week ahead, with each one's shoot-day brief.
+ */
+async function readTeamUpcoming(ctx: Ctx): Promise<TeamShootRow[]> {
+  const { now, tmId, ex } = ctx;
+  const [owners, team] = await Promise.all([
+    prisma.appUser.findMany({ where: { role: "OWNER", status: "ACTIVE", teamMemberId: { not: null } }, select: { teamMemberId: true } }),
+    prisma.teamMember.findMany({ where: { active: true, role: "PHOTOGRAPHER", creativeManager: false }, select: { id: true, name: true } }),
+  ]);
+  const ownerIds = new Set(owners.map((o) => o.teamMemberId!));
+  const field = team.filter((t) => t.id !== tmId && !ownerIds.has(t.id) && !/^jordan\b/i.test(t.name.trim()));
+  if (!field.length) return [];
+  const fieldIds = field.map((t) => t.id);
+  const nameOf = new Map(field.map((t) => [t.id, t.name]));
+  const dayStart = etDayStartUtc(now);
+  const today = etDayKey(now);
+  const visits = await prisma.appointment.findMany({
+    where: {
+      status: { not: "CANCELED" },
+      startAt: { gte: dayStart, lt: new Date(dayStart.getTime() + 8 * DAY) },
+      OR: [{ assignedToId: { in: fieldIds } }, { assignedToId: null, project: { photographerId: { in: fieldIds } } }],
+      project: { status: { notIn: ["CANCELLED"] }, ...(ex.length ? { clientId: { notIn: ex } } : {}) },
+    },
+    orderBy: { startAt: "asc" },
+    take: 80,
+    select: { id: true, startAt: true, status: true, assignedToId: true, rawJson: true, project: { select: { id: true, title: true, status: true, photographerId: true, client: { select: { name: true } } } } },
+  });
+  const live = visits.filter((v) => v.startAt && !/POSTPON|UNSCHEDULED/i.test(v.status ?? ""));
+  if (!live.length) return [];
+  const briefs = await import("@/lib/photographerBrief").then((m) => m.briefStatusForAppointments(live.map((v) => v.id))).catch(() => null);
+  return live.map((v) => {
+    const start = v.startAt!;
+    const who = v.assignedToId ?? v.project.photographerId ?? "";
+    const dayKey = etDayKey(start);
+    const b = briefs?.get(v.id) ?? null;
+    const started = start.getTime() <= now.getTime();
+    const brief: Chip | null = v.project.status === "ON_HOLD" ? { key: "brief", label: "Job on hold", tone: "info" }
+      : !b || started || b.state === "off" ? null
+      : b.state === "acknowledged" ? { key: "brief", label: "Brief confirmed", tone: "ok" }
+      : b.state === "changed" ? { key: "brief", label: "Brief changed, no new Got it yet", tone: "todo" }
+      : b.state === "sent" ? { key: "brief", label: b.why && /^Not delivered:/.test(b.why) ? "Brief text never arrived" : "Brief sent, no Got it yet", tone: b.why && /^Not delivered:/.test(b.why) ? "todo" : "info" }
+      : b.state === "failed" ? { key: "brief", label: "Brief not sent", tone: "todo" }
+      : null;
+    const services = apptItems(v.rawJson);
+    return {
+      id: v.id,
+      projectId: v.project.id,
+      photographer: clean(nameOf.get(who) ?? "The team", 60),
+      street: streetOf(v.project.title),
+      clientName: v.project.client ? clean(v.project.client.name, 80) : null,
+      whenISO: start.toISOString(),
+      whenWords: `${dayKey === today ? "Today" : etDate(start)} ${etTime(start)}`,
+      today: dayKey === today,
+      started,
+      services: services.slice(0, 3).map((x) => clean(x, 60)),
+      brief,
+      href: `/shoot/${v.project.id}`,
+    };
+  });
 }
 
 // ---- C · creative review ---------------------------------------------------------------------
@@ -1003,17 +1100,22 @@ async function readAssigned(ctx: Ctx, roster: Assignee[], exclude: Set<string>):
     if (rows.has(t.id) || exclude.has(t.id)) continue;
     const d = extra.get(t.id);
     if (d) { if (d.state !== "COMPLETED" && d.state !== "CANCELLED") rows.set(t.id, fromDelegated(d)); continue; }
-    const overdue = !!t.dueAt && t.dueAt < ctx.now;
+    // A brand-update card waits on the editor, not on him (Oct 29 2026: 10 of
+    // James's 15 "urgent" were these): it carries no due date of its own, so
+    // one minted before that change is never overdue or urgent here either.
+    const selfClosing = !!t.dedupeKey?.startsWith("brand-ack:");
+    const dueAt = selfClosing ? null : t.dueAt;
+    const overdue = !!dueAt && dueAt < ctx.now;
     const state: AssignedRow["state"] = t.status === "BLOCKED" ? "BLOCKED" : t.status === "IN_PROGRESS" ? "IN_PROGRESS" : t.status.startsWith("WAITING") ? "WAITING" : "OPEN";
     rows.set(t.id, {
       taskId: t.id,
       title: clean(t.title, 160),
       outcome: t.summary ? clean(t.summary, 200) : null,
       assignedBy: t.flaggedBy ? clean(t.flaggedBy, 60) : null,
-      dueISO: t.dueAt?.toISOString() ?? null,
-      dueWords: t.dueAt ? dueWordsFor(t.dueAt.toISOString(), ctx.now) : null,
+      dueISO: dueAt?.toISOString() ?? null,
+      dueWords: dueAt ? dueWordsFor(dueAt.toISOString(), ctx.now) : null,
       overdue,
-      urgent: overdue || state === "BLOCKED" || (!!t.dueAt && t.dueAt < endToday),
+      urgent: overdue || state === "BLOCKED" || (!!dueAt && dueAt < endToday),
       state,
       stateWords: STATE_WORDS[state],
       blocker: t.blockedReason ? clean(t.blockedReason, 200) : null,
@@ -1021,7 +1123,7 @@ async function readAssigned(ctx: Ctx, roster: Assignee[], exclude: Set<string>):
       latestUpdate: null,
       needsVerification: false,
       delegated: false,
-      closesItself: !!t.dedupeKey?.startsWith("brand-ack:"),
+      closesItself: selfClosing,
       // The page the task itself names (a brand update's edit brief, a
       // program's /content page), else its job, else its client.
       href: pathIn(t.description) ?? (t.projectId ? `/projects/${t.projectId}` : t.clientId ? `/clients/${t.clientId}` : "/tasks"),
@@ -1053,7 +1155,7 @@ export async function buildCreativeDesk(me: DeskViewer, opts: { now?: Date; incl
   // only B (Oct 27 2026: the full view behind the Production card).
   const devOnly = opts.only === "development";
   const prodOnly = opts.only === "production";
-  const emptyProduction: CreativeDesk["production"] = { mine: [], handoffs: [], team: [], unavailable: false, myShootsHref: "/shoot", closedOut: 0, fullHref: PRODUCTION_HREF };
+  const emptyProduction: CreativeDesk["production"] = { mine: [], handoffs: [], team: [], teamUpcoming: [], unavailable: false, myShootsHref: "/shoot", closedOut: 0, fullHref: PRODUCTION_HREF };
   const [production, review, dev, prep, improvements] = await Promise.all([
     devOnly ? Promise.resolve(emptyProduction) : readProduction(ctx).catch(warn("your shoots")),
     devOnly || prodOnly ? Promise.resolve({ ready: [], delayed: [], coverHours: 9, unavailable: false }) : readReview(ctx, !!opts.includeTest).catch(warn("the review queue")),
@@ -1140,7 +1242,7 @@ export async function buildCreativeDesk(me: DeskViewer, opts: { now?: Date; incl
     development: seat,
     unavailable,
     glance: { shoots: shootsToday, reviews, followUps: seat ? followUps : null, urgent, line },
-    production: production ?? { mine: [], handoffs: [], team: [], unavailable: true, myShootsHref: me.teamMemberId ? `/shoot?as=${me.teamMemberId}` : "/shoot", closedOut: 0, fullHref: PRODUCTION_HREF },
+    production: production ?? { mine: [], handoffs: [], team: [], teamUpcoming: [], unavailable: true, myShootsHref: me.teamMemberId ? `/shoot?as=${me.teamMemberId}` : "/shoot", closedOut: 0, fullHref: PRODUCTION_HREF },
     review: review ?? { ready: [], delayed: [], coverHours: 9, unavailable: true },
     team,
     readiness,

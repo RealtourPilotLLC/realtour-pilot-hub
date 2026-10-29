@@ -498,7 +498,22 @@ const ACK_TASK_PREFIX = (clientId: string) => `brand-ack:${clientId}:`;
 export const BRAND_ALERT_CATCHUP_DAYS = 7;
 const BRAND_ALERT_LEASE_MS = 5 * 60_000;
 
-type ChangeRow = { id: string; label: string; kind: string; fromText: string | null; toText: string | null; actorLabel: string | null; source: string; createdAt: Date };
+type ChangeRow = { id: string; label: string; kind: string; fromText: string | null; toText: string | null; actorLabel: string | null; source: string; createdAt: Date; fieldKey?: string };
+
+// SHOOT DETAILS ARE NOT THE EDITOR'S (Oct 29 2026, James's call). The
+// production slots a call applies (filming location, preferred filming days,
+// wardrobe, teleprompter) were alerted like a logo: the editor got a DM and a
+// banner, and the creative manager a "Confirm Kim has …'s brand update" card
+// nothing could close (John Collins's and Bernadette Rabel's held only a
+// filming location). Jordan the same day: "The working preferences shown in
+// the editor brief should only be editing related". They stay recorded (the
+// history, the shoot brief reads the slots); they never reach an editor, a
+// receipt or the confirmation card, and an unacknowledged one never keeps a
+// card open.
+export const SHOOT_DETAIL_FIELD_PREFIX = "slot:production.";
+export const isShootDetailChange = (fieldKey: string | null | undefined): boolean => (fieldKey ?? "").startsWith(SHOOT_DETAIL_FIELD_PREFIX);
+const EDITOR_CHANGE: Prisma.ClientBrandChangeWhereInput = { NOT: { fieldKey: { startsWith: SHOOT_DETAIL_FIELD_PREFIX } } };
+export const SHOOT_DETAIL_ACK = "not for the editor: a shoot detail, on the shoot brief";
 
 /** One line per change, for the confirmation task and the editor's DM. */
 export function describeBrandChange(r: Pick<ChangeRow, "label" | "kind" | "fromText" | "toText">): string {
@@ -538,16 +553,21 @@ export async function alertBrandChanges(clientId: string, opts: { now?: Date } =
 
 /** A claimed batch stays recoverable until its task and delivery result are settled. */
 async function finishBrandAlertClaim(clientId: string, claim: string, now: Date, legacyUnknown = false): Promise<BrandAlertOutcome> {
-  const rows: ChangeRow[] = await prisma.clientBrandChange.findMany({ where: { alertClaim: claim }, orderBy: { createdAt: "asc" }, select: { id: true, label: true, kind: true, fromText: true, toText: true, actorLabel: true, source: true, createdAt: true } });
-  if (!rows.length) return { claimed: 0, channel: null, editors: [], taskId: null };
+  const claimed: ChangeRow[] = await prisma.clientBrandChange.findMany({ where: { alertClaim: claim }, orderBy: { createdAt: "asc" }, select: { id: true, label: true, kind: true, fromText: true, toText: true, actorLabel: true, source: true, createdAt: true, fieldKey: true } });
+  if (!claimed.length) return { claimed: 0, channel: null, editors: [], taskId: null };
   const client = await prisma.client.findUnique({ where: { id: clientId }, select: { id: true, name: true } });
   const clientName = client?.name ?? "A client";
   if (client && isSyntheticClientRow(client)) {
     // Ledger rows only — the programReminders escalate rule: a synthetic client
     // never puts work on a real person's desk or in their DMs.
     await prisma.clientBrandChange.updateMany({ where: { alertClaim: claim }, data: { alertChannel: "skipped_test" } });
-    return { claimed: rows.length, channel: "skipped_test", editors: [], taskId: null };
+    return { claimed: claimed.length, channel: "skipped_test", editors: [], taskId: null };
   }
+  // Shoot details settle here: recorded, never alerted (SHOOT_DETAIL_FIELD_PREFIX).
+  const shootIds = claimed.filter((r) => isShootDetailChange(r.fieldKey)).map((r) => r.id);
+  if (shootIds.length) await prisma.clientBrandChange.updateMany({ where: { id: { in: shootIds } }, data: { alertChannel: "shoot_only", alertEditorKeys: null, ackAt: now, ackBy: SHOOT_DETAIL_ACK } });
+  const rows = claimed.filter((r) => !isShootDetailChange(r.fieldKey));
+  if (!rows.length) return { claimed: claimed.length, channel: "shoot_only", editors: [], taskId: null };
   const editors = await assignedEditorsForClient(clientId);
   const alertsOn = await isAutomationEnabled("brand_change_alerts");
   // The task and every row's taskId commit together. A retry after this point
@@ -558,10 +578,10 @@ async function finishBrandAlertClaim(clientId: string, claim: string, now: Date,
     ? await deliverEditorAlert(clientId, clientName, rows, editors, `brand-updated-${clientId}-${dedupeHour}`)
     : "pending";
   await prisma.clientBrandChange.updateMany({
-    where: { alertClaim: claim },
+    where: { alertClaim: claim, id: { in: rows.map((r) => r.id) } },
     data: { alertChannel: channel, alertEditorKeys: editors.map((e) => e.key).join(",") || null, taskId },
   });
-  return { claimed: rows.length, channel, editors: editors.map((e) => e.key), taskId };
+  return { claimed: claimed.length, channel, editors: editors.map((e) => e.key), taskId };
 }
 
 /** The "make sure the editor has it" card: one open card per client, appended to.
@@ -569,7 +589,12 @@ async function finishBrandAlertClaim(clientId: string, claim: string, now: Date,
  *  clients are "the Creative Manager and Jordan", not Kyle). The card goes to
  *  whoever carries the creativeManager flag (taskRouting.creativeWorkDesk:
  *  else the owner), and an open card the hub put on someone else's desk moves
- *  over when the next change is appended. A card a person assigned stays put. */
+ *  over when the next change is appended. A card a person assigned stays put.
+ *  NO DUE DATE (Oct 29 2026, James's call: 15 "urgent" tasks, 10 of them these
+ *  cards). It waits on the editor, not on the person holding it: a 24-hour
+ *  due date made every card overdue the next day, often before the client had
+ *  a job to edit. It closes itself on "Got it", or on the editor working from
+ *  the brief since the change (taskEvidence, lib/brandAckEvidence). */
 async function ensureAckTask(clientId: string, clientName: string, rows: ChangeRow[], editors: AssignedEditor[], alertsOn: boolean, now: Date): Promise<string> {
   const { creativeWorkDesk, deskFields } = await import("@/lib/taskRouting");
   const desk = deskFields(await creativeWorkDesk().catch(() => null));
@@ -581,7 +606,7 @@ async function ensureAckTask(clientId: string, clientName: string, rows: ChangeR
   const lines = rows.map((r) => `• ${describeBrandChange(r)}`);
   const how = !editorWords
     ? "No editor is on their work right now, so nobody has been told. When a job is assigned, make sure its editor reads the brief's brand section."
-    : `${editorWords} ${who.length > 1 ? "see" : "sees"} it as a banner on the brief${projectId ? ` (/edit/${projectId})` : ""} until they press “Got it”, which closes this task. ${alertsOn ? "A Slack alert is enabled; check the recorded delivery result before assuming it arrived." : "Brand-change alerts to editors are switched off, so they have NOT been messaged — tell them, or wait for them to open the brief."}`;
+    : `${editorWords} ${who.length > 1 ? "see" : "sees"} it as a banner on the brief${projectId ? ` (/edit/${projectId})` : ""} until they press “Got it”. This task closes itself then, or once they have worked from that brief since the change (pressed Start or sent a version). ${alertsOn ? "A Slack alert is enabled; check the recorded delivery result before assuming it arrived." : "Brand-change alerts to editors are switched off, so they have NOT been messaged — tell them, or wait for them to open the brief."}`;
   return prisma.$transaction(async (tx) => {
     await lockAdvisory(tx, `brand-ack|${clientId}`);
     if (editors.length) await tx.clientBrandReceipt.createMany({
@@ -613,7 +638,7 @@ async function ensureAckTask(clientId: string, clientName: string, rows: ChangeR
         description: [`${clientName} changed their brand profile (${at}, by ${by}):`, ...lines, "", how].join("\n").slice(0, 6000),
         reasonCreated: "A brand profile or brand asset changed (CP-06)",
         source: rows.some((r) => r.source === "client_portal") ? "portal" : "content_program",
-        priority: "MEDIUM", dueAt: new Date(now.getTime() + 24 * 3600_000), ...desk,
+        priority: "MEDIUM", dueAt: null, ...desk,
         clientId, projectId, dedupeKey: `${ACK_TASK_PREFIX(clientId)}${newRows[0]?.id ?? rows[0].id}`,
       },
       select: { id: true },
@@ -729,7 +754,7 @@ export async function sweepBrandChangeAlerts(opts: { now?: Date; limit?: number 
       if (won.count) caughtUp += await finishBrandCatchup(s.clientId, s.alertClaim, now).catch(() => 0);
     }
     const pending = await prisma.clientBrandChange.findMany({
-      where: { alertChannel: "pending", ackAt: null, createdAt: { gte: new Date(now.getTime() - BRAND_ALERT_CATCHUP_DAYS * 86_400_000) } },
+      where: { alertChannel: "pending", ackAt: null, createdAt: { gte: new Date(now.getTime() - BRAND_ALERT_CATCHUP_DAYS * 86_400_000) }, ...EDITOR_CHANGE },
       distinct: ["clientId"], take: opts.limit ?? 50, select: { clientId: true },
     });
     for (const p of pending) {
@@ -738,7 +763,7 @@ export async function sweepBrandChangeAlerts(opts: { now?: Date; limit?: number 
       // does not send another DM.
       const claim = `${etHourKey(now)}:${randomUUID()}`;
       const won = await prisma.clientBrandChange.updateMany({
-        where: { clientId: p.clientId, alertChannel: "pending", ackAt: null, createdAt: { gte: new Date(now.getTime() - BRAND_ALERT_CATCHUP_DAYS * 86_400_000) } },
+        where: { clientId: p.clientId, alertChannel: "pending", ackAt: null, createdAt: { gte: new Date(now.getTime() - BRAND_ALERT_CATCHUP_DAYS * 86_400_000) }, ...EDITOR_CHANGE },
         data: { alertChannel: "sending", alertClaim: claim, alertedAt: now },
       });
       if (!won.count) continue;
@@ -780,7 +805,7 @@ const PENDING_DAYS = 45;
 export async function pendingBrandChanges(clientId: string, opts: { now?: Date; editorKey?: string | null } = {}): Promise<PendingBrandChange[]> {
   const now = opts.now ?? new Date();
   const rows = await prisma.clientBrandChange.findMany({
-    where: { clientId, ackAt: null, createdAt: { gte: new Date(now.getTime() - PENDING_DAYS * 86_400_000) } },
+    where: { clientId, ackAt: null, createdAt: { gte: new Date(now.getTime() - PENDING_DAYS * 86_400_000) }, ...EDITOR_CHANGE },
     orderBy: { createdAt: "asc" }, take: 60,
     include: { receipts: { select: { editorKey: true, ackAt: true, overrideAt: true } } },
   });
@@ -808,7 +833,7 @@ export async function acknowledgeBrandChanges(clientId: string, editorKey: strin
   const now = opts.now ?? new Date();
   return prisma.$transaction(async (tx) => {
     await lockAdvisory(tx, `brand-ack|${clientId}`);
-    const changes = await tx.clientBrandChange.findMany({ where: { clientId, ackAt: null, createdAt: { gte: new Date(now.getTime() - PENDING_DAYS * 86_400_000) } }, select: { id: true, taskId: true, alertEditorKeys: true } });
+    const changes = await tx.clientBrandChange.findMany({ where: { clientId, ackAt: null, createdAt: { gte: new Date(now.getTime() - PENDING_DAYS * 86_400_000) }, ...EDITOR_CHANGE }, select: { id: true, taskId: true, alertEditorKeys: true } });
     if (!changes.length) return { acked: 0, tasksClosed: 0 };
     const required = changes.flatMap((r) => [...new Set([...(r.alertEditorKeys ?? "").split(",").filter(Boolean), editorKey])].map((key) => ({ changeId: r.id, editorKey: key, requiredAt: now })));
     await tx.clientBrandReceipt.createMany({ data: required, skipDuplicates: true });
@@ -829,9 +854,10 @@ async function settleBrandReceipts(tx: Db, changeIds: string[], now: Date): Prom
   }
   let tasksClosed = 0;
   for (const taskId of taskIds) {
-    const open = await tx.clientBrandChange.count({ where: { taskId, ackAt: null } });
+    // A shoot detail never holds a card open (SHOOT_DETAIL_FIELD_PREFIX).
+    const open = await tx.clientBrandChange.count({ where: { taskId, ackAt: null, ...EDITOR_CHANGE } });
     if (open) {
-      const remaining = await tx.clientBrandReceipt.findMany({ where: { change: { taskId }, ackAt: null, overrideAt: null }, select: { editorKey: true } });
+      const remaining = await tx.clientBrandReceipt.findMany({ where: { change: { taskId, ...EDITOR_CHANGE }, ackAt: null, overrideAt: null }, select: { editorKey: true } });
       const keys = [...new Set(remaining.map((r) => r.editorKey))];
       if (keys.length) await tx.smartTask.updateMany({ where: { id: taskId, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { summary: `Still waiting on ${keys.join(", ")} for the brand update.` } });
       continue;
@@ -850,7 +876,7 @@ export async function overrideBrandChanges(clientId: string, by: string, reason:
   const now = opts.now ?? new Date();
   return prisma.$transaction(async (tx) => {
     await lockAdvisory(tx, `brand-ack|${clientId}`);
-    const rows = await tx.clientBrandChange.findMany({ where: { clientId, ackAt: null, createdAt: { gte: new Date(now.getTime() - PENDING_DAYS * 86_400_000) } }, select: { id: true, taskId: true, alertEditorKeys: true, receipts: { select: { editorKey: true } } } });
+    const rows = await tx.clientBrandChange.findMany({ where: { clientId, ackAt: null, createdAt: { gte: new Date(now.getTime() - PENDING_DAYS * 86_400_000) }, ...EDITOR_CHANGE }, select: { id: true, taskId: true, alertEditorKeys: true, receipts: { select: { editorKey: true } } } });
     if (!rows.length) return { overridden: 0, tasksClosed: 0 };
     await tx.clientBrandReceipt.createMany({ data: rows.flatMap((r) => {
       const keys = [...new Set([...(r.alertEditorKeys ?? "").split(",").filter(Boolean), ...r.receipts.map((x) => x.editorKey)])];

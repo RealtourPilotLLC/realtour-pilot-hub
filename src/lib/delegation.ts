@@ -488,9 +488,11 @@ export function safeHref(v: string | null | undefined): string | null {
  * naming someone else records a RECOMMENDATION the owner decides: the task
  * goes to the owner, never to the person named. A creative manager naming
  * the owner sends him a decision (an escalation), never "a recommendation for
- * Jordan". `traineeKey`: see assignRight (server callers only).
+ * Jordan". `traineeKey`: see assignRight (server callers only). `decision`:
+ * the owner named by anyone is a decision on his plate, the same as the
+ * creative manager's (lib/sendToJordan: Kyle's Send to Jordan too).
  */
-export async function assignTask(actor: Actor, input: AssignInput, opts: { now?: Date; source?: string; taskType?: string; traineeKey?: string | null } = {}): Promise<Result> {
+export async function assignTask(actor: Actor, input: AssignInput, opts: { now?: Date; source?: string; taskType?: string; traineeKey?: string | null; decision?: boolean } = {}): Promise<Result> {
   const now = opts.now ?? new Date();
   const title = clip(input.title, 140);
   if (!title) return say(false, "Give the task a name.");
@@ -505,7 +507,7 @@ export async function assignTask(actor: Actor, input: AssignInput, opts: { now?:
   // his dashboard read "Recommended for Jordan Spackman: your decision", its
   // "Assign to Jordan" changed nothing and the flag never cleared. Naming the
   // owner is an escalation he decides, on his plate.
-  const owner = right === "recommend" ? await ownerPerson(roster) : null;
+  const owner = right === "recommend" || opts.decision ? await ownerPerson(roster) : null;
   const upToOwner = !!owner && owner.key === target.key;
   if (upToOwner) right = "yes";
   const due = readDue(input.dueAt);
@@ -904,17 +906,26 @@ export async function requestUpdate(actor: Actor, taskId: string, note?: string 
   });
 }
 
-/** The assigner (or the owner) calls it off. */
-export async function cancelTask(actor: Actor, taskId: string, why: string, opts: { now?: Date } = {}): Promise<Result> {
+/** Who may take a step off a complaint plan, whoever assigned its task (lib/auth/guards requireCreativeLead). */
+const PLAN_LEAD_ROLES = ["OWNER", "ADMIN", "CREATIVE_MANAGER"];
+
+/**
+ * The assigner (or the owner) calls it off. `planStep`: the task is a step of
+ * a complaint plan, which every lead on the complaint shares (Kyle, Oct 29
+ * 2026: "Remove button is not working" on a step the hub had assigned for
+ * Jordan): any lead may take it off, and the history says it left the plan.
+ */
+export async function cancelTask(actor: Actor, taskId: string, why: string, opts: { now?: Date; planStep?: boolean } = {}): Promise<Result> {
   const now = opts.now ?? new Date();
   const text = clip(why, 300);
   if (!text) return say(false, "Say why it's no longer needed.");
+  const planLead = !!opts.planStep && PLAN_LEAD_ROLES.includes(actor.role);
   return mutate(taskId, (t) => {
     const rec = t.delegationRec;
     if (!t.delegatedAt || !rec) return say(false, "This task wasn't delegated.");
     if (CLOSED.includes(t.status)) return say(true, "Already closed.", taskId);
-    if (!isAssigner(actor, t) && actor.role !== "OWNER") return say(false, "Only the person who assigned it can cancel it.");
-    const next: DelegationRecord = { ...rec, escalated: null, recommended: null, events: [...rec.events, ev(actor, "cancelled", { text }, now)] };
+    if (!isAssigner(actor, t) && actor.role !== "OWNER" && !planLead) return say(false, "Only the person who assigned it can cancel it.");
+    const next: DelegationRecord = { ...rec, escalated: null, recommended: null, events: [...rec.events, ev(actor, "cancelled", { text: opts.planStep ? `Taken off the complaint plan: ${text}` : text }, now)] };
     return {
       data: { status: "CANCELLED", blockedReason: null },
       rec: next,

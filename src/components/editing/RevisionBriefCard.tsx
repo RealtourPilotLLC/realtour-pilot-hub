@@ -617,6 +617,22 @@ function OneBrief({
             </div>
           )}
 
+          {/* YOUR CALL (Oct 29 2026, Jordan: "I shouldn't have to choose the
+              music or dictate the flow"): choices the client left open that
+              are the editor's to make. Nobody is waiting on an answer. */}
+          {(brief.editorCalls?.length ?? 0) > 0 && (
+            <div className="rounded-lg border border-border bg-surface-2/60 px-2 py-1.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">Left to you</p>
+              <ul className="mt-0.5 space-y-1">
+                {brief.editorCalls!.map((q, i) => (
+                  <li key={i} className="text-[12px] leading-relaxed text-foreground/85">
+                    {q}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {/* THE WORK */}
           {total > 0 ? (
             <div>

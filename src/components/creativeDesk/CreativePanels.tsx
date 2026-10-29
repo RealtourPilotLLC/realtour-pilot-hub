@@ -3,20 +3,22 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Check, ExternalLink, Loader2, X } from "lucide-react";
+import { Check, ExternalLink, Loader2, Plus, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etDate, etDateTime } from "@/lib/datetime";
 import type { AssignedRow, CloseoutLine, CreativeDesk as Desk, CreativeCloseoutKey, FrictionRow } from "@/lib/creativeDesk";
-import type { DevGroupKey, Evidence } from "@/lib/teamDevelopment";
+import type { DevGroupKey, Evidence, Signal } from "@/lib/teamDevelopment";
+import { PhotoImg } from "@/components/photoDelivery/PhotoImg";
 import { approveCut } from "@/app/review/actions";
 import {
   acceptTaskAction, completeTaskAction, escalateTaskAction, flagBlockerAction, submitForVerificationAction, updateTaskAction,
 } from "@/app/delegation/actions";
 import { HANDOFF_CLOSE_REASONS, type HandoffCloseReason } from "@/lib/handoffCloseOut";
+import { SendToJordan } from "@/components/delegation/SendToJordan";
 import {
   addImprovementAction, askJordanImprovementAction, assignPracticeAction, closeOutHandoffAction, creativeCloseoutTickAction, escalateCutAction,
   finishImprovementAction, handMyTaskAction, myTaskStepAction, recommendToJordanAction, recordFeedbackAction, recordFollowUpAction,
-  saveAssessmentAction, startAssessmentAction, updateImprovementAction, updatePlanAction, verifyImprovementAction,
+  qcCoachCallAction, saveAssessmentAction, startAssessmentAction, updateImprovementAction, updatePlanAction, verifyImprovementAction,
 } from "@/app/creativeDeskActions";
 
 // ---------------------------------------------------------------------------
@@ -98,11 +100,14 @@ function EvidenceList({ items, href }: { items: Evidence[]; href: (h: string) =>
   );
 }
 
+/** Oct 29 2026 (lib/coachingNotice): what saving does for the person, said before it happens. */
+const TellsThem = () => <p className="text-[12px] text-muted">They see this on their own page in the hub and get the link by text or Slack (their own notification settings). The coaching history says when it reached them.</p>;
+
 const ReadOnlyNote = () => <p className="rounded-lg bg-surface-2 px-3 py-2 text-sm text-muted">Preview: read-only. Actions are off.</p>;
 
 // ---- the panel ---------------------------------------------------------------------------
 
-export function PanelBody({ panel, desk, href, onClose }: { panel: Panel; desk: Desk; href: (h: string) => string; onClose: () => void }) {
+export function PanelBody({ panel, desk, href, onClose, onOpen }: { panel: Panel; desk: Desk; href: (h: string) => string; onClose: () => void; onOpen?: (p: Panel) => void }) {
   const { title, sub, body } = content(panel, desk, href);
   return (
     <>
@@ -113,7 +118,19 @@ export function PanelBody({ panel, desk, href, onClose }: { panel: Panel; desk: 
         </div>
         <button type="button" autoFocus onClick={onClose} aria-label="Close" className="inline-flex size-11 shrink-0 items-center justify-center rounded-lg hover:bg-surface-2"><X aria-hidden className="size-5" /></button>
       </div>
-      <div className="flex-1 space-y-4 overflow-y-auto px-4 py-3">{body}</div>
+      <div className="flex-1 space-y-4 overflow-y-auto px-4 py-3">
+        {body}
+        {/* Oct 29 2026 (James thought one assessment had to be finished before another could
+            start): from inside any assessment, the next one is one tap away. */}
+        {panel.kind === "readiness" && onOpen && !desk.readOnly && !desk.readiness?.unavailable && (
+          <div className="border-t border-border pt-3">
+            <button type="button" data-open-panel="new-readiness" data-start-another onClick={() => onOpen({ kind: "new-readiness" })} className="inline-flex min-h-11 items-center gap-1 rounded-lg border border-border px-3 text-sm font-semibold hover:bg-surface-2">
+              <Plus aria-hidden className="size-4" /> Start another assessment
+            </button>
+            <p className="mt-1 text-[12px] text-muted">This one stays as it is. You can come back to it any time.</p>
+          </div>
+        )}
+      </div>
     </>
   );
 }
@@ -178,12 +195,20 @@ function content(panel: Panel, desk: Desk, href: (h: string) => string): { title
                 <PlanForm itemId={i.id} standard={i.standard} nextAction={i.nextAction} />
                 <PracticeForm itemId={i.id} field={field} />
                 <VerifyForm itemId={i.id} />
+                {/* The one way up (James call, Oct 28 2026): lib/teamDevelopment itemHref. */}
+                <SendToJordan title={`${i.personName} · ${i.skill}`} href={`/development?item=${i.id}`} />
               </div>
             )}
             <div>
               <h3 className="mb-1 text-sm font-semibold">History</h3>
               <ol data-log className="space-y-1 text-[12px] text-muted">
-                {i.log.map((l, n) => <li key={n}>{etDateTime(l.at)} · {l.by} · {l.kind.replace(/_/g, " ")}{l.result ? ` (${l.result.replace(/_/g, " ")})` : ""}{l.note ? `: ${l.note}` : ""}</li>)}
+                {i.log.map((l, n) => (
+                  <li key={n}>
+                    {etDateTime(l.at)} · {l.by} · {l.kind.replace(/_/g, " ")}{l.result ? ` (${l.result.replace(/_/g, " ")})` : ""}{l.note ? `: ${l.note}` : ""}
+                    {/* Oct 29 2026 (lib/coachingNotice): how this note reached them. */}
+                    {l.told && <span data-told className="block font-medium text-foreground">{l.told}</span>}
+                  </li>
+                ))}
               </ol>
             </div>
           </>
@@ -199,12 +224,20 @@ function content(panel: Panel, desk: Desk, href: (h: string) => string): { title
         sub: `${s.detail}. Source: ${s.source}.`,
         body: (
           <>
-            <p className="rounded-lg bg-surface-2/70 px-3 py-2 text-[12px] text-muted">Evidence, not a judgment. Look at the examples before recording anything.</p>
-            <div>
-              <h3 className="mb-1 text-sm font-semibold">Review examples</h3>
-              <EvidenceList items={s.examples} href={href} />
-            </div>
-            {ro ? <ReadOnlyNote /> : <NewItemForm group={g.key} people={[{ id: s.personId, name: s.personName }]} signalKey={s.key} skill={s.skill} />}
+            <p className="rounded-lg bg-surface-2/70 px-3 py-2 text-[12px] text-muted">
+              {s.needsLook
+                ? "Not evidence yet. A car, a bin or an object at the property may not have been the photographer's to fix. Look at each photo and say which."
+                : "Evidence, not a judgment. Look at the examples before recording anything."}
+            </p>
+            {s.findings?.length ? (
+              <PhotoCheckCalls s={s} href={href} readOnly={ro} />
+            ) : (
+              <div>
+                <h3 className="mb-1 text-sm font-semibold">Review examples</h3>
+                <EvidenceList items={s.examples} href={href} />
+              </div>
+            )}
+            {s.needsLook ? null : ro ? <ReadOnlyNote /> : <NewItemForm group={g.key} people={[{ id: s.personId, name: s.personName }]} signalKey={s.key} skill={s.skill} />}
           </>
         ),
       };
@@ -348,6 +381,7 @@ function FeedbackForm({ itemId }: { itemId: string }) {
         <label className={LABEL} htmlFor={`fbx-${itemId}`}>Example (optional)</label>
         <input id={`fbx-${itemId}`} name="ex" className={INPUT} placeholder="The job or moment you looked at" />
         <input name="exHref" className={INPUT} placeholder="Link inside the hub, e.g. /review/..." aria-label="Example link" />
+        <TellsThem />
         <Submit busy={busy}>Save feedback</Submit>
         <Said msg={msg} />
       </form>
@@ -370,6 +404,7 @@ function FollowUpForm({ itemId }: { itemId: string }) {
         </select>
         <label className={LABEL} htmlFor={`fun-${itemId}`}>Next follow-up (optional)</label>
         <input id={`fun-${itemId}`} name="next" type="date" className={INPUT} />
+        <TellsThem />
         <Submit busy={busy}>Save follow-up</Submit>
         <Said msg={msg} />
       </form>
@@ -460,9 +495,88 @@ function NewItemForm({ group, people, signalKey, skill }: { group: DevGroupKey; 
       <input id="nf-next" name="next" className={INPUT} />
       <label className={LABEL} htmlFor="nf-day">Follow-up date (optional)</label>
       <input id="nf-day" name="day" type="date" className={INPUT} />
+      <TellsThem />
       <Submit busy={busy} primary>Save</Submit>
       <Said msg={msg} />
     </form>
+  );
+}
+
+// ---- photo check findings as coaching evidence (Oct 29 2026, lib/qcCoaching) ------------------
+
+const CALL_WORDS: Record<"coach" | "not_theirs" | "wrong", string> = {
+  coach: "Photographer's to fix",
+  not_theirs: "Not an issue, outside their control",
+  wrong: "Not an issue, the check was wrong",
+};
+
+/**
+ * Each photo check finding behind a row, with its photo and the call on it:
+ * the photographer's to fix (it counts), or not an issue because it was
+ * outside their control or the check was wrong (it never counts against
+ * anyone, and the tally learns). Undo takes a call back.
+ */
+function PhotoCheckCalls({ s, href, readOnly }: { s: Signal; href: (h: string) => string; readOnly: boolean }) {
+  const { busy, msg, run } = useRun();
+  const [why, setWhy] = useState<"not_theirs" | "wrong">("not_theirs");
+  const [reason, setReason] = useState("");
+  const rows = s.findings ?? [];
+  const open = rows.filter((r) => !r.call);
+  const call = (ids: string[], verdict: "coach" | "not_theirs" | "wrong" | "undo") => run(() => qcCoachCallAction(ids, verdict, reason.trim() || null));
+  const small = "inline-flex min-h-10 items-center justify-center rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-60";
+  return (
+    <div data-photo-calls className="space-y-2">
+      <h3 className="text-sm font-semibold">{s.needsLook ? "Look at each one" : "The photos behind it"}</h3>
+      {s.tally && <p data-tally className="text-[12px] text-muted">{s.tally}.</p>}
+      {!readOnly && (
+        <div className="grid gap-2 sm:grid-cols-2">
+          <div>
+            <label className={LABEL} htmlFor={`why-${s.key}`}>When it is not an issue</label>
+            <select id={`why-${s.key}`} value={why} onChange={(e) => setWhy(e.target.value === "wrong" ? "wrong" : "not_theirs")} className={INPUT}>
+              <option value="not_theirs">Outside the photographer&rsquo;s control (a neighbor&rsquo;s car, street parking, a city bin)</option>
+              <option value="wrong">The check was wrong (it is not in the photo)</option>
+            </select>
+          </div>
+          <div>
+            <label className={LABEL} htmlFor={`reason-${s.key}`}>Why (optional)</label>
+            <input id={`reason-${s.key}`} value={reason} onChange={(e) => setReason(e.target.value)} className={INPUT} placeholder="e.g. the neighbor's truck" />
+          </div>
+        </div>
+      )}
+      <ul className="space-y-2">
+        {rows.map((r) => (
+          <li key={r.id} data-finding={r.id} data-call={r.call?.verdict ?? "none"} className="flex flex-wrap items-start gap-2 rounded-lg border border-border p-2">
+            {r.photoId && <PhotoImg photoId={r.photoId} hash={null} size="thumb256" alt={`${r.street}: ${r.issue}`} className="h-16 w-24 shrink-0 rounded object-cover" />}
+            <div className="min-w-0 flex-1 basis-40 text-sm">
+              <Link href={href(`/ops/photo-delivery/${r.jobId}${r.photoId ? `?photo=${r.photoId}` : ""}`)} className="font-medium text-brand hover:underline [overflow-wrap:anywhere]">{r.street}</Link>
+              <span className="text-[12px] text-muted"> · {etDate(r.atISO)}</span>
+              <p className="[overflow-wrap:anywhere]">{r.issue}</p>
+              <p className="text-[12px] text-muted [overflow-wrap:anywhere]">
+                {r.call ? `${CALL_WORDS[r.call.verdict]}: ${r.call.by}, ${etDate(r.call.atISO)}${r.call.reason ? `. ${r.call.reason}` : ""}` : r.why}
+              </p>
+            </div>
+            {!readOnly && (
+              <div className="flex flex-wrap gap-1.5">
+                {r.call ? (
+                  <button type="button" disabled={busy} onClick={() => call([r.id], "undo")} className={small}>Undo</button>
+                ) : (
+                  <>
+                    {r.state === "needs_look" && <button type="button" disabled={busy} onClick={() => call([r.id], "coach")} className={small}>Photographer&rsquo;s to fix</button>}
+                    <button type="button" disabled={busy} onClick={() => call([r.id], why)} className={small}>Not an issue</button>
+                  </>
+                )}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+      {!readOnly && open.length > 1 && (
+        <button type="button" disabled={busy} onClick={() => call(open.map((r) => r.id), why)} className={QUIET}>
+          {busy && <Loader2 aria-hidden className="size-4 animate-spin" />} Not an issue: all {open.length}
+        </button>
+      )}
+      <Said msg={msg} />
+    </div>
   );
 }
 
@@ -671,7 +785,7 @@ function PlainTaskControls({ t, people, ownerKey }: { t: AssignedRow; people: { 
         {kyle && <button type="button" onClick={() => setTo(kyle.key)} className={QUIET}>Hand to Kyle</button>}
         {ownerKey && <button type="button" onClick={() => setTo(ownerKey)} className={QUIET}>Escalate to Jordan</button>}
       </div>
-      {t.closesItself && <p className="text-[12px] text-muted">This closes by itself when every editor on the client taps Got it on the brief (or the office records an override there).</p>}
+      {t.closesItself && <p className="text-[12px] text-muted">This closes by itself when the editor taps Got it on the brief or works from it (presses Start or sends a version), or when the office records an override there.</p>}
       {others.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">
           <label className={LABEL} htmlFor={`dg-${t.taskId}`}>Delegate to</label>

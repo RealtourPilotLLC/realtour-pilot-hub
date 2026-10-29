@@ -262,7 +262,8 @@ async function main() {
       item({ area: "Music & sound", ask: "Lower the music in the video.", kind: "REFINEMENT", quote: "Can you turn the music down in the video?", medium: "video" }),
       item({ area: "Graphics & effects", ask: "Restage photo 11 with a small dining table.", kind: "REFINEMENT", quote: "the virtual staging of pic 11 should show a small dining table.", medium: "photo" }),
     ],
-    questions: ["V1: how much quieter should the music be?"],
+    // Oct 29 2026: "how much quieter" is now the editor's call (creativeReviewCore.editorsCall); a question only the client can answer still opens a card.
+    questions: ["V1: did the client send their own music for this? Ask the client."],
   });
   await textIn(X, mixed, { asks: [{ kind: "SPECIAL_REQUEST", text: "the virtual staging of pic 11 should show a small dining table", summary: "Restage pic 11", medium: "photo", projectHint: X.project.id }] });
   const bX = await briefFor(X.project.id, "turn the music down");

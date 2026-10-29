@@ -22,6 +22,7 @@ import { ShootFeedback } from "@/components/shoot/ShootFeedback";
 import { ClientPraiseCard } from "@/components/shoot/ClientPraiseCard";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
 import { BriefReadCard } from "@/components/shoot/BriefReadCard";
+import { SendToJordan } from "@/components/delegation/SendToJordan";
 import { assetRegistry, type AssetRow } from "@/lib/clientAssets";
 import { shootBriefLines, briefSnapshot, briefDigest, briefChanges, parseBriefSnapshot } from "@/lib/shootBriefRead";
 import { stripMoneySentences } from "@/lib/text";
@@ -228,7 +229,14 @@ export default async function ShootDetailPage({
   // "I read this brief" sits UNDER what it is about (Oct 5): ShootScreen
   // places it after the access brief, the checklist, the scripts and the
   // client's own words, so the button is pressed after the reading.
-  const briefRead = <BriefReadCard projectId={id} digest={briefDigestNow} readAtISO={lastBriefRead?.readAt.toISOString() ?? null} changes={briefDelta} canAcknowledge={canReadBrief} unavailable={briefUnavailable} />;
+  // Under it, Send to Jordan for a lead looking in (James call, Oct 28 2026).
+  const sendUp = !!user && (user.role === "ADMIN" || user.role === "CREATIVE_MANAGER");
+  const briefRead = (
+    <>
+      <BriefReadCard projectId={id} digest={briefDigestNow} readAtISO={lastBriefRead?.readAt.toISOString() ?? null} changes={briefDelta} canAcknowledge={canReadBrief} unavailable={briefUnavailable} />
+      {sendUp && <SendToJordan className="mt-2" title={`${view.project.street}: shoot brief`} href={`/shoot/${id}`} projectId={id} />}
+    </>
+  );
 
   // THE JOB'S TEAM CHAT, on the photographer's screen (Kyle call, Sep 16).
   // Tagging a photographer already sent them here — postProjectMessage's
@@ -291,18 +299,24 @@ async function shootPrepLines(view: ShootView, shooterId: string | null): Promis
   const startMs = a.startISO ? Date.parse(a.startISO) : null;
   const notStarted = startMs != null && startMs > Date.now();
   if (shooterId && startMs != null) {
-    const { briefStatusForAppointments, buildBriefDays } = await import("@/lib/photographerBrief");
+    const { briefStatusForAppointments, briefAckViews, changesForShoot } = await import("@/lib/photographerBrief");
     const st = (await briefStatusForAppointments([a.id]).catch(() => null))?.get(a.id) ?? null;
     if (st?.state === "acknowledged") out.push({ key: "brief", label: "Shoot-day brief confirmed", tone: "ok", action: null });
     else if (st && (st.state === "sent" || st.state === "changed") && notStarted) {
       const day = etDayKey(new Date(startMs));
-      const built = await buildBriefDays([day], { teamMemberIds: [shooterId] }).catch(() => null);
-      const digest = built?.briefs.find((b) => b.teamMemberId === shooterId && b.day === day)?.digest ?? "";
+      const v = (await briefAckViews(shooterId, [day]).catch(() => null))?.get(day) ?? null;
+      const digest = v?.digest ?? "";
+      const again = st.state === "changed";
+      // What changed, beside its Got it (James's call, Oct 2026: they opened this
+      // page from "Brief changed" and could not tell what had changed). A change
+      // with no words on record opens the day's brief instead of a blind Got it.
+      const detail = again && v ? changesForShoot(v.changed, a.id) : [];
       out.push({
         key: "brief",
-        label: st.state === "changed" ? "Your shoot-day brief changed. Kyle sees it unconfirmed until you mark it read" : "Kyle sees your shoot-day brief unconfirmed until you mark it read",
+        label: again ? "Your shoot-day brief changed. Kyle sees it unconfirmed until you mark it read" : "Kyle sees your shoot-day brief unconfirmed until you mark it read",
         tone: "todo",
-        action: /^[a-f0-9]{32}$/.test(digest) ? { kind: "ack", day, digest, again: st.state === "changed" } : { kind: "link", label: "Open the day's brief", href: `/shoot/brief/${day}` },
+        detail: detail.length ? { title: "What changed", lines: detail } : undefined,
+        action: /^[a-f0-9]{32}$/.test(digest) && (!again || detail.length) ? { kind: "ack", day, digest, again } : { kind: "link", label: again ? "See what changed" : "Open the day's brief", href: `/shoot/brief/${day}` },
       });
     }
   }

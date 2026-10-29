@@ -460,6 +460,12 @@ function listChanges(street: string, before: string[], after: string[], kindOf: 
   const added = after.filter((x) => !before.includes(x)).map(kindOf);
   const removed = before.filter((x) => !after.includes(x)).map(kindOf);
   if (!added.length && !removed.length) return null;
+  // One line of a kind reworded (the Smart Brain merging a client's message
+  // into the request it already had): before and after, in one line (James's
+  // call, Oct 29 2026: "Show the actual changed information").
+  if (added.length === 1 && removed.length === 1 && added[0].kind === removed[0].kind) {
+    return [`${street}: ${removed[0].kind} changed from ${quoted(removed[0].text)} to ${quoted(added[0].text)}`];
+  }
   return [
     ...added.map((x) => `${street}: new ${x.kind} ${quoted(x.text)}`),
     ...removed.map((x) => `${street}: ${x.kind} removed ${quoted(x.text)}`),
@@ -538,13 +544,14 @@ function listLine(label: string, items: string[]): string {
 /** One shoot, as the text carries it, one fact a line (Jordan, Oct 28 2026:
  *  "make sure text messages are formatted nicer for larger team text message
  *  notifications"; the brief used to run as one block per shoot):
- *  "1) 9:00 AM, 266 Richard Dr, Allentown\nServices: …\nAccess: …\nContact: …" */
-export function shootLine(s: VisitFacts, n: number): string {
+ *  "1) 9:00 AM, 266 Richard Dr, Allentown\nServices: …\nAccess: …\nContact: …"
+ *  Compact (a long day) leaves the contact and the earlier-visit line to the page. */
+export function shootLine(s: VisitFacts, n: number, items: number = TEXT_ITEMS_PER_SHOOT, compact = false): string {
   const parts: string[] = [`${n}) ${s.time}, ${s.address}${s.visit ? ` (visit ${s.visit.n} of ${s.visit.of})` : ""}`];
   parts.push(s.servicesNote ? `Services: ${s.servicesNote}` : listLine("Services", s.services));
   if (s.access.length) parts.push(listLine("Access", s.access));
-  if (s.contact) parts.push(`Contact: ${s.contact}.`);
-  let left = TEXT_ITEMS_PER_SHOOT;
+  if (s.contact && !compact) parts.push(`Contact: ${s.contact}.`);
+  let left = items;
   let more = 0;
   for (const [label, list] of [["Must get", s.must], ["Leave out", s.leave], ["Requests", s.requests]] as const) {
     if (!list.length) continue;
@@ -554,26 +561,59 @@ export function shootLine(s: VisitFacts, n: number): string {
     if (take.length) parts.push(listLine(label, take));
   }
   if (more > 0) parts.push(`(${more} more on the brief page.)`);
-  if (s.earlier.length) parts.push("Notes from the earlier visit are on the brief page, not repeated here.");
+  if (s.earlier.length && !compact) parts.push("Notes from the earlier visit are on the brief page, not repeated here.");
   return noDashes(parts.join("\n"));
 }
 
+/**
+ * THE LONGEST BRIEF TEXT (Oct 29 2026). James never got his Wed Oct 28 brief
+ * or its update: at 907 and 1,040 characters OpenPhone took both and no phone
+ * ever confirmed them, while every brief under 800 characters was confirmed
+ * within seconds (October: every hub text under 700 characters confirmed, 5 of
+ * the 6 over 900 never). The hub marker's emoji makes a text 67 characters a
+ * part, so this keeps a brief to about ten parts; the page has everything.
+ */
+export const BRIEF_TEXT_MAX = 640;
+
+/** One line per shoot, nothing else: the last resort for a long day. */
+const bareShoot = (s: VisitFacts, n: number) => `${n}) ${s.time}, ${s.street}${s.visit ? ` (visit ${s.visit.n} of ${s.visit.of})` : ""}`;
+
 /** The first brief of the day. Plain, no dashes: the heading, each shoot as its
- *  own block with a blank line between, and the page link alone at the end. Pure. */
+ *  own block with a blank line between, and the page link alone at the end.
+ *  Kept under BRIEF_TEXT_MAX: fewer request lines, then no contact lines (the
+ *  client's must-gets and leave-outs outrank a phone number the page has), then
+ *  the shoots one line each (the page has the rest). Pure. */
 export function composeBriefText(d: BriefDay, link: string): string {
   const head = `${BRIEF_PREFIX}: ${firstName(d.name)}, your shoot${d.shoots.length === 1 ? "" : "s"} for ${dayWords(d.day)}`;
-  const body = d.shoots.map((s, i) => shootLine(s, i + 1));
-  return noDashes([head, ...body, `Full brief, then tap Got it:\n${link}`].join("\n\n"));
+  const tail = `Full brief, then tap Got it:\n${link}`;
+  const build = (body: string[]) => noDashes([head, ...body, tail].join("\n\n"));
+  let text = "";
+  for (const [items, compact] of [[TEXT_ITEMS_PER_SHOOT, false], [2, false], [2, true], [1, true], [0, true]] as const) {
+    text = build(d.shoots.map((s, i) => shootLine(s, i + 1, items, compact)));
+    if (text.length <= BRIEF_TEXT_MAX) return text;
+  }
+  return build([d.shoots.map((s, i) => bareShoot(s, i + 1)).join("\n"), "Services, access, contacts and requests are on the brief page."]);
 }
 
-/** An updated brief: what changed first (one line each), then the day as it
- *  stands, and a new Got it. Laid out like the first brief. Pure. */
+/** In an update, at most this many change lines; the page lists them all. */
+const UPDATE_LINES = 5;
+
+/** An updated brief: what changed (one line each) and the link, nothing else
+ *  (Oct 29 2026: the whole day again made James's 1,040-character update one
+ *  that never arrived, and buried the one line that mattered). Pure. */
 export function composeUpdateText(d: BriefDay, changes: string[], link: string): string {
-  const what = !changes.length ? "Details changed." : changes.length === 1 ? `What changed: ${changes[0]}.` : `What changed:\n${changes.map((c) => `• ${c}`).join("\n")}`;
   const head = `${BRIEF_PREFIX}: ${firstName(d.name)}, your ${dayWords(d.day)} brief changed`;
-  if (!d.shoots.length) return noDashes([head, what, `You have no shoots that day now:\n${link}`].join("\n\n"));
-  const body = d.shoots.map((s, i) => shootLine(s, i + 1));
-  return noDashes([head, what, ...body, `Please open it and tap Got it again:\n${link}`].join("\n\n"));
+  const tail = !d.shoots.length ? `You have no shoots that day now:\n${link}` : `Please open it and tap Got it again:\n${link}`;
+  const whatOf = (lines: string[], more: number) =>
+    !lines.length ? "Details changed."
+    : lines.length === 1 && !more ? `What changed: ${lines[0]}.`
+    : `What changed:\n${lines.map((c) => `• ${c}`).join("\n")}${more ? `\n(${more} more on the brief page.)` : ""}`;
+  let text = "";
+  for (let n = Math.min(UPDATE_LINES, changes.length); n >= 1 || !changes.length; n--) {
+    text = noDashes([head, whatOf(changes.slice(0, n), changes.length - n), tail].join("\n\n"));
+    if (text.length <= BRIEF_TEXT_MAX || n <= 1) return text;
+  }
+  return text;
 }
 
 // ---- the record and the state ------------------------------------------------------------
@@ -634,6 +674,42 @@ export function parseRecord(v: string | null | undefined, teamMemberId: string, 
 /** The acknowledgment still holds: nothing that matters changed since the Got it. */
 export function ackHolds(r: BriefRecord | null, current: MaterialSnapshot, now: Date): boolean {
   return !!r?.ack && liveChanges(r.ack.snapshot, current, now).length === 0;
+}
+
+export type ChangeLine = { at: string | null; words: string; appointmentId: string | null };
+
+/**
+ * WHAT CHANGED, for whoever is asked for a Got it (Oct 28 2026, and James's
+ * call: "Show the actual changed information before asking James to
+ * acknowledge it"). Before any Got it: every update texted since the first
+ * brief, plus what changed since the last text. After a Got it that no longer
+ * holds: exactly what changed since he confirmed. An update kept only its
+ * words, so its shoot is the one whose street the words name. The brief page,
+ * the creative's desk row and the shoot screen all read this. Pure.
+ */
+export function briefChangeLines(
+  record: BriefRecord | null,
+  current: MaterialSnapshot | null,
+  shoots: { appointmentId: string; street: string }[],
+  now: Date,
+): { holds: boolean; changed: ChangeLine[]; confirmedUpdates: ChangeLine[] } {
+  if (!current) return { holds: false, changed: [], confirmedUpdates: [] };
+  const holds = ackHolds(record, current, now);
+  const shootOf = (words: string) => shoots.find((s) => words.includes(s.street))?.appointmentId ?? null;
+  const updates: ChangeLine[] = (record?.sends ?? [])
+    .filter((s) => s.kind === "update" && s.outcome !== "failed")
+    .flatMap((s) => (s.changes ?? []).map((words) => ({ at: s.at as string | null, words, appointmentId: shootOf(words) })));
+  const live = (from: MaterialSnapshot | undefined): ChangeLine[] =>
+    from ? liveChanges(from, current, now).map((c) => ({ at: null, words: c.words, appointmentId: c.appointmentId })) : [];
+  const changed = holds ? [] : record?.ack ? live(record.ack.snapshot) : [...updates, ...live(record?.sent?.snapshot)];
+  return { holds, changed, confirmedUpdates: holds ? updates : [] };
+}
+
+/** The lines for one shoot's row: its own changes, else (a change elsewhere on
+ *  the day it shares a Got it with) the day's. Pure. */
+export function changesForShoot(changed: ChangeLine[], appointmentId: string): string[] {
+  const own = changed.filter((c) => c.appointmentId === appointmentId);
+  return (own.length ? own : changed).map((c) => c.words);
 }
 
 export type BriefStatus = { state: BriefState; sentAt: string | null; ackAt: string | null; why: string | null };

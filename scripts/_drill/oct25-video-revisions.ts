@@ -74,15 +74,15 @@ async function main() {
     const items = {
       items: [{ id: "i1", area: "Cuts & content", ask: "Remove close-up shots of the retaining wall", quote: "swap out the shots of close up of the retaining wall", scope: "all", kind: "REFINEMENT", medium: "video" }],
       keep: ["Side yard shots"], references: [],
-      questions: ["V1: Which back-yard clips are there to replace the retaining wall shots?"],
+      questions: ["V1: Which retaining wall does she mean, the front or the back? Confirm with the client."],
     };
     const brief = await prisma.revisionBrief.create({ data: { projectId: cliff.id, source: "gmail", requestedBy: "Alex Drill", requestedByKind: "EMAIL", originalText: words, taskId: rev.id, itemsJson: JSON.stringify(items), analyzedAt: new Date() } });
     const state = await cr.routeCreativeReview(brief.id);
     const card = await prisma.smartTask.findFirst({ where: { projectId: cliff.id, taskType: "creative_review" } });
     c.ok("an open question routes a creative review (unchanged)", state?.state === "OPEN" && !!card, JSON.stringify(state));
-    c.ok("the summary names it an open question, never \"Alex Drill said: V1: …\"", /^Open question on Alex Drill's ask: V1: Which back-yard clips/.test(card?.summary ?? "") && !/said: V1/.test(card?.summary ?? ""), card?.summary ?? "");
+    c.ok("the summary names it an open question, never \"Alex Drill said: V1: …\"", /^Open question on Alex Drill's ask: V1: Which retaining wall/.test(card?.summary ?? "") && !/said: V1/.test(card?.summary ?? ""), card?.summary ?? "");
     c.ok("the card carries her real words under \"The client's words\"", (card?.description ?? "").includes(`The client's words:\n${words}`), card?.description ?? "");
-    c.ok("…and the question under its own heading", /\n\nOpen questions:\n• V1: Which back-yard clips/.test(card?.description ?? ""), card?.description ?? "");
+    c.ok("…and the question under its own heading", /\n\nOpen questions:\n• V1: Which retaining wall/.test(card?.description ?? ""), card?.description ?? "");
 
     // =====================================================================
     c.head("3 · The analyser is told a video made outside the Review Room is already delivered");

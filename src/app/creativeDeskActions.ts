@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser, type CurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
@@ -13,6 +14,8 @@ import {
   type CreativeCloseoutKey, type CreativeCloseoutRecord, type ImprovementMeta,
 } from "@/lib/creativeDesk";
 import { HANDOFF_CLOSE_REASONS, handoffClosedKey, pruneClosedHandoffs, readClosedHandoffs, type HandoffCloseReason } from "@/lib/handoffCloseOut";
+import { noticeKey, tellCreativeAboutCoaching, type NoticeWhat } from "@/lib/coachingNotice";
+import { isCoachVerdict, setCoachCalls, VERDICT_WORDS, type CoachVerdict } from "@/lib/qcCoaching";
 import {
   assessmentHref, cleanText, developmentPeople, developmentSeat, existingCriteria, isDevGroup, isRecommendation, isTrack, itemHref,
   parseCriteria, parseEvidence, parseLog, readDevelopment, trackLabel,
@@ -138,6 +141,21 @@ async function appendLog(id: string, raw: string, line: DevLog, data: Record<str
   await prisma.developmentItem.update({ where: { id }, data: { ...data, logJson: JSON.stringify(log) } });
 }
 
+/**
+ * Oct 29 2026 (lib/coachingNotice): the person is told, with the link to their
+ * own page, after the save (the record never waits on Slack or a text). The
+ * log line keeps the bell row's key, so the entry can say how it reached them.
+ */
+function tellLater(s: Extract<Seat, { ok: true }>, item: { id: string; personId: string; personName: string; group: string; skill: string }, what: NoticeWhat, note: string | null, notice: string) {
+  const run = () => tellCreativeAboutCoaching({ itemId: item.id, personId: item.personId, personName: item.personName, group: isDevGroup(item.group) ? item.group : "FIELD", skill: item.skill, what, by: s.by, note, notice, actorTeamMemberId: s.me?.teamMemberId ?? null });
+  try {
+    after(run);
+  } catch {
+    void run(); // outside a request (a script): no after(), so now
+  }
+}
+const nextNotice = (itemId: string, raw: string) => noticeKey(itemId, parseLog(raw).length);
+
 export type FeedbackInput = {
   /** add to an existing item; otherwise a new one is created */
   itemId?: string | null;
@@ -173,8 +191,10 @@ export async function recordFeedbackAction(input: FeedbackInput): Promise<Creati
     if (item.status !== "OPEN") return { ok: false, message: "That item is closed. Start a new one for new feedback." };
     const evidence = [...parseEvidence(item.evidenceJson), ...typed];
     await audit(s.by, "development_feedback", item.id, { note, typed });
-    await appendLog(item.id, item.logJson, { at, by: s.by, kind: "feedback", note }, { evidenceJson: JSON.stringify(evidence), progress: note });
-    return done(`Feedback recorded for ${firstName(item.personName)}.`);
+    const notice = nextNotice(item.id, item.logJson);
+    await appendLog(item.id, item.logJson, { at, by: s.by, kind: "feedback", note, notice }, { evidenceJson: JSON.stringify(evidence), progress: note });
+    tellLater(s, item, "feedback", note, notice);
+    return done(`Feedback recorded for ${firstName(item.personName)}. They see it in the hub and get a link.`);
   }
 
   if (!isDevGroup(input.group)) return { ok: false, message: "Pick the group: field creatives, editors or admin QC." };
@@ -188,6 +208,8 @@ export async function recordFeedbackAction(input: FeedbackInput): Promise<Creati
     const dev = await readDevelopment({ excludeClientIds: [] });
     const sig = dev.signals.find((x) => x.key === input.signalKey && x.personId === person.id);
     if (!sig) return { ok: false, message: "That evidence has changed or is already on a coaching item. Reload the page." };
+    // Oct 29 2026 (lib/qcCoaching): what is at the property is not evidence until a person confirms it.
+    if (sig.needsLook) return { ok: false, message: "Confirm first which ones were the photographer's to fix (Photographer's to fix on each). Only those become evidence." };
     evidence = sig.examples.length ? sig.examples : [{ label: `${sig.skill}: ${sig.detail}`, href: null, at, source: sig.key }];
     if (!evidence.some((e) => e.source === sig.key)) evidence = evidence.map((e) => ({ ...e, source: sig.key }));
     skill = skill || sig.skill;
@@ -198,6 +220,7 @@ export async function recordFeedbackAction(input: FeedbackInput): Promise<Creati
   const followUpAt = dayToDate(input.followUpDay);
   const log: DevLog[] = [{ at, by: s.by, kind: "created", note }];
   if (followUpAt) log.push({ at, by: s.by, kind: "follow_up_set", note: `Follow up ${etDateTime(followUpAt)}` });
+  // The first line's notice (lib/coachingNotice); its key needs the item's id, set once it exists.
   const item = await prisma.$transaction(async (tx) => {
     const created = await tx.developmentItem.create({
       data: {
@@ -207,9 +230,11 @@ export async function recordFeedbackAction(input: FeedbackInput): Promise<Creati
       },
     });
     await tx.auditLog.create({ data: { actor: s.by, action: "development_item_created", target: created.id, detail: JSON.stringify({ personId: person.id, group: person.group, skill, evidence: evidence.length, followUpAt }) } });
-    return created;
+    log[0].notice = noticeKey(created.id, 0);
+    return tx.developmentItem.update({ where: { id: created.id }, data: { logJson: JSON.stringify(log) } });
   });
-  return done(`Recorded for ${firstName(item.personName)}${followUpAt ? `, follow-up ${etDateTime(followUpAt)}` : ""}.`);
+  tellLater(s, item, "created", note, log[0].notice!);
+  return done(`Recorded for ${firstName(item.personName)}${followUpAt ? `, follow-up ${etDateTime(followUpAt)}` : ""}. They see it in the hub and get a link.`);
 }
 
 /** Update the development plan: the expected standard, the next action, the follow-up date. */
@@ -250,7 +275,9 @@ export async function recordFollowUpAction(itemId: string, input: { note: string
   if (input.nextDay && !next) return { ok: false, message: "Pick the next follow-up date." };
   const at = new Date().toISOString();
   await audit(s.by, "development_follow_up", item.id, { note, result, next });
-  await appendLog(item.id, item.logJson, { at, by: s.by, kind: "follow_up", note, result }, { progress: note, followUpAt: next });
+  const notice = nextNotice(item.id, item.logJson);
+  await appendLog(item.id, item.logJson, { at, by: s.by, kind: "follow_up", note, result, notice }, { progress: note, followUpAt: next });
+  tellLater(s, item, "follow_up", note, notice);
   return done(next ? `Follow-up recorded. Next one ${etDateTime(next)}.` : "Follow-up recorded.");
 }
 
@@ -267,8 +294,35 @@ export async function verifyImprovementAction(itemId: string, input: { note: str
   const href = typeof input.exampleHref === "string" && input.exampleHref.trim().startsWith("/") ? input.exampleHref.trim().slice(0, 300) : null;
   const evidence = [...parseEvidence(item.evidenceJson), { label: `Improvement seen: ${text(input.exampleLabel, 160) || cleanText(note, 160)}`, href, at, source: "verified" }];
   await audit(s.by, "development_verified", item.id, { note, href });
-  await appendLog(item.id, item.logJson, { at, by: s.by, kind: "verified", note }, { status: "VERIFIED", verifiedAt: new Date(at), verifiedBy: s.by, progress: note, followUpAt: null, evidenceJson: JSON.stringify(evidence) });
+  const notice = nextNotice(item.id, item.logJson);
+  await appendLog(item.id, item.logJson, { at, by: s.by, kind: "verified", note, notice }, { status: "VERIFIED", verifiedAt: new Date(at), verifiedBy: s.by, progress: note, followUpAt: null, evidenceJson: JSON.stringify(evidence) });
+  tellLater(s, item, "verified", note, notice);
   return done(`Improvement verified for ${firstName(item.personName)}.`);
+}
+
+/**
+ * A photo check finding as coaching evidence (Oct 29 2026, lib/qcCoaching):
+ * "the photographer's to fix" (it counts), "not an issue" because it was
+ * outside their control or the check was wrong (it never counts, and the
+ * tally learns), or "undo". Only findings the photographer answers for; the
+ * finding and the photo desk's own decision on it are never touched.
+ */
+export async function qcCoachCallAction(findingIds: string[], verdict: CoachVerdict | "undo", reason?: string | null): Promise<CreativeResult> {
+  const s = await seat();
+  if (!s.ok) return s;
+  const ids = [...new Set(Array.isArray(findingIds) ? findingIds.map(String) : [])];
+  if (!ids.length || ids.length > 60 || !ids.every((id) => ID.test(id))) return { ok: false, message: "Pick the photos to call." };
+  if (verdict !== "undo" && !isCoachVerdict(verdict)) return { ok: false, message: "Pick Photographer's to fix or Not an issue." };
+  const rows = await prisma.photoQcFinding.findMany({ where: { id: { in: ids }, responsibility: "PHOTOGRAPHER" }, select: { id: true, ruleId: true, jobId: true } });
+  if (rows.length !== ids.length) return { ok: false, message: "Some of those findings have changed. Reload the page." };
+  const why = text(reason, 300) || null;
+  await audit(s.by, verdict === "undo" ? "qc_coach_undo" : "qc_coach_call", ids.join(",").slice(0, 190), { verdict, reason: why, rules: [...new Set(rows.map((r) => r.ruleId))] });
+  const n = await setCoachCalls(rows, verdict === "undo" ? null : verdict, why, s.by);
+  if (verdict === "undo") return done(n ? "Taken back. It waits on a look again." : "Nothing to take back.");
+  const what = verdict === "coach"
+    ? "the photographer's to fix. It counts as coaching evidence."
+    : `not an issue (${VERDICT_WORDS[verdict].replace(/^Not an issue:\s*/, "")}). It never counts against anyone.`;
+  return done(`${n === 1 ? "Marked" : `${n} marked`} ${what}`);
 }
 
 /**
@@ -605,7 +659,8 @@ export async function handMyTaskAction(taskId: string, toKey: string, why: strin
   if (to.key === got.myKey) return { ok: false, message: "It is already yours." };
   await audit(s.by, "my_task_handed", got.t.id, { to: to.key, reason });
   const { setTaskAssignee } = await import("@/app/actions");
-  await setTaskAssignee(got.t.id, to.key);
+  const moved = await setTaskAssignee(got.t.id, to.key);
+  if (moved && !moved.ok) return { ok: false, message: moved.message };
   const stamp = etDateTime(new Date());
   await prisma.smartTask.update({
     where: { id: got.t.id },

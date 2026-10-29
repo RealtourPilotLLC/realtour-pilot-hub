@@ -166,7 +166,7 @@ async function gmailReplyTarget(
   mailbox: string,
   threadId: string,
 ): Promise<
-  | { ok: true; token: string; acctEmail: string; to: string; subject: string; msgId: string; references: string }
+  | { ok: true; token: string; acctEmail: string; to: string; subject: string; msgId: string; references: string; alsoTo: string[]; cc: string[] }
   | { ok: false; error: string; needsReconnect?: boolean }
 > {
   const accounts = await gmailAccounts();
@@ -181,7 +181,7 @@ async function gmailReplyTarget(
   let thread: GmailThread;
   try {
     thread = await gmail<GmailThread>(
-      `/threads/${encodeURIComponent(threadId)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Message-ID&metadataHeaders=Reply-To&metadataHeaders=References`,
+      `/threads/${encodeURIComponent(threadId)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Message-ID&metadataHeaders=Reply-To&metadataHeaders=References&metadataHeaders=To&metadataHeaders=Cc`,
       token,
     );
   } catch {
@@ -201,16 +201,20 @@ async function gmailReplyTarget(
   const msgId = header(target, "Message-ID").replace(/[\r\n]+/g, " ").trim();
   const prior = header(target, "References").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
   const references = msgId ? (prior.split(" ").includes(msgId) ? prior : `${prior} ${msgId}`.trim()) : prior;
-  return { ok: true, token, acctEmail: acct.email, to, subject, msgId, references };
+  // Oct 29 2026 (Kyle: the reply "disregard[s] the current email chain"):
+  // everyone else on that message, as Gmail's Reply all would, never us.
+  const { replyAllRecipients } = await import("@/lib/emailRecipients");
+  const chain = replyAllRecipients({ to, toHeader: header(target, "To"), ccHeader: header(target, "Cc"), ours: accounts.map((a) => a.email), ourDomain: OUR_DOMAIN });
+  return { ok: true, token, acctEmail: acct.email, to, subject, msgId, references, alsoTo: chain.alsoTo, cc: chain.cc };
 }
 
 // Who a reply to this thread would go to — the UI shows it before Send.
 export async function resolveGmailReplyTarget(
   mailbox: string,
   threadId: string,
-): Promise<{ ok: true; to: string; subject: string; from: string } | { ok: false; error: string; needsReconnect?: boolean }> {
+): Promise<{ ok: true; to: string; subject: string; from: string; alsoTo: string[]; cc: string[] } | { ok: false; error: string; needsReconnect?: boolean }> {
   const t = await gmailReplyTarget(mailbox, threadId);
-  return t.ok ? { ok: true, to: t.to, subject: t.subject, from: t.acctEmail } : { ok: false, error: t.error, needsReconnect: t.needsReconnect };
+  return t.ok ? { ok: true, to: t.to, subject: t.subject, from: t.acctEmail, alsoTo: t.alsoTo, cc: t.cc } : { ok: false, error: t.error, needsReconnect: t.needsReconnect };
 }
 
 export async function sendGmailReply(opts: {
@@ -223,11 +227,18 @@ export async function sendGmailReply(opts: {
    *  a blind copy on this very message, or, if it carries a one-use sign-in
    *  link, a separate redacted copy once this one was accepted. */
   clientCopy?: boolean;
+  /** Oct 29 2026 (Kyle): everyone else on the message answered (its To and Cc,
+   *  never us), as Gmail's Reply all. The hub's two reply boxes pass true. */
+  replyAll?: boolean;
+  /** Addresses a person added. Already validated (lib/emailRecipients
+   *  parseTypedRecipients); anything unclean is dropped here regardless. */
+  cc?: readonly string[] | null;
+  bcc?: readonly string[] | null;
 }): Promise<
   // Oct 27 2026: also Gmail's own id for the sent message (null when its answer
   // can't be read), so the hub's log row is the one the Sent-folder reader
   // would write (`gmail-sent-<threadId>-<id>`) and never doubles it.
-  | { ok: true; to: string; subject: string; copy?: ClientEmailCopyMode; id: string | null; mailbox: string }
+  | { ok: true; to: string; subject: string; copy?: ClientEmailCopyMode; id: string | null; mailbox: string; alsoTo: string[]; cc: string[]; bcc: string[]; chainLeftOff?: number }
   | { ok: false; error: string; needsReconnect?: boolean }
 > {
   const t = await gmailReplyTarget(opts.mailbox, opts.threadId);
@@ -236,15 +247,32 @@ export async function sendGmailReply(opts: {
   if (opts.expectedTo && opts.expectedTo.toLowerCase() !== to.toLowerCase()) {
     return { ok: false, error: `The thread changed — the reply would now go to ${to}, not ${opts.expectedTo}. Re-open and confirm.` };
   }
+  const { cleanAddress, MAX_EXTRA_RECIPIENTS } = await import("@/lib/emailRecipients");
+  const { hasOneUseSignInLink } = await import("@/lib/clientEmailMonitor");
+  const typed = (l: readonly string[] | null | undefined, skip: string[]) =>
+    [...new Set((l ?? []).map((a) => cleanAddress(a)).filter((a): a is string => !!a && !skip.includes(a)))].slice(0, MAX_EXTRA_RECIPIENTS);
+  // A one-use portal sign-in link is the client's alone: nobody else on the
+  // chain gets it, and a person's added copies are refused rather than sent.
+  const signIn = hasOneUseSignInLink(opts.body);
+  const chainTo = opts.replyAll && !signIn ? t.alsoTo : [];
+  const chainCc = opts.replyAll && !signIn ? t.cc : [];
+  const addCc = typed(opts.cc, [to.toLowerCase(), ...chainTo, ...chainCc]);
+  const addBcc = typed(opts.bcc, [to.toLowerCase(), ...chainTo, ...chainCc, ...addCc]);
+  if (signIn && (addCc.length || addBcc.length)) {
+    return { ok: false, error: `This reply carries ${to}'s one-time sign-in link, so it can only go to them. Take out the Cc and Bcc, or the link.` };
+  }
+  const ccAll = [...chainCc, ...addCc];
   // Decided AFTER the recipient is known (the thread names it). Never throws:
   // an unreadable setting means the default — on, to info@.
   const monitor = opts.clientCopy ? await import("@/lib/clientEmailMonitor") : null;
   const plan = monitor ? await monitor.planClientEmailCopy({ to, body: opts.body }) : null;
   const bcc = bccHeader(monitor?.bccOf(plan) ?? null, to);
+  const bccAll = [...new Set([...(bcc && ![...chainTo, ...ccAll].includes(bcc) ? [bcc] : []), ...addBcc])];
 
   const mime = [
-    `To: ${to}`,
-    ...(bcc ? [`Bcc: ${bcc}`] : []),
+    `To: ${[to, ...chainTo].join(", ")}`,
+    ...(ccAll.length ? [`Cc: ${ccAll.join(", ")}`] : []),
+    ...(bccAll.length ? [`Bcc: ${bccAll.join(", ")}`] : []),
     `From: ${acctEmail}`,
     // RFC 2047-encode so names/subjects with non-ASCII survive.
     `Subject: =?UTF-8?B?${Buffer.from(subject).toString("base64")}?=`,
@@ -271,7 +299,12 @@ export async function sendGmailReply(opts: {
     .catch(() => null);
   // The client has it. Only now the separate, redacted copy (sign-in links).
   const copied = monitor && plan?.mode === "copy" ? await monitor.sendClientEmailCopy(plan, { subject, mailbox: acctEmail }) : false;
-  return { ok: true, to, subject, id, mailbox: acctEmail, copy: !plan || plan.mode === "none" ? "none" : plan.mode === "copy" ? (copied ? "copy" : "copy_failed") : bcc ? "bcc" : "none" };
+  return {
+    ok: true, to, subject, id, mailbox: acctEmail,
+    copy: !plan || plan.mode === "none" ? "none" : plan.mode === "copy" ? (copied ? "copy" : "copy_failed") : bcc ? "bcc" : "none",
+    alsoTo: chainTo, cc: ccAll, bcc: addBcc,
+    ...(opts.replyAll && signIn && t.alsoTo.length + t.cc.length ? { chainLeftOff: t.alsoTo.length + t.cc.length } : {}),
+  };
 }
 
 /** The Gmail thread a message belongs to, read from the mailbox it is in

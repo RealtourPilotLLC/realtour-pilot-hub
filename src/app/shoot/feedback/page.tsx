@@ -9,6 +9,8 @@ import { homeFor } from "@/lib/auth/access";
 import { PageHeader } from "@/components/PageHeader";
 import { FieldTabs } from "@/components/shoot/FieldTabs";
 import { FeedbackHubView } from "@/components/shoot/FeedbackHub";
+import { MyCoachingList } from "@/components/coaching/MyCoachingList";
+import { readMyCoaching } from "@/lib/myCoaching";
 
 export const dynamic = "force-dynamic";
 
@@ -72,7 +74,14 @@ export default async function QualityFeedbackPage({
       const { markFeedbackSeen } = await import("@/lib/review");
       await markFeedbackSeen(scoped);
     }
-    const hub = await getFeedbackHub(scoped);
+    const [hub, coaching] = await Promise.all([
+      getFeedbackHub(scoped),
+      // Oct 29 2026 (lib/myCoaching): the coaching James or Jordan recorded for them; the coaching text links to #coaching.
+      readMyCoaching([scoped]).catch((e: unknown) => {
+        console.warn("[feedback] coaching read failed", (e as Error)?.message);
+        return [];
+      }),
+    ]);
     return (
       <div>
         <PageHeader
@@ -86,6 +95,11 @@ export default async function QualityFeedbackPage({
         />
         <div className="mx-auto max-w-3xl px-4 py-5 sm:px-6">
           <FieldTabs active="feedback" asId={viewAs?.id} feedbackCount={hub?.kpis.openFixes ?? 0} />
+          {coaching.length > 0 && (
+            <div className="mb-4">
+              <MyCoachingList items={coaching} whose={viewAs ? viewAs.name.split(" ")[0] : "your"} />
+            </div>
+          )}
           {hub ? (
             <FeedbackHubView hub={hub} readOnly={readOnly} />
           ) : (

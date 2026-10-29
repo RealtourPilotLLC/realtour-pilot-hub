@@ -265,7 +265,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
               <SavedRequestList items={saved.loose} choices={saved.choices} canAct={canPlaceSaved} />
             </section>
           )}
-          {seesCare && <ClientIssuesCard clientId={client.id} issues={complaints} canEdit={canWorkComplaints} projects={client.projects.map((p) => ({ id: p.id, title: p.title }))} />}
+          {seesCare && <ClientIssuesCard clientId={client.id} issues={complaints} canEdit={canWorkComplaints} projects={client.projects.map((p) => ({ id: p.id, title: p.title }))} sendUp={!!me && (me.role === "ADMIN" || me.role === "CREATIVE_MANAGER")} />}
           {entitlements && <EntitlementsCard summary={entitlements} canEdit={canEditPrefs} />}
           {enrollment && creativeGuard && <CreativeGuardEditor enrollmentId={enrollment.id} guard={creativeGuard} canEdit={canEditGuard} />}
 

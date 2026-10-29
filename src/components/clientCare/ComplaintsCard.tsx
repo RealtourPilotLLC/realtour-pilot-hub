@@ -64,7 +64,7 @@ export function ComplaintsCard({ readOnly = false, className }: { readOnly?: boo
               </div>
               {isOpen && (
                 <div className="mt-2 space-y-2">
-                  <ComplaintPlan issueId={r.issueId} readOnly={readOnly} fallbackWords={r.summary} />
+                  <ComplaintPlan issueId={r.issueId} readOnly={readOnly} fallbackWords={r.summary} sendUp={!readOnly} />
                   <Link href={`/clients/${r.clientId}#issue-${r.issueId}`} className="inline-flex min-h-11 items-center text-sm font-medium text-brand">Open on {r.clientName?.split(" ")[0] ?? "the client"}&rsquo;s page</Link>
                 </div>
               )}

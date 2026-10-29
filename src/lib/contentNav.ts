@@ -207,6 +207,21 @@ export function canOpenPortal(me: { role: string } | null | undefined, enforced:
 }
 
 /**
+ * Who may LOOK AT the client's portal from the staff side, through the
+ * preview page (Oct 29 2026, Jordan and James's call: James "wanted to browse
+ * monthly topic banks and skit ideas, but appeared to lack your 'View portal'
+ * button"): the owner, the office and the creative manager. The preview opens
+ * the client's existing link inside the hub, where the portal signs a creative
+ * lead in as staff on the client's behalf (portal.STAFF_ON_BEHALF_ROLES has
+ * held the creative manager since Oct 21 2026), so anything done there is
+ * stamped with their own name. Making or copying the client's link stays
+ * canOpenPortal's (the owner and the office): that is the client's own key.
+ */
+export function canViewPortal(me: { role: string } | null | undefined, enforced: boolean): boolean {
+  return me ? me.role === "OWNER" || me.role === "ADMIN" || me.role === "CREATIVE_MANAGER" : !enforced;
+}
+
+/**
  * The roster's layout: an explicit ?view wins, then the remembered cookie,
  * then the TABLE (Oct 27 2026, Jordan on Monthly Content: "The table looks
  * okay"; the cards were the "overwhelming" view). Cards stay one click away.

@@ -11,6 +11,7 @@ import { Sidebar, type ShellUser } from "@/components/Sidebar";
 import { BottomTabBar } from "@/components/BottomTabBar";
 import { FeedbackWidget } from "@/components/feedback/FeedbackWidget";
 import { ViewAsBanner } from "@/components/ViewAsBanner";
+import { HandledUndoHost } from "@/components/comms/HandledUndo";
 import { cn } from "@/lib/utils";
 
 // Routes that render with NO app chrome. Kept as a list (not an inline `||`
@@ -204,6 +205,8 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
 
       {/* Always-on feedback launcher (Kyle → review board) */}
       <div inert={open}><FeedbackWidget /></div>
+      {/* Undo for every Mark handled (Kyle, Oct 29 2026): components/comms/HandledUndo. */}
+      {user && !user.impersonating && <HandledUndoHost />}
     </div>
   );
 }

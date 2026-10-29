@@ -10,6 +10,7 @@ import {
 import { Badge } from "@/components/ui/Badge";
 import { setSmartTaskStatus, setTaskAssignee, draftTaskReply, sendDeliveryText, sendConfirmationText, toggleTaskChecklistItem, editCardWork, type EditCardWork } from "@/app/actions";
 import { resolveEmailRecipient, sendEmailReply } from "@/app/emailActions";
+import { recipientWords } from "@/lib/emailRecipients";
 import { addTaskNote } from "@/app/projects/messageActions";
 import { acknowledgeQcCategory } from "@/app/ops/actions";
 import { qcCategoryStates } from "@/lib/qcCategories";
@@ -24,6 +25,7 @@ import { TaskCompactRow } from "@/components/queue/TaskCompactRow";
 import { LeadDisregardButton } from "@/components/tasks/ChecklistButtons";
 import type { TaskRowAction } from "@/lib/taskRowPresentation";
 import { TaskDeadlineEditor } from "@/components/queue/TaskDeadlineEditor";
+import { SendToJordan } from "@/components/delegation/SendToJordan";
 import { finishTaskNoteReceipt, finishTaskReplyDraft } from "@/lib/taskTextReceipt";
 
 // Friendly display label per task type (QA → QC, etc.) — the one shared map in
@@ -526,7 +528,12 @@ function EditWorkChip({ task }: { task: QueueTask }) {
 // own surfaces instead: the project goes to /edit/<id> (the editor brief), and
 // the client chip renders unlinked (audit crack #38). Admin-only actions that
 // would bounce them (AI draft / OpenPhone send) are hidden too.
-export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOffice = false, compact = false, initialDetailOpen = false }: { task: QueueTask; assignees?: { key: string; name: string }[]; assignPrompt?: boolean; editorView?: boolean; deadlineOffice?: boolean; compact?: boolean; initialDetailOpen?: boolean }) {
+// lockedFor (James call, Oct 28 2026): the holder's name when this viewer may
+// not complete or move the card (the creative manager on an office task):
+// the status and owner controls give way to one line and Send to Jordan,
+// instead of controls the server refuses. sendUp: draw Send to Jordan (a lead
+// who isn't Jordan).
+export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOffice = false, compact = false, initialDetailOpen = false, lockedFor = null, sendUp = false }: { task: QueueTask; assignees?: { key: string; name: string }[]; assignPrompt?: boolean; editorView?: boolean; deadlineOffice?: boolean; compact?: boolean; initialDetailOpen?: boolean; lockedFor?: string | null; sendUp?: boolean }) {
   const [pending, start] = useTransition();
   const [draft, setDraft] = useState<{ text?: string; error?: string } | null>(null);
   const [draftText, setDraftText] = useState("");
@@ -547,6 +554,11 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
   const [savingNote, startNote] = useTransition();
   const [assigning, startAssign] = useTransition();
   const [assignmentNote, setAssignmentNote] = useState<string | null>(null);
+  // The owner just picked, shown at once (James call, Oct 28 2026: "visibly
+  // update the task"); dropped when the server's card arrives or refuses.
+  const [pickedKey, setPickedKey] = useState<string | null>(null);
+  const [assignedMsg, setAssignedMsg] = useState<string | null>(null);
+  useEffect(() => { setPickedKey(null); }, [task.assignedKey]);
   const [detailOpen, setDetailOpen] = useState(compact && initialDetailOpen);
   const [detailFocus, setDetailFocus] = useState<TaskRowAction["focus"] | "deadline">("details");
   const [deadlineBusy, setDeadlineBusy] = useState(false);
@@ -635,9 +647,15 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
   const isEditCard = task.taskType === "edit_video";
   const assign = (key: string) => startAssign(async () => {
     setAssignmentNote(null);
-    try { await setTaskAssignee(task.id, key); }
-    catch { setAssignmentNote("The assignment was not confirmed. Reload to check the current owner before trying again."); }
+    setAssignedMsg(null);
+    setPickedKey(key);
+    try {
+      const r = await setTaskAssignee(task.id, key);
+      if (r && !r.ok) { setPickedKey(null); setAssignmentNote(r.message); }
+      else if (r) setAssignedMsg(r.message);
+    } catch { setPickedKey(null); setAssignmentNote("The assignment was not confirmed. Reload to check the current owner before trying again."); }
   });
+  const shownKey = pickedKey ?? task.assignedKey;
   const sendText = () =>
     startSend(async () => {
       try {
@@ -650,6 +668,8 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
   // Email tasks can send the reviewed draft straight back into the thread.
   const canEmailSend = task.source === "gmail" && !!task.sourceDetail?.startsWith("gmail-thread:") && !editorView;
   const [emailTo, setEmailTo] = useState<string | null>(null);
+  // Oct 29 2026 (Kyle): a reply goes to everyone on the email (Reply all); say who.
+  const [emailAlso, setEmailAlso] = useState<{ alsoTo: string[]; cc: string[] } | null>(null);
   const updateDraftText = (value: string) => { draftTextRef.current = value; setDraftText(value); };
   const updateNoteText = (value: string) => { noteTextRef.current = value; setNoteText(value); };
   const makeDraft = () => {
@@ -670,6 +690,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
         updateDraftText(receipt.value);
         setDraftReceipt(receipt.message || null);
         setEmailTo(rcpt?.ok ? rcpt.to ?? null : null);
+        setEmailAlso(rcpt?.ok ? { alsoTo: rcpt.alsoTo ?? [], cc: rcpt.cc ?? [] } : null);
       } catch { setStatusNote("A new draft could not be loaded. Any text you already entered is still here."); }
     });
   };
@@ -862,7 +883,9 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
 
       {/* Action footer. */}
       <div className="mt-3 flex flex-wrap items-center gap-2 border-t pt-3">
-        {!done ? (
+        {lockedFor && !done ? (
+          <span className="text-xs text-muted" data-task-locked>{lockedFor}&rsquo;s task: only they or the office complete or move it.</span>
+        ) : !done ? (
           <button
             onClick={() => run("COMPLETED")}
             disabled={pending || deadlineBusy}
@@ -876,7 +899,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
             Reopen
           </button>
         )}
-        {!done && (
+        {!done && !lockedFor && (
           <select
             value={task.status}
             disabled={pending || deadlineBusy}
@@ -894,16 +917,16 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
             ))}
           </select>
         )}
-        {!done && (
+        {!done && !lockedFor && (
           <select
-            value={task.assignedKey || (assignPrompt ? "" : "kyle")}
+            value={shownKey || (assignPrompt ? "" : "kyle")}
             disabled={assigning}
             onChange={(e) => assign(e.target.value)}
             data-task-assignee
             aria-label="Assign this task"
             title="Assign this task"
             className={`w-[7.5rem] min-w-0 rounded-lg border px-2 py-1.5 text-xs focus:outline-none ${
-              task.assignedKey && task.assignedKey !== "kyle"
+              shownKey && shownKey !== "kyle"
                 ? "bg-brand/10 text-brand"
                 : assignPrompt && !task.assignedKey
                   ? "border-warning/40 bg-warning/10 font-medium text-warning"
@@ -995,7 +1018,11 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
           )}
         </div>
       </div>
+      {(sendUp || lockedFor) && !done && task.status !== "CANCELLED" && (
+        <SendToJordan className="mt-2" title={`${projectLabel ?? task.propertyAddress ?? "A task"}: ${task.title}`} taskId={task.id} projectId={task.projectId} clientId={task.clientId ?? null} />
+      )}
       {assignmentNote && <p role="alert" className="mt-2 text-sm text-danger">{assignmentNote}</p>}
+      {assignedMsg && !assignmentNote && <p role="status" className="mt-2 text-xs text-muted">{assignedMsg}</p>}
       {sendMsg && <p role="status" className="mt-2 text-xs text-muted">{sendMsg}</p>}
       {statusNote && (
         <p role="alert" className="mt-2 text-sm text-warning">
@@ -1078,7 +1105,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
                 <p className="text-[10px] text-muted-2">
                   {canEmailSend
                     ? emailTo
-                      ? `Replying to ${emailTo} — sends only when you press the button.`
+                      ? `Replying to ${recipientWords({ to: emailTo, ...(emailAlso ?? {}) })} — sends only when you press the button.`
                       : "Sends only when you press the button — review first."
                     : "Review before sending. The hub never sends on its own."}
                 </p>
@@ -1093,7 +1120,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
   if (!compact) return card;
   return (
     <>
-      <TaskCompactRow task={task} assignees={roster} editorView={editorView} deadlineOffice={deadlineOffice} busy={busy} dueInfo={due} assignmentNote={assignmentNote} onAssign={assign} onOpen={(focus) => { setDetailFocus(focus); setDetailOpen(true); }} />
+      <TaskCompactRow task={pickedKey ? { ...task, assignedKey: pickedKey } : task} assignees={roster} editorView={editorView} deadlineOffice={deadlineOffice} busy={busy} dueInfo={due} assignmentNote={assignmentNote} onAssign={assign} onOpen={(focus) => { setDetailFocus(focus); setDetailOpen(true); }} />
       <ModalDialog open={detailOpen} label={`Task details: ${task.title}`} busy={busy} onCancel={() => setDetailOpen(false)} className="left-auto right-0 top-0 h-dvh max-h-dvh w-[min(100vw,48rem)] translate-x-0 translate-y-0 rounded-none p-0 sm:p-0">
         <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-surface px-4 py-3">
           <div><h2 className="font-semibold">Task details</h2><p className="text-sm text-muted">{busy ? "Updating… keep this task open until the result arrives." : "Closing keeps your unsent draft and note on this page."}</p></div>

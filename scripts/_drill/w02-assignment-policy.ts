@@ -182,7 +182,7 @@ async function main() {
     const previewAssign = await hub("assign_task", { task: "W02 edit", person: "kim" }) as { error?: string };
     const previewComplete = await hub("complete_task", { task: "W02 edit" }) as { error?: string };
     const previewDismiss = await dismissTask(card.id, "not needed");
-    const previewStatus = await setSmartTaskStatus(card.id, "COMPLETED").then(() => false, () => true);
+    const previewStatus = await setSmartTaskStatus(card.id, "COMPLETED").then((r) => r?.ok === false, () => true); // refused in words since Oct 29 (a thrown message is hidden in production)
     const previewChecklist = await toggleTaskChecklistItem(card.id, 0).then(() => false, () => true);
     c.ok("read-only preview refuses every affected fallback write door", !!previewAssign.error && !!previewComplete.error && !previewDismiss.ok && previewStatus && previewChecklist && (await view()).state.digest === beforeRefusal);
     await as(admin);

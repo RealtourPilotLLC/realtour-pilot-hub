@@ -65,7 +65,7 @@ async function main() {
     };
     const deniedActors = [
       { label: "signed client", reason: /Please sign in/, signIn: async () => { await clearSession(); cookieStore.set(CLIENT_COOKIE, clientCookie); } },
-      { label: "unassigned editor", reason: /don't have access/, signIn: async () => { cookieStore.delete(CLIENT_COOKIE); await setSession({ uid: editor.id, email: editor.email, role: editor.role }); } },
+      { label: "unassigned editor", reason: /don't have access|can't be completed or moved from your login/, signIn: async () => { cookieStore.delete(CLIENT_COOKIE); await setSession({ uid: editor.id, email: editor.email, role: editor.role }); } },
       { label: "owner preview", reason: /previewing another user/, signIn: async () => { cookieStore.delete(CLIENT_COOKIE); await setSession({ uid: owner.id, email: owner.email, role: owner.role, actingAs: kyle.id }); } },
     ];
     const refused = async (act: () => Promise<{ ok: boolean; message: string } | undefined>, reason: RegExp) => {

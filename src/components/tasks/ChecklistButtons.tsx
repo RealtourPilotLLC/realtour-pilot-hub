@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { Check, Loader2, X } from "lucide-react";
 import { markCommsHandled, setSmartTaskStatus, dismissTask, setTaskAssignee } from "@/app/actions";
+import { flashHandled } from "@/components/comms/HandledUndo";
 import { DISMISS_REASONS } from "@/lib/triage";
 import { flashNotice } from "@/components/ui/Toast";
 import { useRouter } from "next/navigation";
@@ -34,7 +35,7 @@ export function HandledButton({ clientId, family = "phone", groupKey }: { client
         onClick={() => start(async () => {
           setErr(null);
           const r = await markCommsHandled(clientId, family, groupKey).catch(() => ({ ok: false as const, message: "Something went wrong — try again." }));
-          if (r.ok) { setSaid(("message" in r && r.message) || null); setDone(true); router.refresh(); }
+          if (r.ok) { setSaid(("message" in r && r.message) || null); setDone(true); flashHandled("undoId" in r ? r.undoId : null, ("message" in r && r.message) || "Marked handled."); router.refresh(); }
           else setErr(("message" in r && r.message) || "No access — admins only.");
         })}
         title="Mark handled — answered on a personal phone, in person, or no reply needed"
@@ -50,12 +51,16 @@ export function SlackDoneButton({ taskId }: { taskId: string }) {
   const router = useRouter();
   const [busy, start] = useTransition();
   const [done, setDone] = useState(false);
+  const [refused, setRefused] = useState<string | null>(null);
   if (done) return <span className="mt-0.5 shrink-0 text-xs font-medium text-success"><Check className="mr-1 inline size-3.5" />Done</span>;
+  if (refused) return <span role="alert" className="mt-0.5 shrink-0 text-xs text-danger">{refused}</span>;
   return (
     <button
       disabled={busy}
       onClick={() => start(async () => {
-        await setSmartTaskStatus(taskId, "COMPLETED").catch(() => {});
+        // A refusal says so instead of a Done that never happened (Oct 29 2026).
+        const r = await setSmartTaskStatus(taskId, "COMPLETED").catch(() => ({ ok: false, message: "That didn't save. Try again." }));
+        if (r && !r.ok) { setRefused(r.message); return; }
         setDone(true);
         router.refresh();
       })}
@@ -291,6 +296,7 @@ export function CommsDismissButton({
       }));
       if (r.ok) {
         const message = ("message" in r && r.message) || null;
+        flashHandled("undoId" in r ? r.undoId : null, message ?? "Cleared.");
         setSaid(message);
         setGone(true);
         setOpen(false);
@@ -350,8 +356,10 @@ export function SlackAssignPicker({ taskId, options }: { taskId: string; options
   const router = useRouter();
   const [busy, start] = useTransition();
   const [picked, setPicked] = useState<string | null>(null);
+  const [refused, setRefused] = useState<string | null>(null);
 
   if (picked) return <span className="shrink-0 text-xs font-medium text-success">→ {picked}</span>;
+  if (refused) return <span role="alert" className="shrink-0 text-xs text-danger">{refused}</span>;
   return (
     <select
       disabled={busy}
@@ -361,7 +369,8 @@ export function SlackAssignPicker({ taskId, options }: { taskId: string; options
         if (!key) return;
         const name = options.find((o) => o.key === key)?.name ?? key;
         start(async () => {
-          await setTaskAssignee(taskId, key).catch(() => {});
+          const r = await setTaskAssignee(taskId, key).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
+          if (r && !r.ok) { setRefused(r.message); return; }
           setPicked(name);
           router.refresh();
         });

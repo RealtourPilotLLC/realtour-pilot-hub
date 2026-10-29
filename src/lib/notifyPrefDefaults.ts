@@ -66,12 +66,12 @@ export type NotifyGroup = "Owner" | "Editor" | "Photographer" | "Office";
 export const NOTIFY_EVENTS = [
   { key: "mention", label: "Tagged in a message, or replied to", short: "Tags", appliesTo: ["Owner", "Editor", "Photographer", "Office"] },
   { key: "project_message", label: "A message posted on one of their jobs (photographers: jobs they shot)", short: "Job messages", appliesTo: ["Editor", "Photographer", "Office"] },
-  { key: "job_ping", label: "Job pings — footage landed, a revision, a review verdict, a check before review, reassigned", short: "Job pings", appliesTo: ["Editor", "Photographer"] },
+  { key: "job_ping", label: "Job pings — footage landed, a revision, a review verdict, a check before review, reassigned, coaching (editors)", short: "Job pings", appliesTo: ["Editor", "Photographer"] },
   // Sep 21 2026: the label said "A video waiting on review" while the switch
   // had just been given a second job — the 1080p file landing back from Topaz
   // — so a person turning it off had no way to know what else went quiet.
   { key: "review_ready", label: "A video waiting on review, or a finished Topaz file", short: "Video in review", appliesTo: ["Owner", "Office", "Photographer"] },
-  { key: "shoot_change", label: "Shoot changes & feedback — reschedule, cancel, footage or instructions missing, cull, review feedback", short: "Shoot changes", appliesTo: ["Photographer", "Owner", "Office"] },
+  { key: "shoot_change", label: "Shoot changes & feedback — reschedule, cancel, footage or instructions missing, cull, review feedback, coaching", short: "Shoot changes", appliesTo: ["Photographer", "Owner", "Office"] },
 ] as const satisfies readonly { key: string; label: string; short: string; appliesTo: readonly NotifyGroup[] }[];
 
 export type NotifyEvent = (typeof NOTIFY_EVENTS)[number]["key"];
@@ -154,6 +154,9 @@ export const NOTIFY_KIND_LABELS: Record<string, string> = {
   revision_stuck: "revisions stuck 3+ days",
   // Oct 29 2026 (lib/editStartReminders).
   edit_start_reminder: "press Start reminder",
+  // Oct 29 2026 (lib/coachingNotice).
+  coaching_feedback: "coaching feedback",
+  coaching_feedback_editor: "coaching feedback",
 };
 export function notifyKindLabel(kind: string): string {
   return NOTIFY_KIND_LABELS[kind] ?? kind.replace(/_/g, " ");

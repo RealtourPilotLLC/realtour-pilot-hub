@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/user";
-import { authEnforced } from "@/lib/auth/guards";
+import { addressableKeys, authEnforced, creativeLeadReachesTask, crewKeys } from "@/lib/auth/guards";
 import {
   MapPin,
   Package,
@@ -210,6 +210,21 @@ export default async function ProjectPage({
   const msgExtra = await messageExtras(project.messages, viewer);
 
   const assignees = assigneeList.map((a) => ({ key: a.key, name: a.name }));
+  // WHOSE CARD THIS IS, FOR THE CREATIVE MANAGER (James call, Oct 28 2026: on
+  // 893 S Matlack his Complete and owner picks came back "The status change
+  // was not confirmed. Reload…"). He completes and moves his own cards, his
+  // crew's (editors, photographers) and what he assigned (guards.
+  // creativeLeadReaches, the server's same rule); an office card says whose
+  // it is and offers Send to Jordan instead of controls the server refuses.
+  // The leads (Kyle, James) get Send to Jordan on every card.
+  const cmCrew = viewer?.role === "CREATIVE_MANAGER" ? await crewKeys() : null;
+  const cmKeys = viewer?.role === "CREATIVE_MANAGER" ? await addressableKeys(viewer) : null;
+  const lockedFor = (t: { assignedKey: string | null; delegatedBy: string | null }): string | null => {
+    if (!cmCrew || !cmKeys || !viewer) return null;
+    if ((t.assignedKey && cmKeys.has(t.assignedKey)) || creativeLeadReachesTask(t, viewer.email, cmCrew)) return null;
+    return (t.assignedKey ? assigneeList.find((a) => a.key === t.assignedKey)?.name ?? t.assignedKey : null) ?? "The office";
+  };
+  const sendUp = !!viewer && (viewer.role === "ADMIN" || viewer.role === "CREATIVE_MANAGER");
   // A teammate's pay question filed on this job is the owner's alone (audit Oct 25 2026, F7).
   const openTasks = showMoney ? project.smartTasks : project.smartTasks.filter((t) => !isOwnerPrivateTask(t));
   // THE customer note — one list (src/lib/clientNotes.ts). Owner reads it raw;
@@ -614,7 +629,7 @@ export default async function ProjectPage({
             <Section icon={ListTodo} title="Open tasks" count={openTasks.length} flush>
               <div className="grid gap-3 p-5 sm:grid-cols-2">
                 {openTasks.map((t) => (
-                  <TaskCard key={t.id} task={showMoney ? taskToView(t) : scrubTaskMoney(taskToView(t))} assignees={assignees} editorView={!officeControls} deadlineOffice={viewer ? !viewer.impersonating && (viewer.role === "OWNER" || viewer.role === "ADMIN") : !authEnforced()} />
+                  <TaskCard key={t.id} task={showMoney ? taskToView(t) : scrubTaskMoney(taskToView(t))} assignees={assignees} editorView={!officeControls} deadlineOffice={viewer ? !viewer.impersonating && (viewer.role === "OWNER" || viewer.role === "ADMIN") : !authEnforced()} lockedFor={lockedFor(t)} sendUp={sendUp} />
                 ))}
               </div>
             </Section>

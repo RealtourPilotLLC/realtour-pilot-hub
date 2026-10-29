@@ -13,6 +13,7 @@ import {
   dismissComplaintDraftAction, draftComplaintPlanAction, loadComplaintPlanAction, removeComplaintStepAction, saveComplaintSummaryAction,
 } from "@/app/clients/complaintPlanActions";
 import { moveClientIssueAction } from "@/app/clients/clientCareActions";
+import { SendToJordan } from "@/components/delegation/SendToJordan";
 
 // ---------------------------------------------------------------------------
 // A COMPLAINT'S PLAN, ON SCREEN (Oct 29 2026, lib/clientIssuePlan). The same
@@ -33,7 +34,8 @@ const PRIMARY = "inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-a
 const QUIET = "inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 text-sm font-medium disabled:opacity-50";
 const POLL_MS = 30_000;
 
-export function ComplaintPlan({ issueId, readOnly = false, initial = null, compact = false, fallbackWords = null }: { issueId: string; readOnly?: boolean; initial?: PlanView | null; compact?: boolean; fallbackWords?: string | null }) {
+/** `sendUp`: the viewer is a lead who isn't Jordan (Kyle, James): Send to Jordan under the plan (James call, Oct 28 2026). */
+export function ComplaintPlan({ issueId, readOnly = false, initial = null, compact = false, fallbackWords = null, sendUp = false }: { issueId: string; readOnly?: boolean; initial?: PlanView | null; compact?: boolean; fallbackWords?: string | null; sendUp?: boolean }) {
   const router = useRouter();
   const [plan, setPlan] = useState<PlanView | null>(initial);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -116,6 +118,9 @@ export function ComplaintPlan({ issueId, readOnly = false, initial = null, compa
 
       <Preferences plan={p} readOnly={readOnly} pending={pending} run={run} />
       <KpiTracker plan={p} readOnly={readOnly} pending={pending} run={run} />
+      {sendUp && !readOnly && p.state === "OPEN" && (
+        <SendToJordan title={`${p.clientName ?? "A client"}: ${p.title}`} href={`/clients/${p.clientId}#issue-${p.issueId}`} clientId={p.clientId} projectId={p.projects[0]?.id ?? null} />
+      )}
 
       {msg && <p role={msg.ok ? "status" : "alert"} className={cn("text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
     </section>
@@ -227,6 +232,9 @@ function DraftBox({ plan: p, readOnly, pending, run }: PartProps) {
 function Steps({ plan: p, readOnly, pending, run }: PartProps) {
   const [removing, setRemoving] = useState<string | null>(null);
   const [why, setWhy] = useState("");
+  // A refused Remove says so beside the step, not only at the foot of the
+  // plan (Kyle, Oct 29 2026: "Remove button is not working").
+  const [refused, setRefused] = useState<{ id: string; text: string } | null>(null);
   return (
     <ol className="space-y-1.5" data-plan-steps={p.steps.length}>
       {p.steps.map((s) => (
@@ -237,7 +245,7 @@ function Steps({ plan: p, readOnly, pending, run }: PartProps) {
               disabled={readOnly || pending || s.done || s.cancelled}
               onClick={() => run(() => completeComplaintStepAction(s.id))}
               aria-label={s.done ? "Done" : "Mark this step done"}
-              className={cn("mt-0.5 grid size-6 shrink-0 place-items-center rounded-md border", s.done ? "border-success bg-success text-white" : "border-border hover:border-brand")}
+              className={cn("mt-0.5 grid size-6 shrink-0 place-items-center rounded-md border", s.done ? "border-success-action bg-success-action text-white" : "border-border hover:border-brand")}
             >
               {s.done && <Check aria-hidden className="size-4" />}
             </button>
@@ -251,13 +259,30 @@ function Steps({ plan: p, readOnly, pending, run }: PartProps) {
               {!s.done && s.kind === "prefs" && <p className="text-[12px] text-muted">Done when the preferences below are added to the client&rsquo;s notes.</p>}
             </div>
             {!readOnly && !s.done && !s.cancelled && (
-              <button type="button" onClick={() => { setRemoving(removing === s.id ? null : s.id); setWhy(""); }} aria-label="Remove this step" className="grid size-8 place-items-center rounded-md text-muted hover:text-danger"><X aria-hidden className="size-4" /></button>
+              <button type="button" onClick={() => { setRemoving(removing === s.id ? null : s.id); setWhy(""); setRefused(null); }} aria-label="Remove this step" className="grid size-8 place-items-center rounded-md text-muted hover:text-danger"><X aria-hidden className="size-4" /></button>
             )}
           </div>
           {removing === s.id && (
-            <div className="mt-2 flex flex-wrap gap-2">
-              <input value={why} onChange={(e) => setWhy(e.target.value)} placeholder="Why it isn't needed" className="min-h-11 min-w-0 flex-1 basis-48 rounded-md border border-border bg-surface px-2 text-sm" />
-              <button type="button" disabled={pending || why.trim().length < 3} onClick={() => run(() => removeComplaintStepAction(s.id, why), () => setRemoving(null))} className={QUIET}>Remove</button>
+            <div className="mt-2 space-y-1" data-remove-step>
+              <div className="flex flex-wrap gap-2">
+                <input value={why} onChange={(e) => setWhy(e.target.value)} placeholder="Why this step isn't needed" aria-label="Why this step isn't needed" className="min-h-11 min-w-0 flex-1 basis-48 rounded-md border border-border bg-surface px-2 text-sm" />
+                <button
+                  type="button"
+                  disabled={pending || why.trim().length < 3}
+                  onClick={() => {
+                    setRefused(null);
+                    run(async () => {
+                      const r = await removeComplaintStepAction(s.id, why);
+                      if (!r.ok) setRefused({ id: s.id, text: r.message });
+                      return r;
+                    }, () => setRemoving(null));
+                  }}
+                  className={QUIET}
+                >
+                  {pending ? "Removing…" : "Remove"}
+                </button>
+              </div>
+              {refused?.id === s.id && <p role="alert" className="text-[12px] text-danger" data-remove-refused>Not removed: {refused.text}</p>}
             </div>
           )}
         </li>

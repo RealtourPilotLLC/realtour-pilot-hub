@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth/guards";
+import { recipientWords } from "@/lib/emailRecipients";
 
 // Send the human-reviewed email reply behind a gmail-sourced task. The hub
 // DRAFTS; a person reads, edits, and presses Send — this is that press. The
@@ -12,12 +13,22 @@ import { requireAdmin } from "@/lib/auth/guards";
 export async function sendEmailReply(
   taskId: string,
   body: string,
-  opts?: { expectedTo?: string; /** Revision acks: reply goes out but the edit work remains open. */ keepOpen?: boolean },
+  opts?: {
+    expectedTo?: string;
+    /** Revision acks: reply goes out but the edit work remains open. */
+    keepOpen?: boolean;
+    /** Oct 29 2026 (Kyle): everyone on the chain, as Reply all (default on), plus copies a person added. */
+    replyAll?: boolean;
+    cc?: string[] | string | null;
+    bcc?: string[] | string | null;
+  },
 ): Promise<{ ok: boolean; message: string; to?: string }> {
   await requireAdmin();
   const text = body.trim();
   if (!text) return { ok: false, message: "The reply is empty." };
   if (text.length > 20_000) return { ok: false, message: "That reply is too long." };
+  const typed = await typedCopies(opts?.cc, opts?.bcc);
+  if (!typed.ok) return { ok: false, message: typed.message };
 
   const task = await prisma.smartTask.findUnique({
     where: { id: taskId },
@@ -55,7 +66,7 @@ export async function sendEmailReply(
   // clientCopy (Oct 12 2026): Jordan gets a blind copy of every reply that goes
   // to a client from here — never of one to a team member (the plan skips our
   // own domain and anyone on the team).
-  const sent = await sendGmailReply({ mailbox, threadId, body: text, expectedTo: opts?.expectedTo, clientCopy: true });
+  const sent = await sendGmailReply({ mailbox, threadId, body: text, expectedTo: opts?.expectedTo, clientCopy: true, replyAll: opts?.replyAll ?? true, cc: typed.cc, bcc: typed.bcc });
   if (!sent.ok) {
     if (!opts?.keepOpen) {
       await prisma.smartTask
@@ -101,7 +112,7 @@ export async function sendEmailReply(
   }).catch(() => {});
   if (task.projectId) {
     await prisma.activity
-      .create({ data: { projectId: task.projectId, type: "SYSTEM", body: `Email reply sent to ${sent.to}: ${text.slice(0, 160)}` } })
+      .create({ data: { projectId: task.projectId, type: "SYSTEM", body: `Email reply sent to ${recipientWords(sent)}: ${text.slice(0, 160)}` } })
       .catch(() => {});
   }
   // A delegated email on this thread is done too (Oct 27 2026, see sendEmailThreadReply).
@@ -112,14 +123,36 @@ export async function sendEmailReply(
   revalidatePath("/");
   revalidatePath("/tasks");
   if (task.projectId) revalidatePath(`/projects/${task.projectId}`);
-  return { ok: true, message: `Sent to ${sent.to} — task closed.`, to: sent.to };
+  return { ok: true, message: `Sent to ${recipientWords(sent)}${leftOffWords(sent.chainLeftOff)} — task closed.`, to: sent.to };
+}
+
+/** The Cc and Bcc a person typed, checked (lib/emailRecipients). */
+async function typedCopies(cc: string[] | string | null | undefined, bcc: string[] | string | null | undefined): Promise<{ ok: true; cc: string[]; bcc: string[] } | { ok: false; message: string }> {
+  const { parseTypedRecipients } = await import("@/lib/emailRecipients");
+  const c = parseTypedRecipients(cc ?? null);
+  if (!c.ok) return c;
+  const b = parseTypedRecipients(bcc ?? null, c.list);
+  if (!b.ok) return b;
+  return { ok: true, cc: c.list, bcc: b.list };
+}
+
+/** A sign-in link kept the rest of the chain off the reply: say so. */
+const leftOffWords = (n: number | undefined) => (n ? ` only (it carries a one-time sign-in link, so the ${n} other${n === 1 ? "" : "s"} on the email were left off)` : "");
+
+/** The signed-in person's own address, for "Add me" (never a "view as" preview's). */
+async function myAddress(): Promise<string | null> {
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  if (!me || me.impersonating) return null;
+  const { cleanAddress } = await import("@/lib/emailRecipients");
+  return cleanAddress(me.email);
 }
 
 // Resolve WHO a reply would go to — the UI shows this next to the Send button
 // so the human confirms the recipient before anything leaves, and the send
 // pins it (expectedTo) so a thread update between look and press can't reroute
 // the reply to someone else.
-export async function resolveEmailRecipient(taskId: string): Promise<{ ok: boolean; to?: string; message?: string }> {
+export async function resolveEmailRecipient(taskId: string): Promise<{ ok: boolean; to?: string; alsoTo?: string[]; cc?: string[]; me?: string | null; message?: string }> {
   await requireAdmin();
   const task = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { source: true, sourceDetail: true } });
   const sd = task?.sourceDetail ?? "";
@@ -130,7 +163,7 @@ export async function resolveEmailRecipient(taskId: string): Promise<{ ok: boole
   if (!mailbox || !threadId) return { ok: false, message: "The email thread reference is incomplete." };
   const { resolveGmailReplyTarget } = await import("@/lib/integrations/google");
   const r = await resolveGmailReplyTarget(mailbox, threadId);
-  return r.ok ? { ok: true, to: r.to } : { ok: false, message: r.error };
+  return r.ok ? { ok: true, to: r.to, alsoTo: r.alsoTo, cc: r.cc, me: await myAddress() } : { ok: false, message: r.error };
 }
 
 // ---------------------------------------------------------------------------
@@ -235,20 +268,20 @@ async function replyThreadOf(target: EmailReplyTarget): Promise<{ ok: true; t: R
 /** Who the reply goes to, read from the Gmail thread itself (the newest
  *  message that isn't ours; its Reply-To, else its From). On the client page
  *  that must be the client's own email on file. */
-async function recipientOf(t: ReplyThread): Promise<{ ok: true; to: string; subject: string; from: string } | { ok: false; message: string; needsReconnect?: boolean }> {
+async function recipientOf(t: ReplyThread): Promise<{ ok: true; to: string; subject: string; from: string; alsoTo: string[]; cc: string[] } | { ok: false; message: string; needsReconnect?: boolean }> {
   const { resolveGmailReplyTarget } = await import("@/lib/integrations/google");
   const r = await resolveGmailReplyTarget(t.mailbox, t.threadId);
   if (!r.ok) return { ok: false, message: r.error, needsReconnect: r.needsReconnect };
   if (t.clientEmails && !t.clientEmails.includes(r.to.toLowerCase())) {
     return { ok: false, message: `A reply in this thread would go to ${r.to}, which isn't ${t.clientName ?? "the client"}'s email on file. Answer it in Gmail.` };
   }
-  return { ok: true, to: r.to, subject: r.subject, from: r.from };
+  return { ok: true, to: r.to, subject: r.subject, from: r.from, alsoTo: r.alsoTo, cc: r.cc };
 }
 
 /** The reply box's header: who it goes to, from which mailbox, under what
  *  subject, and whether that mailbox may send at all. Reads only. */
 export async function prepareEmailReply(target: EmailReplyTarget): Promise<
-  EmailReplyResult & { from?: string; subject?: string; canSend?: boolean | null }
+  EmailReplyResult & { from?: string; subject?: string; canSend?: boolean | null; alsoTo?: string[]; cc?: string[]; me?: string | null }
 > {
   const denied = await officeOnly();
   if (denied) return { ok: false, message: denied };
@@ -261,7 +294,7 @@ export async function prepareEmailReply(target: EmailReplyTarget): Promise<
   if (canSend === false) {
     return { ok: false, to: rc.to, from: rc.from, subject: rc.subject, canSend, needsReconnect: true, message: cannotSendMessage(rc.from, await viewerIsOwner()) };
   }
-  return { ok: true, message: "ok", to: rc.to, from: rc.from, subject: rc.subject, canSend };
+  return { ok: true, message: "ok", to: rc.to, from: rc.from, subject: rc.subject, canSend, alsoTo: rc.alsoTo, cc: rc.cc, me: await myAddress() };
 }
 
 /** The AI draft for a Messages · Email thread: that thread as the hub logged
@@ -315,12 +348,17 @@ export async function sendEmailThreadReply(
   body: string,
   intentId: string,
   expectedTo?: string | null,
+  /** Oct 29 2026 (Kyle): Reply all (default on) and the Cc / Bcc a person added. */
+  copies?: { replyAll?: boolean; cc?: string[] | string | null; bcc?: string[] | string | null } | null,
 ): Promise<EmailReplyResult> {
   const denied = await officeOnly();
   if (denied) return { ok: false, message: denied };
   const text = typeof body === "string" ? body.trim() : "";
   if (!text) return { ok: false, message: "Write the reply first. Nothing was sent." };
   if (text.length > 20_000) return { ok: false, message: "That reply is too long." };
+  const typed = await typedCopies(copies?.cc, copies?.bcc);
+  if (!typed.ok) return { ok: false, message: typed.message };
+  const replyAll = copies?.replyAll ?? true;
   if (typeof intentId !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(intentId)) {
     return { ok: false, message: "Refresh the page and try again. We couldn't identify this send, and we won't guess in case it doubles up." };
   }
@@ -344,8 +382,10 @@ export async function sendEmailThreadReply(
   if (t.clientId) {
     const c = await prisma.client.findUnique({ where: { id: t.clientId }, select: { name: true } }).catch(() => null);
     const { isTestClientName, isVerifiedTestDestinationEmail } = await import("@/lib/testClients");
-    if (c && isTestClientName(c.name) && !isVerifiedTestDestinationEmail(rc.to)) {
-      return { ok: false, message: `Not sent: ${c.name} is a test client, and ${rc.to} isn't one of Jordan's test inboxes.` };
+    if (c && isTestClientName(c.name)) {
+      const everyone = [rc.to, ...(replyAll ? [...rc.alsoTo, ...rc.cc] : []), ...typed.cc, ...typed.bcc];
+      const stray = everyone.find((a) => !isVerifiedTestDestinationEmail(a));
+      if (stray) return { ok: false, message: `Not sent: ${c.name} is a test client, and ${stray} isn't one of Jordan's test inboxes.` };
     }
   }
 
@@ -356,12 +396,12 @@ export async function sendEmailThreadReply(
   if (prior?.status === "PROCESSED") return { ok: true, message: `Already sent to ${rc.to}. It didn't go twice.`, to: rc.to };
   if (prior) return { ok: false, message: "That reply is already going out. Give it a moment before pressing Send again." };
   const claim = await prisma.webhookEvent.create({
-    data: { provider: REPLY_CLAIM, eventType: "email_reply", externalId: intentId, payload: JSON.stringify({ mailbox: t.mailbox, threadId: t.threadId }) },
+    data: { provider: REPLY_CLAIM, eventType: "email_reply", externalId: intentId, payload: JSON.stringify({ mailbox: t.mailbox, threadId: t.threadId, replyAll, cc: typed.cc, bcc: typed.bcc }) },
   });
 
   const { sendGmailReply } = await import("@/lib/integrations/google");
   // clientCopy (Oct 12 2026): Jordan's blind copy of every reply to a client.
-  const sent = await sendGmailReply({ mailbox: t.mailbox, threadId: t.threadId, body: text, expectedTo: rc.to, clientCopy: true });
+  const sent = await sendGmailReply({ mailbox: t.mailbox, threadId: t.threadId, body: text, expectedTo: rc.to, clientCopy: true, replyAll, cc: typed.cc, bcc: typed.bcc });
   if (!sent.ok) {
     await prisma.webhookEvent.delete({ where: { id: claim.id } }).catch(() => {});
     if (sent.needsReconnect) {
@@ -373,7 +413,12 @@ export async function sendEmailThreadReply(
     }
     return { ok: false, message: `${sent.error} Nothing was sent.` };
   }
-  await prisma.webhookEvent.update({ where: { id: claim.id }, data: { status: "PROCESSED", processedAt: new Date() } }).catch(() => {});
+  // Who it actually went to, kept on the send's own record (Oct 29 2026): the
+  // comms log has no recipient columns, the claim row does have room.
+  await prisma.webhookEvent.update({
+    where: { id: claim.id },
+    data: { status: "PROCESSED", processedAt: new Date(), payload: JSON.stringify({ mailbox: t.mailbox, threadId: t.threadId, to: [sent.to, ...sent.alsoTo], cc: sent.cc, bcc: sent.bcc }) },
+  }).catch(() => {});
   await (await import("@/lib/gmailHealth")).reportGmailSendWorking(t.mailbox).catch(() => {});
 
   // The email has gone. Everything below is our own record; a failure there
@@ -412,7 +457,7 @@ export async function sendEmailThreadReply(
   if (projectId) {
     const who = actor && !actor.impersonating ? actor.name : null;
     await prisma.activity
-      .create({ data: { projectId, type: "SYSTEM", authorId: actorTeamMemberId, body: `Email reply sent to ${sent.to}${who ? ` by ${who}` : ""}: ${text.slice(0, 160)}` } })
+      .create({ data: { projectId, type: "SYSTEM", authorId: actorTeamMemberId, body: `Email reply sent to ${recipientWords(sent)}${who ? ` by ${who}` : ""}: ${text.slice(0, 160)}` } })
       .catch(() => {});
   }
   // The reply to-do the Gmail sync made for this thread is done (the sync's
@@ -435,5 +480,5 @@ export async function sendEmailThreadReply(
   revalidatePath("/");
   if (t.clientId) revalidatePath(`/clients/${t.clientId}`);
   if (projectId) revalidatePath(`/projects/${projectId}`);
-  return { ok: true, message: `Sent to ${sent.to}.`, to: sent.to };
+  return { ok: true, message: `Sent to ${recipientWords(sent)}${leftOffWords(sent.chainLeftOff)}.`, to: sent.to };
 }

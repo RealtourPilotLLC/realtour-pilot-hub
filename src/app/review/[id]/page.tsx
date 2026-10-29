@@ -25,6 +25,8 @@ import { ProjectVideoStatusList, ProjectVideoStatusUnavailable, readProjectVideo
 import { CreativeReviewPanel } from "@/components/review/CreativeReviewPanel";
 import { JudgeAgainst, type JudgeBrand, type JudgeScript } from "@/components/review/JudgeAgainst";
 import { BeforeYouSendView, loadBeforeYouSend } from "@/components/jobs/BeforeYouSend";
+import { OlderFold } from "@/components/comms/OlderFold";
+import { splitRecent } from "@/lib/recentWindow";
 import { byLine, clientNoteStatusWords, officeReopenLine, officeReopenOf, requesterLine, verdictLine, whenET } from "@/lib/reviewAttribution";
 
 export const dynamic = "force-dynamic";
@@ -115,6 +117,21 @@ export default async function CutReviewPage({
     ? []
     : await import("@/lib/clientDecisions").then((m) => m.clientNotesForReviewRoom(id, 30, { scrub: !canSeeRaw })).catch(() => []);
   const clientNoteCount = clientNoteGroups.reduce((n, g) => n + g.notes.length, 0);
+  // The last seven days open, older notes folded (Jordan and James, Oct 29
+  // 2026: a client's long history overwhelmed the review; lib/recentWindow).
+  // A note still waiting to go to the editor stays in view whatever its age.
+  type ClientNoteGroup = (typeof clientNoteGroups)[number];
+  const clientNoteSplit = splitRecent(
+    clientNoteGroups.flatMap((g) => g.notes.map((n) => ({ submissionId: g.submissionId, n }))),
+    (x) => (x.n.status === "OPEN" ? null : x.n.createdAtISO),
+    new Date(),
+  );
+  const regroupNotes = (rows: typeof clientNoteSplit.recent): ClientNoteGroup[] =>
+    clientNoteGroups
+      .map((g) => ({ ...g, notes: rows.filter((x) => x.submissionId === g.submissionId).map((x) => x.n) }))
+      .filter((g) => g.notes.length > 0);
+  const recentClientNoteGroups = regroupNotes(clientNoteSplit.recent);
+  const olderClientNoteGroups = regroupNotes(clientNoteSplit.older);
   // The client's own words to the office are not the photographer's to read.
   if (!w) notFound();
 
@@ -345,6 +362,52 @@ export default async function CutReviewPage({
     const s = w.submissions.find((x) => x.id === submissionId);
     return s ? `${slotLabel(s) ?? s.fileName ?? "A cut"} · version ${s.round}` : "An earlier cut";
   };
+
+  // The client's notes, grouped by the cut they are on (the recent ones open, the older ones folded).
+  const noteGroupsView = (groups: ClientNoteGroup[]) => (
+    <>
+      {groups.map((g) => (
+        <div key={g.submissionId}>
+          {clientNoteGroups.length > 1 && (
+            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-2">{cutNameOf(g.submissionId)}</p>
+          )}
+          <ul className="space-y-2">
+            {g.notes.map((n) => (
+              <li key={n.id} className="text-sm">
+                <div className="flex items-start gap-2">
+                  {n.timeSec != null && (
+                    <span className="mt-0.5 shrink-0 rounded-md bg-brand-soft px-1.5 py-0.5 text-[11px] font-semibold text-brand">
+                      {Math.floor(n.timeSec / 60)}:{String(Math.floor(n.timeSec % 60)).padStart(2, "0")}
+                    </span>
+                  )}
+                  <span className="min-w-0 flex-1 text-foreground/85">{n.body}</span>
+                </div>
+                <p className="mt-0.5 text-[11px] text-muted-2">
+                  {byLine(n.author, n.createdAtISO)}
+                  {" · "}
+                  {/* Keyed on the resolve stamp, like the portal (review, Sep 28). */}
+                  {clientNoteStatusWords(n)}
+                </p>
+                {/* Our side of the client's note (Oct 28 2026): held back,
+                    reworded or taken off the editor's list, never their words. */}
+                {canCorrectClient && <ClientNoteControls id={n.id} status={n.status} change={clientChanges.get(n.id) ?? null} editorName={editorLabel === "the editor" ? null : editorLabel} />}
+                {n.replies.length > 0 && (
+                  <ul className="mt-1 space-y-1 border-l-2 border-border pl-3">
+                    {n.replies.map((r) => (
+                      <li key={r.id} className="text-[13px]">
+                        <span className="text-foreground/80">{r.body}</span>
+                        <span className="ml-1.5 text-[11px] text-muted-2">{byLine(r.author, r.createdAtISO)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </>
+  );
 
   return (
     <div>
@@ -646,46 +709,12 @@ export default async function CutReviewPage({
               </summary>
               <div className="space-y-3 border-t border-border py-3">
                 {clientNoteCount === 0 && <p className="text-sm text-muted">The client has not left a note on this job&rsquo;s videos.</p>}
-                {clientNoteGroups.map((g) => (
-                  <div key={g.submissionId}>
-                    {clientNoteGroups.length > 1 && (
-                      <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-2">{cutNameOf(g.submissionId)}</p>
-                    )}
-                    <ul className="space-y-2">
-                      {g.notes.map((n) => (
-                        <li key={n.id} className="text-sm">
-                          <div className="flex items-start gap-2">
-                            {n.timeSec != null && (
-                              <span className="mt-0.5 shrink-0 rounded-md bg-brand-soft px-1.5 py-0.5 text-[11px] font-semibold text-brand">
-                                {Math.floor(n.timeSec / 60)}:{String(Math.floor(n.timeSec % 60)).padStart(2, "0")}
-                              </span>
-                            )}
-                            <span className="min-w-0 flex-1 text-foreground/85">{n.body}</span>
-                          </div>
-                          <p className="mt-0.5 text-[11px] text-muted-2">
-                            {byLine(n.author, n.createdAtISO)}
-                            {" · "}
-                            {/* Keyed on the resolve stamp, like the portal (review, Sep 28). */}
-                            {clientNoteStatusWords(n)}
-                          </p>
-                          {/* Our side of the client's note (Oct 28 2026): held back,
-                              reworded or taken off the editor's list, never their words. */}
-                          {canCorrectClient && <ClientNoteControls id={n.id} status={n.status} change={clientChanges.get(n.id) ?? null} editorName={editorLabel === "the editor" ? null : editorLabel} />}
-                          {n.replies.length > 0 && (
-                            <ul className="mt-1 space-y-1 border-l-2 border-border pl-3">
-                              {n.replies.map((r) => (
-                                <li key={r.id} className="text-[13px]">
-                                  <span className="text-foreground/80">{r.body}</span>
-                                  <span className="ml-1.5 text-[11px] text-muted-2">{byLine(r.author, r.createdAtISO)}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
+                {clientNoteSplit.older.length > 0 && (
+                  <OlderFold count={clientNoteSplit.older.length} noun="note">
+                    <div className="space-y-3">{noteGroupsView(olderClientNoteGroups)}</div>
+                  </OlderFold>
+                )}
+                {noteGroupsView(recentClientNoteGroups)}
               </div>
             </details>
           )}

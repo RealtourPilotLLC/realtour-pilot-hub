@@ -10,8 +10,10 @@ import {
   DEFAULT_BRIEF_SETTINGS,
   SEND_TIME_CHOICES,
   ackHolds,
+  briefChangeLines,
   briefDueAt,
   briefStateOf,
+  changesForShoot,
   composeBriefText,
   composeUpdateText,
   dayWords,
@@ -29,6 +31,7 @@ import {
   type BriefRecord,
   type BriefSend,
   type BriefSettings,
+  type ChangeLine,
   type MaterialSnapshot,
   type VisitFacts,
 } from "@/lib/photographerBriefCore";
@@ -619,35 +622,48 @@ export async function briefPageView(teamMemberId: string, day: string, now: Date
   const status = b
     ? briefStateOf({ enabled: settings.enabled, record, current: b.material, firstShootAt: b.firstShootAt, dueAt: briefDueAt(day, settings), now, blocker: null, name: b.name })
     : null;
-  const holds = !!b && ackHolds(record, b.material, now);
   // WHAT CHANGED (Oct 28 2026: James saw "Brief changed" for Ashley Brunner's 3 PM
-  // and the page only said "Sent"). Before any Got it: every update texted since
-  // the first brief, plus what changed since the last text. After a Got it that no
-  // longer holds: exactly what changed since he confirmed. An update kept only
-  // its words, so its shoot is the one whose street the words name.
-  const shootOf = (words: string) => b?.shoots.find((s) => words.includes(s.street))?.appointmentId ?? null;
-  const updates = (record?.sends ?? [])
-    .filter((s) => s.kind === "update" && s.outcome !== "failed")
-    .flatMap((s) => (s.changes ?? []).map((words) => ({ at: s.at as string | null, words, appointmentId: shootOf(words) })));
-  const live = (from: MaterialSnapshot | undefined) =>
-    from && b ? liveChanges(from, b.material, now).map((c) => ({ at: null as string | null, words: c.words, appointmentId: c.appointmentId as string | null })) : [];
-  const changed = !b || holds
-    ? []
-    : record?.ack
-      ? live(record.ack.snapshot)
-      : [...updates, ...live(record?.sent?.snapshot)];
+  // and the page only said "Sent"): photographerBriefCore.briefChangeLines.
+  const lines = briefChangeLines(record, b?.material ?? null, b?.shoots ?? [], now);
   return {
     brief: b,
     record,
     status,
     settings,
-    ackHolds: holds,
+    ackHolds: !!b && lines.holds,
     /** what to read again before Got it (empty when the Got it holds) */
-    changed,
+    changed: lines.changed,
     /** the updates already confirmed with a Got it, for the record */
-    confirmedUpdates: holds ? updates : [],
+    confirmedUpdates: lines.confirmedUpdates,
   };
 }
+
+/**
+ * THE GOT IT, WITH WHAT CHANGED BESIDE IT (James's call, Oct 2026: "The 825
+ * State Street card said the brief changed, but neither of you could
+ * identify what changed after opening it"). The desk row and the shoot
+ * screen offered "Mark changed brief read" with no change in sight; the
+ * change lived only on the day's brief page. For each day: the version a Got
+ * it confirms (its digest) and the lines that changed. Reads only.
+ */
+export async function briefAckViews(teamMemberId: string, days: string[], now: Date = new Date()): Promise<Map<string, { digest: string; changed: ChangeLine[] }>> {
+  const out = new Map<string, { digest: string; changed: ChangeLine[] }>();
+  const keys = [...new Set(days.filter((d) => DAY_KEY.test(d)))];
+  if (!teamMemberId || !keys.length) return out;
+  const [build, rows] = await Promise.all([
+    buildBriefDays(keys, { now, teamMemberIds: [teamMemberId] }),
+    prisma.appSetting.findMany({ where: { key: { in: keys.map((d) => briefRecordKey(teamMemberId, d)) } }, select: { key: true, value: true } }),
+  ]);
+  for (const day of keys) {
+    const b = build.briefs.find((x) => x.teamMemberId === teamMemberId && x.day === day);
+    if (!b) continue;
+    const row = rows.find((r) => r.key === briefRecordKey(teamMemberId, day));
+    const record = row ? parseRecord(row.value, teamMemberId, day) : null;
+    out.set(day, { digest: b.digest, changed: briefChangeLines(record, b.material, b.shoots, now).changed });
+  }
+  return out;
+}
+
 
 /** For the shoot-day special-request text: the creative's brief for that day went, so the requests were in it. */
 export async function briefsSentFor(pairs: { teamMemberId: string; day: string }[]): Promise<Set<string>> {
@@ -692,6 +708,13 @@ export async function briefStatusForAppointments(appointmentIds: string[]): Prom
         prisma.appSetting.findMany({ where: { key: { in: [...groups.values()].map((g) => briefRecordKey(g.who, g.day)) } }, select: { key: true, value: true } }),
       ])
     : [null, []];
+  const delivered = await briefDelivery(
+    [...groups.values()].map((g) => {
+      const row = rows.find((r) => r.key === briefRecordKey(g.who, g.day));
+      return { teamMemberId: g.who, day: g.day, record: row ? parseRecord(row.value, g.who, g.day) : null };
+    }),
+    now,
+  ).catch(() => new Map<string, boolean | null>());
   for (const id of ids) {
     const a = appts.find((x) => x.id === id);
     if (!settings.enabled) {
@@ -721,7 +744,57 @@ export async function briefStatusForAppointments(appointmentIds: string[]): Prom
       out.set(id, { ...s, state: "failed", why: noDashes(`${firstName(b.name)} is on PTO ${dayWords(day)}, but this shoot still names them. Reassign it in Aryeo, or confirm ${firstName(b.name)} is shooting.`) });
       continue;
     }
+    // The text that asks for this Got it never reached their phone: Kyle calls,
+    // or presses Send brief now (now short enough to arrive). Never resent by itself.
+    if ((s.state === "sent" || s.state === "changed") && record?.sent && delivered.get(`${who}|${day}`) === false) {
+      const first = firstName(b?.name ?? "the photographer");
+      out.set(id, { ...s, why: noDashes(`Not delivered: OpenPhone took the ${etTime(new Date(record.sent.at))} text, but ${first}'s phone never confirmed it. Call ${first}, or press Send brief now.`) });
+      continue;
+    }
     out.set(id, s);
+  }
+  return out;
+}
+
+/** How long a phone gets to confirm a brief text before the desk says it never arrived. */
+const DELIVERY_GRACE_MS = 15 * 60_000;
+
+/**
+ * DID THE TEXT REACH THEM (James's call: he "had received no recent text about
+ * that shoot despite the changed-brief alert"). He hadn't: his Wed Oct 28
+ * brief (907 characters) and its 10:10 AM update (1,040) were taken by
+ * OpenPhone, the record said "sent", and no phone ever confirmed either, while
+ * every other brief was confirmed within seconds. For each day's last good
+ * send: true (the phone confirmed it), false (OpenPhone took it 15 minutes or
+ * more ago, phones have confirmed later texts since, and not this one), null
+ * (too soon, no OpenPhone id, or no confirmations coming in at all, so
+ * nothing can be said). Keyed `${teamMemberId}|${day}`. Reads only.
+ */
+export async function briefDelivery(items: { teamMemberId: string; day: string; record: BriefRecord | null }[], now: Date = new Date()): Promise<Map<string, boolean | null>> {
+  const out = new Map<string, boolean | null>();
+  const sent = items.filter((i) => i.record?.sent?.outcome === "sent");
+  if (!sent.length) return out;
+  const { photographerBriefKey } = await import("@/lib/outbox");
+  const keyOf = (i: (typeof sent)[number]) => photographerBriefKey(i.teamMemberId, i.day, i.record!.sent!.n);
+  const rows = await prisma.outboxMessage.findMany({ where: { dedupeKey: { in: sent.map(keyOf) } }, select: { dedupeKey: true, providerId: true, acceptedAt: true, createdAt: true } });
+  const judged = sent
+    .map((i) => {
+      const row = rows.find((r) => r.dedupeKey === keyOf(i));
+      const at = row ? (row.acceptedAt ?? row.createdAt) : null;
+      return { key: `${i.teamMemberId}|${i.day}`, providerId: row?.providerId ?? null, at };
+    })
+    .filter((x): x is { key: string; providerId: string; at: Date } => !!x.providerId && !!x.at && now.getTime() - x.at.getTime() >= DELIVERY_GRACE_MS);
+  for (const i of sent) out.set(`${i.teamMemberId}|${i.day}`, null);
+  if (!judged.length) return out;
+  const since = new Date(Math.min(...judged.map((x) => x.at.getTime())) - 60_000);
+  const [latest, hits] = await Promise.all([
+    prisma.webhookEvent.findFirst({ where: { provider: "openphone", eventType: "message.delivered", createdAt: { gte: since } }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
+    prisma.webhookEvent.findMany({ where: { provider: "openphone", eventType: "message.delivered", createdAt: { gte: since }, OR: judged.map((x) => ({ payload: { contains: x.providerId } })) }, select: { payload: true } }),
+  ]);
+  for (const x of judged) {
+    if (hits.some((h) => h.payload.includes(x.providerId))) out.set(x.key, true);
+    // Only when confirmations are arriving at all: a later text was confirmed, this one never was.
+    else if (latest && latest.createdAt.getTime() > x.at.getTime() + DELIVERY_GRACE_MS) out.set(x.key, false);
   }
   return out;
 }
@@ -731,4 +804,4 @@ export function briefScheduleWords(s: BriefSettings): string {
   return `${sendTimeWords(s.sendMinute)} ET the business day before (Friday covers Saturday, Sunday and Monday)`;
 }
 
-export { daysInScope, briefDueAt, composeBriefText, composeUpdateText, dayWords };
+export { daysInScope, briefDueAt, composeBriefText, composeUpdateText, dayWords, changesForShoot };

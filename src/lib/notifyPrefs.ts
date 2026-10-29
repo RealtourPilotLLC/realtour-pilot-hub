@@ -155,6 +155,12 @@ const KIND_TO_EVENT: Record<string, NotifyEvent> = {
   // Oct 29 2026 (lib/editStartReminders): press Start on a job due soon or
   // ready for days, on the same "Job pings" switch.
   edit_start_reminder: "job_ping",
+  // Oct 29 2026 (lib/coachingNotice): coaching feedback James or Jordan
+  // recorded for the person, with the link to read it. Field creatives and
+  // the office on their "Shoot changes & feedback" switch (Harrison's texts),
+  // editors on "Job pings" (Slack by default).
+  coaching_feedback: "shoot_change",
+  coaching_feedback_editor: "job_ping",
 };
 export function eventForKind(kind: string): NotifyEvent | null {
   return KIND_TO_EVENT[kind] ?? null;

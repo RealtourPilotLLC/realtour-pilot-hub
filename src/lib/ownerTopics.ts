@@ -149,7 +149,13 @@ export async function loadOwnerTopics(opts: { now: Date; bottlenecks: Bottleneck
     if (!p || (p.clientId && excluded.has(p.clientId))) return null;
     return { id, key, label, projectId: pid, client: p.client?.name ?? "A client", street: p.title.split(",")[0], shooter: shooterOf(pid), atISO: at.toISOString(), href: `/projects/${pid}` };
   };
+  // Oct 29 2026 (lib/qcCoaching): a finding someone called "not an issue" is no photo problem.
+  const calls = findings?.length
+    ? await import("@/lib/qcCoaching").then((m) => m.coachCalls(findings.map((f) => f.id))).catch(() => new Map<string, { verdict: string }>())
+    : new Map<string, { verdict: string }>();
   for (const f of findings ?? []) {
+    const call = calls.get(f.id);
+    if (call && call.verdict !== "coach") continue;
     const i = issueOf(f.id, `qc:${f.ruleId}`, ruleById(f.ruleId)?.shortLabel ?? f.ruleId.toLowerCase().replace(/_/g, " "), f.job.projectId, f.createdAt);
     if (i) issues.push(i);
   }

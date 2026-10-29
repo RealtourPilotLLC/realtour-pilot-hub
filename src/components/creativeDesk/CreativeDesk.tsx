@@ -4,12 +4,12 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   AlertTriangle, ArrowRight, BarChart3, Camera, CheckCircle2, ClipboardCheck, Clapperboard, ExternalLink, FileText,
-  GraduationCap, ListChecks, ShieldCheck, Upload, Users, Video, Wrench,
+  GraduationCap, ListChecks, Plus, ShieldCheck, Upload, Users, Video, Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etDate } from "@/lib/datetime";
 import { homeRecordHref } from "@/lib/homeRecordScope";
-import type { AssignedRow, Chip, CreativeDesk as Desk, CutRow, DevGroupView, FrictionRow, HandoffRow, ImprovementRow, PrepRow, ShootRow } from "@/lib/creativeDesk";
+import type { AssignedRow, Chip, CreativeDesk as Desk, CutRow, DevGroupView, FrictionRow, HandoffRow, ImprovementRow, PrepRow, ShootRow, TeamShootRow } from "@/lib/creativeDesk";
 import type { DevItemView, ReadinessView, Signal } from "@/lib/teamDevelopment";
 import { AssignedAction, CloseoutTick, HandoffCloseOut, PanelBody, type Panel } from "@/components/creativeDesk/CreativePanels";
 import { AskOnJob, MarkBriefRead } from "@/components/shoot/AskOnJob";
@@ -231,7 +231,7 @@ export function CreativeDesk({ desk, mode = "home", includeTest = false, initial
         <div className="fixed inset-0 z-50 flex justify-end" data-side-panel={panelKey(panel)}>
           <button type="button" aria-label="Close the panel" onClick={() => setPanel(null)} className="absolute inset-0 bg-black/30" />
           <aside role="dialog" aria-modal="true" aria-labelledby="creative-panel-title" className="relative flex h-full w-full max-w-xl flex-col overflow-hidden border-l border-border bg-surface shadow-xl">
-            <PanelBody panel={panel} desk={desk} href={href} onClose={() => setPanel(null)} />
+            <PanelBody panel={panel} desk={desk} href={href} onClose={() => setPanel(null)} onOpen={open} />
           </aside>
         </div>
       )}
@@ -259,7 +259,8 @@ function productionRows(desk: Desk): ProdRow[] {
 function ProductionCard({ desk, href, shown }: { desk: Desk; href: (h: string) => string; shown: number }) {
   const rows = productionRows(desk);
   const team = desk.production.team.length;
-  const total = rows.length + team;
+  const upcoming = desk.production.teamUpcoming.length;
+  const total = rows.length + team + upcoming;
   return (
     <Section id="production" title="Production" subtitle="Capture, client direction, and clean handoffs." count={rows.length} viewAll={{ label: total > shown ? `Open full view (${total})` : "Open full view", href: href(desk.production.fullHref) }} unavailable={desk.production.unavailable}>
       {rows.length === 0 ? (
@@ -271,9 +272,9 @@ function ProductionCard({ desk, href, shown }: { desk: Desk; href: (h: string) =
             : <HandoffLine key={`h:${r.h.projectId}`} h={r.h} href={href} readOnly={desk.readOnly} />)}
         </ul>
       )}
-      {(rows.length > shown || team > 0) && (
+      {(rows.length > shown || team > 0 || upcoming > 0) && (
         <p data-production-more className="mt-1 text-[12px] text-muted">
-          {[rows.length > shown ? `${rows.length - shown} more of yours` : null, team ? `${team} team ${team === 1 ? "handoff" : "handoffs"} to check` : null].filter(Boolean).join(" · ")} in the full view.
+          {[rows.length > shown ? `${rows.length - shown} more of yours` : null, upcoming ? `${upcoming} team ${upcoming === 1 ? "shoot" : "shoots"} this week` : null, team ? `${team} team ${team === 1 ? "handoff" : "handoffs"} to check` : null].filter(Boolean).join(" · ")} in the full view.
         </p>
       )}
     </Section>
@@ -300,6 +301,15 @@ function ProductionFull({ desk, href }: { desk: Desk; href: (h: string) => strin
         ) : (
           <ul data-list="my-handoffs" className="divide-y divide-border">
             {p.handoffs.map((h) => <HandoffLine key={h.projectId} h={h} href={href} readOnly={desk.readOnly} />)}
+          </ul>
+        )}
+      </Section>
+      <Section id="team-shoots" title="Team shoots this week" subtitle="The field team's shoots from today through the week ahead, as on the Schedule." count={p.teamUpcoming.length} viewAll={{ label: "Schedule", href: href("/schedule") }} unavailable={p.unavailable}>
+        {p.teamUpcoming.length === 0 ? (
+          <Empty>{p.unavailable ? "The team's shoots couldn't be read." : "No team shoots booked from today through next week."}</Empty>
+        ) : (
+          <ul data-list="team-shoots" className="divide-y divide-border">
+            {p.teamUpcoming.map((t) => <TeamShootLine key={t.id} t={t} href={href} />)}
           </ul>
         )}
       </Section>
@@ -391,6 +401,8 @@ function ShootLine({ s, href, readOnly }: { s: ShootRow; href: (h: string) => st
   // The row's ONE main action (Oct 27 2026): the handoff once the visit is
   // over, the brief's Got it while Kyle waits on it, else the brief itself.
   const primary = s.over ? "finish" : s.briefAck && !readOnly ? "ack" : "brief";
+  // A changed brief: the Got it sits under what changed, so it is read first.
+  const changes = !s.over && s.briefAck?.again ? s.briefAck.changes : [];
   const studio = s.links.filter((l) => l.external);
   return (
     <li data-shoot={s.id} data-today={s.today ? "true" : "false"} data-over={s.over ? "true" : "false"} data-started={s.started ? "true" : "false"} className="py-2.5">
@@ -403,10 +415,22 @@ function ShootLine({ s, href, readOnly }: { s: ShootRow; href: (h: string) => st
         <div className="flex shrink-0 items-center gap-2">
           {s.status && <span data-status={s.status.label} className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium", PILL_TONE[s.status.tone])}>{s.status.label}</span>}
           {primary === "finish" && <Link href={href(s.finishHref)} data-primary="finish" className={PRIMARY}><Upload aria-hidden className="size-4" />Finish handoff</Link>}
-          {primary === "ack" && s.briefAck && <MarkBriefRead day={s.briefAck.day} digest={s.briefAck.digest} again={s.briefAck.again} />}
+          {primary === "ack" && s.briefAck && !changes.length && (s.briefAck.again
+            // A change with no words on record: read it on the day's brief before any Got it.
+            ? <Link href={href(`/shoot/brief/${s.briefAck.day}`)} data-primary="see-changes" className={PRIMARY}>See what changed</Link>
+            : <MarkBriefRead day={s.briefAck.day} digest={s.briefAck.digest} again={false} />)}
           {primary === "brief" && <Link href={href(s.links[0].href)} data-primary="brief" className={QUIET}>{s.links[0].label}</Link>}
         </div>
       </div>
+      {/* What changed, beside the Got it that confirms it (James's call, Oct 2026: "The 825 State
+          Street card said the brief changed, but neither of you could identify what changed"). */}
+      {s.briefAck && changes.length > 0 && (
+        <div data-brief-changes={s.id} className="mt-1.5 ml-12 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[12px]">
+          <p className="font-semibold text-warning">What changed</p>
+          <ul className="mt-0.5 list-disc space-y-0.5 pl-4 [overflow-wrap:anywhere]">{changes.map((w, i) => <li key={i}>{w}</li>)}</ul>
+          {primary === "ack" && <div className="mt-1.5 flex justify-end"><MarkBriefRead day={s.briefAck.day} digest={s.briefAck.digest} again /></div>}
+        </div>
+      )}
       <Chips chips={s.chips} />
       {s.requests.length > 0 && <p className="mt-1 pl-12 text-[12px] text-muted [overflow-wrap:anywhere]">Requests: {s.requests.slice(0, 2).join(" · ")}{s.requests.length > 2 ? ` (+${s.requests.length - 2})` : ""}</p>}
       <div className="mt-0.5 flex flex-wrap items-center gap-x-4 pl-12">
@@ -415,6 +439,23 @@ function ShootLine({ s, href, readOnly }: { s: ShootRow; href: (h: string) => st
         <Link href={href(`/shoot/${s.projectId}#flag`)} className={LINK}>Flag a problem</Link>
         {studio.map((l) => <a key={l.label} href={l.href} target="_blank" rel="noreferrer" className={cn(LINK, "gap-1")}>{l.label} <ExternalLink aria-hidden className="size-3" /></a>)}
       </div>
+    </li>
+  );
+}
+
+/** A teammate's shoot from today on: who, where, when, and their brief when it says something. */
+function TeamShootLine({ t, href }: { t: TeamShootRow; href: (h: string) => string }) {
+  return (
+    <li data-team-shoot={t.id} data-today={t.today ? "true" : "false"} className="py-2.5">
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+        <RowIcon><Camera className="size-4" /></RowIcon>
+        <div className="min-w-0 flex-1 basis-40">
+          <p className="text-sm font-semibold leading-snug [overflow-wrap:anywhere]">{t.photographer.split(" ")[0]} · {t.street}{t.clientName ? <span className="font-normal text-muted"> · {t.clientName}</span> : null}</p>
+          <p className="text-[12px] text-muted [overflow-wrap:anywhere]">{t.whenWords}{t.started ? " · started" : ""}{t.services.length ? ` · ${t.services.join(", ")}` : ""}</p>
+        </div>
+        <Link href={href(t.href)} className={cn(QUIET, "shrink-0")}>Open shoot</Link>
+      </div>
+      {t.brief && <Chips chips={[t.brief]} />}
     </li>
   );
 }
@@ -487,10 +528,11 @@ function devRows(g: DevGroupView): DevRow[] {
   });
   const signal = (s: Signal): DevRow => ({
     kind: "signal", id: s.key, who: first(s.personName), what: s.skill, count: s.countWords, due: false,
-    next: "Review the examples and record feedback", panel: { kind: "signal", key: s.key },
+    // Oct 29 2026 (lib/qcCoaching): a photo check row at the property is a look to take, not evidence yet.
+    next: s.needsLook ? "Look at each one: was it the photographer's to fix?" : "Review the examples and record feedback", panel: { kind: "signal", key: s.key },
   });
   const items = [...g.items].sort((a, b) => Number(b.followUpDue) - Number(a.followUpDue));
-  const signals = [...g.signals].sort((a, b) => b.count - a.count);
+  const signals = [...g.signals].sort((a, b) => Number(!!a.needsLook) - Number(!!b.needsLook) || b.count - a.count);
   return [...items.map(item), ...signals.map(signal)];
 }
 
@@ -605,6 +647,16 @@ function ReadinessTile({ items, unavailable, onOpen, readOnly }: { items: Readin
               {a.status === "RECOMMENDED" ? "See the decision" : a.recommendation ? "Recommend to Jordan" : "Assess the evidence"} <ArrowRight aria-hidden className="size-4" />
             </button>
             {items.length > 1 && <p className="text-[12px] text-muted">{items.length - 1} more in team development</p>}
+            {/* Oct 29 2026 (James, on the call with Jordan: he thought one had to be finished before
+                another could start, and only "View all" showed the way): one in progress never
+                holds the next. */}
+            {!readOnly && !unavailable && (
+              <div className="mt-1">
+                <button type="button" data-open-panel="new-readiness" data-start-another onClick={() => onOpen({ kind: "new-readiness" })} className="inline-flex min-h-11 items-center gap-1 rounded-lg border border-border px-3 text-sm font-semibold hover:bg-surface-2">
+                  <Plus aria-hidden className="size-4" /> Start another assessment
+                </button>
+              </div>
+            )}
           </>
         )}
       </Tile>
@@ -642,7 +694,7 @@ function ReadinessBlock({ items, unavailable, limit, onOpen, readOnly, viewAll }
       <div className="flex items-center gap-3">
         <span aria-hidden className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand"><BarChart3 className="size-5" /></span>
         <h3 className="min-w-0 flex-1 text-sm font-semibold">Readiness assessments</h3>
-        {!readOnly && !unavailable && <button type="button" data-open-panel="new-readiness" onClick={() => onOpen({ kind: "new-readiness" })} className="inline-flex min-h-11 items-center text-sm font-semibold text-brand hover:underline">Start one</button>}
+        {!readOnly && !unavailable && <button type="button" data-open-panel="new-readiness" onClick={() => onOpen({ kind: "new-readiness" })} className="inline-flex min-h-11 items-center text-sm font-semibold text-brand hover:underline">{items.length ? "Start another" : "Start one"}</button>}
       </div>
       {items.length === 0 ? (
         <p className="mt-1 text-[13px] text-muted">{unavailable ? "Readiness assessments couldn't be read." : "No assessments yet. Start one when someone may be ready for independent work, premium projects, a skill, or progression."}</p>
@@ -800,7 +852,7 @@ function AssignedTable({ rows, onOpen, href, readOnly }: { rows: AssignedRow[]; 
           <li key={r.taskId} data-task={r.taskId} data-state={r.state} data-urgent={r.urgent ? "true" : "false"} className="grid gap-1 px-3 py-2 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_9rem] md:items-center md:gap-3">
             <div className="min-w-0">
               <Link href={href(r.href)} className="text-sm font-medium leading-snug hover:text-brand [overflow-wrap:anywhere]">{r.title}</Link>
-              <p className="text-[12px] text-muted [overflow-wrap:anywhere]">{[r.assignedBy ? `From ${r.assignedBy}` : null, r.blocker ? `Blocked: ${r.blocker}` : r.nextStep ? `Next: ${r.nextStep}` : null, r.closesItself ? "Closes when the editors tap Got it" : null].filter(Boolean).join(" · ")}</p>
+              <p className="text-[12px] text-muted [overflow-wrap:anywhere]">{[r.assignedBy ? `From ${r.assignedBy}` : null, r.blocker ? `Blocked: ${r.blocker}` : r.nextStep ? `Next: ${r.nextStep}` : null, r.closesItself ? "Closes by itself once the editor works from the brief" : null].filter(Boolean).join(" · ")}</p>
             </div>
             <p className={cn("text-[13px]", r.overdue ? "font-medium text-danger" : "text-muted")}>{r.dueWords ?? "No due date"}</p>
             <p><span className={cn("inline-flex rounded-full px-2 py-0.5 text-[12px] font-medium", STATE_TONE[r.state] ?? "bg-surface-2 text-muted")}>{r.state === "OPEN" ? "Awaiting acceptance" : r.stateWords}</span></p>

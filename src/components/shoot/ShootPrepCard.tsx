@@ -20,6 +20,8 @@ export type PrepLine = {
   key: string;
   label: string;
   tone: "ok" | "todo" | "info";
+  /** lines read before the action (a changed brief's "What changed") */
+  detail?: { title: string; lines: string[] };
   action:
     | { kind: "link"; label: string; href: string }
     | { kind: "ask"; label: string; to: "kyle" | "jordan"; placeholder: string }
@@ -39,6 +41,12 @@ export function ShootPrepCard({ projectId, lines, readOnly }: { projectId: strin
               ? <CheckCircle2 aria-hidden className="size-4 shrink-0 text-success" />
               : <Circle aria-hidden className={cn("size-4 shrink-0", l.tone === "todo" ? "text-warning" : "text-muted-2")} />}
             <span className={cn("min-w-0 flex-1 basis-40 text-sm [overflow-wrap:anywhere]", l.tone === "todo" && "font-medium")}>{l.label}</span>
+            {l.detail && l.detail.lines.length > 0 && (
+              <div data-prep-detail={l.key} className="basis-full rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[13px]">
+                <p className="font-semibold text-warning">{l.detail.title}</p>
+                <ul className="mt-0.5 list-disc space-y-0.5 pl-4 [overflow-wrap:anywhere]">{l.detail.lines.map((w, i) => <li key={i}>{w}</li>)}</ul>
+              </div>
+            )}
             {l.action?.kind === "link" && <a href={l.action.href} className="inline-flex min-h-11 items-center text-sm font-semibold text-brand hover:underline">{l.action.label}</a>}
             {l.action?.kind === "ask" && <AskOnJob projectId={projectId} to={l.action.to} label={l.action.label} placeholder={l.action.placeholder} readOnly={readOnly} variant="quiet" />}
             {l.action?.kind === "ack" && <MarkBriefRead day={l.action.day} digest={l.action.digest} again={l.action.again} readOnly={readOnly} />}

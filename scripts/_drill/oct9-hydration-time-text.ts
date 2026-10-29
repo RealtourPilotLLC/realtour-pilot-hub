@@ -162,6 +162,7 @@ JSON.stringify(out);`;
       // Oct 27 2026: Kyle's desk now opens an email in the hub's own reply box (Jordan: "Same for client
       // communications and messages"), which brings it under Home.
       "src/components/comms/EmailReplyBox.tsx": "mintIntentId() runs only from a Send press (the reply's one-press identity), never while rendering",
+      "src/components/clientCare/ComplaintPlan.tsx": "the Add a step date's earliest day: that form renders only after a press opens it, never in the server HTML",
     };
     // Oct 19 2026 (evening): the old daily checklist's blocks left Home, and
     // with them its Ready-to-send card and the delivery board. The card is

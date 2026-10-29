@@ -95,7 +95,9 @@ function TextCard({ row, onGone }: { row: ClientTextRow; onGone: (id: string, no
   // or the text shouldn't go out. Completes the task like the feed did.
   const done = () =>
     start(async () => {
-      await setSmartTaskStatus(row.id, "COMPLETED");
+      setErr(null);
+      const r = await setSmartTaskStatus(row.id, "COMPLETED").catch(() => ({ ok: false, message: "That didn't save. Try again." }));
+      if (r && !r.ok) { setErr(r.message); return; }
       onGone(row.id, "Marked done");
     });
 
