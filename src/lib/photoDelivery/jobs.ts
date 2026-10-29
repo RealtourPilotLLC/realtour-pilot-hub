@@ -8,6 +8,7 @@ import { dbx, DropboxError } from "@/lib/integrations/dropbox";
 import { Aryeo } from "@/lib/integrations/aryeo";
 import { photoDeliverySettings } from "./settings";
 import { deliveryDueFrom, sameDayTypes } from "@/lib/tasks";
+import type { PromiseRules } from "@/lib/turnaround";
 import { logJobEvent, setStage, type JobStage } from "./jobState";
 import { BY_HAND_LABEL, ON_LISTING, ON_LISTING_REASON, listingImageHash, sameFile } from "./listingMatch";
 
@@ -272,9 +273,15 @@ export function galleryFingerprint(entries: GalleryEntry[]): string {
  * due today", and "split jobs should be treated as a normal SLA for each
  * appointment and depend on what was uploaded to Dropbox / submitted in the
  * upload portal". Pure: the caller picks the visit (photoVisitFor).
+ *
+ * Oct 29 2026 (Kyle: "Why are these showing late if they're from
+ * yesterday?"): the hours are the ones on Settings → Turnaround promises (the
+ * board used the built-in 20 while Settings said 24), and the deadline closes
+ * at the end of the day they land on (deliveryDueFrom), so yesterday's shoot
+ * is due by 5 PM today, not at 5 AM.
  */
-export function photoDueFor(visitStart: Date | null, sameDay: boolean): Date | null {
-  return visitStart ? deliveryDueFrom(visitStart, "PHOTOS", { sameDay }) : null;
+export function photoDueFor(visitStart: Date | null, sameDay: boolean, rules?: PromiseRules | null): Date | null {
+  return visitStart ? deliveryDueFrom(visitStart, "PHOTOS", { sameDay, rules: rules ?? undefined }) : null;
 }
 
 /**
@@ -345,6 +352,8 @@ export async function openNewJobs(now = new Date(), max = 40): Promise<number> {
   if (!projects.length) return 0;
   const existing = new Set((await prisma.photoJob.findMany({ where: { projectId: { in: projects.map((p) => p.id) } }, select: { projectId: true } })).map((j) => j.projectId));
   let opened = 0;
+  const { turnaroundRules } = await import("@/lib/settings");
+  const rules = await turnaroundRules();
   for (const p of projects) {
     if (opened >= max) break;
     if (existing.has(p.id)) continue;
@@ -354,7 +363,7 @@ export async function openNewJobs(now = new Date(), max = 40): Promise<number> {
         data: {
           projectId: p.id,
           stage: "EDITING",
-          slaDueAt: photoDueFor(await photoVisitFor(p.id, p.appointments, p.shootDate, now), await sameDayPhotos(p.id)),
+          slaDueAt: photoDueFor(await photoVisitFor(p.id, p.appointments, p.shootDate, now), await sameDayPhotos(p.id), rules),
           expectedJson: JSON.stringify(await expectedFor(p.id)),
           nextCheckAt: now,
         },
@@ -532,7 +541,8 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
       why = "the job's due date the office set";
     } else {
       const visit = await photoVisitFor(job.projectId, project.appointments, project.shootDate, now);
-      due = photoDueFor(visit, await sameDayPhotos(job.projectId));
+      const { turnaroundRules } = await import("@/lib/settings");
+      due = photoDueFor(visit, await sameDayPhotos(job.projectId), await turnaroundRules());
       why = `the photos turnaround from the ${etDateTime(visit)} visit`;
     }
     if (due && job.slaDueAt?.getTime() !== due.getTime()) {

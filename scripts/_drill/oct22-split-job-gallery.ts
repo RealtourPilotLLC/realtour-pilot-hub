@@ -57,7 +57,7 @@ async function main() {
     c.head("1 · the deadline rule (pure)");
     const oct13 = T("2026-10-13T21:00:00Z"), oct27 = T("2026-10-27T21:00:00Z"), oct21 = T("2026-10-21T20:15:00Z");
     // Oct 22 2026 (Jordan: "they are due today"): the photos turnaround from the visit whose photos these are.
-    c.ok("photos are due the next morning after their visit (20 hours), never the order's reel date", jobs.photoDueFor(oct21, false)?.toISOString() === "2026-10-22T16:15:00.000Z", jobs.photoDueFor(oct21, false)?.toISOString());
+    c.ok("photos are due the next day after their visit (20 hours, closing at 5 PM ET since Oct 29 2026), never the order's reel date", jobs.photoDueFor(oct21, false)?.toISOString() === "2026-10-22T21:00:00.000Z", jobs.photoDueFor(oct21, false)?.toISOString());
     c.ok("a same-day photo order is due the same day, earlier than next morning", (jobs.photoDueFor(oct21, true)?.getTime() ?? Infinity) < T("2026-10-22T16:15:00Z").getTime());
     c.ok("no visit: no deadline", jobs.photoDueFor(null, false) === null);
     const lv = jobs.latestStartedVisit([{ startAt: T("2026-10-07T17:30:00Z"), status: "SCHEDULED" }, { startAt: oct21, status: "SCHEDULED" }, { startAt: T("2026-10-30T15:00:00Z"), status: "SCHEDULED" }, { startAt: T("2026-10-22T09:00:00Z"), status: "CANCELED" }], now0);
@@ -92,7 +92,7 @@ async function main() {
     // Oct 22 2026 (delivered tags): no longer set aside as GONE: shown beside the new visit as Delivered.
     c.ok("the earlier visit's 23 stay on the job as delivered (ON_LISTING), never deleted", (await prisma.photoAsset.count({ where: { jobId: job.id, sourceKind: "ARYEO", status: "ON_LISTING" } })) === 23);
     c.ok("the job links to the new visit's AutoHDR shoot", j.autohdrPhotoshootId === 2320001 && j.autohdrShootName === "615 Cliff Ln (Alex Drill) (more photos 2)", String(j.autohdrPhotoshootId));
-    c.ok("the photo deadline is the Oct 21 visit's next morning (Oct 22, 12:15 PM ET), not the order's Oct 27 or the Oct 13 promise", j.slaDueAt?.toISOString() === "2026-10-22T16:15:00.000Z", j.slaDueAt?.toISOString());
+    c.ok("the photo deadline is the Oct 21 visit's next day (Oct 22, 5 PM ET), not the order's Oct 27 or the Oct 13 promise", j.slaDueAt?.toISOString() === "2026-10-22T21:00:00.000Z", j.slaDueAt?.toISOString());
     c.ok("the stale mismatch diff is cleared", j.deliveryDiffJson === null && j.deliveryCheckNote === null);
     const r2 = await jobs.syncJobFinals(job.id, T("2026-10-22T12:40:00Z"));
     j = await prisma.photoJob.findUniqueOrThrow({ where: { id: job.id } });
@@ -156,7 +156,7 @@ async function main() {
     listings.set("LP", { delivery_status: "SCHEDULED", images: [], floor_plans: [] });
     const r5 = await jobs.syncJobFinals(j3.id, now0);
     const s3 = await prisma.photoJob.findUniqueOrThrow({ where: { id: j3.id } });
-    c.ok("one visit, nothing on the listing: the AutoHDR gallery, EDITING, photos due the next morning after the shoot", r5.source === "autohdr" && r5.count === 4 && s3.stage === "EDITING" && s3.slaDueAt?.toISOString() === "2026-10-22T10:00:00.000Z", `${r5.source} ${r5.count} ${s3.stage} ${s3.slaDueAt?.toISOString()}`);
+    c.ok("one visit, nothing on the listing: the AutoHDR gallery, EDITING, photos due the next day after the shoot (5 PM ET)", r5.source === "autohdr" && r5.count === 4 && s3.stage === "EDITING" && s3.slaDueAt?.toISOString() === "2026-10-22T21:00:00.000Z", `${r5.source} ${r5.count} ${s3.stage} ${s3.slaDueAt?.toISOString()}`);
 
     c.head("6 · a later visit with no photos leaves the photo clock alone (Oct 22 2026)");
     {

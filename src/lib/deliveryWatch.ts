@@ -29,8 +29,9 @@ import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 
 const HOUR = 3_600_000;
 // The next day has had its chance once this many hours have passed since the
-// shoot. TURNAROUND_HOURS.PHOTOS is 20 ("next morning"); this sits past it so a
-// late-afternoon shoot is not chased before lunch the following day.
+// shoot. The photo deadline is the next day (5 PM close since Oct 29 2026);
+// this heads-up sits inside that day's 4 to 7 PM window so a late-afternoon
+// shoot is not chased before lunch the following day.
 const PHOTOS_LATE_AFTER_MS_DEFAULT = 26 * HOUR; // overridden by Settings → Internal alerts
 // Never look further back than this — the backfill guard.
 const LOOKBACK_DAYS = 6;

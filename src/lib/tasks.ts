@@ -221,7 +221,16 @@ export function deliveryDueFrom(
       }
     : TURNAROUND_HOURS;
   const h = (deliverableType && table[deliverableType]) || (r?.otherHours ?? 48);
-  return new Date(anchor.getTime() + h * HOUR);
+  // A PROMISE CLOSES AT THE END OF A DAY, NEVER IN THE MORNING (Oct 29 2026,
+  // Kyle on the photo board: "Why are these showing late if they're from
+  // yesterday?"). 40 N Perry was shot at 9 AM and its photos read "Late" from
+  // 5 AM the next day, when the promise is the next DAY (the delivery board's
+  // next_day tier closes at 5 PM). When the hours land before the close of
+  // their day, the deadline is that close; past it, the hours stand. Only
+  // ever later than the hour quote, never earlier.
+  const byHours = new Date(anchor.getTime() + h * HOUR);
+  const close = endOfDaysET(byHours, 0, businessDayEndHour(r));
+  return close > byHours ? close : byHours;
 }
 
 // MUST match projectStatus.ts PREMIUM_VIDEO_RE — the status card's videoDue and
