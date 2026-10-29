@@ -35,6 +35,14 @@ export async function GET(req: NextRequest) {
     const r = await expireShootNotes(new Date(), { apply: true, actor: "cron:daily" });
     return { found: r.candidates.length, closed: r.closed };
   });
+  // TO-DOS THAT OUTLIVED THEIR SHOOT (Oct 29 2026, lib/pastShootTasks): a
+  // before-the-shoot step (booking, access, prep) on a job that was shot closes
+  // as a dismissal that says why, reversible. OFF until Jordan's go
+  // (`tasks:past_shoot_sweep`): until then this only counts what it would clear.
+  await step("pastShootTasks", async () => {
+    const { runPastShootSweep } = await import("@/lib/pastShootTasks");
+    return runPastShootSweep(new Date(), { actor: "cron:daily" });
+  });
   // Stripe money-in FIRST — see the note above.
   await step("stripe", async () => {
     const { syncStripe } = await import("@/lib/integrations/stripe");
