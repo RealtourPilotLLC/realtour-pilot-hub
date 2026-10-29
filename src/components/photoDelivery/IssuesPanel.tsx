@@ -8,8 +8,9 @@ import { etMonthDayTime } from "@/lib/datetime";
 import { PhotoImg } from "./PhotoImg";
 import { FindingActions } from "./FindingActions";
 import { StraightenButtons } from "./EditTools";
+import { CameraCompare } from "./CameraCompare";
 import { photoTitle, useJob } from "./JobContext";
-import { RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, decidedLine, findingStatusLabel, groupFindings, isQueuedGroup, plural, type FindingGroup } from "./format";
+import { RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, SKIP_ALL_PRESETS, decidedLine, findingStatusLabel, groupFindings, isQueuedGroup, plural, type FindingGroup } from "./format";
 import type { FindingView } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -63,6 +64,7 @@ function GroupCard({ g, low = false }: { g: FindingGroup; low?: boolean }) {
           {first.explanation && first.explanation !== first.specificIssue && <p className="break-words text-[13px] text-muted">{first.explanation}</p>}
           {first.locationText && <p className="text-[13px] text-muted">Where: {first.locationText}</p>}
           {first.recommendedAction && <p className="text-[13px] text-muted">Suggested: {first.recommendedAction}</p>}
+          <CameraCompare f={first} photo={first.photoId ? photoById.get(first.photoId) : null} className="max-w-xl pt-1" />
         </div>
       )}
       {g.photoIds.length > 0 && (
@@ -121,12 +123,13 @@ function FindingRow({ f }: { f: FindingView }) {
       </div>
       <p className="mt-0.5 break-words">{f.specificIssue}</p>
       {f.statusReason && <p className="text-muted">{f.statusReason}</p>}
+      <CameraCompare f={f} photo={p} className="mt-1.5 max-w-xl" />
     </li>
   );
 }
 
 export function IssuesPanel() {
-  const { data, shown, jobId, run, confirm, pending, setTab, readOnly, queued, unqueue, cartLineByFinding } = useJob();
+  const { data, shown, jobId, run, ask, pending, setTab, readOnly, queued, unqueue, cartLineByFinding } = useJob();
   const visible = useMemo(() => data.findings.filter((f) => f.pass !== "P4_ORDER"), [data.findings]);
   const main = useMemo(() => groupFindings(visible.filter((f) => shown(f)), data.groupMeta), [visible, shown, data.groupMeta]);
   const low = useMemo(() => groupFindings(visible.filter((f) => !shown(f)), data.groupMeta), [visible, shown, data.groupMeta]);
@@ -143,13 +146,16 @@ export function IssuesPanel() {
   const ranQc = data.runs.length > 0;
   // Oct 14 2026 (Jordan): "a button that can skip all QC findings for a shoot".
   const skippable = visible.filter((f) => f.status === "OPEN" || f.status === "APPROVED_FIX").length;
+  // Oct 29 2026 (Jordan: "Kyle should be typing reasons"): Skip all says why too, kept with every issue it sets aside.
   const skipAll = async () => {
-    const yes = await confirm({
+    const why = await ask({
       title: `Skip all ${plural(skippable, "issue")} on this shoot?`,
-      body: "Every open issue is set aside, and fixes that have not been sent to AutoHDR yet are called off (nothing is charged for those). Ordered add-ons stay. You can reopen any issue afterwards.",
+      description: "Every open issue is set aside, and fixes that have not been sent to AutoHDR yet are called off (nothing is charged for those). Ordered add-ons stay. You can reopen any issue afterwards. Say why: it stays with each issue.",
+      presets: SKIP_ALL_PRESETS,
+      required: true,
       confirmLabel: "Skip all",
     });
-    if (yes) await run(() => skipAllFindingsAction(jobId));
+    if (why !== null) await run(() => skipAllFindingsAction(jobId, why));
   };
 
   if (!ranQc && visible.length === 0) {

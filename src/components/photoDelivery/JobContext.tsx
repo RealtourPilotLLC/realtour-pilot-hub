@@ -238,21 +238,21 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
       } else if (status === "IGNORED") {
         // Oct 23 2026 (huddle item 5): a few words why, kept with the check and
         // the photo. The same reason on several jobs teaches the check house-wide
-        // (houseRules.learnedChecks); a minor one can still go without words.
+        // (houseRules.learnedChecks). Oct 29 2026 (Jordan: "Kyle should be
+        // typing reasons - please make sure you see his reasons"): a minor one
+        // needs its reason too; a preset is one tap.
         reason = await ask({
           title: n === 1 ? "Not worth fixing?" : `Mark ${n} issues not worth fixing?`,
-          description: required
-            ? "It is there, but not worth fixing here. A major or critical issue needs a reason; it stays in the activity log, and the same reason on several jobs teaches the check."
-            : "It is there, but not worth fixing here. A few words why (optional) teach the check: the same reason on several jobs stops it flagging this kind of thing.",
+          description: "It is there, but not worth fixing here. Say why in a few words, or tap one: it stays with the issue, and the same reason on several jobs teaches the check.",
           presets: IGNORE_PRESETS,
-          required,
+          required: true,
           confirmLabel: "Not worth fixing",
         });
         if (reason === null) return false;
-      } else if (status === "FALSE_POSITIVE" && required) {
+      } else if (status === "FALSE_POSITIVE") {
         reason = await ask({
           title: n === 1 ? "Not there?" : `Mark ${n} issues as not there?`,
-          description: "The check saw something that is not in the photo. Say what it got wrong: these calls make the hub stricter before it fixes this kind of thing on its own.",
+          description: "The check saw something that is not in the photo. Say what it got wrong: these calls make the hub stricter before it fixes this kind of thing on its own. Fixed it yourself? Press Fixed in AutoHDR instead.",
           presets: ["Nothing like this is in the photo", "It is part of the house", "It is intended staging"],
           required: true,
           confirmLabel: "Not there",

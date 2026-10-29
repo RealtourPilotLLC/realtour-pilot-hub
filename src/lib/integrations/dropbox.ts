@@ -407,6 +407,29 @@ export async function dropboxDownload(path: string): Promise<Buffer> {
   return Buffer.from(await res.arrayBuffer());
 }
 
+// A JPEG preview of a photo, at most 1024 x 768 (content API, read-only). Oct
+// 29 2026: the photo check reads the camera's own frames this way, about
+// 100 KB each instead of the whole file. Dropbox makes none for a file over
+// 20 MB (a drone frame): that throws a DropboxError (409), and the caller
+// downloads the file instead.
+export async function dropboxThumbnail(path: string): Promise<Buffer> {
+  const token = await dropboxAccessToken();
+  const res = await fetchWithTimeout("https://content.dropboxapi.com/2/files/get_thumbnail_v2", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(await pathRootHeader(token)),
+      "Dropbox-API-Arg": JSON.stringify({ resource: { ".tag": "path", path }, format: "jpeg", size: "w1024h768", mode: "strict" }),
+    },
+    cache: "no-store",
+  }, DROPBOX_CONTENT_TIMEOUT_MS);
+  if (!res.ok) {
+    const t = await res.text();
+    throw new DropboxError(`Dropbox thumbnail failed: ${t.slice(0, 160)}`, res.status);
+  }
+  return Buffer.from(await res.arrayBuffer());
+}
+
 // Delete a file/folder; a missing path is treated as success (idempotent).
 export async function dropboxDelete(path: string): Promise<void> {
   try {

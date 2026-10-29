@@ -139,6 +139,9 @@ export const HOLD_REASON_LABEL: Record<string, string> = {
 /** Presets for "why are you ignoring this" (plan 8.3). */
 export const IGNORE_PRESETS = ["Neighbor's property", "Barely visible", "Unfinished space (garage, basement)", "Part of the house", "Intentional staging", "Client preference", "Not worth a fix on this listing"] as const;
 
+/** Presets for Skip all (Oct 29 2026: every skip says why). */
+export const SKIP_ALL_PRESETS = ["Checked every photo: nothing worth fixing", "The client wants them as they are", "Fixed them myself in AutoHDR"] as const;
+
 /** Presets for "why is this photo left out". */
 export const EXCLUDE_PRESETS = ["Duplicate", "Out of focus or soft", "Privacy", "Not this property", "Weak angle, better one in the set"] as const;
 
@@ -149,10 +152,11 @@ export type DerivSize = "thumb256" | "thumb768" | "qc1024" | "qc2048";
  * The hub's staff-only image route. `v` pins the cache to the content hash;
  * `version` asks for one PhotoVersion (original vs current in review mode).
  */
-export function photoSrc(photoId: string, size: DerivSize, hash: string | null, versionId?: string | null): string {
+export function photoSrc(photoId: string, size: DerivSize, hash: string | null, versionId?: string | null, cameraOf?: string | null): string {
   const q = new URLSearchParams();
   if (hash) q.set("v", hash);
   if (versionId) q.set("version", versionId);
+  if (cameraOf) q.set("camera", cameraOf);
   const s = q.toString();
   return `/api/photo-delivery/img/${encodeURIComponent(photoId)}/${size}${s ? `?${s}` : ""}`;
 }

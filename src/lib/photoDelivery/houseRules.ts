@@ -130,13 +130,20 @@ const LESSONS_KEY = "photo_delivery:learned_checks";
 type StoredLessons = { lessons: Lesson[]; undone: { key: string; by: string; at: string }[]; at: string };
 
 const LISTING_ONLY = /^(?:not worth a fix on this listing|client preference|skipped all findings|as-is home|not checked any more|nothing like this is in the photo|stop flagging)/i;
+// Oct 29 2026 (Kyle's reasons, read for Jordan): a call about how this one
+// photo was taken or fixed teaches nothing about the check: "Checked raws,
+// they're the same", "Theyre already cropped in the originals", "That's how
+// it's taken" (the camera's own frame now shows that, geometry.ts), "Fixed in
+// autohdr", "Re-editing this myself", "Has other zoomed out photos".
+const ABOUT_THIS_PHOTO = /checked (?:the )?raws?|in the originals?|how (?:it|they) ?(?:was |were |is |are |['’]s )?(?:taken|shot)|fixed (?:it |them )?(?:with|in|on|through) auto ?hdr|re-?edit|editing (?:this|it) myself|has other|other (?:zoomed[- ]out |wider )?(?:photos|shots|angles)/i;
 const NAMES_THE_LISTING = /\bthis (?:listing|house|home|one|shoot|property)\b|\b(?:the )?(?:client|agent|seller|owner|homeowner|buyer)s?\b/i;
 
 /** What a reason teaches about a check, or null (listing-specific, or too short to repeat). Pure. */
 export function lessonOf(reason: string | null | undefined): { scope: LessonScope; norm: string } | null {
   const r = (reason ?? "").replace(/\s+/g, " ").trim();
-  if (r.length < 4 || LISTING_ONLY.test(r)) return null;
-  if (/neighbou?r|next[\s-]door|not (?:on )?(?:the|this|our) property|across the street/i.test(r)) return { scope: "neighbor", norm: "neighbor" };
+  if (r.length < 4 || LISTING_ONLY.test(r) || ABOUT_THIS_PHOTO.test(r)) return null;
+  // Oct 29 2026: Kyle's "Not the house" (a ladder, a shadow off this property) is a neighbor's.
+  if (/neighbou?r|next[\s-]door|not (?:on )?(?:the|this|our) (?:property|house|home)|across the street/i.test(r)) return { scope: "neighbor", norm: "neighbor" };
   if (/garage|basement|unfinished|storage|utility|\bshed\b|attic|workshop|mechanical/i.test(r)) return { scope: "unfinished", norm: "unfinished" };
   if (/part of the house|built[\s-]?in|permanent|plugged|attached|fixture|hard[\s-]?wired|\btv\b|television/i.test(r)) return { scope: "attached", norm: "attached" };
   // Oct 29 2026 (Kyle's words): "Drone shot", "Car is far from property", "Out of view", "Not that visible".

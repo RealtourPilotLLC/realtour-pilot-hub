@@ -343,7 +343,7 @@ async function main() {
       c.ok("the Coverage tab lists the rooms the listing needs, room by room", /Rooms the listing needs/.test(ct) && /From the listing: 3 bedrooms, 2 bathrooms, single family\./.test(ct) && /Living area : Shot, not in the delivery/.test(ct) && /Primary bedroom : Never photographed/.test(ct) && /Primary shower or tub : Worth a look/.test(ct) && /only shows in the background of B\.jpg/.test(ct) && /Uploaded: 80 raw files \(about 16 photos\) · AutoHDR: 16 photos · Delivered: 2 · Left out: 1/.test(ct), (ct.match(/Rooms the listing needs.{0,400}/) ?? [""])[0]);
       const setHtml = await render("the settings page with the free checks and the as-is clients", () => SettingsPage());
       const stt = text(setHtml);
-      c.ok("settings: the four free checks and the as-is clients picker, with the client on the list", ["Measure the lines", "Compare cut-off roofs and warps with AutoHDR's original", "Room coverage", "Check listing photos that change after delivery", "As-is clients"].every((w) => stt.includes(w)) && /Remove Render Client TEST/.test(setHtml), "");
+      c.ok("settings: the four free checks and the as-is clients picker, with the client on the list", ["Measure the lines", "Compare cut-off roofs and warps with the camera's own frame", "Room coverage", "Check listing photos that change after delivery", "As-is clients"].every((w) => stt.includes(w)) && /Remove Render Client TEST/.test(setHtml), "");
       await savePhotoDeliverySettings({ asIsClientIds: [], freeCheck: freeBefore }, "drill");
     }
 

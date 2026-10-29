@@ -53,7 +53,8 @@ import { reviewStage } from "./decisions";
 // ---------------------------------------------------------------------------
 
 const CAMERA = ["REFL_PHOTOGRAPHER_IN_MIRROR", "REFL_CAMERA_TRIPOD_IN_MIRROR", "REFL_PHOTOGRAPHER_IN_GLASS", "REFL_PHOTOGRAPHER_SHADOW", "REFL_TRIPOD_EQUIPMENT_SHADOW", "REFL_SENSOR_DUST", "EXT_PHOTOGRAPHER_VEHICLE"];
-const DISTORTION = ["PERSP_HORIZONTAL_DISTORTION", "PERSP_BOWED_WALLS", "BED_WIDE_ANGLE_DISTORTION"];
+// Oct 29 2026: horizontal lines off level are levelled for free in AutoHDR (AUTOHDR_FREE_FIX), never a paid re-edit.
+const DISTORTION = ["PERSP_BOWED_WALLS", "BED_WIDE_ANGLE_DISTORTION"];
 /** Fixed for free in AutoHDR itself, never with a paid re-edit: what to press, in Kyle's words. */
 const VERTICALS_HOW = "AutoHDR straightens vertical lines on every upload (Perspective Correction). If this photo still leans, open it in AutoHDR and straighten it with Crop & Tilt. Free.";
 export const AUTOHDR_FREE_FIX: Record<string, string> = {
@@ -61,10 +62,15 @@ export const AUTOHDR_FREE_FIX: Record<string, string> = {
   PERSP_LEANING_DOOR_FRAMES: VERTICALS_HOW,
   PERSP_EXTERIOR_WALLS_LEANING: VERTICALS_HOW,
   PERSP_CROOKED_HORIZON: "Level it in AutoHDR with Crop & Tilt. Free.",
+  // Oct 29 2026 (Jordan: "Id like it to pick up horizontal lines that are not level or perfectly horizontal").
+  PERSP_HORIZONTAL_DISTORTION: "Level it in AutoHDR with Crop & Tilt: turn it until the lines on the wall it faces run level. Free.",
   PERSP_AUTOHDR_ROOF_PEAKS_CROPPED: "AutoHDR's straightening cut off the top of the house. Open this photo in AutoHDR and turn Perspective Off on THIS photo (free; the account's Perspective Correction switch only changes new uploads, never photos already edited), then press Check AutoHDR for changes here: the hub and the Aryeo folder take the new version. Compare it in the photo's Versions. If the original photo has no room above the roof either, only a reshoot fixes it.",
   // Oct 15 2026: warped architecture. An AI re-edit does not straighten lines
-  // (first live run); AutoHDR's own editor can undo its straightening.
-  PERSP_EDIT_WARP: "If AutoHDR's straightening bent it (the original looks straight), open the photo in AutoHDR and turn Perspective Off on THIS photo (free), then press Check AutoHDR for changes here. If the original is bent too, it is the lens or the camera angle: no edit fixes it; it goes in the photographer's coaching.",
+  // (first live run); AutoHDR's own editor can undo its straightening. Oct 29
+  // 2026: judged against the camera's own frame (geometry.ts); 615 Cliff Ln's
+  // bowed walls came from AutoHDR's lens correction for that camera (Jordan
+  // asked AutoHDR for a profile for it).
+  PERSP_EDIT_WARP: "If the camera's own frame is straight (shown beside the edit), AutoHDR's editing bent it: open the photo in AutoHDR and turn Perspective Off on THIS photo (free), then press Check AutoHDR for changes here. If it still bows, tell AutoHDR: its lens correction for this camera is off. If the camera's frame bows too, it is the lens or the camera angle: it goes in the photographer's coaching.",
 };
 const VEHICLES = ["EXT_PARKED_CARS_DRIVEWAY", "EXT_VEHICLES_BLOCKING_HOME", "EXT_VEHICLES_THROUGH_WINDOWS"];
 // Oct 15 2026: the kitchen trash can too (Jordan: trash cans are always wanted).
@@ -378,6 +384,7 @@ export type RuleLearning = { ruleId: string; notThere: number; notWorth: number;
 const SYSTEM_DECIDER = /^(auto-|free second look|fix-runner|hub\b|system)/i;
 export const LEARN_DAYS = 60;
 export const STRICT_CONFIDENCE = 0.8;
+const FIXED_BY_HAND = /\bfixed (?:it |them )?(?:with|in|on|through) auto ?hdr\b|\bre-?edit/i;
 
 export async function learnedRules(now = new Date()): Promise<Map<string, RuleLearning>> {
   const rows = await prisma.photoQcFinding.findMany({
@@ -389,7 +396,9 @@ export async function learnedRules(now = new Date()): Promise<Map<string, RuleLe
     if (!r.decidedBy || SYSTEM_DECIDER.test(r.decidedBy)) continue;
     if (/^Skipped all findings/i.test(r.statusReason ?? "")) continue;
     const l = out.get(r.ruleId) ?? { ruleId: r.ruleId, notThere: 0, notWorth: 0, wanted: 0, skip: false, strict: false };
-    if (r.status === "FALSE_POSITIVE") l.notThere++;
+    // Oct 29 2026 (Kyle's reasons): a "Not there" that says "Fixed in autohdr" was there and wanted fixed.
+    if (FIXED_BY_HAND.test(r.statusReason ?? "")) l.wanted++;
+    else if (r.status === "FALSE_POSITIVE") l.notThere++;
     else if (r.status === "IGNORED") l.notWorth++;
     else l.wanted++;
     out.set(r.ruleId, l);

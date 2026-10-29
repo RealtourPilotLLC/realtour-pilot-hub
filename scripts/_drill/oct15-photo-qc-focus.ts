@@ -17,12 +17,14 @@
 //      checks stay out; never "fisheye"
 //   3. prepared or not (prep.ts): the shoot decision and the room-level gate
 //   4. a prepared home end to end: clutter kept only in rooms that look ready,
-//      trash always, the Original comparison (roof: the edit; warp: the lens),
-//      nothing measured that would cost a credit, the plan, room coverage
+//      trash always, the camera's own frame (Oct 29 2026: from the raw folder,
+//      never AutoHDR's Original) kept beside a roof or warp finding, nothing
+//      measured that would cost a credit, the plan, room coverage
 //      (the shower only in the background is advisory, a room left in AutoHDR)
 //   5. as-is homes: a listed client and a lived-in home; nothing shown or
 //      counted; the owner's override both ways; learning ignores the hub
-//   6. a vacant home and measured warps: agree, disagree, measurement only
+//   6. a vacant home, warps against the camera's own frame (the edit bent
+//      them, the camera bows the same, the comparison alone) and level lines
 //   7. coverage: never shot, lost in editing, the delivery checklist, Accept
 //      with reason, and the pure cases (unknown, condo, bathrooms)
 //   8. after delivery (Gregory): the listing replaced, old findings set aside,
@@ -81,14 +83,14 @@ const IMG = {
   few: draw([() => 300, () => 700]),
   // A ceiling line bowed across the room (nothing crossing it).
   bentCeiling: draw([], [(x) => 300 + 0.00008 * (x - W / 2) ** 2]),
+  // Oct 29 2026: a room shot with the camera rolled: plumb walls, the ceiling line and the baseboard both slope 1.2° the same way.
+  offLevel: draw([() => 150, () => 870], [(x) => 90 + (x - W / 2) * tan(1.2), (x) => 610 + (x - W / 2) * tan(1.2)]),
 };
 const jpeg = (l: Uint8Array) => sharp(Buffer.from(l), { raw: { width: W, height: H, channels: 1 } }).jpeg({ quality: 95 }).toBuffer();
 
 // ---- the free check's answers by AutoHDR photo name --------------------------------------------
 type Answer = { room: string; prep?: string; furnished?: string; features?: string[]; issues?: { id: string; where: string; confidence: number }[] };
 const answers = new Map<string, Answer>();
-/** Original comparison answers: by photo name. */
-const originals = new Map<string, { whole?: boolean; bent?: boolean }>();
 /** Rooms of AutoHDR photos never delivered (coverage). */
 const capturedRooms = new Map<string, { room: string; features?: string[] }>();
 const asked: { name: string; kind: string; version: string }[] = [];
@@ -101,10 +103,6 @@ fake.state.describe = (name, prompt, version) => {
   if (/really visible/.test(prompt)) {
     asked.push({ name, kind: "second", version });
     return `{"items":[${prompt.split("\n").filter((l) => /^\d+\. /.test(l)).map((_, i) => `{"n":${i + 1},"present":true}`).join(",")}]}`;
-  }
-  if (/"whole": true or false/.test(prompt) || /"bent": true or false/.test(prompt)) {
-    asked.push({ name, kind: "original", version });
-    return JSON.stringify(originals.get(name) ?? {});
   }
   if (/"room":"<room type>","features"/.test(prompt)) {
     asked.push({ name, kind: "room", version });
@@ -145,6 +143,38 @@ async function main() {
       if (!b) throw new S.PhotoSourceError("no drill bytes", "gone", "no drill bytes");
       return b;
     });
+
+    // The camera's own frames (Oct 29 2026): Dropbox previews by path, kept in the hub's private store.
+    const frames = new Map<string, Buffer>();
+    let frameReads = 0;
+    (await import("@/lib/photoDelivery/cameraFrame")).__setCameraFrameReadForTests(async (path) => {
+      frameReads++;
+      const b = frames.get(path);
+      if (!b) throw new Error("no drill frame");
+      return b;
+    });
+    const kept = new Map<string, Buffer>();
+    (await import("@/lib/photoDelivery/blob")).__setDerivativeStoreForTests({
+      async put(pathname, bytes) { kept.set(pathname, Buffer.from(bytes)); return { pathname, url: `https://drill-store.private.blob.vercel-storage.invalid/${pathname}` }; },
+      async read(ref) { const b = kept.get(ref.pathname); return b ? { stream: new Blob([new Uint8Array(b)]).stream(), size: b.length, contentType: "image/jpeg" } : null; },
+    });
+    /** A bracket set per photo in the hub's intake: three exposures; AutoHDR's upload names the darkest, the middle one is the camera frame. */
+    const intake = async (j: { project: { id: string }; shoot: { photoshoot_id: number; photos: { image_uuid: string; name: string }[] } }, sets: Record<string, Uint8Array>) => {
+      const files: { name: string; path: string; size: number }[] = [];
+      const named: { image_uuid: string; name: string }[] = [];
+      for (const [i, [photo, img]] of Object.entries(sets).entries()) {
+        const base = `${photo.split("-")[0]}${String(i).padStart(2, "0")}`;
+        for (const [k, gain] of [[0, 0.3], [1, 0.6], [2, 1]] as const) {
+          const name = `DSC${base}${k}.ARW`, path = `/raw/${name}`;
+          files.push({ name, path, size: 25_000_000 });
+          frames.set(path, await jpeg(img.map((v) => Math.round(v * gain))));
+        }
+        named.push({ image_uuid: j.shoot.photos.find((p) => p.name === photo)!.image_uuid, name: `DSC${base}0.ARW` });
+      }
+      // Every other upload of the shoot is in the intake too (room coverage reads it).
+      for (const p of j.shoot.photos) if (!named.some((x) => x.image_uuid === p.image_uuid)) named.push({ image_uuid: p.image_uuid, name: p.name });
+      await prisma.photoIntakeBatch.create({ data: { projectId: j.project.id, batchNo: 1, state: "DONE", rawPath: "/raw", filesJson: JSON.stringify(files), fileCount: files.length, fingerprint: `fp-${j.project.id}`, expectedPhotos: named.length, imageCount: named.length, photoshootId: j.shoot.photoshoot_id, photosJson: JSON.stringify(named), seenAt: new Date(), doneAt: new Date() } });
+    };
 
     let seq = 0;
     const mkJob = async (street: string, rooms: string[], opts: { clientName?: string; stage?: string; expected?: Record<string, unknown>; extraInAutohdr?: string[]; source?: "AUTOHDR" | "ARYEO" } = {}) => {
@@ -196,7 +226,7 @@ async function main() {
     c.ok("asks how ready each room looks, and what it shows", /"prep":"staged\|tidy\|lived_in\|cluttered\|empty"/.test(q) && /features: only these/.test(q) && /shower_in_background/.test(q));
     c.ok("names what to look for: the broom, the toilet seat, the door mat, shoes, remotes, cords, hoses, bins outside", ["broom, mop, dustpan", "toilet seat or lid left up", "door mat crooked", "shoes or boots", "TV remotes", "loose cords", "garden hose", "bins outside"].every((w) => q.includes(w)));
     c.ok("only what a photographer could have moved out of the frame", /only things a photographer could have moved out of the frame/.test(q));
-    c.ok("warped architecture asked, never furniture, never the word fisheye", /PERSP_EDIT_WARP: walls, door frames, windows or cabinets that look bent/.test(q) && !/fisheye/i.test(q) && /never furniture/.test(q));
+    c.ok("warped architecture asked (Oct 29 2026: walls, doors, door trim, windows; small rooms), never furniture, never the word fisheye", /PERSP_EDIT_WARP: walls, wall corners, doors, door trim or window frames that bow/.test(q) && !/fisheye/i.test(q) && /never furniture/.test(q));
     c.ok("the five switched-off checks stay out", ["GAL_RESOLUTION_CONSISTENCY", "KIT_CABINET_COLOR_ACROSS_PHOTOS", "PERSP_STRETCHED_EDGE_FURNITURE", "PERSP_EXCESSIVE_FISHEYE", "COMP_MOTION_BLUR"].every((id) => !q.includes(id)));
     c.ok("the kitchen trash can is asked, and is a trash can (always fixed)", /KIT_GARBAGE_CANS: a kitchen trash/.test(q) && policy.fixClass("KIT_GARBAGE_CANS") === "always");
     const parsed = check.parseCheckAnswer('{"room":"kitchen","prep":"Lived in","features":["Shower","jacuzzi","tub_in_background"],"issues":[{"id":"PREP_DOOR_MAT_CROOKED","where":"front door","confidence":0.8}]}', off);
@@ -226,8 +256,7 @@ async function main() {
     answers.set("40-4.jpg", { room: "primary bathroom", prep: "tidy", features: ["shower_in_background", "toilet", "vanity"], issues: [{ id: "BATH_TOILET_SEAT_OPEN", where: "toilet on the left", confidence: 0.9 }] });
     answers.set("40-5.jpg", { room: "bedroom", prep: "lived_in", issues: [{ id: "BED_CLOTHES_LEFT_OUT", where: "on the chair", confidence: 0.9 }] });
     answers.set("40-6.jpg", { room: "primary bedroom", prep: "tidy", issues: [{ id: "PERSP_EDIT_WARP", where: "left wall and window", confidence: 0.8 }] });
-    originals.set("40-1.jpg", { whole: true });
-    originals.set("40-6.jpg", { bent: true });
+    await intake(A, { "40-1.jpg": IMG.straight, "40-6.jpg": IMG.straight });
     capturedRooms.set("40-yard.jpg", { room: "rear exterior", features: [] });
     const dl0 = downloads();
     c.ok("the free check runs and finishes", await runCheck(A.job.id));
@@ -251,15 +280,15 @@ async function main() {
     fA = await findingsOf(A.job.id);
     const roof = st("PERSP_AUTOHDR_ROOF_PEAKS_CROPPED")!;
     const warp = st("PERSP_EDIT_WARP")!;
-    const origAsks = asked.filter((x) => x.kind === "original");
     const origOf = (name: string) => fake.state.shoots.flatMap((s) => s.photos).find((p) => p.name === name)!.versions.find((v) => !v.parent)!.uuid;
-    c.ok("the Original was asked about (its own version, not the edit), free", origAsks.some((x) => x.name === "40-1.jpg" && x.version === origOf("40-1.jpg")) && origAsks.some((x) => x.name === "40-6.jpg" && x.version === origOf("40-6.jpg")));
-    c.ok("the roof: AutoHDR's original shows it whole → the editing cut it (EDITOR, Perspective Off)", roof.responsibility === "EDITOR" && /Perspective Off/.test(roof.recommendedAction ?? "") && /original shows the whole roof/.test(roof.explanation), roof.explanation);
-    c.ok("the warp: the original is bent too → the lens (PHOTOGRAPHER, coaching)", warp.responsibility === "PHOTOGRAPHER" && /coaching/i.test(warp.recommendedAction ?? "") && /Not measured \(not downloaded/.test(warp.explanation), warp.explanation);
-    c.ok("…and on the check's word alone (not measurable for free) it counts as minor", warp.severity === "MINOR" && warp.confidence <= 0.6);
+    c.ok("AutoHDR's Original is never asked about any more (Oct 29 2026: the camera's own frame instead)", !asked.some((x) => x.version === origOf("40-1.jpg") || x.version === origOf("40-6.jpg")));
+    const camOf = (f: { coercedJson: string | null }) => (JSON.parse(f.coercedJson ?? "{}") as { camera?: { verdict?: string; frame?: string; preview?: { pathname: string } | null } }).camera;
+    c.ok("the camera's own frame read from the raw folder: the middle exposure of the bracket set, not the dark frame AutoHDR named, and kept for the side by side", frameReads > 0 && camOf(roof)?.frame === "DSC40001.ARW" && !!camOf(roof)?.preview?.pathname && kept.has(camOf(roof)!.preview!.pathname), JSON.stringify(camOf(roof)));
+    c.ok("the roof: the edit is not bought, so nothing is measured; it says so and keeps the check's own call", camOf(roof)?.verdict === "unclear" && /Not compared with the camera's own frame \(DSC40001\.ARW\): the edit not downloaded from AutoHDR yet/.test(roof.explanation) && /shown beside the edit/.test(roof.explanation) && roof.responsibility !== "PHOTOGRAPHER", roof.explanation);
+    c.ok("the warp: the same, and on the check's word alone it counts as minor", warp.severity === "MINOR" && warp.confidence <= 0.6 && camOf(warp)?.verdict === "unclear" && /look before deciding/.test(warp.explanation), `${warp.severity} ${warp.confidence}`);
     const cartA = await (await import("@/lib/photoDelivery/fixes")).buildFixCart(A.job.id);
     const roofLine = cartA.lines.find((l) => l.ruleId === "PERSP_AUTOHDR_ROOF_PEAKS_CROPPED");
-    c.ok("the Fix Cart's free AutoHDR line says what the comparison found", roofLine?.humanCall === "autohdr-editor" && /Perspective Off on this photo/.test(roofLine.howTo ?? ""), roofLine?.howTo ?? "");
+    c.ok("the Fix Cart's free AutoHDR line says how to fix it in AutoHDR", roofLine?.humanCall === "autohdr-editor" && /Perspective Off on THIS photo/.test(roofLine.howTo ?? ""), roofLine?.howTo ?? "");
     const batchA = await prisma.photoFixBatch.findFirst({ where: { jobId: A.job.id, approvedBy: "auto-fix" } });
     const opsA = batchA ? await prisma.photoFixOperation.findMany({ where: { batchId: batchA.id } }) : [];
     const fixedIds = new Set(opsA.flatMap((o) => JSON.parse(o.findingIdsJson) as string[]));
@@ -322,42 +351,52 @@ async function main() {
 
     // ======================================================================
     c.head("6 · a vacant home, and warps measured");
-    const D = await mkJob("70 Empty Ct", ["living", "bed", "kitchen", "office", "dining"], { source: "ARYEO" });
+    const D = await mkJob("70 Empty Ct", ["living", "bed", "kitchen", "office", "dining", "bath"], { source: "ARYEO" });
     for (const [i, a] of [
       { room: "living room", prep: "empty", furnished: "empty", issues: [{ id: "PREP_LEFTOVER_ITEM_VACANT", where: "paint bucket by the window", confidence: 0.8 }] },
-      { room: "bedroom", prep: "empty", furnished: "empty", issues: [{ id: "PREP_LEFTOVER_ITEM_VACANT", where: "bag in the corner", confidence: 0.6 }] },
+      { room: "bedroom", prep: "empty", furnished: "empty", issues: [{ id: "PREP_LEFTOVER_ITEM_VACANT", where: "bag in the corner", confidence: 0.6 }, { id: "PERSP_HORIZONTAL_DISTORTION", where: "ceiling line", confidence: 0.8 }] },
       { room: "kitchen", prep: "empty", furnished: "empty", issues: [{ id: "PERSP_EDIT_WARP", where: "cabinets on the right", confidence: 0.7 }] },
       { room: "office", prep: "empty", furnished: "empty", issues: [{ id: "PERSP_CROOKED_VERTICALS", where: "door frame", confidence: 0.8 }] },
       { room: "dining room", prep: "empty", furnished: "empty" },
+      { room: "bathroom", prep: "empty", furnished: "empty", issues: [{ id: "PERSP_EDIT_WARP", where: "shower wall", confidence: 0.7 }] },
     ].entries()) answers.set(`70-${i + 1}.jpg`, a);
-    pixels.set("70-1.jpg", await jpeg(IMG.straight));
-    pixels.set("70-2.jpg", await jpeg(IMG.straight));
+    pixels.set("70-1.jpg", await jpeg(IMG.offLevel));
+    pixels.set("70-2.jpg", await jpeg(IMG.offLevel));
     pixels.set("70-3.jpg", await jpeg(IMG.bent));
     pixels.set("70-4.jpg", await jpeg(IMG.straight));
     pixels.set("70-5.jpg", await jpeg(IMG.bent));
-    originals.set("70-3.jpg", { bent: false });
-    originals.set("70-5.jpg", { bent: false });
+    pixels.set("70-6.jpg", await jpeg(IMG.bent));
+    // The camera saw the kitchen and the dining room straight (the edit bent them); the bathroom bows the same in the camera.
+    await intake(D, { "70-3.jpg": IMG.straight, "70-5.jpg": IMG.straight, "70-6.jpg": IMG.bent });
     c.ok("checked", await runCheck(D.job.id));
     const jD = await prisma.photoJob.findUniqueOrThrow({ where: { id: D.job.id } });
     let fD = await findingsOf(D.job.id);
     const leftover = fD.filter((f) => f.ruleId === "PREP_LEFTOVER_ITEM_VACANT");
-    c.ok("read as vacant (5 of 5 rooms empty)", jD.prepMode === "VACANT", jD.prepStatsJson ?? "");
+    c.ok("read as vacant (6 of 6 rooms empty)", jD.prepMode === "VACANT", jD.prepStatsJson ?? "");
     c.ok("an item left in an empty room at 80%: counts; at 60%: set aside (needs 70%)", leftover.find((f) => /paint bucket/.test(f.specificIssue))?.status === "OPEN" && leftover.find((f) => /bag in the corner/.test(f.specificIssue))?.status === "IGNORED", leftover.map((f) => `${f.status} ${f.statusReason}`).join(" | "));
     for (let i = 0; i < 3; i++) await policy.driveAutoFixPlanning({ budgetMs: 120_000 });
     fD = await findingsOf(D.job.id);
     const runD = await prisma.photoQcRun.findFirstOrThrow({ where: { jobId: D.job.id, trigger: "AUTOHDR_CHECK" }, orderBy: { startedAt: "desc" } });
     const progD = check.readProgress(runD.checksJson);
-    c.ok("all 5 photos measured from the listing's own copies (free)", progD.geometryDone === true && Object.values(progD.geometry ?? {}).filter((x) => (x as { m?: unknown }).m).length === 5);
-    const warpD = fD.find((f) => f.ruleId === "PERSP_EDIT_WARP" && f.source === "AHDR")!;
-    c.ok("the check and the measurement agree on the bent cabinets: full weight (confidence raised), measured words added", warpD.severity === "MAJOR" && warpD.confidence >= 0.85 && /Measured too: .*bent/.test(warpD.explanation), `${warpD.severity} ${warpD.confidence}`);
-    c.ok("…and the original was straight: the editing bent it (EDITOR, Perspective Off)", warpD.responsibility === "EDITOR" && /Perspective Off/.test(warpD.recommendedAction ?? ""));
+    c.ok("all 6 photos measured from the listing's own copies (free)", progD.geometryDone === true && Object.values(progD.geometry ?? {}).filter((x) => (x as { m?: unknown }).m).length === 6);
+    const warpD = fD.find((f) => f.ruleId === "PERSP_EDIT_WARP" && f.source === "AHDR" && f.photoId === D.photos[2].id)!;
+    c.ok("the bent cabinets: straight in the camera's own frame, so the edit bent them: full weight (MAJOR, confidence raised)", warpD.severity === "MAJOR" && warpD.confidence >= 0.85 && /the editing bent them/.test(warpD.explanation), `${warpD.severity} ${warpD.confidence} ${warpD.explanation}`);
+    c.ok("…the editor's (Perspective Off, then tell AutoHDR its lens correction is off), with the camera frame kept beside it", warpD.responsibility === "EDITOR" && /Perspective Off/.test(warpD.recommendedAction ?? "") && /lens correction/.test(warpD.recommendedAction ?? "") && camOf(warpD)?.verdict === "edit" && !!camOf(warpD)?.preview);
+    const sameD = fD.find((f) => f.ruleId === "PERSP_EDIT_WARP" && f.source === "AHDR" && f.photoId === D.photos[5].id)!;
+    c.ok("the bathroom bows the same in the camera's frame: not the edit, minor, look before deciding", sameD.severity === "MINOR" && sameD.confidence <= 0.55 && camOf(sameD)?.verdict === "same" && /did not bend them/.test(sameD.explanation), `${sameD.severity} ${sameD.confidence}`);
     const leanD = fD.find((f) => f.ruleId === "PERSP_CROOKED_VERTICALS" && f.source === "AHDR")!;
     c.ok("the check says leaning, the lines measure straight: minor, with why", leanD.severity === "MINOR" && leanD.confidence <= 0.55 && /measured lines look straight/.test(leanD.explanation), `${leanD.severity} ${leanD.confidence}`);
     const onlyCv = fD.find((f) => f.source === "CV" && f.photoId === D.photos[4].id);
-    c.ok("only the measurement saw the bent dining room: advisory, below the confidence floor (never blocks)", onlyCv?.ruleId === "PERSP_EDIT_WARP" && onlyCv.severity === "MINOR" && onlyCv.confidence < (await photoDeliverySettings()).displayConfidenceFloor && /Only the measured line check saw this/.test(onlyCv.explanation));
+    c.ok("only the comparison saw the dining room bent (strong, in a room): a finding of its own, MAJOR, shown", onlyCv?.ruleId === "PERSP_EDIT_WARP" && onlyCv.severity === "MAJOR" && onlyCv.model === "camera-frame" && onlyCv.confidence >= (await photoDeliverySettings()).displayConfidenceFloor && /bow in the edit, straight in the camera's frame/.test(onlyCv.specificIssue), `${onlyCv?.severity} ${onlyCv?.specificIssue}`);
+    c.ok("no bent-line advisory on the measurement alone any more (Jordan: what it detected was not warping)", !fD.some((f) => f.source === "CV" && f.ruleId === "PERSP_EDIT_WARP" && f.model !== "camera-frame"));
+    const levelD = fD.find((f) => f.ruleId === "PERSP_HORIZONTAL_DISTORTION" && f.source === "AHDR")!;
+    c.ok("level: the check says the ceiling line slopes and it measures so: MAJOR, measured words added", levelD?.severity === "MAJOR" && levelD.confidence >= 0.85 && /Measured too: 4 long horizontal lines slope 1\.2° the same way/.test(levelD.explanation), `${levelD?.severity} ${levelD?.explanation}`);
+    const levelCv = fD.find((f) => f.ruleId === "PERSP_HORIZONTAL_DISTORTION" && f.source === "CV");
+    c.ok("level on the measurement alone, inside a room: minor but shown, with the AutoHDR fix (Crop & Tilt)", levelCv?.photoId === D.photos[0].id && levelCv.severity === "MINOR" && levelCv.confidence >= (await photoDeliverySettings()).displayConfidenceFloor && /Crop & Tilt/.test(levelCv.recommendedAction ?? ""), `${levelCv?.severity} ${levelCv?.confidence}`);
+    const reads = frameReads;
     const again = await geometry.geometryJob(D.job.id, runD.id, Date.now() + 60_000);
-    c.ok("nothing is measured or filed twice", (await prisma.photoQcFinding.count({ where: { jobId: D.job.id, source: "CV" } })) === 1 && again.measured === 0);
-    c.ok("pure: the Original's answer read both ways", geometry.originalVerdict("PERSP_AUTOHDR_ROOF_PEAKS_CROPPED", { whole: false })?.responsibility === "PHOTOGRAPHER" && geometry.originalVerdict("PERSP_EDIT_WARP", { bent: false })?.responsibility === "EDITOR" && geometry.originalVerdict("PERSP_EDIT_WARP", {}) === null);
+    c.ok("nothing is measured, compared or filed twice", (await prisma.photoQcFinding.count({ where: { jobId: D.job.id, source: "CV" } })) === 2 && again.measured === 0 && again.compared === 0 && frameReads === reads);
+    c.ok("pure: what the camera frame says, both checks", geometry.cameraVerdict("PERSP_AUTOHDR_ROOF_PEAKS_CROPPED", { roof: "capture" })?.responsibility === "PHOTOGRAPHER" && geometry.cameraVerdict("PERSP_AUTOHDR_ROOF_PEAKS_CROPPED", { roof: "edit" })?.responsibility === "EDITOR" && geometry.cameraVerdict("PERSP_EDIT_WARP", { bowed: false })?.verdict === "same" && geometry.cameraVerdict("PERSP_EDIT_WARP", undefined) === null);
 
     // ======================================================================
     c.head("7 · coverage: never shot, lost in editing, the checklist");

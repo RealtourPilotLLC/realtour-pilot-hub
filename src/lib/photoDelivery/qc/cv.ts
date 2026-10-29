@@ -1051,3 +1051,344 @@ export function geometryWords(g: LineGeometry): string {
   parts.push(g.bentLines ? `${g.bentLines} line${g.bentLines === 1 ? "" : "s"} bent (up to ${Math.round(g.maxBowPx)} px)` : "no bent lines");
   return parts.join("; ");
 }
+
+// ---- lens bow, level lines and the camera's own frame (Oct 29 2026) -------------------------
+//
+// Jordan, Oct 29 2026: "it's saying there is warping, but there isn't. On 615
+// Cliff there was a lot of warping. Especially in small spaces ... I'm really
+// looking for warped walls, doors and door trim, windows". The bend measure
+// above (bentLines) flagged things that are curved (drone horizons, road
+// markings, fridge handles, a mirror) and missed the real warp: AutoHDR's
+// processing bowing every straight line a little (its lens correction for
+// that camera), worst near the edges of a small room.
+//   · lensBow: ONE radial bow for the whole photo (the division model
+//     p_u = c + (p_d - c) / (1 + k r^2), r over the half diagonal), fitted to
+//     every long, nearly straight line in both directions. gain = how much
+//     straighter the lines get with the bow taken out (0 = none).
+//   · Measured on the camera's own frame of the same shot too (cameraFrame.ts):
+//     the edit bows where the camera frame does not = the edit bent it. A
+//     curved thing in the room is curved in both and cancels out.
+//   · levelLines: "it seems to pick up the vertical lines but not the
+//     horizontal lines": long near-horizontal lines above or below eye level
+//     that all slope the same way (a turned camera), never the two ways of a
+//     room shot from a corner.
+//   · sameScene / alignFrame / roofHeadroom: which bracket frames are this
+//     shot, where the edit sits inside the camera frame, and whether the
+//     camera frame had sky above the roof where the edit's top is cut.
+// Calibrated Oct 29 2026 on 615 Cliff Ln (16 camera frames), 538 Onward Ave,
+// 554 Scattergood Ct and the 15 roof findings since Oct 15. Pure.
+
+export const LENS_THRESHOLDS = {
+  /** The bow grid: k from -0.4 to 0.4. */
+  kMax: 0.4,
+  kStep: 0.02,
+  /** A line whose straight fit is off by more than this (px rms) is a curve, not a line. */
+  maxLineRmsPx: 4,
+  /** The edit bows: at least this k and this gain... */
+  editMinK: 0.04,
+  editMinGain: 0.12,
+  /** ...and the camera frame, at the edit's k, gains at least this much less. */
+  minGainGap: 0.08,
+  /** Strong: counts in full on the measurement alone. */
+  strongGain: 0.15,
+  strongGap: 0.15,
+  /** Level: lines at least this share of the width, sloping between these degrees, this far from mid height. */
+  levelMinLen: 0.3,
+  levelMinDeg: 0.4,
+  levelMaxDeg: 2.5,
+  levelOffMid: 0.2,
+  levelMinLines: 2,
+  /** Same scene: gradient match of two bracket frames at 64 px. */
+  sameScene: 0.7,
+  /** The edit found in the camera frame: gradient match at least this. */
+  alignMin: 0.5,
+} as const;
+
+/** Long lines as point lists in image coordinates (every other point), both directions. */
+function plumbLines(l: Uint8Array, w: number, h: number): { x: number[]; y: number[]; len: number; dir: "v" | "h" }[] {
+  const out: { x: number[]; y: number[]; len: number; dir: "v" | "h" }[] = [];
+  for (const dir of ["v", "h"] as const) {
+    const [img, W, H] = dir === "v" ? [l, w, h] : [transpose(l, w, h), h, w];
+    const minSpan = Math.max(40, Math.round(GEOMETRY_THRESHOLDS.minSpan * H));
+    for (const ch of verticalChains(img, W, H)) {
+      const len = ch.lastY - ch.firstY + 1;
+      if (len < minSpan || ch.xs.length < minSpan * 0.8) continue;
+      const x: number[] = [], y: number[] = [];
+      for (let i = 0; i < ch.xs.length; i += 2) {
+        if (dir === "v") { x.push(ch.xs[i]); y.push(ch.ys[i]); } else { x.push(ch.ys[i]); y.push(ch.xs[i]); }
+      }
+      out.push({ x, y, len, dir });
+    }
+  }
+  return out;
+}
+
+/** Total least squares: rms distance of the points from their best straight line. */
+function lineRms(px: ArrayLike<number>, py: ArrayLike<number>): number {
+  const n = px.length;
+  let mx = 0, my = 0;
+  for (let i = 0; i < n; i++) { mx += px[i]; my += py[i]; }
+  mx /= n; my /= n;
+  let sxx = 0, syy = 0, sxy = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = px[i] - mx, dy = py[i] - my;
+    sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
+  }
+  const tr = sxx + syy, det = sxx * syy - sxy * sxy;
+  const least = tr / 2 - Math.sqrt(Math.max(0, (tr * tr) / 4 - det));
+  return Math.sqrt(Math.max(0, least) / n);
+}
+
+export type LensBow = {
+  /** Lines it was fitted to. */
+  lines: number;
+  /** The bow that straightens them most (positive: lines bow out from the centre, barrel). */
+  k: number;
+  /** 1 - error at k / error with no correction (0 = the lines are as straight as they get). */
+  gain: number;
+  /** The error over the k grid (for gainAt). */
+  curve: number[];
+  /** Long near-horizontal lines: slope in degrees (positive: falls to the right), height and length as shares. */
+  level: { deg: number; y: number; len: number }[];
+};
+
+const K_GRID = (() => {
+  const T = LENS_THRESHOLDS;
+  const ks: number[] = [];
+  for (let k = -T.kMax; k <= T.kMax + 1e-9; k += T.kStep) ks.push(Math.round(k * 100) / 100);
+  return ks;
+})();
+
+/** The photo's lens bow and its long near-horizontal lines, from a luma image (about 1024 px wide). Pure. */
+export function lensBow(l: Uint8Array, w: number, h: number): LensBow {
+  const cx = w / 2, cy = h / 2, R = Math.hypot(cx, cy);
+  const lines = plumbLines(l, w, h).filter((L) => lineRms(L.x, L.y) < LENS_THRESHOLDS.maxLineRmsPx);
+  const curve = K_GRID.map(() => 0);
+  const px = new Float64Array(4096), py = new Float64Array(4096);
+  for (const L of lines) {
+    const n = Math.min(L.x.length, 4096);
+    K_GRID.forEach((k, ki) => {
+      for (let i = 0; i < n; i++) {
+        const u = (L.x[i] - cx) / R, v = (L.y[i] - cy) / R;
+        const s = 1 / (1 + k * (u * u + v * v));
+        px[i] = cx + u * s * R;
+        py[i] = cy + v * s * R;
+      }
+      const e = lineRms(px.subarray(0, n), py.subarray(0, n));
+      curve[ki] += L.len * e * e;
+    });
+  }
+  let best = 0;
+  for (let i = 1; i < curve.length; i++) if (curve[i] < curve[best]) best = i;
+  const e0 = curve[K_GRID.indexOf(0)];
+  const level = lines
+    .filter((L) => L.dir === "h" && L.len >= LENS_THRESHOLDS.levelMinLen * w)
+    .map((L) => {
+      const n = L.x.length;
+      return { deg: Math.round(((Math.atan2(L.y[n - 1] - L.y[0], L.x[n - 1] - L.x[0]) * 180) / Math.PI) * 100) / 100, y: Math.round(((L.y[0] + L.y[n - 1]) / 2 / h) * 100) / 100, len: Math.round((L.len / w) * 100) / 100 };
+    });
+  return { lines: lines.length, k: e0 ? K_GRID[best] : 0, gain: e0 ? Math.round((1 - curve[best] / e0) * 100) / 100 : 0, curve, level };
+}
+
+/** How much straighter this photo's lines get with the bow k taken out (negative: worse). Pure. */
+export function bowGainAt(b: Pick<LensBow, "curve">, k: number): number {
+  const i = K_GRID.indexOf(Math.round(k * 100) / 100);
+  const e0 = b.curve[K_GRID.indexOf(0)];
+  return i < 0 || !e0 ? 0 : Math.round((1 - b.curve[i] / e0) * 100) / 100;
+}
+
+/**
+ * The edit bowed the lines the camera kept straight. `bowed` = the edit's
+ * bow is real and the camera frame does not share it; `strong` = enough to
+ * count in full on the measurement alone. Pure.
+ */
+export function editBowVerdict(edit: Pick<LensBow, "k" | "gain" | "lines">, camera: Pick<LensBow, "curve" | "lines">): { bowed: boolean; strong: boolean; gap: number } {
+  const T = LENS_THRESHOLDS;
+  const gap = Math.round((edit.gain - bowGainAt(camera, edit.k)) * 100) / 100;
+  const bowed = edit.lines >= 6 && camera.lines >= 6 && edit.k >= T.editMinK && edit.gain >= T.editMinGain && gap >= T.minGainGap;
+  return { bowed, strong: bowed && edit.gain >= T.strongGain && gap >= T.strongGap, gap };
+}
+
+/** Horizontal lines that should be level and slope one way (a turned camera). null = level, or too few lines to say. Pure. */
+export function notLevel(level: LensBow["level"]): { deg: number; lines: number } | null {
+  const T = LENS_THRESHOLDS;
+  const off = level.filter((x) => Math.abs(x.deg) >= T.levelMinDeg && Math.abs(x.deg) <= T.levelMaxDeg && Math.abs(x.y - 0.5) >= T.levelOffMid && x.len >= T.levelMinLen);
+  const down = off.filter((x) => x.deg > 0), up = off.filter((x) => x.deg < 0);
+  const [one, other] = down.length >= up.length ? [down, up] : [up, down];
+  if (one.length < T.levelMinLines || other.length) return null;
+  const degs = one.map((x) => Math.abs(x.deg)).sort((a, b) => a - b);
+  return { deg: degs[Math.floor(degs.length / 2)], lines: one.length };
+}
+
+// The camera frame and the edit, compared by their edges (exposure-free: each
+// image's tones are equalized first, so a dark bracket frame and an HDR edit
+// still match).
+
+type Grad = { g: Float32Array; w: number; h: number };
+
+function boxResize(f: ArrayLike<number>, w: number, h: number, W: number, H: number): Float32Array {
+  const o = new Float32Array(W * H);
+  for (let Y = 0; Y < H; Y++) {
+    const y0 = Math.floor((Y * h) / H), y1 = Math.max(y0 + 1, Math.floor(((Y + 1) * h) / H));
+    for (let X = 0; X < W; X++) {
+      const x0 = Math.floor((X * w) / W), x1 = Math.max(x0 + 1, Math.floor(((X + 1) * w) / W));
+      let s = 0;
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) s += f[y * w + x];
+      o[Y * W + X] = s / ((x1 - x0) * (y1 - y0));
+    }
+  }
+  return o;
+}
+
+function sobelMag(f: Float32Array, w: number, h: number, soften: boolean): Float32Array {
+  const o = new Float32Array(w * h);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const sx = f[i - w + 1] + 2 * f[i + 1] + f[i + w + 1] - f[i - w - 1] - 2 * f[i - 1] - f[i + w - 1];
+      const sy = f[i + w - 1] + 2 * f[i + w] + f[i + w + 1] - f[i - w - 1] - 2 * f[i - w] - f[i - w + 1];
+      const m = Math.hypot(sx, sy);
+      o[i] = soften ? Math.sqrt(m) : m;
+    }
+  }
+  return o;
+}
+
+/** Equalized-tone edge strength at width W. */
+function edgesAt(l: Uint8Array, w: number, h: number, W: number): Grad {
+  const H = Math.max(8, Math.round((h * W) / w));
+  const hist = new Float64Array(256);
+  for (let i = 0; i < l.length; i++) hist[l[i]]++;
+  const cdf = new Float32Array(256);
+  let acc = 0;
+  for (let i = 0; i < 256; i++) { acc += hist[i]; cdf[i] = (acc / l.length) * 255; }
+  const eq = new Float32Array(l.length);
+  for (let i = 0; i < l.length; i++) eq[i] = cdf[l[i]];
+  return { g: sobelMag(boxResize(eq, w, h, W, H), W, H, true), w: W, h: H };
+}
+
+/** Two bracket frames are the same shot (a tripod: same framing, other exposure). 0 to 1. Pure. */
+export function sameScene(a: { l: Uint8Array; w: number; h: number }, b: { l: Uint8Array; w: number; h: number }): number {
+  const A = edgesAt(a.l, a.w, a.h, 64), B = edgesAt(b.l, b.w, b.h, 64);
+  if (A.h !== B.h) return 0;
+  let ma = 0, mb = 0;
+  for (let i = 0; i < A.g.length; i++) { ma += A.g[i]; mb += B.g[i]; }
+  ma /= A.g.length; mb /= B.g.length;
+  let sab = 0, saa = 0, sbb = 0;
+  for (let i = 0; i < A.g.length; i++) {
+    const x = A.g[i] - ma, y = B.g[i] - mb;
+    sab += x * y; saa += x * x; sbb += y * y;
+  }
+  return saa && sbb ? Math.round((sab / Math.sqrt(saa * sbb)) * 100) / 100 : 0;
+}
+
+/** The edit's middle band (rows 8 to 55%, columns 15 to 85%), zero mean, unit norm. */
+const BAND = { y0: 0.08, y1: 0.55, x0: 0.15, x1: 0.85 };
+function bandOf(e: Grad): { t: Float32Array; tw: number; th: number; ox: number; oy: number } {
+  const x0 = Math.round(BAND.x0 * e.w), x1 = Math.round(BAND.x1 * e.w), y0 = Math.round(BAND.y0 * e.h), y1 = Math.round(BAND.y1 * e.h);
+  const tw = x1 - x0, th = y1 - y0, t = new Float32Array(tw * th);
+  for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) t[y * tw + x] = e.g[(y + y0) * e.w + x + x0];
+  let m = 0;
+  for (const v of t) m += v;
+  m /= t.length || 1;
+  let ss = 0;
+  for (let i = 0; i < t.length; i++) { t[i] -= m; ss += t[i] * t[i]; }
+  const n = Math.sqrt(ss) || 1;
+  for (let i = 0; i < t.length; i++) t[i] /= n;
+  return { t, tw, th, ox: x0, oy: y0 };
+}
+
+/** Best normalized match of the band over the camera frame's edges, inside a window of positions. */
+function slideBand(cam: Grad, b: ReturnType<typeof bandOf>, xr: [number, number], yr: [number, number]): { score: number; x: number; y: number } {
+  let best = { score: -2, x: 0, y: 0 };
+  const n = b.tw * b.th;
+  for (let y = Math.max(0, yr[0]); y <= Math.min(cam.h - b.th, yr[1]); y++) {
+    for (let x = Math.max(0, xr[0]); x <= Math.min(cam.w - b.tw, xr[1]); x++) {
+      let s = 0, sw = 0, sww = 0;
+      for (let j = 0; j < b.th; j++) {
+        const r = (y + j) * cam.w + x, tr = j * b.tw;
+        for (let i = 0; i < b.tw; i++) {
+          const v = cam.g[r + i];
+          s += b.t[tr + i] * v; sw += v; sww += v * v;
+        }
+      }
+      const varw = sww - (sw * sw) / n;
+      const score = varw > 0 ? s / Math.sqrt(varw) : 0;
+      if (score > best.score) best = { score, x, y };
+    }
+  }
+  return best;
+}
+
+/** Where the edit sits inside the camera frame: its width as a share of the frame's (scale), its top-left corner as shares, and how well it matched. */
+export type FrameFit = { score: number; scale: number; left: number; top: number; bottom: number };
+
+/** Find the edit inside the camera frame (a crop, maybe straightened: matched as a scaled crop). Pure. */
+export function alignFrame(edit: { l: Uint8Array; w: number; h: number }, cam: { l: Uint8Array; w: number; h: number }): FrameFit {
+  const C1 = edgesAt(cam.l, cam.w, cam.h, 96);
+  let coarse = { score: -2, s: 1, x: 0, y: 0 };
+  for (let s = 0.55; s <= 1.0501; s += 0.025) {
+    const b = bandOf(edgesAt(edit.l, edit.w, edit.h, Math.round(96 * s)));
+    const m = slideBand(C1, b, [0, C1.w], [0, C1.h]);
+    if (m.score > coarse.score) coarse = { score: m.score, s, x: m.x - b.ox, y: m.y - b.oy };
+  }
+  const C2 = edgesAt(cam.l, cam.w, cam.h, 192);
+  let fine = { score: -2, s: coarse.s, x: 0, y: 0, eh: 0 };
+  for (let s = coarse.s - 0.03; s <= coarse.s + 0.0301; s += 0.005) {
+    const e = edgesAt(edit.l, edit.w, edit.h, Math.round(192 * s));
+    const b = bandOf(e);
+    const cx = Math.round(coarse.x * 2 + b.ox), cy = Math.round(coarse.y * 2 + b.oy);
+    const m = slideBand(C2, b, [cx - 6, cx + 6], [cy - 6, cy + 6]);
+    if (m.score > fine.score) fine = { score: m.score, s, x: m.x - b.ox, y: m.y - b.oy, eh: e.h };
+  }
+  const r3 = (n: number) => Math.round(n * 1000) / 1000;
+  return { score: r3(fine.score), scale: r3(fine.s), left: r3(fine.x / C2.w), top: r3(fine.y / C2.h), bottom: r3((C2.h - (fine.y + fine.eh)) / C2.h) };
+}
+
+/** Per column (at width W), how many rows of smooth sky sit above the first structure (0 = structure touches the top). */
+function skyline(l: Uint8Array, w: number, h: number, W = 256): { S: Int32Array; W: number; H: number } {
+  const SMOOTH = 48, RUN = 3;
+  const H = Math.max(8, Math.round((h * W) / w));
+  const g = sobelMag(boxResize(l, w, h, W, H), W, H, false);
+  for (let x = 0; x < W; x++) { g[x] = g[W + x]; g[(H - 1) * W + x] = g[(H - 2) * W + x]; }
+  for (let y = 0; y < H; y++) { g[y * W] = g[y * W + 1]; g[y * W + W - 1] = g[y * W + W - 2]; }
+  const S = new Int32Array(W);
+  for (let x = 0; x < W; x++) {
+    let y = 0;
+    for (; y < H; y++) {
+      let rough = true;
+      for (let k = 0; k < RUN && y + k < H; k++) if (g[(y + k) * W + x] < SMOOTH) { rough = false; break; }
+      if (rough) break;
+    }
+    S[x] = y;
+  }
+  return { S, W, H };
+}
+
+/**
+ * A cut-off roof: where the edit's top edge cuts through the house, did the
+ * camera frame have sky above it there?
+ *   capture = in a quarter or more of those columns the camera frame is cut
+ *             at the top too: it was framed that way at the shoot;
+ *   edit    = the camera frame has sky above the house in (nearly) all of
+ *             them: the edit's crop or straightening cut it off;
+ *   unclear = the edit's top is not cut, or the two do not line up.
+ * Pure.
+ */
+export function roofHeadroom(edit: { l: Uint8Array; w: number; h: number }, cam: { l: Uint8Array; w: number; h: number }, fit: FrameFit): { verdict: "capture" | "edit" | "unclear"; cutShare: number; cameraCut: number; cameraSky: number } {
+  const E = skyline(edit.l, edit.w, edit.h), C = skyline(cam.l, cam.w, cam.h);
+  let cut = 0, camCut = 0, camSky = 0;
+  const T = fit.top * C.H;
+  for (let x = 2; x < E.W - 2; x++) {
+    if (E.S[x] > 0) continue;
+    cut++;
+    const cx = Math.round((fit.left + (x / E.W) * fit.scale) * C.W);
+    if (cx < 0 || cx >= C.W) continue;
+    if (C.S[cx] === 0) camCut++;
+    else if (C.S[cx] <= T + 3) camSky++;
+  }
+  const cutShare = Math.round((cut / (E.W - 4)) * 100) / 100;
+  const seen = camCut + camSky;
+  const verdict = fit.score < LENS_THRESHOLDS.alignMin || cutShare < 0.03 || seen < 5 ? "unclear" : camCut >= 0.25 * seen ? "capture" : camCut <= 0.1 * seen ? "edit" : "unclear";
+  return { verdict, cutShare, cameraCut: camCut, cameraSky: camSky };
+}

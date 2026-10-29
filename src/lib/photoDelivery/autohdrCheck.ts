@@ -66,11 +66,15 @@ const CHECK_RULES = [
   // Oct 22 2026 (615 Cliff Ln, "the bedroom lamp floating in the one bedroom
   // with a crib"): an object the edit left floating, cut off or doubled.
   "AIEDIT_FLOATING_OBJECT",
+  // Oct 29 2026 (Jordan: "it seems to pick up the vertical lines but not the
+  // horizontal lines. Id like it to pick up horizontal lines that are not
+  // level or perfectly horizontal").
+  "PERSP_HORIZONTAL_DISTORTION",
 ] as const;
 
 const ALLOWED = new Set<string>(CHECK_RULES);
-/** 2: light + furnished (Oct 14 2026). 3: prep + features, "look for" words, the removable-things rule, warped architecture (Oct 15 2026). 4: floating objects left by the edit (Oct 22 2026). 5: the never and always lists, the shot's view (wide, partial, close-up) for the hero, and what the check learned from the office's calls (Oct 23 2026). 6: the house being shot named (its address, the one in the middle), each issue says whose property it is on, and a house shot looking up counts as leaning (Oct 27 2026). */
-export const CHECK_PROMPT_VERSION = 6;
+/** 2: light + furnished (Oct 14 2026). 3: prep + features, "look for" words, the removable-things rule, warped architecture (Oct 15 2026). 4: floating objects left by the edit (Oct 22 2026). 5: the never and always lists, the shot's view (wide, partial, close-up) for the hero, and what the check learned from the office's calls (Oct 23 2026). 6: the house being shot named (its address, the one in the middle), each issue says whose property it is on, and a house shot looking up counts as leaning (Oct 27 2026). 7: horizontal lines off level, warps named as walls, doors, door trim and windows (small rooms first), cords only when they stick out, cars only in this home's own driveway or the near foreground (Oct 29 2026). */
+export const CHECK_PROMPT_VERSION = 7;
 const PER_PHOTO_TRIES = 3;
 const CONCURRENCY = 4;
 
@@ -98,8 +102,11 @@ export const LOOK_FOR: Partial<Record<(typeof CHECK_RULES)[number], string>> = {
   PREP_GARBAGE_BAGS_LOOSE_TRASH: "garbage bags, wrappers, cups or other small trash",
   PREP_CLEANING_SUPPLIES: "a broom, mop, dustpan, bucket, spray bottles or rags left out",
   PREP_VACUUM_CLEANING_EQUIPMENT: "a vacuum or steam mop left out",
-  // Oct 23 2026 (huddle): only a cord left lying loose, never one that belongs to the house.
-  PREP_LOOSE_CORDS_CABLES: "loose cords left lying across a floor, counter, table or bed (an extension cord or a charger cable; never a cord from a TV, lamp or appliance to the wall, never one barely visible)",
+  // Oct 23 2026 (huddle): only a cord left lying loose, never one that belongs
+  // to the house. Oct 29 2026 (Jordan): "only needing to be fixed if they are
+  // really sticking out ... running across an open space, or there are a bunch
+  // of loose cords hanging from a tv, night stand, counter top".
+  PREP_LOOSE_CORDS_CABLES: "cords that really stick out: a cord running across open floor or a walkway, or a bunch of loose cords hanging from a TV, nightstand or countertop (never a single cord to an outlet, never one under or behind furniture, never wiring that is part of the house)",
   PREP_PERSONAL_PHOTOS: "family photos showing people's faces",
   PREP_PERSONAL_DOCUMENTS: "mail, papers or documents you could read",
   PREP_PET_ITEMS: "pet bowls, beds, crates or toys",
@@ -117,9 +124,13 @@ export const LOOK_FOR: Partial<Record<(typeof CHECK_RULES)[number], string>> = {
   BED_CHILDRENS_TOYS: "toys left out",
   BED_LAUNDRY_HAMPERS: "laundry hampers or piles of laundry",
   EXT_TRASH_CANS_PRIMARY: "trash or recycling bins outside this home (its curb, its driveway, by its garage or side door)",
-  // Oct 23 2026 (huddle): a car on THIS home's driveway, always; a neighbor's car, never.
-  EXT_PARKED_CARS_DRIVEWAY: "a car parked in this home's own driveway or carport, or right in front of this home (never a neighbor's car, never one in another home's driveway)",
-  EXT_VEHICLES_BLOCKING_HOME: "a vehicle standing in front of this home and hiding part of it (never a neighbor's)",
+  // Oct 23 2026 (huddle): a car on THIS home's driveway, always; a neighbor's
+  // car, never. Oct 29 2026 (Jordan): "It should only focus on the house we
+  // are shooting. We dont remove neighbors cars unless its a distraction in the
+  // foreground and we can replace whats behind it without obstructing the
+  // property structure."
+  EXT_PARKED_CARS_DRIVEWAY: "a car parked in the driveway or carport of the home being photographed (never a car in any other driveway, on the street or in the background)",
+  EXT_VEHICLES_BLOCKING_HOME: "a car in the near foreground, close to the camera, that distracts from this home and has only street, sidewalk or lawn behind it (never a car far away or in the background, never one parked in another home's driveway)",
   EXT_GARDEN_HOSES: "a garden hose on the lawn, beds or walkway",
   EXT_HOSE_REELS: "a hose reel",
   EXT_CHILDRENS_OUTDOOR_TOYS: "kids' toys or bikes left in the yard",
@@ -136,7 +147,9 @@ export const LOOK_FOR: Partial<Record<(typeof CHECK_RULES)[number], string>> = {
   PERSP_EXTERIOR_WALLS_LEANING: "the house's corners or walls leaning, or leaning in toward each other because the photo was taken looking up (the house looks like it tips backward)",
   PERSP_CROOKED_HORIZON: "a tilted horizon outside",
   PERSP_AUTOHDR_ROOF_PEAKS_CROPPED: "outside: the top of the roof (peak, ridge or chimney) cut off by the top edge of the photo",
-  PERSP_EDIT_WARP: "walls, door frames, windows or cabinets that look bent, curved or wedge-shaped (architecture only, never furniture)",
+  // Oct 29 2026 (Jordan: "I'm really looking for warped walls, doors and door trim, windows, etc."; 615 Cliff Ln: "Especially in small spaces").
+  PERSP_EDIT_WARP: "walls, wall corners, doors, door trim or window frames that bow, curve or bulge instead of running straight, most often near the photo's edges and in small rooms (a bathroom, closet, hallway or laundry); architecture only, never furniture, never the normal look of a wide room",
+  PERSP_HORIZONTAL_DISTORTION: "lines that should be level are not: the top or bottom of the wall the camera faces, a ceiling line, countertop, vanity, shelf, window sill or tile line sloping up or down instead of running level (never lines that run toward a far corner in a room shot from an angle)",
   AIEDIT_FLOATING_OBJECT: "a lamp shade with no lamp base or stand under it, a lamp, piece of furniture or decor floating with nothing under it (no table, floor or shelf), an object cut off in mid-air, or the same object twice or as a faint ghost copy",
 };
 
@@ -206,8 +219,32 @@ export function namesOtherHouse(where: string, own: string | null | undefined): 
   }
   return false;
 }
-/** A cord that belongs to the house: from a TV, lamp or appliance to the wall, or barely there. */
-export const HOUSE_CORD_RE = /\b(?:tv|television|lamps?|plugged|outlets?|sockets?|walls?|appliances?|fridge|refrigerator|microwave|router|modem|barely|faint|thin|behind|under|utility|power lines?|cable lines?|ceiling|mounted)\b/i;
+/** A cord that belongs to the house: from a TV, lamp or appliance to the wall, or barely there. Oct 29 2026: wiring outside or on the house (a meter, the facade, the porch ceiling, an AC unit) and a cord beside furniture too. */
+export const HOUSE_CORD_RE = /\b(?:tv|television|lamps?|plugged|outlets?|sockets?|walls?|appliances?|fridge|refrigerator|microwave|router|modem|barely|faint|thin|behind|under|utility|power lines?|cable lines?|ceiling|mounted|meters?|fa[cç]ade|porch|siding|exterior|gutters?|air condition(?:er|ing)?|a\/?c(?: unit)?|baseboards?|stairs|dressers?|bookshel(?:f|ves)|desks?|cabinets?|nightstands?|side tables?)\b/i;
+/**
+ * A cord that really sticks out (Oct 29 2026, Jordan: "unless its running
+ * across an open space, or there are a bunch of loose cords hanging from a tv,
+ * night stand, counter top"): kept even where the place names a TV or a
+ * nightstand.
+ */
+export const CORD_STICKS_OUT_RE = /\bacross\b|\b(?:open|middle of the|center of the) (?:floor|room|space|walkway)\b|\bwalkway\b|\bbunch\b|\bseveral\b|\bmultiple\b|\btangle[ds]?\b|\bmany\b|\bpile\b|\bcluster\b|\bmess(?:y)?\b|\bnest\b/i;
+/** A cord the screen sets aside as the house's own. Pure. */
+export const houseCord = (where: string): boolean => HOUSE_CORD_RE.test(where) && !CORD_STICKS_OUT_RE.test(where);
+/**
+ * A car away from this home (Oct 29 2026, Jordan: "its been picking up cars in
+ * neighbors driveways. It should only focus on the house we are shooting"):
+ * in the background or the distance, on the street, in other driveways, at the
+ * top of the frame.
+ */
+export const CAR_AWAY_RE = /\bbackground\b|\bdistan(?:t|ce)\b|\bfar(?:ther)?[ -](?:left|right|away|end|side|back|off)\b|\bacross\b|\bdriveways\b|\b(?:upper|top)[ -](?:left|right|corner|edge)\b|\btop of the (?:frame|photo|image|picture)\b|\bstreet\b|\broad\b|\bbeyond\b|\bbehind the (?:house|home|fence|trees?)\b/i;
+/** ...unless it is in the near foreground: the one a neighbor's or street car is removed for. */
+export const FOREGROUND_RE = /\bforeground\b|\bbottom\b|\blower[ -](?:left|right|edge|corner)\b|\bnear(?:est)? (?:the )?camera\b|\bclose to the camera\b/i;
+/** Why a car issue is not this home's, or null. Pure. */
+export function carElsewhere(ruleId: string, where: string): string | null {
+  if (ruleId === "EXT_PARKED_CARS_DRIVEWAY" && CAR_AWAY_RE.test(where)) return "a car away from this home's driveway";
+  if (ruleId === "EXT_VEHICLES_BLOCKING_HOME" && CAR_AWAY_RE.test(where) && !FOREGROUND_RE.test(where)) return "a car away from this home, not in the foreground";
+  return null;
+}
 /**
  * The place itself says the thing is part of the house (an "It is part of the
  * house" lesson on a check other than cords). Oct 23 2026: the cord words above
@@ -248,15 +285,22 @@ export function checkPrompt(off: Set<string> = new Set(), learned: string[] = []
     `features: only these, when this photo shows them: ${CHECK_FEATURES.join(", ")}. shower or tub = it is a main subject of the photo; shower_in_background or tub_in_background = it only shows in the background, partly, or through a doorway.`,
     // Oct 23 2026 (huddle): what is never raised, and what always is.
     "This property only: report things on the home being photographed, its own driveway, yard, porch and curb. Never anything on a neighbor's property: a neighbor's car, a car in another home's driveway, things in a neighbor's yard or on a neighboring house. If something you report is on a neighboring property, say neighbor in where.",
+    // Oct 29 2026 (Jordan: "its been picking up cars in neighbors driveways ... We dont remove neighbors cars unless its a distraction in the foreground").
+    "Cars: EXT_PARKED_CARS_DRIVEWAY only for a car in this home's own driveway or carport. A car on the street or anywhere else only when it sits in the near foreground, close to the camera, with only street, sidewalk or lawn behind it (EXT_VEHICLES_BLOCKING_HOME). Never a car in the background, far away, or in any other driveway.",
     // Oct 27 2026 (Jordan on 913 Lakeview: "it's a neighbor's car ... that's not
     // the property we're shooting ... we were shooting this one, in the middle").
     `${street ? `The home being photographed is ${street}: the house at that address, usually the one in the middle of the frame.` : "The home being photographed is the house the photo is centered on."} A house beside it or across the street is a neighbor, and so is everything on it or in front of it (its cars, porch, door mat, decor and yard).${own ? ` A house number you can read that is not ${own} is a neighbor's house.` : ""}`,
     "property: this_home when the problem is on the home being photographed or its own driveway, yard, porch or curb; neighbor when it is on another house or its lot. Lines, light and editing mistakes are always this_home.",
-    "Never report cords or cables that belong to the house (a TV, lamp or appliance plugged into the wall, a cord barely visible, utility or cable lines), or signs.",
+    // Oct 29 2026 (Jordan: "Some of the things flagged were part of the house that we can not remove").
+    "Cords: report only cords that really stick out: running across open floor or a walkway, or a bunch hanging from a TV, nightstand or countertop. Never a single cord from a TV, lamp or appliance to an outlet, a cord under or behind furniture, a cord barely visible, or wiring that is part of the house (on an outside wall, porch or ceiling, from a meter, light or AC unit, utility or cable lines). Never signs.",
     "Unfinished spaces (a garage, an unfinished basement or room, a storage, utility or mechanical room): never report clutter, cleaning supplies, tools or stored things there. Trash cans still count.",
     "Clutter and distractions: report only things a photographer could have moved out of the frame, never furniture, decor, appliances or anything built in. In an EMPTY room, any loose item left behind counts. In a home that is lived in or cluttered throughout, rate prep honestly.",
-    "Always report, wherever they are on this property: trash or recycling bins; a car in this home's own driveway or in front of it; anything the photographer could have moved before the shot (a crooked door mat, a broom or mop leaning against a door); random clutter in an otherwise clean, finished room.",
-    "Lines: report leaning or bent architecture only (walls, door frames, windows, cabinets, the house), never furniture.",
+    "Always report, wherever they are on this property: trash or recycling bins; a car in this home's own driveway or carport; anything the photographer could have moved before the shot (a crooked door mat, a broom or mop leaning against a door); random clutter in an otherwise clean, finished room.",
+    "Lines: report leaning, bent or tilted architecture only (walls, doors, door trim, windows, cabinets, the house), never furniture.",
+    // Oct 29 2026 (Jordan on 615 Cliff Ln: "there was a lot of warping. Especially in small spaces").
+    "Warping: look hardest in small rooms (bathrooms, closets, hallways, laundry) and near the photo's edges. A door frame, door trim, window frame or wall corner that curves or bulges instead of running straight is PERSP_EDIT_WARP.",
+    // Oct 29 2026 (Jordan: "Id like it to pick up horizontal lines that are not level or perfectly horizontal").
+    "Level: when the camera faces a wall straight on, the lines across that wall (its top and bottom, a counter, vanity, shelf, window sill or tile line) must run perfectly level. If they slope up or down to one side, that is PERSP_HORIZONTAL_DISTORTION. Lines that run toward a far corner in a room shot from an angle are normal.",
     // Oct 27 2026 (913 Lakeview went out leaning: "these shouldn't even have been delivered").
     "A photo taken looking up, so the house's walls lean in toward each other and the house seems to tip backward, is PERSP_EXTERIOR_WALLS_LEANING (inside a room: PERSP_CROOKED_VERTICALS). Report it whenever the lean is easy to see, with confidence 0.8 or more when it is strong.",
     // A check switched off house-wide is never asked about, its explanation included.
@@ -352,7 +396,11 @@ type ScreenLesson = { ruleId: string; scope: string; active: boolean };
  *     neighbor, or Oct 27 2026 the `where` names a house number other than
  *     this listing's, `houseNumber`): every check but the photo's own
  *     (reflections, edit mistakes, lines, exposure);
- *   · a cord that belongs to the house (from a TV, lamp or appliance, barely there);
+ *   · a cord that belongs to the house (from a TV, lamp or appliance, barely
+ *     there, wiring on the house; Oct 29 2026: unless it sticks out, across
+ *     open floor or a bunch of them, CORD_STICKS_OUT_RE);
+ *   · Oct 29 2026: a car away from this home (the background, the street,
+ *     other driveways; a street car is kept in the near foreground);
  *   · clutter in an unfinished space (the room the check named: a garage, an
  *     unfinished basement or room, storage), never an ALWAYS_FLAG check (trash
  *     cans still count there);
@@ -373,12 +421,14 @@ export function screenIssues(a: Pick<CheckAnswer, "room" | "issues">, opts: { le
   const kept: CheckIssue[] = [];
   const dropped: { ruleId: string; why: string }[] = [];
   for (const iss of a.issues) {
+    const car = carElsewhere(iss.ruleId, iss.where);
     const why =
       !NOT_A_PLACE.test(iss.ruleId) && (NEIGHBOR_RE.test(iss.where) || iss.property === "neighbor" || namesOtherHouse(iss.where, opts.houseNumber)) ? "on a neighbor's property"
-      : iss.ruleId === "PREP_LOOSE_CORDS_CABLES" && HOUSE_CORD_RE.test(iss.where) ? "a cord that belongs to the house"
+      : iss.ruleId === "PREP_LOOSE_CORDS_CABLES" && houseCord(iss.where) ? "a cord that belongs to the house"
+      : car ? car
       : unfinished && !always.has(iss.ruleId) && (isClutter(iss.ruleId) || has(iss.ruleId, "unfinished")) ? "in an unfinished space"
       : has(iss.ruleId, "faint") && iss.confidence < 0.75 ? "learned: barely visible"
-      : has(iss.ruleId, "attached") && (iss.ruleId === "PREP_LOOSE_CORDS_CABLES" ? HOUSE_CORD_RE : ATTACHED_RE).test(iss.where) ? "learned: part of the house"
+      : has(iss.ruleId, "attached") && (iss.ruleId === "PREP_LOOSE_CORDS_CABLES" ? houseCord(iss.where) : ATTACHED_RE.test(iss.where)) ? "learned: part of the house"
       : null;
     if (why) dropped.push({ ruleId: iss.ruleId, why });
     else kept.push(iss);

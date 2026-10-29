@@ -1,45 +1,62 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { autohdr, AutohdrError } from "@/lib/integrations/autohdr";
 import { photoDeliverySettings } from "./settings";
 import { logJobEvent } from "./jobState";
-import { describePhoto, jsonFrom, refreshVerdict } from "./fixPolicy";
+import { AUTOHDR_FREE_FIX, jsonFrom, refreshVerdict } from "./fixPolicy";
 import { readProgress, type Progress } from "./autohdrCheck";
-import { geometryWords, lineGeometry, lumaOf, type LineGeometry } from "./qc/cv";
-import { RULES_REGISTRY_VERSION } from "./registry";
+import { alignFrame, editBowVerdict, geometryWords, LENS_THRESHOLDS, lensBow, lineGeometry, lumaOf, notLevel, roofHeadroom, type LensBow, type LineGeometry } from "./qc/cv";
+import { RULES_REGISTRY_VERSION, ruleById } from "./registry";
 
 // ---------------------------------------------------------------------------
-// WARPED OR NOT, MEASURED (Oct 15 2026).
+// WARPED OR NOT, MEASURED (Oct 15 2026; the camera's own frame, Oct 29 2026).
 //
 // Jordan: "the biggest thing I need is making sure images are not warped or
 // cluttered." The free check is a text judgement; this adds two free checks
 // once it (and its second look) finished on a job:
 //
-//   1. THE MEASUREMENT (warpCv): every photo's lines (qc/cv.ts lineGeometry):
-//      leaning verticals and bent walls, door frames, windows and cabinets.
+//   1. THE MEASUREMENT (warpCv): every photo's lines (qc/cv.ts): leaning
+//      verticals (lineGeometry), and since Oct 29 2026 horizontal lines that
+//      should be level (lensBow / notLevel) and the edit's own lens bow.
 //      Only from bytes the hub can read for free: a kept version copy, the
 //      Aryeo listing image, a Dropbox file, or an AutoHDR photo the hub
 //      already bought. A photo that would cost a credit to download is not
 //      measured, and says so. Then, per photo:
 //        · the check and the measurement agree   → the finding counts in full;
-//        · the check says so, the lines measure straight → MINOR, and says why;
-//        · warped walls the check saw but nothing could measure → MINOR too
-//          (leaning lines keep their weight: AutoHDR's free Crop & Tilt);
+//        · the check says so, the lines measure straight (or level) → MINOR,
+//          and says why;
 //        · only the measurement says so → an advisory finding below the
 //          confidence floor (the Low confidence drawer: never blocks);
 //        · Oct 27 2026: only the measurement says so but the verticals lean
 //          STRONG_LEAN_DEG or more → a full (MAJOR) finding. Jordan on 913
 //          Lakeview, leaning that much from a camera tilted up: "these
-//          shouldn't even have been delivered".
-//   2. THE ORIGINAL (warpCompareOriginal): for a cut-off roof or warped walls,
-//      AutoHDR's free describe is asked about the photo's ORIGINAL (its first
-//      version, before AutoHDR's straightening), not the edit:
-//        · the original was fine → the edit did it: EDITOR, Perspective Off
-//          on that photo in AutoHDR (free);
-//        · the original has it too → the framing or the lens did: PHOTOGRAPHER
-//          (coaching; a cut-off roof needs a reshoot).
-//      Written into the finding (responsibility, what to do).
+//          shouldn't even have been delivered";
+//        · Oct 29 2026 (Jordan: "it seems to pick up the vertical lines but not
+//          the horizontal lines. Id like it to pick up horizontal lines that
+//          are not level"): horizontal lines off level inside a room, measured
+//          alone → a MINOR finding that shows (never blocks); with the check
+//          too → MAJOR.
+//      The old bent-line measure no longer raises warps on its own (Jordan,
+//      Oct 29 2026: "it's saying there is warping, but there isn't"): it bent
+//      on things that are curved (drone horizons, road lines, a fridge handle).
+//   2. THE CAMERA'S OWN FRAME (warpCompareOriginal; cameraFrame.ts): Jordan,
+//      Oct 29 2026, "Build a comparison". Replaces asking AutoHDR about its
+//      "original", which always answered that it had none. For a cut-off
+//      roof, warped walls, and any photo whose edit measures bowed:
+//        · roof: where the edit is cut at the top, the camera frame is cut
+//          too → framed that way at the shoot: PHOTOGRAPHER, MINOR (coaching;
+//          every one Kyle checked by hand was this: "Theyre already cropped in
+//          the originals"); the camera frame has sky above it → the edit cut
+//          it: EDITOR, Perspective Off in AutoHDR (free);
+//        · warp: the edit's lines bow where the camera frame's are straight →
+//          the edit bent them (615 Cliff Ln: AutoHDR's lens correction for
+//          that camera): full weight, EDITOR. Seen by this comparison alone,
+//          inside a room and strong, a MAJOR finding of its own (615 Cliff Ln's
+//          four worst; none on 538 Onward Ave or 554 Scattergood Ct; a drone
+//          horizon and a painted crosswalk measure bowed, so never outside).
+//          The edit bows no more than the camera frame → MINOR: something
+//          curved, not a warp.
+//      The camera frame is kept and shown beside the edit.
 // Both are resumable and bounded; the fix plan waits for them on a v3 check.
 // ---------------------------------------------------------------------------
 
@@ -47,8 +64,10 @@ import { RULES_REGISTRY_VERSION } from "./registry";
 const LEAN_RULES = ["PERSP_CROOKED_VERTICALS", "PERSP_LEANING_DOOR_FRAMES", "PERSP_EXTERIOR_WALLS_LEANING"];
 const WARP_RULE = "PERSP_EDIT_WARP";
 const ROOF_RULE = "PERSP_AUTOHDR_ROOF_PEAKS_CROPPED";
-/** Compared against the Original. */
-const ORIGINAL_RULES = [ROOF_RULE, WARP_RULE];
+/** Oct 29 2026: horizontal lines that should be level. */
+const LEVEL_RULE = "PERSP_HORIZONTAL_DISTORTION";
+/** Compared against the camera's own frame. */
+const CAMERA_RULES = [ROOF_RULE, WARP_RULE];
 /** Below the default display floor (0.5): shown in the Low confidence drawer, never blocking. */
 export const ADVISORY_CONFIDENCE = 0.45;
 /** Oct 27 2026: a measured lean this strong (degrees, median over at least 8 long lines) counts in full on its own. */
@@ -56,26 +75,57 @@ export const STRONG_LEAN_DEG = 3;
 const STRONG_LEAN_CONFIDENCE = 0.8;
 const AGREE_CONFIDENCE = 0.85;
 const DISAGREE_CONFIDENCE = 0.55;
+/** Seen by a measurement alone, shown (above the default floor) but minor. */
+const SHOWN_MINOR_CONFIDENCE = 0.65;
 const CONCURRENCY = 2;
 
-/** What is kept per photo in the run's checksJson.geometry. */
-export type StoredGeometry = { m?: { lines: number; tilt: number | null; bent: number; bow: number; crooked: boolean; warped: boolean; words: string }; skipped?: string };
+/**
+ * What is kept per photo in the run's checksJson.geometry. m.k / m.gain: the
+ * edit's lens bow; m.hl: long horizontal lines measured, m.lv: their slope
+ * when they are off level (null: level). cam: the camera-frame comparison.
+ */
+export type StoredGeometry = {
+  m?: { lines: number; tilt: number | null; bent: number; bow: number; crooked: boolean; warped: boolean; words: string; k?: number; gain?: number; hl?: number; lv?: number | null; lvn?: number };
+  skipped?: string;
+  cam?: StoredCamera;
+};
+/** The camera-frame comparison of one photo (Oct 29 2026). */
+export type StoredCamera = {
+  skipped?: string;
+  frame?: string;
+  preview?: { pathname: string; url: string } | null;
+  fit?: number;
+  gap?: number;
+  bowed?: boolean;
+  strong?: boolean;
+  roof?: "capture" | "edit" | "unclear";
+};
 
-type GPhoto = { id: string; name: string; jobId: string; sourceKind: string; sourceUrl: string | null; sourceRef: string | null; dropboxPath: string | null; contentHash: string | null; autohdrImageUuid: string | null; autohdrVersionUuid: string | null };
+type GPhoto = { id: string; name: string; jobId: string; sourceKind: string; sourceUrl: string | null; sourceRef: string | null; dropboxPath: string | null; contentHash: string | null; autohdrImageUuid: string | null; autohdrVersionUuid: string | null; roomType?: string | null; isAerial?: boolean };
 
-let decodeHook: ((bytes: Buffer) => Promise<LineGeometry>) | null = null;
-/** Drills only. */
-export function __setGeometryDecodeForTests(fn: typeof decodeHook) {
-  decodeHook = fn;
+/** A photo's gray levels, about 1024 px wide (the hub's own decoder). */
+async function lumaOfBytes(bytes: Buffer): Promise<{ l: Uint8Array; w: number; h: number }> {
+  const D = await import("./qc/derivatives");
+  const meta = await D.readMeta(bytes);
+  const r = await D.decodeRaster(bytes, meta, 1024);
+  return { l: lumaOf(r.data, r.width * r.height), w: r.width, h: r.height };
 }
 
 /** Measure a photo's lines from its bytes (about 1024 px wide). */
 export async function measureBytes(bytes: Buffer): Promise<LineGeometry> {
-  if (decodeHook) return decodeHook(bytes);
-  const D = await import("./qc/derivatives");
-  const meta = await D.readMeta(bytes);
-  const r = await D.decodeRaster(bytes, meta, 1024);
-  return lineGeometry(lumaOf(r.data, r.width * r.height), r.width, r.height);
+  const { l, w, h } = await lumaOfBytes(bytes);
+  return lineGeometry(l, w, h);
+}
+
+/** Every measurement of one photo: lines, lean, and (Oct 29 2026) lens bow and level. */
+export async function measurePhoto(bytes: Buffer): Promise<{ g: LineGeometry; bow: LensBow }> {
+  const { l, w, h } = await lumaOfBytes(bytes);
+  return { g: lineGeometry(l, w, h), bow: lensBow(l, w, h) };
+}
+
+/** A room, not the outside (the free check's room words): level lines are measured alone only here. Pure. */
+export function isInterior(p: { roomType?: string | null; isAerial?: boolean }): boolean {
+  return !!p.roomType && !p.isAerial && !/EXTERIOR|AERIAL|POOL|PATIO|DECK|YARD|COMMUNITY|DETAIL|OTHER/.test(p.roomType);
 }
 
 /**
@@ -123,17 +173,28 @@ export async function freeBytesOf(p: GPhoto): Promise<{ bytes: Buffer } | { skip
   }
 }
 
-const compact = (g: LineGeometry): NonNullable<StoredGeometry["m"]> => ({ lines: g.verticalLines, tilt: g.tiltDeg, bent: g.bentLines, bow: g.maxBowPx, crooked: g.crooked, warped: g.warped, words: geometryWords(g) });
+const compact = (g: LineGeometry, b: LensBow): NonNullable<StoredGeometry["m"]> => {
+  const lv = notLevel(b.level);
+  return { lines: g.verticalLines, tilt: g.tiltDeg, bent: g.bentLines, bow: g.maxBowPx, crooked: g.crooked, warped: g.warped, words: geometryWords(g), k: b.k, gain: b.gain, hl: b.level.length, lv: lv?.deg ?? null, lvn: lv?.lines ?? 0 };
+};
 
-/** Agree, disagree, or cannot tell, for one finding against its photo's measurement. Pure. */
+/** The level measurement in plain words. Pure. */
+export function levelWords(m: NonNullable<StoredGeometry["m"]>): string {
+  return m.lv != null ? `${m.lvn} long horizontal line${m.lvn === 1 ? "" : "s"} slope ${m.lv.toFixed(1)}° the same way` : `${m.hl ?? 0} long horizontal line${m.hl === 1 ? "" : "s"} measured, level`;
+}
+
+/** The edit's lines bow enough on their own to be worth comparing with the camera's frame. Pure. */
+export const bowsAlone = (m: StoredGeometry["m"]): boolean => !!m && (m.k ?? 0) >= LENS_THRESHOLDS.editMinK && (m.gain ?? 0) >= LENS_THRESHOLDS.editMinGain;
+
+/** Agree, disagree, or cannot tell, for one finding against its photo's measurement (warps: the camera frame, cameraVerdict). Pure. */
 export function measuredVerdict(ruleId: string, g: StoredGeometry | undefined): "agree" | "disagree" | "unmeasured" {
   if (!g?.m) return "unmeasured";
   if (LEAN_RULES.includes(ruleId)) return g.m.lines < 8 ? "unmeasured" : g.m.crooked ? "agree" : "disagree";
-  if (ruleId === WARP_RULE) return g.m.lines < 3 ? "unmeasured" : g.m.warped ? "agree" : "disagree";
+  if (ruleId === LEVEL_RULE) return g.m.hl == null || g.m.hl < 2 ? "unmeasured" : g.m.lv != null ? "agree" : "disagree";
   return "unmeasured";
 }
 
-type Coerced = { measured?: string; original?: { verdict: "edit" | "capture" | "skipped"; note: string }; originalTries?: number } & Record<string, unknown>;
+type Coerced = { measured?: string; camera?: StoredCamera & { verdict?: string; note?: string } } & Record<string, unknown>;
 const coercedOf = (json: string | null): Coerced => jsonFrom<Coerced>(json ?? "") ?? {};
 
 /** Jobs whose v3 free check finished and whose measured check has not. */
@@ -188,7 +249,7 @@ export async function geometryJob(jobId: string, runId: string, deadline: number
   const photos: GPhoto[] = await prisma.photoAsset.findMany({
     where: { jobId, status: "ACTIVE" },
     orderBy: { sequence: "asc" },
-    select: { id: true, name: true, jobId: true, sourceKind: true, sourceUrl: true, sourceRef: true, dropboxPath: true, contentHash: true, autohdrImageUuid: true, autohdrVersionUuid: true },
+    select: { id: true, name: true, jobId: true, sourceKind: true, sourceUrl: true, sourceRef: true, dropboxPath: true, contentHash: true, autohdrImageUuid: true, autohdrVersionUuid: true, roomType: true, isAerial: true },
   });
   const geo = (progress.geometry ??= {}) as Record<string, StoredGeometry>;
   let measured = 0, skipped = 0, compared = 0;
@@ -210,7 +271,8 @@ export async function geometryJob(jobId: string, runId: string, deadline: number
             return;
           }
           try {
-            geo[p.id] = { m: compact(await measureBytes(b.bytes)) };
+            const r = await measurePhoto(b.bytes);
+            geo[p.id] = { m: compact(r.g, r.bow) };
             measured++;
           } catch (e) {
             geo[p.id] = { skipped: `the photo could not be measured (${(e as Error).message.slice(0, 80)})` };
@@ -223,9 +285,9 @@ export async function geometryJob(jobId: string, runId: string, deadline: number
     await reconcile(jobId, runId, photos, geo, settings.displayConfidenceFloor);
   }
 
-  // 2. The Original, for a cut-off roof or warped walls.
+  // 2. The camera's own frame, for a cut-off roof, warped walls, and any edit that measures bowed.
   if (settings.warpCompareOriginal) {
-    const r = await compareOriginals(jobId, photos, { autohdrPhotoshootId: job.autohdrPhotoshootId, projectId: job.projectId }, deadline);
+    const r = await compareCameraFrames({ jobId, runId, projectId: job.projectId, photos, geo, deadline, floor: settings.displayConfidenceFloor, save: () => saveProgress(runId, progress) });
     compared = r.compared;
     if (!r.done) {
       await saveProgress(runId, progress);
@@ -236,16 +298,16 @@ export async function geometryJob(jobId: string, runId: string, deadline: number
   progress.geometryDone = true;
   await saveProgress(runId, progress);
   const notMeasured = photos.filter((p) => geo[p.id]?.skipped).length;
-  await logJobEvent(jobId, "geometry", `measured line check done: ${photos.length - notMeasured} of ${photos.length} photos measured${notMeasured ? ` (${notMeasured} not: ${[...new Set(photos.map((p) => geo[p.id]?.skipped).filter(Boolean))].slice(0, 2).join("; ")})` : ""}${compared ? `, ${compared} compared with AutoHDR's original` : ""}`);
+  await logJobEvent(jobId, "geometry", `measured line check done: ${photos.length - notMeasured} of ${photos.length} photos measured${notMeasured ? ` (${notMeasured} not: ${[...new Set(photos.map((p) => geo[p.id]?.skipped).filter(Boolean))].slice(0, 2).join("; ")})` : ""}${compared ? `, ${compared} compared with the camera's own frame` : ""}`);
   await refreshVerdict(jobId, "geometry").catch(() => {});
   return { done: true, measured, compared, skipped };
 }
 
-/** Measurement against the free check's lean and warp findings, and advisory findings where only the measurement saw it. */
+/** Measurement against the free check's lean and level findings, and findings where only the measurement saw it (warps: compareCameraFrames). */
 async function reconcile(jobId: string, runId: string, photos: GPhoto[], geo: Record<string, StoredGeometry>, floor: number): Promise<void> {
   const ids = photos.map((p) => p.id);
   const findings = await prisma.photoQcFinding.findMany({
-    where: { jobId, photoId: { in: ids }, ruleId: { in: [...LEAN_RULES, WARP_RULE] }, status: { not: "SUPERSEDED" } },
+    where: { jobId, photoId: { in: ids }, ruleId: { in: [...LEAN_RULES, LEVEL_RULE] }, status: { not: "SUPERSEDED" } },
     select: { id: true, photoId: true, ruleId: true, status: true, source: true, severity: true, confidence: true, explanation: true, coercedJson: true, contentHash: true },
   });
   for (const f of findings) {
@@ -254,16 +316,13 @@ async function reconcile(jobId: string, runId: string, photos: GPhoto[], geo: Re
     if (c.measured) continue;
     const g = geo[f.photoId!];
     const v = measuredVerdict(f.ruleId, g);
-    const words = g?.m?.words ?? "";
+    const level = f.ruleId === LEVEL_RULE;
+    const words = g?.m ? (level ? levelWords(g.m) : g.m.words) : "";
     if (v === "agree") {
-      await prisma.photoQcFinding.update({ where: { id: f.id }, data: { confidence: Math.max(f.confidence, AGREE_CONFIDENCE), explanation: `${f.explanation} Measured too: ${words}.`.slice(0, 1000), coercedJson: JSON.stringify({ ...c, measured: "agree" }) } });
+      // Oct 29 2026: a back wall measured off level is the registry's MAJOR ("the back wall is visibly not level").
+      await prisma.photoQcFinding.update({ where: { id: f.id }, data: { ...(level && f.severity === "MINOR" ? { severity: "MAJOR" } : {}), confidence: Math.max(f.confidence, AGREE_CONFIDENCE), explanation: `${f.explanation} Measured too: ${words}.`.slice(0, 1000), coercedJson: JSON.stringify({ ...c, measured: "agree" }) } });
     } else if (v === "disagree") {
-      await prisma.photoQcFinding.update({ where: { id: f.id }, data: { severity: "MINOR", confidence: Math.min(f.confidence, DISAGREE_CONFIDENCE), explanation: `${f.explanation} The measured lines look straight (${words}), so this counts as minor: look before deciding.`.slice(0, 1000), coercedJson: JSON.stringify({ ...c, measured: "disagree" }) } });
-    } else if (f.ruleId === WARP_RULE) {
-      // Warped architecture on the check's word alone: minor (Oct 15: full
-      // weight only when the measurement agrees). Still shown, and still
-      // compared with AutoHDR's original.
-      await prisma.photoQcFinding.update({ where: { id: f.id }, data: { severity: "MINOR", confidence: Math.min(f.confidence, 0.6), explanation: `${f.explanation} Not measured (${g?.skipped ?? "too few straight lines in the photo to measure"}), so it counts as minor: look before deciding.`.slice(0, 1000), coercedJson: JSON.stringify({ ...c, measured: "none" }) } });
+      await prisma.photoQcFinding.update({ where: { id: f.id }, data: { severity: "MINOR", confidence: Math.min(f.confidence, DISAGREE_CONFIDENCE), explanation: `${f.explanation} The measured lines look ${level ? "level" : "straight"} (${words}), so this counts as minor: look before deciding.`.slice(0, 1000), coercedJson: JSON.stringify({ ...c, measured: "disagree" }) } });
     } else {
       // Leaning lines keep the check's own weight when they cannot be measured (as before Oct 15).
       await prisma.photoQcFinding.update({ where: { id: f.id }, data: { explanation: `${f.explanation} Not measured: ${g?.skipped ?? "too few straight lines in the photo to measure"}.`.slice(0, 1000), coercedJson: JSON.stringify({ ...c, measured: "none" }) } });
@@ -276,110 +335,136 @@ async function reconcile(jobId: string, runId: string, photos: GPhoto[], geo: Re
     if (!m) continue;
     const mine = findings.filter((f) => f.photoId === p.id);
     const add = async (ruleId: string, issue: string, strong = false) => {
-      if (mine.some((f) => (ruleId === WARP_RULE ? f.ruleId === WARP_RULE : LEAN_RULES.includes(f.ruleId)) && (f.source !== "CV" || f.contentHash === p.contentHash))) return;
+      const level = ruleId === LEVEL_RULE;
+      if (mine.some((f) => (level ? f.ruleId === LEVEL_RULE : LEAN_RULES.includes(f.ruleId)) && (f.source !== "CV" || f.contentHash === p.contentHash))) return;
       await prisma.photoQcFinding.create({
         data: {
-          qcRunId: runId, jobId, photoId: p.id, ruleId, groupKey: ruleId === WARP_RULE ? "ARCHITECTURE_WARP" : "VERTICALS", pass: "P1_PHOTO", source: "CV", arbitration: "CONFIRMED",
+          qcRunId: runId, jobId, photoId: p.id, ruleId, groupKey: level ? "HORIZONTAL_PERSPECTIVE" : "VERTICALS", pass: "P1_PHOTO", source: "CV", arbitration: "CONFIRMED",
           specificIssue: issue,
-          explanation: strong
-            ? `The measured line check saw a strong lean (${m.words}); the free photo check did not name it. Straighten it in AutoHDR (Crop & Tilt, free) or pick another photo before it goes out.`
-            : `Only the measured line check saw this (${m.words}); the free photo check did not. Advisory: look at the photo before doing anything.`,
-          severity: strong ? "MAJOR" : "MINOR", confidence: strong ? Math.max(STRONG_LEAN_CONFIDENCE, floor) : advisory, responsibility: "HUMAN_REVIEW", fixStrategy: "HUMAN_REVIEW", contentHash: p.contentHash, model: "line-geometry", rulesVersion: RULES_REGISTRY_VERSION,
+          explanation: level
+            ? `The measured line check saw horizontal lines that should be level sloping (${levelWords(m)}); the free photo check did not name it. Level it in AutoHDR (Crop & Tilt, free) if it shows.`
+            : strong
+              ? `The measured line check saw a strong lean (${m.words}); the free photo check did not name it. Straighten it in AutoHDR (Crop & Tilt, free) or pick another photo before it goes out.`
+              : `Only the measured line check saw this (${m.words}); the free photo check did not. Advisory: look at the photo before doing anything.`,
+          // Oct 29 2026: an off-level room is shown (above the floor) but minor; a lean on the measurement alone stays advisory unless strong.
+          severity: strong ? "MAJOR" : "MINOR", confidence: strong ? Math.max(STRONG_LEAN_CONFIDENCE, floor) : level ? Math.max(SHOWN_MINOR_CONFIDENCE, floor) : advisory,
+          responsibility: level ? "EDITOR" : "HUMAN_REVIEW", fixStrategy: "HUMAN_REVIEW", recommendedAction: level ? AUTOHDR_FREE_FIX[LEVEL_RULE] ?? null : null, contentHash: p.contentHash, model: "line-geometry", rulesVersion: RULES_REGISTRY_VERSION,
           coercedJson: JSON.stringify({ measured: strong ? "only-strong" : "only" }),
         },
       });
     };
-    if (m.warped) await add(WARP_RULE, `Measured: ${m.bent} line${m.bent === 1 ? "" : "s"} look bent`);
     if (m.crooked) await add("PERSP_CROOKED_VERTICALS", `Measured: verticals lean ${m.tilt?.toFixed(1) ?? "?"}°`, (m.tilt ?? 0) >= STRONG_LEAN_DEG);
+    // Inside a room only: outside, a sloping street, roof or deck reads as off level.
+    if (m.lv != null && isInterior(p)) await add(LEVEL_RULE, `Measured: horizontal lines slope ${m.lv.toFixed(1)}°`);
   }
 }
 
-const ROOF_PROMPT = [
-  "Look at this real estate photo.",
-  'Answer ONLY with JSON: {"whole": true or false}.',
-  "whole = the entire roof of the main house, its peak or ridge and any chimney, is inside the photo with some sky above its highest point.",
-].join("\n");
-const WARP_PROMPT = [
-  "Look at this real estate photo.",
-  'Answer ONLY with JSON: {"bent": true or false}.',
-  "bent = walls, wall corners, door frames, windows or cabinets look bent, curved or wedge-shaped. Architecture only: ignore furniture and the normal look of a wide room.",
-].join("\n");
+// ---- the camera's own frame (Oct 29 2026) ------------------------------------------------------
 
-/** Pure: what the Original's answer means for a finding. null = the answer could not be read. */
-export function originalVerdict(ruleId: string, answer: { whole?: unknown; bent?: unknown } | null): { verdict: "edit" | "capture"; responsibility: "EDITOR" | "PHOTOGRAPHER"; action: string; note: string } | null {
+/** What the camera frame says about one finding. Pure. */
+export function cameraVerdict(ruleId: string, cam: StoredCamera | undefined): { verdict: "edit" | "capture" | "same" | "unclear"; responsibility?: "EDITOR" | "PHOTOGRAPHER"; action?: string; note: string } | null {
+  if (!cam) return null;
+  const frame = cam.frame ? `the camera's own frame (${cam.frame})` : "the camera's own frame";
+  if (cam.skipped) return { verdict: "unclear", note: `Not compared with ${frame}: ${cam.skipped}.${cam.preview ? " It is shown beside the edit: look at the two." : ""}` };
   if (ruleId === ROOF_RULE) {
-    if (typeof answer?.whole !== "boolean") return null;
-    return answer.whole
-      ? { verdict: "edit", responsibility: "EDITOR", note: "AutoHDR's original shows the whole roof: the straightening in editing cut it off.", action: "Open the photo in AutoHDR and turn Perspective Off on this photo (free), then press Check AutoHDR for changes here." }
-      : { verdict: "capture", responsibility: "PHOTOGRAPHER", note: "AutoHDR's original is cut off too: the photo was framed that way at the shoot.", action: "No edit brings the roof back. It needs a reshoot from farther back or wider; it goes in the photographer's coaching." };
+    if (cam.roof === "capture")
+      return { verdict: "capture", responsibility: "PHOTOGRAPHER", note: `Compared with ${frame}: it is cut off at the top too, so it was framed that way at the shoot.`, action: "No edit brings the roof back: the camera's frame is cut off too. Coaching for the photographer: step back or shoot wider so the whole roof has sky above it." };
+    if (cam.roof === "edit")
+      return { verdict: "edit", responsibility: "EDITOR", note: `Compared with ${frame}: it has sky above the roof, so the edit's straightening or crop cut it off.`, action: AUTOHDR_FREE_FIX[ROOF_RULE] };
+    return { verdict: "unclear", note: `Compared with ${frame}: it could not tell whether the roof was cut at the shoot or in the edit. Look at the two side by side.` };
   }
-  if (typeof answer?.bent !== "boolean") return null;
-  return answer.bent
-    ? { verdict: "capture", responsibility: "PHOTOGRAPHER", note: "AutoHDR's original is bent too: the lens or the camera angle did it, not the editing.", action: "No edit straightens it. Coaching for the photographer: shoot at 20 to 22 mm and keep the camera level." }
-    : { verdict: "edit", responsibility: "EDITOR", note: "AutoHDR's original looks straight: the straightening in editing bent it.", action: "Open the photo in AutoHDR and turn Perspective Off on this photo (free), then press Check AutoHDR for changes here." };
+  if (cam.bowed)
+    return { verdict: "edit", responsibility: "EDITOR", note: `Measured against ${frame}: the edit's walls and frames bow where the camera's are straight, so the editing bent them.`, action: AUTOHDR_FREE_FIX[WARP_RULE] };
+  return { verdict: "same", note: `Measured against ${frame}: the edit's lines bow no more than the camera's own, so the editing did not bend them (something curved, or the normal wide-angle look).` };
 }
 
-/** Ask about each open roof or warp finding's Original. Returns done when none is left to ask. */
-async function compareOriginals(jobId: string, photos: GPhoto[], jobRef: { autohdrPhotoshootId: number | null; projectId: string }, deadline: number): Promise<{ done: boolean; compared: number }> {
+/** Compare one photo's edit with its camera frame; the frame is kept when it matches. */
+async function compareOne(p: GPhoto, jobId: string, projectId: string): Promise<StoredCamera> {
+  const { cameraFrameOf, keepCameraFrame } = await import("./cameraFrame");
+  const cf = await cameraFrameOf(p, projectId);
+  if ("skipped" in cf) return { skipped: cf.skipped };
+  const b = await freeBytesOf(p);
+  // The edit not readable for free: nothing measured, but the camera frame is kept so the two can be looked at side by side.
+  if ("skipped" in b) return { frame: cf.frame.name, preview: await keepCameraFrame(jobId, p.id, cf.frame), skipped: `the edit ${b.skipped}` };
+  const edit = await lumaOfBytes(b.bytes);
+  const cam = cf.frame.luma;
+  const fit = alignFrame(edit, cam);
+  if (fit.score < LENS_THRESHOLDS.alignMin) return { frame: cf.frame.name, fit: fit.score, skipped: `its camera frame ${cf.frame.name} does not line up with the edit (it may be another shot)` };
+  const eb = lensBow(edit.l, edit.w, edit.h);
+  const bow = editBowVerdict(eb, lensBow(cam.l, cam.w, cam.h));
+  const roof = roofHeadroom(edit, cam, fit);
+  const preview = await keepCameraFrame(jobId, p.id, cf.frame);
+  return { frame: cf.frame.name, preview, fit: fit.score, gap: bow.gap, bowed: bow.bowed, strong: bow.strong, roof: roof.verdict };
+}
+
+/**
+ * The camera's own frame for each open roof or warp finding and each photo
+ * whose edit measures bowed, then what it says written into the findings, and
+ * a warp finding where only this comparison saw it. Returns done when nothing
+ * is left to compare.
+ */
+async function compareCameraFrames(o: { jobId: string; runId: string; projectId: string; photos: GPhoto[]; geo: Record<string, StoredGeometry>; deadline: number; floor: number; save: () => Promise<void> }): Promise<{ done: boolean; compared: number }> {
+  const { jobId, runId, photos, geo } = o;
   const byId = new Map(photos.map((p) => [p.id, p]));
-  const findings = (await prisma.photoQcFinding.findMany({
-    where: { jobId, status: "OPEN", ruleId: { in: ORIGINAL_RULES }, photoId: { in: [...byId.keys()] } },
-    select: { id: true, photoId: true, ruleId: true, explanation: true, coercedJson: true, confidence: true },
-  })).filter((f) => !coercedOf(f.coercedJson).original);
-  if (!findings.length) return { done: true, compared: 0 };
-  const { autohdrRefOf } = await import("./versions");
-  const originals = new Map<string, string | { skipped: string }>();
+  const findings = await prisma.photoQcFinding.findMany({
+    where: { jobId, photoId: { in: [...byId.keys()] }, ruleId: { in: CAMERA_RULES }, status: { not: "SUPERSEDED" } },
+    select: { id: true, photoId: true, ruleId: true, status: true, source: true, severity: true, confidence: true, explanation: true, coercedJson: true, contentHash: true },
+  });
+  const asks = findings.filter((f) => f.status === "OPEN" && f.source !== "CV" && !coercedOf(f.coercedJson).camera);
+  const todo = photos.filter((p) => !geo[p.id]?.cam && (asks.some((f) => f.photoId === p.id) || (isInterior(p) && bowsAlone(geo[p.id]?.m))));
   let compared = 0;
-  for (let i = 0; i < findings.length; i += CONCURRENCY) {
-    if (deadline - Date.now() < 12_000) return { done: false, compared };
+  for (let i = 0; i < todo.length; i += CONCURRENCY) {
+    if (o.deadline - Date.now() < 15_000) return { done: false, compared };
     await Promise.all(
-      findings.slice(i, i + CONCURRENCY).map(async (f) => {
-        const p = byId.get(f.photoId!)!;
-        const c = coercedOf(f.coercedJson);
-        const skip = async (why: string) => prisma.photoQcFinding.update({ where: { id: f.id }, data: { coercedJson: JSON.stringify({ ...c, original: { verdict: "skipped", note: why } }) } });
-        const ref = await autohdrRefOf({ id: p.id, jobId, sourceRef: p.sourceRef, autohdrImageUuid: p.autohdrImageUuid, sourceKind: p.sourceKind }, { job: jobRef }).catch(() => null);
-        if (!ref) return void (await skip("not linked to its AutoHDR photo"));
-        let original = originals.get(p.id);
-        if (original === undefined) {
-          try {
-            const steps = await autohdr.history(ref.shootId, ref.imageUuid);
-            const first = steps.find((s) => !s.parent_image_version_uuid);
-            const head = steps.find((s) => s.is_head)?.image_version_uuid ?? p.autohdrVersionUuid;
-            original = !first ? { skipped: "AutoHDR has no original for this photo" } : first.image_version_uuid === head ? { skipped: "the photo is still AutoHDR's original" } : first.image_version_uuid;
-          } catch (e) {
-            original = { skipped: e instanceof AutohdrError && (e.status === 404 || e.expired) ? "AutoHDR no longer has this photo (shoots close after 7 days)" : `AutoHDR's history could not be read (${(e as Error).message.slice(0, 80)})` };
-          }
-          originals.set(p.id, original);
-        }
-        if (typeof original !== "string") return void (await skip(original.skipped));
-        let answer: { whole?: unknown; bent?: unknown } | null = null;
-        try {
-          answer = jsonFrom(await describePhoto(ref.shootId, ref.imageUuid, f.ruleId === ROOF_RULE ? ROOF_PROMPT : WARP_PROMPT, original));
-        } catch {
-          answer = null;
-        }
-        const v = originalVerdict(f.ruleId, answer);
-        if (!v) {
-          // Asked again next pass; two answers that cannot be read and it is left as it is.
-          const tries = (c.originalTries ?? 0) + 1;
-          if (tries >= 2) return void (await skip("AutoHDR's answer about the original could not be read"));
-          await prisma.photoQcFinding.update({ where: { id: f.id }, data: { coercedJson: JSON.stringify({ ...c, originalTries: tries }) } });
-          return;
-        }
-        compared++;
-        await prisma.photoQcFinding.update({
-          where: { id: f.id },
-          data: {
-            responsibility: v.responsibility,
-            recommendedAction: v.action,
-            explanation: `${f.explanation} ${v.note}`.slice(0, 1000),
-            coercedJson: JSON.stringify({ ...c, original: { verdict: v.verdict, note: v.note }, originalVersion: original }),
-          },
-        });
+      todo.slice(i, i + CONCURRENCY).map(async (p) => {
+        const cam = await compareOne(p, jobId, o.projectId).catch((e) => ({ skipped: `the comparison failed (${((e as Error).message ?? "").slice(0, 100)})` }) as StoredCamera);
+        geo[p.id] = { ...geo[p.id], cam };
+        if (!cam.skipped) compared++;
       }),
     );
+    await o.save();
   }
-  const left = (await prisma.photoQcFinding.findMany({ where: { jobId, status: "OPEN", ruleId: { in: ORIGINAL_RULES }, photoId: { in: [...byId.keys()] } }, select: { coercedJson: true } })).filter((f) => !coercedOf(f.coercedJson).original);
-  if (compared) await logJobEvent(jobId, "geometry", `${compared} cut-off roof or warp finding${compared === 1 ? "" : "s"} compared with AutoHDR's original (free)`);
-  return { done: left.length === 0, compared };
+  // What the camera frame says, written into the check's findings.
+  for (const f of asks) {
+    const cam = geo[f.photoId!]?.cam;
+    const v = cameraVerdict(f.ruleId, cam);
+    if (!v || !cam) continue;
+    const c = coercedOf(f.coercedJson);
+    const camera = { ...cam, verdict: v.verdict, note: v.note };
+    const warp = f.ruleId === WARP_RULE;
+    // A warp counts in full only when the camera frame shows the edit bent it (Oct 15: on the check's word alone, minor).
+    const severity = warp ? (v.verdict === "edit" ? (f.severity === "MINOR" ? "MAJOR" : f.severity) : "MINOR") : v.verdict === "capture" ? "MINOR" : f.severity;
+    const confidence = warp ? (v.verdict === "edit" ? Math.max(f.confidence, AGREE_CONFIDENCE) : Math.min(f.confidence, v.verdict === "same" ? DISAGREE_CONFIDENCE : 0.6)) : f.confidence;
+    const tail = warp && v.verdict !== "edit" ? " It counts as minor: look before deciding." : "";
+    await prisma.photoQcFinding.update({
+      where: { id: f.id },
+      data: {
+        severity, confidence,
+        ...(v.responsibility ? { responsibility: v.responsibility } : {}),
+        ...(v.action ? { recommendedAction: v.action } : {}),
+        explanation: `${f.explanation} ${v.note}${tail}`.slice(0, 1000),
+        coercedJson: JSON.stringify({ ...c, camera }),
+      },
+    });
+  }
+  // Bowed by the edit inside a room, strongly, and the free check did not name it: a finding of its own.
+  const rule = ruleById(WARP_RULE);
+  for (const p of photos) {
+    const cam = geo[p.id]?.cam;
+    if (!cam?.strong || !isInterior(p)) continue;
+    if (findings.some((f) => f.photoId === p.id && f.ruleId === WARP_RULE && (f.source !== "CV" || f.contentHash === p.contentHash))) continue;
+    const v = cameraVerdict(WARP_RULE, cam)!;
+    await prisma.photoQcFinding.create({
+      data: {
+        qcRunId: runId, jobId, photoId: p.id, ruleId: WARP_RULE, groupKey: rule?.groupKey ?? "ARCHITECTURE_WARP", pass: "P1_PHOTO", source: "CV", arbitration: "CONFIRMED",
+        specificIssue: "Walls and frames bow in the edit, straight in the camera's frame",
+        explanation: `${v.note} The free photo check did not name it.`,
+        severity: "MAJOR", confidence: Math.max(STRONG_LEAN_CONFIDENCE, o.floor),
+        responsibility: "EDITOR", fixStrategy: "HUMAN_REVIEW", recommendedAction: v.action ?? null, contentHash: p.contentHash, model: "camera-frame", rulesVersion: RULES_REGISTRY_VERSION,
+        coercedJson: JSON.stringify({ measured: "camera", camera: { ...cam, verdict: v.verdict, note: v.note } }),
+      },
+    });
+  }
+  if (compared) await logJobEvent(jobId, "geometry", `${compared} photo${compared === 1 ? "" : "s"} compared with the camera's own frame (free, from the Dropbox raw folder)`);
+  return { done: true, compared };
 }

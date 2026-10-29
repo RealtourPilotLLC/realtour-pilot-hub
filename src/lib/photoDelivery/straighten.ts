@@ -372,7 +372,7 @@ export function boxToSource(box: Box, p: StraightenParams, W: number, H: number)
 // ---- which findings an edit can settle ---------------------------------------------------------
 
 /** Leaning lines: a turn or a keystone fixes them. */
-export const LEAN_RULES = ["PERSP_CROOKED_VERTICALS", "PERSP_LEANING_DOOR_FRAMES", "PERSP_EXTERIOR_WALLS_LEANING", "PERSP_CROOKED_HORIZON", "PERSP_INCORRECT_LR_CORRECTION"];
+export const LEAN_RULES = ["PERSP_CROOKED_VERTICALS", "PERSP_LEANING_DOOR_FRAMES", "PERSP_EXTERIOR_WALLS_LEANING", "PERSP_CROOKED_HORIZON", "PERSP_INCORRECT_LR_CORRECTION", "PERSP_HORIZONTAL_DISTORTION"];
 /** Framing a crop fixes. */
 export const CROP_RULES = ["COMP_TOO_MUCH_CEILING", "COMP_TOO_MUCH_FLOOR", "COMP_EXCESSIVE_FOREGROUND", "COMP_EXTERIOR_NOT_CENTERED", "PERSP_EXTERIOR_NOT_CENTERED", "PERSP_EXCESSIVE_CEILING_FLOOR_SPACE"];
 /** The rows that offer Straighten, and the findings a save may mark fixed. */

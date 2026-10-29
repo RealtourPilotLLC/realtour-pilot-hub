@@ -243,8 +243,10 @@ export async function decideFindings(input: { findingIds: string[]; status: Deci
  *     queued for a real twilight.
  */
 const fixes = (n: number) => `${n} fix${n === 1 ? "" : "es"}`;
-export async function skipAllFindings(jobId: string, by: string): Promise<WriteResult & { cancelled?: number }> {
+export async function skipAllFindings(jobId: string, by: string, why?: string | null): Promise<WriteResult & { cancelled?: number }> {
   const who = clean(by, 120) || "staff";
+  // Oct 29 2026 (Jordan: "Kyle should be typing reasons"): the person's words ride along with every issue it sets aside.
+  const said = clean(why, 240);
   const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true } });
   if (!job) return { ok: false, message: "That job no longer exists. Reload the page." };
   const now = new Date();
@@ -274,7 +276,7 @@ export async function skipAllFindings(jobId: string, by: string): Promise<WriteR
   // saying an earlier AI fix changed the house (huddle finding 8: "skipping
   // findings must not approve damage from earlier edits"): that stays open
   // until a person restores the photo.
-  const reason = "Skipped all findings on this shoot";
+  const reason = said ? `Skipped all findings on this shoot: ${said}` : "Skipped all findings on this shoot";
   // Oct 21 2026: nor one the client asked to have removed (clientAsked.findingAskLinks):
   // that waits for the request to be answered.
   const jobRow = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true } });
@@ -291,7 +293,7 @@ export async function skipAllFindings(jobId: string, by: string): Promise<WriteR
   });
   const damage = await prisma.photoQcFinding.count({ where: { jobId, ruleId: "FIX_DAMAGE_AI_EDIT", status: "OPEN" } });
   if (!res.count && !cancelled) return { ok: false, message: asked.size ? "Nothing skipped: the open findings are what the client asked to have removed. Answer the request first." : "Nothing to skip: there are no open findings on this shoot." };
-  await logJobEvent(jobId, who, `Skipped all findings: ${plural(res.count, "issue")} set aside${cancelled ? `, ${fixes(cancelled)} not yet sent to AutoHDR called off (nothing charged)` : ""}`, { skippedAll: true, findings: res.count, cancelled });
+  await logJobEvent(jobId, who, `Skipped all findings: ${plural(res.count, "issue")} set aside${cancelled ? `, ${fixes(cancelled)} not yet sent to AutoHDR called off (nothing charged)` : ""}${said ? `. Why: ${said}` : ""}`, { skippedAll: true, findings: res.count, cancelled, why: said || null });
   // 3. The stage follows: out of FIXING when nothing is running, then Ready.
   const running = await prisma.photoFixOperation.count({ where: { jobId, status: { in: ["QUEUED", "SUBMITTING", "SUBMITTED"] } } });
   const stage = await reconcileReviewStage(jobId, who);

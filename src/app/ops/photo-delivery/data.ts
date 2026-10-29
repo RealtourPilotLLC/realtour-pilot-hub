@@ -628,11 +628,17 @@ const PHOTO_FIELDS = {
 } as const;
 
 /** What the job page and the verdict engine read of a finding (the model's raw answer is read only for the P4 checklist). */
+/** Oct 29 2026: the camera's own frame a roof or warp finding was compared with (geometry.ts), when one was kept. */
+function cameraView(coercedJson: string | null): FindingView["camera"] {
+  const cam = parse<{ camera?: { preview?: { pathname?: string } | null; frame?: string; verdict?: string } }>(coercedJson)?.camera;
+  return cam?.preview?.pathname ? { frame: cam.frame ?? "", verdict: cam.verdict ?? "unclear" } : null;
+}
+
 const FINDING_FIELDS = {
   id: true, photoId: true, photoIdsJson: true, ruleId: true, groupKey: true, pass: true, source: true, specificIssue: true, explanation: true,
   locationText: true, bboxJson: true, severity: true, confidence: true, responsibility: true, postFixable: true, reshootMayBeNeeded: true,
   isPermanentFeature: true, privacySensitive: true, recommendedAction: true, fixStrategy: true, status: true, statusReason: true, planNote: true,
-  decidedBy: true, decidedAt: true, arbitration: true,
+  decidedBy: true, decidedAt: true, arbitration: true, coercedJson: true,
 } as const;
 
 /** How many of the job's newest events the Activity tab shows. */
@@ -797,6 +803,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       decidedAt: iso(f.decidedAt),
       arbitration: f.arbitration,
       coverageStatus: f.pass === "P4_ORDER" ? cov : null,
+      camera: cameraView(f.coercedJson),
     };
   });
 

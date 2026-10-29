@@ -241,6 +241,8 @@ export type FindingView = {
   arbitration: string;
   /** P4 only: MET | NOT_MET | UNKNOWN when the QC engine recorded it. */
   coverageStatus: string | null;
+  /** Oct 29 2026: the camera's own frame it was compared with (file name; capture | edit | same | unclear), shown beside the edit. */
+  camera?: { frame: string; verdict: string } | null;
 };
 
 export type CartLineView = {

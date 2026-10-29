@@ -488,7 +488,7 @@ export async function readyProgressAction(jobId: string): Promise<{ ok: boolean;
  * shoot"): every open finding set aside in one press, and the fixes not yet
  * sent to AutoHDR (nothing charged) called off. Ordered add-ons stay.
  */
-export async function skipAllFindingsAction(jobId: string): Promise<ActionResult> {
+export async function skipAllFindingsAction(jobId: string, reason?: string | null): Promise<ActionResult> {
   try {
     await requireAdmin();
   } catch (e) {
@@ -498,7 +498,7 @@ export async function skipAllFindingsAction(jobId: string): Promise<ActionResult
   try {
     const { by } = await actor();
     const { skipAllFindings } = await import("@/lib/photoDelivery/decisions");
-    const r = await skipAllFindings(jobId, by);
+    const r = await skipAllFindings(jobId, by, typeof reason === "string" ? reason : null);
     if (r.ok) refresh(jobId);
     return { ok: r.ok, message: r.message };
   } catch (e) {

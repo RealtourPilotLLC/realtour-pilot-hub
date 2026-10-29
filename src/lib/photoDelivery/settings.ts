@@ -55,12 +55,13 @@ import { getSetting, putSetting } from "@/lib/settings";
 //   warpCv         measure the lines of each photo (qc/cv.ts lineGeometry) on
 //                  bytes the hub can read for free (the Aryeo listing, a kept
 //                  version copy, a photo already bought); never a download
-//                  that costs a credit. A warp finding counts in full only
-//                  when the measurement and the free check agree.
-//   warpCompareOriginal  for a cut-off roof or warped walls, ask AutoHDR's
-//                  free describe about the photo's Original (before AutoHDR's
-//                  straightening): the edit did it (EDITOR, Perspective Off)
-//                  or the framing/lens did (PHOTOGRAPHER, coaching).
+//                  that costs a credit. Oct 29 2026: lines that should run
+//                  level are measured too (a camera roll, inside a room).
+//   warpCompareOriginal  for a cut-off roof or warped walls, the camera's own
+//                  frame of the shot from the raw folder (cameraFrame.ts; Oct
+//                  29 2026, no longer AutoHDR's Original): the edit did it
+//                  (EDITOR, Perspective Off) or the framing did (PHOTOGRAPHER,
+//                  coaching); kept and shown beside the edit.
 //   freeCoverage   the rooms a listing needs (its bedrooms and bathrooms)
 //                  against the delivered photos and AutoHDR's photos of the
 //                  shoot: shot but not delivered, never shot, lost in editing.

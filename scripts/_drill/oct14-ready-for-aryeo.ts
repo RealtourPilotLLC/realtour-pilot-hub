@@ -238,7 +238,7 @@ async function main() {
     const twice = await actions.skipAllFindingsAction(job.id);
     c.ok("pressing it again: nothing left to skip", !twice.ok && /Nothing to skip/.test(twice.message));
     const issues = fs.readFileSync("src/components/photoDelivery/IssuesPanel.tsx", "utf8");
-    c.ok("the issues list has the button, behind a confirm", /> Skip all\b/.test(issues) && /skipAllFindingsAction\(jobId\)/.test(issues) && /await confirm\(/.test(issues));
+    c.ok("the issues list has the button, behind a question that asks why (Oct 29 2026: Skip all says why too)", /> Skip all\b/.test(issues) && /skipAllFindingsAction\(jobId, why\)/.test(issues) && /await ask\(/.test(issues) && /presets: SKIP_ALL_PRESETS,\s*required: true/.test(issues));
 
     c.head("isolation");
     c.ok("only the fakes answered", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

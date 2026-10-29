@@ -12,6 +12,8 @@ export const maxDuration = 60;
 // A QC DERIVATIVE OF ONE PHOTO, FOR STAFF (Photo Delivery page, Oct 13 2026).
 //
 //   GET /api/photo-delivery/img/<photoId>/<thumb256|thumb768|qc1024|qc2048>?v=<hash>
+//   ...&version=<PhotoVersion id>  an earlier version (its kept copy)
+//   ...&camera=<finding id>        the camera's own frame a finding was compared with
 //
 // The photos are a client's unreleased listing images, so: OWNER and ADMIN,
 // and since Oct 22 2026 the CREATIVE_MANAGER (the view-only photo desk), only
@@ -124,6 +126,27 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ photoId: st
     if (!v || v.photoId !== photo.id) return NextResponse.json({ error: "Not found" }, { status: 404 });
     const isCurrent = (!!v.autohdrVersionUuid && v.autohdrVersionUuid === photo.autohdrVersionUuid) || (!v.autohdrVersionUuid && !!v.contentHash && v.contentHash === photo.contentHash);
     if (!isCurrent) return serveVersion(req, photo.id, v, size);
+  }
+
+  // THE CAMERA'S OWN FRAME (?camera=<finding id>, Oct 29 2026): the frame a
+  // roof or warp finding was compared with (geometry.ts), kept private at
+  // about 1024 px; shown beside the edit.
+  const cameraOf = req.nextUrl.searchParams.get("camera");
+  if (cameraOf && /^[a-z0-9]{10,40}$/i.test(cameraOf)) {
+    const f = await prisma.photoQcFinding.findUnique({ where: { id: cameraOf }, select: { id: true, photoId: true, coercedJson: true } });
+    let kept: { pathname: string; url: string } | null | undefined;
+    try {
+      kept = (JSON.parse(f?.coercedJson ?? "{}") as { camera?: { preview?: { pathname: string; url: string } | null } }).camera?.preview;
+    } catch {
+      kept = null;
+    }
+    if (!f || f.photoId !== photo.id || !kept?.pathname) return NextResponse.json({ error: "No camera frame was kept for this finding." }, { status: 404, headers: { "cache-control": "no-store" } });
+    const etag = `"cam-${f.id.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40)}-${kept.pathname.length}"`;
+    if (req.headers.get("if-none-match") === etag) return new Response(null, { status: 304, headers: headers(etag, 86400) });
+    const { readDerivativeBytes } = await import("@/lib/photoDelivery/blob");
+    const bytes = await readDerivativeBytes(kept);
+    if (!bytes) return NextResponse.json({ error: "The camera frame could not be read right now." }, { status: 503, headers: { "cache-control": "no-store" } });
+    return new Response(new Uint8Array(bytes), { status: 200, headers: headers(etag, 86400) });
   }
 
   // The key derivatives are stored under (the photo's content hash). An AutoHDR photo's
