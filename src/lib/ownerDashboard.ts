@@ -1384,7 +1384,10 @@ const NOT_ENOUGH = "Not enough data";
 async function revisionRate(now: Date, exclude: string[]): Promise<{ jobs: number; revised: number }> {
   const since = new Date(now.getTime() - 30 * DAY);
   const outs = await prisma.deliverableOutput.findMany({
-    where: { deliveredAt: { gte: since, lt: now }, category: "VIDEO", ...(exclude.length ? { project: { clientId: { notIn: exclude } } } : {}) },
+    // A video output reaches its job through its deliverable: it has no
+    // `project` relation of its own (that filter threw whenever test clients
+    // were excluded, and the card fell back to nothing).
+    where: { deliveredAt: { gte: since, lt: now }, category: "VIDEO", ...(exclude.length ? { deliverable: { project: { clientId: { notIn: exclude } } } } : {}) },
     select: { projectId: true },
   });
   const jobs = [...new Set(outs.map((o) => o.projectId))];
