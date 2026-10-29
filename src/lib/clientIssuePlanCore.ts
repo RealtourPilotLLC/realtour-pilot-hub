@@ -236,8 +236,27 @@ const SOURCE_WORDS: Record<string, string> = { call: "on a call", text: "by text
 /** The KPI entry's title, with the client named (pure). */
 export const kpiTitle = (clientName: string | null, street: string | null) => `Client complaint from ${clientName ?? "a client"}${street ? `: ${street}` : ""}`.slice(0, 160);
 
-/** The KPI entry's note: who said it, how and when, then their words (pure). */
+/** Words kept to `n` characters, ending on a whole sentence when one fits past halfway, else on a whole word (pure). */
+export function clipToSentence(text: string | null | undefined, n: number): string {
+  const t = (text ?? "").replace(/[ \t]+/g, " ").trim();
+  if (t.length <= n) return t;
+  const cut = t.slice(0, n);
+  const end = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "), /[.!?]$/.test(cut) ? cut.length - 1 : -1);
+  if (end >= n / 2) return cut.slice(0, end + 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > 0 ? cut.slice(0, space) : cut).replace(/[,;:]$/, "")}...`;
+}
+
+/** The KPI entry's note: who said it, how and when, then their words (pure).
+ *  Words that open "Tim said ..." lose that opening: the note already says who. */
 export function kpiNote(clientName: string | null, source: string | null, dayWords: string, words: string): string {
   const how = SOURCE_WORDS[source ?? ""] ?? "";
-  return noLongDashes(`${clientName ?? "The client"} said${how ? ` ${how}` : ""} on ${dayWords}: ${words.trim()}`).slice(0, 1000);
+  let said = words.trim();
+  const names = [clientName, clientName ? firstNameOf(clientName) : null].filter((x): x is string => !!x && x.trim().length > 1);
+  if (names.length) {
+    const esc = names.map((n) => n.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+    const lead = said.replace(new RegExp(`^(?:${esc})\\s+(?:said|says|told us)(?:\\s+that)?[,:]?\\s+`, "i"), "");
+    if (lead !== said && lead.length > 0) said = lead[0].toUpperCase() + lead.slice(1);
+  }
+  return noLongDashes(`${clientName ?? "The client"} said${how ? ` ${how}` : ""} on ${dayWords}: ${said}`).slice(0, 1000);
 }

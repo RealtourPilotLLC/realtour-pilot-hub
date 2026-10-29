@@ -6,7 +6,7 @@ import { listAssignees } from "@/lib/assignees";
 import type { Actor } from "@/lib/delegation";
 import { readHistory, readIds, type ClientIssueState } from "@/lib/clientIssuesCore";
 import {
-  KPI_POINT_CHOICES, appendToNotes, correctedBlocker, correctionFromSteps, draftIsStale, firstNameOf, isStepKind, kpiNote, kpiTitle,
+  KPI_POINT_CHOICES, appendToNotes, clipToSentence, correctedBlocker, correctionFromSteps, draftIsStale, firstNameOf, isStepKind, kpiNote, kpiTitle,
   noLongDashes, prefLines, prefsBlock, progressOf, readDraft, readKpiLinks, stepView,
   type ComplaintDraft, type DraftStep, type KpiLink, type Progress, type StepKind, type StepTask, type StepView,
 } from "@/lib/clientIssuePlanCore";
@@ -21,6 +21,9 @@ import {
 //                          around it and proposes a summary, steps, the
 //                          client's standing preferences and what they said
 //                          about the shoot; ONE draft at a time (a claim)
+//   askDraft / askFeedback the model's answer on its own, saving nothing
+//   refreshFeedback        a plan already in hand read again for only its
+//                          summary and what the client said about the shoot
 //   approveDraft           a person's OK: the steps they kept become tasks
 //   addStep / completeStep / removeStep
 //                          each step is a delegated task (lib/delegation
@@ -169,7 +172,7 @@ export async function loadPlan(issueId: string, opts: { scrubMoney: boolean; now
   const shooter = await photographerOf(projectIds[0] ?? null);
   const channel = await sourceChannel(issue.clientId, issue.createdAt);
   const words = draft?.shootFeedback ?? issue.summary ?? issue.whatHappened;
-  const kpiWords = clip(words, 700);
+  const kpiWords = clipToSentence(words, 700);
   const title = kpiTitle(client?.name ?? null, projects[0]?.street ?? null);
   return {
     issueId, clientId: issue.clientId, clientName: client?.name ?? null, clientFirst: firstNameOf(client?.name),
@@ -206,11 +209,24 @@ export async function loadPlan(issueId: string, opts: { scrubMoney: boolean; now
 
 // ---- the hub's draft -------------------------------------------------------------------
 
-const DRAFT_SYSTEM = `You help the office of Realtour Pilot, a real estate media company (listing photos, video, drone, 2D floor plans, Zillow 3D tours and Zillow Showcase), work a client complaint. You read the complaint and the conversation around it and return a plan for the team. Nothing you write is sent to the client.
+const ABOUT_US = "You help the office of Realtour Pilot, a real estate media company (listing photos, video, drone, 2D floor plans, Zillow 3D tours and Zillow Showcase), work a client complaint.";
+const PLAIN_RULE = "- Plain, short words. Never use em dashes or en dashes. Never mention prices or dollar amounts. Put words in quotation marks only when they are the client's exact words.";
+
+// HOW THE PHOTOGRAPHER WORKED, NOT ONLY THE PHOTOS (Oct 29 2026, Jordan, on
+// Tim Bonner's complaint: "it doesnt show anything about rushing. That's a
+// common complaint for Harrison. Tim mentioned that"). Tim said three times on
+// the call that Harrison was rushing, and that it has been so since their first
+// shoot in 2025; the draft kept only the framing faults in the summary and the
+// KPI words, and the rushing only as a preference ("Take your time"). The rule
+// for both now names how the photographer worked on site first.
+const SUMMARY_RULE = "- summary: 2 to 4 sentences. What the client is unhappy about and what they asked for. Keep concrete corrections (a wrong label, a missing item, something pending) apart from matters of taste or preference. When the client said how the photographer worked on site (rushing, care, time taken, being late, manner), say so in their own short words, and say when they say it keeps happening; put it first when it is their main point. Do not judge whether the client is right.";
+const SHOOT_RULE = "- shootFeedback: what the client said about the photographer on this shoot, for the photographer's scorecard. First how the photographer worked on site, when the client raised it (rushing, care, time taken, being late, manner), and whether they say it keeps happening; then what was wrong in the photos, specific (which rooms, what was wrong). Neutral, in the client's terms, 1 to 4 sentences and under 600 characters in all (the photo faults together in one or two sentences). Do not add your own judgement and never add a complaint the client did not make. A complaint about how the photographer worked goes here and in the summary, never only in preferences. An empty string when they said nothing about the shoot.";
+
+export const DRAFT_SYSTEM = `${ABOUT_US} You read the complaint and the conversation around it and return a plan for the team. Nothing you write is sent to the client.
 
 Rules:
-- Plain, short words. Never use em dashes or en dashes. Never mention prices or dollar amounts.
-- summary: 2 to 4 sentences. What the client is unhappy about and what they asked for. Keep concrete corrections (a wrong label, a missing item, something pending) apart from matters of taste or preference. Do not judge whether the client is right.
+${PLAIN_RULE}
+${SUMMARY_RULE}
 - steps: 3 to 8. Each is ONE thing ONE person does, starting with a verb, under 120 characters, naming the property or item. ownerKey is one key from the team list. Pick the owner by role: client care (the ADMIN) talks to the client and handles floor plans, Zillow, uploads, delivery and revisions; the OWNER decides on photo quality, retakes, refunds and coaches photographers; the CREATIVE_MANAGER handles creative direction and coaching the field team and editors. Photographers and editors only own a step that is their own production work.
 - Never plan a reshoot, retake, refund or discount as a step. If the client asked for retakes or complained about the photos, the step is for the OWNER to review the named photos and decide whether anything needs a retake.
 - When the client criticised the photographer's work, add one step with kind "coach" for the OWNER: coach the photographer with notes on the specific photos.
@@ -219,7 +235,15 @@ Rules:
 - alreadyDone: when the conversation shows our side already did a step, say how we know in a few words (who, when). Otherwise an empty string.
 - dueBusinessDays: 0 for today, 1 for the next business day, up to 5.
 - preferences: standing preferences for every FUTURE shoot or edit for this client, written as short instructions to the photographer or editor, in the client's terms. Only what they want every time, not one-off fixes for this job. An empty list when there are none.
-- shootFeedback: what the client said about the photographer's own work on this shoot, specific (which rooms, what was wrong), neutral, in the client's terms, 1 to 3 sentences. Do not add your own judgement. An empty string when they said nothing about the shoot.`;
+${SHOOT_RULE}`;
+
+/** The same two rules on their own, for a complaint whose steps are already made. */
+export const FEEDBACK_SYSTEM = `${ABOUT_US} The team already has its steps for this complaint. You read the complaint and the conversation around it and return only the summary and what the client said about the shoot. Nothing you write is sent to the client.
+
+Rules:
+${PLAIN_RULE}
+${SUMMARY_RULE}
+${SHOOT_RULE}`;
 
 const DRAFT_SCHEMA = {
   type: "object",
@@ -245,6 +269,12 @@ const DRAFT_SCHEMA = {
   required: ["summary", "steps", "preferences", "shootFeedback"],
 };
 
+const FEEDBACK_SCHEMA = {
+  type: "object",
+  properties: { summary: { type: "string" }, shootFeedback: { type: "string" } },
+  required: ["summary", "shootFeedback"],
+};
+
 /** The conversation around the complaint, oldest first, capped (calls are long). */
 async function conversationAround(clientId: string, at: Date): Promise<string> {
   const rows = await prisma.commLog.findMany({
@@ -265,6 +295,91 @@ async function conversationAround(clientId: string, at: Date): Promise<string> {
 
 const ROLE_WORDS: Record<string, string> = { OWNER: "OWNER", ADMIN: "ADMIN (client care)", CREATIVE_MANAGER: "CREATIVE_MANAGER", PHOTOGRAPHER: "photographer", EDITOR: "editor" };
 
+/** What the hub reads to draft (reads only): the complaint, its jobs, the client's notes, the team and the conversation. */
+export async function draftPrompt(issueId: string): Promise<{ prompt: string; ownerKeys: Set<string> } | null> {
+  const issue = await prisma.clientIssue.findUnique({ where: { id: issueId } });
+  if (!issue || issue.dismissedAt) return null;
+  const projectIds = readIds(issue.projectIdsJson);
+  const [client, projects, users, roster, tasks, shooterId] = await Promise.all([
+    prisma.client.findUnique({ where: { id: issue.clientId }, select: { name: true, generalNotes: true } }),
+    projectIds.length ? prisma.project.findMany({ where: { id: { in: projectIds } }, select: { id: true, title: true, status: true } }) : Promise.resolve([]),
+    prisma.appUser.findMany({ where: { status: "ACTIVE" }, select: { role: true, teamMemberId: true } }),
+    listAssignees(),
+    projectIds.length
+      ? prisma.smartTask.findMany({ where: { projectId: { in: projectIds }, status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { title: true, assignedKey: true }, take: 30 })
+      : Promise.resolve([]),
+    photographerOf(projectIds[0] ?? null),
+  ]);
+  const roleOf = new Map(users.filter((u) => u.teamMemberId).map((u) => [u.teamMemberId!, u.role]));
+  const team = roster
+    .filter((a) => a.kind !== "vendor")
+    .map((a) => `${a.key}: ${a.name}, ${ROLE_WORDS[(a.teamMemberId && roleOf.get(a.teamMemberId)) || ""] ?? (a.kind === "owner" ? "OWNER" : a.kind)}`);
+  const shooter = shooterId ? roster.find((a) => a.teamMemberId === shooterId)?.name ?? null : null;
+  const convo = await conversationAround(issue.clientId, issue.createdAt);
+  const prompt = [
+    `Client: ${client?.name ?? "unknown"}`,
+    `Complaint opened ${issue.createdAt.toISOString()}: ${issue.title}`,
+    `What the hub recorded: ${clip(issue.whatHappened, 2000)}`,
+    projects.length ? `Jobs: ${projects.map((p) => `${p.title} (${p.status.toLowerCase()})`).join("; ")}` : "",
+    shooter ? `Photographer on the job: ${shooter}` : "",
+    client?.generalNotes ? `The client's notes already on file: ${clip(redactMoney(client.generalNotes), 1500)}` : "The client's notes on file: none",
+    tasks.length ? `Already on the team's lists for this job: ${tasks.map((t) => `${clip(t.title, 120)} (${t.assignedKey ?? "unassigned"})`).join("; ")}` : "",
+    `Team (key: name, role):\n${team.join("\n")}`,
+    `The conversation (oldest first):\n${convo || "(nothing on file)"}`,
+  ].filter(Boolean).join("\n\n");
+  return { prompt, ownerKeys: new Set(roster.map((a) => a.key)) };
+}
+
+/** Ask the model for a whole draft. Saves nothing: draftPlan saves it, and a probe can call it as it is. Throws when the model can't. */
+export async function askDraft(issueId: string, by: string | null): Promise<ComplaintDraft> {
+  const ctx = await draftPrompt(issueId);
+  if (!ctx) throw new Error("That complaint no longer exists.");
+  const { aiJsonWithUsage } = await import("@/lib/integrations/ai");
+  const out = await aiJsonWithUsage<{ summary: string; steps: { text: string; ownerKey: string; dueBusinessDays: number; kind: string; alreadyDone: string }[]; preferences: string[]; shootFeedback: string }>({
+    system: DRAFT_SYSTEM, prompt: ctx.prompt, schema: DRAFT_SCHEMA, maxTokens: 3000, feature: "client_issue_plan",
+  });
+  const r = out.result;
+  return {
+    v: 1, state: "ready", at: new Date().toISOString(), by, model: out.model,
+    summary: noLongDashes(clip(r.summary, 1500)),
+    steps: (r.steps ?? []).slice(0, 10).map((x): DraftStep => ({
+      text: noLongDashes(clip(x.text, 200)),
+      ownerKey: ctx.ownerKeys.has(String(x.ownerKey ?? "").toLowerCase()) ? String(x.ownerKey).toLowerCase() : null,
+      dueBusinessDays: Number.isFinite(x.dueBusinessDays) ? Math.max(0, Math.min(5, Math.round(x.dueBusinessDays))) : 1,
+      kind: isStepKind(x.kind) ? x.kind : "task",
+      alreadyDone: x.alreadyDone?.trim() ? noLongDashes(clip(x.alreadyDone, 200)) : null,
+    })).filter((x) => x.text.length > 2),
+    preferences: (r.preferences ?? []).map((p) => noLongDashes(clip(p, 240))).filter((p) => p.length > 2).slice(0, 12),
+    shootFeedback: r.shootFeedback?.trim() ? noLongDashes(clipToSentence(r.shootFeedback, 700)) : null,
+  };
+}
+
+/**
+ * Ask the model again for only the summary and what the client said about the
+ * shoot. Saves nothing. `current` is the summary on file: its facts are kept
+ * and what it leaves out is added, so reading again never loses a detail.
+ */
+export async function askFeedback(issueId: string, opts: { current?: string | null } = {}): Promise<{ summary: string; shootFeedback: string | null; model: string }> {
+  const ctx = await draftPrompt(issueId);
+  if (!ctx) throw new Error("That complaint no longer exists.");
+  const current = clip(opts.current, 1500);
+  const prompt = current
+    ? `${ctx.prompt}
+
+The summary on file now: ${current}
+Keep every fact in it that the conversation bears out, and add what the rules ask for that it leaves out.`
+    : ctx.prompt;
+  const { aiJsonWithUsage } = await import("@/lib/integrations/ai");
+  const out = await aiJsonWithUsage<{ summary: string; shootFeedback: string }>({
+    system: FEEDBACK_SYSTEM, prompt, schema: FEEDBACK_SCHEMA, maxTokens: 1200, feature: "client_issue_plan",
+  });
+  return {
+    summary: noLongDashes(clip(out.result.summary, 1500)),
+    shootFeedback: out.result.shootFeedback?.trim() ? noLongDashes(clipToSentence(out.result.shootFeedback, 700)) : null,
+    model: out.model,
+  };
+}
+
 /**
  * The hub drafts the plan. One draft at a time: the claim is the planJson
  * row itself (written only while empty, failed or stale). Never throws.
@@ -281,53 +396,7 @@ export async function draftPlan(issueId: string, by: string | null, opts: { forc
   if (took.count !== 1) return { ok: true, message: "Someone else just started a draft." };
 
   try {
-    const projectIds = readIds(issue.projectIdsJson);
-    const [client, projects, users, roster, tasks, shooterId] = await Promise.all([
-      prisma.client.findUnique({ where: { id: issue.clientId }, select: { name: true, generalNotes: true } }),
-      projectIds.length ? prisma.project.findMany({ where: { id: { in: projectIds } }, select: { id: true, title: true, status: true } }) : Promise.resolve([]),
-      prisma.appUser.findMany({ where: { status: "ACTIVE" }, select: { role: true, teamMemberId: true } }),
-      listAssignees(),
-      projectIds.length
-        ? prisma.smartTask.findMany({ where: { projectId: { in: projectIds }, status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { title: true, assignedKey: true }, take: 30 })
-        : Promise.resolve([]),
-      photographerOf(projectIds[0] ?? null),
-    ]);
-    const roleOf = new Map(users.filter((u) => u.teamMemberId).map((u) => [u.teamMemberId!, u.role]));
-    const team = roster
-      .filter((a) => a.kind !== "vendor")
-      .map((a) => `${a.key}: ${a.name}, ${ROLE_WORDS[(a.teamMemberId && roleOf.get(a.teamMemberId)) || ""] ?? (a.kind === "owner" ? "OWNER" : a.kind)}`);
-    const shooter = shooterId ? roster.find((a) => a.teamMemberId === shooterId)?.name ?? null : null;
-    const convo = await conversationAround(issue.clientId, issue.createdAt);
-    const prompt = [
-      `Client: ${client?.name ?? "unknown"}`,
-      `Complaint opened ${issue.createdAt.toISOString()}: ${issue.title}`,
-      `What the hub recorded: ${clip(issue.whatHappened, 2000)}`,
-      projects.length ? `Jobs: ${projects.map((p) => `${p.title} (${p.status.toLowerCase()})`).join("; ")}` : "",
-      shooter ? `Photographer on the job: ${shooter}` : "",
-      client?.generalNotes ? `The client's notes already on file: ${clip(redactMoney(client.generalNotes), 1500)}` : "The client's notes on file: none",
-      tasks.length ? `Already on the team's lists for this job: ${tasks.map((t) => `${clip(t.title, 120)} (${t.assignedKey ?? "unassigned"})`).join("; ")}` : "",
-      `Team (key: name, role):\n${team.join("\n")}`,
-      `The conversation (oldest first):\n${convo || "(nothing on file)"}`,
-    ].filter(Boolean).join("\n\n");
-    const { aiJsonWithUsage } = await import("@/lib/integrations/ai");
-    const out = await aiJsonWithUsage<{ summary: string; steps: { text: string; ownerKey: string; dueBusinessDays: number; kind: string; alreadyDone: string }[]; preferences: string[]; shootFeedback: string }>({
-      system: DRAFT_SYSTEM, prompt, schema: DRAFT_SCHEMA, maxTokens: 3000, feature: "client_issue_plan",
-    });
-    const keys = new Set(roster.map((a) => a.key));
-    const r = out.result;
-    const draft: ComplaintDraft = {
-      v: 1, state: "ready", at: new Date().toISOString(), by, model: out.model,
-      summary: noLongDashes(clip(r.summary, 1500)),
-      steps: (r.steps ?? []).slice(0, 10).map((x): DraftStep => ({
-        text: noLongDashes(clip(x.text, 200)),
-        ownerKey: keys.has(String(x.ownerKey ?? "").toLowerCase()) ? String(x.ownerKey).toLowerCase() : null,
-        dueBusinessDays: Number.isFinite(x.dueBusinessDays) ? Math.max(0, Math.min(5, Math.round(x.dueBusinessDays))) : 1,
-        kind: isStepKind(x.kind) ? x.kind : "task",
-        alreadyDone: x.alreadyDone?.trim() ? noLongDashes(clip(x.alreadyDone, 200)) : null,
-      })).filter((x) => x.text.length > 2),
-      preferences: (r.preferences ?? []).map((p) => noLongDashes(clip(p, 240))).filter((p) => p.length > 2).slice(0, 12),
-      shootFeedback: r.shootFeedback?.trim() ? noLongDashes(clip(r.shootFeedback, 700)) : null,
-    };
+    const draft = await askDraft(issueId, by);
     await prisma.clientIssue.update({ where: { id: issueId }, data: { planJson: JSON.stringify(draft) } });
     return { ok: true, message: "Drafted. Check the steps, then create them." };
   } catch (e) {
@@ -335,6 +404,49 @@ export async function draftPlan(issueId: string, by: string | null, opts: { forc
     await prisma.clientIssue.update({ where: { id: issueId }, data: { planJson: JSON.stringify(failed) } }).catch(() => {});
     return { ok: false, message: `The hub couldn't draft it: ${failed.error}` };
   }
+}
+
+/**
+ * A plan already in hand, read again for its summary and what the client said
+ * about the shoot (the KPI note's words) under today's rules. The steps, the
+ * preferences and anything already added to the client's notes stay as they
+ * are. The complaint's summary is replaced only while it is still the hub's
+ * own words; a summary a person rewrote is kept. `mustMention`: write only
+ * when both new texts carry it.
+ */
+export async function refreshFeedback(issueId: string, by: string | null, opts: { mustMention?: RegExp } = {}): Promise<Result & { before?: { summary: string; shootFeedback: string | null }; after?: { summary: string; shootFeedback: string | null }; summaryKept?: boolean }> {
+  const issue = await prisma.clientIssue.findUnique({ where: { id: issueId }, select: { planJson: true, summary: true, historyJson: true, dismissedAt: true } });
+  if (!issue || issue.dismissedAt) return { ok: false, message: "That complaint no longer exists." };
+  const d = readDraft(issue.planJson);
+  if (!d || d.state === "drafting" || d.state === "failed") return { ok: false, message: "There is no finished hub draft to read again." };
+  let fresh: Awaited<ReturnType<typeof askFeedback>>;
+  try {
+    fresh = await askFeedback(issueId, { current: issue.summary || d.summary });
+  } catch (e) {
+    return { ok: false, message: `The hub couldn't read it again: ${clip((e as Error)?.message ?? "The AI didn't answer.", 300)}` };
+  }
+  if (fresh.summary.length < 10) return { ok: false, message: "The hub's new summary came back empty. Nothing was changed." };
+  // A repair that reads again for one missing point checks the new words carry it, else writes nothing.
+  if (opts.mustMention && !(opts.mustMention.test(fresh.summary) && opts.mustMention.test(fresh.shootFeedback ?? ""))) {
+    return { ok: false, message: "The new words still leave it out. Nothing was changed.", before: { summary: d.summary, shootFeedback: d.shootFeedback }, after: { summary: fresh.summary, shootFeedback: fresh.shootFeedback } };
+  }
+  // The stored record as it is, with only these two words changed.
+  const raw = JSON.parse(issue.planJson!) as Record<string, unknown>;
+  const next = { ...raw, summary: fresh.summary, shootFeedback: fresh.shootFeedback, feedbackAt: new Date().toISOString(), feedbackBy: by, feedbackModel: fresh.model };
+  const ownWords = !issue.summary || issue.summary.trim() === d.summary.trim();
+  const took = await prisma.clientIssue.updateMany({
+    where: { id: issueId, planJson: issue.planJson },
+    data: {
+      planJson: JSON.stringify(next),
+      ...(ownWords ? { summary: fresh.summary } : {}),
+      historyJson: pushHistory(issue.historyJson, by, `Read the complaint again for its summary and what the client said about the shoot${ownWords ? "" : " (the summary a person wrote was kept)"}`),
+    },
+  });
+  if (took.count !== 1) return { ok: false, message: "Someone else just changed this plan. Try again." };
+  return {
+    ok: true, message: ownWords ? "The summary and the KPI words are updated." : "The KPI words are updated; your summary was kept.",
+    before: { summary: d.summary, shootFeedback: d.shootFeedback }, after: { summary: fresh.summary, shootFeedback: fresh.shootFeedback }, summaryKept: !ownWords,
+  };
 }
 
 /** Set the draft aside (the steps are added by hand instead). */

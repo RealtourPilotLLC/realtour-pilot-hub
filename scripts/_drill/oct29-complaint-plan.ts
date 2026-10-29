@@ -22,6 +22,10 @@
 //      step is high; Kyle's and James's lists count their own steps; money scrubbed
 //   §8 the panels render
 //   §9 the office to-do: one per job; a call's words become the hub's summary
+//   §10 how the photographer worked (Jordan: "it doesnt show anything about
+//      rushing"): the rules carry it; a plan read again changes only its summary
+//      and KPI words, keeps a summary a person wrote, and writes nothing when the
+//      new words still leave the point out
 // Disposable PGlite; nothing leaves but the faked model call.
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
 import { createElement } from "react";
@@ -78,6 +82,13 @@ async function main() {
     c.ok("progress: cancelled steps don't count; the next open step with who and when", prog.total === 2 && prog.done === 1 && prog.words === "1 of 2 steps done · next: Kyle, Fix the floor plans (due Fri)" && !prog.allDone, prog.words);
     c.ok("'Mark corrected' waits, naming what is open", core.correctedBlocker([sv({})]) === "One step is still open: Kyle, Fix the floor plans. Finish or remove it first." && core.correctedBlocker([sv({ done: true })]) === null);
     c.ok("the KPI title and note name the client, how and when", core.kpiTitle("Tim Bonner", "265 Mill Rd") === "Client complaint from Tim Bonner: 265 Mill Rd" && core.kpiNote("Tim Bonner", "call", "Oct 29, 2026", "The kitchen was all wide shots — no close angle.") === "Tim Bonner said on a call on Oct 29, 2026: The kitchen was all wide shots, no close angle.");
+    c.ok("the KPI note doesn't say who twice: 'Tim said ...' loses its opening", core.kpiNote("Tim Bonner", "call", "Oct 29, 2026", "Tim said Harrison was rushing.") === "Tim Bonner said on a call on Oct 29, 2026: Harrison was rushing." && core.kpiNote("Tim Bonner", "call", "Oct 29, 2026", "Timothy said it was fine.").endsWith(": Timothy said it was fine."));
+    const sentences = `${"Tim said Harrison was rushing to get it done. ".repeat(4)}Then a long list of photo faults that runs on and on.`;
+    const oneLong = `Short start. ${"then a long list of photo faults, ".repeat(10)}and more.`;
+    c.ok("long words end on a whole sentence, never mid-word", core.clipToSentence(sentences, 200) === "Tim said Harrison was rushing to get it done. ".repeat(4).trim() && core.clipToSentence("short", 200) === "short", core.clipToSentence(sentences, 200));
+    const cut = core.clipToSentence(oneLong, 100);
+    const head = cut.replace(/\.\.\.$/, "");
+    c.ok("…and with no sentence end past halfway, on a whole word", cut.endsWith("...") && oneLong.startsWith(head) && oneLong[head.length] === " " && core.clipToSentence("one two three four five six seven", 12) === "one two...", cut);
     c.ok("no count is picked for you: the choices start at a note", core.KPI_POINT_CHOICES[0].points === 0 && core.KPI_POINT_CHOICES.every((x) => x.points <= 0));
     c.ok("a broken plan record reads as nothing, not a crash", core.readDraft("{oops") === null && core.readDraft(null) === null);
 
@@ -272,6 +283,40 @@ async function main() {
     const office = await prisma.smartTask.findMany({ where: { projectId: oak.id, dedupeKey: { startsWith: A.OFFICE_TASK_KEY_PREFIX } } });
     c.ok("a second, different ask on the same job joins the open to-do (one, not two)", !!o1.taskId && o2.taskId === o1.taskId && !o1.reused && o2.reused && office.length === 1, JSON.stringify([o1, o2, office.length]));
     c.ok("…the call's words became the hub's summary, added under the first ask", office[0]?.summary?.includes('Also asked: "Get Zillow to match the 3D tour room names"') === true && !(office[0]?.description ?? "").includes("Tim Bonner call."), office[0]?.summary ?? "");
+
+    // =====================================================================
+    c.head("§10 · how the photographer worked");
+    // =====================================================================
+    const L = await import("@/lib/clientIssuePlan");
+    c.ok("the draft's rules: how the photographer worked goes in the summary and the KPI words, never only in preferences", /how the photographer worked on site \(rushing, care, time taken, being late, manner\)/.test(L.DRAFT_SYSTEM) && /never only in preferences/.test(L.DRAFT_SYSTEM) && /keeps happening/.test(L.DRAFT_SYSTEM) && /exact words/.test(L.DRAFT_SYSTEM));
+    c.ok("…and the same rules when a plan is read again", /how the photographer worked on site \(rushing/.test(L.FEEDBACK_SYSTEM) && /never only in preferences/.test(L.FEEDBACK_SYSTEM) && !/steps: 3 to 8/.test(L.FEEDBACK_SYSTEM));
+    const before10 = await prisma.clientIssue.findUnique({ where: { id: issue.id } });
+    const stepsBefore10 = await prisma.clientIssueStep.count({ where: { issueId: issue.id, removedAt: null } });
+    modelReply = { summary: "Tim says the floor plans swap the laundry and half bath and the kitchen was all wide.", shootFeedback: "The kitchen photos were all wide." };
+    const still = await L.refreshFeedback(issue.id, "claude: drill", { mustMention: /\brush/i });
+    const unchanged = await prisma.clientIssue.findUnique({ where: { id: issue.id } });
+    c.ok("new words that still leave the rushing out: nothing is written", !still.ok && unchanged?.planJson === before10?.planJson && unchanged?.summary === before10?.summary, still.message);
+    modelReply = {
+      summary: "Tim says Harrison rushed through the shoot and that it has happened since their first shoot. The floor plans swap the laundry and half bath and call the attic a bedroom.",
+      shootFeedback: "Tim said Harrison was rushing to get it done and that it keeps happening. The kitchen photos were all wide and the bathrooms only showed the vanity and toilet.",
+    };
+    const asked10 = asked.length;
+    const redo = await L.refreshFeedback(issue.id, "claude: drill", { mustMention: /\brush/i });
+    const after10 = await prisma.clientIssue.findUnique({ where: { id: issue.id } });
+    const d10 = core.readDraft(after10?.planJson);
+    const d0 = core.readDraft(before10?.planJson);
+    c.ok("read again: the summary and the KPI words now carry the rushing", redo.ok && after10?.summary?.startsWith("Tim says Harrison rushed") === true && d10?.summary === after10?.summary && /rushing to get it done/.test(d10?.shootFeedback ?? ""), redo.message);
+    c.ok("…the model was told to keep the summary's facts", asked.length === asked10 + 1 && asked[asked10].includes("The summary on file now: Tim says the floor plans") && /Keep every fact in it/.test(asked[asked10]));
+    c.ok("…the steps, the preferences, the notes added and the KPI link are as they were", d10?.state === "approved" && JSON.stringify(d10?.steps) === JSON.stringify(d0?.steps) && JSON.stringify(d10?.preferences) === JSON.stringify(d0?.preferences) && after10?.prefsText === before10?.prefsText && after10?.kpiJson === before10?.kpiJson && (await prisma.clientIssueStep.count({ where: { issueId: issue.id, removedAt: null } })) === stepsBefore10);
+    const h10 = JSON.parse(after10?.historyJson ?? "[]") as { by: string | null; what: string }[];
+    c.ok("…and the history says who read it again", h10.at(-1)?.by === "claude: drill" && /Read the complaint again/.test(h10.at(-1)?.what ?? ""), JSON.stringify(h10.at(-1)));
+    const v10 = await P.loadComplaintPlanAction(issue.id);
+    c.ok("the KPI form's words now lead with the rushing, naming Tim once", v10.ok && /^Tim Bonner said on a call on .+: Harrison was rushing to get it done/.test(v10.plan.kpi.note), v10.ok ? v10.plan.kpi.note : "");
+    await P.saveComplaintSummaryAction(issue.id, "Kyle's own words about this complaint, kept as he wrote them.");
+    modelReply = { summary: "Tim says Harrison rushes. The floor plans need fixing.", shootFeedback: "Tim said Harrison rushes and the bathrooms were too tight." };
+    const kept = await L.refreshFeedback(issue.id, "claude: drill");
+    const after10b = await prisma.clientIssue.findUnique({ where: { id: issue.id } });
+    c.ok("a summary a person wrote is kept; only the KPI words change", kept.ok && kept.summaryKept === true && after10b?.summary === "Kyle's own words about this complaint, kept as he wrote them." && core.readDraft(after10b?.planJson)?.shootFeedback === "Tim said Harrison rushes and the bathrooms were too tight.", kept.message);
 
     c.ok("nothing left the box but the faked model", fence.blocked.length === 0, JSON.stringify(fence.blocked));
     c.summary();
