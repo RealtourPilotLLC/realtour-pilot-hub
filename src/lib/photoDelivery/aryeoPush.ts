@@ -7,6 +7,7 @@ import { logJobEvent } from "./jobState";
 import { closeMediaCheckForPhotos } from "./mediaCheck";
 import { UPLOAD_HELD_PREFIX, UPLOAD_OVERRIDE_MIN } from "./holding";
 import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
+import { isTransientProviderError } from "@/lib/cronNoise";
 
 // ---------------------------------------------------------------------------
 // THE PHOTOS INTO ARYEO, BY THE HUB (Oct 14 2026).
@@ -805,6 +806,16 @@ async function download(path: string): Promise<Buffer> {
 }
 
 const fail = (r: PushRun, note: string): PushRun => ({ ...r, state: "FAILED", note: note.slice(0, 400), finishedAt: new Date().toISOString(), lease: null });
+/**
+ * Aryeo's bad minute: its own "try again later" answer, or the connection
+ * dropping on the way there (fetch failed, a timeout). The run waits and the
+ * next pass carries on; never a refusal, a sign-in or a changed Aryeo
+ * (Oct 29 2026, 825 State St: Kyle's approved delivery stopped for good on
+ * one "fetch failed" and sat in Delivering, never delivered).
+ */
+const badMinute = (e: unknown): boolean => e instanceof Error && (e.name === "AryeoWebError" ? (e as Error & { kind?: string }).kind === "transient" : isTransientProviderError(e));
+/** A step that ended on a bad minute: its note is saved and the pass ends there (the next cron pass carries on), never tried again in a tight loop. */
+const waitingOnAryeo = new WeakSet<PushRun>();
 
 /** "lot lines", "lot lines and virtual staging": the person-only add-on lines of a checklist (Oct 22 2026). */
 function addOnWords(lines: { label: string; addOn?: { need: string } }[]): string {
@@ -986,7 +997,7 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
       try {
         await W.attachImages(r.listingId, r.groupId!, { agreesToMediaLicense: page.requiresMediaLicense });
       } catch (e) {
-        if ((e as Error & { kind?: string }).kind !== "transient") throw e;
+        if (!badMinute(e)) throw e;
       }
       r.addedAt = new Date().toISOString();
       r.state = "CHECKING";
@@ -1165,9 +1176,13 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
     return null;
   } catch (e) {
     const err = e as Error & { kind?: string };
-    // A refused sign-in or a changed Aryeo stops the run with Aryeo's words; a bad minute waits.
-    if (err.name === "AryeoWebError" && err.kind === "transient") {
-      r.note = err.message;
+    // A refused sign-in or a changed Aryeo stops the run with Aryeo's words; a
+    // bad minute waits. Every step is safe to run again: Deliver reads the
+    // listing first and never delivers twice, and an add already sent is
+    // looked for on the listing before anything is sent again.
+    if (badMinute(err)) {
+      r.note = err.name === "AryeoWebError" ? err.message : `Aryeo could not be reached (${err.message.slice(0, 120)}). The hub tries again in a few minutes.`;
+      waitingOnAryeo.add(r);
       return r;
     }
     if (err.name === "AryeoWebError" && (err.kind === "sign-in" || err.kind === "not-connected")) {
@@ -1207,6 +1222,7 @@ export async function advancePush(jobId: string, opts: { budgetMs?: number } = {
     if (!saved) break; // someone else took it over
     raw = saved;
     run = JSON.parse(saved) as PushRun;
+    if (waitingOnAryeo.has(next)) break;
     if (before !== run.state) {
       if (run.state === "FAILED") await logJobEvent(jobId, "aryeo-push", `sending to Aryeo stopped: ${run.note}`);
       else if (run.state === "WAITING") await logJobEvent(jobId, "aryeo-push", `all ${run.items.length} photos are on the Aryeo listing${run.note ? ` (${run.note})` : ""}; waiting for Deliver in Aryeo`);

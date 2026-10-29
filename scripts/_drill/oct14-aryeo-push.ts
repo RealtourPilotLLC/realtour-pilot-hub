@@ -23,6 +23,8 @@
 //      own defaults (no added recipients), the hub confirms DELIVERED and the
 //      job is verified. Auto: the same, by itself, from the cron.
 //   6. A refusal stops the run with Aryeo's words; nothing is guessed.
+//  12. A dropped connection waits and carries on (Oct 29 2026, 825 State St):
+//      delivered once, never twice.
 // ISOLATION: PGlite via the shared harness; nothing leaves the fakes.
 // ---------------------------------------------------------------------------
 import { bootDrillDb, fenceFetch, installNextStubs, makeChecker } from "./_harness";
@@ -43,6 +45,8 @@ const processingPasses = 1; // Aryeo shows new photos only after this many API r
 let refuseAttach = false;
 let refuseLogin = false;
 let bounceAfterAttach = false;
+// The connection drops on Deliver (Oct 29 2026, 825 State St): before Aryeo hears it, or after it delivered.
+let dropDeliver: "before" | "after" | null = null;
 const dropboxFolder = new Map<string, number>(); // path -> size
 let n = 0;
 const id = (p: string) => `${p}-${String(++n).padStart(4, "0")}`;
@@ -156,7 +160,9 @@ async function aryeoWeb(url: string, init?: RequestInit): Promise<Response | nul
     const b = JSON.parse(String(init?.body)) as { email_subject?: string | null };
     calls.push({ kind: "deliver", body: b });
     if (!b.email_subject) return redirect(`/admin/listings/${l.id}/edit?err=subject`);
+    if (dropDeliver === "before") { dropDeliver = null; throw new TypeError("fetch failed"); }
     l.delivery = "DELIVERED";
+    if (dropDeliver === "after") { dropDeliver = null; throw new TypeError("fetch failed"); }
     return redirect(`/admin/listings/${l.id}/edit`);
   }
   return new Response("not faked", { status: 404 });
@@ -519,6 +525,27 @@ async function main() {
     const jq = await prisma.photoJob.findUniqueOrThrow({ where: { id: Q.job.id } });
     c.ok("half an hour later, the login working, the cron sends Kyle's approval again and it is delivered", q1.started.includes(Q.job.id) && listings.get("L-Q")!.delivery === "DELIVERED" && jq.stage === "DELIVERED", `${JSON.stringify(q1)} ${jq.stage}`);
     c.ok("…and Connections no longer says the sign-in is failing", !(await getConnection(W.ARYEO_WEB_PROVIDER))?.lastError);
+
+    // ======================================================================
+    c.head("12 · the connection drops on Deliver: the run waits and carries on, delivered once (825 State St, Oct 29)");
+    for (const [street, listingId, when] of [["130 Drop Rd", "L-R", "before"], ["140 Drop Rd", "L-S", "after"]] as const) {
+      const R = await mkJob(street, listingId, 2);
+      const ar = await P.approveJob(R.job.id, "Kyle", { deliver: true });
+      dropDeliver = when;
+      const delivers0 = calls.filter((x) => x.kind === "deliver").length;
+      let saw: string | null = null;
+      for (let i = 0; i < 12; i++) {
+        await P.advancePush(R.job.id, { budgetMs: 30_000 });
+        const pr = await P.pushProgress(R.job.id);
+        if (pr?.state === "FAILED") { saw = `FAILED: ${pr.note}`; break; }
+        if (!saw && /could not be reached/.test(pr?.note ?? "")) saw = pr!.note;
+      }
+      const pr = await P.pushProgress(R.job.id);
+      const jr = await prisma.photoJob.findUniqueOrThrow({ where: { id: R.job.id } });
+      const pressed = calls.filter((x) => x.kind === "deliver").length - delivers0;
+      c.ok(`dropped ${when} Aryeo delivered: never stopped, said so while it waited, then delivered and verified`, ar.started && dropDeliver === null && !!saw && !saw.startsWith("FAILED") && /fetch failed\)\. The hub tries again in a few minutes\./.test(saw) && pr?.state === "DONE" && listings.get(listingId)!.delivery === "DELIVERED" && jr.stage === "DELIVERED", `${saw} · ${pr?.state} · ${jr.stage}`);
+      c.ok(`…Deliver pressed ${when === "before" ? "twice (the first never reached Aryeo)" : "once (the listing read as delivered, so never again)"}`, pressed === (when === "before" ? 2 : 1), String(pressed));
+    }
 
     c.head("isolation");
     c.ok("no outbound call escaped the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));
