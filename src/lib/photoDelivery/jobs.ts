@@ -319,7 +319,7 @@ export async function photoVisitFor(
 }
 
 /** Whether this order bought same-day photos (the add-on outranks next morning). */
-async function sameDayPhotos(projectId: string): Promise<boolean> {
+export async function sameDayPhotos(projectId: string): Promise<boolean> {
   const p = await prisma.project.findUnique({
     where: { id: projectId },
     select: { deliverables: { where: { removedFromOrderAt: null, waivedAt: null }, select: { type: true, label: true, productTitle: true } }, orderItems: { select: { title: true, isCanceled: true } } },
