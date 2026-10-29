@@ -123,6 +123,11 @@ async function main() {
       },
     };
     const covered = new Set<string>();
+    // Oct 28 2026 (Jordan: "make sure text messages are formatted nicer for
+    // larger team text message notifications"): a team text the hub sends
+    // itself keeps the old words, laid out for a phone (lib/hubSms staffText).
+    const { HUB_SMS_PREFIX: HUB, staffText } = await import("@/lib/hubSms");
+    const laid = (old: string) => (old.startsWith(`${HUB}: `) ? staffText(old.slice(HUB.length + 2)) : old);
     const same = (key: string, label: string, before: string, after: string) => {
       covered.add(key);
       c.ok(`${key}: ${label}`, before === after, before === after ? "" : `\n      before: ${JSON.stringify(before)}\n      after:  ${JSON.stringify(after)}`);
@@ -175,25 +180,25 @@ async function main() {
       ];
       for (const a of asks) {
         const o = { firstName: "Harrison", street: "123 Main St", shotOn: day, missing: a.missing, link: `${APP}/upload/p1`, again: a.again };
-        same("instructions_missing_photographer", `again=${a.again}, ${a.missing.video.length ? "video" : "photos"}`, OLD.missing.composeNudgeText(o), missing.composeNudgeText(o));
+        same("instructions_missing_photographer", `again=${a.again}, ${a.missing.video.length ? "video" : "photos"}`, laid(OLD.missing.composeNudgeText(o)), missing.composeNudgeText(o));
         const m = { photographerFirst: "Harrison", street: "123 Main St", shotOn: day, missing: a.missing, unreachable: a.unreachable, again: a.again };
         same("instructions_missing_manager", `again=${a.again}, unreachable=${!!a.unreachable}`, OLD.missing.composeManagerLine(m), missing.composeManagerLine(m));
       }
       for (const requests of [["Shoot the backyard at golden hour."], ["Skip the basement.", "Client: Get the new deck — it is finished.", "Seller present: yes."]]) {
         const o = { street: "104 Carlton Ct", startAt: new Date("2026-10-21T18:30:00Z"), requests, link: `${APP}/shoot/p1` };
-        same("shoot_day_requests", `${requests.length} request(s)`, OLD.shootDay.composeShootDayText(o), shootDay.composeShootDayText(o));
+        same("shoot_day_requests", `${requests.length} request(s)`, laid(OLD.shootDay.composeShootDayText(o)), shootDay.composeShootDayText(o));
       }
       {
         // Oct 23 2026: new with its template (no older code to compare), so it is held to the words Jordan approved.
         const sst = await import("@/lib/sessionScriptsText");
         const o = { name: "Harrison Wells", client: "John Collins", startAt: new Date("2026-10-23T17:30:00Z"), street: "80 W Lancaster Ave", link: `${APP}/shoot/p1` };
-        same("session_scripts", "John's session", `⚙️ Realtour Hub: Hi Harrison, John's content session is today at 1:30 PM at 80 W Lancaster Ave. The scripts are on your shoot page: ${APP}/shoot/p1`, sst.composeSessionScriptsText(o));
+        same("session_scripts", "John's session", laid(`⚙️ Realtour Hub: Hi Harrison, John's content session is today at 1:30 PM at 80 W Lancaster Ave. The scripts are on your shoot page: ${APP}/shoot/p1`), sst.composeSessionScriptsText(o));
       }
       {
         // Oct 23 2026: the Editing Room's Remind photographer button, new with its template (no older code to compare).
         const rmd = await import("@/lib/remindPhotographer");
         const o = { firstName: "Harrison", street: "610 Onward Ave", missing: ["the flow and vision for video 1 (Premium Social Reel)", "the instructions for video 2 (Standard Reel)"], link: `${APP}/upload/p1` };
-        same("instructions_reminder_photographer", "two videos", `⚙️ Realtour Hub: Hi Harrison, quick reminder: the instructions for 610 Onward Ave are missing and the editor is waiting on them. Still needed: the flow and vision for video 1 (Premium Social Reel) and the instructions for video 2 (Standard Reel). You can add them here: ${APP}/upload/p1`, rmd.composeReminderText(o));
+        same("instructions_reminder_photographer", "two videos", laid(`⚙️ Realtour Hub: Hi Harrison, quick reminder: the instructions for 610 Onward Ave are missing and the editor is waiting on them. Still needed: the flow and vision for video 1 (Premium Social Reel) and the instructions for video 2 (Standard Reel). You can add them here: ${APP}/upload/p1`), rmd.composeReminderText(o));
       }
       {
         // Oct 23 2026 (huddle item 9): Photo Delivery's Ask the photographer for notes, new with its template (no older code to compare).
@@ -203,7 +208,7 @@ async function main() {
       const counts = { groundPhotos: 0, dronePhotos: 45, droneClips: 4, footage: 0, newestAt: null };
       for (const [sure, alsoEmpty] of [[["ground_photos"], []], [["ground_photos", "drone"], ["footage"]], [["footage"], ["ground_photos", "drone"]]] as const) {
         const o = { firstName: "Harrison", street: "123 Main St", shotWhen: "yesterday", counts, sure: [...sure], alsoEmpty: [...alsoEmpty], link: `${APP}/upload/p1` };
-        same("upload_gap", `missing ${sure.length}, also ${alsoEmpty.length}`, OLD.gaps.composeGapText(o), gaps.composeGapText(o));
+        same("upload_gap", `missing ${sure.length}, also ${alsoEmpty.length}`, laid(OLD.gaps.composeGapText(o)), gaps.composeGapText(o));
       }
 
       // ---- the client texts (delivery.ts) ------------------------------------
@@ -405,7 +410,7 @@ async function main() {
       const set = await store.loadTextTemplates();
       console.warn = realWarn;
       const o = { street: "104 Carlton Ct", startAt: new Date("2026-10-21T18:30:00Z"), requests: ["Skip the basement."], link: `${APP}/shoot/p1` };
-      c.ok("a saved wording missing a required placeholder ({link}) is ignored at send: the default goes", set.sourceOf("shoot_day_requests") === "default" && shootDay.composeShootDayText(o, set) === OLD.shootDay.composeShootDayText(o));
+      c.ok("a saved wording missing a required placeholder ({link}) is ignored at send: the default goes", set.sourceOf("shoot_day_requests") === "default" && shootDay.composeShootDayText(o, set) === laid(OLD.shootDay.composeShootDayText(o)));
       c.ok("…and one with an unknown placeholder too", set.sourceOf("payday") === "default" && paydayText({ total: 10, jobs: 1, startKey: "2026-10-01", endKey: "2026-10-15", link: "L" }, set) === paydayText({ total: 10, jobs: 1, startKey: "2026-10-01", endKey: "2026-10-15", link: "L" }));
       c.ok("…and each is logged", warns.some((w) => w.includes("shoot_day_requests") && w.includes("{link}")) && warns.some((w) => w.includes("payday") && w.includes("{bogus}")), warns.join(" | "));
       const rows = await store.textTemplateRows();

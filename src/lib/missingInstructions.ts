@@ -5,7 +5,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { etDate, etDayBoundsUtc, etDayKey, etMinutesOfDay, etMonthDay, etTime } from "@/lib/datetime";
 import { noDashes } from "@/lib/text";
-import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
+import { staffText, staffTextNumber } from "@/lib/hubSms";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { categoryHandoffAt, liveHandoffCategories } from "@/lib/handoff";
 import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
@@ -126,9 +126,7 @@ export const streetOf = (title: string, addressLine: string | null) =>
  *  Oct 21 2026); the hub marker stays in front. `t` = saved wording, else default. */
 export function composeNudgeText(o: { firstName: string; street: string; shotOn: Date; missing: MissingInstructions; link: string; again?: boolean }, t: TextTemplateSet = DEFAULT_TEXTS): string {
   const waitingFor = o.missing.video.length ? "before editing can start" : "before the photos can go out";
-  return noDashes(
-    `${HUB_SMS_PREFIX}: ${t.render("instructions_missing_photographer", { firstName: o.firstName, street: o.street, shotDay: shotDay(o.shotOn), still: o.again ? "still" : "", waitingFor, missingList: listWords(allItems(o.missing)), link: o.link })}`,
-  );
+  return staffText(t.render("instructions_missing_photographer", { firstName: o.firstName, street: o.street, shotDay: shotDay(o.shotOn), still: o.again ? "still" : "", waitingFor, missingList: listWords(allItems(o.missing)), link: o.link }));
 }
 
 /** The creative manager's heads-up (their bell row's sentence, and their text):

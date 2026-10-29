@@ -302,7 +302,7 @@ async function alertOffice(e: { id: string; clientName: string }, owner: DutyOwn
     if (until) { await queueStaffSms(m.id, line, { kind: "program_message_text" }, until).catch(() => false); continue; }
     try {
       if (!from) throw new Error("no OpenPhone number");
-      await op.OpenPhone.sendMessage(from, num.to, `${sms.HUB_SMS_PREFIX}: ${line}`);
+      await op.OpenPhone.sendMessage(from, num.to, sms.staffText(line));
       await logDelivery({ teamMemberId: m.id, kind: "program_message_text", channel: "sms", status: "sent" });
     } catch (err) {
       await logDelivery({ teamMemberId: m.id, kind: "program_message_text", channel: "sms", status: "failed", detail: err instanceof Error ? err.message : "send failed" }).catch(() => {});

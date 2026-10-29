@@ -110,7 +110,8 @@ async function main() {
     c.ok("nothing special → nothing to say", sdt.shootDayRequests({ brief: brief("n/a"), jobLines: ["The lockbox code is 1234"], clientAsks: [] }).length === 0);
     const sample = sdt.composeShootDayText({ street: "104 Carlton Ct", startAt: MON(14, 30), requests: ["Take a photo of the Liberty Knoll sign at the entrance.", "Client: a few things may still be in the basement."], link: "https://hub.example/shoot/p1" });
     console.log(`\n--- the shape ---\n${sample}\n---`);
-    c.ok("the message's shape", sample === `${HUB_SMS_PREFIX}: 104 Carlton Ct, 2:30 PM. Special requests for this shoot: 1) Take a photo of the Liberty Knoll sign at the entrance. 2) Client: a few things may still be in the basement. Shoot screen: https://hub.example/shoot/p1`, sample);
+    // Oct 28 2026: laid out for a phone, one request a line, the link alone at the end.
+    c.ok("the message's shape", sample === `${HUB_SMS_PREFIX}: 104 Carlton Ct, 2:30 PM. Special requests for this shoot:\n1) Take a photo of the Liberty Knoll sign at the entrance.\n2) Client: a few things may still be in the basement.\n\nShoot screen:\nhttps://hub.example/shoot/p1`, sample);
     c.ok("live appointments: cancelled and postponed (UNSCHEDULED) are not", sdt.liveAppointment({ status: "SCHEDULED", startAt: MON(9) }) && !sdt.liveAppointment({ status: "CANCELED", startAt: MON(9) }) && !sdt.liveAppointment({ status: "UNSCHEDULED", startAt: MON(9) }) && !sdt.liveAppointment({ status: "SCHEDULED", startAt: null }));
 
     // =====================================================================
@@ -191,10 +192,10 @@ async function main() {
     c.ok("Harrison's 6:30 twilight visit to the same job: no second text that day", textsTo("6105550144").filter((t) => t.body.includes("104 Carlton Ct")).length === 1);
     const h = carltonTexts.find((t) => t.to.endsWith("6105550144"))?.body ?? "";
     console.log(`\n--- Harrison's text ---\n${h}\n---`);
-    c.ok("from the company line as a hub text, the address and the start time first", h.startsWith(`${HUB_SMS_PREFIX}: 104 Carlton Ct, 2:30 PM. Special requests for this shoot: 1) `), h.slice(0, 120));
+    c.ok("from the company line as a hub text, the address and the start time first", h.startsWith(`${HUB_SMS_PREFIX}: 104 Carlton Ct, 2:30 PM. Special requests for this shoot:\n1) `), h.slice(0, 120));
     c.ok("…the order's instructions, the office's line (no figures), the client's open ask", h.includes("1) Basement floor has stains on it, may not be painted in time. Please take a pic of the Liberty Knoll sign at entrance.") && h.includes("2) Shoot the community pool too, [amount] add-on paid.") && h.includes("3) Client: A few things may still be in the basement."));
     c.ok("…no codes, no access, no who's there, no closed or no-longer-filed asks, no scheduling", !/5636|4417|key under|side door|Agent|Old ask|order note|Friday/i.test(h));
-    c.ok("…the shoot screen link last; no dashes; no money", h.endsWith(`Shoot screen: ${(await import("@/lib/appUrl")).appBase()}/shoot/${carlton.id}`) && !DASH.test(h) && !/\$\d/.test(h), h.slice(-80));
+    c.ok("…the shoot screen link last; no dashes; no money", h.endsWith(`\n\nShoot screen:\n${(await import("@/lib/appUrl")).appBase()}/shoot/${carlton.id}`) && !DASH.test(h) && !/\$\d/.test(h), h.slice(-80));
     c.ok("James's text says the same", carltonTexts.find((t) => t.to.endsWith("6105550133"))?.body === h);
     const rows = await prisma.outboxMessage.findMany({ where: { projectId: carlton.id } });
     c.ok("through the durable outbox: two accepted shoot_day rows, keyed per job, creative and day, no client on them", rows.length === 2 && rows.every((r) => r.state === "accepted" && r.clientId === null && r.dedupeKey?.startsWith(`shoot_day:${carlton.id}:`) && r.dedupeKey.endsWith(":2026-10-19")), rows.map((r) => `${r.state} ${r.dedupeKey}`).join(" | "));
@@ -280,7 +281,7 @@ async function main() {
     // =====================================================================
     c.ok("no outbound call at all (OpenPhone answered in-process, no Slack, no weather)", fence.blocked.length === 0 && fence.faked.length === 0, fence.blocked.join(" "));
     c.ok("only the creatives were texted (Harrison, James); never a client, Kim, Kyle or Jordan", texts.every((t) => /6105550144$|6105550133$/.test(t.to.replace(/\D/g, ""))), texts.map((t) => t.to).join(","));
-    c.ok("every text is a hub text with special requests", texts.every((t) => t.body.startsWith(`${HUB_SMS_PREFIX}: `) && t.body.includes("Special requests for this shoot: 1) ")));
+    c.ok("every text is a hub text with special requests", texts.every((t) => t.body.startsWith(`${HUB_SMS_PREFIX}: `) && t.body.includes("Special requests for this shoot:\n1) ")));
   } finally {
     c.summary();
     quiet.restore();

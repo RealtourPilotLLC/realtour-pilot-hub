@@ -85,6 +85,8 @@ const ok = (label: string, good: boolean, detail = "") => {
   good ? pass++ : fail++;
   console.log(`  ${good ? "PASS" : "FAIL"} ${label}${detail ? ` — ${detail}` : ""}`);
 };
+// The updates a digest carried (Oct 28 2026: numbered, a blank line apart).
+const digestItems = (body: string) => body.match(/(?:^|\n\n)\d+\. /g)?.length ?? 0;
 
 async function main() {
   const db = await PGlite.create();
@@ -149,7 +151,7 @@ async function main() {
   ok("the digest went", sent.length === 1, JSON.stringify(r1));
   ok("BEFORE: the overflow release could fail and strand rows. It is never called", releaseAttempts === 0, `${releaseAttempts} attempt(s)`);
 
-  const carried = sent[0].body.split("\n").filter((l) => l.startsWith("• ")).length;
+  const carried = digestItems(sent[0].body);
   const stamped = await prisma.pendingSms.count({ where: { teamMemberId: member.id, sentAt: { not: null } } });
   const stillDue = await prisma.pendingSms.count({ where: { teamMemberId: member.id, sentAt: null } });
   ok("every claimed row is a line in the text that went", stamped === carried, `${stamped} claimed vs ${carried} carried`);
@@ -175,7 +177,7 @@ async function main() {
   const r2 = await notify.flushPendingSms();
   ok("once the window passes, the remainder is carried", sent.length === 2, JSON.stringify(r2));
   ok("  …and nothing is left due", (await prisma.pendingSms.count({ where: { teamMemberId: member.id, sentAt: null } })) === 0);
-  ok("  …with every line accounted for exactly once", sent[0].body.split("\n").filter((l) => l.startsWith("• ")).length + sent[1].body.split("\n").filter((l) => l.startsWith("• ")).length === 12);
+  ok("  …with every line accounted for exactly once", digestItems(sent[0].body) + digestItems(sent[1].body) === 12);
 
   // ======================================================================
   console.log("\n=== R3 (2): the recovery scan cannot fill with history ===\n");

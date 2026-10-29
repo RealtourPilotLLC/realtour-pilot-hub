@@ -122,7 +122,7 @@ async function main() {
     const one = rp.composeReminderText({ firstName: "Harrison", street: "859 N Lawrence St", missing: ["the flow and vision for the edit"], link: "https://hub.example/upload/p1" });
     console.log(`\n--- one video ---\n${one}\n---`);
     c.ok("Jordan's shape: the street, missing, the editor waiting, what is needed, the upload page",
-      one === `${HUB_SMS_PREFIX}: Hi Harrison, quick reminder: the instructions for 859 N Lawrence St are missing and the editor is waiting on them. Still needed: the flow and vision for the edit. You can add them here: https://hub.example/upload/p1`, one);
+      one === `${HUB_SMS_PREFIX}: Hi Harrison, quick reminder: the instructions for 859 N Lawrence St are missing and the editor is waiting on them. Still needed: the flow and vision for the edit.\n\nYou can add them here:\nhttps://hub.example/upload/p1`, one);
     c.ok("a list of three reads 'a, b and c'", rp.composeReminderText({ firstName: "H", street: "1 A St", missing: ["a", "b", "c"], link: "x" }).includes("Still needed: a, b and c."));
     c.ok("no dashes, even from a dashed street", !DASH.test(one) && !DASH.test(rp.composeReminderText({ firstName: "H", street: "12 Elm St — Unit 2", missing: ["a"], link: "x" })));
     c.ok("the row's line: today 'Reminded 9:00 AM by Jordan', the hub's own 'by the hub', another day dated",
@@ -292,13 +292,13 @@ async function main() {
     const a = reminders("859 N Lawrence St");
     c.ok("one text to Harrison's phone", a.length === 1 && a[0].to.replace(/\D/g, "").endsWith("6105550144"), a.map((t) => t.to).join(","));
     console.log(`\n--- one video (859 N Lawrence St) ---\n${a[0]?.body}\n---`);
-    c.ok("one video: what is missing and the upload page", a[0]?.body === `${HUB_SMS_PREFIX}: Hi Harrison, quick reminder: the instructions for 859 N Lawrence St are missing and the editor is waiting on them. Still needed: the flow and vision for the edit and the wrap-up on the upload page. You can add them here: ${appBase()}/upload/${lawrence.id}`, a[0]?.body);
+    c.ok("one video: what is missing and the upload page", a[0]?.body === `${HUB_SMS_PREFIX}: Hi Harrison, quick reminder: the instructions for 859 N Lawrence St are missing and the editor is waiting on them. Still needed: the flow and vision for the edit and the wrap-up on the upload page.\n\nYou can add them here:\n${appBase()}/upload/${lawrence.id}`, a[0]?.body);
     const b = reminders("610 Onward Ave");
     console.log(`\n--- two videos (610 Onward Ave) ---\n${b[0]?.body}\n---`);
-    c.ok("two videos: each video named", b.length === 1 && b[0].body === `${HUB_SMS_PREFIX}: Hi Harrison, quick reminder: the instructions for 610 Onward Ave are missing and the editor is waiting on them. Still needed: the flow and vision for video 1 (${v1.label}), the instructions for video 2 (${v2.label}) and the wrap-up on the upload page. You can add them here: ${appBase()}/upload/${onward.id}`, b[0]?.body);
+    c.ok("two videos: each video named", b.length === 1 && b[0].body === `${HUB_SMS_PREFIX}: Hi Harrison, quick reminder: the instructions for 610 Onward Ave are missing and the editor is waiting on them. Still needed: the flow and vision for video 1 (${v1.label}), the instructions for video 2 (${v2.label}) and the wrap-up on the upload page.\n\nYou can add them here:\n${appBase()}/upload/${onward.id}`, b[0]?.body);
     const g = reminders("540 Onward Ave");
     console.log(`\n--- an added video (540 Onward Ave) ---\n${g[0]?.body}\n---`);
-    c.ok("a video added after the handoff: just that video", g[0]?.body === `${HUB_SMS_PREFIX}: Hi Harrison, quick reminder: the instructions for 540 Onward Ave are missing and the editor is waiting on them. Still needed: the instructions for video 2 (${v2.label}). You can add them here: ${appBase()}/upload/${added.id}`, g[0]?.body);
+    c.ok("a video added after the handoff: just that video", g[0]?.body === `${HUB_SMS_PREFIX}: Hi Harrison, quick reminder: the instructions for 540 Onward Ave are missing and the editor is waiting on them. Still needed: the instructions for video 2 (${v2.label}).\n\nYou can add them here:\n${appBase()}/upload/${added.id}`, g[0]?.body);
     c.ok("no dashes in any of them", [...a, ...b, ...g].every((t) => !DASH.test(t.body)));
     const rows = await prisma.outboxMessage.findMany({ where: { projectId: lawrence.id } });
     c.ok("through the durable outbox: one accepted team text, no client on it, signed by the person", rows.length === 1 && rows[0].state === "accepted" && rows[0].clientId === null && rows[0].requestedBy === "Jordan Spackman" && /^instructions_missing:[^:]+:[^:]+:remind:/.test(rows[0].dedupeKey ?? ""), rows.map((r) => `${r.state} ${r.requestedBy} ${r.dedupeKey}`).join(" | "));

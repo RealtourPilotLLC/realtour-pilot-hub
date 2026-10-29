@@ -287,20 +287,21 @@ async function main() {
     const run = await pb.sweepPhotographerBriefs(setNow(FRI(18, 5)));
     console.log(`\n--- Fri 6:05 PM run ---\n${JSON.stringify(run)}\n---`);
     const hMon = toHarrison();
-    c.ok("Harrison: ONE text, his Monday brief", hMon.length === 1 && hMon[0].body.startsWith(`${HUB_SMS_PREFIX}: Harrison, your shoots for Mon Oct 26.`), hMon.map((t) => t.body.split("\n")[0]).join(" | "));
+    c.ok("Harrison: ONE text, his Monday brief", hMon.length === 1 && hMon[0].body.startsWith(`${HUB_SMS_PREFIX}: Harrison, your shoots for Mon Oct 26\n\n1) `), hMon.map((t) => t.body.split("\n")[0]).join(" | "));
     console.log(`\n--- Harrison's Monday brief ---\n${hMon[0]?.body}\n---`);
-    c.ok("James: ONE text, his Saturday brief (Friday covers the weekend)", toJames().length === 1 && toJames()[0].body.startsWith(`${HUB_SMS_PREFIX}: James, your shoot for Sat Oct 24.`), toJames().map((t) => t.body).join(" | "));
+    c.ok("James: ONE text, his Saturday brief (Friday covers the weekend)", toJames().length === 1 && toJames()[0].body.startsWith(`${HUB_SMS_PREFIX}: James, your shoot for Sat Oct 24\n\n1) `), toJames().map((t) => t.body).join(" | "));
     c.ok("no Tuesday brief yet", !texts.some((t) => t.body.includes("Tue Oct 27") || t.body.includes("77 Tuesday Ct")));
     const body = hMon[0]?.body ?? "";
-    const cliffLine = body.split("\n").find((l) => l.includes("615 Cliff Ln")) ?? "";
-    const richardLine = body.split("\n").find((l) => l.includes("266 Richard Dr")) ?? "";
-    c.ok("in time order: 11:00 AM Richard Dr, then 1:00 PM Cliff Ln", body.indexOf("1) 11:00 AM, 266 Richard Dr, Allentown.") > 0 && body.indexOf("2) 1:00 PM, 615 Cliff Ln, Malvern (visit 2 of 2).") > 0);
+    // Oct 28 2026: each shoot is its own block, one fact a line, a blank line between.
+    const cliffLine = body.split("\n\n").find((l) => l.includes("615 Cliff Ln")) ?? "";
+    const richardLine = body.split("\n\n").find((l) => l.includes("266 Richard Dr")) ?? "";
+    c.ok("in time order: 11:00 AM Richard Dr, then 1:00 PM Cliff Ln", body.indexOf("\n\n1) 11:00 AM, 266 Richard Dr, Allentown\nServices: ") > 0 && body.indexOf("\n\n2) 1:00 PM, 615 Cliff Ln, Malvern (visit 2 of 2)\nServices: ") > body.indexOf("1) 11:00 AM"));
     c.ok("Cliff Ln: only this visit's services (the 3D tour), not the order's Social Influencer", cliffLine.includes("Services: Zillow Showcase 3D Tour Add-on.") && !cliffLine.includes("Social Influencer"), cliffLine);
     c.ok("Cliff Ln: this visit's requests (made since visit 1), the client's must-get included", cliffLine.includes("For the second visit: interiors and agent on camera") && cliffLine.includes("Must get: Client: Please make sure to capture the finished basement this time"), cliffLine);
     c.ok("Cliff Ln: never visit 1's 'Exteriors only' or its pool request, never the post-delivery lamp revision", !/Exteriors only|pool from the deck|lamp/i.test(cliffLine), cliffLine);
     c.ok("…the text says the earlier visit's notes are on the page", cliffLine.includes("Notes from the earlier visit are on the brief page"));
     c.ok("Richard Dr: services, access (lockbox, who's there), contact, and the exclusion", richardLine.includes("Services: Social Influencer.") && richardLine.includes("Access: Lockbox or door code: 4417; Agent will be there.") && richardLine.includes("Contact: Nick Valudes (717) 575-8139.") && richardLine.includes("Leave out: Do not shoot the neighbor's yard, keep it tight."), richardLine);
-    c.ok("ends with the full-brief link", body.trim().endsWith(`Full brief, then tap Got it: ${appBase()}/shoot/brief/2026-10-26`), body.slice(-90));
+    c.ok("ends with the full-brief link", body.trim().endsWith(`\n\nFull brief, then tap Got it:\n${appBase()}/shoot/brief/2026-10-26`), body.slice(-90));
     c.ok("no em or en dashes (the special instructions had one)", !DASH.test(body) && !texts.some((t) => DASH.test(t.body)));
     const outRows = await prisma.outboxMessage.findMany({ orderBy: { createdAt: "asc" } });
     const { outboxKind, isClientKind } = await import("@/lib/outbox");
@@ -396,7 +397,7 @@ async function main() {
     const upd = toHarrison().slice(n10);
     console.log(`\n--- the update ---\n${upd[0]?.body}\n---`);
     c.ok("ONE updated brief, leading with what changed, asking for Got it again",
-      upd.length === 1 && upd[0].body.startsWith(`${HUB_SMS_PREFIX}: Harrison, your Mon Oct 26 brief changed. 266 Richard Dr is now at 12:00 PM (was 11:00 AM).`) && upd[0].body.includes("1) 12:00 PM, 266 Richard Dr, Allentown.") && upd[0].body.includes(`Please open it and tap Got it again: ${appBase()}/shoot/brief/2026-10-26`) && !DASH.test(upd[0].body), upd.map((t) => t.body).join(" | "));
+      upd.length === 1 && upd[0].body.startsWith(`${HUB_SMS_PREFIX}: Harrison, your Mon Oct 26 brief changed\n\nWhat changed: 266 Richard Dr is now at 12:00 PM (was 11:00 AM).\n\n`) && upd[0].body.includes("\n\n1) 12:00 PM, 266 Richard Dr, Allentown\n") && upd[0].body.includes(`Please open it and tap Got it again:\n${appBase()}/shoot/brief/2026-10-26`) && !DASH.test(upd[0].body), upd.map((t) => t.body).join(" | "));
     const s10 = (await status([richardA.id, cliffV2.id])).get(richardA.id);
     c.ok("status: changed (sent again, awaiting a new Got it), the old ackAt kept", s10?.state === "changed" && /Waiting for Harrison's new Got it/.test(s10?.why ?? "") && Math.abs(Date.parse(s10?.ackAt ?? "") - FRI(19, 12).getTime()) < 60_000, JSON.stringify(s10));
     const page10 = await (async () => { await signIn(harrisonLogin); return render("2026-10-26"); })();
@@ -430,7 +431,7 @@ async function main() {
     const hOff = toHarrison().slice(nH);
     const jNew = toJames().slice(nJ);
     c.ok("Harrison is told 615 Cliff Ln is off his schedule", hOff.length === 1 && hOff[0].body.includes("615 Cliff Ln is off your schedule") && !hOff[0].body.includes("2) "), hOff.map((t) => t.body).join(" | "));
-    c.ok("James gets his Monday brief with it (his first for that day)", jNew.length === 1 && jNew[0].body.startsWith(`${HUB_SMS_PREFIX}: James, your shoot for Mon Oct 26.`) && jNew[0].body.includes("615 Cliff Ln, Malvern (visit 2 of 2)"), jNew.map((t) => t.body).join(" | "));
+    c.ok("James gets his Monday brief with it (his first for that day)", jNew.length === 1 && jNew[0].body.startsWith(`${HUB_SMS_PREFIX}: James, your shoot for Mon Oct 26\n\n`) && jNew[0].body.includes("615 Cliff Ln, Malvern (visit 2 of 2)"), jNew.map((t) => t.body).join(" | "));
     c.ok("…the Cliff Ln status is James's now: sent, no Got it", (await status([cliffV2.id])).get(cliffV2.id)?.state === "sent");
 
     // =====================================================================
@@ -480,7 +481,7 @@ async function main() {
     await signIn(kyle);
     const pKyle = await actions.sendPhotographerBriefNow(harrison.id, "2026-10-26");
     c.ok("the admin (Kyle): sent", pKyle.ok && nowCount() === n12 + 1 && texts[texts.length - 1].to === "6105550144", pKyle.message);
-    c.ok("…the same brief again (nothing changed since the last update), and the timeline names him", texts[texts.length - 1].body.startsWith(`${HUB_SMS_PREFIX}: Harrison, your shoot for Mon Oct 26.`) && (await lines(richard.id)).some((l) => l === "Kyle Smith texted Harrison the shoot brief for Mon Oct 26 again at 3:00 PM."), texts[texts.length - 1].body.split("\n")[0]);
+    c.ok("…the same brief again (nothing changed since the last update), and the timeline names him", texts[texts.length - 1].body.startsWith(`${HUB_SMS_PREFIX}: Harrison, your shoot for Mon Oct 26\n\n`) && (await lines(richard.id)).some((l) => l === "Kyle Smith texted Harrison the shoot brief for Mon Oct 26 again at 3:00 PM."), texts[texts.length - 1].body.split("\n")[0]);
     await signIn(james);
     const pJ1 = await actions.sendPhotographerBriefNow(harrison.id, "2026-10-26");
     c.ok("a second press a moment later: refused, nothing sent", !pJ1.ok && /Give it a couple of minutes/.test(pJ1.message) && nowCount() === n12 + 1, pJ1.message);

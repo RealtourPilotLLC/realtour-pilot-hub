@@ -4,7 +4,7 @@ import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { etTime } from "@/lib/datetime";
 import { noDashes } from "@/lib/text";
-import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
+import { staffText, staffTextNumber } from "@/lib/hubSms";
 import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 import { logJobEvent } from "./jobState";
 
@@ -51,7 +51,7 @@ const streetOf = (title: string | null | undefined, address: string | null | und
 
 /** The photographer's text: the hub marker, then the template. No dashes. Pure. */
 export function composeNotesAskText(o: { firstName: string; street: string; link: string }, t: TextTemplateSet = DEFAULT_TEXTS): string {
-  return noDashes(`${HUB_SMS_PREFIX}: ${t.render("photo_notes_ask_photographer", { firstName: o.firstName, street: o.street, link: o.link })}`);
+  return staffText(t.render("photo_notes_ask_photographer", { firstName: o.firstName, street: o.street, link: o.link }));
 }
 
 /** The last ask on this job, for the button's line ("Asked 2:14 PM by Kyle"), or null. */

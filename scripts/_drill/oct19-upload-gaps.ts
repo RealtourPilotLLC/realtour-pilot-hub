@@ -64,8 +64,9 @@ async function main() {
 
   c.head("4 · the text");
   const text = composeGapText({ firstName: "Harrison", street: "34 Oakland Rd", shotWhen: "today", counts: countUpload(dji(45, at(12)), clips(4, at(12), "Drone")), sure: ["ground_photos"], alsoEmpty: ["footage"], link: "https://hub.realtourpilot.com/upload/p1" });
+  // Oct 28 2026: the upload page link alone on the last line, its label above it.
   c.ok("says what Dropbox has, what is missing, what else is not there yet, and links the upload page",
-    /Dropbox only has 45 drone photos and 4 drone clips/.test(text) && /Missing: the ground photos\./.test(text) && /Also not there yet: the video footage\./.test(text) && /Upload page: https:\/\/hub\.realtourpilot\.com\/upload\/p1$/.test(text), text);
+    /Dropbox only has 45 drone photos and 4 drone clips/.test(text) && /Missing: the ground photos\./.test(text) && /Also not there yet: the video footage\./.test(text) && /Can you upload them\?\n\nUpload page:\nhttps:\/\/hub\.realtourpilot\.com\/upload\/p1$/.test(text), text);
   c.ok("no dashes, no dollar figures", !/[–—]/.test(text) && !/\$\d/.test(text), text);
   c.ok("held words read naturally", heldWords(countUpload(dji(1, at(1)), [])) === "1 drone photo" && heldWords(countUpload([], [])) === "nothing");
   c.ok("one text per job, person and gap (the outbox key)", uploadGapKey("p1", "tm1", ["footage", "ground_photos"]) === "upload_gap:p1:tm1:footage+ground_photos");

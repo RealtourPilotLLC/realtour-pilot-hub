@@ -1,8 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etAt, etDayKey, etHour, etTime } from "@/lib/datetime";
-import { noDashes } from "@/lib/text";
-import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
+import { staffText, staffTextNumber } from "@/lib/hubSms";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 import { liveAppointment } from "@/lib/shootDayText";
@@ -47,7 +46,7 @@ export const sessionScriptsKey = (projectId: string, teamMemberId: string, day: 
 
 /** "⚙️ Realtour Hub: Hi Harrison, John's content session is today at 1:30 PM at 80 W Lancaster Ave. …" */
 export function composeSessionScriptsText(o: { name: string; client: string; startAt: Date; street: string; link: string }, t: TextTemplateSet = DEFAULT_TEXTS): string {
-  return noDashes(`${HUB_SMS_PREFIX}: ${t.render("session_scripts", { firstName: firstName(o.name), client: clientFirst(o.client), time: etTime(o.startAt), street: o.street, link: o.link })}`);
+  return staffText(t.render("session_scripts", { firstName: firstName(o.name), client: clientFirst(o.client), time: etTime(o.startAt), street: o.street, link: o.link }));
 }
 
 export type SessionScriptsCandidate = {

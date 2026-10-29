@@ -49,7 +49,8 @@ export function TextMessagesSettings({ rows, isOwner }: { rows: TextTemplateRow[
         </p>
         <p>
           Team texts start with &ldquo;⚙️ Realtour Hub:&rdquo; so the team can tell the hub sent them. That marker is added on its
-          own and is not part of the wording.
+          own and is not part of the wording. On the phone, a team text is also laid out for reading: the link sits alone on
+          the last line with its label above it, a list goes one item a line, and a long dash becomes a line break or a comma.
         </p>
         {!isOwner && <p className="font-medium text-foreground/85">Only Jordan can change these. You can read every one here.</p>}
         <p>{edited === 0 ? "All of them use the default wording." : `${edited} of ${rows.length} use wording of your own.`}</p>

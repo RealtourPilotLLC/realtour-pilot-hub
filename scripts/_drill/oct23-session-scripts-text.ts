@@ -90,7 +90,7 @@ async function main() {
     await sst.sweepSessionScriptsTexts(setNow(FRI(7, 0)));
     const h = texts.filter((t) => t.to.replace(/\D/g, "").endsWith("6105550144"));
     c.ok("7:00 AM: Harrison gets one text", h.length === 1, String(h.length));
-    c.ok("…the words: who, when, where and the shoot page link", /^⚙️ Realtour Hub: Hi Harrison, John's content session is today at 1:30 PM at 80 W Lancaster Ave\. The scripts are on your shoot page: \S+\/shoot\/\S+$/.test(h[0]?.body ?? "") && !!h[0]?.body.endsWith(`/shoot/${session.id}`), h[0]?.body);
+    c.ok("…the words: who, when, where and the shoot page link", /^⚙️ Realtour Hub: Hi Harrison, John's content session is today at 1:30 PM at 80 W Lancaster Ave\.\n\nThe scripts are on your shoot page:\nhttps?:\/\/\S+\/shoot\/\S+$/.test(h[0]?.body ?? "") && !!h[0]?.body.endsWith(`/shoot/${session.id}`), h[0]?.body);
     c.ok("…no listing shoot, cancelled appointment, test client or cancelled job is texted", texts.length === 1, texts.map((t) => t.body.slice(0, 60)).join(" | "));
     await Promise.all([sst.sweepSessionScriptsTexts(setNow(FRI(7, 5))), sst.sweepSessionScriptsTexts(FRI(7, 5))]);
     c.ok("later ticks (two at once) send nothing again", texts.length === 1, String(texts.length));

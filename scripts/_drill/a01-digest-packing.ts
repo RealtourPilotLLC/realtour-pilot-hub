@@ -15,7 +15,7 @@
 // number it slices by.
 // ---------------------------------------------------------------------------
 import { packStaffDigest } from "../../src/lib/notify";
-import { HUB_SMS_PREFIX } from "../../src/lib/hubSms";
+import { HUB_SMS_PREFIX, staffTextLayout } from "../../src/lib/hubSms";
 
 let pass = 0, fail = 0;
 const ok = (label: string, good: boolean, detail = "") => {
@@ -36,10 +36,11 @@ console.log("\n=== A01: a staff digest never claims a line it did not carry ===\
   ok("BEFORE: all twelve would have been marked sent — now fewer are carried", p.count < 12, `carried ${p.count} of 12`);
   ok("every carried line is present WHOLE", lines.slice(0, p.count).every((l) => p.body.includes(l)));
   ok("no line is present in part", lines.slice(p.count).every((l) => !p.body.includes(l.slice(0, 60))));
-  ok("the header's count matches what is actually in the body", p.body.startsWith(`${HUB_SMS_PREFIX} — ${p.count} updates:`), p.body.slice(0, 40));
+  // Oct 28 2026: laid out for a phone, "N updates" then numbered updates a blank line apart.
+  ok("the header's count matches what is actually in the body", p.body.startsWith(`${HUB_SMS_PREFIX}: ${p.count} updates\n\n1. `) && (p.body.match(/(?:^|\n\n)\d+\. /g) ?? []).length === p.count, p.body.slice(0, 40));
   // The proof that the OLD behaviour was a silent loss: the naive body is
   // longer than the limit, so slicing it would have cut a line in half.
-  const naive = `${HUB_SMS_PREFIX} — ${lines.length} updates:\n` + lines.map((l) => `• ${l}`).join("\n");
+  const naive = `${HUB_SMS_PREFIX}: ${lines.length} updates\n\n` + lines.map((l, i) => `${i + 1}. ${l}`).join("\n\n");
   ok("BEFORE: the naive body really did overrun and would have been cut", naive.length > LIMIT, `${naive.length} chars`);
 }
 
@@ -60,7 +61,7 @@ console.log("\n=== A01: a staff digest never claims a line it did not carry ===\
 {
   const lines = Array.from({ length: 6 }, (_, i) => line(i + 1, 240));
   const p = packStaffDigest(lines, LIMIT);
-  const oneMore = `${HUB_SMS_PREFIX} — ${p.count + 1} updates:\n` + lines.slice(0, p.count + 1).map((l) => `• ${l}`).join("\n");
+  const oneMore = `${HUB_SMS_PREFIX}: ${p.count + 1} updates\n\n` + lines.slice(0, p.count + 1).map((l, i) => `${i + 1}. ${staffTextLayout(l, { compact: true })}`).join("\n\n");
   ok("it takes as many complete lines as genuinely fit", p.count > 0 && (p.count === lines.length || oneMore.length > LIMIT), `carried ${p.count}`);
 }
 
@@ -73,6 +74,19 @@ console.log("\n=== A01: a staff digest never claims a line it did not carry ===\
   ok("an oversized single update still sends something", p.count === 1 && p.body.length <= LIMIT);
   ok("  …and SAYS it was cut, with somewhere to go", p.summarisedOne === true && p.body.includes("open the hub to read it in full"));
   ok("  …rather than ending mid-sentence with no sign of it", !p.body.endsWith("instruction "));
+}
+
+// Oct 28 2026 (Jordan: "make sure text messages are formatted nicer for
+// larger team text message notifications"): each update laid out for a phone.
+{
+  const p = packStaffDigest([
+    "FYI video in review — 538 Onward Ave (John Mark, v1) · James reviews it first; approve it any time. https://hub.realtourpilot.com/review/a?cut=b",
+    "Cut approved — 538 Onward Ave (v2.mov) → https://hub.realtourpilot.com/projects/a",
+  ], LIMIT);
+  ok("a digest: numbered updates a blank line apart, the heading on its own line, each link alone, no long dashes",
+    p.count === 2 && p.body === `${HUB_SMS_PREFIX}: 2 updates\n\n1. FYI video in review\n538 Onward Ave (John Mark, v1) · James reviews it first; approve it any time.\nhttps://hub.realtourpilot.com/review/a?cut=b\n\n2. Cut approved\n538 Onward Ave (v2.mov)\nhttps://hub.realtourpilot.com/projects/a`, JSON.stringify(p.body));
+  const one = packStaffDigest(["Kyle asked for changes on 12 Elm St. Kim has it.: “Video 2: [0:41] trim the intro” https://hub.realtourpilot.com/edit/a"], LIMIT);
+  ok("one update: the client's words on their own line, a blank line, then the link", one.body === `${HUB_SMS_PREFIX}: Kyle asked for changes on 12 Elm St. Kim has it.\n“Video 2: [0:41] trim the intro”\n\nhttps://hub.realtourpilot.com/edit/a`, JSON.stringify(one.body));
 }
 
 // Nothing queued.

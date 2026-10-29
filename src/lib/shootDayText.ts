@@ -4,7 +4,7 @@ import { etDayKey, etTime } from "@/lib/datetime";
 import { clip, noDashes, scrubMoney } from "@/lib/text";
 import { aryeoCustomerNote } from "@/lib/shoot";
 import { isAccessNote } from "@/lib/specialRequests";
-import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
+import { staffText, staffTextNumber } from "@/lib/hubSms";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 
@@ -125,7 +125,7 @@ export function shootDayRequests(src: ShootDaySources): string[] {
  *  Oct 21 2026); the hub marker stays in front. `t` = saved wording, else default. */
 export function composeShootDayText(o: { street: string; startAt: Date; requests: string[]; link: string }, t: TextTemplateSet = DEFAULT_TEXTS): string {
   const items = o.requests.map((r, i) => `${i + 1}) ${r}`).join(" ");
-  return noDashes(`${HUB_SMS_PREFIX}: ${t.render("shoot_day_requests", { street: o.street, time: etTime(o.startAt), requestList: items, link: o.link })}`);
+  return staffText(t.render("shoot_day_requests", { street: o.street, time: etTime(o.startAt), requestList: items, link: o.link }));
 }
 
 /** The appointment can still happen at its time: not cancelled, not postponed without a slot. */

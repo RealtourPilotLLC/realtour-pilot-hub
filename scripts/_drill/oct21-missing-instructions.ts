@@ -96,7 +96,7 @@ async function main() {
     const sample = mi.composeNudgeText({ firstName: "Harrison", street: "859 N Lawrence St", shotOn: TUE(14), missing: joe, link: "https://hub.example/upload/p1" });
     console.log(`\n--- the shape ---\n${sample}\n---`);
     c.ok("Jordan's shape: who, the job, the shoot day, exactly what is missing, the upload page",
-      sample === `${HUB_SMS_PREFIX}: Hi Harrison, 859 N Lawrence St (shot Tue Oct 20) is waiting on you before editing can start: the flow and vision for the edit and the agent's intro script as delivered on camera. Finish it here: https://hub.example/upload/p1`, sample);
+      sample === `${HUB_SMS_PREFIX}: Hi Harrison, 859 N Lawrence St (shot Tue Oct 20) is waiting on you before editing can start: the flow and vision for the edit and the agent's intro script as delivered on camera.\n\nFinish it here:\nhttps://hub.example/upload/p1`, sample);
     c.ok("the next morning says 'still waiting'", mi.composeNudgeText({ firstName: "Harrison", street: "859 N Lawrence St", shotOn: TUE(14), missing: joe, link: "x", again: true }).includes("is still waiting on you"));
     c.ok("photos only: 'before the photos can go out'", mi.composeNudgeText({ firstName: "Harrison", street: "1 A St", shotOn: TUE(9), missing: { video: [], photos: ["the cull confirmation"] }, link: "x" }).includes("waiting on you before the photos can go out: the cull confirmation."));
     const jamesLine = mi.composeManagerLine({ photographerFirst: "Harrison", street: "859 N Lawrence St", shotOn: TUE(14), missing: joe });
@@ -212,7 +212,7 @@ async function main() {
     const hb = h[0]?.body ?? "";
     console.log(`\n--- Harrison's text ---\n${hb}\n---`);
     c.ok("…naming exactly what is missing, the shoot day and the upload page",
-      hb === `${HUB_SMS_PREFIX}: Hi Harrison, 859 N Lawrence St (shot Tue Oct 20) is waiting on you before editing can start: the flow and vision for the edit, the agent's intro script as delivered on camera, the wrap-up on the upload page, the cull confirmation and the removal notes. Finish it here: ${appBase()}/upload/${lawrence.id}`, hb);
+      hb === `${HUB_SMS_PREFIX}: Hi Harrison, 859 N Lawrence St (shot Tue Oct 20) is waiting on you before editing can start: the flow and vision for the edit, the agent's intro script as delivered on camera, the wrap-up on the upload page, the cull confirmation and the removal notes.\n\nFinish it here:\n${appBase()}/upload/${lawrence.id}`, hb);
     // Which of his lines leads the first digest depends on which twin tick got
     // there first; the queue below holds every one of them either way.
     const jamesTexts = textsTo("6105550133").filter((t) => t.body.includes("Heads up: "));
@@ -222,7 +222,7 @@ async function main() {
     const jamesQueue = await prisma.pendingSms.findMany({ where: { teamMemberId: james.id }, orderBy: { createdAt: "asc" } });
     c.ok("James gets one line per job (the later ones wait for his next digest, as every team ping does)", jamesQueue.length === 3 && jamesQueue.some((q) => q.line.includes("859 N Lawrence St (shot Oct 20) yet: the flow and vision for the edit, the agent's intro script as delivered on camera, the wrap-up on the upload page, the cull confirmation and the removal notes. Editing is waiting.")) && jamesQueue.some((q) => q.line.includes("22 Half In Way")), jamesQueue.map((q) => q.line).join(" || "));
     c.ok("…linking the job (a photographer lands on its shoot screen)", jamesQueue.every((q) => q.line.includes(`${appBase()}/projects/`)));
-    c.ok("22 Half In Way: Harrison asked for the cinematic's brief only", nudgesAbout("22 Half In Way").length === 1 && nudgesAbout("22 Half In Way")[0].body.includes("before editing can start: the flow and vision for the edit and the wrap-up on the upload page. Finish it here:"), nudgesAbout("22 Half In Way").map((t) => t.body).join(""));
+    c.ok("22 Half In Way: Harrison asked for the cinematic's brief only", nudgesAbout("22 Half In Way").length === 1 && nudgesAbout("22 Half In Way")[0].body.includes("before editing can start: the flow and vision for the edit and the wrap-up on the upload page.\n\nFinish it here:"), nudgesAbout("22 Half In Way").map((t) => t.body).join(""));
     const lw = await lines(lawrence.id);
     c.ok("the job's timeline: 'Asked Harrison for the missing instructions at 10:00 AM; James copied.' with the list", lw.length === 1 && lw[0].startsWith("Asked Harrison for the missing instructions at 10:00 AM; James copied. Missing: the flow and vision for the edit,") && !DASH.test(lw[0]), lw.join(" | "));
     const rows = await prisma.outboxMessage.findMany({ where: { projectId: lawrence.id } });

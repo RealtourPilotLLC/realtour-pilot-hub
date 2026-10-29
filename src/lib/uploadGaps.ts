@@ -1,8 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etDayKey, etTime, etYesterdayKey } from "@/lib/datetime";
-import { noDashes } from "@/lib/text";
-import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
+import { staffText, staffTextNumber } from "@/lib/hubSms";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
@@ -155,9 +154,7 @@ const listWords = (kinds: GapKind[]) => {
 export function composeGapText(o: { firstName: string; street: string; shotWhen: string; counts: UploadCounts; sure: GapKind[]; alsoEmpty: GapKind[]; link: string }, t: TextTemplateSet = DEFAULT_TEXTS): string {
   const also = o.alsoEmpty.length ? `Also not there yet: ${listWords(o.alsoEmpty)}.` : "";
   const missing = listWords(o.sure);
-  return noDashes(
-    `${HUB_SMS_PREFIX}: ${t.render("upload_gap", { firstName: o.firstName, street: o.street, shotWhen: o.shotWhen, held: heldWords(o.counts), missing, alsoMissing: also, link: o.link })}`,
-  );
+  return staffText(t.render("upload_gap", { firstName: o.firstName, street: o.street, shotWhen: o.shotWhen, held: heldWords(o.counts), missing, alsoMissing: also, link: o.link }));
 }
 
 // ---- the record per job ---------------------------------------------------------

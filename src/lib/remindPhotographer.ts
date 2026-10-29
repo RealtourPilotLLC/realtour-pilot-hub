@@ -3,7 +3,7 @@ import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { addBusinessDayKeysET, etAt, etDayKey, etMonthDayTime, etTime } from "@/lib/datetime";
 import { noDashes } from "@/lib/text";
-import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
+import { staffText, staffTextNumber } from "@/lib/hubSms";
 import { FLOW_AND_VISION_GAP } from "@/lib/handoff";
 import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 import {
@@ -94,7 +94,7 @@ const parseLock = (v: string | null | undefined): LockRecord | null => {
 
 /** The photographer's text: the hub marker, then the template. No dashes. */
 export function composeReminderText(o: { firstName: string; street: string; missing: string[]; link: string }, t: TextTemplateSet = DEFAULT_TEXTS): string {
-  return noDashes(`${HUB_SMS_PREFIX}: ${t.render("instructions_reminder_photographer", { firstName: o.firstName, street: o.street, missingList: listWords(o.missing), link: o.link })}`);
+  return staffText(t.render("instructions_reminder_photographer", { firstName: o.firstName, street: o.street, missingList: listWords(o.missing), link: o.link }));
 }
 
 /** The last reminder a job had: a press (by a person) or the hub's morning text (by null). */

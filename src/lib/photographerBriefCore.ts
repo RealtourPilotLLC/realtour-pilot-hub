@@ -535,9 +535,12 @@ function listLine(label: string, items: string[]): string {
   return /[.!?…]$/.test(body) || /https?:\/\/\S+$/.test(body) ? `${label}: ${body}` : `${label}: ${body}.`;
 }
 
-/** One shoot, as the text carries it: "1) 9:00 AM, 266 Richard Dr, Allentown. Services: …" */
+/** One shoot, as the text carries it, one fact a line (Jordan, Oct 28 2026:
+ *  "make sure text messages are formatted nicer for larger team text message
+ *  notifications"; the brief used to run as one block per shoot):
+ *  "1) 9:00 AM, 266 Richard Dr, Allentown\nServices: …\nAccess: …\nContact: …" */
 export function shootLine(s: VisitFacts, n: number): string {
-  const parts: string[] = [`${n}) ${s.time}, ${s.address}${s.visit ? ` (visit ${s.visit.n} of ${s.visit.of})` : ""}.`];
+  const parts: string[] = [`${n}) ${s.time}, ${s.address}${s.visit ? ` (visit ${s.visit.n} of ${s.visit.of})` : ""}`];
   parts.push(s.servicesNote ? `Services: ${s.servicesNote}` : listLine("Services", s.services));
   if (s.access.length) parts.push(listLine("Access", s.access));
   if (s.contact) parts.push(`Contact: ${s.contact}.`);
@@ -552,23 +555,25 @@ export function shootLine(s: VisitFacts, n: number): string {
   }
   if (more > 0) parts.push(`(${more} more on the brief page.)`);
   if (s.earlier.length) parts.push("Notes from the earlier visit are on the brief page, not repeated here.");
-  return noDashes(parts.join(" "));
+  return noDashes(parts.join("\n"));
 }
 
-/** The first brief of the day. Short, plain, no dashes, the page link last. Pure. */
+/** The first brief of the day. Plain, no dashes: the heading, each shoot as its
+ *  own block with a blank line between, and the page link alone at the end. Pure. */
 export function composeBriefText(d: BriefDay, link: string): string {
-  const head = `${BRIEF_PREFIX}: ${firstName(d.name)}, your shoot${d.shoots.length === 1 ? "" : "s"} for ${dayWords(d.day)}.`;
+  const head = `${BRIEF_PREFIX}: ${firstName(d.name)}, your shoot${d.shoots.length === 1 ? "" : "s"} for ${dayWords(d.day)}`;
   const body = d.shoots.map((s, i) => shootLine(s, i + 1));
-  return noDashes([head, ...body, `Full brief, then tap Got it: ${link}`].join("\n"));
+  return noDashes([head, ...body, `Full brief, then tap Got it:\n${link}`].join("\n\n"));
 }
 
-/** An updated brief: what changed first, then the day as it stands, and a new Got it. Pure. */
+/** An updated brief: what changed first (one line each), then the day as it
+ *  stands, and a new Got it. Laid out like the first brief. Pure. */
 export function composeUpdateText(d: BriefDay, changes: string[], link: string): string {
-  const what = changes.length ? `${changes.join("; ")}.` : "Details changed.";
-  const head = `${BRIEF_PREFIX}: ${firstName(d.name)}, your ${dayWords(d.day)} brief changed. ${what}`;
-  if (!d.shoots.length) return noDashes([head, `You have no shoots that day now. ${link}`].join("\n"));
+  const what = !changes.length ? "Details changed." : changes.length === 1 ? `What changed: ${changes[0]}.` : `What changed:\n${changes.map((c) => `• ${c}`).join("\n")}`;
+  const head = `${BRIEF_PREFIX}: ${firstName(d.name)}, your ${dayWords(d.day)} brief changed`;
+  if (!d.shoots.length) return noDashes([head, what, `You have no shoots that day now:\n${link}`].join("\n\n"));
   const body = d.shoots.map((s, i) => shootLine(s, i + 1));
-  return noDashes([head, ...body, `Please open it and tap Got it again: ${link}`].join("\n"));
+  return noDashes([head, what, ...body, `Please open it and tap Got it again:\n${link}`].join("\n\n"));
 }
 
 // ---- the record and the state ------------------------------------------------------------

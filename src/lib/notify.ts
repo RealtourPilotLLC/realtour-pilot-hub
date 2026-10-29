@@ -4,7 +4,7 @@ import type { Prisma } from "@prisma/client";
 import { scrubMoney } from "@/lib/text";
 import { slackNotify, slackChannels } from "@/lib/integrations/slack";
 import { appBase } from "@/lib/appUrl";
-import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
+import { HUB_SMS_PREFIX, staffText, staffTextLayout, staffTextNumber } from "@/lib/hubSms";
 import type { Role } from "@/lib/auth/access";
 import { etDayKey, etHour } from "@/lib/datetime";
 import { allSlackOwnerIds, wantsAllSlack } from "@/lib/notifyAllSlack";
@@ -687,8 +687,12 @@ export type PackedDigest = {
 export function packStaffDigest(lines: string[], limit = SMS_BODY_LIMIT): PackedDigest {
   if (lines.length === 0) return { count: 0, body: "", summarisedOne: false };
 
-  const single = (line: string) => `${HUB_SMS_PREFIX}: ${line}`;
-  const many = (ls: string[]) => `${HUB_SMS_PREFIX} — ${ls.length} updates:\n` + ls.map((l) => `• ${l}`).join("\n");
+  // Laid out for a phone (lib/hubSms staffTextLayout, Jordan Oct 28 2026):
+  // a digest is numbered, one blank line between updates, each link alone on
+  // its own line. The packer measures the laid-out body, so what fits is what
+  // is sent.
+  const single = (line: string) => staffText(line);
+  const many = (ls: string[]) => `${HUB_SMS_PREFIX}: ${ls.length} updates\n\n` + ls.map((l, i) => `${i + 1}. ${staffTextLayout(l, { compact: true })}`).join("\n\n");
 
   // One line, and it fits: the ordinary case.
   if (lines.length === 1 && single(lines[0]).length <= limit) {
@@ -707,9 +711,9 @@ export function packStaffDigest(lines: string[], limit = SMS_BODY_LIMIT): Packed
   // ONE line, too long for a text on its own. Never a mid-sentence cut — the
   // beginning plus an explicit pointer, so the reader knows there is more and
   // where it is. The full text is on the bell in the hub.
-  const tail = " … (cut short — open the hub to read it in full)";
+  const tail = " … (cut short: open the hub to read it in full)";
   const room = limit - `${HUB_SMS_PREFIX}: `.length - tail.length;
-  return { count: 1, body: `${HUB_SMS_PREFIX}: ${lines[0].slice(0, Math.max(40, room))}${tail}`, summarisedOne: true };
+  return { count: 1, body: `${HUB_SMS_PREFIX}: ${staffTextLayout(lines[0]).slice(0, Math.max(40, room)).trimEnd()}${tail}`, summarisedOne: true };
 }
 
 async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "parked" | "held"> {
@@ -1239,7 +1243,7 @@ export async function notifyStaffSms(
     const ours = await ourOpenPhoneNumberKeys().catch(() => new Set<string>());
     // Resolved ONCE — defaultOpenPhoneNumber is a live API round trip.
     const from = ids.length ? await defaultOpenPhoneNumber() : null;
-    const body = `${HUB_SMS_PREFIX}: ${text}`;
+    const body = staffText(text);
     const log = (teamMemberId: string, channel: DeliveryChannel, status: DeliveryStatus, detail?: string) =>
       logDelivery({ teamMemberId, kind, channel, status, detail });
 
