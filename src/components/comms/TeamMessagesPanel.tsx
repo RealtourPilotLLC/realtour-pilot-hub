@@ -368,7 +368,9 @@ export function TeamMessagesPanel({
             <Link href={hrefFor(base, { q, view: view === "all" ? undefined : view })} aria-label="Back to the conversations" className="-ml-2 inline-flex size-11 items-center justify-center rounded-lg hover:bg-surface-2 lg:hidden">
               <ArrowLeft aria-hidden className="size-4 text-muted" />
             </Link>
-            <div className="min-w-0 flex-1">
+            {/* A floor under the title (basis-52): on a phone the buttons wrap
+                below it instead of squeezing it to one word a line. */}
+            <div className="min-w-0 flex-1 basis-52">
               <div className="truncate text-sm font-semibold">
                 {selected.street} <span className="font-normal text-muted">({selected.client})</span>
               </div>

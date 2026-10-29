@@ -22,6 +22,21 @@ import {
 } from "@/lib/messageFiles";
 import { MAX_LINKS_PER_MESSAGE, type HubLinkRef, type HubLinkView } from "@/lib/hubLinks";
 
+// A hub link's title is "<place> · <screen>" ("825 State St · Editor brief").
+// On a phone the place truncates and the screen stays readable: a long job
+// name cut one row into "Avery Accelerator TES…" five times over, with
+// nothing saying which was the brief and which the job file (Oct 28 2026).
+function LinkTitle({ title, className }: { title: string; className?: string }) {
+  const at = title.lastIndexOf(" · ");
+  if (at < 0) return <span className={cn("min-w-0 flex-1 truncate", className)}>{title}</span>;
+  return (
+    <span className={cn("flex min-w-0 flex-1", className)}>
+      <span className="min-w-0 truncate">{title.slice(0, at)}</span>
+      <span className="shrink-0 whitespace-pre text-muted"> · {title.slice(at + 3)}</span>
+    </span>
+  );
+}
+
 /** A file on a message as the board draws it (lib/messageAttachments). */
 export type ProjectMsgFile = { id: string; name: string; size: number; image: boolean; href: string };
 
@@ -471,7 +486,7 @@ function MessageBoard({
               {links.map((l) => (
                 <li key={`${l.kind}:${l.id}:${l.cut ?? ""}`} className="flex min-w-0 items-center gap-2 rounded-lg border border-border bg-surface-2/60 pl-3">
                   <Link2 aria-hidden className="size-4 shrink-0 text-brand" />
-                  <span className="min-w-0 flex-1 truncate text-sm font-medium">{l.title}</span>
+                  <LinkTitle title={l.title} className="text-sm font-medium" />
                   <button type="button" onClick={() => setLinks((cur) => cur.filter((x) => x !== l))} aria-label={`Remove ${l.title}`} className="inline-flex size-11 shrink-0 items-center justify-center text-muted-2 hover:text-foreground">
                     <X aria-hidden className="size-4" />
                   </button>
@@ -569,13 +584,13 @@ export function MessageAttachments({ files, links }: { files: ProjectMsgFile[]; 
         l.href ? (
           <a key={i} href={l.href} className="flex min-h-11 min-w-0 items-center gap-2 rounded-lg border border-border bg-surface-2/60 px-3 text-sm hover:border-brand/50 hover:bg-surface-2">
             <Link2 aria-hidden className="size-4 shrink-0 text-brand" />
-            <span className="min-w-0 flex-1 truncate font-medium">{l.title}</span>
+            <LinkTitle title={l.title} className="font-medium" />
             <ExternalLink aria-hidden className="size-3.5 shrink-0 text-muted-2" />
           </a>
         ) : (
           <div key={i} className="flex min-h-11 min-w-0 items-center gap-2 rounded-lg border border-dashed border-border px-3 text-sm text-muted" title="You can't open this page">
             <Lock aria-hidden className="size-4 shrink-0 text-muted-2" />
-            <span className="min-w-0 flex-1 truncate">{l.title}</span>
+            <LinkTitle title={l.title} />
             <span className="shrink-0 text-[11px] text-muted-2">Not open to you</span>
           </div>
         ),
@@ -649,7 +664,7 @@ function HubLinkPicker({ conversation, team, chosen, onPick, onClose }: {
         {pasted && pasted.ok && (
           <button type="button" disabled={isChosen(pasted.link)} onClick={() => onPick(pasted.link)} className="flex min-h-11 w-full min-w-0 items-center gap-2 rounded-lg border border-border px-3 text-left text-sm hover:bg-surface-2 disabled:opacity-50">
             <Link2 aria-hidden className="size-4 shrink-0 text-brand" />
-            <span className="min-w-0 flex-1 truncate font-medium">{pasted.link.title}</span>
+            <LinkTitle title={pasted.link.title} className="font-medium" />
             <span className="shrink-0 text-xs text-muted-2">{isChosen(pasted.link) ? "Added" : "Add"}</span>
           </button>
         )}
@@ -661,7 +676,7 @@ function HubLinkPicker({ conversation, team, chosen, onPick, onClose }: {
                 <li key={`${o.kind}:${o.id}:${o.cut ?? ""}`}>
                   <button type="button" disabled={isChosen(o)} onClick={() => onPick(o)} className="flex min-h-11 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left text-sm hover:bg-surface-2 disabled:opacity-50">
                     <Link2 aria-hidden className="size-4 shrink-0 text-brand" />
-                    <span className="min-w-0 flex-1 truncate">{o.title}</span>
+                    <LinkTitle title={o.title} />
                     <span className="shrink-0 text-xs text-muted-2">{isChosen(o) ? "Added" : "Add"}</span>
                   </button>
                 </li>

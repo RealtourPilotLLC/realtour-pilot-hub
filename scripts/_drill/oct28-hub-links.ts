@@ -179,8 +179,12 @@ async function main() {
     c.ok("signed out: no link", views[0].href === null);
     const lockedHtml = renderToStaticMarkup(createElement(MessageAttachments, { files: [], links: [{ title: "825 State St · Editor brief", href: null, kind: "edit" }] }));
     const openHtml = renderToStaticMarkup(createElement(MessageAttachments, { files: [], links: [{ title: "825 State St · Editor brief", href: hubLinkPath({ kind: "edit", id: p1.id }), kind: "edit" }] }));
-    c.ok("a locked card draws the title, \"Not open to you\", and no link", lockedHtml.includes("825 State St · Editor brief") && lockedHtml.includes("Not open to you") && !lockedHtml.includes("<a "));
-    c.ok("an open card is a link to the page", openHtml.includes(`href="/edit/${p1.id}"`) && openHtml.includes("825 State St · Editor brief"));
+    // The screen's name is its own span (so a phone keeps it when the place
+    // truncates): read the card's text, not its markup.
+    const textOf = (h: string) => h.replace(/<[^>]+>/g, "");
+    c.ok("a locked card draws the title, \"Not open to you\", and no link", textOf(lockedHtml).includes("825 State St · Editor brief") && lockedHtml.includes("Not open to you") && !lockedHtml.includes("<a "));
+    c.ok("an open card is a link to the page", openHtml.includes(`href="/edit/${p1.id}"`) && textOf(openHtml).includes("825 State St · Editor brief"));
+    c.ok("…the screen's name stays whole on a phone (not inside the truncated part)", /<span class="min-w-0 truncate">825 State St<\/span><span class="shrink-0[^"]*"> · Editor brief<\/span>/.test(openHtml), openHtml.slice(0, 400));
 
     c.ok("nothing left the drill", fence.blocked.length === 0, fence.blocked.join(", "));
     void james;
