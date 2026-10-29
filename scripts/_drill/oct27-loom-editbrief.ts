@@ -212,7 +212,12 @@ async function main() {
     const jordanTm = await prisma.teamMember.create({ data: { name: "Jordan Drill", email: "jordan-drill@example.com", phone: "+12155550140" }, select: { id: true } });
     const kimLogin = await prisma.appUser.create({ data: { email: "kim-drill@example.com", name: "Kim Drill", role: "EDITOR", status: "ACTIVE", editorKey: "kim", teamMemberId: kimTm.id }, select: { id: true } });
     const ownerLogin = await prisma.appUser.create({ data: { email: "jordan-drill@example.com", name: "Jordan Drill", role: "OWNER", status: "ACTIVE", teamMemberId: jordanTm.id }, select: { id: true } });
-    const client = await prisma.client.create({ data: { name: "Ana Drill", brandColors: "#0B3D2E, #C9A227", portalVideoStyle: "Fast cuts, no trending audio. Wears navy on camera.", portalPreferences: "Prefers a text, not a call." }, select: { id: true } });
+    const client = await prisma.client.create({ data: { name: "Ana Drill", brandColors: "#0B3D2E, #C9A227", portalVideoStyle: "Fast cuts, no trending audio. Wears navy on camera. Like this one: https://www.instagram.com/p/drill123/", portalPreferences: "Prefers a text, not a call." }, select: { id: true } });
+    // Oct 28 2026: what she wrote on her Brand Profile, for the brand card.
+    const bp = await import("@/lib/brandProfile");
+    for (const [key, value] of [["fonts", "Nunito body, Brittany headlines"], ["music", "Calm piano, no lyrics"], ["website", "https://ana.example"], ["social", "Instagram: https://instagram.com/anadrill"]] as const) {
+      await bp.setProfileSlot({ clientId: client.id, key, value, source: "staff", actor: { staffEmail: "jordan-drill@example.com", label: "drill" } });
+    }
     const instructions0 = "STYLE: Fast-Paced\nCOLOR PROFILE: S-Log3\n\nVISION FOR THE EDIT\nBright and quick.\n\nEDITING NOTES\nOpen on the kitchen.";
     const project = await prisma.project.create({
       data: {
@@ -331,10 +336,16 @@ async function main() {
     const instr = section(kim, "instructions");
     const iw = said(instr);
     c.ok("instructions: the style, the color profile, the vision and the video notes, each on its own", /Style Fast-Paced/.test(iw) && /Color profile S-Log3/.test(iw) && /Vision for the edit Bright and quick\./i.test(iw) && /Open on the kitchen\./.test(iw) && !/COLOR PROFILE:/.test(iw), iw.slice(0, 300));
-    c.ok("their words: only the edit (\"Fast cuts, no trending audio.\"), not \"wears navy\" or \"prefers a text\"", /Fast cuts, no trending audio\./.test(iw) && !/navy|Prefers a text/.test(said(kim)), iw.slice(0, 400));
+    // Oct 28 2026 (Jordan: "whatever was written for music, font names, video
+    // style etc needs to be show in the their brand section"): the video style
+    // is whole in the brand card, once; working preferences stay edit-only.
+    c.ok("their working preferences stay edit-only (\"prefers a text\" nowhere), and the video style is not repeated in Instructions", !/Prefers a text/.test(said(kim)) && !/Fast cuts/.test(iw), iw.slice(0, 400));
     c.ok("no \"not approved by the client\" anywhere on the brief", !/[Nn]ot approved by the client|Approved by the client/.test(said(kim)) && find(kim, (e) => "data-not-approved" in (e.props ?? {})).length === 0);
     c.ok("no half-shot card on the editor's brief", named(kim, "SecondShootCard").length === 0);
     const brand = section(kim, "brand");
+    const bw = (k: string) => said(find(brand, (e) => e.props?.["data-brand-word"] === k)[0] ?? {});
+    c.ok("the brand card: everything she wrote on her Brand Profile, whole, under the portal's headings", /Font names Nunito body, Brittany headlines/i.test(bw("fonts")) && /Music Calm piano, no lyrics/i.test(bw("music")) && /Website https:\/\/ana\.example/i.test(bw("website")) && /Social links Instagram: https:\/\/instagram\.com\/anadrill/i.test(bw("social")) && /Fast cuts, no trending audio\. Wears navy on camera\. Like this one: https:\/\/www\.instagram\.com\/p\/drill123\//.test(bw("style")) && /theirs wins/.test(bw("style")), [bw("fonts"), bw("music"), bw("style"), bw("website"), bw("social")].join(" | "));
+    c.ok("…in her order (fonts, music, style, website, social), with her links clickable", find(brand, (e) => e.props?.["data-brand-word"]).map((e) => e.props["data-brand-word"]).join(",") === "fonts,music,style,website,social" && find(brand, (e) => e.type === "a" && e.props?.href === "https://www.instagram.com/p/drill123/").length === 1 && find(brand, (e) => e.type === "a" && e.props?.href === "https://instagram.com/anadrill").length === 1);
     c.ok("their brand right there: the colors as swatches, and the one-box line for the final check", /#0B3D2E/.test(said(brand)) && find(brand, (e) => "data-brand-enforced" in (e.props ?? {})).length === 1, said(brand).slice(0, 200));
     const aside = find(kim, (e) => e.type === "aside" && e.props?.["data-brief-section"] === "client")[0];
     c.ok("the client's profile in a side column (not under the brief)", !!aside && /lg:sticky/.test(aside.props.className ?? "") && find(find(kim, (e) => e.type === "article")[0], (e) => e === aside).length === 0);

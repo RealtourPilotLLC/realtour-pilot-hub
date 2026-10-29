@@ -257,7 +257,9 @@ async function main() {
     // house style); since Oct 27 2026 they sit in Instructions, and About the
     // client is the side column, outside the video's brief.
     const client1 = block(make1, /data-their-words/);
-    c.ok("their own words sit in Instructions, and say they win over the house style", text(client1).includes("Calm, confident, no flashy transitions.") && text(client1).includes("theirs wins"));
+    c.ok("their own words sit in Instructions, and say they win over the house style", text(client1).includes("Please keep her on the left third.") && text(client1).includes("theirs wins"));
+    // Oct 28 2026: their video style is whole in the brand card, said once.
+    c.ok("their video style is in the brand card (theirs wins), not repeated in Instructions", text(brand1).includes("Calm, confident, no flashy transitions.") && text(brand1).includes("theirs wins") && !text(client1).includes("Calm, confident") && count(kim1Text, "Calm, confident, no flashy transitions.") === 1, text(brand1).slice(0, 400));
     c.ok("the order note reaches the editor without our billing", text(client1).includes("Please keep her on the left third.") && !kim1Text.includes("$175") && !/invoice/i.test(kim1Text), text(client1).slice(0, 300));
     c.ok("About the client is the side column, outside the video's brief", !article1.includes('data-brief-section="client"') && /<aside[^>]*data-brief-section="client"/.test(kim1) && kim1.indexOf('data-brief-section="client"') > kim1.indexOf('id="submit-cut"'));
     c.ok("the office's fee sentence is withheld, its real-estate instruction kept", text(block(article1, /data-brief-section="instructions"/)).includes("Show the pricing chart") && !kim1Text.includes("$150"));

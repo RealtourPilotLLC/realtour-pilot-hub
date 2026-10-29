@@ -5,8 +5,9 @@ import React from "react";
 // **bold**, and paragraphs. Not a general-purpose parser — just what we author.
 // A bare URL becomes a link (the editor brief carries an example reel:
 // "Example: https://media.realtourpilot.com/videos/…" — Jordan, Sep 10). A
-// trailing period/comma stays outside the link.
-function linkify(text: string): React.ReactNode {
+// trailing period/comma stays outside the link. Exported for the editor
+// brief's brand card (Oct 28 2026), where a client's own words carry links.
+export function linkify(text: string): React.ReactNode {
   const bits = text.split(/(https?:\/\/[^\s<>()]+)/g);
   if (bits.length === 1) return text;
   return bits.map((b, i) => {

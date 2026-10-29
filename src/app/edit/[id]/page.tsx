@@ -20,6 +20,7 @@ import { BrandUpdatesBanner } from "@/components/editing/BrandUpdatesBanner";
 import { BackLink } from "@/components/ui/BackLink";
 import { queueReturnHref } from "@/lib/editingQueueUrl";
 import { Section } from "@/components/ui/Section";
+import { linkify } from "@/components/ui/Markdown";
 import { Button } from "@/components/ui/Action";
 import { getProject, getTeam } from "@/lib/queries";
 import { getCurrentUser } from "@/lib/auth/user";
@@ -1223,6 +1224,22 @@ export default async function EditBriefPage({
   });
   const brandColorsShown = agent?.style.colors.length ? agent.style.colors.map((c) => c.hex) : brandColors.map((c) => c.toLowerCase());
   const brandFonts = agent?.style.fonts?.text ?? brandBrief?.fontNames ?? null;
+  // EVERYTHING THEY WROTE ON THEIR BRAND PROFILE, in the brand card (Jordan,
+  // Oct 28 2026: "whatever was written for music, font names, video style etc
+  // needs to be show in the their brand section in the editor breif"). Their
+  // own words, whole, under the portal's own headings. The Oct 27 edit-only
+  // filter (lib/editorPrefs) had cut Kristin Ciarmella's video style to its
+  // first sentence and dropped the Instagram reel she pointed at, and her
+  // social links were on no screen an editor reads. Money-scrubbed for a
+  // creative like every other brand value (brandBriefFor's scrub). Working
+  // preferences (scheduling, how to reach them) keep the edit-only rule below.
+  const brandWords = [
+    { key: "fonts", label: "Font names", text: brandFonts },
+    { key: "music", label: "Music", text: brandBrief?.music },
+    { key: "style", label: "Video style & look", text: brandBrief?.videoStyle ?? showTheirStyle },
+    { key: "website", label: "Website", text: brandBrief?.website },
+    { key: "social", label: "Social links", text: brandBrief?.social },
+  ].filter((w): w is { key: string; label: string; text: string } => !!w.text?.trim());
 
   // THE BRAND, BESIDE WHAT TO MAKE (Jordan, Oct 20 2026: "I want to make sure
   // the client's brand assets and brand colors are displayed clearly alongside
@@ -1500,14 +1517,14 @@ export default async function EditBriefPage({
       })
     : [];
   // ONLY THE TECHNICAL PREFERENCES (lib/editorPrefs): the edit, never the shoot or the relationship.
-  const techTheirStyle = technicalLines(showTheirStyle);
   const techTheirPrefs = technicalLines(showTheirPrefs);
   const techCustomerNote = customerNoteLines.filter(isTechnicalPreference);
   const techConfirmed = [
     ...(brandBrief?.productionDefaults ?? []).filter(isTechnicalDefault).map((d) => `${d.name}: ${d.text}`),
     ...(brandBrief?.acceptedPreferences ?? []).filter(isTechnicalPreference),
   ];
-  const hasTechWords = !!(techTheirStyle || techTheirPrefs || showOrderNote || techConfirmed.length || techCustomerNote.length);
+  // Their video style is whole in the brand card (brandWords), not here too.
+  const hasTechWords = !!(techTheirPrefs || showOrderNote || techConfirmed.length || techCustomerNote.length);
   const agentForEditor = agent ? { ...agent, style: { ...agent.style, preferences: agent.style.preferences.filter((p) => isTechnicalPreference(p.text)) } } : null;
   // The client's asks, each with its request, so a question names the one it is about.
   const askRows = (tasks: typeof videoRevisionTasks) =>
@@ -2192,7 +2209,16 @@ export default async function EditBriefPage({
                 </ul>
               </div>
             )}
-            {brandFonts && <p className="mt-3 text-sm"><span className="text-muted">Fonts:</span> {brandFonts}</p>}
+            {brandWords.length > 0 && (
+              <dl className="mt-4 space-y-2.5 text-sm leading-relaxed" data-brand-words>
+                {brandWords.map((w) => (
+                  <div key={w.key} data-brand-word={w.key} className="min-w-0">
+                    <dt className={LABEL}>{w.label}{w.key === "style" && <span className="font-normal normal-case tracking-normal"> · where it differs from the house style, theirs wins</span>}</dt>
+                    <dd className="mt-0.5 whitespace-pre-wrap break-words text-foreground/90">{linkify(w.text)}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
             {kitOtherFiles.length > 0 && (
               <ul className="mt-3 flex flex-wrap gap-2">
                 {kitOtherFiles.map((f) => (
@@ -2203,7 +2229,6 @@ export default async function EditBriefPage({
                 ))}
               </ul>
             )}
-            {brandBrief?.website && <p className="mt-2 text-sm"><span className="text-muted">Website:</span> {brandBrief.website}</p>}
             {assets ? (
               <details className="mt-3 border-t border-border pt-2">
                 <summary className="flex min-h-11 cursor-pointer items-center text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Their brand folder · add a file</summary>
@@ -2366,7 +2391,6 @@ export default async function EditBriefPage({
                 {hasTechWords && (
                   <div className="space-y-3 border-t border-border pt-3 text-sm leading-relaxed first:border-t-0 first:pt-0" data-their-words>
                     <p className="font-medium">In their words <span className="font-normal text-muted">· where this differs from the house style, theirs wins</span></p>
-                    {techTheirStyle && <div><p className={LABEL}>How they like their videos (their portal)</p><p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{techTheirStyle}</p></div>}
                     {techTheirPrefs && <div><p className={LABEL}>About the edit (their portal)</p><p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{techTheirPrefs}</p></div>}
                     {showOrderNote && <div><p className={LABEL}>On this order</p><p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{showOrderNote}</p></div>}
                     {techCustomerNote.length > 0 && (
