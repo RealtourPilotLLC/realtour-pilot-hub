@@ -152,6 +152,8 @@ export const NOTIFY_KIND_LABELS: Record<string, string> = {
   revision_waiting: "revision waiting",
   revision_waiting_office: "revision waiting (relay or assign)",
   revision_stuck: "revisions stuck 3+ days",
+  // Oct 29 2026 (lib/editStartReminders).
+  edit_start_reminder: "press Start reminder",
 };
 export function notifyKindLabel(kind: string): string {
   return NOTIFY_KIND_LABELS[kind] ?? kind.replace(/_/g, " ");

@@ -30,7 +30,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import Module from "node:module";
-import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors } from "./_harness";
+import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors, interceptModule } from "./_harness";
+
+// THE BRIEF OPENS ON START (Oct 29 2026, lib/editorBriefGate): an editor who
+// has not pressed Start gets a summary page. This drill is about the brief
+// itself, so its editor reads it as one who has pressed Start; the gate has
+// its own drill (oct29-editor-start-tracking).
+interceptModule(
+  (r) => /(^|[\\/@])lib[\\/]editorBriefGate(\.ts)?$/.test(r),
+  (loaded) => new Proxy(loaded as Record<string | symbol, unknown>, {
+    get: (t, k) => (k === "briefOpenFor" ? async () => true : k === "briefOpenJobs" ? async (ids: string[]) => new Set(ids) : t[k]),
+  }),
+);
 
 const PORT = Number(process.env.DRILL_PORT ?? 5622);
 const REPO = fs.realpathSync(path.resolve(__dirname, "../.."));
@@ -394,7 +405,8 @@ async function main() {
     const room = read("src/app/editing/page.tsx");
     c.ok("the Editing Room shows it to the owner and the creative manager only (not the admin, not an editor)", /const seesSpeed = [^;]*OWNER[^;]*CREATIVE_MANAGER/.test(room) && !/const seesSpeed = [^;]*"ADMIN"/.test(room) && /seesSpeed && [^\n]*<EditorSpeedPanel/.test(room.replace(/\n\s*/g, " ")) , (room.match(/const seesSpeed = [^;]*;/) ?? [""])[0]);
     const panelSrc = read("src/components/editing/EditorSpeedPanel.tsx");
-    c.ok("…per editor, per kind of video, with the last 30 or 90 days and what they are on now", /\[30, 90\]/.test(panelSrc) && /Last \{d\} days/.test(panelSrc) && /data-speed-editor/.test(panelSrc) && /Working on/.test(panelSrc));
+    // Oct 29 2026: a 7-day window joined 30 and 90 (lib/editorSpeed SPEED_WINDOWS).
+    c.ok("…per editor, per kind of video, with the last 7, 30 or 90 days and what they are on now", /SPEED_WINDOWS\.map/.test(panelSrc) && /SPEED_WINDOWS = \[7, 30, 90\]/.test(read("src/lib/editorSpeed.ts")) && /Last \{d\} days/.test(panelSrc) && /data-speed-editor/.test(panelSrc) && /Working on/.test(panelSrc));
 
     // =====================================================================
     c.head("8 · The words");

@@ -253,10 +253,13 @@ export function barWords(bar: WorkBar, tz: string, now: Date): BarWords {
 /** The four lines under "How this works", shared by the desk and the job bar.
  *  Line 3 promises nothing it cannot keep (Sep 28 review): the Dropbox "Send
  *  to Review" never asks, and a Start naming another video can outlive an
- *  upload — pressing Start again is always safe ("You're already on …"). */
+ *  upload — pressing Start again is always safe ("You're already on …").
+ *  Oct 29 2026 (Jordan: "how long it takes them from start to finish"): Start
+ *  now opens the brief and times each video, so line 4 says so instead of
+ *  "It's not a timer". */
 export const HOW_START_WORKS = [
-  "Start = you're editing this job now. Starting another job pauses this one.",
+  "Start = you're editing this video now. The full brief opens when you press it. Starting another job pauses this one.",
   "Pause = you stopped. Nothing on the job changes.",
-  "After you send a version for review, press Start again if you're still working on the job.",
-  "It's not a timer, and it's not used for pay.",
+  "Sending a video for review stops its clock. Press Start again for the next video or a revision.",
+  "The office sees how long each video took from Start to sent. It's not used for pay.",
 ] as const;

@@ -152,6 +152,9 @@ const KIND_TO_EVENT: Record<string, NotifyEvent> = {
   // office copies (revision_waiting_office, revision_stuck) stay bell-only
   // here: kyleNotice sends Kyle's DM itself.
   revision_waiting: "job_ping",
+  // Oct 29 2026 (lib/editStartReminders): press Start on a job due soon or
+  // ready for days, on the same "Job pings" switch.
+  edit_start_reminder: "job_ping",
 };
 export function eventForKind(kind: string): NotifyEvent | null {
   return KIND_TO_EVENT[kind] ?? null;

@@ -182,6 +182,8 @@ export async function askHub(question: string, history: HubTurn[] = [], chatId?:
       who: me?.name ?? me?.email ?? null,
       office,
       ownKeys,
+      appRole: me?.role ?? null,
+      editorKey: me?.role === "EDITOR" ? me.editorKey ?? null : null,
     });
     const o = out as { drafted?: boolean; client_id?: string; client_name?: string; channel?: string; message?: string; can_text?: boolean; created_task?: boolean; id?: string; title?: string; priority?: string; due?: string; project?: string | null; href?: string; remembered?: boolean; category?: string; min_role?: string; superseded?: number; document_saved?: boolean; kind?: string };
     if (name === "draft_client_message" && o?.drafted && o.message && o.client_id) {

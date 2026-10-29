@@ -25,8 +25,11 @@ import { etDayKey, etMonthDay, etTime } from "@/lib/datetime";
 //                    rather than a partial index: the schema is managed by
 //                    `db push`, which would drop an index it does not know.)
 //   EditorWorkEvent  the declared log: who pressed what, when, for whom.
-//                    Not keyboard time, not payroll time, never summed into
-//                    hours anywhere.
+//                    Not keyboard time and never payroll time. Since Oct 29
+//                    2026 (Jordan: "how long it takes them from start to
+//                    finish") lib/editorSpeed adds each video's Start-to-stop
+//                    stretches up for the owner's Editor speed panel, and
+//                    says when a stretch was left running.
 //
 // WHO MAY MOVE IT. Only startEditing and confirmCurrentWork ever write ACTIVE,
 // and both need a person: the assigned editor for their own work, or the office
@@ -569,10 +572,23 @@ export async function startEditing(input: StartInput): Promise<WorkResult> {
       const now = new Date();
       const cur = await tx.editorWorkItem.findUnique({ where: { activeFor: editorKey } });
       if (cur && cur.projectId === projectId) {
-        // Already on it: a second click, a second tab. Only the video pick may
-        // change, and that is not an event.
+        // Already on it: a second click, a second tab — nothing to record.
+        // ANOTHER VIDEO ON THE SAME JOB is (Jordan, Oct 29 2026: "It would
+        // have to work that way for each individual video so we can track
+        // how long it takes them"): the stretch on the video they were on
+        // ends there (AUTO_PAUSE, its own video) and a fresh one starts on
+        // the new video. It used to change the pick silently, so the whole
+        // stretch counted for whichever video was named last.
         if (input.outputId !== undefined && (input.outputId ?? null) !== cur.outputId) {
-          await tx.editorWorkItem.update({ where: { id: cur.id }, data: { outputId: input.outputId ?? null } });
+          const nextOutput = input.outputId ?? null;
+          await tx.editorWorkItem.update({ where: { id: cur.id }, data: { outputId: nextOutput, activeSince: now, lastEventAt: now } });
+          await tx.editorWorkEvent.create({
+            data: { itemId: cur.id, editorKey, projectId, outputId: cur.outputId, kind: "AUTO_PAUSE", at: now, ...actorCols(caller.actor, onBehalf), reason: "another video on the job" },
+          });
+          await tx.editorWorkEvent.create({
+            data: { itemId: cur.id, editorKey, projectId, outputId: nextOutput, kind: "START", at: now, ...actorCols(caller.actor, onBehalf), requestId, reason: "another video on the job" },
+          });
+          return { kind: "started" as const, street, event: "START" as const, switchedFrom: null, quietStart: true };
         }
         return { kind: "noop" as const, street };
       }

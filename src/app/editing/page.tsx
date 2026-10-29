@@ -25,6 +25,8 @@ import { syntheticClientIds } from "@/lib/syntheticClients";
 import { isCreativeLead } from "@/lib/auth/access";
 import { remindViewsFor, type RemindView } from "@/lib/remindPhotographer";
 import { EditorSpeedPanel, type SpeedNow } from "@/components/editing/EditorSpeedPanel";
+import { briefOpenJobs } from "@/lib/editorBriefGate";
+import type { SpeedWindow } from "@/lib/editorSpeed";
 
 export const dynamic = "force-dynamic";
 
@@ -174,9 +176,16 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
   // QueueRow carries no money fields.
   if (me?.role === "EDITOR" && editorScope) {
     const mine = (rows: QueueRow[]) => rows.filter((r) => r.editorKey === editorScope);
-    const myNotDone = mine(notDone);
-    const myUpcoming = mine(upcomingRows);
-    const myDone = mine(done);
+    // THE FOOTAGE FOLDERS WAIT FOR START TOO (Jordan, Oct 29 2026: "to see
+    // all details and instructions, they press start"; lib/editorBriefGate).
+    // A row's Raw and Final links show once their work on that job is active
+    // or paused, the same rule as the brief. A failed read shows no links.
+    const mineAll = [...mine(notDone), ...mine(upcomingRows), ...mine(done)];
+    const openJobs = await briefOpenJobs(mineAll.map((r) => r.id), me).catch(() => new Set<string>());
+    const gated = (rows: QueueRow[]) => rows.map((r) => (openJobs.has(r.id) ? r : { ...r, rawUrl: null, finalUrl: null }));
+    const myNotDone = gated(mine(notDone));
+    const myUpcoming = gated(mine(upcomingRows));
+    const myDone = gated(mine(done));
     const unread = (await unreadThreadCount(me.id, [...myNotDone, ...myUpcoming, ...myDone].map((r) => r.id))) + ((await teamChannelUnread(me.id).catch(() => false)) ? 1 : 0); // + the team channel (Oct 28 2026)
     // THE DESK (§7.1; Jordan, Sep 28: "the working on now button for the
     // editors needs to be clearer"). Always drawn: "What are you working on
@@ -261,10 +270,10 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
   // EDITOR SPEED (Jordan, Oct 27 2026: "how long it takes Kim to work on
   // specific videos of personal branding, how long it takes him to start ...
   // so that I can know when to hire other editors"). The owner and the
-  // creative manager only; 30 or 90 days (lib/editorSpeed). A failed read
+  // creative manager only; 7, 30 or 90 days (lib/editorSpeed). A failed read
   // says so on the card.
   const seesSpeed = !me || me.role === "OWNER" || me.role === "CREATIVE_MANAGER";
-  const speedDays: 30 | 90 = sp.speed === "90" ? 90 : 30;
+  const speedDays: SpeedWindow = sp.speed === "90" ? 90 : sp.speed === "7" ? 7 : 30;
   const speedRead = seesSpeed
     ? import("@/lib/editorSpeed").then((m) => m.editorSpeedReport({ days: speedDays, now: new Date(), excludeClientIds })).catch(() => null)
     : Promise.resolve(null);
@@ -279,10 +288,10 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
   const speedNow: Record<string, SpeedNow> = Object.fromEntries(
     (wn.ok ? wn.editors : []).map((e) => [e.key, e.active ? { key: e.key, projectId: e.active.projectId, street: e.active.street, outputTitle: e.active.outputTitle ?? null, sinceISO: e.active.sinceISO ?? null, firstStartedISO: e.active.firstStartedISO ?? null } : null]),
   );
-  const speedHref = (d: 30 | 90) => {
+  const speedHref = (d: SpeedWindow) => {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(sp)) if (typeof v === "string" && k !== "speed") q.set(k, v);
-    if (d === 90) q.set("speed", "90");
+    if (d !== 30) q.set("speed", String(d));
     const qs = q.toString();
     return `/editing${qs ? `?${qs}` : ""}#editor-speed`;
   };

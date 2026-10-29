@@ -24,6 +24,16 @@ export async function GET(req: NextRequest) {
   if (denied) return denied;
   const { step, out, finish, remaining } = cronBudget(250_000, Date.now(), "reconcile");
 
+  // PRESS START, A REMINDER (Jordan, Oct 29 2026: "when Kim doesn't press
+  // start on a video, can we auto-remind him to press start?";
+  // lib/editStartReminders). Weekdays 9 AM to 6 PM Eastern, once per job per
+  // day; outside those hours it returns at once. First, and capped, so the
+  // Aryeo slices below keep their budget.
+  await step("startReminders", async () => {
+    const { sweepStartReminders } = await import("@/lib/editStartReminders");
+    return sweepStartReminders();
+  }, { maxMs: 20_000 });
+
   await step("ordersSlice", () =>
     syncAryeoOrders({ full: true, maxPages: 8, budgetMs: Math.max(60_000, remaining() - 120_000) }));
   // 8 pages of 50 = the 4 pages of 100 this used to walk (the page size halved

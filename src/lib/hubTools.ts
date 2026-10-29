@@ -428,7 +428,10 @@ function resolveRange(input: { range?: string; from?: string; to?: string }): { 
 // him taking over someone else's (lib/delegation). `office` says whether the
 // signed-in person is the owner or the office; `ownKeys` are the assignment
 // keys that are theirs. A caller that passes neither keeps the tier rule.
-type HubToolCtx = { role: string; impersonating?: boolean; who?: string | null; office?: boolean; ownKeys?: string[] };
+// `appRole` + `editorKey` (Oct 29 2026): the signed-in login's own role and
+// editor key, so a job's details wait for Start for Kim and John Mark here
+// too (lib/editorBriefGate).
+type HubToolCtx = { role: string; impersonating?: boolean; who?: string | null; office?: boolean; ownKeys?: string[]; appRole?: string | null; editorKey?: string | null };
 const notOffice = (ctx: HubToolCtx) => ctx.office === false;
 // The owner's books-audit items and pay questions are read, completed and
 // handed around by the owner alone (audit Oct 25 2026, F7): every task read
@@ -508,6 +511,12 @@ export async function execHubTool(
         },
       });
       if (!p) return { error: "No project with that id." };
+      // THE BRIEF OPENS ON START (Jordan, Oct 29 2026; lib/editorBriefGate):
+      // an editor who has not pressed Start on this job gets the summary the
+      // job page shows them, without the revision ask, tasks or messages.
+      const { briefGated, briefOpenFor } = await import("@/lib/editorBriefGate");
+      const gateViewer = { role: ctx.appRole ?? null, editorKey: ctx.editorKey ?? null };
+      const detailsClosed = briefGated(gateViewer) && !(await briefOpenFor(p.id, gateViewer).catch(() => false));
       const ev = parseEvidence(p.statusEvidence);
       // Free text on a project (the client's revision ask, the last few thread
       // messages) routinely carries amounts — "we agreed $150 off", "invoice
@@ -526,14 +535,15 @@ export async function execHubTool(
         deliverables_ordered: deliverableLabels(p.deliverables),
         delivered_categories: ev?.present ?? [],
         missing: ev?.missing ?? [],
-        in_revision: p.revisionRequestedAt ? { since: etDate(p.revisionRequestedAt), note: scrub(p.revisionNote) || null } : null,
+        in_revision: p.revisionRequestedAt ? { since: etDate(p.revisionRequestedAt), note: detailsClosed ? null : scrub(p.revisionNote) || null } : null,
         // Billing block (price, balance, payment status, invoice link) is
         // OWNER-only — everyone else gets the project without the money.
         billing: seesMoney
           ? { total: p.price, balance_owed: p.paidMarkedAt || p.arRemovedAt ? 0 : dollars(p.balanceAmount), payment_status: p.paymentStatus, invoice_url: p.invoiceUrl }
           : undefined,
-        open_tasks: p.smartTasks.map((t) => ({ type: t.taskType, title: scrub(t.title) || t.taskType, priority: t.priority, due: t.dueAt ? etDate(t.dueAt) : null })),
-        recent_messages: p.messages.map((m) => ({ from: m.authorName, at: etDate(m.createdAt), text: scrub((m.body ?? "").slice(0, 280)) })),
+        open_tasks: detailsClosed ? [] : p.smartTasks.map((t) => ({ type: t.taskType, title: scrub(t.title) || t.taskType, priority: t.priority, due: t.dueAt ? etDate(t.dueAt) : null })),
+        recent_messages: detailsClosed ? [] : p.messages.map((m) => ({ from: m.authorName, at: etDate(m.createdAt), text: scrub((m.body ?? "").slice(0, 280)) })),
+        details_behind_start: detailsClosed ? `The instructions, notes and messages open when you press Start on /edit/${p.id}. Say so plainly.` : undefined,
         redaction_notice: seesMoney ? undefined : MONEY_BLIND_NOTICE,
         aryeo_url: p.aryeoListingId ? aryeoListingUrl(p.aryeoListingId) : p.aryeoOrderId ? aryeoOrderUrl(p.aryeoOrderId) : null, // the listing editor opens for everyone; the order page does not (Sep 15)
         hub_url: `/projects/${p.id}`,

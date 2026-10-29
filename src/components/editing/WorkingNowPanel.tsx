@@ -156,7 +156,7 @@ export function WorkingNowPanel({ view }: { view: EditorsTodayView }) {
               in the hub&rdquo; is not &ldquo;not working&rdquo;.
             </li>
             <li>Today = since 12am Eastern. Opening a page never counts.</li>
-            <li>Start and Pause are what the editor says — not a timer, not used for pay.</li>
+            <li>Start and Pause are what the editor says. They time each video (Editor speed), never pay.</li>
             <li>Paused jobs and old &ldquo;In editing&rdquo; marks are under each editor&rsquo;s details.</li>
           </ul>
         </details>

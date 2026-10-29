@@ -53,8 +53,19 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import Module from "node:module";
-import { bootDrillDb, fenceFetch, installNextStubs, makeChecker, quietPrismaErrors } from "./_harness";
+import { bootDrillDb, fenceFetch, installNextStubs, makeChecker, quietPrismaErrors, interceptModule } from "./_harness";
 import { buildContentMonth } from "./_fixtures/contentMonth";
+
+// THE BRIEF OPENS ON START (Oct 29 2026, lib/editorBriefGate): an editor who
+// has not pressed Start gets a summary page. This drill is about the brief
+// itself, so its editor reads it as one who has pressed Start; the gate has
+// its own drill (oct29-editor-start-tracking).
+interceptModule(
+  (r) => /(^|[\\/@])lib[\\/]editorBriefGate(\.ts)?$/.test(r),
+  (loaded) => new Proxy(loaded as Record<string | symbol, unknown>, {
+    get: (t, k) => (k === "briefOpenFor" ? async () => true : k === "briefOpenJobs" ? async (ids: string[]) => new Set(ids) : t[k]),
+  }),
+);
 
 const PORT = Number(process.env.DRILL_PORT ?? 5991);
 const BASE = "0950c1c"; // the commit this change starts from — never HEAD

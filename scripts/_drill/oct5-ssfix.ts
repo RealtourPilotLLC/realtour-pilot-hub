@@ -39,6 +39,17 @@ import { createRequire } from "node:module";
 import { cloneElement, createElement, isValidElement, type ReactNode } from "react";
 import { bootDrillDb, fenceFetch, installNextStubs, interceptModule, makeChecker, quietPrismaErrors } from "./_harness";
 
+// THE BRIEF OPENS ON START (Oct 29 2026, lib/editorBriefGate): an editor who
+// has not pressed Start gets a summary page. This drill is about the brief
+// itself, so its editor reads it as one who has pressed Start; the gate has
+// its own drill (oct29-editor-start-tracking).
+interceptModule(
+  (r) => /(^|[\\/@])lib[\\/]editorBriefGate(\.ts)?$/.test(r),
+  (loaded) => new Proxy(loaded as Record<string | symbol, unknown>, {
+    get: (t, k) => (k === "briefOpenFor" ? async () => true : k === "briefOpenJobs" ? async (ids: string[]) => new Set(ids) : t[k]),
+  }),
+);
+
 const PORT = 6770;
 const req = createRequire(__filename);
 const c = makeChecker();

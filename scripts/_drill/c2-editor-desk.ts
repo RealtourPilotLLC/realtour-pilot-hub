@@ -458,13 +458,18 @@ async function main() {
     c.ok("…the video picker sits beside Start (Oct 5), labelled \"Video\", with \"Any / not sure\" — not folded under details",
       /<label[^>]*>Video<select[^>]*aria-label="Which video you(?:&#x27;|')re working on"[\s\S]*?<option value=""[^>]*>Any \/ not sure<\/option>[\s\S]*?<\/select>/.test(idleHtml.split("<details")[0]) &&
       !/<details[\s\S]*<select/.test(idleHtml) && !idleHtml.includes("Which video? (optional)"), idleHtml.slice(Math.max(0, idleHtml.indexOf("<select") - 160), idleHtml.indexOf("<select") + 360));
-    c.ok("…the fine print (\"not a timer\") lives only inside details now",
-      !text((r.barIdle ?? "").replace(/<details[\s\S]*<\/details>/, "")).includes("not a timer") && t("barIdle").includes("It's not a timer, and it's not used for pay."));
+    // Oct 29 2026: Start now times each video (editorSpeed), so the fine print
+    // says that instead of "not a timer"; it still lives only inside details.
+    c.ok("…the fine print (\"not used for pay\") lives only inside details now",
+      !text((r.barIdle ?? "").replace(/<details[\s\S]*<\/details>/, "")).includes("not used for pay") && t("barIdle").includes("It's not used for pay."));
     c.ok("job bar, on it: \"You're on this job since 12:40am your time\" + Pause", t("barActive").includes("You're on this job since 12:40am your time") && JSON.stringify(buttonWords("barActive")) === JSON.stringify(["Pause"]));
     c.ok("job bar, paused: \"Paused at 12:40am your time.\" + Resume — labelled, beside the tracker's Eastern stamps",
       t("barPaused").includes("Paused at 12:40am your time.") && JSON.stringify(buttonWords("barPaused")) === JSON.stringify(["Resume"]));
-    c.ok("REVIEW F12: \"How this works\" promises nothing the Dropbox send breaks — \"After you send a version for review, press Start again if you're still working on the job.\"",
-      t("barIdle").includes("After you send a version for review, press Start again if you're still working on the job.") && !/We.ll ask/.test(t("barIdle")) && !/We.ll ask/.test(t("idle")));
+    // Oct 29 2026: the line now says the send stops that video's clock (per
+    // video, lib/editorWork) and when to press Start again; still no promise
+    // that the hub will ask.
+    c.ok("REVIEW F12: \"How this works\" promises nothing the Dropbox send breaks — \"Sending a video for review stops its clock. Press Start again for the next video or a revision.\"",
+      t("barIdle").includes("Sending a video for review stops its clock. Press Start again for the next video or a revision.") && !/We.ll ask/.test(t("barIdle")) && !/We.ll ask/.test(t("idle")));
     c.ok("job bar, on another job: \"You're on 22 Switch Ave now.\" + ONE tap, \"Switch to this job\" (no two-step confirm)",
       t("barSwitch").includes("You're on 22 Switch Ave now.") && t("barSwitch").includes("Switching pauses 22 Switch Ave.") &&
       JSON.stringify(buttonWords("barSwitch")) === JSON.stringify(["Switch to this job"]) && !t("barSwitch").includes("Pause it and start this"));

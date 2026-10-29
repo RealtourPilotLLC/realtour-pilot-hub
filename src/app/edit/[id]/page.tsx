@@ -64,6 +64,8 @@ import { EditFeedback } from "@/components/editing/EditFeedback";
 import { EditTracker, deriveEditStage, type RoundRow } from "@/components/editing/EditTracker";
 // §7.1: the editor's own Start / Pause / Resume, on the screen they work from.
 import { WorkStateBar } from "@/components/editing/WorkStateBar";
+import { EditorStartGate } from "@/components/editing/EditorStartGate";
+import { briefGated, briefOpenFor, briefSummaryFor } from "@/lib/editorBriefGate";
 // §8.1: the ONE person each waiting cut is waiting on, and the desk's doors.
 import { ReviewerStrip } from "@/components/review/ReviewerStrip";
 import { EditOverridesButton, RushButton } from "@/components/editing/EditOverridesDialog";
@@ -179,6 +181,27 @@ export default async function EditBriefPage({
   // This contextual route is not scoped by middleware. Check the effective
   // viewer (including "view as") before the script sync or any job read.
   if (!(await canViewProject(id, viewer))) notFound();
+
+  // THE BRIEF OPENS ON START, FOR THE EDITORS (Jordan, Oct 29 2026: "to see
+  // all details and instructions, they press start"; lib/editorBriefGate).
+  // Kim and John Mark get the short summary and Start until their work on
+  // this job is active or paused; sending a video for review closes it again.
+  // Returned BEFORE any detail is read, so none is sent. Everyone else, and a
+  // started editor, gets the whole page below as before.
+  if (viewer && briefGated(viewer) && !(await briefOpenFor(id, viewer))) {
+    const [summary, gateBar] = await Promise.all([
+      briefSummaryFor(id, viewer.editorKey),
+      import("@/lib/editorWork").then((m) => m.workBarFor(id, viewer)).catch(() => null),
+    ]);
+    if (!summary) notFound();
+    // Start names a video: the one in the link, else the first still to do.
+    const pick =
+      (outputParam && summary.videos.some((v) => v.id === outputParam) ? outputParam : null) ??
+      summary.videos.find((v) => v.state === "Not started" || v.state.startsWith("Changes requested"))?.id ??
+      summary.videos.find((v) => v.state !== "Approved")?.id ??
+      null;
+    return <EditorStartGate summary={summary} bar={gateBar} backHref={queueReturnHref(queue)} backPreferHref={!!queue} selectedOutputId={pick} />;
+  }
 
   // Scripts sync THEMSELVES from the Script Writing platform (by this project
   // id) — cheap freshness gate inside. Owner preview is read-only: even this

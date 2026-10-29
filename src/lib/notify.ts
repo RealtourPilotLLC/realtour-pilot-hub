@@ -358,6 +358,9 @@ const BELL_RULES: Record<string, BellRule> = {
   revision_waiting: "all",
   revision_waiting_office: "all",
   revision_stuck: "all",
+  // Oct 29 2026 (lib/editStartReminders): an editor's job due soon, or ready
+  // for days, that they have not pressed Start on. Person-addressed.
+  edit_start_reminder: "all",
   review_approved: "all", // the editor's loop closes here
   // §8.1 (Sep 25): a cut's ONE reviewer changed — the FYI to the person it
   // left, and the backup being OFFERED a cut the primary has held past the

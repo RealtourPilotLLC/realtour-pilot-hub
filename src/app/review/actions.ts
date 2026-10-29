@@ -585,12 +585,18 @@ export async function submitCutForReview(
   // — theirs only, and nothing about the other videos a batch still owes. The
   // office sending on an editor's behalf is recorded as the office. The hourly
   // folder discovery is NOT a submit and never reaches this line. Never throws.
+  // THAT VIDEO'S clock only (Jordan, Oct 29 2026: "when they send a video for
+  // review, it automatically stops ... for each individual video"): a Start
+  // on another video of the job keeps running; a Start that named no video
+  // ends here as before (editorWork closeScope).
   {
     const { closeActiveWork } = await import("@/lib/editorWork");
     const office = !me || me.role !== "EDITOR";
+    const sentVideo = await prisma.reviewSubmission.findUnique({ where: { id: submission.id }, select: { outputId: true } }).catch(() => null);
     await closeActiveWork(projectId, {
       editorKey: myEditorKey ?? editorKey,
       reason: "SUBMITTED",
+      forOutputId: sentVideo?.outputId ?? null,
       // The display name sessionAuthor resolved (roster before email, Sep 28).
       actor: { userId: me?.id ?? null, name: authorName ?? "The office", role: office ? (me?.realRole === "ADMIN" || me?.realRole === "CREATIVE_MANAGER" ? "ADMIN" : "OWNER") : "EDITOR" },
       detail: office ? `cut sent to review by ${authorName ?? "the office"}` : "cut submitted",
