@@ -100,14 +100,16 @@ export default async function SessionAddressPage({ params, searchParams }: {
         <label className="block text-xs font-semibold uppercase tracking-widest text-muted-2">Unit (optional)
           <input name="unit" autoComplete="address-line2" placeholder="Unit 2" className={input} />
         </label>
+        {/* Phone layout (Jordan, Oct 28 2026): City takes its own row on a phone, so the
+            State box is wide enough to show "PA" (it was about 15px of room). */}
         <div className="grid grid-cols-6 gap-3">
-          <label className="col-span-3 block text-xs font-semibold uppercase tracking-widest text-muted-2">City
+          <label className="col-span-6 block text-xs font-semibold uppercase tracking-widest text-muted-2 sm:col-span-3">City
             <input name="city" required autoComplete="address-level2" className={input} />
           </label>
-          <label className="col-span-1 block text-xs font-semibold uppercase tracking-widest text-muted-2">State
+          <label className="col-span-2 block text-xs font-semibold uppercase tracking-widest text-muted-2 sm:col-span-1">State
             <input name="state" required maxLength={2} autoComplete="address-level1" placeholder="PA" className={input} />
           </label>
-          <label className="col-span-2 block text-xs font-semibold uppercase tracking-widest text-muted-2">ZIP
+          <label className="col-span-4 block text-xs font-semibold uppercase tracking-widest text-muted-2 sm:col-span-2">ZIP
             <input name="zip" required inputMode="numeric" maxLength={10} autoComplete="postal-code" className={input} />
           </label>
         </div>

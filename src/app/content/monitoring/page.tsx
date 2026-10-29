@@ -219,7 +219,8 @@ export default async function ContentMonitoringPage() {
                     <span className="font-medium">{j.kind}</span>
                     <span className={cn(j.state === "FAILED" || j.state === "NEEDS_REVIEW" ? "text-warning" : "text-muted")}>{j.state.toLowerCase().replace(/_/g, " ")}</span>
                     <span className="text-muted-2">attempt {j.attempts}</span>
-                    {(j.reviewReason ?? j.lastError) && <span className="min-w-0 flex-1 truncate text-muted-2">{j.reviewReason ?? j.lastError}</span>}
+                    {/* Phone layout (Jordan, Oct 28 2026): the reason wraps onto its own line instead of truncating to a word. */}
+                    {(j.reviewReason ?? j.lastError) && <span className="min-w-0 flex-1 basis-48 truncate text-muted-2">{j.reviewReason ?? j.lastError}</span>}
                     <span className="ml-auto text-muted-2">{when(j.updatedAt)}</span>
                   </div>
                 ))}
@@ -249,7 +250,7 @@ export default async function ContentMonitoringPage() {
                     <span className="text-muted-2">{s.monthKey ?? "no month"}</span>
                     <span>{s.status.toLowerCase().replace(/_/g, " ")}</span>
                     <span className="text-muted-2">booking {s.bookingState.toLowerCase()} · {s.attempts} attempt{s.attempts === 1 ? "" : "s"}</span>
-                    {s.lastError && <span className="min-w-0 flex-1 truncate text-warning">{s.lastError}</span>}
+                    {s.lastError && <span className="min-w-0 flex-1 basis-48 truncate text-warning">{s.lastError}</span>}
                     <span className="ml-auto text-muted-2">{when(s.updatedAt)}</span>
                   </div>
                 ))}
@@ -374,7 +375,7 @@ export default async function ContentMonitoringPage() {
               {imports.batches.map((b) => (
                 <div key={b.id} className="flex flex-wrap items-center gap-2 px-5 py-2 text-[12px]">
                   <span className="font-medium">{b.clientName}</span>
-                  <span className="min-w-0 flex-1 truncate text-muted">{b.fileName ?? b.id} · {b.kind.toLowerCase()} · {b.items} item{b.items === 1 ? "" : "s"}</span>
+                  <span className="min-w-0 flex-1 basis-48 truncate text-muted">{b.fileName ?? b.id} · {b.kind.toLowerCase()} · {b.items} item{b.items === 1 ? "" : "s"}</span>
                   {b.proposedMonthKey && <span className="text-muted-2">→ {b.proposedMonthKey}</span>}
                   <span className={b.appliedAt ? "text-success" : "text-warning"}>{b.appliedAt ? `applied ${when(b.appliedAt)}${b.appliedBy ? ` by ${b.appliedBy}` : ""}` : "preview only"}</span>
                 </div>

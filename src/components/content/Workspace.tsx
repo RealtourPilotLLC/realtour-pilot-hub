@@ -507,7 +507,8 @@ export function GenerateButton({ label, busyLabel, run }: { label: string; busyL
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
   return (
-    <span className="flex items-center gap-2">
+    // Phone layout (Jordan, Oct 28 2026): the note and the button wrap instead of running past a phone's edge.
+    <span className="flex flex-wrap items-center gap-2">
       {note && <span className="max-w-64 truncate text-[11px] text-muted" title={note}>{note}</span>}
       <button disabled={busy} onClick={() => start(async () => { setNote(busyLabel); const r = await run(); setNote(r.message); })}
         className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50">

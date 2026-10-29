@@ -94,7 +94,8 @@ export default async function CreditsPage({ searchParams }: { searchParams: Prom
                   <p className="text-sm text-muted">credits{page.credit.usdPerCredit != null && page.credit.balance != null ? ` · about ${usd(page.credit.balance * page.credit.usdPerCredit)}` : ""}</p>
                   <span className={cn("mt-2 inline-flex rounded-full px-2.5 py-0.5 text-ui-status font-semibold ring-1 ring-inset", LEVEL[page.credit.connected ? page.credit.level : "unknown"].cls)}>{page.credit.connected ? LEVEL[page.credit.level].label : "API not connected"}</span>
                 </div>
-                <dl className="grid min-w-0 flex-1 grid-cols-1 gap-x-6 gap-y-1.5 text-sm sm:grid-cols-2">
+                {/* Phone layout (Jordan, Oct 28 2026): the facts drop under the balance instead of squeezing into a sliver beside it. */}
+                <dl className="grid min-w-0 flex-1 basis-64 grid-cols-1 gap-x-6 gap-y-1.5 text-sm sm:grid-cols-2">
                   <div>
                     <dt className="text-muted">Runway</dt>
                     <dd>{page.credit.runwayDays != null ? `${page.credit.runwayDays < 1 ? "Under a day" : `About ${page.credit.runwayDays} day${page.credit.runwayDays === 1 ? "" : "s"}`} at ${page.credit.perDay} a day (14-day average)` : "No recent spend to project from"}</dd>

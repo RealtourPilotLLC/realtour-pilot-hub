@@ -73,7 +73,8 @@ export function PortalSignIn({ reason, signedIn, emailSignIn = true }: { reason?
           {note && !done && <p className="mt-2 text-center text-sm text-muted">{note}</p>}
           {signedIn && !done && (
             <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2.5 text-sm">
-              <span className="min-w-0 flex-1 break-words text-muted">Signed in as <span className="font-semibold text-foreground">{signedIn.who}</span></span>
+              {/* Phone layout (Jordan, Oct 28 2026): the buttons wrap under the line instead of squeezing it. */}
+              <span className="min-w-0 flex-1 basis-48 break-words text-muted">Signed in as <span className="font-semibold text-foreground">{signedIn.who}</span></span>
               {signedIn.canEnter && (
                 <ActionLink href="/portal/me" variant="primary">
                   Open your portal <ArrowRight className="size-3.5" />

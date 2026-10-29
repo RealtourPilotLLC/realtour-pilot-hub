@@ -197,12 +197,13 @@ function JobLine({ r, includeTest }: { r: JobRow; includeTest: boolean }) {
   // desktop and wrapped every address to four lines.
   return (
     <li data-job={r.projectId} className={cn("px-4 py-2.5", r.monthly && "opacity-80")}>
-      <div className="flex items-baseline gap-3">
-        <Link href={homeRecordHref(`/projects/${r.projectId}`, includeTest)} className="min-w-0 flex-1 font-semibold leading-snug [overflow-wrap:anywhere] hover:text-brand">
+      {/* Phone layout (Jordan, Oct 28 2026): the due date and the button wrap under the words instead of squeezing them. */}
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+        <Link href={homeRecordHref(`/projects/${r.projectId}`, includeTest)} className="min-w-0 flex-1 basis-48 font-semibold leading-snug [overflow-wrap:anywhere] hover:text-brand">
           {r.street}
           {r.client && <span className="block text-[12px] font-normal text-muted">{r.client}</span>}
         </Link>
-        <span className={cn("shrink-0 text-right text-[13px] tabular-nums", r.late ? "font-semibold text-danger" : r.dueToday ? "font-medium" : "text-muted")}>{r.dueWords}</span>
+        <span className={cn("ml-auto text-right text-[13px] tabular-nums", r.late ? "font-semibold text-danger" : r.dueToday ? "font-medium" : "text-muted")}>{r.dueWords}</span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-2">
         <span className="inline-flex items-center gap-1">Photos <StageChip stage={r.photos} /></span>
@@ -253,9 +254,9 @@ export function ShootsInProgress({ jobs, includeTest = false, doors = ALL_DOORS 
 
 function AttentionRow({ item, includeTest, doors }: { item: AttentionItem; includeTest: boolean; doors: Doors }) {
   return (
-    <li data-attention={item.key} className="flex items-start gap-3 py-2.5">
+    <li data-attention={item.key} className="flex flex-wrap items-start gap-x-3 gap-y-2 py-2.5">
       <span aria-hidden className={cn("mt-1.5 size-2 shrink-0 rounded-full", item.tone === "bad" ? "bg-danger" : "bg-warning")} />
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 basis-48">
         <p className="text-sm leading-snug [overflow-wrap:anywhere]"><strong className="font-semibold">{item.lead}</strong> {item.text}</p>
         <p className="mt-0.5 text-[12px] text-muted" data-owner>{item.owner}</p>
       </div>
@@ -263,7 +264,7 @@ function AttentionRow({ item, includeTest, doors }: { item: AttentionItem; inclu
         <Link
           href={homeRecordHref(item.action.href, includeTest)}
           className={cn(
-            "inline-flex min-h-11 shrink-0 items-center rounded-lg px-3 text-[13px] font-semibold",
+            "ml-auto inline-flex min-h-11 items-center rounded-lg px-3 text-[13px] font-semibold",
             item.tone === "bad" ? "bg-brand-action text-white hover:opacity-90" : "border border-border-strong hover:bg-surface-2",
           )}
         >

@@ -127,8 +127,9 @@ function ExampleCarousel({ examples }: { examples: Resolved[] }) {
         <div className="-mx-1 flex snap-x snap-mandatory gap-3 overflow-x-auto px-1 pb-2">
           {playable.map((e) => (
             <figure key={e.url} className="shrink-0 snap-start">
+              {/* Phone layout (Jordan, Oct 28 2026): a landscape example fits the phone's width (it was 569px wide, controls off screen). */}
               <div
-                className={`overflow-hidden rounded-xl border border-border bg-black ${e.vertical ? "aspect-[9/16]" : "aspect-video"} h-80`}
+                className={`overflow-hidden rounded-xl border border-border bg-black ${e.vertical ? "aspect-[9/16] h-80" : "aspect-video w-[calc(100vw-3rem)] sm:h-80 sm:w-auto"}`}
               >
                 <video
                   src={e.mp4}

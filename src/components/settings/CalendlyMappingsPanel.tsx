@@ -181,7 +181,7 @@ export function CalendlyMappingsPanel({ state, canOpenOperations = false }: { st
           <div className="mb-2 font-medium">Automation switches</div>
           <ul className="space-y-1 text-xs">
             {state.switches.map((s) => (
-              <li key={s.key} className="flex items-center gap-2">
+              <li key={s.key} className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <Chip tone={s.enabled ? "ok" : "muted"}>{s.enabled ? "on" : s.missing ? "off (never configured)" : "off"}</Chip>
                 <code>{s.key}</code>
                 {s.lastError && <span className="text-danger">· {s.lastError}</span>}

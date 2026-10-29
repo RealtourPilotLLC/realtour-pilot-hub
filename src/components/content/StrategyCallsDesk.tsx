@@ -158,12 +158,13 @@ function CallRow({ r, data, assign, unassign, ignore, errors }: { r: DeskRow } &
   const err = errors[r.id];
   return (
     <li className={cn("rounded-xl border bg-surface/70 p-3 sm:p-4", r.state === "OPEN" && live ? "border-brand/30" : "border-border", (!live || r.state === "IGNORED") && "opacity-70")}>
+      {/* Phone layout (Jordan, Oct 28 2026): the time and name keep a real width; on a phone the chips wrap under them. */}
       <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-56">
           <div className="text-sm font-semibold">{whenET(r.startISO)}</div>
           <div className="break-words text-sm">{r.inviteeName ?? "Unknown invitee"}{r.inviteeEmail && <span className="text-muted"> · {r.inviteeEmail}</span>}</div>
         </div>
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
           <Chip className="bg-surface-2 text-muted">{r.eventType}</Chip>
           <Chip className={STATUS_TONE[r.status]}>{STATUS_WORD[r.status]}</Chip>
         </div>

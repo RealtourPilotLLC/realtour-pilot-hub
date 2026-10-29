@@ -107,7 +107,8 @@ export async function PersonalTab({ show }: { show: FinanceTab[] }) {
           <div className="space-y-2.5">
             {data.byBucket.map((b, i) => (
               <div key={b.bucket} className="flex items-center gap-3">
-                <div className="w-40 shrink-0 truncate text-sm text-foreground/85">{b.bucket}</div>
+                {/* Phone layout (Jordan, Oct 28 2026): a narrower name column on a phone so the row fits. */}
+                <div className="w-28 shrink-0 truncate text-sm text-foreground/85 sm:w-40">{b.bucket}</div>
                 <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-surface-2">
                   <div className="h-full rounded-full" style={{ width: `${(b.amount / maxBucket) * 100}%`, backgroundColor: colorAt(i) }} />
                 </div>

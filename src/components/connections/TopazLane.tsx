@@ -361,7 +361,8 @@ function JobRow({ job }: { job: TopazLaneJob }) {
       <p className={`mt-0.5 text-[12px] leading-relaxed ${job.state === "failed" ? "text-danger" : "text-muted"}`}>{job.says}</p>
 
       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-2">
-        {job.fileName && <span className="font-mono">{job.fileName}</span>}
+        {/* Phone layout (Jordan, Oct 28 2026): a long file name breaks instead of pushing the page sideways. */}
+        {job.fileName && <span className="min-w-0 font-mono [overflow-wrap:anywhere]">{job.fileName}</span>}
         {job.sourceLabel && job.outputLabel && (
           <span>
             {job.sourceLabel} → {job.outputLabel}

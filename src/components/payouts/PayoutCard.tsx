@@ -482,7 +482,7 @@ function MileageDayRow({ day: d, memberId, busy, run }: {
             value={note}
             onChange={(e) => setNote(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }}
-            className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-xs"
+            className="min-w-0 flex-1 basis-40 rounded-md border border-border bg-surface px-2 py-1 text-xs"
             placeholder="why? (optional — e.g. detour on Rt 30)" aria-label="Reason for the adjustment"
           />
           <button onClick={save} disabled={busy} className="rounded-md bg-brand-action px-2 py-1 font-semibold text-white disabled:opacity-50">

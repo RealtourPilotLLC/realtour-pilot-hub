@@ -393,7 +393,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
                   {choice === null && <p className="text-xs text-muted-2">Pick one before you approve.</p>}
                 </fieldset>
               )}
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button type="button" onClick={approve} disabled={busy || draftBlocks || (open.length > 0 && choice === null) || (onBehalf && !howOk)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-success-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3.5 animate-spin" />} {copy.confirm}</button>
                 <button type="button" onClick={() => setApproving(false)} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Not yet</button>
               </div>
@@ -580,9 +580,10 @@ function NoteComposer({ ref, submissionId, player, playerFailed, afterSend, onDr
   return (
     <div>
       {restored && has && <p className="mb-1.5 text-xs font-medium text-warning">{NOTE_COPY.restored}</p>}
-      <div className="flex items-start gap-2">
-        <textarea value={text} onChange={(e) => update(e.target.value)} placeholder="Pause the video and write what you'd change, or leave a general note" rows={3} aria-label="New note" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-base outline-none focus:border-brand sm:text-sm" />
-        <button type="button" onClick={() => void send()} disabled={sending || !has} className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+      {/* Phone layout (Jordan, Oct 28 2026): Send note wraps under the box instead of squeezing it. */}
+      <div className="flex flex-wrap items-start gap-x-2 gap-y-1.5">
+        <textarea value={text} onChange={(e) => update(e.target.value)} placeholder="Pause the video and write what you'd change, or leave a general note" rows={3} aria-label="New note" className="min-w-0 flex-1 basis-56 rounded-lg border border-border bg-surface px-3 py-2 text-base outline-none focus:border-brand sm:text-sm" />
+        <button type="button" onClick={() => void send()} disabled={sending || !has} className="ml-auto inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
           {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-3.5" />} {NOTE_COPY.send}
         </button>
       </div>

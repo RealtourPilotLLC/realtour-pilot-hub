@@ -168,7 +168,8 @@ export function BrandAssetsPanel({
           {sources.folder && !sources.folder.folderExists && <p className="px-5 py-3 text-sm text-muted">No folder yet at <span className="font-mono text-[12px]">{sources.folder.path}</span> — the hourly sweep creates one for every video client.</p>}
           {sources.folder?.files.map((f) => (
             <div key={f.path} className="flex flex-wrap items-center gap-2 px-5 py-2 text-[13px]">
-              <span className="min-w-0 flex-1 truncate">{f.url ? <a href={f.url} target="_blank" rel="noopener noreferrer" className="hover:underline">{f.name}</a> : f.name}</span>
+              {/* Phone layout (Jordan, Oct 28 2026): the file name keeps a real width; Track and its picker wrap under it on a phone. */}
+              <span className="min-w-0 flex-1 basis-48 truncate">{f.url ? <a href={f.url} target="_blank" rel="noopener noreferrer" className="hover:underline">{f.name}</a> : f.name}</span>
               {f.tracked ? (
                 <span className="rounded-full bg-success/15 px-2 py-0.5 text-[10px] font-semibold text-success">tracked</span>
               ) : canEdit ? (
@@ -326,7 +327,7 @@ function AssetRow({
               <div key={v.id} className="flex flex-wrap items-center gap-2 text-[12px]">
                 <span className={v.id === a.active?.id ? "font-semibold" : "text-muted"}>v{v.versionNo}</span>
                 <span className="text-muted-2">{day(v.createdAtISO)} · {v.source}{v.uploadedBy ? ` · ${v.uploadedBy}` : ""}</span>
-                <span className="min-w-0 flex-1 truncate">{v.cleared ? "(cleared)" : v.valueText ?? v.fileName ?? "—"}</span>
+                <span className="min-w-0 flex-1 basis-48 truncate">{v.cleared ? "(cleared)" : v.valueText ?? v.fileName ?? "—"}</span>
                 {v.note && <span className="text-muted-2">{v.note}</span>}
                 {canEdit && v.id !== a.active?.id && (
                   <button className={quiet} disabled={busy} onClick={() => start(async () => say(await setActiveAssetVersionAction(enrollmentId, a.id, v.id)))}>Make current</button>

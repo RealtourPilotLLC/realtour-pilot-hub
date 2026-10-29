@@ -145,7 +145,8 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
             ? "We covered most of this on your call. These are only the pieces we still need, in your own words. Skip anything; you can come back and change any answer."
             : "A few quick questions in your own words. We turn them into a filmable script. Skip anything; you can come back and change any answer."}
         </p>
-        <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-2">
+        {/* Phone layout (Jordan, Oct 28 2026): the progress chips wrap instead of running off the edge. */}
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-2">
           <span className="rounded-md bg-surface-2 px-1.5 py-0.5 font-semibold">{iv.mode === "GAPS_ONLY" ? `${iv.progress.substantiveAnswered} answered` : `${iv.progress.substantiveAnswered}/${iv.progress.substantiveTotal} answered`}</span>
           {submitted && <span className="inline-flex items-center gap-1 text-success"><CheckCircle2 className="size-3" /> sent {iv.submittedAtISO ? new Date(iv.submittedAtISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : ""}</span>}
           {sentWithGaps && <span className="inline-flex items-center gap-1 text-warning"><CheckCircle2 className="size-3" /> sent with gaps {callDay(iv.sentWithGapsAtISO) ?? ""} · we&rsquo;ll follow up</span>}

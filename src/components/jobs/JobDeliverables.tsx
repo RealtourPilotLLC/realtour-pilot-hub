@@ -116,8 +116,9 @@ function Requests({ medium, checks, canCheck, placement }: { medium: "photo" | "
       <ul className="space-y-1.5">
         {checks.requests.map((r: JobCheckRequest) => (
           <li key={r.id} data-request-id={r.id} className="space-y-1.5 rounded-lg bg-surface-2 px-3 py-2">
+            {/* Phone layout (Jordan, Oct 28 2026): the owner pill wraps under the words instead of squeezing them. */}
             <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
-              <div className="min-w-0 flex-1">
+              <div className="min-w-0 flex-1 basis-48">
                 <p className="text-sm text-foreground">{r.summary}</p>
                 <p className="text-xs text-muted">
                   {r.askedBy ?? "The client"} · {etDateTime(r.askedAtISO)}
@@ -133,7 +134,7 @@ function Requests({ medium, checks, canCheck, placement }: { medium: "photo" | "
             {r.text.trim() && r.text.trim() !== r.summary.trim() && (
               <details className="text-xs">
                 <summary className="cursor-pointer font-medium text-brand">The client&rsquo;s words</summary>
-                <p className="mt-1 whitespace-pre-wrap rounded-lg bg-surface px-2 py-1.5 text-[13px] text-foreground/85">{r.text}</p>
+                <p className="mt-1 whitespace-pre-wrap rounded-lg bg-surface px-2 py-1.5 text-[13px] text-foreground/85 [overflow-wrap:anywhere]">{r.text}</p>
               </details>
             )}
             {canCheck && (

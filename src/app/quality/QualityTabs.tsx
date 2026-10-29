@@ -31,7 +31,9 @@ export function QualityTabs({ active, counts, only }: {
   ];
   const tabs = only ? all.filter((t) => only.includes(t.key)) : all;
   return (
-    <div className="mb-4 flex items-center gap-1 rounded-2xl border bg-surface p-1">
+    // Phone layout (Jordan, Oct 28 2026): the three tabs wrap onto a second row
+    // instead of running off the right edge.
+    <div className="mb-4 flex flex-wrap items-center gap-1 rounded-2xl border bg-surface p-1">
       {tabs.map((t) => {
         const is = t.key === active;
         return (
@@ -40,7 +42,7 @@ export function QualityTabs({ active, counts, only }: {
             href={t.href}
             aria-current={is ? "page" : undefined}
             className={cn(
-              "inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-sm font-medium transition-colors",
+              "inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-center text-sm font-medium transition-colors",
               is ? "bg-brand-soft text-brand" : "text-muted hover:bg-surface-2 hover:text-foreground",
             )}
           >

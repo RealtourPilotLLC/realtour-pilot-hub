@@ -294,7 +294,7 @@ function Thumb({ note, onOpen }: { note: ReviewNote; onOpen: () => void }) {
       type="button"
       onClick={onOpen}
       title={note.assetType === "video" ? "Open the video at this moment" : "Open the photo at this spot"}
-      className="group relative w-[120px] shrink-0 self-start overflow-hidden rounded-lg border bg-surface-2 transition-shadow hover:ring-2 hover:ring-brand/60"
+      className="group relative w-24 shrink-0 self-start sm:w-[120px] overflow-hidden rounded-lg border bg-surface-2 transition-shadow hover:ring-2 hover:ring-brand/60"
     >
       {videoFrame ? (
         <video

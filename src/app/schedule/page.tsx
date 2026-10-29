@@ -95,10 +95,12 @@ async function ListView({ excludeClientIds, includeTest, office, tabs }: { exclu
                     // shoots does (audit A14); /shoot is the photographer's
                     // field screen, kept for anyone else this page is opened to.
                     href={office ? `/projects/${p.id}` : `/shoot/${p.id}`}
-                    className="flex items-center gap-3 border-b px-4 py-3 last:border-0 hover:bg-surface-2 sm:gap-4 sm:px-5"
+                    // Phone layout (Jordan, Oct 28 2026): the stage, photographer and
+                    // "Off that day" wrap under the address instead of squeezing it.
+                    className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b px-4 py-3 last:border-0 hover:bg-surface-2 sm:gap-x-4 sm:px-5"
                   >
                     <div className="w-16 shrink-0 text-sm font-semibold text-foreground/80">{time}</div>
-                    <div className="min-w-0 flex-1">
+                    <div className="min-w-0 flex-1 basis-48">
                       <div className="flex items-center gap-1.5 truncate text-sm font-medium">
                         <MapPinIcon className="size-3.5 shrink-0 text-muted-2" />
                         {p.title}
@@ -111,7 +113,7 @@ async function ListView({ excludeClientIds, includeTest, office, tabs }: { exclu
                         <span className="truncate">{p.client.name}</span>
                       </div>
                     </div>
-                    <span className="shrink-0 sm:w-24">
+                    <span className="ml-auto shrink-0 sm:w-24">
                       <Badge color={stage.color} soft={stage.soft}>
                         {stage.short}
                       </Badge>

@@ -131,7 +131,7 @@ export function MonthBriefPanel({ mode, monthId, files: initialFiles, notes: ini
             </button>
           </>
         ) : (
-          <p className="mt-1 whitespace-pre-wrap text-sm">{savedText || <span className="text-muted">No notes.</span>}</p>
+          <p className="mt-1 whitespace-pre-wrap text-sm [overflow-wrap:anywhere]">{savedText || <span className="text-muted">No notes.</span>}</p>
         )}
       </div>
       {msg && <p role="status" className={`text-xs ${msg.ok ? "text-success" : "text-warning"}`}>{msg.text}</p>}

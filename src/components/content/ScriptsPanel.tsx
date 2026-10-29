@@ -379,9 +379,10 @@ function ScriptItem({ s, busy, run, open, rev, onAsk, clientFirst = "" }: { s: S
     : null;
   return (
     <details className="group px-5 py-3" open={open} data-script-card={s.id}>
-      <summary className="flex cursor-pointer flex-wrap items-center gap-2 marker:content-none">
+      {/* Phone layout (Jordan, Oct 28 2026): the title keeps a real width; on a phone the chips wrap under it instead of cutting it to a few letters. */}
+      <summary className="flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1.5 marker:content-none">
         <FileText className="size-3.5 shrink-0 text-muted-2" />
-        <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">{s.title}</span>
+        <span className="min-w-0 flex-1 basis-48 truncate text-[15px] font-semibold">{s.title}</span>
         {cur?.format && <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cur.format === "SKIT" ? "bg-brand-soft text-brand" : "bg-surface-2 text-muted"}`}>{VIDEO_FORMAT_LABEL[cur.format]}</span>}
         <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>{state}</span>
         {verdict && <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${verdict.cls}`} title={s.clientVerdictAt ? `on ${fmt(s.clientVerdictAt)}` : undefined}>{verdict.label}</span>}
@@ -589,9 +590,9 @@ function QuestionRequestCard({ q, show }: { q: QuestionRequestUi; show: (kind: "
     : "No email yet.";
   return (
     <div className="px-5 py-3" data-question-request-card={q.id}>
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <MessageSquareText className="size-3.5 shrink-0 text-muted-2" />
-        <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">{q.topicTitle}</span>
+        <span className="min-w-0 flex-1 basis-48 truncate text-[15px] font-semibold">{q.topicTitle}</span>
         <span className="shrink-0 rounded-full bg-brand-soft px-2 py-0.5 text-xs font-medium text-brand">{chip}</span>
       </div>
       <p className="mt-1.5 text-[12px] text-muted">{emailLine}{q.answered > 0 && q.stage === "WAITING" ? ` ${q.answered} of ${q.questions.length} answered so far.` : ""}</p>

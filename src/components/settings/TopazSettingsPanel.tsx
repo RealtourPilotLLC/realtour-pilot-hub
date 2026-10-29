@@ -665,12 +665,13 @@ function NumRow({
   locked?: boolean;
 }) {
   return (
+    // Phone layout (Jordan, Oct 28 2026): the number box wraps under the words instead of squeezing them.
     <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2" data-locked={locked ? "" : undefined}>
-      <span className="min-w-0 flex-1 text-[13px]">
+      <span className="min-w-0 flex-1 basis-48 text-[13px]">
         <b>{label}</b>
         <span className="text-muted"> — {hint}</span>
       </span>
-      <Num value={value} onChange={onChange} min={min} max={max} suffix={suffix} wide locked={locked} />
+      <span className="ml-auto"><Num value={value} onChange={onChange} min={min} max={max} suffix={suffix} wide locked={locked} /></span>
     </div>
   );
 }

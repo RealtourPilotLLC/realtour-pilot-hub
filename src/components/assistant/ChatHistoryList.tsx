@@ -113,7 +113,7 @@ function ChatRow({ chat }: { chat: ChatListItem }) {
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="text-[10px] uppercase tracking-wide text-muted-2">{m.role === "user" ? "Asked" : "Hub"} · {m.at}</div>
-                  <div className="whitespace-pre-wrap text-sm text-foreground/85">{m.content}</div>
+                  <div className="whitespace-pre-wrap text-sm text-foreground/85 [overflow-wrap:anywhere]">{m.content}</div>
                 </div>
               </div>
             ))

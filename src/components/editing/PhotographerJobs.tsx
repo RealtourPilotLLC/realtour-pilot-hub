@@ -78,8 +78,9 @@ function JobCard({ job }: { job: PhotographerJob }) {
 
   return (
     <li className="rounded-xl border bg-surface">
+      {/* Phone layout (Jordan, Oct 28 2026): the address keeps a real width; on a phone Watch and Your notes wrap under it. */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 p-3.5">
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-56">
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-sm font-semibold">{job.street}</span>
             <span
@@ -119,21 +120,23 @@ function JobCard({ job }: { job: PhotographerJob }) {
             </span>
           </div>
         </div>
-        {job.cutsInReview > 0 && (
-          <Link
-            href={`/review/${job.id}`}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-brand/40 bg-brand-soft px-2.5 py-1.5 text-xs font-medium text-brand hover:bg-brand/10"
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
+          {job.cutsInReview > 0 && (
+            <Link
+              href={`/review/${job.id}`}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-brand/40 bg-brand-soft px-2.5 py-1.5 text-xs font-medium text-brand hover:bg-brand/10"
+            >
+              <PlayCircle className="size-3.5" /> Watch {job.cutsInReview === 1 ? "the cut" : `${job.cutsInReview} cuts`}
+            </Link>
+          )}
+          <button
+            onClick={() => setOpen((v) => !v)}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
           >
-            <PlayCircle className="size-3.5" /> Watch {job.cutsInReview === 1 ? "the cut" : `${job.cutsInReview} cuts`}
-          </Link>
-        )}
-        <button
-          onClick={() => setOpen((v) => !v)}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
-        >
-          <PenLine className="size-3.5" /> Your notes
-          <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
-        </button>
+            <PenLine className="size-3.5" /> Your notes
+            <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
+          </button>
+        </div>
       </div>
 
       {open && (

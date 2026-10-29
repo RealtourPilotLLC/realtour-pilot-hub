@@ -317,7 +317,8 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
         {!open && <span className="text-xs text-muted">{summary}</span>}
         {open && (
         <>
-        <div className="flex items-center gap-1">
+        {/* Phone layout (Jordan, Oct 28 2026): the tabs wrap instead of running off the right edge. */}
+        <div className="flex flex-wrap items-center gap-1">
           {tabs.map((t) => {
             const Icon = t.icon;
             const active = tab === t.key;
@@ -544,8 +545,8 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
         <div className="fixed inset-0 z-[1450] flex flex-col bg-black/90 backdrop-blur-sm" onClick={close}>
           {/* Top bar */}
           <div className="flex items-center justify-between gap-2 px-4 py-3 text-white" onClick={(e) => e.stopPropagation()}>
-            <span className="text-sm text-white/70">{idx + 1} / {count}</span>
-            <div className="flex items-center gap-2">
+            <span className="shrink-0 text-sm text-white/70">{idx + 1} / {count}</span>
+            <div className="flex flex-wrap items-center justify-end gap-2">
               {/* Review mode swaps the legacy Flag affordance for verdict chips
                   (pins carry the detail; the verdict is the quick thumbs call). */}
               {reviewable && reviewOn && lbAssetUrl && (

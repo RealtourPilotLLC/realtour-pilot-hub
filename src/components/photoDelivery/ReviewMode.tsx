@@ -172,14 +172,15 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
         <Link href={`/ops/photo-delivery/${jobId}`} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">
           <X aria-hidden className="size-4" /> Exit
         </Link>
-        <div className="min-w-0 flex-1">
+        {/* Phone layout (Jordan, Oct 28 2026): the tools wrap under the address instead of squeezing it. */}
+        <div className="min-w-0 flex-1 basis-48">
           <p className="truncate text-sm font-semibold">{data.header.street}</p>
           <p className="text-[12px] text-muted">
             {idx + 1} of {photos.length} · {withIssues} with open issues
             {listed ? <span className="font-medium text-success"> · Delivered: already on the Aryeo listing</span> : photo.status === "ACTIVE" && (data.listing?.delivered ?? 0) > 0 ? <span className="font-medium text-warning"> · Not delivered yet</span> : null}
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
           <button type="button" className={tool} aria-pressed={overlays} onClick={() => setOverlays((v) => !v)} title="Finding boxes (O)">
             <Layers aria-hidden className="size-4" /> <span className="hidden sm:inline">Boxes</span> <kbd className="text-[11px] text-muted">O</kbd>
           </button>

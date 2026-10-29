@@ -202,7 +202,8 @@ function RequestRow({ r, readOnly, tz, selfBooking, onMove, moving }: { r: Porta
         </span>
       </StatusRow>
       {!readOnly && r.canChange && !conflict && (
-        <div className="mt-1 flex items-center gap-3">
+        // Phone layout (Jordan, Oct 28 2026): Change time and the cancel question wrap instead of squeezing each other.
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
           <button type="button" onClick={() => onMove(r.id)} className="inline-flex min-h-11 items-center gap-1 rounded-md px-2 py-2 text-sm font-medium text-muted hover:text-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
             <MoveRight className="size-3.5" /> {moving ? "Pick the new time below" : "Change time"}
           </button>
@@ -233,7 +234,7 @@ function AddressForm({ sessionKey, onDone }: { sessionKey: string; onDone: () =>
       <input aria-label="City" placeholder="City" value={f.city} onChange={set("city")} className={cn(input, "sm:col-span-3")} />
       <input aria-label="State" placeholder="State" maxLength={2} value={f.state} onChange={set("state")} className={cn(input, "sm:col-span-1")} />
       <input aria-label="ZIP" placeholder="ZIP" inputMode="numeric" maxLength={10} value={f.zip} onChange={set("zip")} className={cn(input, "sm:col-span-2")} />
-      <div className="flex items-center gap-2 sm:col-span-6">
+      <div className="flex flex-wrap items-center gap-2 sm:col-span-6">
         <button type="button" onClick={go} disabled={busy || !f.street.trim()} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">
           {busy && <Loader2 className="size-3 animate-spin" />} Save the address
         </button>

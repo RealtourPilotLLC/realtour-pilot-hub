@@ -123,14 +123,15 @@ export default async function QualityFeedbackPage({
                   className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border bg-surface p-3.5 hover:border-brand/40"
                 >
                   <Camera className="size-5 shrink-0 text-brand" />
-                  <div className="min-w-0 flex-1">
+                  {/* Phone layout (Jordan, Oct 28 2026): the counts wrap under the name instead of squeezing it. */}
+                  <div className="min-w-0 flex-1 basis-48">
                     <span className="truncate text-sm font-semibold">{r.name}</span>
                     <div className="text-xs text-muted">
                       {r.shoots90} shoot{r.shoots90 === 1 ? "" : "s"} in 90d · {r.totalNotes} note
                       {r.totalNotes === 1 ? "" : "s"} all-time
                     </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-1.5 text-[11px] font-medium">
+                  <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5 text-[11px] font-medium">
                     {r.openFixes > 0 && (
                       <span className="rounded-full bg-warning/10 px-2 py-0.5 text-warning">{r.openFixes} to fix</span>
                     )}

@@ -139,9 +139,10 @@ function Row({ x, planId, sessionOptions, busy, run }: { x: BulkItem; planId: st
   const w = STATE_WORDS[x.state];
   const open = x.state === "planned" || x.state === "client_done";
   return (
-    <li className="flex flex-wrap items-center gap-2 py-2">
+    // Phone layout (Jordan, Oct 28 2026): the title keeps a real width; the state, arrows and session picker wrap under it on a phone.
+    <li className="flex flex-wrap items-center gap-x-2 gap-y-1.5 py-2">
       <span className="w-7 shrink-0 text-right text-[12px] tabular-nums text-muted">{x.rank}</span>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 basis-56">
         <p className="truncate text-sm font-medium">{x.title}</p>
         <p className="text-[12px] text-muted">
           {x.pillar ?? "No pillar"}{x.released ? "" : " · not on the portal yet"}
@@ -149,7 +150,7 @@ function Row({ x, planId, sessionOptions, busy, run }: { x: BulkItem; planId: st
           {x.clientMarkedDoneAtISO && open ? ` · ticked ${fmtDay(x.clientMarkedDoneAtISO)}, no footage yet` : ""}
         </p>
       </div>
-      <span className={cn("rounded-md px-2 py-0.5 text-[12px] font-semibold", w.cls)}>{w.label}</span>
+      <span className={cn("ml-auto rounded-md px-2 py-0.5 text-[12px] font-semibold", w.cls)}>{w.label}</span>
       {open && (
         <>
           <button type="button" aria-label={`Move “${x.title}” up`} disabled={busy} onClick={() => run(() => nudgeBulkScriptAction(planId, x.topicId, "up"))} className="rounded-md p-2 text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-40"><ArrowUp className="size-4" /></button>

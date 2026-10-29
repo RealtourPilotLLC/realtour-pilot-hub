@@ -221,10 +221,11 @@ export async function UnpaidTab({ show, amounts, actions }: { show: FinanceTab[]
                 >
                   {r.kind === "paid" ? "PAID" : "REMOVED"}
                 </span>
-                <Link href={`/projects/${r.id}`} className="min-w-0 flex-1 truncate text-sm font-medium hover:text-brand">
+                {/* Phone layout (Jordan, Oct 28 2026): the client and amount wrap under the job instead of squeezing it. */}
+                <Link href={`/projects/${r.id}`} className="min-w-0 flex-1 basis-48 truncate text-sm font-medium hover:text-brand">
                   {r.title}
                 </Link>
-                <span className="shrink-0 text-xs text-muted">{r.clientName}{amounts ? ` · ${usd(r.outstanding)}` : ""}</span>
+                <span className="ml-auto shrink-0 text-xs text-muted">{r.clientName}{amounts ? ` · ${usd(r.outstanding)}` : ""}</span>
                 {/* The paid/removed note is free text and often quotes the money. */}
                 {amounts && r.note && <span className="w-full text-[11px] text-muted-2">{r.note}</span>}
                 {actions && <RestoreToAr projectId={r.id} />}

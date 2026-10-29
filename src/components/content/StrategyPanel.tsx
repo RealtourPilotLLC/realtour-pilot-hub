@@ -302,7 +302,8 @@ function DiscoveryStrip({ d, busy, isOwner, hasVersions, sending = false, onDraf
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-[13px]">
       <Mic className="size-4 text-muted-2" />
-      <span className="min-w-0 flex-1">{line}</span>
+      {/* Phone layout (Jordan, Oct 28 2026): the sentence keeps a real width; on a phone the draft and waive buttons wrap under it. */}
+      <span className="min-w-0 flex-1 basis-56">{line}</span>
       {t && <div className="basis-full"><CallTranscriptItem call={t} variant="inline" showCall={false} /></div>}
       {ready && !d.draftedVersionNo && !d.waived && (drafting ? (
         <button disabled aria-busy="true" className={`${btn} inline-flex items-center bg-brand-action text-white`} title="Runs in the background — the draft appears under Strategy versions when it's ready.">

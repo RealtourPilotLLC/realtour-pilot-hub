@@ -169,7 +169,8 @@ function BouncedCut({ cut }: { cut: BouncedCutView }) {
 
   return (
     <section className="overflow-hidden rounded-xl border border-danger/25 bg-surface">
-      <div className="flex items-center gap-2 bg-danger-soft/40 px-3 py-2">
+      {/* Phone layout (Jordan, Oct 28 2026): the words keep a real width; on a phone Go to this cut wraps under them. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 bg-danger-soft/40 px-3 py-2">
         <button
           type="button"
           onClick={() => setOpen((o) => !o)}
@@ -179,7 +180,7 @@ function BouncedCut({ cut }: { cut: BouncedCutView }) {
         >
           <ChevronDown className={cn("size-3.5 transition-transform", !open && "-rotate-90")} />
         </button>
-        <a href={href} className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
+        <a href={href} className="flex min-w-0 flex-1 basis-56 flex-wrap items-center gap-x-2 gap-y-0.5">
           <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-danger/10 px-1.5 py-0.5 text-[10px] font-semibold text-danger">
             <Undo2 className="size-3" /> Changes requested
           </span>
@@ -199,7 +200,7 @@ function BouncedCut({ cut }: { cut: BouncedCutView }) {
         </a>
         <a
           href={href}
-          className="inline-flex shrink-0 items-center gap-1 rounded-md bg-danger px-2 py-1 text-[11px] font-semibold text-white hover:opacity-90"
+          className="ml-auto inline-flex items-center gap-1 rounded-md bg-danger px-2 py-1 text-[11px] font-semibold text-white hover:opacity-90"
         >
           Go to this cut <ArrowRight className="size-3" />
         </a>
@@ -352,8 +353,8 @@ function Item({
         {isDone && <Check className="size-3" />}
       </button>
       <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-1.5">
-          <p className={cn("min-w-0 flex-1 whitespace-pre-line text-[13px] leading-snug", isDone ? "text-success line-through" : it.held ? "italic text-muted" : "font-medium text-foreground")}>
+        <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1">
+          <p className={cn("min-w-0 flex-1 basis-48 whitespace-pre-line text-[13px] leading-snug", isDone ? "text-success line-through" : it.held ? "italic text-muted" : "font-medium text-foreground")}>
             {it.ask}
           </p>
           {/* Oct 15 2026 (creative review): a feeling with no instruction in it
@@ -527,7 +528,7 @@ function OneBrief({
         type="button"
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          "flex w-full items-center gap-2 px-3 py-2 text-left",
+          "flex w-full flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 text-left",
           allDone ? "bg-success-soft/60 hover:bg-success-soft" : "bg-danger-soft/40 hover:bg-danger-soft/60",
         )}
       >
@@ -544,7 +545,7 @@ function OneBrief({
         {rounds > 1 && (
           <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">R{round}</span>
         )}
-        <span className={cn("min-w-0 flex-1 truncate text-[13px] font-medium", allDone ? "text-muted" : "text-foreground")}>
+        <span className={cn("min-w-0 flex-1 basis-48 truncate text-[13px] font-medium", allDone ? "text-muted" : "text-foreground")}>
           {line}
         </span>
         {/* Whose ask it is, even with the card shut (Sep 28). */}

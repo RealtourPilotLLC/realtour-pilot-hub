@@ -136,7 +136,7 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focu
       <div className="p-4">
         {/* What they actually said */}
         <div className="rounded-xl bg-surface-2 p-3">
-          <p className="whitespace-pre-wrap text-sm leading-relaxed">{card.lastInbound}</p>
+          <p className="whitespace-pre-wrap text-sm leading-relaxed [overflow-wrap:anywhere]">{card.lastInbound}</p>
         </div>
         {/* Oct 22 2026 (audit H4): our last word was a holding line, so the answer is still owed. */}
         {card.holding && (
@@ -170,7 +170,7 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focu
                     t.role === "us" ? "bg-brand-soft text-foreground" : "bg-surface-2",
                   )}
                 >
-                  <p className="whitespace-pre-wrap">{t.text}</p>
+                  <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{t.text}</p>
                   <p className="mt-0.5 text-[10px] text-muted-2">{fmtTime(t.at)}</p>
                 </div>
               </div>

@@ -198,8 +198,9 @@ export function WorkStateBar({
         tone === "active" ? "border-[#8b5cf6]/40 bg-[#8b5cf6]/10" : tone === "paused" ? "border-border bg-surface-2/60" : "border-border bg-surface",
       )}
     >
+      {/* Phone layout (Jordan, Oct 28 2026): the state line keeps a real width; on a phone the picker and buttons wrap under it. */}
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <div className="flex min-w-0 flex-1 items-start gap-2">
+        <div className="flex min-w-0 flex-1 basis-56 items-start gap-2">
           <span
             className={cn(
               "mt-1.5 inline-block size-2 shrink-0 rounded-full",
@@ -215,7 +216,7 @@ export function WorkStateBar({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
           {showPicker && (
             <label className="inline-flex items-center gap-1.5 text-sm text-muted">
               Video

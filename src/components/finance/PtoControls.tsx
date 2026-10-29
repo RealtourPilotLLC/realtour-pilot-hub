@@ -102,9 +102,10 @@ export function PtoRow({ memberId, types, initial, children }: { memberId: strin
   const { busy, msg, run } = useAction();
   if (editing) return <PtoForm memberId={memberId} types={types} defaultDay={initial.startKey} initial={initial} onDone={() => setEditing(false)} />;
   return (
+    // Phone layout (Jordan, Oct 28 2026): the buttons wrap under the words instead of squeezing them.
     <div className="flex flex-wrap items-start justify-between gap-2">
-      <div className="min-w-0 flex-1">{children}</div>
-      <div className="flex shrink-0 flex-wrap items-center gap-2">
+      <div className="min-w-0 flex-1 basis-56">{children}</div>
+      <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
         <button type="button" onClick={() => setEditing(true)} className={QUIET}>Edit</button>
         <button type="button" disabled={busy} onClick={() => run(() => removePto(memberId, initial.yearKey, initial.id))} className={QUIET}>
           {busy && <Loader2 className="size-3 animate-spin" />} Remove

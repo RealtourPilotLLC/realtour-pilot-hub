@@ -125,11 +125,12 @@ export function HeldCutsCard({ held, onBehalfOf = null, canFinish }: { held: Hel
       </p>
       <ul className="mt-3 space-y-2">
         {held.map((h) => (
-          <li key={h.submissionId} className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-surface p-3">
-            <div className="min-w-0 flex-1">
+          // Phone layout (Jordan, Oct 28 2026): the version's name keeps a real width; on a phone Finish the check wraps under it.
+          <li key={h.submissionId} className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-surface p-3">
+            <div className="min-w-0 flex-1 basis-56">
               <p className="text-sm font-medium">
                 {h.label} · version {h.round}
-                {h.fileName ? <span className="ml-1.5 text-xs font-normal text-muted-2">{h.fileName}</span> : null}
+                {h.fileName ? <span className="ml-1.5 text-xs font-normal text-muted-2 [overflow-wrap:anywhere]">{h.fileName}</span> : null}
               </p>
               {h.reason && <p className="mt-0.5 text-xs text-muted">{h.reason}</p>}
               {msg[h.submissionId] && <p className="mt-0.5 text-xs text-foreground/80">{msg[h.submissionId]}</p>}
@@ -138,7 +139,7 @@ export function HeldCutsCard({ held, onBehalfOf = null, canFinish }: { held: Hel
               <button
                 type="button"
                 onClick={() => setOpen(h)}
-                className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg bg-brand-action px-4 py-2 text-sm font-semibold text-brand-fg hover:brightness-95"
+                className="ml-auto inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-4 py-2 text-sm font-semibold text-brand-fg hover:brightness-95"
               >
                 <ClipboardCheck className="size-4" /> Finish the check
               </button>

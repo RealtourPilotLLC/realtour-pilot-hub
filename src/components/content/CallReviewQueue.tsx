@@ -94,7 +94,7 @@ export function CallReviewQueue({
           {aliases?.length === 0 && <p className="px-5 py-3 text-sm text-muted">Nothing proposed.</p>}
           {aliases?.map((a) => (
             <div key={a.id} className="flex flex-wrap items-center gap-2 px-5 py-2 text-[13px]">
-              <span className="font-medium">{a.email}</span>
+              <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{a.email}</span>
               <span className="text-muted">→ {a.clientName}</span>
               <span className="text-[11px] text-muted-2">from {a.source} · {when(a.createdAtISO)}</span>
               <span className="ml-auto flex gap-1.5">
@@ -112,8 +112,9 @@ export function CallReviewQueue({
           {unlinked?.length === 0 && <p className="px-5 py-3 text-sm text-muted">No unlinked transcript is waiting in this review queue.</p>}
           {unlinked?.map((u) => (
             <div key={u.id} className="px-5 py-2 text-[13px]">
+              {/* Phone layout (Jordan, Oct 28 2026): the title keeps a real width; the date and Not ours wrap under it on a phone. */}
               <div className="flex flex-wrap items-center gap-2">
-                <span className="min-w-0 flex-1 truncate font-medium">
+                <span className="min-w-0 flex-1 basis-48 truncate font-medium">
                   {u.sourceUrl ? <a href={u.sourceUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">{u.title ?? "Untitled document"}</a> : (u.title ?? "Untitled document")}
                 </span>
                 <span className="text-[11px] text-muted-2">{when(u.recordedAtISO)}</span>
@@ -222,7 +223,7 @@ function CallRow({
         <div className="mt-1.5 space-y-0.5">
           {c.transcripts.map((t) => (
             <div key={t.id} className="flex flex-wrap items-center gap-2 text-[12px]">
-              <span className="min-w-0 flex-1 truncate">{t.sourceUrl ? <a href={t.sourceUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">{t.title ?? "document"}</a> : (t.title ?? "document")}</span>
+              <span className="min-w-0 flex-1 basis-48 truncate">{t.sourceUrl ? <a href={t.sourceUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">{t.title ?? "document"}</a> : (t.title ?? "document")}</span>
               <span className="text-muted-2">{t.matchState.toLowerCase()} · {when(t.recordedAtISO)}</span>
               {t.matchState !== "CONFIRMED" && (
                 <>

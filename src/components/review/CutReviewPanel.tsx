@@ -478,11 +478,12 @@ export function CutReviewPanel({
             wrongFile.strong ? "border-danger/40 bg-danger-soft/40" : "border-warning/40 bg-warning-soft/30",
           )}
         >
-          <span className="flex min-w-0 flex-1 items-start gap-1.5 font-medium text-foreground">
+          {/* Phone layout (Jordan, Oct 28 2026): "Wrong video?" wraps under the warning instead of squeezing it. */}
+          <span className="flex min-w-0 flex-1 basis-56 items-start gap-1.5 font-medium text-foreground">
             <AlertTriangle aria-hidden className={cn("mt-0.5 size-4 shrink-0", wrongFile.strong ? "text-danger" : "text-warning")} />
             <span data-wrong-file-line>{wrongFile.line}</span>
           </span>
-          {takeBack && <CutTakeBack info={takeBack} cutLabel={cutLabel ?? "this cut"} className="font-medium text-foreground underline underline-offset-2 hover:text-brand" />}
+          {takeBack && <CutTakeBack info={takeBack} cutLabel={cutLabel ?? "this cut"} className="ml-auto font-medium text-foreground underline underline-offset-2 hover:text-brand" />}
         </div>
       )}
       {canDecide && spellingNote}

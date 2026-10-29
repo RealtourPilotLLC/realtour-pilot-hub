@@ -271,8 +271,9 @@ export function Gallery() {
           </div>
         )}
 
-        {/* bottom row: room label + actions (hidden while reordering: the toolbar moves photos then; none on a view-only page) */}
-        <div className={cn("flex items-center gap-1 p-1.5", p.description && "lg:group-hover:invisible", (readOnly || isListed) && "min-h-10")}>
+        {/* bottom row: room label + actions (hidden while reordering: the toolbar moves photos then; none on a view-only page).
+            Phone layout (Jordan, Oct 28 2026): a Delivered / Not delivered yet chip wraps above the room label instead of squeezing it to nothing. */}
+        <div className={cn("flex flex-wrap items-center gap-1 p-1.5", p.description && "lg:group-hover:invisible", (readOnly || isListed) && "min-h-10")}>
           {isListed ? (
             <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-success-soft px-1.5 py-0.5 text-[12px] font-semibold text-success ring-1 ring-inset ring-success/30" title={deliveredTitle}>
               <CheckCircle2 aria-hidden className="size-3" /> Delivered{p.delivered?.since ? ` ${etMonthDay(p.delivered.since)}` : ""}
@@ -282,7 +283,7 @@ export function Gallery() {
               Not delivered yet
             </span>
           ) : null}
-          <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-muted" title={isListed ? `${p.name}. ${deliveredTitle}` : p.name}>{p.roomLabel}</span>
+          <span className="min-w-0 flex-1 basis-16 truncate text-[12px] font-medium text-muted" title={isListed ? `${p.name}. ${deliveredTitle}` : p.name}>{p.roomLabel}</span>
           {!readOnly && !reorder && !isExcluded && !isListed && (
             <button
               type="button"

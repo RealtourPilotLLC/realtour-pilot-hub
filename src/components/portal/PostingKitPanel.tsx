@@ -118,7 +118,7 @@ export function PostingKitPanel({ videoId, title, downloadHref, download, finalL
                 {isEditing ? (
                   <div className="mt-1.5 space-y-1.5">
                     <textarea value={editing.body} onChange={(e) => setEditing({ ...editing, body: e.target.value })} rows={k === "CAPTION" ? 5 : 2} aria-label={`Edit ${KIND_LABEL[k] ?? k}`} className="w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-base outline-none focus:border-brand sm:text-sm" />
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <button type="button" onClick={save} disabled={busy || !editing.body.trim()} className="min-h-11 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Save as new version</button>
                       <button type="button" onClick={() => setEditing(null)} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Cancel</button>
                     </div>

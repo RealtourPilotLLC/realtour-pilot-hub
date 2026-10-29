@@ -344,13 +344,14 @@ export function DeliverPanel() {
     <section aria-label="Deliver" className="sticky bottom-0 z-20 mt-4 rounded-t-2xl border border-b-0 border-border bg-surface/95 shadow-[0_-12px_32px_-20px_rgba(0,0,0,0.7)] backdrop-blur-xl">
       {/* The bar asks the office-only progress route (which also moves the copy on): never on a view-only page. */}
       {!readOnly && <ReadyProgressBar key={barKey} jobId={jobId} state={bar} setState={setBar} />}
-      <div className="flex items-center gap-2 px-3 py-2.5 sm:px-4">
+      {/* On a phone the buttons take their own line when they and the checklist line do not both fit (Oct 28 2026). */}
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2.5 sm:px-4">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           aria-controls="pd-deliver-body"
-          className="inline-flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg px-1 text-left text-sm hover:bg-surface-2/60 sm:flex-initial"
+          className="inline-flex min-h-11 min-w-0 flex-1 basis-48 items-center gap-2 rounded-lg px-1 text-left text-sm hover:bg-surface-2/60 sm:flex-initial sm:basis-auto"
         >
           {delivered ? <CheckCircle2 aria-hidden className="size-5 shrink-0 text-success" /> : gate?.passed ? <ShieldCheck aria-hidden className="size-5 shrink-0 text-success" /> : <CircleAlert aria-hidden className={cn("size-5 shrink-0", gate?.advisory ? "text-warning" : "text-danger")} />}
           <span className="min-w-0">
@@ -368,7 +369,7 @@ export function DeliverPanel() {
           </span>
           {open ? <ChevronDown aria-hidden className="ml-auto size-4 shrink-0" /> : <ChevronUp aria-hidden className="ml-auto size-4 shrink-0" />}
         </button>
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
           {/* Huddle finding 11: the one folder to upload from, always in reach (the only download button). */}
           {ready && !preparing && !readOnly && (
             <a

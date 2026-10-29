@@ -55,7 +55,7 @@ function OneIssue({ issue, canEdit, projects }: { issue: ClientIssueView; canEdi
         <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-medium", TONE[issue.state])}>{STATE_WORDS[issue.state]}</span>
         <span className="text-[11px] text-muted-2">opened {day(issue.createdAtISO)} · {issue.source}</span>
       </div>
-      <p className="mt-1 whitespace-pre-wrap text-foreground/90">{issue.whatHappened}</p>
+      <p className="mt-1 whitespace-pre-wrap text-foreground/90 [overflow-wrap:anywhere]">{issue.whatHappened}</p>
       {jobTitles.length > 0 && <p className="mt-0.5 text-xs text-muted">Jobs: {jobTitles.map((p, i) => <span key={p.id}>{i ? ", " : ""}<Link href={`/projects/${p.id}`} className="text-brand hover:underline">{p.title.split(",")[0]}</Link></span>)}</p>}
       <details className="mt-1.5" open={issue.state === "OPEN"}>
         <summary className="cursor-pointer text-xs font-medium text-brand">Cause, correction and owner</summary>
@@ -90,7 +90,7 @@ function OneIssue({ issue, canEdit, projects }: { issue: ClientIssueView; canEdi
           {issue.state === "OPEN" && <button type="button" disabled={pending || correction.trim().length < 3} title={correction.trim().length < 3 ? "Write what was done to correct it first" : undefined} onClick={() => run(() => moveClientIssueAction({ id: issue.id, to: "CORRECTED", correction, processChange }))} className="min-h-11 rounded-lg bg-brand-action px-3 text-sm font-medium text-white disabled:opacity-50">{pending && <Loader2 className="mr-1 inline size-4 animate-spin" />}Mark corrected</button>}
           {(issue.state === "CORRECTED" || issue.state === "OPEN") && (
             <>
-              <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="What the client said" className="min-h-11 min-w-0 flex-1 rounded-md border border-border bg-surface px-2 text-sm" />
+              <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="What the client said" className="min-h-11 min-w-0 flex-1 basis-48 rounded-md border border-border bg-surface px-2 text-sm" />
               {issue.state === "CORRECTED" && <button type="button" disabled={pending} onClick={() => run(() => moveClientIssueAction({ id: issue.id, to: "CONFIRMED_SATISFIED", note }))} className="min-h-11 rounded-lg border border-success/40 px-3 text-sm font-medium text-success">Client satisfied</button>}
               <button type="button" disabled={pending || note.trim().length < 3} onClick={() => run(() => moveClientIssueAction({ id: issue.id, to: "UNRESOLVED", note }))} className="min-h-11 rounded-lg border border-danger/40 px-3 text-sm font-medium text-danger disabled:opacity-50">Not resolved</button>
             </>

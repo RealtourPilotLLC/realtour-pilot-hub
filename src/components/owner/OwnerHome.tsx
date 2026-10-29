@@ -406,12 +406,13 @@ async function CreativeSection({ p }: { p: Promise<CreativeDecisions | null> }) 
         {rows.slice(0, SHOWN).map((r) => (
           <li key={r.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-border p-3" data-creative-row={r.kind}>
             {r.kind === "listing" ? <FileText aria-hidden className="size-5 shrink-0 text-brand" /> : <Lightbulb aria-hidden className="size-5 shrink-0 text-brand" />}
-            <div className="min-w-0 flex-1">
+            {/* Phone layout (Jordan, Oct 28 2026): the buttons wrap under the words instead of squeezing them. */}
+            <div className="min-w-0 flex-1 basis-56">
               <p className="text-sm font-semibold [overflow-wrap:anywhere]">{r.kind === "listing" ? "Listing script" : "Monthly content"} · {r.client}</p>
               <p className="text-[13px] [overflow-wrap:anywhere]">{r.what}</p>
               <p className="text-[12px] text-muted">Writing: {r.writer} · Approval: {r.approver}{r.related ? ` · ${r.related}` : ""}</p>
             </div>
-            <div className="flex flex-wrap gap-2" data-creative-actions={r.actions.map((a) => a.label).join("|")}>
+            <div className="ml-auto flex flex-wrap justify-end gap-2" data-creative-actions={r.actions.map((a) => a.label).join("|")}>
               {r.actions.map((a, i) => act(a, i))}
             </div>
           </li>

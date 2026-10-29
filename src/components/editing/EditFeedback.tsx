@@ -110,7 +110,8 @@ export function EditFeedback({
                   </span>
                 )
               )}
-              <button onClick={() => setOpenId((v) => (v === n.id ? null : n.id))} className="min-w-0 flex-1 text-left">
+              {/* Phone layout (Jordan, Oct 28 2026): the note keeps a real width; on a phone Mark fixed wraps under it. */}
+              <button onClick={() => setOpenId((v) => (v === n.id ? null : n.id))} className="min-w-0 flex-1 basis-48 text-left">
                 <span className="text-sm text-foreground/90">{n.body}</span>
                 <span className="ml-2 align-middle">
                   <span className={cn("rounded-full px-1.5 py-0.5 text-[10px] font-medium", STATUS_CHIP[n.status] ?? "bg-surface-2 text-muted")}>
@@ -151,7 +152,7 @@ export function EditFeedback({
                 <button
                   onClick={() => run(() => setCutNoteStatus(n.id, "FIXED"))}
                   disabled={pending}
-                  className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg bg-success/10 px-3 py-2 text-xs font-medium text-success hover:bg-success/20 disabled:opacity-50"
+                  className="ml-auto inline-flex min-h-11 items-center gap-1 rounded-lg bg-success/10 px-3 py-2 text-xs font-medium text-success hover:bg-success/20 disabled:opacity-50"
                 >
                   {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />} Mark fixed
                 </button>

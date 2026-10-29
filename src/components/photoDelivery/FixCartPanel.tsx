@@ -120,7 +120,8 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
     const isOn = l.findingIds.some((id) => selected.has(id));
     const id = `pd-cart-${l.findingIds[0]}`;
     return (
-      <li key={l.findingIds.join(",")} className={cn("flex items-start gap-2.5 rounded-xl border p-2", isOn ? "border-brand/40 bg-brand-soft/30" : "border-border bg-surface")}>
+      // Phone layout (Jordan, Oct 28 2026): the buttons wrap under the issue instead of squeezing it.
+      <li key={l.findingIds.join(",")} className={cn("flex flex-wrap items-start gap-x-2.5 gap-y-1.5 rounded-xl border p-2", isOn ? "border-brand/40 bg-brand-soft/30" : "border-border bg-surface")}>
         {!l.humanCall ? (
           <input id={id} type="checkbox" checked={isOn} disabled={pending} onChange={(e) => toggle(l, e.target.checked)} className="mt-3 size-5 shrink-0 accent-[var(--brand)]" />
         ) : (
@@ -133,7 +134,7 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
         ) : (
           <span className="flex size-12 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-[11px] text-muted">Gallery</span>
         )}
-        <label htmlFor={l.humanCall ? undefined : id} className="min-w-0 flex-1 text-sm">
+        <label htmlFor={l.humanCall ? undefined : id} className="min-w-0 flex-1 basis-40 text-sm">
           <span className="flex flex-wrap items-center gap-1.5">
             <span className="font-medium">{p ? `${p.position ? String(p.position).padStart(2, "0") : ""} ${p.roomLabel}`.trim() : "Whole gallery"}</span>
             <span className={cn("rounded-full px-1.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset", SEVERITY_CLASS[l.severity])}>{SEVERITY_LABEL[l.severity]}</span>
@@ -160,14 +161,14 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
             type="button"
             disabled={pending}
             onClick={() => void decide(l.findingIds.map((id) => findingById.get(id)).filter((f): f is NonNullable<typeof f> => !!f), "FIXED_IN_AUTOHDR")}
-            className="inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50"
+            className="ml-auto inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50"
             data-fixed-in-autohdr
           >
             <CheckCircle2 aria-hidden className="size-3.5" /> Fixed in AutoHDR
           </button>
         )}
         {l.humanCall && p && (
-          <button type="button" onClick={() => openLightbox(p.id)} className="inline-flex min-h-10 shrink-0 items-center rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2">
+          <button type="button" onClick={() => openLightbox(p.id)} className={cn("inline-flex min-h-10 items-center rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2", l.humanCall !== "autohdr-editor" && "ml-auto")}>
             Decide
           </button>
         )}

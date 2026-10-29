@@ -383,7 +383,7 @@ function QcClientStrip({ qcClient }: { qcClient?: QcClientContext | null }) {
       </div>
       <div className="space-y-1 text-foreground/85">
         {customerNote && (
-          <p className="whitespace-pre-line"><span className="text-muted-2">Customer note:</span> {customerNote}</p>
+          <p className="whitespace-pre-line [overflow-wrap:anywhere]"><span className="text-muted-2">Customer note:</span> {customerNote}</p>
         )}
         {usuallyAsks.length > 0 && (
           <p className="flex flex-wrap items-baseline gap-1">

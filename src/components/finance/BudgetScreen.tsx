@@ -106,30 +106,33 @@ export function BudgetScreen({
               const bar = over ? "#ec6a6a" : hot ? "#e0a53a" : "#5cb98a";
               return (
                 <div key={r.category} className="px-5 py-3">
-                  <div className="flex items-center justify-between gap-3 text-sm">
+                  {/* Phone layout (Jordan, Oct 28 2026): the numbers wrap under the name instead of squeezing it. */}
+                  <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 text-sm">
                     {/* Tap the name to open the category's itemized charges below. */}
                     <button
                       onClick={() => setOpen(open === r.category ? null : r.category)}
-                      className="flex min-w-0 flex-1 items-center gap-1 text-left"
+                      className="flex min-w-0 flex-1 basis-40 items-center gap-1 text-left"
                       title="See the charges behind this number"
                     >
                       <ChevronRight className={`size-3.5 shrink-0 text-muted-2 transition-transform ${open === r.category ? "rotate-90" : ""}`} />
                       <span className="truncate font-medium">{r.category}</span>
                     </button>
-                    <span className="shrink-0 tabular-nums text-muted">{m0(r.spent)} /</span>
-                    <input
-                      defaultValue={Math.round(r.target)}
-                      onChange={(e) => setEdits((s) => ({ ...s, [r.category]: e.target.value }))}
-                      onBlur={() => { if (edits[r.category] != null && edits[r.category] !== String(Math.round(r.target))) save(r.category, edits[r.category]); }}
-                      onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                      disabled={pending}
-                      inputMode="numeric"
-                      className="w-20 shrink-0 rounded border border-border bg-surface-2 px-1.5 py-0.5 text-right text-sm tabular-nums outline-none focus:border-brand disabled:opacity-50"
-                      title="Monthly target — edit and press Enter"
-                    />
-                    <button onClick={() => remove(r.category)} disabled={pending} className="shrink-0 text-muted-2 hover:text-danger disabled:opacity-40" title="Remove from budget">
-                      <Trash2 className="size-3.5" />
-                    </button>
+                    <div className="ml-auto flex items-center gap-3">
+                      <span className="shrink-0 tabular-nums text-muted">{m0(r.spent)} /</span>
+                      <input
+                        defaultValue={Math.round(r.target)}
+                        onChange={(e) => setEdits((s) => ({ ...s, [r.category]: e.target.value }))}
+                        onBlur={() => { if (edits[r.category] != null && edits[r.category] !== String(Math.round(r.target))) save(r.category, edits[r.category]); }}
+                        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                        disabled={pending}
+                        inputMode="numeric"
+                        className="w-20 shrink-0 rounded border border-border bg-surface-2 px-1.5 py-0.5 text-right text-sm tabular-nums outline-none focus:border-brand disabled:opacity-50"
+                        title="Monthly target — edit and press Enter"
+                      />
+                      <button onClick={() => remove(r.category)} disabled={pending} className="shrink-0 text-muted-2 hover:text-danger disabled:opacity-40" title="Remove from budget">
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    </div>
                   </div>
                   <div className="relative mt-1.5 h-2 overflow-hidden rounded-full bg-surface-2">
                     <div className="h-full rounded-full" style={{ width: `${Math.min(100, frac * 100)}%`, backgroundColor: bar }} />
@@ -168,16 +171,16 @@ export function BudgetScreen({
           <div className="divide-y divide-border/60">
             {unbudgeted.map((u) => (
               <div key={u.category} className="px-5 py-2">
-                <div className="flex items-center justify-between gap-3 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-sm">
                   <button
                     onClick={() => setOpen(open === u.category ? null : u.category)}
-                    className="flex min-w-0 flex-1 items-center gap-1 text-left"
+                    className="flex min-w-0 flex-1 basis-48 items-center gap-1 text-left"
                     title="See the charges behind this number"
                   >
                     <ChevronRight className={`size-3.5 shrink-0 text-muted-2 transition-transform ${open === u.category ? "rotate-90" : ""}`} />
                     <span className="truncate">{u.category}</span>
                   </button>
-                  <span className="shrink-0 tabular-nums text-muted">{m0(u.spent)} this mo · avg {m0(u.avg3mo)}</span>
+                  <span className="ml-auto shrink-0 tabular-nums text-muted">{m0(u.spent)} this mo · avg {m0(u.avg3mo)}</span>
                   <button
                     onClick={() => save(u.category, String(Math.max(25, Math.round(u.avg3mo))))}
                     disabled={pending}

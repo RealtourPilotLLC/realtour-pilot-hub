@@ -105,7 +105,7 @@ export function PortalAccessControls(props: {
           )}
           {props.accessRevokedAtISO && <span className="rounded bg-danger-soft px-1.5 py-0.5 text-sm font-semibold text-danger">access revoked {fmt(props.accessRevokedAtISO)}</span>}
         </div>
-        <dl className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-sm text-muted">
+        <dl className="mt-1.5 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 break-words text-sm text-muted">
           <dt>Issued</dt><dd>{fmt(link.issuedAtISO) ?? (link.issued ? "before Sep 16 (no stamp)" : "—")}</dd>
           <dt>Expires</dt><dd>{fmt(link.expiresAtISO) ?? "never"}</dd>
           <dt>Rotated</dt><dd>{fmt(link.rotatedAtISO) ?? "never"}</dd>
@@ -142,13 +142,14 @@ export function PortalAccessControls(props: {
         ) : (
           <ul className="mt-2 divide-y divide-border rounded-xl border border-border">
             {active.map((p) => (
-              <li key={p.membershipId} className="flex flex-wrap items-center gap-2 px-3 py-2">
-                <div className="min-w-0 flex-1">
+              // Phone layout (Jordan, Oct 28 2026): the role picker and buttons wrap under the person instead of squeezing them.
+              <li key={p.membershipId} className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2">
+                <div className="min-w-0 flex-1 basis-64">
                   <div className="break-words font-medium">{p.name ?? p.email}</div>
                   <div className="break-words text-sm text-muted">{p.email} · invited {fmt(p.invitedAtISO)}{p.acceptedAtISO ? ` · accepted ${fmt(p.acceptedAtISO)}` : " · not signed in yet"}{p.lastLoginAtISO ? ` · last sign-in ${fmt(p.lastLoginAtISO)}` : ""}</div>
                 </div>
                 <select value={p.role} disabled={busy} onChange={(e) => { const next = e.target.value; void run("role", () => setPortalPersonRole(enrollmentId, p.membershipId, next)); }}
-                  className={selectClass} aria-label={`Role for ${p.name ?? p.email}`} title={ROLE_HELP[p.role]}>
+                  className={cn(selectClass, "ml-auto")} aria-label={`Role for ${p.name ?? p.email}`} title={ROLE_HELP[p.role]}>
                   {ROLES.map((r) => <option key={r} value={r}>{r.toLowerCase()}</option>)}
                 </select>
                 <Button variant="secondary" disabled={busy} title="Mint a one-time sign-in link to open yourself (testing)"

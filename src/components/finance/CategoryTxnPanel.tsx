@@ -98,7 +98,8 @@ export function CategoryTxnPanel({
         </div>
       )}
       {txns.map((t) => (
-        <div key={t.id} className="flex items-center gap-2 rounded-lg px-2 py-1 text-xs hover:bg-surface">
+        // Phone layout (Jordan, Oct 28 2026): the amount and category wrap under the name instead of squeezing it.
+        <div key={t.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-2 py-1 text-xs hover:bg-surface">
           <input
             type="checkbox"
             className="size-3.5 shrink-0 accent-[var(--brand,#6ba3d6)]"
@@ -106,20 +107,22 @@ export function CategoryTxnPanel({
             onChange={() => toggleSel(t.id)}
             title="Select for bulk move"
           />
-          <span className="min-w-0 flex-1 truncate" title={t.name}>
+          <span className="min-w-0 flex-1 basis-40 truncate" title={t.name}>
             <span className="text-muted-2">{t.date.slice(5)}</span> {t.name}
             {t.locked && <Lock className="ml-1 inline size-2.5 text-muted-2" />}
           </span>
-          <span className="shrink-0 tabular-nums">{m(t.amount)}</span>
-          <select
-            disabled={pending}
-            value={t.kind === "EXCLUDE" ? EXCLUDE_OPT : category}
-            onChange={(e) => moveTxn(t.id, e.target.value)}
-            className="w-32 shrink-0 rounded border border-border bg-surface px-1 py-0.5 text-[11px] outline-none focus:border-brand disabled:opacity-50"
-            title="Recategorize this charge"
-          >
-            {catOptions()}
-          </select>
+          <div className="ml-auto flex items-center gap-2">
+            <span className="shrink-0 tabular-nums">{m(t.amount)}</span>
+            <select
+              disabled={pending}
+              value={t.kind === "EXCLUDE" ? EXCLUDE_OPT : category}
+              onChange={(e) => moveTxn(t.id, e.target.value)}
+              className="w-32 shrink-0 rounded border border-border bg-surface px-1 py-0.5 text-[11px] outline-none focus:border-brand disabled:opacity-50"
+              title="Recategorize this charge"
+            >
+              {catOptions()}
+            </select>
+          </div>
         </div>
       ))}
       {txns.length === 0 && <div className="py-1 text-xs text-muted-2">No charges in this window.</div>}

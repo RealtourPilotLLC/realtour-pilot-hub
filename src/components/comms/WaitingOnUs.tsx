@@ -179,7 +179,7 @@ export function WaitingOnUs({ board, now, clean, includeTest, excludeClientIds, 
                               {i.subject ? clean(i.subject) : "(no subject)"}
                               <span className="ml-2 font-normal text-muted-2">{waitedWords(i.ageHours)} ago</span>
                             </p>
-                            {i.body && <p className="mt-0.5 whitespace-pre-wrap text-foreground/80">{clean(i.body)}</p>}
+                            {i.body && <p className="mt-0.5 whitespace-pre-wrap text-foreground/80 [overflow-wrap:anywhere]">{clean(i.body)}</p>}
                           </div>
                         ) : (
                           <p key={idx} className="text-sm text-foreground/85">

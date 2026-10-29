@@ -720,7 +720,8 @@ export function EditOverridesButton({
         </button>
       )}
       {note && !onReceipt && (
-        <span className="flex max-w-96 items-start gap-2 whitespace-normal rounded-lg border border-success/30 bg-success/10 px-2 py-1 text-left text-[11px] leading-snug text-foreground/90">
+        // Phone layout (Oct 28 2026): never wider than a phone's content column, like the Rush note below.
+        <span className="flex max-w-[min(24rem,calc(100vw-2rem))] items-start gap-2 whitespace-normal rounded-lg border border-success/30 bg-success/10 px-2 py-1 text-left text-[11px] leading-snug text-foreground/90">
           <span className="min-w-0 flex-1">{note}</span>
           <button type="button" onClick={() => setNote(null)} aria-label="Dismiss" className="shrink-0 text-muted hover:text-foreground">
             <X className="size-3" />

@@ -325,11 +325,13 @@ function JobRow({ s, extraShoot, overBudget, nowMs, payHidden, myPartWaitingOn =
   // Distinct deliverable types = the checklist of what to capture/upload.
   const types = [...new Set(s.deliverables.map((d) => d.type))];
   return (
-    <Link href={`/upload/${s.id}`} className="flex items-center gap-4 rounded-2xl border bg-surface p-4 transition-shadow hover:shadow-md">
+    // Phone layout (Jordan, Oct 28 2026): the photographer's face and Upload
+    // wrap under the words instead of squeezing the address to a sliver.
+    <Link href={`/upload/${s.id}`} className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl border bg-surface p-4 transition-shadow hover:shadow-md">
       <span className="flex size-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: stage.soft, color: ink(stage.color) }}>
         {uploaded ? <CheckCircle2 className="size-5" /> : <Camera className="size-5" />}
       </span>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 basis-56">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className="truncate font-semibold">{s.title}</span>
           {/* The pipeline status always shows now that submitted jobs stay
@@ -389,12 +391,14 @@ function JobRow({ s, extraShoot, overBudget, nowMs, payHidden, myPartWaitingOn =
           </div>
         )}
       </div>
-      {s.photographer && <Avatar name={s.photographer.name} color={s.photographer.avatarColor} size={28} />}
-      <span className="flex shrink-0 items-center gap-1 text-sm font-medium text-brand">
-        {/* A reopened job reads "Upload" even though its page was submitted
-            weeks ago — the extra footage is what the photographer is here for,
-            and "View" would send them away from the only thing left to do. */}
-        {(s.debriefSubmittedAt || myPartIn) && !extraShoot ? "View" : uploaded ? "Review" : <><FolderOpen className="size-4" /> Upload</>} <ArrowRight className="size-4" />
+      <span className="ml-auto flex items-center gap-4">
+        {s.photographer && <Avatar name={s.photographer.name} color={s.photographer.avatarColor} size={28} />}
+        <span className="flex shrink-0 items-center gap-1 text-sm font-medium text-brand">
+          {/* A reopened job reads "Upload" even though its page was submitted
+              weeks ago — the extra footage is what the photographer is here for,
+              and "View" would send them away from the only thing left to do. */}
+          {(s.debriefSubmittedAt || myPartIn) && !extraShoot ? "View" : uploaded ? "Review" : <><FolderOpen className="size-4" /> Upload</>} <ArrowRight className="size-4" />
+        </span>
       </span>
     </Link>
   );

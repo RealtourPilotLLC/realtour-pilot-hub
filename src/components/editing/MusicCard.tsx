@@ -778,7 +778,7 @@ function TrackRow({
           {loadingId === t.id ? <Loader2 className="size-4 animate-spin" /> : playingId === t.id ? <Pause className="size-4" /> : <Play className="size-4" />}
         </button>
       )}
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 basis-40">
         <div className="flex flex-wrap items-baseline gap-x-2">
           <span className="truncate text-sm font-medium">{t.title}</span>
           <span className="truncate text-xs text-muted">{t.artist}</span>
@@ -792,7 +792,8 @@ function TrackRow({
           ))}
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-1.5">
+      {/* On a phone the three buttons wrap under the track, so its name keeps the row (Oct 28 2026). */}
+      <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
         <button type="button" onClick={() => onSimilar(t)} className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium text-muted hover:text-foreground" title="Find tracks that sound like this one">
           <Sparkles className="size-3" /> Similar
         </button>

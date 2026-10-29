@@ -343,7 +343,7 @@ function CutMessage({
   return (
     <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-1">
       {shown ? (
-        <p className="min-w-0 flex-1 text-xs italic leading-relaxed text-foreground/75">
+        <p className="min-w-0 flex-1 basis-56 text-xs italic leading-relaxed text-foreground/75">
           &ldquo;{shown}&rdquo;
           {!liveTargetId && canWrite && (
             <span className="ml-1.5 not-italic text-[10px] font-semibold uppercase tracking-wide text-muted-2">goes with version {nextVersion}</span>
@@ -354,7 +354,7 @@ function CutMessage({
         <button
           type="button"
           onClick={() => { setText(liveTargetId ? (savedNote ?? "") : draft); setOpen(true); }}
-          className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+          className="ml-auto inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
         >
           <MessageSquarePlus className="size-3.5" /> {shown ? "Edit the note to the reviewer" : "Add a note for the reviewer"}
         </button>
@@ -1053,8 +1053,9 @@ export function CutUploader({
           const blk = blocked[key];
           const refusal = blk ? exportRefusal(blk.width, blk.height) : null;
           return (
-            <li key={key} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
-              <div className="min-w-0 flex-1">
+            // Phone layout (Jordan, Oct 28 2026): the cut's name and notes keep a real width; on a phone Upload version N wraps under them.
+            <li key={key} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 sm:px-5">
+              <div className="min-w-0 flex-1 basis-56">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-medium">{c.label}</span>
                   {handed ? (
@@ -1330,7 +1331,7 @@ export function CutUploader({
                   onClick={() => inputs.current[key]?.click()}
                   className={cn(
                     // One look for the page's one main action (Oct 15 2026).
-                    "inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-brand-fg hover:brightness-95 disabled:opacity-60",
+                    "ml-auto inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-brand-fg hover:brightness-95 disabled:opacity-60",
                   )}
                 >
                   {b ? <Loader2 className="size-4 animate-spin" /> : isRedo ? <RotateCcw className="size-4" /> : <CloudUpload className="size-4" />}

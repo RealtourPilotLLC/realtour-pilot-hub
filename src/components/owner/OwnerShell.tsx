@@ -352,7 +352,8 @@ function ListBody({ spec }: { spec: Extract<PanelSpec, { kind: "list" }> }) {
         {spec.rows.map((r) => (
           <li key={r.id} className="flex flex-wrap items-center gap-2 px-3 py-2.5">
             <span className={cn("size-2 shrink-0 rounded-full", r.tone === "bad" ? "bg-danger" : r.tone === "warn" ? "bg-warning" : "bg-success")} aria-hidden />
-            <div className="min-w-0 flex-1">
+            {/* Phone layout (Jordan, Oct 28 2026): the button wraps under the words instead of squeezing them. */}
+            <div className="min-w-0 flex-1 basis-48">
               <p className="text-sm font-medium [overflow-wrap:anywhere]">
                 {r.open ? <button type="button" onClick={() => open(r.open!)} className="text-left hover:underline">{r.title}</button> : r.href ? <Link href={r.href} className="hover:underline">{r.title}</Link> : r.title}
               </p>
@@ -362,10 +363,10 @@ function ListBody({ spec }: { spec: Extract<PanelSpec, { kind: "list" }> }) {
                 and assignment has an actionable button"). The row's own action,
                 else Assign, else Open: its panel (the task, the email) or its exact
                 page. Only a plain fact (time off) has none. */}
-            {r.action ? <RowActionButton a={r.action} />
-              : r.assign && !readOnly ? <button type="button" onClick={() => open({ kind: "assign", seed: r.assign! })} className={QUIET}>Assign</button>
-                : r.open ? <button type="button" onClick={() => open(r.open!)} className={QUIET} data-row-open>{r.openLabel ?? "Open"}</button>
-                  : r.href ? <Link href={r.href} className={QUIET} data-row-open>{r.openLabel ?? "Open"}</Link> : null}
+            {r.action ? <RowActionButton a={r.action} className="ml-auto" />
+              : r.assign && !readOnly ? <button type="button" onClick={() => open({ kind: "assign", seed: r.assign! })} className={cn(QUIET, "ml-auto")}>Assign</button>
+                : r.open ? <button type="button" onClick={() => open(r.open!)} className={cn(QUIET, "ml-auto")} data-row-open>{r.openLabel ?? "Open"}</button>
+                  : r.href ? <Link href={r.href} className={cn(QUIET, "ml-auto")} data-row-open>{r.openLabel ?? "Open"}</Link> : null}
           </li>
         ))}
       </ul>

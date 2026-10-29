@@ -240,15 +240,15 @@ export default async function TrendsPage() {
             <div className="mt-3 grid grid-cols-3 gap-3 rounded-xl border border-warning/25 bg-warning/[0.06] p-3">
               <div>
                 <div className="text-[11px] uppercase tracking-wide text-muted-2">Spent this year</div>
-                <div className="text-xl font-bold tabular-nums text-warning">{usd(quiet.ytdRevenue)}</div>
+                <div className="text-lg font-bold tabular-nums sm:text-xl text-warning">{usd(quiet.ytdRevenue)}</div>
               </div>
               <div>
                 <div className="text-[11px] uppercase tracking-wide text-muted-2">Spent with us ever</div>
-                <div className="text-xl font-bold tabular-nums">{usd(quiet.lifetimeRevenue)}</div>
+                <div className="text-lg font-bold tabular-nums sm:text-xl">{usd(quiet.lifetimeRevenue)}</div>
               </div>
               <div>
                 <div className="text-[11px] uppercase tracking-wide text-muted-2">Worth per year</div>
-                <div className="text-xl font-bold tabular-nums">{usd(quiet.annualValue)}</div>
+                <div className="text-lg font-bold tabular-nums sm:text-xl">{usd(quiet.annualValue)}</div>
               </div>
             </div>
 
@@ -283,8 +283,10 @@ export default async function TrendsPage() {
         <Section icon={Package} title="Most-ordered packages" action={<span className="text-[11px] text-muted-2">{services.totalOrders} orders this year</span>}>
           <div className="space-y-2">
             {services.packages.map((s) => (
-              <div key={s.label} className="flex items-center gap-3">
-                <span className="w-48 shrink-0 truncate text-sm" title={s.label}>{s.label}</span>
+              // Phone layout (Jordan, Oct 28 2026): the package name sits on its own line above
+              // its bar and numbers, so the row no longer runs off the right edge.
+              <div key={s.label} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="w-full shrink-0 truncate text-sm sm:w-48" title={s.label}>{s.label}</span>
                 <div className="h-5 min-w-0 flex-1 overflow-hidden rounded bg-surface-2">
                   <div className="h-full rounded bg-brand/70" style={{ width: `${(s.orders / maxPackage) * 100}%` }} />
                 </div>
@@ -313,8 +315,8 @@ export default async function TrendsPage() {
         >
           <div className="space-y-2">
             {packagesByRevenue.map((s) => (
-              <div key={s.label} className="flex items-center gap-3">
-                <span className="w-48 shrink-0 truncate text-sm" title={s.label}>
+              <div key={s.label} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="w-full shrink-0 truncate text-sm sm:w-48" title={s.label}>
                   {s.label}
                   {!s.exact && !s.estPrice && (
                     <span className="ml-1 text-[10px] text-muted-2" title="No standalone sales to learn a price from — this share is a generic estimate">~</span>

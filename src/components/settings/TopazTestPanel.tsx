@@ -107,12 +107,13 @@ export function TopazTestPanel({
       {cuts.length === 0 ? (
         <p className="mt-2 text-[13px] text-muted">No recent approved video is still held by the hub, so there is nothing to test on yet.</p>
       ) : (
+        // Phone layout (Jordan, Oct 28 2026): the button wraps under the picker instead of squeezing it.
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <select
             value={pick}
             onChange={(e) => { setPick(e.target.value); setPriced(null); setMsg(null); }}
             aria-label="Video to test"
-            className="min-h-11 min-w-0 max-w-full flex-1 rounded-lg border border-border bg-surface-2 px-2 text-sm outline-none focus:border-brand"
+            className="min-h-11 min-w-0 max-w-full flex-1 basis-56 rounded-lg border border-border bg-surface-2 px-2 text-sm outline-none focus:border-brand"
           >
             {cuts.map((c) => (
               <option key={c.submissionId} value={c.submissionId}>
@@ -120,7 +121,7 @@ export function TopazTestPanel({
               </option>
             ))}
           </select>
-          <button type="button" onClick={check} disabled={busy || !pick} className={btn}>
+          <button type="button" onClick={check} disabled={busy || !pick} className={cn(btn, "ml-auto")}>
             {busy && !priced ? <Loader2 className="size-4 animate-spin" /> : null} Check the price (free)
           </button>
         </div>

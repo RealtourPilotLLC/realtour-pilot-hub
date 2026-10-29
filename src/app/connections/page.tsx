@@ -687,7 +687,8 @@ export default async function ConnectionsPage({
                   <Landmark className="size-5" />
                 </span>
                 <div>
-                  <div className="flex items-center gap-2 text-sm font-semibold">
+                  {/* Phone layout (Jordan, Oct 28 2026): the badges wrap instead of squeezing the title onto two lines. */}
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-semibold">
                     Bank &amp; card accounts <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-brand">Plaid</span>
                     {byProvider.get("plaid")?.status === "CONNECTED" && (
                       <span className="rounded-full bg-success/15 px-2 py-0.5 text-[10px] font-medium text-success">Connected</span>

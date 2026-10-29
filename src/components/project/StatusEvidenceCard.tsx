@@ -567,8 +567,9 @@ async function OwedVideos({ projectId }: { projectId: string }) {
       </div>
       <ul className="divide-y rounded-lg border">
         {rows.map((r) => (
+          // Phone layout (Jordan, Oct 28 2026): who, when and the state wrap under the video's name instead of squeezing it.
           <li key={r.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 text-xs">
-            <span className="min-w-0 flex-1 truncate text-foreground/85">
+            <span className="min-w-0 flex-1 basis-40 truncate text-foreground/85">
               {owed.length > 1 && r.state !== "waived" && r.state !== "removed" ? `${r.index}. ` : ""}
               {r.label}
             </span>

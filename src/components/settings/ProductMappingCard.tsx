@@ -308,7 +308,7 @@ export function ProductMappingCard({ card }: { card: ProductCard }) {
         {types.size > 0 && (
           <div className="flex w-full flex-col gap-1">
             {[...types].map((t) => (
-              <div key={t} className="flex items-center gap-2 text-xs">
+              <div key={t} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
                 <span className="w-28 shrink-0 text-muted">{TYPE_OPTIONS.find((o) => o.key === t)?.label ?? t}</span>
                 <div className="flex overflow-hidden rounded-lg border border-border">
                   <button

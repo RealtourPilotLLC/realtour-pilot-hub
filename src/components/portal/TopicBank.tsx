@@ -404,13 +404,14 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
                 recsHere.alt.length > 0 ? (
                   <ul className="mt-2 space-y-1.5">
                     {recsHere.alt.map(({ t }) => (
-                      <li key={t.id} className="flex flex-wrap items-start gap-2 rounded-lg border border-border bg-surface px-2.5 py-2">
-                        <div className="min-w-0 flex-1">
+                      // Phone layout (Jordan, Oct 28 2026): the button wraps under the words instead of squeezing them.
+                      <li key={t.id} className="flex flex-wrap items-start gap-x-2 gap-y-1.5 rounded-lg border border-border bg-surface px-2.5 py-2">
+                        <div className="min-w-0 flex-1 basis-48">
                           <div className="break-words text-sm font-medium">{t.title}</div>
                           {t.recommended?.reason && <div className="text-[11px] text-muted">{t.recommended.reason}</div>}
                           {cardStatus(t.id)}
                         </div>
-                        <button type="button" onClick={() => select(t.id)} disabled={busy} className={cn("shrink-0 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}>Choose this topic</button>
+                        <button type="button" onClick={() => select(t.id)} disabled={busy} className={cn("ml-auto rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}>Choose this topic</button>
                       </li>
                     ))}
                   </ul>

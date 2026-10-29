@@ -415,7 +415,8 @@ function ShootRowLink({ r, showWho, as, types, className }: { r: MyShootRow; sho
           live on Aryeo, then the listing's first image (server-side swap). */}
       <ShootThumb r={r} />
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
+        {/* Phone layout (Jordan, Oct 28 2026): the badges wrap instead of running into the arrow. */}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className="text-xs font-medium text-brand">{r.whenISO ? etTime(r.whenISO) : "—"}</span>
           {r.completed && <Badge color={PALETTE.green}><CheckCircle2 className="mr-0.5 inline size-3" /> Complete</Badge>}
           {!r.completed && r.uploaded && <Badge color={PALETTE.blue}><UploadIcon className="mr-0.5 inline size-3" /> Uploaded</Badge>}

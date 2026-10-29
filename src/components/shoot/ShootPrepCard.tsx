@@ -33,11 +33,12 @@ export function ShootPrepCard({ projectId, lines, readOnly }: { projectId: strin
     <Section icon={ListChecks} title="Before the shoot" count={open ? `${open} to handle` : "Ready"} bodyClassName="space-y-1">
       <ul data-shoot-prep className="divide-y divide-border">
         {lines.map((l) => (
-          <li key={l.key} data-prep-line={l.key} data-tone={l.tone} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
+          // Phone layout (Jordan, Oct 28 2026): a wide button (Mark brief read) wraps under the words, on the right, instead of squeezing them.
+          <li key={l.key} data-prep-line={l.key} data-tone={l.tone} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 [&>:last-child]:ml-auto">
             {l.tone === "ok"
               ? <CheckCircle2 aria-hidden className="size-4 shrink-0 text-success" />
               : <Circle aria-hidden className={cn("size-4 shrink-0", l.tone === "todo" ? "text-warning" : "text-muted-2")} />}
-            <span className={cn("min-w-0 flex-1 text-sm [overflow-wrap:anywhere]", l.tone === "todo" && "font-medium")}>{l.label}</span>
+            <span className={cn("min-w-0 flex-1 basis-40 text-sm [overflow-wrap:anywhere]", l.tone === "todo" && "font-medium")}>{l.label}</span>
             {l.action?.kind === "link" && <a href={l.action.href} className="inline-flex min-h-11 items-center text-sm font-semibold text-brand hover:underline">{l.action.label}</a>}
             {l.action?.kind === "ask" && <AskOnJob projectId={projectId} to={l.action.to} label={l.action.label} placeholder={l.action.placeholder} readOnly={readOnly} variant="quiet" />}
             {l.action?.kind === "ack" && <MarkBriefRead day={l.action.day} digest={l.action.digest} again={l.action.again} readOnly={readOnly} />}

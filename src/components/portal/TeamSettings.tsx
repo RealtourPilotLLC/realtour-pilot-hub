@@ -73,8 +73,9 @@ export function TeamSettings({ seats, invitationsOn }: { seats: TeamSeat[]; invi
 
       <ul className="divide-y divide-border rounded-xl border border-border">
         {seats.map((s) => (
-          <li key={s.seatKey} className="flex flex-wrap items-center gap-2 px-3 py-2.5 text-sm">
-            <div className="min-w-0 flex-1">
+          // Phone layout (Jordan, Oct 28 2026): the role picker and buttons wrap under the name instead of squeezing it.
+          <li key={s.seatKey} className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2.5 text-sm">
+            <div className="min-w-0 flex-1 basis-56">
               <div className="font-medium">{s.name || s.email}{s.isYou && <span className="ml-1.5 text-sm font-normal text-muted-2">(you)</span>}</div>
               {s.name && <div className="break-words text-sm text-muted">{s.email}</div>}
               <div className="mt-0.5 flex flex-wrap gap-1.5 text-sm">
@@ -87,13 +88,13 @@ export function TeamSettings({ seats, invitationsOn }: { seats: TeamSeat[]; invi
               </div>
             </div>
             {s.held ? (
-              <Button variant="secondary" disabled={busy} onClick={() => run("cancelHeld", () => portalCancelHeldInvite(auth(), s.email))} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-sm text-muted hover:text-danger disabled:opacity-50">
+              <Button variant="secondary" disabled={busy} onClick={() => run("cancelHeld", () => portalCancelHeldInvite(auth(), s.email))} className="ml-auto inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-sm text-muted hover:text-danger disabled:opacity-50">
                 <X className="size-3" /> Cancel invitation
               </Button>
             ) : !s.isYou && s.membershipId && s.accountHolder ? (
-              <span className="text-sm text-muted-2">Account holder</span>
+              <span className="ml-auto text-sm text-muted-2">Account holder</span>
             ) : !s.isYou && s.membershipId ? (
-              <div className="flex items-center gap-1.5">
+              <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
                 <select
                   aria-label={`What ${s.name || s.email} can do`} value={s.role} disabled={busy}
                   onChange={(e) => { const next = e.target.value; const id = s.membershipId!; run("role", () => portalSetTeammateRole(auth(), id, next)); }}

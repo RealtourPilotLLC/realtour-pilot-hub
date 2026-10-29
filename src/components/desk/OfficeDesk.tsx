@@ -297,7 +297,7 @@ function rowButtonLabel(i: DeskItem): { label: string; solid: boolean } {
 function RowButton({ i, onOpen, small = false }: { i: DeskItem; onOpen: (i: DeskItem) => void; small?: boolean }) {
   const { label, solid } = rowButtonLabel(i);
   return (
-    <button type="button" onClick={() => onOpen(i)} data-open-panel={i.id} className={cn(solid ? PRIMARY : QUIET, "shrink-0", small ? "font-medium" : "sm:min-w-28")}>
+    <button type="button" onClick={() => onOpen(i)} data-open-panel={i.id} className={cn(solid ? PRIMARY : QUIET, "ml-auto", small ? "font-medium" : "sm:min-w-28")}>
       {label}
     </button>
   );
@@ -321,9 +321,10 @@ function ReviewDeliver({ s, onOpen, readOnly, href }: { s: DeskSection; onOpen: 
   // the row's own button; the side panel carries the same control.
   const reruns = (i: DeskItem) => (readOnly || i.group !== "video" ? [] : i.actions.filter((a): a is Extract<DeskAction, { kind: "topaz-rerun" }> => a.kind === "topaz-rerun"));
   const row = (i: DeskItem) => (
-    <li key={i.id} data-desk-item={i.id} className="flex flex-wrap items-center gap-3 py-2.5">
+    // Phone layout (Jordan, Oct 28 2026): the buttons wrap under the words instead of squeezing them.
+    <li key={i.id} data-desk-item={i.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2.5">
       <Thumb i={i} icon={i.group === "video" ? "video" : "photo"} />
-      <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 text-left">
+      <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 basis-40 text-left">
         <span className="block font-semibold leading-snug [overflow-wrap:anywhere]">{i.title}</span>
         <span className={cn("block text-sm", i.late ? "text-danger" : "text-foreground/80")}>{i.line}</span>
         <span className="block text-[13px] text-muted">{[i.client && `Client: ${i.client}`, i.dueWords].filter(Boolean).join(" · ")}</span>
@@ -351,8 +352,8 @@ function ReviewDeliver({ s, onOpen, readOnly, href }: { s: DeskSection; onOpen: 
                 {/* Each with its own button (Oct 28 2026): Open, or the floor plan's Mark delivered. */}
                 <ul className="mt-1 divide-y divide-border text-[13px]">
                   {s.waiting.map((i) => (
-                    <li key={i.id} data-desk-item={i.id} data-state="waiting" className="flex items-center gap-2 py-1.5">
-                      <button type="button" onClick={() => onOpen(i)} className="min-h-9 min-w-0 flex-1 text-left [overflow-wrap:anywhere] hover:underline">
+                    <li key={i.id} data-desk-item={i.id} data-state="waiting" className="flex flex-wrap items-center gap-x-2 gap-y-1 py-1.5">
+                      <button type="button" onClick={() => onOpen(i)} className="min-h-9 min-w-0 flex-1 basis-48 text-left [overflow-wrap:anywhere] hover:underline">
                         <span className="font-medium">{i.title}</span> <span className="text-muted">· {i.line}{i.dueWords ? ` · ${i.dueWords}` : ""}</span>
                       </button>
                       <RowButton i={i} onOpen={onOpen} small />
@@ -395,12 +396,12 @@ function Communications({ s, onOpen, fresh }: { s: DeskSection; onOpen: (i: Desk
       </summary>
       <ul className="divide-y divide-border">
         {s.ok.map((i) => (
-          <li key={i.id} data-desk-item={i.id} data-state="ok" className="flex items-center gap-3 py-2">
-            <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 text-left">
+          <li key={i.id} data-desk-item={i.id} data-state="ok" className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2">
+            <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 basis-48 text-left">
               <span className="block text-sm font-medium">{i.title}</span>
               <span className="block text-[13px] text-muted [overflow-wrap:anywhere]">{[i.channel, i.line].filter(Boolean).join(" · ")}</span>
             </button>
-            <button type="button" onClick={() => onOpen(i, "handled")} data-open-panel={i.id} className={cn(QUIET, "shrink-0")}>Mark handled</button>
+            <button type="button" onClick={() => onOpen(i, "handled")} data-open-panel={i.id} className={cn(QUIET, "ml-auto")}>Mark handled</button>
           </li>
         ))}
       </ul>
@@ -412,14 +413,14 @@ function Communications({ s, onOpen, fresh }: { s: DeskSection; onOpen: (i: Desk
         <>
           <ul className="divide-y divide-border">
             {rows.map((i) => (
-              <li key={i.id} data-desk-item={i.id} className="flex items-start gap-3 py-3">
+              <li key={i.id} data-desk-item={i.id} className="flex flex-wrap items-start gap-x-3 gap-y-2 py-3">
                 <span aria-hidden className={cn("flex size-11 shrink-0 items-center justify-center rounded-full text-sm font-semibold", i.late ? "bg-danger/15 text-danger" : "bg-brand-soft text-brand")}>{i.initials ?? "?"}</span>
-                <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 text-left">
+                <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 basis-48 text-left">
                   <span className="block font-semibold leading-snug [overflow-wrap:anywhere]">{i.title}</span>
                   <span className={cn("block text-[13px]", i.late ? "text-danger" : "text-muted")}>{[i.channel, i.elapsed].filter(Boolean).join(" · ")}</span>
                   <span className="mt-0.5 block text-sm text-foreground/80 [overflow-wrap:anywhere]">{i.line}</span>
                 </button>
-                <span className="flex shrink-0 flex-col items-end gap-1">
+                <span className="ml-auto flex flex-col items-end gap-1">
                   <RowButton i={i} onOpen={onOpen} />
                   {i.actions.some((a) => a.kind === "follow-up") && (
                     <button type="button" onClick={() => onOpen(i, "follow-up")} data-create-follow-up={i.id} className="min-h-9 text-[13px] font-medium text-brand underline-offset-2 hover:underline">Create follow-up</button>
@@ -449,8 +450,8 @@ function Communications({ s, onOpen, fresh }: { s: DeskSection; onOpen: (i: Desk
           </summary>
           <ul className="divide-y divide-border">
             {s.waiting.map((i) => (
-              <li key={i.id} data-desk-item={i.id} data-state="waiting" className="flex items-center gap-3 py-2">
-                <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 text-left">
+              <li key={i.id} data-desk-item={i.id} data-state="waiting" className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2">
+                <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 basis-48 text-left">
                   <span className="block text-sm font-medium [overflow-wrap:anywhere]">{i.title}</span>
                   <span className="block text-[13px] text-muted [overflow-wrap:anywhere]">{[i.channel, i.line].filter(Boolean).join(" · ")}</span>
                 </button>
@@ -479,9 +480,9 @@ function Shoots({ s, onOpen, initialDay, includeTest, briefs, onBriefs }: { s: D
   const row = (i: DeskItem) => {
     const v = i.panel.kind === "visit" ? i.panel.visit : null;
     return (
-      <li key={i.id} data-desk-item={i.id} data-state={i.state} data-started={over(i) ? "true" : undefined} className="flex flex-wrap items-center gap-3 py-2.5 sm:flex-nowrap">
+      <li key={i.id} data-desk-item={i.id} data-state={i.state} data-started={over(i) ? "true" : undefined} className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2.5">
         <span className="w-16 shrink-0 text-sm font-semibold tabular-nums">{v?.timeISO ? `${day === "next" ? `${etDate(v.timeISO).split(",")[0]} ` : ""}${etTime(v.timeISO)}` : "No time"}</span>
-        <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 text-left">
+        <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 basis-40 text-left">
           <span className="block font-semibold leading-snug [overflow-wrap:anywhere]">{i.title}</span>
           <span className="block text-[13px] text-muted">{v?.photographer ?? "No photographer"}</span>
         </button>
@@ -537,8 +538,8 @@ function FollowUps({ s, onOpen, backlog, includeTest }: { s: DeskSection; onOpen
   const overdue = s.now.filter((i) => i.late).length;
   const rows = all ? s.now : s.now.slice(0, ROWS_SHOWN);
   const row = (i: DeskItem) => (
-    <li key={i.id} data-desk-item={i.id} data-state={i.state} className="flex items-center gap-3 py-2.5">
-      <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 text-left">
+    <li key={i.id} data-desk-item={i.id} data-state={i.state} className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2.5">
+      <button type="button" onClick={() => onOpen(i)} className="min-w-0 flex-1 basis-48 text-left">
         {i.tag && <span data-tag={i.tag} className={cn("mb-0.5 inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold", TAG[i.tag].cls)}>{TAG[i.tag].label}</span>}
         <span className="block font-semibold leading-snug [overflow-wrap:anywhere]">{i.title}</span>
         <span className={cn("block text-sm", i.late ? "text-danger" : "text-muted")}>{i.line}</span>
@@ -827,7 +828,7 @@ function PanelBody({ item, readOnly }: { item: DeskItem; readOnly: boolean }) {
       <div className="space-y-2" data-panel="thread">
         <ol className="space-y-1.5">
           {p.messages.map((m, n) => (
-            <li key={n} className="rounded-lg bg-surface-2/60 px-3 py-2 text-sm">
+            <li key={n} className="rounded-lg bg-surface-2/60 px-3 py-2 text-sm [overflow-wrap:anywhere]">
               <span className="block text-[11px] text-muted">{etDateTime(m.atISO)}</span>
               {m.text}
             </li>

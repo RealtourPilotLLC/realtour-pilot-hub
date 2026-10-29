@@ -75,7 +75,8 @@ export function EmailThreadList({ threads, focusKey = null, nowMs }: { threads: 
                 <Mail className="size-4" />
               </span>
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
+                {/* Phone layout (Jordan, Oct 28 2026): the pills wrap under the name instead of squeezing it to a few letters. */}
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                   {unread && <span aria-hidden className="size-2 shrink-0 rounded-full bg-brand-action" />}
                   <span className={cn("truncate text-sm", unread ? "font-semibold" : "font-medium")}>{t.counterpart}</span>
                   {unread && <span className="rounded-full bg-brand-soft px-1.5 text-[10px] font-semibold text-brand">Unread</span>}
@@ -145,14 +146,14 @@ export function EmailThreadList({ threads, focusKey = null, nowMs }: { threads: 
 function EmailCard({ m }: { m: EmailMessage }) {
   return (
     <div data-email-message={m.id} className="rounded-xl border bg-surface p-3">
-      <div className="mb-1.5 flex items-center gap-2 text-xs">
+      <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
         {m.direction === "in" ? <ArrowDownLeft className="size-3 text-success" /> : <ArrowUpRight className="size-3 text-muted-2" />}
         <span className="font-medium">{m.sender}</span>
         <span className="ml-auto text-muted-2" title={m.ago}>{m.atLabel}</span>
       </div>
       {/* Bodies are often Gmail snippets, sometimes full text — a capped
           scroll keeps one long email from eating the page. */}
-      <div className="max-h-56 overflow-y-auto whitespace-pre-wrap text-sm text-muted">{m.body}</div>
+      <div className="max-h-56 overflow-y-auto whitespace-pre-wrap text-sm text-muted [overflow-wrap:anywhere]">{m.body}</div>
     </div>
   );
 }

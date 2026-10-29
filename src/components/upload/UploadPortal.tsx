@@ -2821,7 +2821,8 @@ export function UploadPortal({
       {restored && !draftConflict && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-brand/30 bg-brand-soft/40 px-3.5 py-2.5 text-sm">
           <NotebookPen className="size-4 shrink-0 text-brand" />
-          <span className="flex-1">
+          {/* Phone layout (Jordan, Oct 28 2026): the buttons wrap under the words instead of squeezing them. */}
+          <span className="min-w-0 flex-1 basis-48">
             {restored.from === "device"
               ? `Restored answers kept on this device (${etDateTime(restored.atISO)}) — they weren't submitted yet.`
               : `Restored answers you hadn't submitted (saved ${etDateTime(restored.atISO)}).`}
@@ -3174,7 +3175,7 @@ export function UploadPortal({
                     </button>
                   )}
                   {editing && (
-                    <div className="mt-1.5 flex gap-2">
+                    <div className="mt-1.5 flex flex-wrap gap-2">
                       <input
                         autoFocus
                         value={reasonText}
@@ -3184,7 +3185,7 @@ export function UploadPortal({
                           if (e.key === "Escape") { setReasonFor(null); setReasonText(""); }
                         }}
                         placeholder={contentSession ? "Why couldn't it be completed? e.g. The client ran out of time, so two topics move to the next session" : "Why couldn't it be completed? e.g. Seller refused the drone, needs a re-shoot"}
-                        className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                        className="min-w-0 flex-1 basis-48 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
                       />
                       <button
                         disabled={toggling || !reasonText.trim()}
@@ -3305,8 +3306,8 @@ export function UploadPortal({
                 return (
                   <li key={f.key} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2.5">
                     <FolderOpen aria-hidden className={cn("size-4 shrink-0", backup ? "text-muted" : "text-warning")} />
-                    <span className="min-w-0 flex-1 text-sm font-semibold">{f.label}</span>
-                    <span className="text-xs">
+                    <span className="min-w-0 flex-1 basis-48 text-sm font-semibold">{f.label}</span>
+                    <span className="ml-auto text-xs">
                       {backup ? <span className="text-muted">Optional · culled extras</span>
                         : !dropboxConnected && !rawCheck ? <span className="text-muted">Not checked</span>
                         : n === null ? <span className="text-warning">Couldn&rsquo;t read</span>
@@ -4315,7 +4316,7 @@ function MissingWork({ projectId, gaps, office }: { projectId: string; gaps: Gap
                       <select value={recovery} onChange={(e) => setRecovery(e.target.value)} className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm">
                         {RECOVERY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                       </select>
-                      <input value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="Who owns it (e.g. kyle, harrison)" className="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm" />
+                      <input value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="Who owns it (e.g. kyle, harrison)" className="min-w-0 flex-1 basis-48 rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm" />
                       <input type="date" value={dueDay} onChange={(e) => setDueDay(e.target.value)} className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm" />
                     </div>
                     {recovery === "RESHOOT" && (

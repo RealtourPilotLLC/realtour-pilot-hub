@@ -41,7 +41,7 @@ function RequestCards({ cards, canAct }: { cards: RequestCardView[]; canAct: boo
       {cards.map((c) => (
         <li key={c.id} data-request-card={c.id} className="min-w-0 space-y-1.5 rounded-lg bg-surface-2 px-3 py-2">
           <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
-            <p className="min-w-0 flex-1 text-sm font-medium text-foreground [overflow-wrap:anywhere]">{c.summary}</p>
+            <p className="min-w-0 flex-1 basis-48 text-sm font-medium text-foreground [overflow-wrap:anywhere]">{c.summary}</p>
             <span data-request-for className={cn("inline-flex max-w-full items-center rounded-full px-2 py-0.5 text-xs font-medium [overflow-wrap:anywhere]", c.needsOwner ? "bg-warning/15 text-warning ring-1 ring-warning/30" : "bg-surface text-foreground ring-1 ring-border")}>
               {c.forLine}
             </span>
@@ -107,15 +107,16 @@ function Row({ r, extra, requests }: { r: ShootRow; extra?: DeliverExtra | null;
   const asks = requestsLine(r.requests);
   return (
     <li className={cn("px-4 py-4 sm:px-5", r.delivered && "opacity-70")} data-shoot-row={r.projectId}>
+      {/* Phone layout (Jordan, Oct 28 2026): the due date wraps under a long street instead of squeezing it. */}
       <Link
         href={r.href}
-        className="-mx-2 flex items-start justify-between gap-3 rounded-lg px-2 py-1 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+        className="-mx-2 flex flex-wrap items-start justify-between gap-x-3 gap-y-1 rounded-lg px-2 py-1 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
       >
         <span className="min-w-0">
           <span className="block font-semibold text-foreground [overflow-wrap:anywhere]">{r.street}</span>
           {r.client && <span className="block text-sm text-muted">{r.client}</span>}
         </span>
-        <span className="flex shrink-0 items-center gap-1.5">
+        <span className="ml-auto flex items-center gap-1.5">
           <span className={cn("text-sm tabular-nums", r.late ? "font-semibold text-danger" : "text-muted")}>{dueLine(r)}</span>
           <ChevronRight aria-hidden className="size-4 text-muted-2" />
         </span>

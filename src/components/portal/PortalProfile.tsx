@@ -115,13 +115,14 @@ function FolderFiles({ files, readOnly }: { files: PortalBrandView["folderOnly"]
       <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Already in your folder</p>
       <ul className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
         {files.map((f, i) => (
-          <li key={i} className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface-2/50 px-2.5 py-1.5 text-xs">
+          // Phone layout (Jordan, Oct 28 2026): the two buttons wrap under the file name instead of squeezing it.
+          <li key={i} className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border bg-surface-2/50 px-2.5 py-1.5 text-xs">
             <FileImage className="size-3.5 shrink-0 text-muted-2" />
-            {f.url ? <a href={f.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 min-w-0 flex-1 items-center break-all rounded-lg text-sm hover:text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">{f.name}</a> : <span className="min-w-0 flex-1 break-all text-sm">{f.name}</span>}
+            {f.url ? <a href={f.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 min-w-0 flex-1 basis-40 items-center break-all rounded-lg text-sm hover:text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">{f.name}</a> : <span className="min-w-0 flex-1 basis-40 break-all text-sm">{f.name}</span>}
             {filed[f.name] ? (
-              <span className="inline-flex items-center gap-1 text-success"><CheckCircle2 className="size-3.5" /> {filed[f.name]}</span>
+              <span className="ml-auto inline-flex items-center gap-1 text-success"><CheckCircle2 className="size-3.5" /> {filed[f.name]}</span>
             ) : !readOnly ? (
-              <span className="flex max-w-full flex-wrap gap-1.5">
+              <span className="ml-auto flex max-w-full flex-wrap justify-end gap-1.5">
                 <button type="button" disabled={busy} onClick={() => use(f.name, "LOGO")} className="min-h-11 rounded-md border border-border px-2.5 py-2 text-sm font-medium hover:border-brand hover:text-brand disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">This is my logo</button>
                 <button type="button" disabled={busy} onClick={() => use(f.name, "HEADSHOT")} className="min-h-11 rounded-md border border-border px-2.5 py-2 text-sm font-medium hover:border-brand hover:text-brand disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">My headshot</button>
               </span>

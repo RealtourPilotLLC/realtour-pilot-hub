@@ -86,7 +86,7 @@ export function CreativeGuardEditor({ enrollmentId, guard, canEdit }: { enrollme
                 <span className="text-[11px] text-muted">Series or concept</span>
                 <input value={name} onChange={(e) => setName(e.target.value)} disabled={pending} placeholder="Fairy God Realtor" className="mt-0.5 block w-52 rounded-md border border-border bg-surface px-2 py-1.5" />
               </label>
-              <label className="block min-w-0 flex-1">
+              <label className="block min-w-0 flex-1 basis-40">
                 <span className="text-[11px] text-muted">Why (optional)</span>
                 <input value={reason} onChange={(e) => setReason(e.target.value)} disabled={pending} placeholder="Client asked to stop it" className="mt-0.5 block w-full rounded-md border border-border bg-surface px-2 py-1.5" />
               </label>

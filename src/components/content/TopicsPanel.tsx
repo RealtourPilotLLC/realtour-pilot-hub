@@ -234,13 +234,15 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
           <p className="border-b border-border px-5 py-2 text-[12px] text-muted">Set aside by the client on their portal. They are off the client&rsquo;s bank, never re-suggested by a refresh, and no longer count as stock. Reject one to make it permanent, or put it back.</p>
           <div className="divide-y divide-border">
             {declined.map((t) => (
-              <div key={t.id} className="flex items-start gap-3 px-5 py-2.5">
-                <div className="min-w-0 flex-1">
+              <div key={t.id} className="flex flex-wrap items-start gap-x-3 gap-y-2 px-5 py-2.5">
+                <div className="min-w-0 flex-1 basis-56">
                   <div className="text-[15px] font-medium">{t.title}</div>
                   <p className="text-[12px] text-muted">{t.clientDeclineReason ? `“${t.clientDeclineReason}”` : "No reason given"}{t.clientDeclinedAt ? ` · ${fmt(t.clientDeclinedAt)}` : ""}</p>
                 </div>
-                <button disabled={busy} onClick={() => run(() => undeclineTopicAction(t.id))} className={quiet}><Undo2 className="mr-1 inline size-3" />Put back</button>
-                <button disabled={busy} onClick={() => run(() => topicDecision(t.id, "REJECT", t.clientDeclineReason ? `Client not interested: ${t.clientDeclineReason}` : "Client not interested"))} className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50">Reject</button>
+                <div className="ml-auto flex flex-wrap justify-end gap-1">
+                  <button disabled={busy} onClick={() => run(() => undeclineTopicAction(t.id))} className={quiet}><Undo2 className="mr-1 inline size-3" />Put back</button>
+                  <button disabled={busy} onClick={() => run(() => topicDecision(t.id, "REJECT", t.clientDeclineReason ? `Client not interested: ${t.clientDeclineReason}` : "Client not interested"))} className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50">Reject</button>
+                </div>
               </div>
             ))}
           </div>
@@ -405,8 +407,12 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
   });
   return (
     <div className="px-5 py-2.5">
-      <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1">
+      {/* Jordan, Oct 28 2026, with a phone screenshot of the video plan ("This
+          looks bad on mobile"): the buttons held their width and squeezed the
+          title to a word a line. The words take the row; on a phone the buttons
+          wrap below them, on a wide screen they stay on the right. */}
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+        <div className="min-w-0 flex-1 basis-64">
           <div className="flex flex-wrap items-center gap-2">
             {idx != null && <span className="text-[12px] text-muted-2">{idx}.</span>}
             <span className="text-[15px] font-medium">{t.title}</span>
@@ -429,7 +435,7 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
           {/* Oct 26 2026: "What <first> said", the summary of the call or the written answers (TopicBriefFold). */}
           {inMonth && month && brief !== undefined && <TopicBriefFold topicId={t.id} monthId={month.id} brief={brief} clientFirst={clientFirst} />}
         </div>
-        <div className="flex shrink-0 flex-wrap justify-end gap-1">
+        <div className="ml-auto flex flex-wrap justify-end gap-1">
           {!inMonth && month && (!inProduction || parkedScript) && t.monthId !== month.id && (
             <button disabled={busy} onClick={() => run(() => setTopicStatus(t.id, "SELECTED", month.id))} className="rounded-lg border border-brand/40 px-2.5 py-1 text-xs font-semibold text-brand hover:bg-brand-soft disabled:opacity-50">{parkedScript ? `Use its script for ${month.short}` : `Use for ${month.short}`}</button>
           )}
@@ -443,7 +449,7 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
           {!inProduction && <button disabled={busy} title="Reject" onClick={() => { const r = window.prompt("Why? (kept internally so it is never re-suggested)") ?? ""; run(() => topicDecision(t.id, "REJECT", r)); }} className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50"><X className="size-3" /></button>}
         </div>
       </div>
-      <div className="mt-1 flex gap-3 text-[11px] text-muted-2">
+      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-2">
         <button onClick={() => setOpen(open === "edit" ? "none" : "edit")} className="hover:underline">edit</button>
         <button onClick={() => setOpen(open === "discuss" ? "none" : "discuss")} className="hover:underline">note a discussion</button>
         <button onClick={() => setOpen(open === "history" ? "none" : "history")} className="hover:underline"><History className="mr-0.5 inline size-3" />history ({history.length})</button>

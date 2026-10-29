@@ -210,7 +210,8 @@ export function ContentLibraryPanel({
                     <p className="text-muted">No cut has been submitted for this video yet.</p>
                   ) : (
                     <div role="region" aria-label={`Cut history for ${v.title}`} tabIndex={0} className="overflow-x-auto rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
-                    <table className="w-full text-left">
+                    {/* Phone layout (Oct 28 2026): five columns keep a readable width and the box scrolls sideways, instead of squeezing each cell to a word a line. */}
+                    <table className="w-full min-w-[30rem] text-left">
                       <thead className="text-ui-status uppercase tracking-wide text-muted">
                         <tr><th className="py-1 pr-2">Round</th><th className="pr-2">Internal</th><th className="pr-2">Editor</th><th className="pr-2">Client saw it</th><th>Their answer</th></tr>
                       </thead>
@@ -302,7 +303,7 @@ function ClientReview({ v }: { v: LibraryVideoUi }) {
       )}
       {rounds.length > 0 && (
         <div role="region" aria-label={`Revision rounds for ${v.title}`} tabIndex={0} className="overflow-x-auto rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
-        <table className="w-full text-left">
+        <table className="w-full min-w-[26rem] text-left">
           <thead className="text-ui-status text-muted">
             <tr><th className="py-1 pr-2">Round</th><th className="pr-2">Asked by</th><th className="pr-2">State</th><th>Extra round</th></tr>
           </thead>

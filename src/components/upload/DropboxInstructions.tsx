@@ -103,12 +103,13 @@ export function DropboxInstructions({ projectId, current, readOnly }: { projectI
               ))}
             </ul>
           )}
+          {/* Phone layout (Jordan, Oct 28 2026): Save and Cancel wrap under the box instead of squeezing it. */}
           <div className="flex flex-wrap items-center gap-2 pt-1">
             <input
               value={typed}
               onChange={(e) => setTyped(e.target.value)}
               placeholder="Not listed? e.g. 02-RAW-Video/edit notes.docx"
-              className="min-h-11 min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 text-sm"
+              className="min-h-11 min-w-0 flex-1 basis-48 rounded-lg border border-border bg-surface px-3 text-sm"
               aria-label="Where the instructions file is in the job's folder"
             />
             <button type="button" className={cn(choiceBtn, "border-brand bg-brand-soft text-brand")} disabled={pending || !typed.trim()} onClick={() => save(typed)}>Save</button>

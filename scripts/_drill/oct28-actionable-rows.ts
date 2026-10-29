@@ -181,7 +181,7 @@ async function main() {
     const deliver = rowsOf(card(html, 'data-desk-section="deliver"'));
     c.ok("Review & Deliver, awaiting files: a job waiting on AutoHDR says Open", deliver.find((r) => r.id === `media:${PROJ.wait}`)?.button === "Open", deliver.map((r) => `${r.id}=${r.button}`).join());
     c.ok("…a floor plan not in yet says its own move (Check floor plan)", deliver.find((r) => r.id === `media:${PROJ.plan}`)?.button === "Check floor plan");
-    c.ok("…each awaiting row keeps the row text a 36px press and the button 44px (QUIET's min-h-11)", /data-state="waiting" class="flex items-center gap-2 py-1\.5"/.test(html) && /<button[^>]*data-open-panel="media:[^"]+"[^>]*class="[^"]*min-h-11/.test(card(html, 'data-desk-section="deliver"')));
+    c.ok("…each awaiting row keeps the row text a 36px press and the button 44px (QUIET's min-h-11)", /data-state="waiting" class="flex flex-wrap items-center gap-x-2 gap-y-1 py-1\.5"/.test(html) && /<button[^>]*data-open-panel="media:[^"]+"[^>]*class="[^"]*min-h-11/.test(card(html, 'data-desk-section="deliver"')));
 
     const fu = rowsOf(card(html, 'data-desk-section="followups"'));
     c.ok("Requests & Follow-Ups, waiting on James: Follow up (its panel: Mark done, a new date, Waiting on, Delegate)", fu.find((r) => r.id === "task:cfixtask000000000102")?.button === "Follow up", fu.map((r) => `${r.id}=${r.button}`).join());

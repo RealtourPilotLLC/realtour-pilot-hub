@@ -30,12 +30,13 @@ function FlagRow({ submissionId, flag, owner, href }: { submissionId: string; fl
     });
   const btn = "inline-flex min-h-9 items-center gap-1 rounded-lg border px-2.5 text-xs font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60";
   return (
+    // Phone layout (Jordan, Oct 28 2026): Right and Wrong wrap under the line instead of squeezing it.
     <li data-spelling-flag={flag.id} className="flex flex-wrap items-center gap-x-3 gap-y-1">
-      <span className="min-w-0 flex-1 break-words text-sm text-foreground">
+      <span className="min-w-0 flex-1 basis-48 break-words text-sm text-foreground">
         {href ? <Link href={href} className="hover:text-brand hover:underline">{flag.line}</Link> : flag.line}
       </span>
       {owner && (
-        <span className="flex shrink-0 gap-1.5">
+        <span className="ml-auto flex flex-wrap justify-end gap-1.5">
           <button type="button" onClick={() => mark("RIGHT")} disabled={busy} aria-pressed={verdict === "RIGHT"} title="It is a real mistake on screen"
             className={cn(btn, verdict === "RIGHT" ? "border-success bg-success-soft text-success" : "border-border hover:bg-surface-2")}>
             <Check aria-hidden className="size-3.5" /> Right

@@ -37,7 +37,8 @@ export function PayFlag({ projectId, street, periodStartKey, already, general }:
   }
 
   return (
-    <span className={general ? "block" : "inline-block"}>
+    // Phone layout (Jordan, Oct 28 2026): the open form takes the whole row under the shoot line, not just its own content width.
+    <span className={general ? "block" : open ? "block w-full" : "inline-block"}>
       {!open && (
         <button
           onClick={() => setOpen(true)}

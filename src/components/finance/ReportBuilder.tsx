@@ -109,9 +109,10 @@ export function ReportBuilder({ reports }: { reports: SavedReport[] }) {
             <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-2">Saved reports</p>
             <div className="space-y-1">
               {reports.map((r) => (
-                <div key={r.id} className="flex items-center gap-2 text-sm">
-                  <a href={`/sales/report/${r.id}`} className="min-w-0 flex-1 truncate text-brand hover:underline">{r.title}</a>
-                  <span className="shrink-0 text-[11px] text-muted-2">{r.startKey} → {r.endKey}</span>
+                // Phone layout (Jordan, Oct 28 2026): the dates wrap under the title instead of squeezing it.
+                <div key={r.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+                  <a href={`/sales/report/${r.id}`} className="min-w-0 flex-1 basis-48 truncate text-brand hover:underline">{r.title}</a>
+                  <span className="ml-auto shrink-0 text-[11px] text-muted-2">{r.startKey} → {r.endKey}</span>
                   <button
                     title="Delete report"
                     onClick={async () => { await deleteReportAction(r.id); router.refresh(); }}

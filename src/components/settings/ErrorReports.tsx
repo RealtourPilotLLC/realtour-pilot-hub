@@ -152,7 +152,8 @@ function ErrorRow({ row, open, onToggle, canAct }: { row: ErrorReportRow; open: 
       </button>
       {open && (
         <div className="space-y-3 border-t bg-surface-2/30 px-4 py-3 text-sm">
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-[13px]">
+          {/* Phone layout (Jordan, Oct 28 2026): a long route or message wraps inside its column instead of widening the page. */}
+          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 break-words text-[13px]">
             <dt className="text-muted">Error</dt>
             <dd className="font-mono text-[12px]">{row.errorName ? `${row.errorName}: ` : ""}{row.message}</dd>
             <dt className="text-muted">Where</dt>

@@ -51,7 +51,7 @@ export function OpenClientAsksCard({ asks, deliverWhat }: { asks: AskView[]; del
             </p>
             <details className="text-xs">
               <summary className="cursor-pointer font-medium text-brand">The client&rsquo;s words</summary>
-              <p className="mt-1 whitespace-pre-wrap rounded-lg bg-surface-2 px-2 py-1.5 text-[13px] text-foreground/85">{a.text}</p>
+              <p className="mt-1 whitespace-pre-wrap rounded-lg bg-surface-2 px-2 py-1.5 text-[13px] text-foreground/85 [overflow-wrap:anywhere]">{a.text}</p>
             </details>
             <AskActions id={a.id} kind={a.kind} holdsDelivery={a.holdsDelivery} state={a.state} />
           </li>

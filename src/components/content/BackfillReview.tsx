@@ -70,9 +70,10 @@ function Row({
   const href = contentHref(i.enrollmentId, { tab: "import", month: i.monthKey ?? null });
   return (
     <div className={cn("px-5 py-2.5 text-[13px]", i.handled && "opacity-60")}>
-      <div className="flex flex-wrap items-center gap-2">
+      {/* Phone layout (Jordan, Oct 28 2026): the title keeps a real width; the kind and the link wrap under it on a phone. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="font-medium">{i.clientName}</span>
-        <span className="min-w-0 flex-1">{i.title}</span>
+        <span className="min-w-0 flex-1 basis-48">{i.title}</span>
         <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted-2">{KIND_WORDS[i.kind] ?? i.kind.toLowerCase()}</span>
         <Link href={href} className="text-[12px] font-medium text-brand hover:underline">Open the record →</Link>
       </div>
@@ -85,7 +86,7 @@ function Row({
         </p>
       ) : (
         <div className="mt-1 flex flex-wrap items-center gap-1.5">
-          <input className={`${input} flex-1`} placeholder="What did you conclude? (required)" value={why} onChange={(e) => setWhy(e.target.value)} disabled={busy} />
+          <input className={`${input} flex-1 basis-56`} placeholder="What did you conclude? (required)" value={why} onChange={(e) => setWhy(e.target.value)} disabled={busy} />
           <button className={quiet} disabled={busy || !why.trim()} onClick={() => start(async () => say(await markReviewItemAction(i.key, "CORRECT", why)))}>It is filed correctly</button>
           <button className={quiet} disabled={busy || !why.trim()} onClick={() => start(async () => say(await markReviewItemAction(i.key, "FIXED", why)))}>I corrected it</button>
           <button className={quiet} disabled={busy || !why.trim()} onClick={() => start(async () => say(await markReviewItemAction(i.key, "LEAVE", why)))}>Leave it, on purpose</button>

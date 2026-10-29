@@ -228,7 +228,9 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
         {/* Period switch: the payout awaiting its payday (when there is one),
             the accruing period, and a peek at next. */}
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 text-sm">
+          {/* Phone layout (Jordan, Oct 28 2026): rows wrap onto a second line on a
+              phone instead of running off the edge or squeezing the words. */}
+          <div className="flex flex-wrap items-center gap-1.5 text-sm">
             {[
               ...(prevAwaitingPayout ? [{ key: prev.startKey, label: "Getting paid" }] : []),
               { key: current.startKey, label: prevAwaitingPayout ? "Current period" : "Current" },
@@ -303,10 +305,10 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
                       </span>
                       <span className="shrink-0 font-semibold">{usd(j.jobTotal)}</span>
                     </div>
-                    <div className="mt-0.5 flex items-center justify-between gap-3 text-[11px] text-muted-2">
+                    <div className="mt-0.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-muted-2">
                       {/* The agent beside the invoice — a row is reviewable without
                           opening the job (Jordan, Aug 25). */}
-                      <span className="min-w-0 truncate">
+                      <span className="min-w-0 flex-1 basis-48 truncate">
                         {fmtDay(j.shootISO)}
                         {j.clientName ? <> · <span className="font-medium text-muted">{j.clientName}</span></> : ""}
                         {j.invoice > 0 ? ` · invoice ${usd(j.invoice)}` : ""} · shoot {usd(j.shootPay)}{j.mileageShare > 0 ? ` · mileage ${usd(j.mileageShare)}` : ""}
@@ -595,7 +597,7 @@ function FixedPayPanel({ pay, todayKey }: { pay: OwnFixedPay; todayKey: string }
           <div className="divide-y divide-border/60">
             {pay.paychecks.map((p) => (
               <div key={p.startKey} className="px-4 py-2.5">
-                <div className="flex items-center gap-3 text-sm">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
                   <span className="min-w-0 truncate">{fmtKey(p.startKey)} to {fmtKey(p.endKey)}</span>
                   <span className={`shrink-0 text-[10px] ${p.state === "paid" ? "text-muted-2" : "rounded-full bg-success/15 px-1.5 py-0.5 font-medium text-success"}`}>
                     {PAYCHECK_STATE[p.state](p.payoutKey)}
@@ -633,9 +635,9 @@ function BonusesPaid({ pay }: { pay: OwnFixedPay }) {
       ) : (
         <div className="divide-y divide-border/60">
           {pay.bonusesPaid.map((b) => (
-            <div key={b.id} className="flex items-center justify-between gap-3 px-4 py-2 text-sm">
-              <span className="min-w-0 truncate text-muted">{b.label.replace(/^Quarterly bonus /, "Bonus for ")}</span>
-              <span className="shrink-0 text-[11px] text-muted-2">on the {fmtKey(b.payoutKey)} paycheck</span>
+            <div key={b.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-4 py-2 text-sm">
+              <span className="min-w-0 flex-1 basis-48 truncate text-muted">{b.label.replace(/^Quarterly bonus /, "Bonus for ")}</span>
+              <span className="ml-auto shrink-0 text-[11px] text-muted-2">on the {fmtKey(b.payoutKey)} paycheck</span>
               <span className="w-20 shrink-0 text-right font-semibold tabular-nums text-success">{usd(b.amount)}</span>
             </div>
           ))}

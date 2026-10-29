@@ -58,7 +58,7 @@ export async function ShootFlags({ projectId }: { projectId: string }) {
       <ul className="mt-2 space-y-2">
         {flags.map((f) => (
           <li key={f.id} className="text-sm">
-            <p className="whitespace-pre-wrap text-foreground/90">{f.text}</p>
+            <p className="whitespace-pre-wrap text-foreground/90 [overflow-wrap:anywhere]">{f.text}</p>
             <p className="mt-0.5 text-xs text-muted">
               {[f.by, f.at, f.aboutShoot ? "about the shoot" : "about the work"].filter(Boolean).join(" · ")}
             </p>

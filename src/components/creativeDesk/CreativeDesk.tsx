@@ -445,9 +445,10 @@ function HandoffLine({ h, href, readOnly, team = false }: { h: HandoffRow; href:
 function CutLine({ c, href, onOpen, delayed = false }: { c: CutRow; href: (h: string) => string; onOpen: () => void; delayed?: boolean }) {
   return (
     <li data-cut={c.id} data-version={c.version} className="py-2.5">
-      <div className="flex items-start gap-3">
+      {/* Phone layout (Jordan, Oct 28 2026): the buttons wrap under the words instead of squeezing them. */}
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
         <RowIcon><Video className="size-4" /></RowIcon>
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-40">
           <p className="text-sm font-semibold leading-snug [overflow-wrap:anywhere]">{c.street}{c.clientName ? <span className="font-normal text-muted"> · {c.clientName}</span> : null}</p>
           <p className="text-[12px] text-muted">
             Version {c.version} · {c.priorNotes.total ? "Corrections returned" : "First review"}{c.editor ? ` · ${c.editor}` : ""}{delayed && c.reviewer ? ` · with ${c.reviewer}` : ""} · waiting {c.waitedWords}
@@ -456,8 +457,8 @@ function CutLine({ c, href, onOpen, delayed = false }: { c: CutRow; href: (h: st
           {!delayed && <button type="button" data-open-panel={`cut:${c.id}`} onClick={onOpen} className={LINK}>Approve or escalate</button>}
         </div>
         {delayed
-          ? <button type="button" data-open-panel={`cut:${c.id}`} onClick={onOpen} className={cn(QUIET, "shrink-0")}>Follow up</button>
-          : <Link href={href(c.href)} className={cn(PRIMARY, "shrink-0")}>Review</Link>}
+          ? <button type="button" data-open-panel={`cut:${c.id}`} onClick={onOpen} className={cn(QUIET, "ml-auto")}>Follow up</button>
+          : <Link href={href(c.href)} className={cn(PRIMARY, "ml-auto")}>Review</Link>}
       </div>
     </li>
   );
@@ -523,12 +524,12 @@ function GroupBlock({ g, full, onOpen, readOnly, recordsUnavailable, href }: { g
       {full && rows.length > 0 && (
         <ul className="mt-1 divide-y divide-border sm:pl-[3.25rem]">
           {rows.map((r) => (
-            <li key={`${r.kind}:${r.id}`} data-dev-row={r.kind} className="flex items-start gap-3 py-2">
-              <div className="min-w-0 flex-1">
+            <li key={`${r.kind}:${r.id}`} data-dev-row={r.kind} className="flex flex-wrap items-start gap-x-3 gap-y-2 py-2">
+              <div className="min-w-0 flex-1 basis-48">
                 <p className="text-sm font-semibold leading-snug [overflow-wrap:anywhere]">{r.who} · {r.what}{r.count && <span className="font-normal text-muted"> ({r.count})</span>}</p>
                 <p className={cn("text-[12px] [overflow-wrap:anywhere]", r.due ? "font-medium text-warning" : "text-muted")}>Next step: {r.next}</p>
               </div>
-              <button type="button" data-open-panel={`${r.kind === "item" ? "dev-item" : "signal"}:${r.id}`} onClick={() => onOpen(r.panel)} className={cn(r.due ? PRIMARY : QUIET, "shrink-0")}>{r.due ? "Record follow-up" : r.kind === "item" ? "Open" : "Review examples"}</button>
+              <button type="button" data-open-panel={`${r.kind === "item" ? "dev-item" : "signal"}:${r.id}`} onClick={() => onOpen(r.panel)} className={cn(r.due ? PRIMARY : QUIET, "ml-auto")}>{r.due ? "Record follow-up" : r.kind === "item" ? "Open" : "Review examples"}</button>
             </li>
           ))}
         </ul>
@@ -645,15 +646,15 @@ function ReadinessBlock({ items, unavailable, limit, onOpen, readOnly, viewAll }
       ) : (
         <ul className="mt-1 divide-y divide-border">
           {items.slice(0, limit).map((a) => (
-            <li key={a.id} data-readiness={a.id} data-status={a.status} className="flex items-start gap-3 py-1.5">
-              <div className="min-w-0 flex-1">
+            <li key={a.id} data-readiness={a.id} data-status={a.status} className="flex flex-wrap items-start gap-x-3 gap-y-1 py-1.5">
+              <div className="min-w-0 flex-1 basis-48">
                 <p className="text-[13px] font-semibold">{a.personName.split(" ")[0]} · {a.trackLabel}</p>
                 <p className="text-[12px] text-muted">
                   {a.met} of {a.criteria.length} criteria met{a.recommendation ? ` · You recommend: ${REC_WORDS[a.recommendation]}` : " · No recommendation yet"}
                   {a.decision ? ` · ${a.decision.words}` : ""}
                 </p>
               </div>
-              <button type="button" data-open-panel={`readiness:${a.id}`} onClick={() => onOpen({ kind: "readiness", id: a.id })} className="inline-flex min-h-11 shrink-0 items-center gap-1 text-sm font-semibold text-brand hover:underline">
+              <button type="button" data-open-panel={`readiness:${a.id}`} onClick={() => onOpen({ kind: "readiness", id: a.id })} className="ml-auto inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-brand hover:underline">
                 {a.status === "DRAFT" && a.recommendation ? "Recommend to Jordan" : a.status === "DRAFT" ? "Assess" : "See the decision"} <ArrowRight aria-hidden className="size-4" />
               </button>
             </li>

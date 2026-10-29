@@ -144,7 +144,7 @@ export function EmailReplyBox({
         {loading && !head ? (
           <span className="inline-flex items-center gap-1.5"><Loader2 aria-hidden className="size-3.5 animate-spin" /> Checking who this goes to…</span>
         ) : head?.to ? (
-          <span>
+          <span className="min-w-0 [overflow-wrap:anywhere]">
             To <strong className="font-semibold text-foreground">{head.to}</strong>
             {head.from ? <> from {head.from}</> : null}
             {head.subject ? <> · {head.subject}</> : null}

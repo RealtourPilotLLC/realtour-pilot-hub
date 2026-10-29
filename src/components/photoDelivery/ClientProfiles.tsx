@@ -109,12 +109,13 @@ function ProfileEditor({ p, rules, ruleById }: { p: ClientProfileView; rules: Ru
               const r = ruleById.get(o.ruleId);
               return (
                 <li key={o.ruleId} className="rounded-xl border border-border p-2.5">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="min-w-0 flex-1 text-sm">
+                  {/* Phone layout (Jordan, Oct 28 2026): the picker and button wrap under the rule instead of squeezing it. */}
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                    <span className="min-w-0 flex-1 basis-48 text-sm">
                       <span className="font-medium">{r?.label ?? o.ruleId}</span>
                       <span className="block text-[12px] text-muted">{o.ruleId}{r ? ` · default ${SEVERITY_LABEL[r.severity].toLowerCase()}` : " · not in the registry"}</span>
                     </span>
-                    <label className="text-[13px]">
+                    <label className="ml-auto text-[13px]">
                       <span className="sr-only">What to do with {r?.label ?? o.ruleId}</span>
                       <select
                         value={o.disabled ? "OFF" : o.severity ?? "MINOR"}
@@ -176,7 +177,7 @@ export function ClientProfiles({ profiles, rules }: { profiles: ClientProfileVie
               <details className="rounded-xl border border-border bg-surface">
                 <summary className="flex min-h-12 cursor-pointer list-none flex-wrap items-center gap-2 px-4 py-2 [&::-webkit-details-marker]:hidden">
                   <ChevronDown aria-hidden className="size-4 text-muted" />
-                  <span className="min-w-0 flex-1">
+                  <span className="min-w-0 flex-1 basis-48">
                     <span className="font-medium">{p.clientName}</span>
                     {p.company && <span className="text-[13px] text-muted"> · {p.company}</span>}
                     <span className="block text-[12px] text-muted">
@@ -184,7 +185,7 @@ export function ClientProfiles({ profiles, rules }: { profiles: ClientProfileVie
                       {p.updatedAt ? ` · profile saved ${etMonthDayTime(p.updatedAt)}${p.updatedBy ? ` by ${p.updatedBy}` : ""}` : ""}
                     </span>
                   </span>
-                  <span className={cn("rounded-full px-2 py-0.5 text-[12px]", custom ? "bg-brand-soft text-foreground" : "bg-surface-2 text-muted")}>
+                  <span className={cn("ml-auto rounded-full px-2 py-0.5 text-[12px]", custom ? "bg-brand-soft text-foreground" : "bg-surface-2 text-muted")}>
                     {custom ? [p.overrides.length > 0 && `${p.overrides.length} override${p.overrides.length === 1 ? "" : "s"}`, p.deliveryMessage && "own message"].filter(Boolean).join(" · ") || "notes" : "Defaults"}
                   </span>
                 </summary>

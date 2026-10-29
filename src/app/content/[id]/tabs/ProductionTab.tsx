@@ -28,12 +28,13 @@ const fmtDay = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("
 /** One cut waiting on review or back with the editor. */
 function CutRow({ c }: { c: RevisionCutUi }) {
   return (
-    <Link href={c.status === "PENDING" ? "/review" : `/edit/${c.projectId}`} className="flex items-center gap-3 px-5 py-2.5 hover:bg-surface-2/60">
-      <div className="min-w-0 flex-1">
+    // Phone layout (Jordan, Oct 28 2026): the status pill wraps under the words instead of squeezing them.
+    <Link href={c.status === "PENDING" ? "/review" : `/edit/${c.projectId}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2.5 hover:bg-surface-2/60">
+      <div className="min-w-0 flex-1 basis-56">
         <div className="truncate text-[13px] font-medium">{c.fileName ?? "Cut"} <span className="font-normal text-muted-2">v{c.round}</span></div>
         <div className="text-[12px] text-muted">{c.projectTitle}{c.monthKey ? ` · ${monthLabel(c.monthKey)}` : ""} · {fmtDay(c.createdAtISO)}</div>
       </div>
-      <span className={c.status === "PENDING" ? "shrink-0 rounded-full bg-brand-soft px-2 py-0.5 text-xs font-semibold text-brand" : "shrink-0 rounded-full bg-warning/15 px-2 py-0.5 text-xs font-semibold text-warning"}>
+      <span className={c.status === "PENDING" ? "ml-auto shrink-0 rounded-full bg-brand-soft px-2 py-0.5 text-xs font-semibold text-brand" : "ml-auto shrink-0 rounded-full bg-warning/15 px-2 py-0.5 text-xs font-semibold text-warning"}>
         {c.status === "PENDING" ? "waiting for review" : "back with the editor"}
       </span>
     </Link>

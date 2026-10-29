@@ -58,7 +58,7 @@ export function ImportPanel({ enrollmentId, batches, reviewItems, pillars }: { e
         </div>
         {preview && (
           <div className="border-t border-border px-5 py-3">
-            <p className="text-sm">{preview.fileName} · {preview.items.length} items{preview.existingBatchId ? " · this exact file was imported before — re-opening that batch (already-applied items stay untouched)" : ""}</p>
+            <p className="break-words text-sm">{preview.fileName} · {preview.items.length} items{preview.existingBatchId ? " · this exact file was imported before — re-opening that batch (already-applied items stay untouched)" : ""}</p>
             {preview.notes.length > 0 && <ul className="mt-1 list-inside list-disc text-[11px] text-muted-2">{preview.notes.map((n, i) => <li key={i}>{n}</li>)}</ul>}
             {preview.kind !== "STRATEGY" && (
               <div className="mt-2 rounded-lg border border-warning/30 bg-warning-soft/40 px-3 py-2 text-[12px]">
@@ -74,7 +74,7 @@ export function ImportPanel({ enrollmentId, batches, reviewItems, pillars }: { e
                     <span className="text-[12px] text-muted-2">#{it.ordinal}</span><span className="text-sm font-medium">{it.title}</span>
                     {it.pillarLabel && <span className="rounded-full bg-surface-2 px-1.5 text-[11px] text-muted" title={it.pillarWhy ?? undefined}>{pillarChip(it, pillars)}</span>}
                     {it.importedMark && <span className="text-[11px] text-warning">mark: {it.importedMark} → proposes {it.proposedState?.toLowerCase()}</span>}
-                    <select value={modes[it.ordinal] ?? it.proposedMode} onChange={(e) => setModes({ ...modes, [it.ordinal]: e.target.value as ItemMode })} className="ml-auto rounded border border-border bg-surface-2 px-1.5 py-0.5 text-[11px]">
+                    <select value={modes[it.ordinal] ?? it.proposedMode} onChange={(e) => setModes({ ...modes, [it.ordinal]: e.target.value as ItemMode })} className="ml-auto max-w-full rounded border border-border bg-surface-2 px-1.5 py-0.5 text-[11px]">
                       {[...new Set([it.proposedMode, ...MODES])].map((m) => <option key={m} value={m}>{m === "CREATE" ? "create" : m === "LINK" ? `link to existing${it.targetTitle ? ` (${it.targetTitle})` : ""}` : m === "UPDATE_PROPOSAL" ? "propose as update / new version" : m === "CONFLICT" ? "conflict — hold" : "skip"}</option>)}
                     </select>
                   </div>
@@ -100,7 +100,7 @@ export function ImportPanel({ enrollmentId, batches, reviewItems, pillars }: { e
       <Section icon={FileUp} title="Import batches" count={batches.length} flush>
         <div className="divide-y divide-border">
           {batches.length === 0 && <p className="px-5 py-3 text-sm text-muted">No imports through this tool yet.</p>}
-          {batches.map((b) => <div key={b.id} className="px-5 py-2 text-[12px]"><span className="font-medium">{b.fileName ?? b.id}</span> · {b.kind.toLowerCase()} · {b.mode.toLowerCase()}{b.proposedMonthKey ? ` · ${b.proposedMonthKey}` : ""}{b.appliedAt ? ` · applied by ${b.appliedBy}` : ""} · {b.created} created / {b.linked} linked / {b.updated} updates / {b.skipped} skipped / {b.conflicts} conflicts</div>)}
+          {batches.map((b) => <div key={b.id} className="break-words px-5 py-2 text-[12px]"><span className="font-medium">{b.fileName ?? b.id}</span> · {b.kind.toLowerCase()} · {b.mode.toLowerCase()}{b.proposedMonthKey ? ` · ${b.proposedMonthKey}` : ""}{b.appliedAt ? ` · applied by ${b.appliedBy}` : ""} · {b.created} created / {b.linked} linked / {b.updated} updates / {b.skipped} skipped / {b.conflicts} conflicts</div>)}
         </div>
       </Section>
     </div>

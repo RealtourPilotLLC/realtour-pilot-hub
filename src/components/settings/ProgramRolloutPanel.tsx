@@ -111,7 +111,8 @@ export function PilotForm({ data, busy, onSave }: { data: ProgramRolloutPanelDat
           <input type="date" className="mt-0.5 block min-h-11 rounded-lg border border-border bg-surface px-2 py-1.5" value={until} onChange={(e) => setUntil(e.target.value)} />
         </label>
         {!until && <button type="button" className={quiet} onClick={() => setUntil(in30Days())}>Suggest 30 days</button>}
-        <label className="block min-w-0 flex-1">
+        {/* Phone layout (Jordan, Oct 28 2026): the note box wraps to its own line instead of being squeezed to nothing. */}
+        <label className="block min-w-0 flex-1 basis-48">
           <span className="text-[14px] text-muted">Note (optional)</span>
           <input className="mt-0.5 min-h-11 w-full rounded-lg border border-border bg-surface px-2 py-1.5" value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} />
         </label>

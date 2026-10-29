@@ -86,7 +86,7 @@ export function PlatformFeedbackItem({ row, canModerate = true, pingTargets = []
         </span>
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium leading-snug">{row.title}</div>
-          {row.body && <p className="mt-0.5 whitespace-pre-line text-xs text-muted">{row.body}</p>}
+          {row.body && <p className="mt-0.5 whitespace-pre-line text-xs text-muted [overflow-wrap:anywhere]">{row.body}</p>}
           {row.screenshot && (
             <button
               type="button"
@@ -99,7 +99,7 @@ export function PlatformFeedbackItem({ row, canModerate = true, pingTargets = []
               <img src={row.screenshot} alt="Screenshot" loading="lazy" className="max-h-40 max-w-full object-contain" />
             </button>
           )}
-          <div className="mt-1 text-[11px] text-muted-2">
+          <div className="mt-1 text-[11px] text-muted-2 [overflow-wrap:anywhere]">
             Received {etDateTime(row.createdAt)}{row.submittedBy ? ` · from ${row.submittedBy}` : ""}
             {row.page &&
               // In-app paths only — "//host" would be a protocol-relative

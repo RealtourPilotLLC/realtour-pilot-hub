@@ -28,7 +28,7 @@ export function BriefReadOnly({ brief, clientPlanned, monthName, className = "" 
           ))}
         </ul>
       )}
-      {notes && <p className="mt-2 whitespace-pre-wrap leading-relaxed text-foreground/90">{notes}</p>}
+      {notes && <p className="mt-2 whitespace-pre-wrap leading-relaxed text-foreground/90 [overflow-wrap:anywhere]">{notes}</p>}
     </div>
   );
 }

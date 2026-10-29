@@ -113,7 +113,7 @@ export function Markdown({ content, className }: { content: string; className?: 
           {items.map((it, j) => (
             <li key={j} className="flex gap-2 text-sm leading-relaxed text-foreground/85">
               <span className="mt-[7px] size-1 shrink-0 rounded-full bg-muted-2" />
-              <span>{inline(it)}</span>
+              <span className="min-w-0 [overflow-wrap:anywhere]">{inline(it)}</span>
             </li>
           ))}
         </ul>,

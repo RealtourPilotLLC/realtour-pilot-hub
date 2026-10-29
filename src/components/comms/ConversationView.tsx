@@ -183,7 +183,7 @@ export function ChatPanel({
                   // eslint-disable-next-line @next/next/no-img-element
                   <img key={i} src={m} alt="attachment" className="mb-1 max-h-52 rounded-lg object-cover" />
                 ))}
-                {it.text && <p className="whitespace-pre-wrap">{it.text}</p>}
+                {it.text && <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{it.text}</p>}
                 <div className={cn("mt-1 flex items-center gap-1 text-[10px]", out ? "text-white/70" : "text-muted-2")}>
                   {fmtTime(it.at)}
                   {/* R4: neither a tick nor a cross — we genuinely do not know. */}
@@ -289,7 +289,7 @@ export function ConversationView({
                   </div>
                   <div className="space-y-1 text-xs text-muted">
                     {client.company && <div className="flex items-center gap-1.5"><Building2 className="size-3.5" /> {client.company}</div>}
-                    {client.email && <div className="flex items-center gap-1.5"><Mail className="size-3.5" /> {client.email}</div>}
+                    {client.email && <div className="flex items-center gap-1.5 [overflow-wrap:anywhere]"><Mail className="size-3.5" /> {client.email}</div>}
                     {client.phone && <div className="flex items-center gap-1.5"><Phone className="size-3.5" /> {client.phone}</div>}
                   </div>
                   <div>

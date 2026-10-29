@@ -329,7 +329,8 @@ async function LegacyPeriod({ p, paidTo }: { p: KpiPeriod; paidTo: Map<string, n
                       {a.label}
                       <span className="ml-1.5 text-[10px] font-normal text-muted-2">{a.weight} pts</span>
                     </span>
-                    <span className="min-w-0 flex-1 text-xs text-muted">{a.measured ? a.value : (a.why ?? a.value)}</span>
+                    {/* Phone layout (Jordan, Oct 28 2026): the result wraps under the label instead of being squeezed beside it. */}
+                    <span className="min-w-0 flex-1 basis-40 text-xs text-muted">{a.measured ? a.value : (a.why ?? a.value)}</span>
                     <span className="shrink-0 text-right text-xs font-semibold tabular-nums">
                       {scored ? `${Math.round(a.points)}/${Math.round(a.maxPoints)}` : a.measured ? "measured" : "not measured"}
                     </span>

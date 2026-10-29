@@ -100,7 +100,7 @@ export function BeforeYouSendView({ data, medium, compact, hideNotes, canCheck }
                 {!compact && r.text.trim() && r.text.trim() !== r.summary.trim() && (
                   <details className="text-xs">
                     <summary className="cursor-pointer font-medium text-brand">The client&rsquo;s words</summary>
-                    <p className="mt-1 whitespace-pre-wrap rounded-lg bg-surface-2 px-2 py-1.5 text-[13px] text-foreground/85">{r.text}</p>
+                    <p className="mt-1 whitespace-pre-wrap rounded-lg bg-surface-2 px-2 py-1.5 text-[13px] text-foreground/85 [overflow-wrap:anywhere]">{r.text}</p>
                   </details>
                 )}
               </li>

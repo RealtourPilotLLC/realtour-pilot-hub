@@ -195,7 +195,7 @@ function CustomerNotes({ clientId, notes, notesSyncedAt, notesSyncError, aryeoLi
       {aryeoDiffers && (
         <div className="rounded-lg border border-warning/30 bg-warning-soft/50 px-3 py-2 text-sm">
           <p className="font-semibold text-warning">Aryeo’s copy is different</p>
-          <p className="mt-1 whitespace-pre-wrap text-foreground/80">{state.aryeoNotes}</p>
+          <p className="mt-1 whitespace-pre-wrap text-foreground/80 [overflow-wrap:anywhere]">{state.aryeoNotes}</p>
           <Button
             variant="secondary"
             onClick={() => {

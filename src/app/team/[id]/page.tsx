@@ -117,7 +117,8 @@ export default async function TeamMemberPage({ params }: { params: Promise<{ id:
                   <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-brand-soft text-brand">
                     <Camera className="size-4" />
                   </span>
-                  <div className="min-w-0 flex-1">
+                  {/* Phone layout (Jordan, Oct 28 2026): the date wraps under the address instead of squeezing it. */}
+                  <div className="min-w-0 flex-1 basis-48">
                     <div className="truncate text-sm font-medium">{a.project.title}</div>
                     <div className="truncate text-sm text-muted">{a.project.client.name}</div>
                   </div>

@@ -114,14 +114,16 @@ export default async function ReviewHistoryPage({ searchParams }: { searchParams
                         // The cut with its notes (Sep 28); the project page only
                         // when the notes are not on a cut (photos).
                         href={followUpHref(f)}
-                        className="flex items-center justify-between gap-3 py-2.5 hover:text-brand"
+                        // Phone layout (Jordan, Oct 28 2026): the counts wrap under the
+                        // street instead of squeezing it to nothing.
+                        className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 py-2.5 hover:text-brand"
                       >
-                        <div className="flex min-w-0 items-center gap-2">
+                        <div className="flex min-w-0 flex-1 basis-48 items-center gap-2">
                           <m.icon className="size-4 shrink-0 text-muted-2" />
                           <span className="truncate text-sm font-medium">{f.street}</span>
                           <span className="text-xs text-muted">{m.label}</span>
                         </div>
-                        <span className="shrink-0 text-xs">
+                        <span className="ml-auto shrink-0 text-xs">
                           {f.awaitingReply > 0 && (
                             <span className="mr-2 rounded-md bg-warning/10 px-1.5 py-0.5 text-[11px] font-medium text-warning">
                               {f.awaitingReply} unanswered {f.awaitingReply === 1 ? "reply" : "replies"}

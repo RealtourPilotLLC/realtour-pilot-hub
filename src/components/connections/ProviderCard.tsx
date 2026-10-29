@@ -405,7 +405,8 @@ function AryeoActions({
 
   return (
     <div className="space-y-2">
-      <div className="flex gap-2">
+      {/* Phone layout (Jordan, Oct 28 2026): the three buttons wrap instead of squeezing into two-line labels. */}
+      <div className="flex flex-wrap gap-2">
         <button
           onClick={() => startTransition(async () => setMsg(await syncAryeoNow()))}
           disabled={pending}

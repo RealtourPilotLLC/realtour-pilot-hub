@@ -93,14 +93,17 @@ export default async function HubHistoryPage() {
         <Section icon={Users} title="Who's asking" count={people.length || null} flush>
           <div className="divide-y">
             {people.map((p) => (
-              <div key={p.email ?? p.person} className="flex items-center justify-between gap-3 px-5 py-2.5 text-sm">
-                <div className="min-w-0 flex-1">
+              // Phone layout (Jordan, Oct 28 2026): the counts wrap under the name instead of squeezing it to nothing.
+              <div key={p.email ?? p.person} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-5 py-2.5 text-sm">
+                <div className="min-w-0 flex-1 basis-48">
                   <div className="truncate font-medium text-foreground">{p.person}</div>
                   {p.email && <div className="truncate text-xs text-muted-2">{p.email}</div>}
                 </div>
-                <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-medium text-muted">{p.role}</span>
-                <span className="shrink-0 tabular-nums text-xs text-muted">{p.questions} questions · {p.chats} chats</span>
-                <span className="shrink-0 text-xs text-muted-2">last {etDateTime(p.lastAt)}</span>
+                <div className="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+                  <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-medium text-muted">{p.role}</span>
+                  <span className="shrink-0 tabular-nums text-xs text-muted">{p.questions} questions · {p.chats} chats</span>
+                  <span className="shrink-0 text-xs text-muted-2">last {etDateTime(p.lastAt)}</span>
+                </div>
               </div>
             ))}
             {people.length === 0 && <div className="px-5 py-6 text-center text-sm text-muted">No conversations yet.</div>}
