@@ -511,7 +511,7 @@ function CloseSignal({ row }: { row: ClientIssueRow }) {
         >
           {c.kind === "rounds" && (
             <label className="block text-sm">
-              <span className="font-medium">Why did it take {c.rounds} rounds?{mode === "COMPLAINT" ? " (if you know)" : ""}</span>
+              <span className="font-medium">{c.rounds === 1 ? `Why did it need ${c.retake ? "a retake" : "the fix"}?` : `Why did it take ${c.rounds} rounds?`}{mode === "COMPLAINT" ? " (if you know)" : ""}</span>
               <select required={mode === "HAPPY"} value={cause} onChange={(e) => setCause(e.target.value)} className={cn(FIELD, "mt-1")} data-close-cause>
                 <option value="">Pick one</option>
                 {ROUND_CAUSES.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}

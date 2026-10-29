@@ -16,7 +16,7 @@ import { loadQueue } from "@/app/ops/photo-delivery/data";
 import { opsExceptionsBoard } from "@/lib/opsExceptions";
 import { kylePerson, chipPerson, ownerWeek, etWeekStart, ON_TIME_MIN_JOBS } from "@/lib/opsHome";
 import { ownerShootIssues } from "@/lib/shootIssues";
-import { CLOSE_KEY_PREFIX, closeKeyFor, readClosure, roundsStage, signalClosed, type SignalClosure } from "@/lib/issueSignalsCore";
+import { asksForRetake, CLOSE_KEY_PREFIX, closeKeyFor, readClosure, roundsStage, signalClosed, type SignalClosure } from "@/lib/issueSignalsCore";
 import { offAt, offWords, timeOffBetween } from "@/lib/timeOff";
 // The books: Finance's own engines (static, so the drills' seams reach them).
 import { revenueByProcessor } from "@/lib/bookkeeping";
@@ -964,7 +964,7 @@ export type ClientIssueRow = {
 };
 /** Revisions close with the client's answer and the cause; the rest with one line. */
 export type SignalClose =
-  | { kind: "rounds"; rounds: number; clientFirst: string; settlesAtISO: string | null; reopenedFrom: string | null }
+  | { kind: "rounds"; rounds: number; retake?: boolean; clientFirst: string; settlesAtISO: string | null; reopenedFrom: string | null }
   | { kind: "done"; prompt: string };
 export type ClientIssues = { rows: ClientIssueRow[]; unavailable: string[] };
 
@@ -972,6 +972,8 @@ export type ClientIssues = { rows: ClientIssueRow[]; unavailable: string[] };
 export const roundsHref = (projectId: string) => `/projects/${projectId}#revisions`;
 /** Revision work that, while open, means the round is still being fixed. */
 const FIX_TASKS = ["revision", "creative_review"];
+/** How a retake ask reached us (RevisionBrief.requestedByKind), as a verb. */
+const RETAKE_VERB: Record<string, string> = { TEXT: "texted", EMAIL: "emailed", PHONE: "said on a call", CLIENT: "wrote", CLIENT_STAFF: "wrote" };
 
 export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?: string[] } = {}): Promise<ClientIssues> {
   const now = opts.now ?? new Date();
@@ -989,7 +991,7 @@ export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?:
     }).catch(warn("feedback")),
     prisma.revisionBrief.findMany({
       where: { createdAt: { gte: since }, OR: [{ requestedByKind: null }, { requestedByKind: { notIn: ["OFFICE", "SYSTEM"] } }] },
-      select: { projectId: true, createdAt: true },
+      select: { projectId: true, createdAt: true, originalText: true, requestedByKind: true },
     }).catch(warn("revisions")),
     prisma.activity.findMany({ where: { createdAt: { gte: since }, body: { startsWith: "Order canceled in Aryeo AFTER delivery" } }, select: { id: true, projectId: true, createdAt: true, body: true, project: { select: { title: true, clientId: true, client: { select: { name: true } } } } }, take: 20 }).catch(warn("cancellations")),
     prisma.stripeTransaction.findMany({ where: { createdAt: { gte: since }, type: { in: ["refund", "payment_refund"] } }, select: { id: true, gross: true, createdAt: true, customerName: true, projectId: true, description: true }, orderBy: { createdAt: "desc" }, take: 20 }).catch(warn("refunds")),
@@ -1052,14 +1054,17 @@ export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?:
   }
   // A round is a client ask on its own ET day: the same ask by text and by
   // email the same day is one round, not two.
-  const rounds = new Map<string, { days: Set<string>; latest: Date }>();
+  // One ask for a retake is enough (issueSignalsCore.asksForRetake, Oct 29 2026).
+  type Retake = { at: Date; text: string; kind: string | null };
+  const rounds = new Map<string, { days: Set<string>; latest: Date; retake: Retake | null }>();
   for (const r of revisions ?? []) {
-    const cur = rounds.get(r.projectId) ?? { days: new Set<string>(), latest: r.createdAt };
+    const cur = rounds.get(r.projectId) ?? { days: new Set<string>(), latest: r.createdAt, retake: null };
     cur.days.add(etDayKey(r.createdAt));
     if (r.createdAt > cur.latest) cur.latest = r.createdAt;
+    if (asksForRetake(r.originalText) && (!cur.retake || r.createdAt > cur.retake.at)) cur.retake = { at: r.createdAt, text: r.originalText, kind: r.requestedByKind };
     rounds.set(r.projectId, cur);
   }
-  const repeat = [...rounds.entries()].map(([projectId, v]) => ({ projectId, days: [...v.days].sort(), latest: v.latest })).filter((r) => r.days.length >= 2 && !coveredProjects.has(r.projectId));
+  const repeat = [...rounds.entries()].map(([projectId, v]) => ({ projectId, days: [...v.days].sort(), latest: v.latest, retake: v.retake })).filter((r) => (r.days.length >= 2 || r.retake) && !coveredProjects.has(r.projectId));
   if (repeat.length) {
     // Where each job's rounds stand (lib/issueSignalsCore.roundsStage): still
     // being fixed, waiting on the client's word, or settled and closed.
@@ -1085,25 +1090,29 @@ export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?:
       const closure = closureOf(id);
       const d = deleg.find((t) => t.dedupeKey === `deleg:${roundsHref(r.projectId)}`);
       const st = roundsStage({
-        rounds: n, latestRoundAt: r.latest, clientFirst, now, closure,
+        rounds: n, retake: !!r.retake, latestRoundAt: r.latest, clientFirst, now, closure,
         openWork: openFix.filter((t) => t.projectId === r.projectId).map((t) => ({ title: t.title.split(" — ")[0].trim() || t.title, who: nameOf(t.assignedKey) })),
         lastFixAt: later(doneFix.find((x) => x.projectId === r.projectId)?._max.completedAt, sent.find((x) => x.projectId === r.projectId)?._max.sentToClientAt),
         delegated: d ? { open: !["COMPLETED", "CANCELLED"].includes(d.status), who: nameOf(d.assignedKey), completedAt: d.status === "COMPLETED" ? d.completedAt : null } : null,
       });
       if (!st.show) continue;
       const dayList = r.days.map((k) => etMonthDay(new Date(`${k}T12:00:00Z`))).join(", ");
+      const roundsWords = `The client asked for changes on ${n} different days in 30 days (${dayList}), the latest ${etDateTime(r.latest)}.`;
+      // A retake leads with the client's own words, the way they sent them.
+      const said = r.retake ? `${clientFirst} ${RETAKE_VERB[r.retake.kind ?? ""] ?? "asked"} ${etDateTime(r.retake.at)}: "${r.retake.text.replace(/\s+/g, " ").trim().slice(0, 240)}"` : null;
+      const lone = !!r.retake && n === 1;
       rows.push({
         id, kind: "revisions", client: p.client?.name ?? null, clientId: p.clientId, project: street(p.title), projectId: p.id,
-        title: `${n} revision rounds${st.reopened ? " · new ask after it was closed" : ""}`,
-        summary: `The client asked for changes on ${n} different days in 30 days (${dayList}), the latest ${etDateTime(r.latest)}.`,
-        evidence: "Revision requests on the job", severity: st.reopened || n >= 3 ? "high" : "medium",
-        severityWhy: st.reopened ? "A new ask after it was closed" : "Repeated revisions",
+        title: `${r.retake ? (n >= 2 ? `Asked for a retake · ${n} revision rounds` : "Asked for a retake") : `${n} revision rounds`}${st.reopened ? " · new ask after it was closed" : ""}`,
+        summary: said ? (n >= 2 ? `${said} ${roundsWords}` : said) : roundsWords,
+        evidence: r.retake ? "A retake request on the job" : "Revision requests on the job", severity: st.reopened || n >= 3 ? "high" : "medium",
+        severityWhy: st.reopened ? "A new ask after it was closed" : r.retake ? "Asked for a retake" : "Repeated revisions",
         suggested: false, owner: st.owner, lastClientUpdateISO: null, nextAction: st.nextAction, deadlineISO: null, decision: null,
         href: `/projects/${p.id}`, conversationHref: `/communications?client=${p.clientId}`,
         whyHere: st.whyHere,
-        close: { kind: "rounds", rounds: n, clientFirst, settlesAtISO: st.settlesAt?.toISOString() ?? null, reopenedFrom: st.reopened ? reopenedWords(closure) : null },
+        close: { kind: "rounds", rounds: n, retake: !!r.retake, clientFirst, settlesAtISO: st.settlesAt?.toISOString() ?? null, reopenedFrom: st.reopened ? reopenedWords(closure) : null },
         assign: st.stage === "FIXING"
-          ? { title: `Finish the fix: ${street(p.title)}`, outcome: `Round ${n} fixed and sent to ${clientFirst}`, sourceHref: roundsHref(p.id), clientId: p.clientId, projectId: p.id }
+          ? { title: `Finish the ${lone ? "retake" : "fix"}: ${street(p.title)}`, outcome: lone ? `Retake done and sent to ${clientFirst}` : `Round ${n} fixed and sent to ${clientFirst}`, sourceHref: roundsHref(p.id), clientId: p.clientId, projectId: p.id }
           : { title: `Check in with ${clientFirst}: is ${street(p.title)} right now?`, outcome: `${clientFirst} confirms it's right, or we know what's still wrong`, assigneeKey: "kyle", sourceHref: roundsHref(p.id), clientId: p.clientId, projectId: p.id },
       });
     }

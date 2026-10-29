@@ -12,7 +12,7 @@
 // Correction plan" and no way to say it was handled.
 //
 // THE RULES, for repeated revision rounds (two or more client asks on
-// different ET days in 30 days):
+// different ET days in 30 days, or one ask for a retake, Oct 29):
 //   STILL BEING FIXED   a revision or creative review on the job is open.
 //                       Next: finish it; the owner is whoever holds it.
 //   CONFIRM THE CLIENT  every round is fixed. The two questions left are the
@@ -88,9 +88,22 @@ export const ROUND_CAUSES: { key: string; label: string }[] = [
 export const isRoundCause = (v: unknown): v is string => typeof v === "string" && ROUND_CAUSES.some((c) => c.key === v);
 export const roundCauseLabel = (k: string | null | undefined) => ROUND_CAUSES.find((c) => c.key === k)?.label ?? null;
 
+// A RETAKE IS AN ISSUE FROM THE FIRST ASK (Jordan, Oct 29 2026, with Tim
+// Bonner's text "I'm looking at the pictures from Harrison now, and we need to
+// have some retaken" missing from the card: "That's something that I would
+// like on here"). Any other change still needs two rounds; a retake means the
+// shoot itself missed and someone goes back out. Read from the client's own
+// words on the ask, never the hub's one-line summary of it: the summary of
+// Mike Flatley's "New 3d tour as well" said "photo reshoot" for a reshoot he
+// had booked and paid for.
+const RETAKE_RE = /\b(re-?tak(?:e|en|es|ing)|re-?shoot(?:s|ing)?|re-?shot|shoot (?:it|them|that|those|these|this|some|the [a-z]+)(?: [a-z]+)? again|take (?:it|them|that|those|these|some|the [a-z]+)(?: [a-z]+)? again|(?:come|go|head) back (?:out )?to (?:re)?(?:shoot|take|photograph))\b/i;
+export const asksForRetake = (text: string | null | undefined): boolean => RETAKE_RE.test(text ?? "");
+
 export type OpenFix = { title: string; who: string | null };
 export type RoundsInput = {
   rounds: number;
+  /** one of the asks is for a retake (asksForRetake): one round is enough to show */
+  retake?: boolean;
   latestRoundAt: Date;
   /** open revision / creative-review work on the job */
   openWork: OpenFix[];
@@ -126,12 +139,14 @@ export function roundsStage(i: RoundsInput): RoundsStage {
   }
   const reopened = Number.isFinite(closedUpTo);
   const heldBy = i.delegated?.open ? i.delegated.who : null;
+  // One round on the card is a lone retake: "round 1 of 1" reads wrong.
+  const lone = i.rounds === 1 ? (i.retake ? "retake" : "fix") : null;
   if (i.openWork.length) {
     const w = i.openWork[0];
     return {
       show: true, stage: "FIXING", reopened,
-      whyHere: `Round ${i.rounds} is still being fixed${w.who ? ` (${w.who} has it)` : ""}.`,
-      nextAction: `Finish the fix: ${w.title}`,
+      whyHere: `${lone ? `The ${lone} is still open` : `Round ${i.rounds} is still being fixed`}${w.who ? ` (${w.who} has it)` : ""}.`,
+      nextAction: `Finish the ${lone ?? "fix"}: ${w.title}`,
       owner: heldBy ?? w.who, settlesAt: null,
     };
   }
@@ -142,7 +157,9 @@ export function roundsStage(i: RoundsInput): RoundsStage {
   }
   return {
     show: true, stage: "CONFIRM", reopened,
-    whyHere: `${i.rounds === 2 ? "Both rounds are" : `All ${i.rounds} rounds are`} fixed, and nobody has confirmed ${i.clientFirst} is happy or recorded why it took ${i.rounds} rounds.`,
+    whyHere: lone
+      ? `The ${lone} is done, and nobody has confirmed ${i.clientFirst} is happy or recorded why it needed ${lone === "retake" ? "a retake" : "one"}.`
+      : `${i.rounds === 2 ? "Both rounds are" : `All ${i.rounds} rounds are`} fixed, and nobody has confirmed ${i.clientFirst} is happy or recorded why it took ${i.rounds} rounds.`,
     nextAction: `Confirm ${i.clientFirst} is happy`,
     owner: heldBy, settlesAt: heldBy ? null : settlesAt,
   };

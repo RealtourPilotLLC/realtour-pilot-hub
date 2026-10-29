@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { etDayKey } from "@/lib/datetime";
 import { createClientIssue } from "@/lib/clientIssues";
 import { cancelTask, completeTask, type Actor } from "@/lib/delegation";
-import { closeKeyFor, isRoundCause, roundCauseLabel, type SignalClosure, type SignalOutcome } from "@/lib/issueSignalsCore";
+import { asksForRetake, closeKeyFor, isRoundCause, roundCauseLabel, type SignalClosure, type SignalOutcome } from "@/lib/issueSignalsCore";
 
 // ---------------------------------------------------------------------------
 // CLOSING A CLIENT ISSUE SIGNAL, SERVER HALF (Oct 24 2026). The rules and the
@@ -50,21 +50,23 @@ export async function closeIssueSignal(
     if (!p) return { ok: false, message: "That job no longer exists." };
     const asks = await prisma.revisionBrief.findMany({
       where: { projectId: p.id, createdAt: { gte: new Date(now.getTime() - 30 * DAY) }, OR: [{ requestedByKind: null }, { requestedByKind: { notIn: ["OFFICE", "SYSTEM"] } }] },
-      select: { createdAt: true },
+      select: { createdAt: true, originalText: true },
     });
     if (!asks.length) return { ok: false, message: "There are no client asks on this job in the last 30 days to close." };
     const n = new Set(asks.map((a) => etDayKey(a.createdAt))).size;
+    // A lone retake ask (Oct 29 2026) reads as the retake, not "1 rounds".
+    const lone = n === 1 ? (asks.some((a) => asksForRetake(a.originalText)) ? "retake" : "fix") : null;
     const latest = asks.reduce((m, a) => (a.createdAt > m ? a.createdAt : m), asks[0].createdAt);
     projectId = p.id;
     clientId = p.clientId;
     let complaintId: string | null = null;
     if (input.outcome === "HAPPY") {
-      if (!isRoundCause(input.cause)) return { ok: false, message: `Pick why it took ${n} rounds.` };
-      words = `client is happy. Why ${n} rounds: ${roundCauseLabel(input.cause)}${note ? `. ${note}` : ""}`;
+      if (!isRoundCause(input.cause)) return { ok: false, message: lone ? `Pick why it needed ${lone === "retake" ? "a retake" : "the fix"}.` : `Pick why it took ${n} rounds.` };
+      words = `client is happy. Why ${lone ? `a ${lone}` : `${n} rounds`}: ${roundCauseLabel(input.cause)}${note ? `. ${note}` : ""}`;
     } else if (input.outcome === "COMPLAINT") {
       if (!note || note.length < 3) return { ok: false, message: "Say what is still wrong for them." };
       const made = await createClientIssue({
-        clientId: p.clientId, title: `Still unhappy after ${n} revision rounds: ${street(p.title)}`, whatHappened: note,
+        clientId: p.clientId, title: `Still unhappy after ${lone ? `the ${lone}` : `${n} revision rounds`}: ${street(p.title)}`, whatHappened: note,
         source: "staff", projectIds: [p.id], cause: isRoundCause(input.cause) ? input.cause : null, createdBy: by.name,
       });
       if (!made.ok || !made.id) return { ok: false, message: made.message };
@@ -75,7 +77,7 @@ export async function closeIssueSignal(
     }
     closure = { v: 1, at: now.toISOString(), by: by.name, outcome: input.outcome, cause: isRoundCause(input.cause) ? input.cause : null, note, upToISO: latest.toISOString(), upToCount: null, complaintId };
     await settleCheckIn(`deleg:/projects/${p.id}#revisions`, by.actor, input.outcome === "HAPPY" ? `Closed from the dashboard: ${words}` : "A complaint was opened instead; it has its own owner and check-in.", input.outcome, now);
-    words = `${n} revision rounds closed by ${by.name ?? "the office"}: ${words}`;
+    words = `${lone === "retake" ? "Retake request" : n === 1 ? "Revision request" : `${n} revision rounds`} closed by ${by.name ?? "the office"}: ${words}`;
   } else {
     if (!note || note.length < 3) return { ok: false, message: "Say in a line what was decided." };
     let upToISO: string | null = null;

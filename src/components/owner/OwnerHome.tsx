@@ -275,7 +275,7 @@ async function ClientIssuesSection({ p }: { p: Promise<ClientIssues | null> }) {
   return (
     <Card title="Client issues" id="client-issues" right={rows.length > 3 ? <ViewAll n={rows.length} spec={{ kind: "list", title: "Client issues", rows: all }} /> : undefined}>
       {!c ? <Unavailable what={["client issues"]} /> : <Unavailable what={c.unavailable} />}
-      {c && rows.length === 0 && !c.unavailable.length && <p className="text-sm text-muted" data-empty="client-issues">No open complaints, negative feedback, repeated revisions, cancellations or refunds in the last 30 days.</p>}
+      {c && rows.length === 0 && !c.unavailable.length && <p className="text-sm text-muted" data-empty="client-issues">No open complaints, negative feedback, retake requests, repeated revisions, cancellations or refunds in the last 30 days.</p>}
       <ul className="space-y-3" data-client-issues={rows.length}>
         {rows.slice(0, 3).map((r) => (
           <li key={r.id} className="relative overflow-hidden rounded-xl border border-border py-3 pl-4 pr-3" data-issue={r.id}>
