@@ -1297,8 +1297,62 @@ model ProjectMessage {
   replyTo    ProjectMessage?  @relation("MsgReplies", fields: [replyToId], references: [id], onDelete: SetNull)
   replies    ProjectMessage[] @relation("MsgReplies")
   createdAt  DateTime         @default(now())
+  // HUB LINKS (Jordan, Oct 28 2026: "let users add hub pages to messages").
+  // JSON array of { kind, id, cut?, title } (lib/hubLinks). Checked against
+  // every reader of the thread on send; each viewer's link is checked again
+  // when the message is drawn. Additive, Oct 28 2026.
+  links       String?
+  // Photos and files sent with the message (Oct 28 2026), private store only.
+  attachments MessageAttachment[]
 
   @@index([projectId])
+}
+
+// THE TEAM CHANNEL (Jordan, Oct 28 2026: "add a team messages channel so all
+// team members can message"). One conversation every active hub login reads
+// and posts in, beside the per-job threads. Same shape as ProjectMessage with
+// no job: @mentions, replies, links, attachments. Read state lives in
+// ThreadRead under the key "team:channel" (lib/teamChannel). Additive.
+model TeamChannelMessage {
+  id           String               @id @default(cuid())
+  channel      String               @default("team")
+  authorId     String? // TeamMember id of the poster, when they have one
+  authorUserId String? // AppUser id of the poster
+  authorName   String?
+  body         String
+  mentions     String? // JSON array of tagged TeamMember ids
+  links        String? // JSON, same as ProjectMessage.links
+  replyToId    String?
+  replyTo      TeamChannelMessage?  @relation("ChannelReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies      TeamChannelMessage[] @relation("ChannelReplies")
+  attachments  MessageAttachment[]
+  createdAt    DateTime             @default(now())
+
+  @@index([channel, createdAt])
+}
+
+// A photo or file sent in a team message (Oct 28 2026), on a job thread or the
+// team channel. The bytes sit in the PRIVATE blob store under team-files/…;
+// nothing but /api/messages/file/<id> ever reads them, and that route asks
+// whether the viewer can read `conversation` ("team" or "project:<id>").
+// Additive.
+model MessageAttachment {
+  id               String              @id @default(cuid())
+  projectMessage   ProjectMessage?     @relation(fields: [projectMessageId], references: [id], onDelete: Cascade)
+  projectMessageId String?
+  channelMessage   TeamChannelMessage? @relation(fields: [channelMessageId], references: [id], onDelete: Cascade)
+  channelMessageId String?
+  conversation     String // "team" | "project:<projectId>"
+  pathname         String              @unique
+  url              String
+  name             String
+  contentType      String
+  size             Int
+  uploadedByUserId String?
+  createdAt        DateTime            @default(now())
+
+  @@index([projectMessageId])
+  @@index([channelMessageId])
 }
 
 // A client's change request, turned into a work order. The raw ask (a 20-minute

@@ -7,6 +7,7 @@ import { getTeam } from "@/lib/queries";
 import { redactMoney } from "@/lib/hubTools";
 import { Section } from "@/components/ui/Section";
 import { ProjectMessages } from "@/components/project/ProjectMessages";
+import { messageExtras } from "@/lib/messageExtras";
 import { getShoot, photographerMemberId, photographerOwnsShoot, type ShootView } from "@/lib/shoot";
 import { getClientFeedback, getPhotographerFeedback } from "@/lib/review";
 import { getCurrentUser } from "@/lib/auth/user";
@@ -241,6 +242,9 @@ export default async function ShootDetailPage({
   // redactor unless the reader is the owner — the sentence stays, the figure
   // goes (the same rule the job page applies to its activity feed).
   const chatScrub = (t: string) => (chatMoney ? t : redactMoney(t));
+  // Photos, files and hub pages on the thread, as this viewer may see them,
+  // and the ten-day fold (Oct 28 2026, lib/messageExtras).
+  const msgExtra = await messageExtras(chatMsgs, user);
   // A preview ("view as") reads; so does an owner/admin who is only looking in
   // on someone else's field screen — no, they post too: this is the one place
   // the office and the shooter share on a shoot day. Only impersonation reads.
@@ -259,6 +263,7 @@ export default async function ShootDetailPage({
           createdAt: m.createdAt.toISOString(),
           ago: formatDistanceToNow(m.createdAt, { addSuffix: true }),
           replyTo: m.replyTo ? { authorName: m.replyTo.authorName, body: chatScrub(m.replyTo.body) } : null,
+          ...msgExtra(m.id),
         }))}
       />
     </Section>

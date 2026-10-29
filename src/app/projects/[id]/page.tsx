@@ -55,6 +55,7 @@ import { RefreshFromAryeo } from "@/components/projects/RefreshFromAryeo";
 import { Checklist } from "@/components/project/Checklist";
 import { ActivityComposer } from "@/components/project/ActivityComposer";
 import { ProjectMessages } from "@/components/project/ProjectMessages";
+import { messageExtras } from "@/lib/messageExtras";
 import { ProjectMap } from "@/components/map/ProjectMap";
 import { DroneBadge, hasDroneOps } from "@/components/project/DroneBadge";
 import { DroneAdvisory } from "@/components/project/DroneAdvisory";
@@ -204,6 +205,9 @@ export default async function ProjectPage({
   // and the feed is the only reader on this page (audit A24).
   const [project, team, assigneeList] = await Promise.all([getProject(id, { activities: ACTIVITY_SHOWN }), getTeam(), listAssignees()]);
   if (!project) notFound();
+  // The team thread's photos, files and hub pages, each page checked for this
+  // viewer, and the ten-day fold (Oct 28 2026, lib/messageExtras).
+  const msgExtra = await messageExtras(project.messages, viewer);
 
   const assignees = assigneeList.map((a) => ({ key: a.key, name: a.name }));
   // A teammate's pay question filed on this job is the owner's alone (audit Oct 25 2026, F7).
@@ -893,10 +897,11 @@ export default async function ProjectPage({
               authorName: m.authorName,
               // Display only: "Send to the editor as a revision" and replies
               // carry the message id, and the server reads the stored words.
-              body: scrubLines(m.body) || HELD_BACK,
+              body: m.body ? scrubLines(m.body) || HELD_BACK : "",
               createdAt: m.createdAt.toISOString(),
               ago: formatDistanceToNow(m.createdAt, { addSuffix: true }),
               replyTo: m.replyTo ? { authorName: m.replyTo.authorName, body: scrub(m.replyTo.body) || HELD_BACK } : null,
+              ...msgExtra(m.id),
             }))}
           />
 

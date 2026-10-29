@@ -9,6 +9,7 @@ import { FloatingStyleGuide } from "@/components/editing/FloatingStyleGuide";
 import { SimpleQueue, type QueueRow } from "@/components/editing/SimpleQueue";
 import { EditorQualityCard } from "@/components/editing/EditorQualityCard";
 import { buildEditorQueue, unreadThreadCount, WAITING_ON_FOOTAGE, WAITING_ON_INSTRUCTIONS } from "@/lib/editorQueue";
+import { teamChannelUnread } from "@/lib/teamChannel";
 import { editingWorkload, type WorkloadRow } from "@/lib/editorWorkload";
 import { WorkloadPanel } from "@/components/editing/WorkloadPanel";
 import { RecentlyRemoved } from "@/components/editing/RemoveFromQueue";
@@ -176,7 +177,7 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
     const myNotDone = mine(notDone);
     const myUpcoming = mine(upcomingRows);
     const myDone = mine(done);
-    const unread = await unreadThreadCount(me.id, [...myNotDone, ...myUpcoming, ...myDone].map((r) => r.id));
+    const unread = (await unreadThreadCount(me.id, [...myNotDone, ...myUpcoming, ...myDone].map((r) => r.id))) + ((await teamChannelUnread(me.id).catch(() => false)) ? 1 : 0); // + the team channel (Oct 28 2026)
     // THE DESK (§7.1; Jordan, Sep 28: "the working on now button for the
     // editors needs to be clearer"). Always drawn: "What are you working on
     // now?" with one button per job they could be on, or "You're on … since"
@@ -268,7 +269,7 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
     ? import("@/lib/editorSpeed").then((m) => m.editorSpeedReport({ days: speedDays, now: new Date(), excludeClientIds })).catch(() => null)
     : Promise.resolve(null);
   const [unread, wn, act, workload, removedRows, reminders, speed] = await Promise.all([
-    unreadThreadCount(me?.id ?? null, [...notDone, ...upcomingRows, ...done].map((r) => r.id)),
+    Promise.all([unreadThreadCount(me?.id ?? null, [...notDone, ...upcomingRows, ...done].map((r) => r.id)), teamChannelUnread(me?.id).catch(() => false)]).then(([n, channel]) => n + (channel ? 1 : 0)), // + the team channel (Oct 28 2026)
     workingNow({ now, excludeProjectIds }), editorActivityToday({ now, excludeProjectIds }),
     editingWorkload(workloadRows([...notDone, ...upcomingRows])),
     recentlyRemovedFromQueue(),

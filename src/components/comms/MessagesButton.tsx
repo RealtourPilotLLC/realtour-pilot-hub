@@ -21,7 +21,9 @@ import { cn } from "@/lib/utils";
 // a small menu, Client messages and Team messages; for James and the editors
 // it opens their team message center. Numbers come from /api/messages/unread,
 // one shared poll for every mounted icon, every two minutes while the tab is
-// visible. A photographer has no team center and sees no icon.
+// visible. Since Oct 28 2026 (the team channel: "so all team members can
+// message") a photographer has a team center too and sees the icon: it opens
+// the channel and their own shoots' threads.
 // ---------------------------------------------------------------------------
 
 type Counts = { clients: number; team: number; clientsHref: string | null; teamHref: string | null };
@@ -69,7 +71,7 @@ function subscribe(fn: (c: Counts) => void): () => void {
 /** Before the first read: where the icon goes by role alone. */
 export function messagesFallbackHref(role: string | null | undefined): string | null {
   if (role === "OWNER" || role === "ADMIN") return "/communications";
-  if (role === "CREATIVE_MANAGER" || role === "EDITOR") return "/editing/messages";
+  if (role === "CREATIVE_MANAGER" || role === "EDITOR" || role === "PHOTOGRAPHER") return "/editing/messages";
   return null;
 }
 

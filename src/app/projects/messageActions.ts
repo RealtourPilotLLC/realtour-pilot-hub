@@ -114,51 +114,33 @@ export async function postProjectMessage(
   body: string,
   mentionIds: string[] = [],
   replyToId?: string | null,
+  // PHOTOS, FILES AND HUB PAGES (Jordan, Oct 28 2026). Files were uploaded
+  // straight to the private store by the browser; pages are re-checked here
+  // against everyone who reads this thread (lib/hubLinkAccess).
+  extras: { files?: import("@/lib/messageFiles").PendingMessageFile[]; links?: unknown } = {},
 ): Promise<MsgResult> {
   await requireThreadAccess(projectId);
-  const text = body.trim();
-  if (!text) return { ok: false, message: "Write a message first." };
+  const text = (body ?? "").trim();
+  const pendingFiles = Array.isArray(extras?.files) ? extras.files : [];
+  const { sanitizeLinkTargets } = await import("@/lib/hubLinks");
+  const linkTargets = sanitizeLinkTargets(extras?.links);
+  if (!text && pendingFiles.length === 0 && linkTargets.length === 0) return { ok: false, message: "Write a message first." };
   const parentId = await safeReplyTo(projectId, replyToId);
 
   const { getCurrentUser } = await import("@/lib/auth/user");
   const { authEnforced } = await import("@/lib/auth/guards");
   const me = await getCurrentUser().catch(() => null);
-  let authorId: string | null = null;
-  let authorName: string | null = null;
-  const myName = me?.name?.trim();
-  if (me) {
-    // The login's LINKED Team row first (reviewer, Sep 15: the self-tag and
-    // self-reply rules below compare this id exactly, so it has to be the
-    // writer's own row, not a name lookalike), then the exact display name,
-    // then the roster email. A logged-in user with no row still posts as
-    // THEMSELVES (name or email), never as a client-chosen TeamMember — the
-    // passed authorId is a spoof vector once a session exists (adversarial
-    // review).
-    //
-    // THREE RUNGS, NOT FOUR (review, Sep 16). There used to be a fourth:
-    // `name: { contains: <first name> }`, which matched a substring anywhere
-    // in anyone's roster name — so a login called "Kim" could be attributed to
-    // "Kimberly Vance", and "Mark" to "John Mark". That id is not cosmetic: it
-    // decides whose "you were tagged" task auto-closes, who counts as tagging
-    // themselves, who a reply rings, and (since RTP-02) which editor keeps a
-    // thread they have already spoken on. A GUESS must not open any of those.
-    // When nothing matches exactly we now leave authorId null and post under
-    // the person's own name — which is what every unmatched login already did.
-    const select = { id: true, name: true };
-    const tm =
-      (me.teamMemberId ? await prisma.teamMember.findUnique({ where: { id: me.teamMemberId }, select }) : null) ??
-      (myName ? await prisma.teamMember.findFirst({ where: { name: { equals: myName, mode: "insensitive" } }, select }) : null) ??
-      (me.email
-        ? await prisma.teamMember.findFirst({ where: { email: { equals: me.email, mode: "insensitive" }, active: true }, select })
-        : null);
-    authorId = tm?.id ?? null;
-    authorName = tm?.name ?? myName ?? me.email ?? "Team";
-  } else if (!authEnforced() && clientAuthorId) {
-    // Sessionless local dev only — no identity exists to derive.
-    const m = await prisma.teamMember.findUnique({ where: { id: clientAuthorId }, select: { name: true } });
-    authorId = m ? clientAuthorId : null;
-    authorName = m?.name ?? null;
-  }
+  const conv = { kind: "project" as const, projectId };
+  const { checkHubLinks } = await import("@/lib/hubLinkAccess");
+  const linkCheck = await checkHubLinks(conv, linkTargets);
+  if (!linkCheck.ok) return { ok: false, message: linkCheck.message };
+  const { acceptMessageFiles, attachmentRows } = await import("@/lib/messageAttachments");
+  const fileCheck = await acceptMessageFiles(conv, me?.id ?? null, pendingFiles);
+  if (!fileCheck.ok) return { ok: false, message: fileCheck.message };
+  // Whoever is logged in (lib/messageAuthor: the linked roster row, the exact
+  // name, the roster email; never a client-chosen id once a session exists).
+  const { resolveMessageAuthor } = await import("@/lib/messageAuthor");
+  const { authorId, authorName } = await resolveMessageAuthor(me, clientAuthorId, authEnforced());
 
   // The composer resolves only the full names it inserted itself ("@John
   // Mark"); a hand-typed "@John" posted without picking rang nobody. Jordan,
@@ -185,8 +167,13 @@ export async function postProjectMessage(
       body: text.slice(0, 2000),
       mentions: mentions.length ? JSON.stringify(mentions) : null,
       replyToId: parentId,
+      links: linkCheck.refs.length ? JSON.stringify(linkCheck.refs) : null,
+      attachments: fileCheck.files.length ? { create: attachmentRows(conv, me?.id ?? null, fileCheck.files) } : undefined,
     },
   });
+  // What the pings below quote when the message is only files or a page.
+  const { filesLine, isMessageImage } = await import("@/lib/messageFiles");
+  const said = text || filesLine(fileCheck.files.length, fileCheck.files.filter((f) => isMessageImage(f.contentType)).length) || "Shared a hub page";
   await reopenThread(projectId);
   // Oct 14 2026: a team note can be the "it's not needed" for a client's open ask (lib/revisionNotNeeded).
   {
@@ -375,7 +362,7 @@ export async function postProjectMessage(
         replierTmId: authorId,
         inferOwnerReplier: !me && !authorId,
         replierName: authorName,
-        text,
+        text: said,
         excludeTmIds: mentions,
       })) reached.add(id);
     } catch { /* the reply ping is best-effort */ }
@@ -392,7 +379,7 @@ export async function postProjectMessage(
       authorTmId: authorId,
       authorKey: me?.editorKey ? `editor:${me.editorKey}` : null,
       authorName,
-      text,
+      text: said,
       context: "the job's team chat",
       excludeTmIds: [...reached],
     });

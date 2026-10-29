@@ -309,8 +309,8 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
           title="Messages"
           subtitle={
             chat.unreadTotal > 0
-              ? `Team messages by property. ${chat.unreadTotal} conversation${chat.unreadTotal === 1 ? " has" : "s have"} something new. This opens from the messages icon beside the bell.`
-              : "Team messages by property. Pick a job to read and reply. This opens from the messages icon beside the bell."
+              ? `Team messages: the team channel and each job's thread. ${chat.unreadTotal} conversation${chat.unreadTotal === 1 ? " has" : "s have"} something new. This opens from the messages icon beside the bell.`
+              : "Team messages: the team channel and each job's thread. Pick one to read and reply. This opens from the messages icon beside the bell."
           }
         />
         <div className="p-4 sm:p-6">
