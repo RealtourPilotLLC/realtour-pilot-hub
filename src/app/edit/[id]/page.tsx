@@ -25,6 +25,7 @@ import { getProject, getTeam } from "@/lib/queries";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced, canViewProject, editorScopeOf } from "@/lib/auth/guards";
 import { ProjectMessages } from "@/components/project/ProjectMessages";
+import { messageExtras } from "@/lib/messageExtras";
 import { ReelScriptCard, currentScriptOf } from "@/components/project/ReelScriptCard";
 // Oct 5: the brief's own script block (no "(empty)" sections, one Copy), the
 // one-per-job "Got it", the Agent Profile and the live due countdown.
@@ -207,6 +208,9 @@ export default async function EditBriefPage({
     }),
   ]);
   if (!project) notFound();
+  // The team thread's photos, files and hub pages (each page checked for this
+  // viewer) and the ten-day fold (Oct 28 2026, lib/messageExtras).
+  const msgExtra = await messageExtras(project.messages, viewer);
   // The brief is long and the conversation is near its end. A read-only cue
   // gives the editor a direct path without advancing ThreadRead just because
   // they opened the brief to inspect footage or download a file.
@@ -2117,6 +2121,7 @@ export default async function EditBriefPage({
                 createdAt: m.createdAt.toISOString(),
                 ago: formatDistanceToNow(m.createdAt, { addSuffix: true }),
                 replyTo: m.replyTo ? { authorName: m.replyTo.authorName, body: m.replyTo.body } : null,
+                ...msgExtra(m.id),
               }))}
             />
           </section>

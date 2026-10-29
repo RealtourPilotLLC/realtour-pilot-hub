@@ -983,10 +983,20 @@ export type ChatConversation = {
   assignedTeamMemberIds: string[];
 };
 
-export type ChatScope = { kind: "editor"; editorKey: string } | { kind: "office" };
+// Oct 28 2026: two more scopes beside the editor's lane and the office.
+// A PHOTOGRAPHER's center lists the shoots they own (ownsShootWhere: the
+// shoot screen's own rule) that have a thread or are in flight, plus the team
+// channel; "channel" is the team channel alone (an editor login not linked to
+// an editor profile yet: the team channel is for every login, a job thread is not).
+export type ChatScope =
+  | { kind: "editor"; editorKey: string }
+  | { kind: "office" }
+  | { kind: "photographer"; memberId: string }
+  | { kind: "channel" };
 
 export async function teamChatConversations(scope: ChatScope): Promise<ChatConversation[]> {
   let basic: Omit<ChatConversation, "monthContext" | "topicContext">[];
+  if (scope.kind === "channel") return [];
   if (scope.kind === "editor") {
     const { notDone, upcoming, done } = await buildEditorQueue();
     basic = [...notDone, ...upcoming, ...done]
@@ -994,11 +1004,16 @@ export async function teamChatConversations(scope: ChatScope): Promise<ChatConve
       .map((r) => ({ id: r.id, street: r.street, client: r.client, status: r.status, sortAt: r.dueISO ? new Date(r.dueISO) : null, activeWork: !done.some((d) => d.id === r.id), assignedTeamMemberIds: [] }));
   } else {
     const now = new Date();
+    const { ownsShootWhere } = await import("@/lib/shoot");
+    const mine = scope.kind === "photographer" ? ownsShootWhere(scope.memberId) : null;
     const [threaded, active] = await Promise.all([
-      prisma.projectMessage.groupBy({ by: ["projectId"] }),
+      mine
+        ? prisma.project.findMany({ where: { AND: [mine, { messages: { some: {} } }] }, select: { id: true } }).then((r) => r.map((p) => ({ projectId: p.id })))
+        : prisma.projectMessage.groupBy({ by: ["projectId"] }),
       prisma.project.findMany({
         where: {
           aryeoMissingAt: null,
+          ...(mine ? { AND: [mine] } : {}),
           OR: [
             { status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
             { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { gte: etAddDays(now, -7), lte: etAddDays(now, 14) } },
@@ -1061,6 +1076,56 @@ export async function teamChatConversations(scope: ChatScope): Promise<ChatConve
     monthContext: context.has(r.id) ? Array.from(context.get(r.id)!.months).sort().join(", ") || null : null,
     topicContext: context.has(r.id) ? Array.from(context.get(r.id)!.topics) : [],
   }));
+}
+
+// ---- Archived threads (Jordan, Oct 28 2026) ---------------------------------
+// "Also messages for any inactive work should be archived." A job thread
+// whose WORK IS FINISHED folds under Archived in the message center, out of
+// the active list, the way "Close conversation" folds one by hand. Finished
+// means all of: the job is Delivered or Cancelled (a revision puts it back to
+// REVISION, which is active), no task open on it (a revision, an edit, a tag
+// waiting on an answer), and no cut waiting in the Review Room. The viewer's
+// half (threadIsArchived, read by loadTeamChat): never a thread with
+// something unread for them, never one whose last word is a question, and a
+// post after the work ended keeps it out for three days. Nothing is stored:
+// it comes back by itself.
+
+export const ARCHIVE_RECENT_POST_MS = 3 * 86_400_000;
+
+/** For the jobs among these whose work is finished: when it ended (delivered, else last touched). */
+export async function finishedWork(projectIds: string[]): Promise<Map<string, { endedAt: Date }>> {
+  const out = new Map<string, { endedAt: Date }>();
+  if (projectIds.length === 0) return out;
+  const [projects, openTasks, waitingCuts] = await Promise.all([
+    prisma.project.findMany({
+      where: { id: { in: projectIds }, status: { in: ["DELIVERED", "CANCELLED"] } },
+      select: { id: true, status: true, deliveredAt: true, updatedAt: true },
+    }),
+    prisma.smartTask.groupBy({ by: ["projectId"], where: { projectId: { in: projectIds }, status: { notIn: ["COMPLETED", "CANCELLED"] } } }),
+    prisma.reviewSubmission.groupBy({ by: ["projectId"], where: { projectId: { in: projectIds }, status: { in: ["PENDING", "UPLOADING"] } } }),
+  ]);
+  const busy = new Set([...openTasks.map((t) => t.projectId), ...waitingCuts.map((c) => c.projectId)].filter((id): id is string => !!id));
+  for (const p of projects) {
+    if (busy.has(p.id)) continue;
+    out.set(p.id, { endedAt: (p.status === "DELIVERED" ? p.deliveredAt : null) ?? p.updatedAt });
+  }
+  return out;
+}
+
+/** The viewer's half of the archive rule. Pure. */
+export function threadIsArchived(o: {
+  finished: { endedAt: Date } | undefined;
+  last: { createdAt: Date; body: string } | null;
+  unread: boolean;
+  now: Date;
+}): boolean {
+  if (!o.finished || o.unread) return false;
+  if (!o.last) return true;
+  // Waiting on an answer: the last word is a question.
+  if (/\?\s*$/.test(o.last.body.trim())) return false;
+  // Someone spoke after the work ended: back in the list for a few days.
+  if (o.last.createdAt > o.finished.endedAt && o.now.getTime() - o.last.createdAt.getTime() < ARCHIVE_RECENT_POST_MS) return false;
+  return true;
 }
 
 // ---------------------------------------------------------------------------

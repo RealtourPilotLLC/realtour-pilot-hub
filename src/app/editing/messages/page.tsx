@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { editorScopeOf, isUnmappedEditor, requirePageAccess, UNMAPPED_EDITOR_MESSAGE } from "@/lib/auth/guards";
 import { PageHeader } from "@/components/PageHeader";
@@ -35,61 +34,62 @@ export default async function MessageCenterPage({
   const { t: selectedId, q, view } = await searchParams;
   const me = await getCurrentUser().catch(() => null);
   // A PHOTOGRAPHER holds the `editing` key from Sep 18 (their read-only board
-  // of jobs they shot) and this page rides the SAME key. Without this line that
-  // grant silently opened the office↔editor message centre — with `editorScope`
-  // null they would fall into the branch that "reads as the office below and
-  // hands them every lane's threads", which is the exact failure the editor
-  // fail-closed two lines down was written to prevent. They have no entry point
-  // here (their board renders no Messages button), so this is the door, not the
-  // sign. Their conversation about a cut is the Review Room.
-  if (me?.role === "PHOTOGRAPHER") redirect("/editing");
+  // of jobs they shot) and this page rides the SAME key. They must never fall
+  // into the office branch below, which hands out every lane's threads. Until
+  // Oct 28 2026 they were sent away; now this is their message center too
+  // (Jordan: "a team messages channel so all team members can message"): the
+  // team channel and the threads of THEIR OWN shoots (the shoot screen's
+  // ownership rule), opening to /shoot/<id>. The messages icon is their door.
+  const photographer = me?.role === "PHOTOGRAPHER";
+  const photographerId = photographer ? await (await import("@/lib/shoot")).photographerMemberId(me).catch(() => null) : null;
   // The one editor scope (guards.editorScopeOf): an assigned editorKey or the
   // fail-closed sentinel. Oct 20 2026 (audit B2): this page used to rebuild it
   // with the first-name fallback the Sep 17 audit removed, so an unlinked
   // EDITOR could read another editor's threads by sharing a first name.
   const editorScope = editorScopeOf(me);
   // Fail CLOSED for an editor whose scope can't resolve — a null scope would
-  // read as "the office" below and hand them every lane's threads.
-  if (me?.role === "EDITOR" && (!editorScope || isUnmappedEditor(editorScope))) {
-    return (
-      <div>
-        <PageHeader eyebrow="Editing Room" title="Messages" />
-        <p className="m-4 rounded-2xl border border-dashed border-border bg-surface p-6 text-sm text-muted sm:m-6">
-          {UNMAPPED_EDITOR_MESSAGE}
-        </p>
-      </div>
-    );
-  }
+  // read as "the office" below and hand them every lane's threads. They still
+  // get the team channel (Oct 28 2026), which is every login's.
+  const unmapped = me?.role === "EDITOR" && (!editorScope || isUnmappedEditor(editorScope));
 
   const chat = await loadTeamChat({
-    scope: editorScope ? { kind: "editor", editorKey: editorScope } : { kind: "office" },
+    scope: photographer
+      ? photographerId ? { kind: "photographer", memberId: photographerId } : { kind: "channel" }
+      : unmapped ? { kind: "channel" }
+      : editorScope ? { kind: "editor", editorKey: editorScope } : { kind: "office" },
     viewer: me ? { id: me.id, teamMemberId: me.teamMemberId, impersonating: !!me.impersonating } : null,
     selectedId,
     q,
     view,
+    user: me,
   });
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader
-        eyebrow="Editing Room"
+        eyebrow={photographer ? "Team" : "Editing Room"}
         title="Messages"
         subtitle={
           chat.unreadTotal > 0
             ? `${chat.unreadTotal} unread conversation${chat.unreadTotal === 1 ? "" : "s"}`
-            : "Every job's team chat, one place"
+            : photographer ? "The team channel and your shoots' threads" : "The team channel and every job's team chat, one place"
         }
         actions={
-          <Link href="/editing" className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
-            <ArrowLeft className="size-3.5" /> Editing Room
+          <Link href={photographer ? "/shoot" : "/editing"} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+            <ArrowLeft className="size-3.5" /> {photographer ? "My Shoots" : "Editing Room"}
           </Link>
         }
       />
       <div className="flex-1 p-4 sm:p-6">
+        {unmapped && (
+          <p className="mb-4 rounded-2xl border border-dashed border-border bg-surface p-4 text-sm text-muted">
+            {UNMAPPED_EDITOR_MESSAGE} Until then you have the team channel.
+          </p>
+        )}
         <TeamMessagesPanel
           data={chat}
           base={{ pathname: "/editing/messages" }}
-          open={{ pathname: "/edit", label: "Open edit" }}
+          open={photographer ? { pathname: "/shoot", label: "Open the shoot" } : { pathname: "/edit", label: "Open edit" }}
           readOnly={!!me?.impersonating}
         />
       </div>

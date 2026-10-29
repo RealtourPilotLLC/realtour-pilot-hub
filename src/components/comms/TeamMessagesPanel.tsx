@@ -1,17 +1,22 @@
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
-import { Archive, ArrowLeft, ExternalLink, MessageSquare, Search } from "lucide-react";
+import { Archive, ArrowLeft, ExternalLink, MessageSquare, Search, Users } from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { getTeam } from "@/lib/queries";
-import { ProjectMessages, ThreadCloseButton, type ProjectMsg } from "@/components/project/ProjectMessages";
+import { getCurrentUser, type CurrentUser } from "@/lib/auth/user";
+import { ProjectMessages, TeamChannelMessages, ThreadCloseButton, type ProjectMsg } from "@/components/project/ProjectMessages";
 import {
+  finishedWork,
   latestMessagePerProject,
   teamChatConversations,
+  threadIsArchived,
   threadIsClosed,
   type ChatConversation,
   type ChatScope,
   type LatestMsg,
 } from "@/lib/editorQueue";
+import { messageExtras } from "@/lib/messageExtras";
+import { latestChannelMessage, loadTeamChannel, teamChannelUnread, TEAM_CHANNEL_ID } from "@/lib/teamChannel";
 import { cn } from "@/lib/utils";
 
 // TEAM CHAT BY PROPERTY (Kyle call, Sep 16). The two-pane message center
@@ -29,6 +34,13 @@ import { cn } from "@/lib/utils";
 // visible, so a thread read anywhere is read everywhere. A
 // conversation the viewer closed sits under the Closed fold until someone
 // posts on it again.
+//
+// Oct 28 2026 (Jordan): THE TEAM CHANNEL sits at the top of the list in every
+// entry (?t=team: lib/teamChannel), photographers get the center too (their
+// own shoots' threads), and a thread whose work is finished folds under
+// ARCHIVED by itself ("messages for any inactive work should be archived":
+// lib/editorQueue finishedWork + threadIsArchived), coming back when someone
+// posts or the job is reopened.
 
 const fmtDay = (d: Date) =>
   d.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
@@ -37,6 +49,8 @@ export type ChatRow = ChatConversation & {
   lastMsg: LatestMsg | null;
   unread: boolean;
   closed: boolean;
+  /** Finished work, nothing open, nothing unread (Oct 28 2026). */
+  archived: boolean;
   mine: boolean;
 };
 
@@ -50,8 +64,11 @@ export type TeamChatData = {
   counts: Record<ChatView, number>;
   open: ChatRow[];
   closed: ChatRow[];
+  archived: ChatRow[];
   selected: ChatRow | null;
   thread: { messages: ProjectMsg[]; team: { id: string; name: string; avatarColor: string }[] } | null;
+  /** The team channel's row, and its thread when it is the one open. */
+  channel: { lastMsg: LatestMsg | null; unread: boolean; selected: boolean };
   /** Unread conversations other than the one on screen — for the page subtitle. */
   unreadTotal: number;
 };
@@ -62,12 +79,15 @@ export async function loadTeamChat(opts: {
   selectedId?: string;
   q?: string;
   view?: string;
+  /** Whose links and files the thread draws for; defaults to the signed-in viewer. */
+  user?: CurrentUser | null;
 }): Promise<TeamChatData> {
   const { scope, viewer, selectedId, q } = opts;
   const view = chatView(opts.view);
+  const now = new Date();
   const rows = await teamChatConversations(scope);
   const ids = rows.map((r) => r.id);
-  const [latest, reads, related] = await Promise.all([
+  const [latest, reads, related, channelLast, channelUnread] = await Promise.all([
     latestMessagePerProject(ids),
     viewer && ids.length
       ? prisma.threadRead.findMany({
@@ -85,9 +105,12 @@ export async function loadTeamChat(opts: {
           select: { projectId: true },
         })
       : Promise.resolve([]),
+    latestChannelMessage(),
+    viewer ? teamChannelUnread(viewer.id) : Promise.resolve(false),
   ]);
   const read = new Map(reads.map((r) => [r.projectId, r]));
   const relatedIds = new Set(related.map((r) => r.projectId));
+  const finished = await finishedWork(rows.filter((r) => !r.activeWork).map((r) => r.id)).catch(() => new Map<string, { endedAt: Date }>());
 
   // Conversations with messages first (newest activity on top), then the rest
   // by their date — so a job with no thread yet is still one click from
@@ -98,12 +121,15 @@ export async function loadTeamChat(opts: {
     .map((r) => {
       const m = latest.get(r.id) ?? null;
       const s = read.get(r.id);
+      const closed = threadIsClosed(s?.closedAt, m);
+      const unread = !!m && (!s || m.createdAt > s.seenAt);
       return {
         ...r,
         lastMsg: m,
-        closed: threadIsClosed(s?.closedAt, m),
-        unread: !!m && (!s || m.createdAt > s.seenAt),
-        mine: scope.kind === "editor" || !!viewer?.teamMemberId && (r.assignedTeamMemberIds.includes(viewer.teamMemberId) || relatedIds.has(r.id)),
+        closed,
+        unread,
+        archived: !closed && threadIsArchived({ finished: finished.get(r.id), last: m, unread, now }),
+        mine: scope.kind === "editor" || scope.kind === "photographer" || !!viewer?.teamMemberId && (r.assignedTeamMemberIds.includes(viewer.teamMemberId) || relatedIds.has(r.id)),
       };
     })
     .sort((a, b) => {
@@ -116,15 +142,19 @@ export async function loadTeamChat(opts: {
     });
   const matchesView = (r: ChatRow) => view === "all" || view === "mine" && r.mine || view === "unread" && r.unread && !r.closed || view === "active" && r.activeWork;
   const visible = all.filter(matchesView);
-  const open = visible.filter((r) => !r.closed);
+  const open = visible.filter((r) => !r.closed && !r.archived);
   const closed = visible.filter((r) => r.closed);
+  const archived = visible.filter((r) => r.archived);
 
   // The open thread — only a job the viewer's list actually contains (an
-  // editor can't open another lane's thread by pasting an id).
-  const selected = selectedId ? visible.find((r) => r.id === selectedId) ?? null : null;
+  // editor can't open another lane's thread by pasting an id). ?t=team is
+  // the team channel, which every login on the team reads.
+  const channelSelected = selectedId === TEAM_CHANNEL_ID;
+  const selected = selectedId && !channelSelected ? visible.find((r) => r.id === selectedId) ?? null : null;
   let thread: TeamChatData["thread"] = null;
-  if (selected) {
-    const [messages, team] = await Promise.all([loadThread(selected.id), getTeam()]);
+  if (selected || channelSelected) {
+    const user = opts.user !== undefined ? opts.user : await getCurrentUser().catch(() => null);
+    const [messages, team] = await Promise.all([selected ? loadThread(selected.id, user) : loadTeamChannel(user), getTeam()]);
     thread = { messages, team: team.map((m) => ({ id: m.id, name: m.name, avatarColor: m.avatarColor })) };
   }
 
@@ -134,18 +164,22 @@ export async function loadTeamChat(opts: {
     counts: { all: all.length, mine: all.filter((r) => r.mine).length, unread: all.filter((r) => r.unread && !r.closed).length, active: all.filter((r) => r.activeWork).length },
     open,
     closed,
+    archived,
     selected,
     thread,
-    unreadTotal: all.filter((r) => r.unread && !r.closed && r.id !== selected?.id).length,
+    channel: { lastMsg: channelLast, unread: channelUnread, selected: channelSelected },
+    unreadTotal: all.filter((r) => r.unread && !r.closed && r.id !== selected?.id).length + (channelUnread && !channelSelected ? 1 : 0),
   };
 }
 
-export async function loadThread(projectId: string): Promise<ProjectMsg[]> {
+export async function loadThread(projectId: string, user?: CurrentUser | null): Promise<ProjectMsg[]> {
   const msgs = await prisma.projectMessage.findMany({
     where: { projectId },
     orderBy: { createdAt: "asc" },
     include: { replyTo: { select: { authorName: true, body: true } } },
   });
+  const viewer = user !== undefined ? user : await getCurrentUser().catch(() => null);
+  const extra = await messageExtras(msgs, viewer);
   return msgs.map((m) => ({
     id: m.id,
     authorId: m.authorId,
@@ -154,6 +188,7 @@ export async function loadThread(projectId: string): Promise<ProjectMsg[]> {
     createdAt: m.createdAt.toISOString(),
     ago: formatDistanceToNow(m.createdAt, { addSuffix: true }),
     replyTo: m.replyTo ? { authorName: m.replyTo.authorName, body: m.replyTo.body } : null,
+    ...extra(m.id),
   }));
 }
 
@@ -182,14 +217,15 @@ export function TeamMessagesPanel({
 }: {
   data: TeamChatData;
   base: ChatBase;
-  /** The thread header's jump-out button: the job file for the office, the edit page for editors. */
-  open: { pathname: "/projects" | "/edit"; label: string };
+  /** The thread header's jump-out button: the job file for the office, the edit page for editors, the shoot for photographers. */
+  open: { pathname: "/projects" | "/edit" | "/shoot"; label: string };
   /** "View as" previews: no composer, no close button. */
   readOnly?: boolean;
 }) {
-  const { term, selected, thread, view } = data;
+  const { term, selected, thread, view, channel } = data;
   const q = term || undefined;
   const filterHref = (next: ChatView) => hrefFor(base, { q, view: next === "all" ? undefined : next });
+  const anyOpen = !!selected || channel.selected;
 
   const row = (r: ChatRow) => (
     <li key={r.id}>
@@ -211,7 +247,7 @@ export function TeamMessagesPanel({
         </span>
         <span className="mt-0.5 block truncate pl-4 text-xs text-muted">
           {r.lastMsg
-            ? `${r.lastMsg.authorName.split(" ")[0]}: ${r.lastMsg.body}`
+            ? `${r.lastMsg.authorName.split(" ")[0]}: ${r.lastMsg.body || "Sent a file or a page"}`
             : "No messages yet — start the thread."}
         </span>
         {(r.monthContext || r.topicContext.length > 0) && (
@@ -224,15 +260,36 @@ export function TeamMessagesPanel({
     </li>
   );
 
+  // THE TEAM CHANNEL'S ROW: first in the list whatever the search or filter.
+  const channelRow = (
+    <Link
+      href={hrefFor(base, { t: TEAM_CHANNEL_ID, q, view: view === "all" ? undefined : view }, channel.lastMsg ? `msg-${channel.lastMsg.id}` : undefined)}
+      data-team-channel-row
+      className={cn("block border-b border-border/60 px-4 py-3 hover:bg-surface-2/60", channel.selected && "bg-surface-2/80")}
+    >
+      <span className="flex items-center gap-2">
+        <span className={cn("size-2 shrink-0 rounded-full", channel.unread ? "bg-success" : "bg-transparent")} title={channel.unread ? "New messages" : undefined} />
+        <Users aria-hidden className="size-4 shrink-0 text-brand" />
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold">
+          Team channel <span className="font-normal text-muted">(everyone)</span>
+        </span>
+        {channel.lastMsg && <span className="shrink-0 text-[11px] text-muted-2">{fmtDay(channel.lastMsg.createdAt)}</span>}
+      </span>
+      <span className="mt-0.5 block truncate pl-4 text-xs text-muted">
+        {channel.lastMsg ? `${channel.lastMsg.authorName.split(" ")[0]}: ${channel.lastMsg.body}` : "Message everyone on the team."}
+      </span>
+    </Link>
+  );
+
   return (
     <div className="mx-auto grid w-full max-w-7xl flex-1 gap-4 lg:grid-cols-[minmax(280px,340px)_1fr]">
       {/* CONVERSATION LIST — hidden on mobile while a thread is open. */}
-      <div className={cn("min-w-0", selected && "hidden lg:block")}>
+      <div className={cn("min-w-0", anyOpen && "hidden lg:block")}>
         <form method="GET" action={base.pathname} className="relative mb-3">
           {Object.entries(base.params ?? {}).map(([k, v]) => (
             <input key={k} type="hidden" name={k} value={v} />
           ))}
-          {selected && <input type="hidden" name="t" value={selected.id} />}
+          {(selected || channel.selected) && <input type="hidden" name="t" value={channel.selected ? TEAM_CHANNEL_ID : selected!.id} />}
           {view !== "all" && <input type="hidden" name="view" value={view} />}
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-2" />
           <input
@@ -253,11 +310,12 @@ export function TeamMessagesPanel({
         </nav>
         {view === "mine" && <p className="mb-2 text-xs text-muted">Assigned jobs and conversations you posted in or were tagged in.</p>}
         <div className="overflow-hidden rounded-2xl border border-border bg-surface">
-          {data.open.length === 0 && data.closed.length === 0 ? (
-            <p className="p-5 text-sm text-muted">{term || view !== "all" ? "No conversations match these filters." : "No conversations yet."}</p>
+          {channelRow}
+          {data.open.length === 0 && data.closed.length === 0 && data.archived.length === 0 ? (
+            <p className="p-5 text-sm text-muted">{term || view !== "all" ? "No job conversations match these filters." : "No job conversations yet."}</p>
           ) : (
             <>
-              {data.open.length === 0 && <p className="p-5 text-sm text-muted">No open conversations match these filters.</p>}
+              {data.open.length === 0 && <p className="p-5 text-sm text-muted">No open job conversations match these filters.</p>}
               <ul className="divide-y divide-border/60">{data.open.map(row)}</ul>
               {/* THE CLOSED FOLD — conversations this viewer put away. A new
                   message on any of them moves it back up on its own. */}
@@ -270,13 +328,41 @@ export function TeamMessagesPanel({
                   <ul className="divide-y divide-border/60 opacity-80">{data.closed.map(row)}</ul>
                 </details>
               )}
+              {/* THE ARCHIVED FOLD (Oct 28 2026) — finished jobs with nothing
+                  open and nothing unread. A new message or reopened work
+                  brings one back by itself. */}
+              {data.archived.length > 0 && (
+                <details data-archived-fold={data.archived.length} className="border-t border-border/60" open={!!selected?.archived}>
+                  <summary className="flex min-h-11 cursor-pointer flex-wrap items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-muted hover:bg-surface-2/60">
+                    <Archive className="size-3.5" /> Archived
+                    <span className="rounded-full bg-surface-2 px-1.5 text-[10px] font-medium">{data.archived.length}</span>
+                    <span className="font-normal text-muted-2">finished jobs, nothing open</span>
+                  </summary>
+                  <ul className="divide-y divide-border/60 opacity-80">{data.archived.map(row)}</ul>
+                </details>
+              )}
             </>
           )}
         </div>
       </div>
 
       {/* THE THREAD */}
-      {selected && thread ? (
+      {channel.selected && thread ? (
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2 rounded-t-2xl border border-b-0 border-border bg-surface px-4 py-3">
+            <Link href={hrefFor(base, { q, view: view === "all" ? undefined : view })} aria-label="Back to the conversations" className="-ml-2 inline-flex size-11 items-center justify-center rounded-lg hover:bg-surface-2 lg:hidden">
+              <ArrowLeft aria-hidden className="size-4 text-muted" />
+            </Link>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-semibold">Team channel</div>
+              <div className="text-[11px] text-muted-2">Everyone on the team reads this. Only the people you tag are notified.</div>
+            </div>
+          </div>
+          <div className="rounded-b-2xl border border-border bg-surface p-4 sm:p-5">
+            <TeamChannelMessages team={thread.team} messages={thread.messages} readOnly={readOnly} />
+          </div>
+        </div>
+      ) : selected && thread ? (
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2 rounded-t-2xl border border-b-0 border-border bg-surface px-4 py-3">
             <Link href={hrefFor(base, { q, view: view === "all" ? undefined : view })} aria-label="Back to the conversations" className="-ml-2 inline-flex size-11 items-center justify-center rounded-lg hover:bg-surface-2 lg:hidden">
@@ -289,6 +375,7 @@ export function TeamMessagesPanel({
               <div className="text-[11px] text-muted-2">
                 {selected.status}
                 {selected.closed && " · closed — a new message reopens it"}
+                {selected.archived && " · archived: the work is finished. A new message or new work brings it back."}
               </div>
               {(selected.monthContext || selected.topicContext.length > 0) && <div className="text-[13px] text-muted">
                 {selected.monthContext?.split(", ").map(monthLabel).join(", ")}{selected.monthContext && selected.topicContext.length > 0 ? " · " : ""}
@@ -298,7 +385,7 @@ export function TeamMessagesPanel({
             {!readOnly && <ThreadCloseButton projectId={selected.id} closed={selected.closed} />}
             <Link
               href={`${open.pathname}/${selected.id}#messages`}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-semibold text-white hover:opacity-90"
             >
               {open.label} <ExternalLink className="size-3" />
             </Link>
@@ -311,7 +398,7 @@ export function TeamMessagesPanel({
         <div className="hidden items-center justify-center rounded-2xl border border-dashed border-border bg-surface/50 lg:flex">
           <div className="p-8 text-center text-sm text-muted">
             <MessageSquare className="mx-auto mb-2 size-6 text-muted-2" />
-            Pick a conversation — every message stays on the job&rsquo;s own thread.
+            Pick a conversation — the team channel, or a job&rsquo;s own thread.
           </div>
         </div>
       )}
