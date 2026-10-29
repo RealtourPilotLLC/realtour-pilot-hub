@@ -35,8 +35,11 @@ export const HOLDING_ORDER = [
   "fixing", // approved fixes running
   "upload", // part of the order never uploaded
   "wrapup", // the photographer's wrap-up
-  "addon", // Lot Lines needed, Virtual Staging needed
-  "ask", // what the client asked about the photos
+  // Oct 28 2026 (Kyle: "it should be in one category/task for the job (Client Requests)"):
+  // every client request (add-ons on the order, order notes, texts, emails, calls) in ONE item.
+  "requests",
+  "addon", // Lot Lines needed, Virtual Staging needed (an older reader; now inside "requests")
+  "ask", // the photographer's wrap-up removal notes (the client's requests are inside "requests")
   // Oct 27 2026 (Jordan on the Needs decision column: "I don't know why these are in here"):
   // a reopened job says why first (the client's request), before the checks; it is still sent last.
   "revision", // the client asked for changes after delivery: send again once the rest is settled
@@ -58,8 +61,10 @@ export type HoldingAction =
   | { kind: "link"; label: string; href: string; external?: boolean }
   | { kind: "tab"; label: string; tab: "issues" | "cart" | "coverage" | "activity" }
   | { kind: "wrapup"; label: string; href: string }
-  | { kind: "addon"; label: string; addOn: string }
-  | { kind: "ask"; label: string; askId: string }
+  /** Oct 28 2026: `askIds`, the client's requests that only asked for this add-on again, settled with it. */
+  | { kind: "addon"; label: string; addOn: string; askIds?: string[] }
+  /** Oct 28 2026: `askIds`, the same request from several places, settled together (askId is the first). */
+  | { kind: "ask"; label: string; askId: string; askIds?: string[] }
   /** upload (Oct 27 2026): "Approve and upload" beside it, the photos put on the listing without the delivery. */
   | { kind: "approve"; label: string; upload?: boolean }
   | { kind: "deliver"; label: string }
@@ -91,6 +96,32 @@ export type HoldingItem = {
   alt?: HoldingAction | null;
   /** A second way in (the listing to look at before Deliver). */
   link: { label: string; href: string; external?: boolean } | null;
+  /** Oct 28 2026: the "Client requests" item's lines, each with its own button (clientRequestLines). */
+  requests?: RequestLine[];
+};
+
+/**
+ * One line of the job's Client requests (Oct 28 2026). The same request from
+ * several places is ONE line that lists them (`sources`); settling it settles
+ * every place at once (`askIds`, and the add-on when it is one).
+ */
+export type RequestLine = {
+  key: string;
+  /** "Virtual Staging needed", "Client asked: crop out the sidewalk forms (photos 1-5)". */
+  text: string;
+  /** Where it was asked: "On the order: Virtual Staging (3 staged photos)", "Special instructions", "Text from Ashley, Oct 26". */
+  sources: string[];
+  /** The client's own words about it, each with where it came from. */
+  quotes: { from: string; text: string }[];
+  said: { from: string; text: string } | null;
+  detail: string | null;
+  waitingOn: string;
+  /** It holds Kyle's approval (else it only informs him). */
+  holds: boolean;
+  /** The add-on it is (its steps and confirm button), when it is one. */
+  addOn: string | null;
+  askIds: string[];
+  action: HoldingAction | null;
 };
 
 export type HoldingView = {
@@ -127,6 +158,10 @@ export type HoldingGateLine = {
   /** Oct 23 2026: informs Kyle, holds only the hub's own delivery (the wrap-up); offer "Ask the photographer for notes". */
   hubHold?: boolean;
   askNotes?: boolean;
+  /** Oct 28 2026 (delivery.ts): a photo-only check on a job with no photos yet: it waits for them, never a thing to do. */
+  waiting?: boolean;
+  /** Oct 28 2026 (delivery.ts): a client's request, for the one Client requests item. */
+  request?: { what: string; from: string; sameAs?: string | null };
 };
 
 export type HoldingPush = {
@@ -213,8 +248,127 @@ const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 const clipTo = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 const first = (name: string | null) => (name ?? "").trim().split(/\s+/)[0] || null;
 
-function item(kind: HoldingKind, key: string, text: string, short: string, waitingOn: string, action: HoldingAction | null, extra: Partial<Pick<HoldingItem, "detail" | "quotes" | "link" | "said" | "alt">> = {}): HoldingItem {
-  return { key, kind, text, short, waitingOn, detail: extra.detail ?? null, quotes: extra.quotes ?? [], said: extra.said ?? null, action, ...(extra.alt ? { alt: extra.alt } : {}), link: extra.link ?? null };
+function item(kind: HoldingKind, key: string, text: string, short: string, waitingOn: string, action: HoldingAction | null, extra: Partial<Pick<HoldingItem, "detail" | "quotes" | "link" | "said" | "alt" | "requests">> = {}): HoldingItem {
+  return { key, kind, text, short, waitingOn, detail: extra.detail ?? null, quotes: extra.quotes ?? [], said: extra.said ?? null, action, ...(extra.alt ? { alt: extra.alt } : {}), link: extra.link ?? null, ...(extra.requests ? { requests: extra.requests } : {}) };
+}
+
+const normWords = (s: string) => (s ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+/** The same words: equal, or one holds the other (long enough to mean it). */
+const sameWords = (a: string, b: string) => !!a && !!b && (a === b || (Math.min(a.length, b.length) >= 12 && (a.includes(b) || b.includes(a))));
+
+/**
+ * THE JOB'S CLIENT REQUESTS, ONE ITEM (Oct 28 2026). Kyle on 40 N Perry St:
+ * "Virtual staging is also showing twice, as it was in the order instructions
+ * and texted to us. If it's the same request, then it should be combined into
+ * one and if it's multiple requests then it should be in one category/task
+ * for the job (Client Requests)". From the checklist's request lines
+ * (delivery.ts `request`): each add-on on the order is one line, carrying the
+ * client's words about it and every request that only asked for it again
+ * (`sameAs`: the text "please virtually stage the living room" is the staging
+ * line, not a second one). Every other request is a line of its own; the same
+ * words from two places (an email and a text saying the same) are one line.
+ * Each line lists where it was asked and has its own button; settling it
+ * settles every place at once. Open lines only: a done add-on whose request
+ * is still open reads as that request (check it, then Done). `holds`: the
+ * line holds Kyle's approval. Pure.
+ */
+export function clientRequestLines(checks: HoldingGateLine[], holds: (c: HoldingGateLine) => boolean = (c) => !!c.hold && !c.ok && !c.advisory): RequestLine[] {
+  const reqs = checks.filter((c) => !!c.request);
+  const lines: RequestLine[] = [];
+  const used = new Set<string>();
+  const uniq = (xs: string[]) => [...new Set(xs.filter(Boolean))];
+  // The requests that are lines of their own (not only the add-on asked again).
+  const ownLines = reqs.filter((r) => !!r.askId && !r.ok && !(r.request?.sameAs && reqs.some((x) => x.key === r.request!.sameAs)));
+  const ownLine = (t: string) => ownLines.some((r) => [r.request!.what, r.said?.text ?? ""].some((w) => sameWords(normWords(t), normWords(w))));
+  // The add-ons on the order, each with the requests that only ask for it again.
+  for (const c of reqs) {
+    if (!c.addOn && c.key !== "addons") continue;
+    used.add(c.key);
+    const again = reqs.filter((r) => !!r.askId && !r.ok && r.request?.sameAs === c.key);
+    for (const r of again) used.add(r.key);
+    if (c.ok && !again.length) continue;
+    const a = c.addOn ?? null;
+    // A request listed as its own line ("Could you also stage the dining room?", a question
+    // for the office) is not quoted under the add-on too, nor counted as a place it was asked.
+    const own = (a?.quotes ?? []).filter((q) => !ownLine(q.text));
+    const quotes = [...own];
+    // A request whose words the add-on already quotes is that place, under its own name
+    // (the order note filed as a request is the "Order notes" quote): never listed twice.
+    const againFrom: string[] = [];
+    for (const r of again) {
+      const w = r.request!.what;
+      const q = quotes.find((x) => sameWords(normWords(x.text), normWords(w)));
+      if (q) againFrom.push(q.from);
+      else {
+        quotes.push({ from: r.request!.from, text: w });
+        againFrom.push(r.request!.from);
+      }
+    }
+    const askIds = again.map((r) => r.askId!);
+    const open = !c.ok;
+    lines.push({
+      key: c.key,
+      text: open ? (a?.need ?? c.label) : `${a?.done ?? c.label}. Check it against the client's request, then press Done.`,
+      sources: uniq([c.request!.from, ...own.map((q) => q.from), ...againFrom]),
+      quotes,
+      said: null,
+      detail: c.detail ?? null,
+      waitingOn: "Waiting on Kyle",
+      holds: (open && holds(c)) || again.some((r) => holds(r)),
+      addOn: open && a ? a.key : null,
+      askIds,
+      action: open ? (a ? { kind: "addon", label: a.done, addOn: a.key, ...(askIds.length ? { askIds } : {}) } : null) : { kind: "ask", label: "Done (fixed)", askId: askIds[0], askIds },
+    });
+  }
+  // Every other request: the same words from several places are one line.
+  for (const c of reqs) {
+    if (used.has(c.key) || c.ok) continue;
+    used.add(c.key);
+    if (!c.askId) {
+      // "What the client asked" could not be read just now: a line with no button.
+      lines.push({ key: c.key, text: c.label, sources: [], quotes: [], said: null, detail: c.detail ?? null, waitingOn: c.waitingOn ?? "Waiting on Kyle", holds: holds(c), addOn: null, askIds: [], action: null });
+      continue;
+    }
+    const k = normWords(c.request!.what);
+    // (A question for the office is settled differently: never one line with a fix.)
+    const same = reqs.filter((r) => !used.has(r.key) && !!r.askId && !r.ok && (r.doneLabel ?? "") === (c.doneLabel ?? "") && sameWords(k, normWords(r.request!.what)));
+    for (const r of same) used.add(r.key);
+    const all = [c, ...same];
+    const askIds = all.map((r) => r.askId!);
+    lines.push({
+      key: c.key,
+      text: c.label,
+      sources: uniq(all.map((r) => r.request!.from)),
+      quotes: [],
+      said: c.said ?? null,
+      detail: null,
+      waitingOn: c.waitingOn ?? "Waiting on Kyle",
+      holds: all.some((r) => holds(r)),
+      addOn: null,
+      askIds,
+      action: { kind: "ask", label: c.doneLabel ?? "Done (fixed)", askId: askIds[0], ...(askIds.length > 1 ? { askIds } : {}) },
+    });
+  }
+  return lines;
+}
+
+/**
+ * What a photo-only check waits for on a job with no photos yet (Oct 28 2026,
+ * delivery.ts `waiting`): "the upload", "the next visit's photos", "AutoHDR's
+ * edits". Pure.
+ */
+export function photoChecksWaitFor(base: { stage: string; rawBatches?: number | null; photosRead?: number | null; waitingForVisit?: string | null }): string {
+  if (base.stage === "EDITING" && base.waitingForVisit) return "the next visit's photos";
+  if (notUploadedYet(base.stage, base.rawBatches, base.photosRead)) return "the upload";
+  if (base.stage === "EDITING") return "AutoHDR's edits";
+  return "the photos";
+}
+
+/** "3 photo checks wait for the upload. They run once the photos are in." (null: none waits). Pure. */
+export function photoChecksWaitWords(checks: { waiting?: boolean }[] | null | undefined, base: Parameters<typeof photoChecksWaitFor>[0]): string | null {
+  const n = (checks ?? []).filter((c) => c.waiting).length;
+  if (!n) return null;
+  return `${n === 1 ? "1 photo check waits" : `${n} photo checks wait`} for ${photoChecksWaitFor(base)}. ${n === 1 ? "It runs" : "They run"} once the photos are in.`;
 }
 
 /**
@@ -309,12 +463,16 @@ export function holdingFor(input: HoldingInput): HoldingView {
   // person; the hub no longer closes them by itself.
   // (What the client asked and the add-on work; the wrap-up only informs a delivery, and its removal notes are an ask.)
   const openAfter = delivered ? (gate?.checks ?? []).filter((c) => c.hold && !c.ok && !c.advisory && (c.key.startsWith("ask") || c.key.startsWith("addon"))) : [];
-  if (openAfter.length) {
-    add(true, item("delivered", "delivered-open", `The photos went out with ${plural(openAfter.length, "thing")} still open. Settle each one below.`, `Delivered with ${plural(openAfter.length, "thing")} open`, "Waiting on Kyle", null));
+  // Oct 28 2026: counted as they are listed (the same request from two places is one).
+  const openAfterN = openAfter.filter((c) => !c.request).length + clientRequestLines(openAfter.filter((c) => !!c.request)).length;
+  if (openAfterN) {
+    add(true, item("delivered", "delivered-open", `The photos went out with ${plural(openAfterN, "thing")} still open. Settle each one below.`, `Delivered with ${plural(openAfterN, "thing")} open`, "Waiting on Kyle", null));
   }
   for (const c of delivered ? openAfter : gate?.checks ?? []) {
     // The checklist's Update on Aryeo line is the job's own fact here (listingUpdates, below), delivered or not.
-    if (c.ok || c.key === "listing-update") continue;
+    // Oct 28 2026: a photo-only check before there are photos is not a thing to do (the edits line says it waits);
+    // the client's requests are one item (below).
+    if (c.ok || c.key === "listing-update" || c.waiting || c.request) continue;
     const holds = holdsKyle(c);
     if (c.key === "upload") {
       add(holds, item("upload", c.key, `Part of the order was not uploaded${c.detail ? `: ${c.detail}` : "."}`, "Part of the order not uploaded", photographer, { kind: "link", label: "Open the upload page", href: `/upload/${input.projectId}` }));
@@ -347,6 +505,25 @@ export function holdingFor(input: HoldingInput): HoldingView {
       add(holds, item("checks", c.key, `${c.label}${c.detail ? `: ${c.detail}` : ""}.`, clipTo(c.label, 50), "Waiting on the hub", c.key === "qc" || c.key === "gallery" || c.key === "rooms" ? { kind: "rerun", label: "Check again" } : null));
     }
   }
+  // Oct 28 2026 (Kyle: "it should be in one category/task for the job (Client Requests)"):
+  // every client request in ONE item, the same request from several places one line.
+  const requests = clientRequestLines((delivered ? openAfter : gate?.checks ?? []).filter((c) => !!c.request), holdsKyle);
+  if (requests.length) {
+    const n = requests.length;
+    const one = requests[0];
+    const waitingOn = requests.every((l) => l.waitingOn === one.waitingOn) ? one.waitingOn : "Waiting on Kyle";
+    add(requests.some((l) => l.holds), item(
+      "requests", "requests",
+      // One request says itself ("Lot Lines needed.", "Client asked: ..."); the panel heads it "Client requests".
+      n === 1 ? `${one.text.replace(/\.$/, "")}.` : `Client requests: ${n} to settle.`,
+      n === 1 ? (one.addOn ? one.text : clipTo(one.text, 60)) : `${n} client requests`,
+      waitingOn, null, { requests },
+    ));
+  }
+  // Oct 28 2026: the photo-only checks waiting for the photos, said once, on the line about the photos.
+  const waitWords = photoChecksWaitWords(gate?.checks, input);
+  const photosLine = out.find((i) => i.kind === "edits") ?? out.find((i) => i.kind === "hold");
+  if (waitWords && photosLine && !photosLine.detail) photosLine.detail = waitWords;
   if (!delivered) {
     const tickets = input.decisions.critical + input.decisions.major;
     const failing = (gate?.checks ?? []).filter((c) => (c.key === "critical" || c.key === "major") && !c.ok);

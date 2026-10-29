@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
-import { AlertTriangle, Ban, Hand, Play } from "lucide-react";
+import { AlertTriangle, Ban, CheckCircle2, Hand, Play } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { approveFixesAction } from "@/app/ops/photo-delivery/actions";
 import { PhotoImg } from "./PhotoImg";
@@ -154,6 +154,18 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
             </span>
           )}
         </label>
+        {/* Oct 28 2026 (fixedInAutohdr.ts): done in AutoHDR's editor? Record it here, one tap (Undo on the issue). */}
+        {l.humanCall === "autohdr-editor" && (
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => void decide(l.findingIds.map((id) => findingById.get(id)).filter((f): f is NonNullable<typeof f> => !!f), "FIXED_IN_AUTOHDR")}
+            className="inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50"
+            data-fixed-in-autohdr
+          >
+            <CheckCircle2 aria-hidden className="size-3.5" /> Fixed in AutoHDR
+          </button>
+        )}
         {l.humanCall && p && (
           <button type="button" onClick={() => openLightbox(p.id)} className="inline-flex min-h-10 shrink-0 items-center rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2">
             Decide
@@ -175,7 +187,7 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
               <li key={b}>{b}</li>
             ))}
           </ul>
-          <p className="mt-1 text-[13px] text-muted">You can still decide each issue: Not worth fixing, Not there, or Send to editor.</p>
+          <p className="mt-1 text-[13px] text-muted">You can still decide each issue: Not worth fixing, Not there, Fixed in AutoHDR, or Send to editor.</p>
         </div>
       )}
 

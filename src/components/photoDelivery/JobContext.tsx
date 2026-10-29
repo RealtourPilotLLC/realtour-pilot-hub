@@ -6,7 +6,7 @@ import { useToast } from "@/components/ui/Toast";
 import {
   decideFindingsAction, setHeroAction, setPhotoExcludedAction, stopFlaggingAction, type ActionResult,
 } from "@/app/ops/photo-delivery/actions";
-import { EXCLUDE_PRESETS, HUMAN_CALL_LABEL, IGNORE_PRESETS, UNDOABLE, findingPhotoIds, reasonRequired } from "./format";
+import { EXCLUDE_PRESETS, HUMAN_CALL_LABEL, IGNORE_PRESETS, UNDOABLE, findingPhotoIds, isUndoable, reasonRequired } from "./format";
 import { usePrompt, type AskOptions } from "./usePrompt";
 import { MIN_OWN_WORDS, needsOwnWords } from "@/lib/photoDelivery/careRules";
 import { VIEW_ONLY_NOTE, type CartLineView, type FindingView, type JobDetail, type PhotoView, type Viewer } from "./types";
@@ -25,7 +25,7 @@ import { VIEW_ONLY_NOTE, type CartLineView, type FindingView, type JobDetail, ty
 // ---------------------------------------------------------------------------
 
 export type TabKey = "issues" | "cart" | "coverage" | "activity" | "files";
-export type DecisionStatus = "IGNORED" | "FALSE_POSITIVE" | "OVERRIDDEN" | "SENT_TO_EDITOR" | "RESHOOT_REQUESTED" | "OPEN";
+export type DecisionStatus = "IGNORED" | "FALSE_POSITIVE" | "OVERRIDDEN" | "SENT_TO_EDITOR" | "RESHOOT_REQUESTED" | "FIXED_IN_AUTOHDR" | "OPEN";
 
 type Ctx = {
   data: JobDetail;
@@ -201,7 +201,8 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
   const decide = useCallback(
     async (list: FindingView[], status: DecisionStatus) => {
       if (readOnly) return false;
-      const target = status === "OPEN" ? list.filter((f) => UNDOABLE.has(f.status)) : list.filter((f) => f.status === "OPEN" || UNDOABLE.has(f.status));
+      // Oct 28 2026: Undo reopens a "Fixed in AutoHDR" too (format.isUndoable).
+      const target = status === "OPEN" ? list.filter((f) => isUndoable(f)) : list.filter((f) => f.status === "OPEN" || UNDOABLE.has(f.status));
       if (!target.length) {
         show("err", "Nothing to change there: those issues are already in a fix or decided.");
         return false;

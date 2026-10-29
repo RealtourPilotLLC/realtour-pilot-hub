@@ -114,7 +114,8 @@ function withAddOns(lines: AddOnConfirmLine[], body: ReactNode): ReactNode {
   if (!lines.length) return body;
   return (
     <>
-      <span className="mb-2 block font-medium">Special requests on this order:</span>
+      {/* Oct 28 2026: the same name as the job's one item (Kyle: "Client Requests"). */}
+      <span className="mb-2 block font-medium">Client requests on this order:</span>
       <span className="mb-2 block space-y-0.5" data-addon-confirm>
         {lines.map((l) => (
           <span key={l.key} className="block">{l.done ? "Done: " : "Not done: "}{l.words}</span>
@@ -131,7 +132,7 @@ export function useAryeoPushActions() {
   // Oct 23 2026 (huddle item 7): before the photos go up or out, virtual
   // staging and lot lines asked for or ordered are confirmed done. One not
   // done stops the send here with the plain next step, and opens its steps at
-  // the top of the job (SpecialRequests).
+  // the top of the job (Oct 28 2026: under its line in Client requests, HoldingPanel).
   const addOnLines = addOnConfirmLines(data.gate?.checks);
   const addOnsReady = async (): Promise<boolean> => {
     const open = addOnLines.filter((l) => !l.done);

@@ -211,8 +211,10 @@ async function main() {
     const listingUrl = "https://realtourpilot.aryeo.com/admin/listings/L5/edit";
     const pv = H.holdingFor({ ...pd.holdingBase, listingUrl, stage: pd.header.stage, gate: pd.gate, gateError: pd.gateError, push: push as never });
     const rev = pv.items.find((i) => i.kind === "revision");
-    const askItem = pv.items.find((i) => i.kind === "ask");
-    c.ok("What's holding this: the request first, as its own item (Done), in the client's words", !!askItem && pv.items.indexOf(askItem) < pv.items.indexOf(rev!) && /Remove the car, brighten photo 2/.test(askItem.text) && askItem.action?.kind === "ask", JSON.stringify(pv.items.map((i) => [i.kind, i.text, i.said])));
+    // Oct 28 2026 (Kyle: every client request in ONE "Client requests" item): the request is that item's line.
+    const askItem = pv.items.find((i) => i.kind === "requests");
+    const askLine = askItem?.requests?.[0];
+    c.ok("What's holding this: the request first, in the Client requests item (Done), in the client's words", !!askItem && !!askLine && pv.items.indexOf(askItem) < pv.items.indexOf(rev!) && /Remove the car, brighten photo 2/.test(askItem.text) && /Remove the car, brighten photo 2/.test(askLine.text) && askLine.action?.kind === "ask", JSON.stringify(pv.items.map((i) => [i.kind, i.text, i.said])));
     c.ok("…then the revision, which does not quote it twice", rev?.text === "The client asked for changes after delivery (listed above)." && rev.quotes.length === 0 && /^Fix the photos, then send them again\./.test(rev.detail ?? ""), JSON.stringify(rev));
     c.ok("…the button: Approve and deliver again, with Approve and upload beside it; Settled with the client stays", rev?.action?.kind === "approve" && rev.action.label === "Approve and deliver again" && (rev.action as { upload?: boolean }).upload === true && rev.alt?.kind === "settle", JSON.stringify([rev?.action, rev?.alt]));
     // A reopen with no request on file to list (the reopen's own words): quoted under the revision, with who and when.

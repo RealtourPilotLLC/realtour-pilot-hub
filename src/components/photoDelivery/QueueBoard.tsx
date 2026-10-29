@@ -101,11 +101,18 @@ function Card({ card, nowIso }: { card: QueueCard; nowIso: string }) {
           <span className="min-w-0 break-words">{card.holding.line}</span>
         </p>
       )}
+      {/* Oct 28 2026 (Kyle: no notices about photo work before the photos are uploaded): before the
+          raws arrive, an add-on reads "ordered" in grey, not "needed" in amber; it turns amber once there
+          are photos to do it on. */}
       {(card.addOns ?? []).filter((a) => !card.holding?.line.startsWith(a)).length > 0 && (
         <p className="mt-1.5 flex flex-wrap gap-1">
-          {(card.addOns ?? []).filter((a) => !card.holding?.line.startsWith(a)).map((a) => (
-            <span key={a} data-addon-chip className={cn("rounded-full px-2 py-0.5 text-[12px] font-semibold ring-1 ring-inset", SEVERITY_CLASS.MAJOR)}>{a}</span>
-          ))}
+          {(card.addOns ?? []).filter((a) => !card.holding?.line.startsWith(a)).map((a) =>
+            card.waitingForUpload ? (
+              <span key={a} data-addon-chip="ordered" className="rounded-full bg-surface-2 px-2 py-0.5 text-[12px] font-medium text-muted ring-1 ring-inset ring-border">{a.replace(/\s+needed$/i, " ordered")}</span>
+            ) : (
+              <span key={a} data-addon-chip className={cn("rounded-full px-2 py-0.5 text-[12px] font-semibold ring-1 ring-inset", SEVERITY_CLASS.MAJOR)}>{a}</span>
+            ),
+          )}
         </p>
       )}
       {card.lastError && (

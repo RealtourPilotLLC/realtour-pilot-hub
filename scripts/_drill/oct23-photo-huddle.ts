@@ -345,9 +345,11 @@ async function main() {
     let d7 = (await data.loadJobDetail(S7.job.id, { viewer: kyleView as never }))!;
     const { JobWorkspace } = await import("@/components/photoDelivery/JobWorkspace");
     let h7 = html(createElement(JobWorkspace, { data: d7, viewer: kyleView as never, history: null }));
-    c.ok("the job page opens with Special requests, before 'What's holding this' and the gallery", h7.indexOf("pd-special-h") >= 0 && h7.indexOf("pd-special-h") < h7.indexOf("pd-holding-h") && h7.indexOf("pd-holding-h") < h7.indexOf("pd-gallery-h"));
-    const card7 = text(h7.split('aria-labelledby="pd-special-h"')[1]?.split("</section>")[0] ?? "");
-    c.ok("…'Virtual Staging (2 staged photos): not done yet', with the three steps", /Virtual Staging \(2 staged photos\): not done yet/.test(card7) && /1 · Select photos for it/.test(card7) && /2 · Download/.test(card7) && /3 · Upload the finished versions/.test(card7) && /added as new photos next to the originals; the originals stay/.test(card7), card7.slice(0, 300));
+    // Oct 28 2026 (Kyle: "Virtual staging is also showing twice"): the Special requests card is gone; the special
+    // requests are the ONE Client requests item at the top of the job, in What's holding this, before the gallery.
+    c.ok("the job page opens with What's holding this and its Client requests item (no separate Special requests card), before the gallery", h7.indexOf("pd-special-h") < 0 && h7.indexOf("pd-holding-h") >= 0 && h7.indexOf('id="pd-special-requests"') > h7.indexOf("pd-holding-h") && h7.indexOf('id="pd-special-requests"') < h7.indexOf("pd-gallery-h"));
+    const card7 = text(h7.split('id="pd-special-requests"')[1]?.split("</section>")[0] ?? "");
+    c.ok("…'Virtual Staging needed', from the order (2 staged photos), with the three steps", /Client requests 1 request/.test(card7) && /Virtual Staging needed/.test(card7) && /From: On the order: Virtual Staging \(2 staged photos\)/.test(card7) && /1 · Select photos for it/.test(card7) && /2 · Download/.test(card7) && /3 · Upload the finished versions/.test(card7) && /added as new photos next to the originals; the originals stay/.test(card7), card7.slice(0, 300));
     c.ok("…it holds the delivery (the photo audit's hold), so Approve and deliver is refused", !(d7.gate?.canDeliver ?? true) && d7.gate!.checks.some((x) => x.key === "addon:virtual_staging" && !x.ok && x.hold));
     const jpg = await sharp({ create: { width: 3000, height: 2000, channels: 3, background: { r: 180, g: 170, b: 160 } } }).jpeg({ quality: 80 }).toBuffer();
     const upA = `${HF.uploadPathPrefix(S7.job.id, "new")}70-2-staged.jpg`;
@@ -362,8 +364,9 @@ async function main() {
     c.ok("…labelled as the staging ('Virtual staging by Kyle Smith (next to 70-2.jpg)')", v7?.label === "Virtual staging by Kyle Smith (next to 70-2.jpg)", v7?.label ?? "");
     d7 = (await data.loadJobDetail(S7.job.id, { viewer: kyleView as never }))!;
     h7 = html(createElement(JobWorkspace, { data: d7, viewer: kyleView as never, history: null }));
-    const card7b = text(h7.split('aria-labelledby="pd-special-h"')[1]?.split("</section>")[0] ?? "");
-    c.ok("the hold clears by itself; the card now reads 'Virtual staging added, on <the new photo>', no steps", d7.gate!.checks.find((x) => x.key === "addon:virtual_staging")?.ok === true && /Virtual staging added, on 70-2-staged\.jpg/.test(card7b) && !/Select photos for it/.test(card7b), card7b.slice(0, 200));
+    // Oct 28 2026: nothing open, so no Client requests item; the Deliver panel says they are settled, and how.
+    const card7b = text(h7.split('id="pd-deliver-body"')[1] ?? "");
+    c.ok("the hold clears by itself; Client requests read settled, 'Virtual staging added (on <the new photo>)', no steps", d7.gate!.checks.find((x) => x.key === "addon:virtual_staging")?.ok === true && !h7.includes("data-client-requests") && /Client requests settled[\s\S]*Virtual staging added \(on 70-2-staged\.jpg/.test(card7b) && !/Select photos for it/.test(text(h7)), card7b.slice(0, 300));
     c.ok("…and the confirmation will list it as done", steps.addOnConfirmLines(d7.gate!.checks)[0]?.done === true);
 
     // ======================================================================

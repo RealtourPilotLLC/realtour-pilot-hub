@@ -7,6 +7,7 @@ import { isExteriorFinding, ruleById, SEVERITIES, type RuleOverride, type Severi
 import { MIN_OWN_WORDS, needsOwnWords, ownWordsOk } from "./careRules";
 import { houseOverrides, mergeOverrides } from "./houseRules";
 import { jobVerdict, type JobVerdict } from "./qc/verdict";
+import { FIXED_IN_AUTOHDR, isFixedInAutohdr } from "./fixedInAutohdr";
 
 // ---------------------------------------------------------------------------
 // THE SIMPLE DECISION WRITES behind the Photo Delivery page (docs/photo-
@@ -28,8 +29,9 @@ import { jobVerdict, type JobVerdict } from "./qc/verdict";
 // below the floor sit in the "Low confidence" drawer and never block (plan 7.5).
 // ---------------------------------------------------------------------------
 
-export type DecisionStatus = "IGNORED" | "FALSE_POSITIVE" | "OVERRIDDEN" | "SENT_TO_EDITOR" | "RESHOOT_REQUESTED" | "OPEN";
-export const DECISION_STATUSES: readonly DecisionStatus[] = ["IGNORED", "FALSE_POSITIVE", "OVERRIDDEN", "SENT_TO_EDITOR", "RESHOOT_REQUESTED", "OPEN"];
+/** FIXED_IN_AUTOHDR (Oct 28 2026, fixedInAutohdr.ts): a person fixed it in AutoHDR's own editor; it is written as FIXED with that reason. */
+export type DecisionStatus = "IGNORED" | "FALSE_POSITIVE" | "OVERRIDDEN" | "SENT_TO_EDITOR" | "RESHOOT_REQUESTED" | "FIXED_IN_AUTOHDR" | "OPEN";
+export const DECISION_STATUSES: readonly DecisionStatus[] = ["IGNORED", "FALSE_POSITIVE", "OVERRIDDEN", "SENT_TO_EDITOR", "RESHOOT_REQUESTED", "FIXED_IN_AUTOHDR", "OPEN"];
 
 export type WriteResult = { ok: true; message: string; changed: number; stage: string | null } | { ok: false; message: string };
 
@@ -49,6 +51,7 @@ const VERB: Record<DecisionStatus, string> = {
   OVERRIDDEN: "overridden",
   SENT_TO_EDITOR: "sent to the editor",
   RESHOOT_REQUESTED: "flagged for a reshoot (recommendation)",
+  FIXED_IN_AUTOHDR: "marked fixed in AutoHDR",
   OPEN: "reopened",
 };
 
@@ -149,7 +152,7 @@ export async function decideFindings(input: { findingIds: string[]; status: Deci
 
   const found = await prisma.photoQcFinding.findMany({
     where: { id: { in: ids } },
-    select: { id: true, jobId: true, severity: true, status: true, ruleId: true, photoId: true, specificIssue: true, locationText: true },
+    select: { id: true, jobId: true, severity: true, status: true, statusReason: true, ruleId: true, photoId: true, specificIssue: true, locationText: true },
   });
   if (found.length !== ids.length) return { ok: false, message: "Some of those issues no longer exist. Reload the page." };
   const jobIds = new Set(found.map((f) => f.jobId));
@@ -158,7 +161,10 @@ export async function decideFindings(input: { findingIds: string[]; status: Deci
   if (input.jobId && input.jobId !== jobId) return { ok: false, message: "Those issues belong to a different job." };
 
   const from: string[] = status === "OPEN" ? [...HUMAN_DECIDED] : ["OPEN", ...HUMAN_DECIDED];
-  const decidable = found.filter((f) => from.includes(f.status));
+  // Oct 28 2026: an issue a person marked fixed in AutoHDR is theirs to undo
+  // too (a paid fix is undone by restoring the photo's earlier version).
+  const handFixed = status === "OPEN" ? found.filter((f) => isFixedInAutohdr(f)) : [];
+  const decidable = found.filter((f) => from.includes(f.status) || handFixed.includes(f));
   if (!decidable.length) {
     return {
       ok: false,
@@ -188,11 +194,18 @@ export async function decideFindings(input: { findingIds: string[]; status: Deci
 
   const now = new Date();
   const res = await prisma.photoQcFinding.updateMany({
-    where: { id: { in: decidable.map((f) => f.id) }, jobId, status: { in: from } },
+    where: {
+      id: { in: decidable.map((f) => f.id) },
+      jobId,
+      ...(handFixed.length ? { OR: [{ status: { in: from } }, { status: "FIXED", statusReason: { startsWith: FIXED_IN_AUTOHDR } }] } : { status: { in: from } }),
+    },
     data:
       status === "OPEN"
         ? { status: "OPEN", statusReason: null, decidedBy: null, decidedAt: null }
-        : { status, statusReason: reason || null, decidedBy: by, decidedAt: now },
+        : status === "FIXED_IN_AUTOHDR"
+          // FIXED, the paid fix's own status, so every count reads it as fixed (fixedInAutohdr.ts).
+          ? { status: "FIXED", statusReason: `${FIXED_IN_AUTOHDR}${reason ? `: ${reason}` : ""}`.slice(0, 500), decidedBy: by, decidedAt: now }
+          : { status, statusReason: reason || null, decidedBy: by, decidedAt: now },
   });
   if (res.count === 0) return { ok: false, message: "Someone else decided these a moment ago. Reload the page." };
 
@@ -203,7 +216,8 @@ export async function decideFindings(input: { findingIds: string[]; status: Deci
   });
   // Oct 23 2026 (huddle item 5): a reason given (or a call undone) may teach
   // the check a house lesson, or stop teaching one (houseRules.refreshLessons).
-  if ((status === "IGNORED" || status === "FALSE_POSITIVE" || status === "OPEN") && (reason || status === "OPEN")) {
+  // Oct 28 2026: so does Fixed in AutoHDR (it often replaces a "Not there" that was really a fix).
+  if (status === "OPEN" || status === "FIXED_IN_AUTOHDR" || ((status === "IGNORED" || status === "FALSE_POSITIVE") && reason)) {
     await import("./houseRules").then((m) => m.refreshLessons(new Date(), by)).catch((e) => console.warn("photo delivery: lessons not refreshed", (e as Error).message));
   }
   const stage = await reconcileReviewStage(jobId, by);
@@ -212,7 +226,7 @@ export async function decideFindings(input: { findingIds: string[]; status: Deci
     ok: true,
     changed: res.count,
     stage,
-    message: `${plural(res.count, "issue")} ${VERB[status]}.${skipped > 0 ? ` ${plural(skipped, "other")} left as ${skipped === 1 ? "it was" : "they were"} (already in a fix or decided).` : ""}${stage === "READY" ? " Nothing major is left: the job is Ready." : ""}`,
+    message: `${plural(res.count, "issue")} ${VERB[status]}.${status === "FIXED_IN_AUTOHDR" ? " The hub reads AutoHDR again, so the photo and the Aryeo folder use your fixed version." : ""}${skipped > 0 ? ` ${plural(skipped, "other")} left as ${skipped === 1 ? "it was" : "they were"} (already in a fix or decided).` : ""}${stage === "READY" ? " Nothing major is left: the job is Ready." : ""}`,
   };
 }
 

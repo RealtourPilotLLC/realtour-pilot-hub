@@ -147,7 +147,15 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
             and the order and edit notes. A same-day job waits for the open
             requests before the hub approves it by itself; Kyle's own Approve
             is never blocked. Replaces the open-asks card that stood here. */}
-        <BeforeYouSendView data={box.data} medium="photo" canCheck={box.canCheck} />
+        {/* Oct 28 2026 (Kyle on 40 N Perry St: "Virtual staging is also showing twice"): on this
+            page the client's requests, the order's own note and the add-ons ordered are the ONE
+            Client requests item under What's holding this (each request once, settled there), so
+            this box keeps only what was flagged at the shoot and the job's other notes. */}
+        <BeforeYouSendView
+          data={{ ...box.data, requests: [], openRequests: 0, checked: null, notes: box.data.notes.filter((n) => n.label !== "On the order" && n.label !== "Add-on ordered") }}
+          medium="photo"
+          canCheck={box.canCheck}
+        />
 
         {coaching && <CoachingCard jobId={h.id} coaching={{ photographerName: coaching.photographerName, note: coaching.note, preShootReminders: coaching.preShootReminders, status: coaching.status }} />}
           </>}

@@ -303,16 +303,19 @@ async function main() {
     // The job page: the header chip, the holding panel (first), the Deliver bar's first line.
     const detail = (await data.loadJobDetail(job.id, { viewer: kyleView }))!;
     const view = H.holdingFor({ ...detail.holdingBase, gate: detail.gate, gateError: detail.gateError, push: detail.aryeoPush });
-    c.ok("'What's holding this' lists Lot Lines needed first, waiting on Kyle, with the agent's words and its button", view.items[0]?.kind === "addon" && view.items[0].text === "Lot Lines needed." && view.items[0].waitingOn === "Waiting on Kyle" && view.items[0].quotes.length >= 3 && view.items[0].action?.kind === "addon" && view.items[0].action.label === "Lot lines added", JSON.stringify(view.items.map((i) => [i.kind, i.text])));
-    c.ok("…then the client's own requests (the order note, the text), each with Done or Answer", view.items.slice(1).every((i) => i.kind === "ask" && i.action?.kind === "ask") && view.items.slice(1).some((i) => /back pasture/.test(i.text)), JSON.stringify(view.items.slice(1).map((i) => i.text)));
+    // Oct 28 2026 (Kyle: "If it's the same request, then it should be combined into one ... (Client Requests)"):
+    // Lot Lines needed is the ONE Client requests item, and the order note and Brandon's text that only ask for it again are that same line.
+    const lotReq = view.items[0]?.requests?.[0];
+    c.ok("'What's holding this' lists Client requests first, Lot Lines needed, waiting on Kyle, with the agent's words and its button", view.items[0]?.kind === "requests" && view.items[0].text === "Lot Lines needed." && view.items[0].waitingOn === "Waiting on Kyle" && !!lotReq && lotReq.text === "Lot Lines needed" && lotReq.quotes.length >= 3 && lotReq.action?.kind === "addon" && lotReq.action.label === "Lot lines added", JSON.stringify(view.items.map((i) => [i.kind, i.text, i.requests?.map((l) => l.text)])));
+    c.ok("…the client's own requests for it (the order note, the text) are that same line, settled with it, each place listed once", view.items.length === 1 && view.items[0].requests?.length === 1 && lotReq?.askIds.length === 2 && (lotReq.action as { askIds?: string[] }).askIds?.length === 2 && lotReq.sources.some((s) => /^Text from Brandon, /.test(s)) && lotReq.sources.includes("Order notes") && !lotReq.sources.includes("Order note") && new Set(lotReq.sources).size === lotReq.sources.length && lotReq.quotes.some((q) => /back pasture/.test(q.text)), JSON.stringify(lotReq?.sources));
     c.ok("the header's chip reads from the same line (Lot Lines needed)", (detail.gate?.checks ?? []).filter((x) => x.addOn && !x.ok).map((x) => x.addOn!.need).join() === "Lot Lines needed");
     const { JobWorkspace } = await import("@/components/photoDelivery/JobWorkspace");
     const kh = html(createElement(JobWorkspace, { data: detail, viewer: kyleView, history: null }));
     const panel = text(kh.split('aria-labelledby="pd-holding-h"')[1]?.split("</section>")[0] ?? "");
-    c.ok("the page: the panel comes first and reads 'What's holding this', Lot Lines needed, the agent's words, Lot lines added", kh.indexOf("pd-holding-h") < kh.indexOf("pd-gallery-h") && /What's holding this/.test(panel) && /1 Lot Lines needed\./.test(panel) && /both parcels, the plat is attached/.test(panel) && /Lot lines added/.test(panel) && /Waiting on Kyle/.test(panel), panel.slice(0, 300));
+    c.ok("the page: the panel comes first and reads 'What's holding this', 1 Client requests, Lot Lines needed (once), the agent's words, Lot lines added", kh.indexOf("pd-holding-h") < kh.indexOf("pd-gallery-h") && /What's holding this/.test(panel) && /1 Client requests 1 request/.test(panel) && (panel.match(/Lot Lines needed/g) ?? []).length === 1 && /both parcels, the plat is attached/.test(panel) && /Lot lines added/.test(panel) && /Waiting on Kyle/.test(panel), panel.slice(0, 300));
     const bar = text((kh.split('aria-label="Deliver"')[1] ?? "").split('id="pd-deliver-body"')[0]);
-    c.ok("the Deliver bar's first line is the panel's first item", /Lot Lines needed\. \(\+\d+ more, listed at the top\)/.test(bar), bar.slice(0, 200));
-    c.ok("…the Deliver panel's checklist carries it too, with Lot lines added", /Before the photos go out[\s\S]*Lot Lines needed[\s\S]*Lot lines added/.test(text(kh.split('id="pd-deliver-body"')[1] ?? "")));
+    c.ok("the Deliver bar's first line is the panel's first item", bar.includes(view.items[0].text) && /Lot Lines needed\./.test(bar), bar.slice(0, 200));
+    c.ok("…the Deliver panel's checklist carries it too, as the one Client requests line (settled at the top)", /Before the photos go out[\s\S]*Client requests: 1 to settle[\s\S]*Lot Lines needed[\s\S]*Settle them at the top/.test(text(kh.split('id="pd-deliver-body"')[1] ?? "")));
     const jd = (await data.loadJobDetail(job.id, { viewer: jamesView }))!;
     const jh = html(createElement(JobWorkspace, { data: jd, viewer: jamesView, history: null }));
     const jamesButtons = [...(jh.split('aria-labelledby="pd-holding-h"')[1]?.split("</section>")[0] ?? "").matchAll(/<button\b[\s\S]*?<\/button>/g)].map((x) => text(x[0]));
@@ -322,7 +325,8 @@ async function main() {
     // The board card and the Shoots row.
     const queue = await data.loadQueue({ holding: true, viewer: { readOnly: false } });
     const card = queue.columns.flatMap((col) => col.cards).find((x) => x.id === job.id);
-    c.ok("the board card's line is the panel's first line ('Lot Lines needed (+N more)')", card?.holding?.line === view.line && /^Lot Lines needed \(\+\d+ more\)$/.test(view.line) && card?.holding?.tone === "held", `${card?.holding?.line} | ${view.line}`);
+    // Oct 28 2026: the order note and the text are the same line now, so nothing "more".
+    c.ok("the board card's line is the panel's first line ('Lot Lines needed')", card?.holding?.line === view.line && view.line === "Lot Lines needed" && card?.holding?.tone === "held", `${card?.holding?.line} | ${view.line}`);
     c.ok("…and the card carries the add-on: Lot Lines needed", JSON.stringify(card?.addOns) === '["Lot Lines needed"]');
     c.ok("Home's QC counts read the board without the holding lines (no extra reads there)", (await data.loadQueue({})).columns.flatMap((col) => col.cards).find((x) => x.id === job.id)?.holding === undefined);
     const { shootsBoard } = await import("@/lib/jobsBoard");
