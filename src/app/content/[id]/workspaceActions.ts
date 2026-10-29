@@ -327,6 +327,14 @@ export async function sessionPanelAction(formData: FormData): Promise<void> {
     } else if (op === "addressRecheck") {
       const { recheckSessionAddress } = await import("@/lib/sessionAddress");
       await recheckSessionAddress(String(formData.get("rowId") ?? ""));
+    } else if (op === "planPin" || op === "planRelookup") {
+      // Oct 29 2026: a saved address no map found, placed by hand or looked up again. The outcome is on the plan's row.
+      const planId = String(formData.get("planId") ?? "");
+      const plan = await prisma.programSessionPlan.findUnique({ where: { id: planId }, select: { enrollmentId: true } });
+      if (!plan || plan.enrollmentId !== enrollmentId) throw new Error("That session address is not on this client.");
+      const a = await import("@/lib/sessionAddress");
+      if (op === "planPin") await a.pinSessionPlan(planId, String(formData.get("point") ?? ""), me.email);
+      else await a.relookupSessionPlan(planId);
     } else if (op === "addressSet") {
       const { submitSessionAddress } = await import("@/lib/sessionAddress");
       await submitSessionAddress(

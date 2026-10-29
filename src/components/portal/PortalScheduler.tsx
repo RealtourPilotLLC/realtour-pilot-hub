@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { portalRequestSession, portalRescheduleSession, portalSaveSessionPlanAddress, portalSessionSlots, portalSubmitSessionAddress, type BookedSession } from "@/app/portal/actions";
 import { filmingSessionEvent, googleCalendarLink } from "@/lib/calendarLink";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
+import { AddressLookup } from "@/components/portal/AddressLookup";
 import type { PortalSlotDay, PortalScheduleMonth } from "@/lib/portal";
 import type { PreparationHold, SessionSlotsResult, TravelLabel, TravelSlotDay } from "@/lib/sessionTravel";
 import { CancelRequestButton } from "@/components/portal/PlanningChoice";
@@ -229,6 +230,8 @@ function AddressForm({ sessionKey, onDone }: { sessionKey: string; onDone: () =>
   const input = "min-h-11 w-full rounded-lg border border-border bg-surface px-3 py-2 text-base outline-none focus:border-brand sm:text-sm";
   return (
     <div className="mt-2 grid gap-2 rounded-xl border border-border bg-surface-2/40 p-3 sm:grid-cols-6">
+      <AddressLookup className="sm:col-span-6" onPick={(p) => setF((x) => ({ street: p.street, unit: p.unit || x.unit, city: p.city, state: p.state, zip: p.zip }))} />
+      <p className="text-xs text-muted sm:col-span-6">Or type it in yourself:</p>
       <input aria-label="Street address" placeholder="Street address (117 Kyle Lane)" value={f.street} onChange={set("street")} className={cn(input, "sm:col-span-4")} />
       <input aria-label="Unit" placeholder="Unit (optional)" value={f.unit} onChange={set("unit")} className={cn(input, "sm:col-span-2")} />
       <input aria-label="City" placeholder="City" value={f.city} onChange={set("city")} className={cn(input, "sm:col-span-3")} />
@@ -264,6 +267,8 @@ function PlanAddressStep({ monthId, sessionIndex, lead, onSaved, onCancel }: { m
       <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Where are we filming?</div>
       {lead && <p className="mt-1 text-xs text-muted">{lead}</p>}
       <div className="mt-1.5 grid gap-2 rounded-xl border border-border bg-surface-2/40 p-3 sm:grid-cols-6">
+        <AddressLookup className="sm:col-span-6" onPick={(p) => setF((x) => ({ street: p.street, unit: p.unit || x.unit, city: p.city, state: p.state, zip: p.zip }))} />
+        <p className="text-xs text-muted sm:col-span-6">Or type it in yourself:</p>
         <input aria-label="Street address" placeholder="Street address (117 Kyle Lane)" autoComplete="address-line1" value={f.street} onChange={set("street")} className={cn(input, "sm:col-span-4")} />
         <input aria-label="Unit" placeholder="Unit (optional)" autoComplete="address-line2" value={f.unit} onChange={set("unit")} className={cn(input, "sm:col-span-2")} />
         <input aria-label="City" placeholder="City" autoComplete="address-level2" value={f.city} onChange={set("city")} className={cn(input, "sm:col-span-3")} />

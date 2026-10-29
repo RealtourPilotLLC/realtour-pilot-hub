@@ -723,6 +723,38 @@ export async function portalRescheduleSession(
   return out;
 }
 
+// Oct 29 2026 (Jordan: "Can we have an auto address detection and a way to add
+// it manually as well?"): suggestions as the client types the filming address.
+// A pick only fills the form; the save still looks the address up itself.
+// A soft per-client cap keeps a stuck key or a held-down key from costing much.
+const SUGGEST_WINDOW_MS = 10 * 60_000;
+const SUGGEST_MAX = 80;
+const suggestHits = new Map<string, number[]>();
+function suggestAllowed(who: string): boolean {
+  const now = Date.now();
+  const recent = (suggestHits.get(who) ?? []).filter((t) => now - t < SUGGEST_WINDOW_MS);
+  if (recent.length >= SUGGEST_MAX) { suggestHits.set(who, recent); return false; }
+  recent.push(now);
+  suggestHits.set(who, recent);
+  return true;
+}
+const sessionTokenOk = (s: unknown): s is string => typeof s === "string" && /^[A-Za-z0-9-]{8,64}$/.test(s);
+
+export async function portalSuggestAddresses(auth: PortalAuth, query: string, session: string): Promise<import("@/lib/travel").AddressSuggestion[]> {
+  const v = await viewerFor(auth, "requestSession");
+  if (typeof v === "string" || !sessionTokenOk(session)) return [];
+  if (!suggestAllowed(v.enrollment.id)) return [];
+  const { suggestFilmingAddresses } = await import("@/lib/travel");
+  return suggestFilmingAddresses(String(query ?? ""), session).catch(() => []);
+}
+
+export async function portalResolveAddress(auth: PortalAuth, id: string, session: string): Promise<import("@/lib/travel").AddressParts | null> {
+  const v = await viewerFor(auth, "requestSession");
+  if (typeof v === "string" || !sessionTokenOk(session) || typeof id !== "string") return null;
+  const { resolveFilmingAddress } = await import("@/lib/travel");
+  return resolveFilmingAddress(id, session).catch(() => null);
+}
+
 /**
  * §6.6 W02 — STEP ONE OF BOOKING A SESSION: its exact address. Saved on the
  * session's plan (durable: "Schedule later" keeps it), validated (an area is

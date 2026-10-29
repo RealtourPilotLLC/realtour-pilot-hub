@@ -509,6 +509,13 @@ export async function GET(req: NextRequest) {
     const { syncSessionAddresses } = await import("@/lib/sessionAddress");
     return syncSessionAddresses({ budgetMs: 25_000 });
   }, { maxMs: 30_000 });
+  // Oct 29 2026: a session's saved address that no map knew (Joe Sutow's new
+  // build) is looked up again, each at most every 12 hours, so it gets real
+  // portal times once Google or the free maps have it.
+  await step("sessionPlanMaps", async () => {
+    const { relookupUnplacedPlans } = await import("@/lib/sessionAddress");
+    return relookupUnplacedPlans({ max: 5 });
+  }, { maxMs: 20_000 });
   // Program months: strategyCallStatus / preparationStatus are DERIVED from
   // call records + the enrollment's call mode, hourly, for every live month —
   // the rule that turns Mike Ciunci's NOT_SCHEDULED into NOT_REQUIRED without

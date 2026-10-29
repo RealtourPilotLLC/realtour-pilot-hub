@@ -1,8 +1,8 @@
-import { CalendarCheck2, MapPin } from "lucide-react";
+import { CalendarCheck2, MapPin, MapPinOff } from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { Section } from "@/components/ui/Section";
 import { sessionPanelAction } from "@/app/content/[id]/workspaceActions";
-import { formatAddressLine } from "@/lib/sessionAddress";
+import { formatAddressLine, unplacedPlans } from "@/lib/sessionAddress";
 import { sessionRequestLabel } from "@/lib/sessionRequests";
 
 // ---------------------------------------------------------------------------
@@ -28,11 +28,12 @@ const chip = (tone: "ok" | "warn" | "bad" | "muted") =>
 const STUCK = new Set(["RECONCILE", "REJECTED", "MISMATCH", "CONFLICT", "UNKNOWN", "FAILED"]);
 
 export async function SessionsPanel({ enrollmentId, monthId }: { enrollmentId: string; monthId: string }) {
-  const [requests, addresses] = await Promise.all([
+  const [requests, addresses, offMap] = await Promise.all([
     prisma.programSessionRequest.findMany({ where: { enrollmentId, monthId }, orderBy: { createdAt: "desc" }, take: 20 }),
     prisma.programSessionAddress.findMany({ where: { enrollmentId, monthId }, orderBy: { shootStartAt: "asc" }, take: 20 }),
+    unplacedPlans(monthId).catch(() => []),
   ]);
-  if (requests.length === 0 && addresses.length === 0) return null;
+  if (requests.length === 0 && addresses.length === 0 && offMap.length === 0) return null;
   const attempts = requests.length
     ? await prisma.programBookingAttempt.findMany({ where: { requestId: { in: requests.map((r) => r.id) } }, orderBy: [{ requestId: "asc" }, { createdAt: "asc" }] })
     : [];
@@ -45,6 +46,33 @@ export async function SessionsPanel({ enrollmentId, monthId }: { enrollmentId: s
 
   return (
     <div className="mt-4 space-y-4">
+      {/* Oct 29 2026 (Joe Sutow's new build): a saved address no map found gets no portal times until it is placed. */}
+      {offMap.length > 0 && (
+        <Section icon={MapPinOff} title="Not on the map" count={offMap.length} flush>
+          <div className="divide-y divide-border">
+            {offMap.map((p) => (
+              <div key={p.planId} data-off-map={p.planId} className="px-5 py-3.5 text-[13px]">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium">{p.addressLine}</span>
+                  <span className="text-muted">· session {p.sessionIndex}</span>
+                  <span className="ml-auto" />
+                  <span className={chip("warn")}>NO TIMES OFFERED</span>
+                </div>
+                <p className="mt-0.5 text-muted">No map could find this address, so the client&rsquo;s portal offers no times for it. Paste the house&rsquo;s Google Maps link, or right-click the house in Google Maps and paste the numbers it copies.</p>
+                {p.mapNote && <p className="mt-0.5 text-warning">{p.mapNote}</p>}
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <form action={sessionPanelAction} className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+                    {hidden({ op: "planPin", enrollmentId, planId: p.planId })}
+                    <input name="point" required placeholder="Google Maps link, or 39.9684, -75.4610" aria-label="Google Maps link or the map numbers" className={`${input} min-w-0 flex-1 basis-56`} />
+                    <button className={btn}>Place it</button>
+                  </form>
+                  <form action={sessionPanelAction}>{hidden({ op: "planRelookup", enrollmentId, planId: p.planId })}<button className={btn}>Look it up again</button></form>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
       {requests.length > 0 && (
         <Section icon={CalendarCheck2} title="Session requests" count={requests.length} flush>
           <div className="divide-y divide-border">

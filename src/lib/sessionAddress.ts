@@ -868,6 +868,7 @@ export async function saveSessionPlanAddress(a: {
     streetNumber: v.value.streetNumber, streetName: v.value.streetName, unitNumber: v.value.unit, city: v.value.city, stateCode: v.value.stateCode, postalCode: v.value.postalCode,
     latitude: geo?.lat ?? null, longitude: geo?.lng ?? null, geocodeSource: geo ? "GEOCODED" : "MISS",
     addressValidatedAt: geo ? now : null, lastStep: "ADDRESS",
+    geocodeTriedAt: now, geocodeBy: null, mapNote: geo ? foundBy(geo.source) : missNote(now),
   };
   const row = existing
     ? await prisma.programSessionPlan.update({ where: { id: existing.id }, data: { ...data, addressVersion: { increment: 1 } } })
@@ -883,4 +884,142 @@ export async function saveSessionPlanAddress(a: {
     message: geo ? "Saved. Here are the times that work from this address." : `Saved. We could not find that address on a map, so Kyle will confirm it and your time with you. You can still tell us what works.`,
     planId: row.id, addressVersion: row.addressVersion, bookable: planBookable(row), changed: true,
   };
+}
+
+// ===========================================================================
+// A PLAN THE MAPS MISSED (Oct 29 2026). Joe Sutow saved 322 Morris St, Newtown
+// Square, a new build neither the Census nor OpenStreetMap knew, so his portal
+// offered no times and the request waited on Kyle. Jordan: "Can we have an
+// auto address detection and a way to add it manually as well?"
+//
+//   · AUTO: the lookup now asks Google too (travel.geocodeAddress), the portal
+//     suggests addresses as the client types, and the hourly sync retries
+//     every saved address that is still off the map (relookupUnplacedPlans,
+//     at most every 12 hours each), so a miss heals itself once a map has it.
+//   · BY HAND: on the client's Production tab, staff paste a Google Maps link
+//     or the pin's numbers (pinSessionPlan). A point more than 25 miles from
+//     the address's own town is refused as the wrong house. The address text
+//     is not changed, so its version (and any offered times) stands.
+// ===========================================================================
+
+const SOURCE_WORDS: Record<string, string> = { census: "the Census map", google: "Google Maps", osm: "OpenStreetMap" };
+const foundBy = (source: string | undefined) => `Found on ${SOURCE_WORDS[source ?? ""] ?? "the map"}.`;
+const missNote = (at: Date) => `Not found on any map (${at.toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} ET).`;
+const RETRY_MS = 12 * 3_600_000;
+const TOWN_MILES = 25;
+
+/** A point in the United States (Alaska and Hawaii included). Pure. */
+const inUs = (lat: number, lng: number) => Number.isFinite(lat) && Number.isFinite(lng) && lat >= 17 && lat <= 72 && lng >= -180 && lng <= -60;
+
+/**
+ * The map point in what staff pasted: a Google Maps link's pin (!3d…!4d…), a
+ * q=/ll= point, the map's view (@lat,lng), or the numbers Google Maps copies
+ * from a right-click ("39.96841, -75.46097"). The pin wins over the view. Pure.
+ */
+export function parseMapPoint(text: string | null | undefined): { lat: number; lng: number } | null {
+  let t = String(text ?? "").trim();
+  if (!t) return null;
+  try { t = decodeURIComponent(t); } catch { /* keep it as typed */ }
+  const tries = [
+    /!3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)/,
+    /[?&](?:q|query|ll|center|destination)=(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/,
+    /@(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/,
+    /^\(?\s*(-?\d{1,2}\.\d{3,})\s*[,\s]\s*(-?\d{1,3}\.\d{3,})\s*\)?$/,
+  ];
+  for (const re of tries) {
+    const m = t.match(re);
+    if (!m) continue;
+    const lat = Number(m[1]), lng = Number(m[2]);
+    if (inUs(lat, lng)) return { lat, lng };
+  }
+  return null;
+}
+
+/** A shared short link (maps.app.goo.gl) carries no numbers: follow it to the full link. */
+async function expandMapLink(url: string): Promise<string | null> {
+  let at = url;
+  for (let hop = 0; hop < 4; hop++) {
+    if (!/^https:\/\/(maps\.app\.goo\.gl|goo\.gl\/maps|g\.co\/kgs|maps\.google\.com|www\.google\.com\/maps)/i.test(at)) return at;
+    if (parseMapPoint(at)) return at;
+    const res = await fetch(at, { redirect: "manual", cache: "no-store", signal: AbortSignal.timeout(6_000) }).catch(() => null);
+    const next = res?.headers.get("location");
+    if (!next) return at;
+    at = new URL(next, at).toString();
+  }
+  return at;
+}
+
+export type PlanPinResult = { ok: boolean; message: string };
+
+/** Staff place a session's saved address on the map by hand. */
+export async function pinSessionPlan(planId: string, text: string, by: string, now: Date = new Date()): Promise<PlanPinResult> {
+  const plan = await prisma.programSessionPlan.findUnique({ where: { id: planId } });
+  if (!plan || !planExact(plan)) return { ok: false, message: "That session has no exact address to place." };
+  const said = async (message: string, ok = false): Promise<PlanPinResult> => {
+    if (!ok) await prisma.programSessionPlan.update({ where: { id: plan.id }, data: { mapNote: `Not placed: ${message}` } }).catch(() => null);
+    return { ok, message };
+  };
+  const raw = String(text ?? "").trim().slice(0, 2_000);
+  if (!raw) return said("paste a Google Maps link or the pin's numbers.");
+  let pt = parseMapPoint(raw);
+  if (!pt && /^https?:\/\//i.test(raw)) pt = parseMapPoint(await expandMapLink(raw.replace(/^http:/i, "https:")).catch(() => null));
+  if (!pt) return said("there is no map point in that. In Google Maps, right-click the house, click the numbers at the top of the menu to copy them, and paste them here.");
+  const { geocodeAddress, haversineMiles } = await import("@/lib/travel");
+  const townLine = [plan.city, [plan.stateCode, plan.postalCode].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+  const town = townLine ? await geocodeAddress(townLine).catch(() => null) : null;
+  if (town) {
+    const mi = haversineMiles(town.lat, town.lng, pt.lat, pt.lng);
+    if (mi > TOWN_MILES) return said(`that point is ${Math.round(mi)} miles from ${plan.city ?? plan.postalCode}. Check it is the right house.`);
+  }
+  await prisma.programSessionPlan.update({
+    where: { id: plan.id },
+    data: { latitude: pt.lat, longitude: pt.lng, geocodeSource: "MANUAL", geocodeBy: by, geocodeTriedAt: now, addressValidatedAt: now, mapNote: `Placed by hand by ${by}.` },
+  });
+  return { ok: true, message: "On the map. The portal now offers times from this address." };
+}
+
+/** Look a saved address up again (staff "Look it up again", and the hourly retry). */
+export async function relookupSessionPlan(planId: string, now: Date = new Date()): Promise<PlanPinResult> {
+  const plan = await prisma.programSessionPlan.findUnique({ where: { id: planId } });
+  if (!plan || !planExact(plan)) return { ok: false, message: "That session has no exact address to look up." };
+  if (planBookable(plan)) return { ok: true, message: "Already on the map." };
+  const { geocodeAddress } = await import("@/lib/travel");
+  const geo = await geocodeAddress(planAddressLine(plan)).catch(() => null);
+  if (!geo) {
+    await prisma.programSessionPlan.update({ where: { id: plan.id }, data: { geocodeTriedAt: now, mapNote: missNote(now) } });
+    return { ok: false, message: "Still not on any map. Place it by hand." };
+  }
+  await prisma.programSessionPlan.update({
+    where: { id: plan.id },
+    data: { latitude: geo.lat, longitude: geo.lng, geocodeSource: "GEOCODED", geocodeBy: null, geocodeTriedAt: now, addressValidatedAt: now, mapNote: foundBy(geo.source) },
+  });
+  return { ok: true, message: foundBy(geo.source) };
+}
+
+/** The hourly retry: open months' saved addresses still off the map, each at most every 12 hours. */
+export async function relookupUnplacedPlans(opts: { max?: number; now?: Date } = {}): Promise<{ tried: number; placed: number }> {
+  const now = opts.now ?? new Date();
+  const rows = await prisma.programSessionPlan.findMany({
+    where: {
+      latitude: null, streetNumber: { not: null }, streetName: { not: null }, postalCode: { not: null },
+      OR: [{ geocodeTriedAt: null }, { geocodeTriedAt: { lt: new Date(now.getTime() - RETRY_MS) } }],
+    },
+    orderBy: { updatedAt: "desc" },
+    select: { id: true, monthId: true },
+    take: 40,
+  });
+  if (!rows.length) return { tried: 0, placed: 0 };
+  const open = new Set((await prisma.contentMonth.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.monthId))] }, historical: false }, select: { id: true } })).map((m) => m.id));
+  let tried = 0, placed = 0;
+  for (const r of rows.filter((x) => open.has(x.monthId)).slice(0, opts.max ?? 5)) {
+    tried++;
+    if ((await relookupSessionPlan(r.id, now)).ok) placed++;
+  }
+  return { tried, placed };
+}
+
+/** The staff panel's list: this month's saved addresses that are not on the map. */
+export async function unplacedPlans(monthId: string): Promise<{ planId: string; sessionIndex: number; addressLine: string; mapNote: string | null; triedAt: Date | null }[]> {
+  const rows = await prisma.programSessionPlan.findMany({ where: { monthId, latitude: null }, orderBy: { sessionIndex: "asc" } });
+  return rows.filter((p) => planExact(p)).map((p) => ({ planId: p.id, sessionIndex: p.sessionIndex, addressLine: planAddressLine(p), mapNote: p.mapNote, triedAt: p.geocodeTriedAt }));
 }

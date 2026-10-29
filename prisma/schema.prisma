@@ -5546,6 +5546,11 @@ model ProgramSessionPlan {
   longitude            Float?
   geocodeSource        String?
   addressValidatedAt   DateTime?
+  // Oct 29 2026: the last map lookup (the hourly retry waits 12 h between tries),
+  // who placed it by hand ("MANUAL"), and what the last try or placement said.
+  geocodeTriedAt       DateTime?
+  geocodeBy            String?
+  mapNote              String?
   addressVersion       Int       @default(0)
   schedulingDeferredAt DateTime?
   schedulingDeferredBy String?

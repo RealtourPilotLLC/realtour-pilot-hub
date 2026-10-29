@@ -638,6 +638,17 @@ async function ensureDeskTask(requestId: string, mode: DeskMode = "BOOK", reason
     FIX: "The hub's booking needs a person in Aryeo. Once it is right, confirm the request on the client file.",
     UNDO_MOVE: "The client withdrew this move, so the session stays at its original time. If you had not moved it in Aryeo yet, just close this task. If you already moved it, move it back.",
   };
+  // Oct 29 2026 (Joe Sutow's new build): an address no map found is why the
+  // client was offered no times; say so, and where to place it by hand.
+  const unmapped = mode === "BOOK" && r.planId
+    ? await prisma.programSessionPlan.findUnique({ where: { id: r.planId } }).then(async (p) => {
+        const { planExact, planBookable } = await import("@/lib/sessionAddress");
+        return !!p && planExact(p) && !planBookable(p);
+      }).catch(() => false)
+    : false;
+  const unmappedLine = unmapped
+    ? "No map could find this address when it was requested, so the client was offered no times. On the client's Production tab, under Not on the map, paste the house's Google Maps link: the portal then offers real times. Or book it in Aryeo."
+    : null;
   const description = [
     `Content session request for ${month?.monthKey ?? "their month"} (${r.kind === "EXTRA_SESSION" ? "EXTRA session" : "package session"}).`,
     lateLine,
@@ -647,6 +658,7 @@ async function ensureDeskTask(requestId: string, mode: DeskMode = "BOOK", reason
     earliestLine,
     r.creativeName ? `Creative the client picked: ${r.creativeName}` : null,
     r.locationText ? `Filming location: ${r.locationText}` : null,
+    unmappedLine,
     r.aryeoOrderId ? `Aryeo order: ${r.aryeoOrderId}` : null,
     r.notes ? r.notes : null,
     "",
