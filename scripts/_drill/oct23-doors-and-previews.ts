@@ -331,7 +331,8 @@ async function main() {
     c.ok("James's own shoots from his dashboard: My Shoots, his own tasks with their Done, not a read-only look at himself", mine.kind === "ok" && (mine.html ?? "").includes("My Shoots") && !(mine.html ?? "").includes("Read-only") && (mine.html ?? "").includes("Plan the premium reel"), `${mine.kind} ${(mine.html ?? "").match(/Read-only[^<]{0,40}/)?.[0] ?? ""}`);
     await signIn(viewers.find((v) => v.name === "the owner as James")!);
     const mineP = await open(`/shoot?as=${jamesTm.id}`);
-    const doneButtons = (h: string) => (h.match(/<li\b[^>]*>\s*<button/g) ?? []).length;
+    // Oct 28 2026: the Done is a labelled button at the row's end (data-task-done).
+    const doneButtons = (h: string) => (h.match(/data-task-done=/g) ?? []).length;
     c.ok("…and the owner's 'view as James' of it stays look-don't-touch (no Done on the tasks)", mineP.kind === "ok" && (mineP.html ?? "").includes("Plan the premium reel") && doneButtons(mineP.html ?? "") === 0 && doneButtons(mine.html ?? "") > 0, `${doneButtons(mineP.html ?? "")}/${doneButtons(mine.html ?? "")}`);
 
     // Every open that did not simply render, for the log (a section that could not draw in a drill is listed, not failed).

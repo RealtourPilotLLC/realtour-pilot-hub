@@ -83,6 +83,9 @@ export const MODELS = [
   // plan, creative holds, reassessments and portal-booked calls.
   "ContentReviewWindow", "ContentRevisionRound", "ContentFilmingReport", "ContentTopicFolder",
   "ProgramSessionPlan", "ProgramCreativeHold", "ProgramSessionReassessment", "ProgramCallBooking",
+  // Oct 26 2026: what the agent said, per chosen topic (the brief the script
+  // writer reads). Program content.
+  "ContentTopicBrief",
 ] as const;
 
 /**
@@ -131,6 +134,9 @@ export const OPERATIONAL_CORE = [
   // Oct 24 2026: the media library's index of each delivered job's Aryeo
   // listing (videos and cover; lib/listingMediaIndex). Rebuildable from Aryeo.
   "ListingMediaItem",
+  // Oct 28 2026: the Review Room's note edits and deletes (with the full copy
+  // Undo restores), and the team channel with message files. Operational.
+  "NoteChange", "TeamChannelMessage", "MessageAttachment",
 ] as const;
 
 /** Schema models in neither list, and listed names the schema does not have. */
