@@ -13,6 +13,7 @@ import { updateOnAryeoAction } from "@/app/ops/photo-delivery/editActions";
 import { useJob } from "./JobContext";
 import { useAryeoPushActions } from "./AryeoPushControls";
 import { AddOnSteps } from "./AddOnSteps";
+import { NotForThisProject } from "@/components/requests/RequestPlacement";
 
 // ---------------------------------------------------------------------------
 // WHAT'S HOLDING THIS (Oct 22 2026), at the top of the job page.
@@ -226,6 +227,7 @@ export function HoldingPanel() {
     );
 
   // Oct 28 2026 (Kyle): one line of the Client requests item: the request once, where it was asked, its own button.
+  const notForProject = (l: RequestLine) => l.askIds.length === 1 && !l.addOn && !l.key.startsWith("addon");
   const requestLine = (l: RequestLine) => (
     <li key={l.key} className="min-w-0 rounded-xl border border-border bg-surface-2/30 p-2.5" data-request-line={l.addOn ?? (l.askIds.length ? "ask" : "unread")} data-sources={l.sources.length}>
       <p className="break-words text-sm font-medium">{l.text}</p>
@@ -248,7 +250,14 @@ export function HoldingPanel() {
           <p className="mt-0.5 text-[12px] text-muted">{l.said.from}</p>
         </details>
       )}
-      {!readOnly && l.action && <div className="mt-2 flex flex-wrap gap-2">{action(l.action)}</div>}
+      {!readOnly && (l.action || notForProject(l)) && (
+        <div className="mt-2 flex flex-wrap items-start gap-2">
+          {l.action && action(l.action)}
+          {/* Oct 28 2026 (Kyle, 825 State St): a request filed on the wrong job is taken off it here too
+              (moved, kept for a future project, or not a request, with Undo). One request, not an add-on on the order. */}
+          {notForProject(l) && <NotForThisProject askId={l.askIds[0]} />}
+        </div>
+      )}
       {l.addOn && !readOnly && !delivered && <AddOnSteps addOn={l.addOn} need={l.text} open={openSteps === l.addOn} onOpen={(v) => setOpenSteps(v ? l.addOn : null)} />}
     </li>
   );

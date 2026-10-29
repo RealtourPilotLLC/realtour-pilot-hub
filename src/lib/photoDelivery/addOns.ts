@@ -356,14 +356,19 @@ export async function addOnStates(projectId: string, jobId: string): Promise<Add
   if (!p) return [];
   const ordered = addOnsOrdered(p.orderItems, p.deliverables);
   if (!ordered.length) return [];
-  const [{ cleanBrief, parseShootBrief }, { ASK_SOURCES, sourceWords }, confirmed, versions, listed, asks] = await Promise.all([
+  const [{ cleanBrief, parseShootBrief }, { ASK_SOURCES, sourceWords }, { FUTURE_STATE, parseHistory, takenOffProject }, confirmed, versions, listed, rows] = await Promise.all([
     import("@/lib/shoot"),
     import("@/lib/clientAsks"),
+    import("@/lib/requestPlacementCore"),
     confirmationsOf([jobId]),
     versionsOf([jobId]),
     listedWorkOf([jobId]),
-    prisma.clientAsk.findMany({ where: { projectId }, orderBy: { askedAt: "asc" }, take: 40, select: { text: true, source: true, askedBy: true, askedAt: true } }),
+    prisma.clientAsk.findMany({ where: { projectId, state: { not: "FUTURE" } }, orderBy: { askedAt: "asc" }, take: 40, select: { text: true, source: true, askedBy: true, askedAt: true, state: true, projectId: true, historyJson: true } }),
   ]);
+  // Oct 28 2026 (Kyle, 825 State St: "Not for this project"): a request set
+  // aside (kept for a future project, or "Not a request") or moved to another
+  // job is not this order's words; one put back with Undo is again.
+  const asks = rows.filter((a) => a.state !== FUTURE_STATE && !(a.historyJson?.includes('"placed":') && takenOffProject(parseHistory(a.historyJson), projectId, { projectId: a.projectId, state: a.state })));
   // Every place the agent (or the photographer) could have said how they want it.
   const sources: (WordSource & { whole?: boolean })[] = [];
   for (const a of p.appointments) {

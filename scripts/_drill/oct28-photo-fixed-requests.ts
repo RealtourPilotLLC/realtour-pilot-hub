@@ -229,7 +229,8 @@ async function main() {
     const panel = kh.split('aria-labelledby="pd-holding-h"')[1]?.split("</section>")[0] ?? "";
     c.ok("the page: one Client requests item, no separate Special requests card", (kh.match(/data-client-requests/g) ?? []).length === 1 && !/pd-special-h/.test(kh) && (kh.match(/id="pd-special-requests"/g) ?? []).length === 1, String((kh.match(/data-client-requests/g) ?? []).length));
     c.ok("…'Virtual Staging needed' once in the panel, 'Asked in 3 places', its own button; the other two lines with theirs", (text(panel).match(/Virtual Staging needed/g) ?? []).length === 1 && /Asked in 3 places/.test(text(panel)) && /Virtual staging added/.test(text(panel)) && /trash cans/.test(text(panel)) && /Settled with the client/.test(text(panel)) && (panel.match(/data-request-line=/g) ?? []).length === 3, text(panel).slice(0, 600));
-    c.ok("…no 'Every photo is a full-size JPEG' or 'QC has not run' to do in the panel", !/full-size JPEG|QC has not run|Gallery and order checks/.test(text(panel)));
+    c.ok("…a request of its own can be taken off the job ('Not for this project'); the staging on the order and the text that only asks for it cannot", panel.includes(`data-not-for-project="${trash.id}"`) && panel.includes(`data-not-for-project="${office.id}"`) && !(stLine?.askIds ?? []).some((id) => panel.includes(`data-not-for-project="${id}"`)), String((panel.match(/data-not-for-project="/g) ?? []).length));
+    c.ok("…no 'Every photo is a full-size JPEG' or 'QC has not run' to do in the panel",!/full-size JPEG|QC has not run|Gallery and order checks/.test(text(panel)));
     const bar = text((kh.split('aria-label="Deliver"')[1] ?? "").split('id="pd-deliver-body"')[0]);
     const g = detail.gate!;
     const expectTotal = g.checks.filter((x) => !x.advisory && !x.waiting && !x.request).length + 1;
@@ -260,6 +261,18 @@ async function main() {
     c.ok("…the trash cans and the dining room question stay open, two lines", (await stateOf(trash.id)) === "OPEN" && (await stateOf(office.id)) === "OPEN" && H.clientRequestLines(after.checks).length === 2, JSON.stringify(H.clientRequestLines(after.checks).map((l) => l.text)));
     const ans = await settleClientRequestAction(job.id, { askIds: [office.id], how: "answered", note: "Told Ashley the dining room is a third staged photo, $25 more." });
     c.ok("the dining room question, answered with a note: settled; the trash cans still to do", ans.ok && (await stateOf(office.id)) !== "OPEN" && (await stateOf(trash.id)) === "OPEN", JSON.stringify(ans));
+
+    // Requests set aside with "Not for this project" no longer feed the add-on's words (coordinator, Oct 28 2026).
+    const placement = await import("@/lib/requestPlacement");
+    const basement = await prisma.clientAsk.create({ data: { clientId: ashley.id, projectId: project.id, kind: "SPECIAL_REQUEST", medium: "photo", text: "Please virtually stage the basement for the Elm St listing.", source: "text", askedBy: "Ashley Brunner", askedAt: new Date(Date.now() - 3_600_000), dedupeKey: "drill:40-basement" } });
+    const loft = await prisma.clientAsk.create({ data: { clientId: ashley.id, projectId: project.id, kind: "SPECIAL_REQUEST", medium: "photo", text: "Next time, virtually stage the loft with a reading nook.", source: "email", askedBy: "Ashley Brunner", askedAt: new Date(Date.now() - 3_000_000), dedupeKey: "drill:40-loft" } });
+    const quoted = async () => ((await A.addOnStates(project.id, job.id)).find((s) => s.key === "virtual_staging")?.quotes ?? []).map((q) => q.text).join(" | ");
+    c.ok("while on the job, their staging words are quoted under the staging", /basement/.test(await quoted()) && /loft/.test(await quoted()), await quoted());
+    const off1 = await placement.takeRequestOffProject({ askId: basement.id, fromProjectId: project.id, outcome: "dismiss", toProjectId: null, by: "Kyle Smith" });
+    const off2 = await placement.takeRequestOffProject({ askId: loft.id, fromProjectId: project.id, outcome: "future", toProjectId: null, by: "Kyle Smith" });
+    c.ok("set aside ('Not a request', 'Keep for a future project'): no longer the staging's words", off1.ok && off2.ok && !/basement|loft/.test(await quoted()), `${JSON.stringify([off1, off2])} ${await quoted()}`);
+    const back = await placement.undoRequestPlacement({ askId: basement.id, by: "Kyle Smith" });
+    c.ok("…Undo puts it back: quoted again", back.ok && /basement/.test(await quoted()) && !/loft/.test(await quoted()), `${JSON.stringify(back)} ${await quoted()}`);
 
     // ======================================================================
     c.head("6 · plain words, no em dashes");
