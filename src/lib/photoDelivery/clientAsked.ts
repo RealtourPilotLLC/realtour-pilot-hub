@@ -478,6 +478,8 @@ export function photosDeliveredAt(job: { stage: string; deliveredAt: Date | null
 export async function photoAskAfterDelivery(input: {
   projectId: string; words: string; by: string; askedBy?: string | null; clientId?: string | null;
   trusted?: boolean; judged?: import("./afterDeliveryAsk").AfterDeliveryJudgement | null; askKey?: string | null;
+  /** the hub's one-line read of the ask (comms): an office to-do's words when the client's run long */
+  summary?: string | null;
 }): Promise<{ jobId: string | null; reopened: boolean; taskId: string | null; routed?: "office" | "video" }> {
   const out: { jobId: string | null; reopened: boolean; taskId: string | null; routed?: "office" | "video" } = { jobId: null, reopened: false, taskId: null };
   try {
@@ -488,7 +490,7 @@ export async function photoAskAfterDelivery(input: {
       const A = await import("./afterDeliveryAsk");
       const judged = input.judged ?? (await A.judgeAfterDeliveryAsk(input.words));
       if (judged.kind !== "photo") {
-        const r = await A.routeOfficeAsk({ projectId: input.projectId, jobId: job.id, words: input.words, kind: judged.kind, why: judged.why, askedBy: input.askedBy ?? null, clientId: input.clientId ?? null, askKey: input.askKey ?? null, by: "hub (request after delivery)" });
+        const r = await A.routeOfficeAsk({ projectId: input.projectId, jobId: job.id, words: input.words, summary: input.summary ?? null, kind: judged.kind, why: judged.why, askedBy: input.askedBy ?? null, clientId: input.clientId ?? null, askKey: input.askKey ?? null, by: "hub (request after delivery)" });
         out.taskId = r.taskId;
         out.routed = judged.kind;
         return out;

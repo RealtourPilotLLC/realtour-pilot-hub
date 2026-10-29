@@ -136,10 +136,16 @@ export function sameRequestWords(a: string, b: string): boolean {
  */
 export async function routeOfficeAsk(input: {
   projectId: string; jobId: string; words: string; kind: "office" | "video"; why: string; askedBy?: string | null; clientId?: string | null; askKey?: string | null; by: string;
+  /** the hub's one-line read of the ask: the to-do's words when the client's own run long (a call) */
+  summary?: string | null;
 }): Promise<{ taskId: string | null; reused: boolean; closed: number }> {
   const out = { taskId: null as string | null, reused: false, closed: 0 };
   try {
-    const words = clip(scrubMoney(input.words.replace(/\s+/g, " ").trim()), 400);
+    // Oct 29 2026 (Tim Bonner's call): a whole call transcript became the
+    // to-do's title. Words that long are a conversation, not a request: the
+    // hub's summary of the ask stands in for them.
+    const said = input.words.replace(/\s+/g, " ").trim();
+    const words = clip(scrubMoney(said.length > 300 && input.summary?.trim() ? input.summary.trim() : said), 400);
     const [project, job] = await Promise.all([
       prisma.project.findUnique({ where: { id: input.projectId }, select: { title: true, clientId: true } }),
       prisma.photoJob.findUnique({ where: { id: input.jobId }, select: { deliveredAt: true, stageChangedAt: true } }),
@@ -159,12 +165,28 @@ export async function routeOfficeAsk(input: {
       });
       const key = `${OFFICE_TASK_KEY_PREFIX}${input.projectId}:${sha(norm(words))}`;
       const same = open.find((t) => t.dedupeKey === key) ?? open.find((t) => sameRequestWords(`${t.title} ${t.summary ?? ""} ${t.description ?? ""}`, words));
+      // One open office to-do per job (Oct 29 2026: Tim Bonner restated his
+      // floor plan ask five ways and Kyle got five to-dos). A new ask on a
+      // job that already has one is added to it, under what is there.
+      const jobs = same ? null : open.find((t) => t.dedupeKey?.startsWith(`${OFFICE_TASK_KEY_PREFIX}${input.projectId}:`));
       const { kyleDesk } = await import("@/lib/kyleNotice");
       const desk = await kyleDesk();
       if (same) {
         out.taskId = same.id;
         out.reused = true;
         if (!same.ownerId && !same.assignedKey && desk) await prisma.smartTask.update({ where: { id: same.id }, data: { ownerId: desk.id, assignedKey: desk.key } }).catch(() => {});
+      } else if (jobs) {
+        out.taskId = jobs.id;
+        out.reused = true;
+        const who = input.askedBy?.trim() || "The client";
+        await prisma.smartTask.update({
+          where: { id: jobs.id },
+          data: {
+            summary: clip(`${jobs.summary ?? ""}\nAlso asked: "${words}"`.trim(), 1000),
+            description: `${jobs.description ?? ""}\n${who} (${etDateTime(new Date())}): "${words}"`.trim(),
+            ...(!jobs.ownerId && !jobs.assignedKey && desk ? { ownerId: desk.id, assignedKey: desk.key } : {}),
+          },
+        }).catch(() => {});
       } else {
         const who = input.askedBy?.trim() || "The client";
         const made = await prisma.smartTask

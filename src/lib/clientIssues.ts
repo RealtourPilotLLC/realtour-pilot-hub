@@ -113,6 +113,10 @@ export async function moveClientIssue(id: string, to: ClientIssueState, input: {
   const data: Record<string, unknown> = { state: to };
   const note = clip(input.note, 1000) || null;
   if (to === "CORRECTED") {
+    // A plan's open steps come first (Oct 29 2026, lib/clientIssuePlan).
+    const { openStepsBlocker } = await import("@/lib/clientIssuePlan");
+    const blocker = await openStepsBlocker(id);
+    if (blocker) return { ok: false, message: blocker };
     const correction = clip(input.correction ?? cur.correction, 4000);
     if (correction.length < 3) return { ok: false, message: "Say what was done to correct it." };
     data.correction = correction;
@@ -222,7 +226,7 @@ export async function openIssueFromFeedback(feedbackId: string): Promise<string 
 }
 
 export type ClientIssueView = {
-  id: string; clientId: string; clientName: string | null; title: string; whatHappened: string; impact: string | null; cause: string | null;
+  id: string; clientId: string; clientName: string | null; title: string; whatHappened: string; summary: string | null; impact: string | null; cause: string | null;
   correction: string | null; processChange: string | null; ownerName: string | null; ownerKey: string | null; dueAtISO: string | null;
   state: ClientIssueState; source: string; projectIds: string[]; createdAtISO: string; correctedAtISO: string | null;
   confirmedAtISO: string | null; confirmationNote: string | null; checkInTaskId: string | null; history: IssueHistory[];
@@ -238,7 +242,7 @@ export async function listClientIssues(opts: { clientId?: string; states?: Clien
   const names = new Map((await prisma.client.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.clientId))] } }, select: { id: true, name: true } })).map((c) => [c.id, c.name]));
   const s = (t: string | null) => (t == null ? null : opts.scrubMoney ? redactMoney(t) : t);
   return rows.map((r) => ({
-    id: r.id, clientId: r.clientId, clientName: names.get(r.clientId) ?? null, title: s(r.title) ?? "", whatHappened: s(r.whatHappened) ?? "",
+    id: r.id, clientId: r.clientId, clientName: names.get(r.clientId) ?? null, title: s(r.title) ?? "", whatHappened: s(r.whatHappened) ?? "", summary: s(r.summary),
     impact: s(r.impact), cause: r.cause, correction: s(r.correction), processChange: s(r.processChange), ownerName: r.ownerName, ownerKey: r.ownerKey,
     dueAtISO: r.dueAt?.toISOString() ?? null, state: r.state as ClientIssueState, source: r.source, projectIds: readIds(r.projectIdsJson),
     createdAtISO: r.createdAt.toISOString(), correctedAtISO: r.correctedAt?.toISOString() ?? null, confirmedAtISO: r.confirmedAt?.toISOString() ?? null,

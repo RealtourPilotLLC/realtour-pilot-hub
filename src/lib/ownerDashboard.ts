@@ -1019,19 +1019,29 @@ export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?:
   const issueFeedback = await prisma.clientIssue.findMany({ where: { feedbackId: { not: null } }, select: { feedbackId: true } }).catch(() => []);
   for (const f of issueFeedback) if (f.feedbackId) linkedFeedback.add(f.feedbackId);
 
+  // A complaint's plan (Oct 29 2026, lib/clientIssuePlan): its next open step
+  // is the row's next action, owner and deadline; a late step makes it high.
+  const { progressFor } = await import("@/lib/clientIssuePlan");
+  const plans = await progressFor((issues ?? []).map((i) => i.id), now).catch(() => null);
   for (const i of issues ?? []) {
     if (exclude.has(i.clientId)) continue;
-    const pastDue = !!i.dueAtISO && Date.parse(i.dueAtISO) < now.getTime();
+    const plan = plans?.get(i.id)?.progress ?? null;
+    const planned = !!plan && plan.total > 0 && i.state === "OPEN";
+    const next = planned ? plan!.next : null;
+    const stepsLate = planned ? plan!.late : 0;
+    const pastDue = planned ? stepsLate > 0 : !!i.dueAtISO && Date.parse(i.dueAtISO) < now.getTime();
     const severity: ClientIssueRow["severity"] = i.state === "UNRESOLVED" || pastDue ? "high" : i.state === "OPEN" ? "medium" : "low";
-    const severityWhy = i.state === "UNRESOLVED" ? "Still unhappy after the fix" : pastDue ? "Past its correction date" : i.state === "OPEN" ? "Open complaint" : "Fixed; check-in pending";
+    const severityWhy = i.state === "UNRESOLVED" ? "Still unhappy after the fix" : planned && stepsLate ? `${stepsLate === 1 ? "A step is" : `${stepsLate} steps are`} late` : pastDue ? "Past its correction date" : i.state === "OPEN" ? "Open complaint" : "Fixed; check-in pending";
     for (const p of i.projectIds) coveredProjects.add(p);
     rows.push({
       id: `issue:${i.id}`, kind: "complaint", client: i.clientName, clientId: i.clientId, project: null, projectId: i.projectIds[0] ?? null,
-      title: i.title, summary: i.whatHappened, evidence: `Recorded from ${i.source === "staff" ? "the team" : `a ${i.source}`} ${etDate(i.createdAtISO)}`,
-      severity, severityWhy, suggested: false, owner: i.ownerName,
+      title: i.title, summary: i.summary ?? i.whatHappened, evidence: `Recorded from ${i.source === "staff" ? "the team" : `a ${i.source}`} ${etDate(i.createdAtISO)}`,
+      severity, severityWhy, suggested: false, owner: next?.ownerName ?? i.ownerName,
       lastClientUpdateISO: lastOutOf.get(i.clientId)?.toISOString() ?? null,
-      nextAction: i.state === "OPEN" ? "Correct it" : i.state === "CORRECTED" ? "Confirm the client is satisfied" : "Decide the recovery",
-      deadlineISO: i.dueAtISO,
+      nextAction: planned
+        ? next ? `${plan!.done} of ${plan!.total} steps done · next: ${next.text}` : "Every step is done: mark it corrected"
+        : i.state === "OPEN" ? "Correct it" : i.state === "CORRECTED" ? "Confirm the client is satisfied" : "Decide the recovery",
+      deadlineISO: planned ? next?.dueAtISO ?? null : i.dueAtISO,
       decision: i.state === "UNRESOLVED" ? "Recovery decision needed from you" : null,
       href: `/clients/${i.clientId}#issues`,
       conversationHref: `/communications?client=${i.clientId}`,

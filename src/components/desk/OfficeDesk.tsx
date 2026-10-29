@@ -19,6 +19,7 @@ import { RemindPhotographerButton } from "@/components/editing/RemindPhotographe
 import { EmailReplyBox } from "@/components/comms/EmailReplyBox";
 import { LeadDisregardButton } from "@/components/tasks/ChecklistButtons";
 import { draftEmailThreadReply } from "@/app/emailActions";
+import { ComplaintsCard } from "@/components/clientCare/ComplaintsCard";
 import {
   BriefSend, CloseoutTick, ConfirmControls, DelegationControls, DraftReply, FinishDay, FollowUpCreate, HandOn, MarkDelivered, MarkHandled, PhotoApprove, PRIMARY, QUIET, ReplyBox, RevisionDecide, TaskResolve, WaitOn,
 } from "@/components/desk/DeskControls";
@@ -144,6 +145,7 @@ export function OfficeDesk({ desk, includeTest = false, initialOpen = null, init
       <div className="grid items-stretch gap-4 lg:grid-cols-2" data-desk-grid>
         <ReviewDeliver s={sec("deliver")} onOpen={show} readOnly={desk.readOnly} href={desk.deliverHref} />
         <Communications s={sec("comms")} onOpen={show} fresh={desk.commsFresh} />
+        <ComplaintsCard readOnly={desk.readOnly} className="lg:col-span-2" />
         <Shoots s={sec("shoots")} onOpen={show} initialDay={initialDay} includeTest={includeTest} briefs={desk.briefsPending} onBriefs={() => special("special:briefs")} />
         <FollowUps s={sec("followups")} onOpen={show} backlog={desk.backlog} includeTest={includeTest} />
         <NextDayCard desk={desk} onPrepare={() => special("special:prepare")} />

@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { authEnforced, requireAdmin } from "@/lib/auth/guards";
+import { authEnforced, requireAdmin, requireCreativeLead } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { displayNameFor } from "@/lib/actorName";
 import { isClientIssueState } from "@/lib/clientIssuesCore";
@@ -25,6 +25,14 @@ async function who(): Promise<string | null> {
 
 async function office(): Promise<Result | null> {
   try { await requireAdmin(); return null; } catch (e) { return { ok: false, message: (e as Error).message }; }
+}
+
+/** Complaints: the owner, the office and the creative manager work the same
+ *  record (Jordan, Oct 29 2026: "James also needs to be able to see this as
+ *  well since he is the creative manager. All of our accounts should work in
+ *  tandem on it"). */
+async function care(): Promise<Result | null> {
+  try { await requireCreativeLead(); return null; } catch (e) { return { ok: false, message: (e as Error).message }; }
 }
 
 /** "2026-10-20" → 5 PM ET that day; anything else as a date. */
@@ -103,7 +111,7 @@ export async function setTermAction(input: { enrollmentId: string; termStartMont
 // ---- complaints --------------------------------------------------------------
 
 export async function createClientIssueAction(input: { clientId: string; title: string; whatHappened: string; source?: string | null; impact?: string | null; cause?: string | null; ownerKey?: string | null; ownerName?: string | null; dueISO?: string | null; projectIds?: string[] }): Promise<Result> {
-  const refused = await office();
+  const refused = await care();
   if (refused) return refused;
   const { createClientIssue } = await import("@/lib/clientIssues");
   const r = await createClientIssue({ ...input, dueAt: await dueFrom(input.dueISO), createdBy: await who() });
@@ -112,7 +120,7 @@ export async function createClientIssueAction(input: { clientId: string; title: 
 }
 
 export async function updateClientIssueAction(input: { id: string; impact?: string | null; cause?: string | null; correction?: string | null; processChange?: string | null; ownerKey?: string | null; ownerName?: string | null; dueISO?: string | null }): Promise<Result> {
-  const refused = await office();
+  const refused = await care();
   if (refused) return refused;
   const { updateClientIssue } = await import("@/lib/clientIssues");
   const due = input.dueISO === undefined ? undefined : await dueFrom(input.dueISO);
@@ -128,7 +136,7 @@ export async function updateClientIssueAction(input: { id: string; impact?: stri
 }
 
 export async function moveClientIssueAction(input: { id: string; to: string; correction?: string | null; processChange?: string | null; note?: string | null }): Promise<Result> {
-  const refused = await office();
+  const refused = await care();
   if (refused) return refused;
   if (!isClientIssueState(input.to)) return { ok: false, message: "That isn't a step." };
   const { moveClientIssue } = await import("@/lib/clientIssues");
@@ -141,7 +149,7 @@ export async function moveClientIssueAction(input: { id: string; to: string; cor
 }
 
 export async function dismissClientIssueAction(input: { id: string; reason: string }): Promise<Result> {
-  const refused = await office();
+  const refused = await care();
   if (refused) return refused;
   const { dismissClientIssue } = await import("@/lib/clientIssues");
   const r = await dismissClientIssue(input.id, input.reason, await who());

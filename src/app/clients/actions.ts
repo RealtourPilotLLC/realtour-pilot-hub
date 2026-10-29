@@ -275,78 +275,24 @@ export async function loadCustomerNotes(clientId: string): Promise<CustomerNotes
   return { ok: true, message: "ok", aryeoNotes: r.text, ...base };
 }
 
-// Save the customer note. Order matters: the hub row is written FIRST so a
-// flaky API can never eat what somebody typed, then the note is pushed to Aryeo
-// and the outcome is recorded ON THE ROW. A failed push is remembered
-// (notesSyncError) and shown in red on the card with a Retry — never swallowed.
+// Save the customer note (lib/customerNoteWrite: the hub row first, then
+// Aryeo, the outcome recorded on the row; a complaint's "Add to client notes"
+// writes through the same function, Oct 29 2026).
 export async function saveCustomerNotes(clientId: string, notes: string): Promise<CustomerNotesState> {
   await requireAdmin();
   const { etDateTime } = await import("@/lib/datetime");
-  const text = notes.trim();
-
-  const client = await prisma.client.findUnique({
-    where: { id: clientId },
-    select: { aryeoCustomerId: true },
-  });
-  if (!client) return { ok: false, message: "Client not found.", linked: false, aryeoNotes: null, syncError: null, syncedAt: null };
-
-  // 1. Local first — the note exists from here on, whatever Aryeo does next.
-  await prisma.client.update({ where: { id: clientId }, data: { generalNotes: text || null } });
-
-  // 2. No Aryeo customer behind this client → honestly hub-only. Clear any
-  //    stale error so the card doesn't keep warning about a push it can't make.
-  if (!client.aryeoCustomerId) {
-    await prisma.client.update({
-      where: { id: clientId },
-      data: { notesSyncError: null, notesSyncedAt: null },
-    });
-    revalidatePath(`/clients/${clientId}`);
-    return {
-      ok: true,
-      message: "Saved in the hub. This client isn't linked to an Aryeo customer, so the note stays here only.",
-      linked: false,
-      aryeoNotes: null,
-      syncError: null,
-      syncedAt: null,
-    };
-  }
-
-  // 3. Push to Aryeo — the system of record — and verify it landed.
-  const { writeAryeoCustomerNotes } = await import("@/lib/integrations/aryeo");
-  const w = await writeAryeoCustomerNotes(client.aryeoCustomerId, text);
-  if (!w.ok) {
-    await prisma.client.update({
-      where: { id: clientId },
-      data: { notesSyncError: w.error.slice(0, 500) },
-    });
-    revalidatePath(`/clients/${clientId}`);
-    return {
-      ok: false,
-      message: `Saved in the hub, but it did NOT reach Aryeo: ${w.error}`,
-      linked: true,
-      aryeoNotes: null,
-      syncError: w.error,
-      syncedAt: null,
-    };
-  }
-
-  const now = new Date();
-  await prisma.client.update({
-    where: { id: clientId },
-    // Store Aryeo's own copy back into the mirror so the two are byte-identical
-    // and the next sync sees nothing to reconcile. A cleared note stores NULL,
-    // never an empty string — every surface tests `generalNotes &&`.
-    data: { generalNotes: text ? w.raw ?? text : null, notesSyncedAt: now, notesSyncError: null },
-  });
+  const { writeCustomerNote } = await import("@/lib/customerNoteWrite");
+  const w = await writeCustomerNote(clientId, notes);
+  if (w.message === "Client not found.") return { ok: false, message: w.message, linked: false, aryeoNotes: null, syncError: null, syncedAt: null };
   revalidatePath(`/clients/${clientId}`);
-  revalidatePath("/clients");
+  if (w.ok && w.linked) revalidatePath("/clients");
   return {
-    ok: true,
-    message: "Saved — and updated in Aryeo.",
-    linked: true,
-    aryeoNotes: w.text,
-    syncError: null,
-    syncedAt: etDateTime(now),
+    ok: w.ok,
+    message: w.ok && w.linked ? "Saved \u2014 and updated in Aryeo." : w.message,
+    linked: w.linked,
+    aryeoNotes: w.aryeoNotes,
+    syncError: w.syncError,
+    syncedAt: w.syncedAt ? etDateTime(w.syncedAt) : null,
   };
 }
 

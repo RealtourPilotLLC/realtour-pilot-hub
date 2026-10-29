@@ -15,6 +15,7 @@ import { EmailReplyBox } from "@/components/comms/EmailReplyBox";
 import { closeIssueSignalAction } from "@/app/clients/clientCareActions";
 import { makeOwnerTopicMyTask, setOwnerTopicState } from "@/app/ownerTopicActions";
 import { ROUND_CAUSES } from "@/lib/issueSignalsCore";
+import { ComplaintPlan } from "@/components/clientCare/ComplaintPlan";
 import type { AssignSeed, ClientIssueRow } from "@/lib/ownerDashboard";
 import type { PanelSpec, RosterOption, ShellAction } from "@/components/owner/panelTypes";
 
@@ -456,7 +457,10 @@ function IssueBody({ spec }: { spec: Extract<PanelSpec, { kind: "issue" }> }) {
         ["Next action", `${r.nextAction}${r.deadlineISO ? ` by ${etDateTime(r.deadlineISO)}` : ""}`],
         ["Your decision", r.decision],
       ]} />
-      <blockquote className="rounded-lg bg-surface-2 px-3 py-2 text-sm">{r.summary}</blockquote>
+      {/* A complaint carries its plan (Oct 29 2026): the same record Kyle and James work from their desks. */}
+      {r.kind === "complaint"
+        ? <ComplaintPlan issueId={r.id.replace(/^issue:/, "")} readOnly={readOnly} fallbackWords={r.summary} />
+        : <blockquote className="rounded-lg bg-surface-2 px-3 py-2 text-sm">{r.summary}</blockquote>}
       {r.records && r.records.length > 0 && (
         <section aria-labelledby={`records-${r.id}`} data-issue-records={r.records.length}>
           <h3 id={`records-${r.id}`} className="text-sm font-semibold">The flags</h3>
@@ -478,7 +482,7 @@ function IssueBody({ spec }: { spec: Extract<PanelSpec, { kind: "issue" }> }) {
       <div className="flex flex-wrap gap-2">
         {r.conversationHref && <Link href={r.conversationHref} className={QUIET}>Review conversation</Link>}
         {r.conversationHref && <Link href={r.conversationHref} className={QUIET}>Reply</Link>}
-        {!readOnly && <button type="button" onClick={() => open({ kind: "assign", seed: r.assign, heading: r.handledBy ? "Reassign" : r.close ? "Assign it" : "Assign recovery" })} className={r.close || r.handledBy ? QUIET : PRIMARY}>{r.handledBy ? "Reassign" : r.close?.kind === "rounds" ? "Assign the check-in" : r.close ? "Assign it" : "Assign recovery"}</button>}
+        {!readOnly && (r.kind !== "complaint" || r.handledBy) && <button type="button" onClick={() => open({ kind: "assign", seed: r.assign, heading: r.handledBy ? "Reassign" : r.close ? "Assign it" : "Assign recovery" })} className={r.close || r.handledBy ? QUIET : PRIMARY}>{r.handledBy ? "Reassign" : r.close?.kind === "rounds" ? "Assign the check-in" : r.close ? "Assign it" : "Assign recovery"}</button>}
         <Link href={r.href} className={QUIET}>{r.close ? (r.projectId ? "Open the job" : r.kind === "pattern" && r.clientId ? "Open the client" : "Open the record") : "Record decision or resolve"}</Link>
       </div>
       {r.close && !readOnly && <CloseSignal row={r} />}

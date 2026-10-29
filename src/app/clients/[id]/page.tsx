@@ -74,6 +74,8 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
   const canEditPrefs = me
     ? (me.realRole === "OWNER" || me.realRole === "ADMIN") && !me.impersonating
     : !authEnforced();
+  // Complaints and their plans: the creative manager works them too (Oct 29 2026).
+  const canWorkComplaints = canEditPrefs || (!!me && me.realRole === "CREATIVE_MANAGER" && !me.impersonating);
 
   // Jordan, Sep 2 2026: an admin gets full ops access and NO money. This page
   // led with the client's LIFETIME SPEND in the header and printed the price of
@@ -254,7 +256,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
               <SavedRequestList items={saved.loose} choices={saved.choices} canAct={canPlaceSaved} />
             </section>
           )}
-          {seesCare && <ClientIssuesCard clientId={client.id} issues={complaints} canEdit={canEditPrefs} projects={client.projects.map((p) => ({ id: p.id, title: p.title }))} />}
+          {seesCare && <ClientIssuesCard clientId={client.id} issues={complaints} canEdit={canWorkComplaints} projects={client.projects.map((p) => ({ id: p.id, title: p.title }))} />}
           {entitlements && <EntitlementsCard summary={entitlements} canEdit={canEditPrefs} />}
           {enrollment && creativeGuard && <CreativeGuardEditor enrollmentId={enrollment.id} guard={creativeGuard} canEdit={canEditGuard} />}
 

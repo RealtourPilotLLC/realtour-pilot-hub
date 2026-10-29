@@ -49,6 +49,9 @@ export type KpiManualEntry = {
   at: string;
   editedBy?: string | null;
   editedAt?: string | null;
+  /** added from a client complaint (lib/clientIssuePlan addToKpi): the complaint, and the client named */
+  issueId?: string | null;
+  client?: string | null;
 };
 export type KpiCheckIn = {
   /** area → 0..100 */

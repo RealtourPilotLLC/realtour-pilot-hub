@@ -217,6 +217,7 @@ export const AI_FEATURE_LABEL: Record<string, string> = {
   content_program: "Content program",
   script_writer: "Script writer",
   photo_qc: "Photo QC",
+  client_issue_plan: "Complaint plans",
   key_test: "AI connection test",
   // Names for call sites outside integrations/ai.ts that do not pass one yet
   // (they land under "Other", "Ask the Hub and advisors" or "Content program").

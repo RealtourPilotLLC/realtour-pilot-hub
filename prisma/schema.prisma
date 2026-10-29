@@ -6341,8 +6341,47 @@ model ClientIssue {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
+  // THE PLAN (Oct 29 2026, lib/clientIssuePlan.ts). Jordan, on Tim Bonner's
+  // call: "I want a way for the system to handle and delegate this issue, and
+  // track it." A plain summary (not the opening of a call recording), the
+  // hub's proposed steps waiting for a person's OK, what was added to the
+  // client's notes, and what went on a creative's KPI tracker.
+  summary          String?
+  planJson         String? // the hub's draft: {v, state, summary, steps[], preferences[], shootFeedback, ...}
+  prefsText        String? // the preference lines added to the client's notes
+  prefsAddedAt     DateTime?
+  prefsAddedBy     String?
+  kpiJson          String? // [{memberId, memberName, periodKey, entryId, area, points, at, by}]
+
   @@index([clientId, state])
   @@index([state])
+}
+
+// One step of a complaint's plan (Oct 29 2026, lib/clientIssuePlan.ts): what,
+// who, by when. A step with a task is done when its task is (the delegated
+// SmartTask on that person's list), so ticking it on any screen ticks it
+// everywhere. A step without a task was recorded as already done.
+model ClientIssueStep {
+  id         String    @id @default(cuid())
+  issueId    String
+  sort       Int       @default(0)
+  text       String
+  kind       String    @default("task") // task | coach | prefs
+  ownerKey   String?
+  ownerName  String?
+  dueAt      DateTime?
+  taskId     String?
+  doneAt     DateTime? // a step with no task: when it was recorded done
+  doneBy     String?
+  doneNote   String?
+  removedAt  DateTime?
+  removedBy  String?
+  createdBy  String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([issueId])
+  @@index([taskId])
 }
 
 // ---------------------------------------------------------------------------

@@ -669,7 +669,7 @@ export async function recordClientCommunication(opts: {
         const { judgeAfterDeliveryAsk } = await import("@/lib/photoDelivery/afterDeliveryAsk");
         const judged = await judgeAfterDeliveryAsk(w.words);
         if (judged.kind !== "photo") {
-          await photoAskAfterDelivery({ projectId: w.projectId, words: w.words, by: who ?? "client", askedBy: who, clientId: opts.clientId, judged, askKey });
+          await photoAskAfterDelivery({ projectId: w.projectId, words: w.words, summary: w.summary ?? null, by: who ?? "client", askedBy: who, clientId: opts.clientId, judged, askKey });
           continue;
         }
         await createAsk({

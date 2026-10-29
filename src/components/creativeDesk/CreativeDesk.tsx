@@ -13,6 +13,7 @@ import type { AssignedRow, Chip, CreativeDesk as Desk, CutRow, DevGroupView, Fri
 import type { DevItemView, ReadinessView, Signal } from "@/lib/teamDevelopment";
 import { AssignedAction, CloseoutTick, HandoffCloseOut, PanelBody, type Panel } from "@/components/creativeDesk/CreativePanels";
 import { AskOnJob, MarkBriefRead } from "@/components/shoot/AskOnJob";
+import { ComplaintsCard } from "@/components/clientCare/ComplaintsCard";
 
 // ---------------------------------------------------------------------------
 // THE CREATIVE MANAGER'S DASHBOARD, the screen (Oct 23 2026, Jordan's spec §6
@@ -104,6 +105,8 @@ export function CreativeDesk({ desk, mode = "home", includeTest = false, initial
 
       {mode === "home" && (
         <div data-grid="production-review" className={GRID}>
+          {/* Open client complaints and their plans (Oct 29 2026): James works them with Jordan and Kyle. */}
+          <ComplaintsCard readOnly={desk.readOnly} className="lg:col-span-2" />
           {/* B · PRODUCTION (the first two rows; the rest in the full view) */}
           <ProductionCard desk={desk} href={href} shown={PRODUCTION_SHOWN} />
 

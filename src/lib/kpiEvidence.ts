@@ -679,7 +679,7 @@ async function feedbackEntries(
     },
     select: {
       id: true, projectId: true, rating: true, photographerRating: true, sentiment: true, attribution: true, attributionWhy: true,
-      body: true, source: true, createdAt: true, project: { select: { title: true, addressLine: true } },
+      body: true, source: true, createdAt: true, authorName: true, project: { select: { title: true, addressLine: true, client: { select: { name: true } } } },
     },
   });
   const out: KpiEntryBase[] = [];
@@ -693,7 +693,9 @@ async function feedbackEntries(
       auto: true,
       advisory: false,
     };
-    const said = [`"${clip(f.body, 400)}"`, `From the client by ${f.source === "form" ? "the feedback form" : f.source}, ${etDateTime(f.createdAt)}.`];
+    // The client named, so the creative knows who said it (Jordan, Oct 29 2026: "I think it's important to be transparent").
+    const who = f.authorName?.trim() || f.project.client?.name || "the client";
+    const said = [`"${clip(f.body, 400)}"`, `From ${who} by ${f.source === "form" ? "the feedback form" : f.source}, ${etDateTime(f.createdAt)}.`];
     if (f.attribution === "OPERATIONS" && f.photographerRating == null) {
       out.push({ ...base, id: `feedback:${f.id}`, kind: "ops_feedback", title: `Feedback about editing or delivery: ${street}`, detail: [...said, `Not counted: it is about the edit, turnaround or delivery${f.attributionWhy ? ` (${f.attributionWhy})` : ""}, which is not your work.`], effect: "neutral" });
       continue;

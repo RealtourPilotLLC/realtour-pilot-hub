@@ -10,6 +10,7 @@ import { createClientIssueAction, dismissClientIssueAction, moveClientIssueActio
 import { COMPLAINT_CAUSES, STATE_WORDS } from "@/lib/clientIssuesCore";
 import type { ClientIssueView } from "@/lib/clientIssues";
 import { etDayKey } from "@/lib/datetime";
+import { ComplaintPlan } from "@/components/clientCare/ComplaintPlan";
 
 // ---------------------------------------------------------------------------
 // COMPLAINTS on the client file (Oct 15 2026): what happened, the impact, the
@@ -49,15 +50,20 @@ function OneIssue({ issue, canEdit, projects }: { issue: ClientIssueView; canEdi
   const jobTitles = issue.projectIds.map((id) => projects.find((p) => p.id === id)).filter(Boolean) as { id: string; title: string }[];
   const field = "mt-0.5 block w-full rounded-md border border-border bg-surface px-2 py-1.5 text-sm";
   return (
-    <li className="rounded-xl border border-border px-3 py-2.5" data-client-issue={issue.state}>
+    <li id={`issue-${issue.id}`} className="scroll-mt-24 rounded-xl border border-border px-3 py-2.5" data-client-issue={issue.state}>
       <div className="flex flex-wrap items-baseline gap-2">
         <span className="font-medium">{issue.title}</span>
         <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-medium", TONE[issue.state])}>{STATE_WORDS[issue.state]}</span>
         <span className="text-[11px] text-muted-2">opened {day(issue.createdAtISO)} · {issue.source}</span>
       </div>
-      <p className="mt-1 whitespace-pre-wrap text-foreground/90 [overflow-wrap:anywhere]">{issue.whatHappened}</p>
+      {/* Oct 29 2026: the plan (summary, steps, preferences, KPI) for the people who work complaints; everyone else reads the words. */}
+      {canEdit ? (
+        <div className="mt-1.5"><ComplaintPlan issueId={issue.id} compact fallbackWords={issue.summary ?? issue.whatHappened} /></div>
+      ) : (
+        <p className="mt-1 whitespace-pre-wrap text-foreground/90 [overflow-wrap:anywhere]">{issue.summary ?? issue.whatHappened}</p>
+      )}
       {jobTitles.length > 0 && <p className="mt-0.5 text-xs text-muted">Jobs: {jobTitles.map((p, i) => <span key={p.id}>{i ? ", " : ""}<Link href={`/projects/${p.id}`} className="text-brand hover:underline">{p.title.split(",")[0]}</Link></span>)}</p>}
-      <details className="mt-1.5" open={issue.state === "OPEN"}>
+      <details className="mt-1.5" open={issue.state === "OPEN" && !issue.summary}>
         <summary className="cursor-pointer text-xs font-medium text-brand">Cause, correction and owner</summary>
         <div className="mt-2 grid gap-2 sm:grid-cols-2">
           <label className="text-xs text-muted">Impact on the client<textarea value={impact} onChange={(e) => setImpact(e.target.value)} rows={2} disabled={!canEdit || pending} className={field} /></label>
