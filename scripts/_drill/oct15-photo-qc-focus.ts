@@ -362,9 +362,9 @@ async function main() {
     // ======================================================================
     c.head("7 · coverage: never shot, lost in editing, the checklist");
     const E = await mkJob("80 Short St", ["front", "living", "bath"], { expected: { bedrooms: 1, bathrooms: 1 } });
-    // The hub's own intake: 20 bracket files (4 sets) went in, AutoHDR returned 3.
-    const files = Array.from({ length: 20 }, (_, i) => ({ id: `id:${i}`, name: `DSC0${8000 + i}.JPG`, path: `/raw/DSC0${8000 + i}.JPG`, size: 9_000_000, hash: `h${i}` }));
-    await prisma.photoIntakeBatch.create({ data: { projectId: E.project.id, batchNo: 1, state: "DONE", rawPath: "/raw", filesJson: JSON.stringify(files), fileCount: 20, fingerprint: "fp", expectedPhotos: 4, imageCount: 3, photoshootId: E.shoot.photoshoot_id, photosJson: JSON.stringify(E.shoot.photos.map((p) => ({ image_uuid: p.image_uuid, image_version_uuid: p.head, name: p.name }))), seenAt: new Date(), doneAt: new Date() } });
+    // The hub's own intake: 50 bracket files (10 sets) went in, AutoHDR returned 3 (Oct 29 2026: a gap of 6 or more counts).
+    const files = Array.from({ length: 50 }, (_, i) => ({ id: `id:${i}`, name: `DSC0${8000 + i}.JPG`, path: `/raw/DSC0${8000 + i}.JPG`, size: 9_000_000, hash: `h${i}` }));
+    await prisma.photoIntakeBatch.create({ data: { projectId: E.project.id, batchNo: 1, state: "DONE", rawPath: "/raw", filesJson: JSON.stringify(files), fileCount: 50, fingerprint: "fp", expectedPhotos: 10, imageCount: 3, photoshootId: E.shoot.photoshoot_id, photosJson: JSON.stringify(E.shoot.photos.map((p) => ({ image_uuid: p.image_uuid, image_version_uuid: p.head, name: p.name }))), seenAt: new Date(), doneAt: new Date() } });
     answers.set("80-1.jpg", { room: "front exterior", prep: "tidy" });
     answers.set("80-2.jpg", { room: "living room", prep: "tidy" });
     answers.set("80-3.jpg", { room: "bathroom", prep: "tidy", features: ["shower", "toilet"] });
@@ -375,7 +375,12 @@ async function main() {
     const fE = (await findingsOf(E.job.id)).filter((f) => f.source === "COVERAGE");
     const byG = (k: string) => fE.find((f) => f.groupKey === `coverage-${k}`);
     c.ok("the kitchen was never shot: PHOTOGRAPHER, MAJOR, and it may have been lost in editing", byG("kitchen")?.ruleId === "COVERAGE_ROOM_NOT_CAPTURED" && byG("kitchen")?.severity === "MAJOR" && byG("kitchen")?.responsibility === "PHOTOGRAPHER" && /lost in editing/.test(byG("kitchen")?.explanation ?? ""));
-    c.ok("AutoHDR returned 3 photos for 4 bracket sets: EDITOR, MAJOR", byG("lost-in-edit")?.ruleId === "COVERAGE_PHOTOS_LOST_IN_EDIT" && byG("lost-in-edit")?.responsibility === "EDITOR" && /3 photos for 4 bracket sets/.test(byG("lost-in-edit")?.specificIssue ?? ""));
+    c.ok("AutoHDR returned 3 photos for 10 bracket sets: EDITOR, MAJOR", byG("lost-in-edit")?.ruleId === "COVERAGE_PHOTOS_LOST_IN_EDIT" && byG("lost-in-edit")?.responsibility === "EDITOR" && /3 photos for 10 bracket sets/.test(byG("lost-in-edit")?.specificIssue ?? ""));
+    // Oct 29 2026 (Kyle overrode every one: "Autohdr has 92", "Only 50 photos in autohdr"; 902 Valley Rd: 9 photos for 135 frames).
+    const raw = (n: number, drone = 0) => [...Array.from({ length: n }, (_, i) => ({ id: `r${i}`, name: `DSC${i}.JPG`, path: `/r/DSC${i}.JPG`, size: 1, hash: `r${i}` })), ...Array.from({ length: drone }, (_, i) => ({ id: `d${i}`, name: `DJI_${i}.JPG`, path: `/r/DJI_${i}.JPG`, size: 1, hash: `d${i}` }))];
+    c.ok("pure: 92 back for 96 sets, 50 for 54, 80 for 85: AutoHDR's own count, not a loss", [[96, 92], [54, 50], [85, 80]].every(([sets, got]) => coverage.editLoss([{ batchNo: 1, files: raw(sets * 5), returned: got }]).length === 0));
+    c.ok("pure: 9 back for 135 frames is 15 to a set (with 4 drone shots: 13), nothing lost", coverage.editLoss([{ batchNo: 1, files: raw(135), returned: 9 }]).length === 0 && coverage.editLoss([{ batchNo: 1, files: raw(135, 4), returned: 13 }]).length === 0);
+    c.ok("pure: 40 back for 50 sets is still a loss", coverage.editLoss([{ batchNo: 1, files: raw(250), returned: 40 }])[0]?.expected === 50);
     c.ok("the shower has a photo of its own: no shower finding", !byG("primary-shower"));
     const gate1 = await delivery.deliveryGate(E.job.id);
     c.ok("the checklist: rooms checked, the coverage line open (blocks the automatic delivery)", gate1.checks.find((x) => x.key === "rooms")?.ok === true && gate1.checks.find((x) => x.key === "coverage")?.ok === false && !gate1.passed, `${covE1.findings} findings`);
@@ -394,6 +399,10 @@ async function main() {
     const rowsCondo = coverage.assessCoverage({ ...base, propertyType: "condo", delivered: [lab("KITCHEN"), lab("LIVING"), lab("BEDROOM"), lab("BATHROOM", ["tub"]), lab("BATHROOM"), lab("POWDER_ROOM")] });
     c.ok("pure: a condo needs no rear exterior and its front exterior is minor", !rowsCondo.some((r) => r.key === "rear-exterior") && rowsCondo.find((r) => r.key === "front-exterior")?.severity === "MINOR");
     c.ok("pure: an older check (no features) never judges the shower", !coverage.assessCoverage({ ...base, featuresKnown: false, delivered: [lab("PRIMARY_BATHROOM")] }).some((r) => r.key === "primary-shower"));
+    // Oct 29 2026 (58 Recreation Dr, drone and lot lines: Kyle "Exterior only").
+    const rowsOut = coverage.assessCoverage({ ...base, exteriorOnly: true, delivered: [lab("EXTERIOR_FRONT"), lab("AERIAL")] });
+    c.ok("pure: an exterior-only order expects the outside only (no kitchen, living area, bedroom or bathroom)", rowsOut.map((r) => r.key).join(",") === "front-exterior,rear-exterior", rowsOut.map((r) => r.key).join(","));
+    c.ok("pure: which orders show the inside", !coverage.orderShowsInside([{ type: "DRONE" }, { type: "OTHER" }]) && !coverage.orderShowsInside([{ type: "TWILIGHT" }]) && coverage.orderShowsInside([{ type: "PHOTOS" }, { type: "DRONE" }]) && coverage.orderShowsInside([{ type: "VIRTUAL_STAGING" }, { type: "DRONE" }]) && coverage.orderShowsInside([]) && coverage.orderShowsInside([{ type: "SOCIAL_REEL" }]));
 
     // ======================================================================
     c.head("8 · after delivery: 2236 Gregory Dr's listing replaced");

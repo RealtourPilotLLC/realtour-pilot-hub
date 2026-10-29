@@ -97,8 +97,9 @@ export async function houseOverrides(): Promise<RuleOverride[]> {
 // one photo (feedback Oct 14: a listing-specific ignore is not a house rule
 // unless the same reason repeats), and neither do the hub's own calls, Skip
 // all, or the checks switched off. ALWAYS_FLAG checks (trash cans, cars on
-// this home's driveway, lines, camera and edit mistakes) are recorded but
-// never learned away. The lessons go into the free check's question and its
+// this home's driveway, lines, camera and edit mistakes) are never learned
+// away: only narrowed, to this home and (Oct 29 2026) to what is clearly
+// visible, never for lines or edit mistakes (narrowsAlways). The lessons go into the free check's question and its
 // code screen (autohdrCheck), the "rule" ones into the house overrides above.
 // Jordan sees them on Photo Delivery settings and can undo one: it stops,
 // and only calls made after the undo can teach it again.
@@ -138,17 +139,34 @@ export function lessonOf(reason: string | null | undefined): { scope: LessonScop
   if (/neighbou?r|next[\s-]door|not (?:on )?(?:the|this|our) property|across the street/i.test(r)) return { scope: "neighbor", norm: "neighbor" };
   if (/garage|basement|unfinished|storage|utility|\bshed\b|attic|workshop|mechanical/i.test(r)) return { scope: "unfinished", norm: "unfinished" };
   if (/part of the house|built[\s-]?in|permanent|plugged|attached|fixture|hard[\s-]?wired|\btv\b|television/i.test(r)) return { scope: "attached", norm: "attached" };
-  if (/barely|hardly|faint|tiny|too small|far away|in the distance|not noticeable|can'?t (?:really )?see|not (?:very |really )?visible|in (?:the )?drone/i.test(r)) return { scope: "faint", norm: "faint" };
+  // Oct 29 2026 (Kyle's words): "Drone shot", "Car is far from property", "Out of view", "Not that visible".
+  if (/barely|hardly|faint|tiny|too small|far (?:away|from)|in the distance|not (?:very |really |that |too )?noticeable|can'?t (?:really )?see|not (?:very |really |that |too )?visible|out of (?:view|frame|sight)|\bdrone\b/i.test(r)) return { scope: "faint", norm: "faint" };
   if (/stag(?:ing|ed)|\bdecor\b|intentional/i.test(r)) return { scope: "staged", norm: "staged" };
   if (NAMES_THE_LISTING.test(r)) return null;
   const norm = r.toLowerCase().replace(/[^a-z0-9 ]+/g, "").replace(/\s+/g, " ").trim();
   return norm.length >= 4 ? { scope: "rule", norm } : null;
 }
 
+/**
+ * NARROWED, NEVER SWITCHED OFF (Oct 29 2026, Jordan: "review some of Kyle's
+ * notes on the QC checks, and let's tighten them up so we don't flag things we
+ * dont need to fix"). An always-flagged check still learns where it does not
+ * apply: something on a neighbor's property is not this home's, and something
+ * barely visible (far off, out of view, in a drone shot) is not one to fix:
+ * Kyle set aside cars seen through windows "barely visible" 12 times on 6
+ * jobs, trash cans and driveway cars the same way. A clearly visible bin or
+ * car is still always flagged. Lines and the AI edit's own mistakes are never
+ * narrowed (913 Lakeview went out leaning), and no lesson ever switches an
+ * always-flagged check off.
+ */
+export function narrowsAlways(ruleId: string, scope: LessonScope): boolean {
+  return scope === "neighbor" || (scope === "faint" && !/^(?:PERSP_|AIEDIT_)/.test(ruleId));
+}
+
 /** What a lesson changes, in Jordan's words (the settings list). Pure. */
-export function lessonWords(l: Pick<Lesson, "scope" | "alwaysFlagged" | "active" | "undone">): string {
-  // A neighbor's property is never this home's, always-flagged check or not (the free check's own screen drops it for every check).
-  if (l.alwaysFlagged && l.scope !== "neighbor") return "Not applied: Jordan always wants this flagged";
+export function lessonWords(l: Pick<Lesson, "ruleId" | "scope" | "alwaysFlagged" | "active" | "undone">): string {
+  // A neighbor's property is never this home's, and a barely visible thing is not one to fix (narrowsAlways); anything else on an always-flagged check is not applied.
+  if (l.alwaysFlagged && !narrowsAlways(l.ruleId, l.scope)) return "Not applied: Jordan always wants this flagged";
   if (l.undone && !l.active) return "Undone";
   const w: Record<LessonScope, string> = {
     neighbor: "Not flagged on a neighbor's property",
@@ -214,7 +232,7 @@ export function lessonsFrom(
       jobs,
       examples: (counted.length ? counted : all).slice(0, 4).map((r) => ({ findingId: r.id, jobId: r.jobId, photoId: r.photoId, reason: (r.statusReason ?? "").slice(0, 200), by: r.decidedBy!.slice(0, 120), atISO: r.decidedAt!.toISOString() })),
       lastISO: all[0].decidedAt!.toISOString(),
-      active: ripe && (!alwaysFlagged || g.scope === "neighbor"),
+      active: ripe && (!alwaysFlagged || narrowsAlways(g.ruleId, g.scope)),
       alwaysFlagged,
       undone: u ? { by: u.by, atISO: u.at } : null,
     });

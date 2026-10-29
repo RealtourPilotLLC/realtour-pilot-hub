@@ -10,6 +10,7 @@ import { CHECK_FEATURES, readProgress, roomTypeFrom } from "./autohdrCheck";
 import { DRONE_RE, expectedPhotosFor, type IntakeFile } from "./intake";
 import { RULES_REGISTRY_VERSION, type RoomType, type Severity } from "./registry";
 import { ON_LISTING } from "./listingMatch";
+import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 
 // ---------------------------------------------------------------------------
 // ROOM COVERAGE, FREE (Oct 15 2026).
@@ -69,6 +70,12 @@ export type CoverageInput = {
   /** The check saw features (v3): the shower view can be judged. */
   featuresKnown: boolean;
   lostInEdit: EditLoss[];
+  /**
+   * Oct 29 2026 (Kyle on 58 Recreation Dr, a drone and lot lines order:
+   * "Exterior only"): the order has no photos of the inside, so no room inside
+   * is expected (orderShowsInside).
+   */
+  exteriorOnly?: boolean;
 };
 
 const BATHS: RoomType[] = ["PRIMARY_BATHROOM", "BATHROOM", "POWDER_ROOM"];
@@ -104,7 +111,7 @@ export function assessCoverage(input: CoverageInput): RoomRow[] {
   };
   room("front-exterior", "Front exterior", condo ? "MINOR" : "MAJOR", ["EXTERIOR_FRONT", "TWILIGHT_EXTERIOR"]);
   if (!condo) room("rear-exterior", "Rear exterior", "MINOR", ["EXTERIOR_REAR", "PATIO_DECK", "YARD", "POOL_SPA"]);
-  if (land) return rows;
+  if (land || input.exteriorOnly) return rows;
   room("kitchen", "Kitchen", "MAJOR", ["KITCHEN"]);
   room("living", "Living area", "MAJOR", ["LIVING", "FAMILY"]);
   if (input.bedrooms !== 0) room("primary-bedroom", "Primary bedroom", "MAJOR", ["PRIMARY_BEDROOM", "BEDROOM"], (hit) => (hit.some((p) => p.room === "PRIMARY_BEDROOM") ? "" : "No photo was labeled the primary bedroom; a bedroom is in."));
@@ -141,7 +148,19 @@ export function assessCoverage(input: CoverageInput): RoomRow[] {
   return rows;
 }
 
-/** AutoHDR returned fewer photos than the 5-shot bracket sets make. Pure. Only when every non-drone file is part of a full set (no single test frames). */
+/**
+ * NOT A LOSS (Oct 29 2026, Kyle overrode every one this month: "Autohdr has
+ * 92", "Only 50 photos in autohdr", "Autohdr only has 80"; none was ever
+ * fixed). A gap of a few photos is AutoHDR's own count (a set with an extra
+ * frame, a drone shot not named as one), not a loss to chase: a room that is
+ * really missing is the coverage rows' to say. And a shoot whose photos match
+ * another bracket size exactly (902 Valley Rd: 9 photos for 135 frames, 15 to
+ * a set) lost nothing.
+ */
+export const LOSS_MIN_GAP = 6;
+const OTHER_BRACKETS = [3, 7, 9, 15];
+
+/** AutoHDR returned fewer photos than the 5-shot bracket sets make, by LOSS_MIN_GAP or more. Pure. Only when every non-drone file is part of a full set (no single test frames). */
 export function editLoss(batches: { batchNo: number; files: IntakeFile[]; returned: number | null }[]): EditLoss[] {
   const out: EditLoss[] = [];
   for (const b of batches) {
@@ -149,7 +168,10 @@ export function editLoss(batches: { batchNo: number; files: IntakeFile[]; return
     const ground = b.files.filter((f) => !DRONE_RE.test(f.name)).length;
     if (ground % 5 !== 0) continue;
     const expected = expectedPhotosFor(b.files);
-    if (b.returned < expected) out.push({ batchNo: b.batchNo, expected, returned: b.returned });
+    if (expected - b.returned < LOSS_MIN_GAP) continue;
+    const drone = b.files.length - ground;
+    if (OTHER_BRACKETS.some((n) => ground % n === 0 && ground / n + drone === b.returned)) continue;
+    out.push({ batchNo: b.batchNo, expected, returned: b.returned });
   }
   return out;
 }
@@ -174,6 +196,16 @@ export function findingsFor(rows: RoomRow[], loss: EditLoss[]): FindingPlan[] {
   return out;
 }
 
+/**
+ * Whether the order has photos of the inside: false only when what it owes is
+ * outside work alone (drone, twilight, lot lines and the like, no Photos or
+ * Virtual Staging line). An order with nothing on it yet reads as inside. Pure.
+ */
+export function orderShowsInside(owed: { type: string }[]): boolean {
+  if (!owed.length) return true;
+  return owed.some((d) => d.type === "PHOTOS" || d.type === "VIRTUAL_STAGING") || !owed.some((d) => d.type === "DRONE" || d.type === "TWILIGHT");
+}
+
 /** coverageJson. */
 export type CoverageState = {
   v: 1;
@@ -181,7 +213,7 @@ export type CoverageState = {
   photoSet: string;
   done: boolean;
   at: string;
-  expected: { bedrooms: number | null; bathrooms: number | null; propertyType: string | null };
+  expected: { bedrooms: number | null; bathrooms: number | null; propertyType: string | null; exteriorOnly?: boolean };
   counts: { raw: number | null; expectedPhotos: number | null; autohdr: number | null; delivered: number; leftOut: number };
   capturedKnown: boolean;
   capturedNote: string | null;
@@ -268,9 +300,10 @@ export async function coverageJob(jobId: string, deadline: number): Promise<{ do
   };
   const asLabeled = (p: (typeof photos)[number]): LabeledPhoto => ({ id: p.id, name: p.name, room: (p.roomType as RoomType | null) ?? null, features: featuresOf(p) });
   const prev = parseCoverage(job.coverageJson);
+  const owed = await prisma.deliverable.findMany({ where: { projectId: job.projectId, ...OWED_DELIVERABLE_WHERE }, select: { type: true } });
   const state: CoverageState = {
     v: 1, photoSet: photoSetKey(active.map((p) => p.id)), done: false, at: new Date().toISOString(),
-    expected: { bedrooms: typeof expected.bedrooms === "number" ? expected.bedrooms : null, bathrooms: typeof expected.bathrooms === "number" ? expected.bathrooms : null, propertyType: typeof expected.propertyType === "string" ? expected.propertyType : null },
+    expected: { bedrooms: typeof expected.bedrooms === "number" ? expected.bedrooms : null, bathrooms: typeof expected.bathrooms === "number" ? expected.bathrooms : null, propertyType: typeof expected.propertyType === "string" ? expected.propertyType : null, ...(orderShowsInside(owed) ? {} : { exteriorOnly: true }) },
     counts: { raw: null, expectedPhotos: null, autohdr: null, delivered: active.length, leftOut: photos.filter((p) => p.status === "EXCLUDED").length },
     capturedKnown: false, capturedNote: null, captured: prev?.captured ?? {}, rooms: [], lostInEdit: [],
   };
@@ -356,6 +389,7 @@ export async function coverageJob(jobId: string, deadline: number): Promise<{ do
     unlabeledCaptured: unlabeled,
     featuresKnown: (progress.v ?? 0) >= 3,
     lostInEdit: state.lostInEdit,
+    exteriorOnly: state.expected.exteriorOnly === true,
   });
   state.done = true;
   const plans = findingsFor(state.rooms, state.lostInEdit);

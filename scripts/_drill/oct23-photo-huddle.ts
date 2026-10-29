@@ -265,12 +265,19 @@ async function main() {
     lessons = await house.learnedChecks();
     const vac = lessons.find((l) => l.ruleId === "PREP_VACUUM_CLEANING_EQUIPMENT" && l.scope === "staged");
     c.ok("'Intentional staging' 3 times on 2 jobs: 'Not flagged when it is intentional staging or decor', in the question, the check kept", !!vac?.active && check.checkPrompt(house.disabledIn(await house.houseOverrides()), house.lessonPromptLines(lessons)).includes("PREP_VACUUM_CLEANING_EQUIPMENT: never intentional staging or decor") && !house.disabledIn(await house.houseOverrides()).has("PREP_VACUUM_CLEANING_EQUIPMENT"), JSON.stringify(vac));
-    // "Barely visible" on a trash can: recorded, never applied (always wanted).
+    // "Barely visible" on a trash can: Oct 29 2026 (Jordan: "tighten them up so we don't flag things we dont need to fix"), an always-flagged check is narrowed to what is clearly visible, never switched off.
     await seedDecided("40 Bin Ct", "EXT_TRASH_CANS_PRIMARY", 2, "Barely visible from the street");
     await seedDecided("41 Bin Ct", "EXT_TRASH_CANS_PRIMARY", 2, "Barely visible from the street");
     lessons = await house.learnedChecks();
     const bins = lessons.find((l) => l.ruleId === "EXT_TRASH_CANS_PRIMARY");
-    c.ok("a trash can 'barely visible' 4 times: listed, not applied ('Jordan always wants this flagged')", !!bins && !bins.active && bins.alwaysFlagged && /always wants this flagged/.test(house.lessonWords(bins)) && check.screenIssues({ room: "front exterior", issues: [{ ruleId: "EXT_TRASH_CANS_PRIMARY", where: "far curb", confidence: 0.5 }] }, { lessons, alwaysFlag: policy.ALWAYS_FLAG }).kept.length === 1, JSON.stringify(bins));
+    const binScreen = check.screenIssues({ room: "front exterior", issues: [{ ruleId: "EXT_TRASH_CANS_PRIMARY", where: "far curb", confidence: 0.5 }, { ruleId: "EXT_TRASH_CANS_PRIMARY", where: "driveway, by the garage", confidence: 0.9 }] }, { lessons, alwaysFlag: policy.ALWAYS_FLAG });
+    c.ok("a trash can 'barely visible' 4 times: applied as 'Flagged only when it is clearly visible'; a faint one is dropped, a clear one still flagged", !!bins && bins.active && bins.alwaysFlagged && house.lessonWords(bins) === "Flagged only when it is clearly visible" && binScreen.kept.length === 1 && binScreen.kept[0].where === "driveway, by the garage" && binScreen.dropped[0]?.why === "learned: barely visible", JSON.stringify({ bins, binScreen }));
+    c.ok("…in the question too, and the check is still on", house.lessonPromptLines(lessons).some((l) => l.startsWith("EXT_TRASH_CANS_PRIMARY: only when it is clearly visible")) && !house.disabledIn(await house.houseOverrides()).has("EXT_TRASH_CANS_PRIMARY"));
+    // Lines and the AI edit's own mistakes are never narrowed; no other kind of lesson narrows an always-flagged check.
+    const rowsA = (ruleId: string, reason: string) => ["j1", "j2", "j3"].map((jobId, i) => ({ id: `${ruleId}-${i}`, jobId, photoId: `p${i}`, ruleId, statusReason: reason, decidedBy: "Kyle Smith", decidedAt: new Date(Date.now() - i * 1000), status: "IGNORED" }));
+    const pureA = house.lessonsFrom([...rowsA("PERSP_EXTERIOR_WALLS_LEANING", "Barely visible in the photo"), ...rowsA("AIEDIT_FLOATING_OBJECT", "barely visible"), ...rowsA("EXT_TRASH_CANS_PRIMARY", "It is part of the house"), ...rowsA("EXT_PARKED_CARS_DRIVEWAY", "Drone shot"), ...rowsA("EXT_VEHICLES_THROUGH_WINDOWS", "Car is far from property")], [], policy.ALWAYS_FLAG);
+    const act = (ruleId: string) => pureA.find((l) => l.ruleId === ruleId)?.active;
+    c.ok("lines, edit mistakes and 'part of the house' on a bin are not applied; 'Drone shot' and 'far from property' read as barely visible and are", act("PERSP_EXTERIOR_WALLS_LEANING") === false && act("AIEDIT_FLOATING_OBJECT") === false && act("EXT_TRASH_CANS_PRIMARY") === false && act("EXT_PARKED_CARS_DRIVEWAY") === true && act("EXT_VEHICLES_THROUGH_WINDOWS") === true && pureA.find((l) => l.ruleId === "EXT_PARKED_CARS_DRIVEWAY")?.scope === "faint", JSON.stringify(pureA.map((l) => [l.ruleId, l.scope, l.active])));
     // The listing-specific preset never teaches.
     await seedDecided("50 Mat Way", "PREP_SHOES_FOOTWEAR", 3, "Not worth a fix on this listing");
     await seedDecided("51 Mat Way", "PREP_SHOES_FOOTWEAR", 3, "Not worth a fix on this listing");
@@ -294,7 +301,7 @@ async function main() {
     // Jordan's list, and Undo.
     const { LearnedChecks } = await import("@/components/photoDelivery/LearnedChecks");
     const lh = html(createElement(LearnedChecks, { lessons: lessons.filter((l) => l.count >= 3).map((l) => ({ key: l.key, label: l.ruleId, reason: l.reason, count: l.count, jobs: l.jobs, changes: house.lessonWords(l), active: l.active, alwaysFlagged: l.alwaysFlagged, undone: null, examples: [] })) }));
-    c.ok("the settings list: each lesson, its words and counts, what changes, Undo on the active ones only", /We never fix paper towels|we never fix paper towels/i.test(text(lh)) && /3 times on 2 jobs/.test(text(lh)) && /No longer flagged on any shoot/.test(text(lh)) && (lh.match(/Undo/g) ?? []).length === lessons.filter((l) => l.count >= 3 && l.active).length && /Not applied: Jordan always wants this flagged/.test(text(lh)));
+    c.ok("the settings list: each lesson, its words and counts, what changes, Undo on the active ones only", /We never fix paper towels|we never fix paper towels/i.test(text(lh)) && /3 times on 2 jobs/.test(text(lh)) && /No longer flagged on any shoot/.test(text(lh)) && (lh.match(/Undo/g) ?? []).length === lessons.filter((l) => l.count >= 3 && l.active).length && /Flagged only when it is clearly visible/.test(text(lh)));
     const settingsSrc = src("src/app/ops/photo-delivery/settings/page.tsx");
     c.ok("…on Photo Delivery settings (owner only), worked out fresh on each visit", /What the check has learned/.test(settingsSrc) && /refreshLessons\(/.test(settingsSrc) && /<LearnedChecks lessons=\{lessonViews\}/.test(settingsSrc) && /if \(!viewer\.isOwner\) redirect/.test(settingsSrc));
     const undo = await house.undoLesson(towels!.key, "Jordan Spackman");

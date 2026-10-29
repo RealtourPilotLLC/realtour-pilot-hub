@@ -8,7 +8,7 @@ import { photoDeliverySettings } from "./settings";
 import { logJobEvent, setStage } from "./jobState";
 import { ruleById, RULES_REGISTRY_VERSION, SEVERITY_RANK, type RoomType } from "./registry";
 import { jobVerdict, photoVerdicts, qcStageFor } from "./qc/verdict";
-import { disabledIn, houseOverrides, learnedChecks, lessonPromptLines } from "./houseRules";
+import { disabledIn, houseOverrides, learnedChecks, lessonPromptLines, narrowsAlways, type LessonScope } from "./houseRules";
 import { ALWAYS_FLAG, fixClass, instructionFor, refreshVerdict, shootIdOf as shootOf } from "./fixPolicy";
 import { overridesFor } from "./decisions";
 
@@ -356,8 +356,9 @@ type ScreenLesson = { ruleId: string; scope: string; active: boolean };
  *   · clutter in an unfinished space (the room the check named: a garage, an
  *     unfinished basement or room, storage), never an ALWAYS_FLAG check (trash
  *     cans still count there);
- *   · what the office's calls taught (houseRules.learnedChecks), never on an
- *     ALWAYS_FLAG check: "barely visible" drops one the check was under 75%
+ *   · what the office's calls taught (houseRules.learnedChecks), on an
+ *     ALWAYS_FLAG check only "barely visible" (Oct 29 2026, never lines or
+ *     edit mistakes): "barely visible" drops one the check was under 75%
  *     sure of, "part of the house" one whose place says it is, "garage or
  *     basement" one in an unfinished space.
  * Then one finding per family (dedupeIssues).
@@ -366,7 +367,8 @@ export function screenIssues(a: Pick<CheckAnswer, "room" | "issues">, opts: { le
   const always = opts.alwaysFlag ?? new Set<string>();
   const isClutter = opts.clutter ?? ((id: string) => fixClass(id) === "prep");
   const unfinished = UNFINISHED_RE.test(a.room ?? "");
-  const lessons = (opts.lessons ?? []).filter((l) => l.active && !always.has(l.ruleId));
+  // Oct 29 2026: an always-flagged check is narrowed by a "barely visible" lesson too (houseRules.narrowsAlways), never by the others.
+  const lessons = (opts.lessons ?? []).filter((l) => l.active && (!always.has(l.ruleId) || narrowsAlways(l.ruleId, l.scope as LessonScope)));
   const has = (ruleId: string, scope: string) => lessons.some((l) => l.ruleId === ruleId && l.scope === scope);
   const kept: CheckIssue[] = [];
   const dropped: { ruleId: string; why: string }[] = [];
