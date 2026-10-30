@@ -3,7 +3,8 @@
 // the spec's checks that belong to it:
 //   1  Jordan and the assignee see the same task, the same state, the same update
 //   2  delegation reaches the right person with its context (the bell row)
-//   3  unaccepted and overdue assignments resurface to the assigner
+//   3  overdue and blocked assignments resurface to the assigner (no
+//      acceptance step since Oct 30 2026: assigned is the assignee's)
 //   14 role permissions and the read-only preview are enforced
 // plus: one canonical task (re-assigning a record re-uses its task, a double
 // press makes one), reassignment keeps the history, verification only when
@@ -74,7 +75,7 @@ async function main() {
     const rec1 = lib.parseDelegation(t1?.delegation);
     c.ok("…its record carries the outcome, the verification flag, the source, an acceptance deadline and the 'assigned' event", rec1?.outcome?.startsWith("A one-page brief") === true && rec1.needsVerification && rec1.sourceHref === `/projects/${project.id}#brief` && !!rec1.acceptBy && rec1.events.length === 1 && rec1.events[0].kind === "assigned" && rec1.events[0].by === "Jordan");
     const jb = await bells(jamesTm.id);
-    c.ok("#2 James is told through the bell (task_assigned, addressed to him, with the outcome and the link)", jb.length === 1 && jb[0].kind === "task_assigned" && /Jordan assigned you: Prepare the strategy brief/.test(jb[0].title) && jb[0].href === `/projects/${project.id}#brief`, jb.map((b) => b.title).join(" | "));
+    c.ok("#2 James is told through the bell (task_assigned, addressed to him, with the outcome and the link)", jb.length === 1 && jb[0].kind === "task_assigned" && /Jordan assigned you: Prepare the strategy brief/.test(jb[0].title) && jb[0].href === `/?task=${t1!.id}`, jb.map((b) => b.title).join(" | "));
 
     // ---- one canonical task ----
     const again = await A.assignTaskAction({ title: "Prepare the strategy brief for Real Agent", assigneeKey: "james", sourceHref: `/projects/${project.id}#brief` });
@@ -98,17 +99,18 @@ async function main() {
       const dash = (await delegatedByMe({ email: "info@realtourpilot.com" })).rows.find((d) => d.taskId === t1!.id);
       return { ok: !!mine && !!theirs && !!dash && mine.state === want && theirs.state === want && dash.state === want && mine.latestUpdate === theirs.latestUpdate && mine.latestUpdate === dash.latestUpdate, mine, theirs };
     };
-    let s = await sameState("ASSIGNED");
-    c.ok("#1 both read Awaiting acceptance (assigned is not accepted)", s.ok, `${s.mine?.state}/${s.theirs?.state}`);
+    // Oct 30 2026 (Jordan: "if I assign it to them it's assigned to them"): no acceptance step.
+    let s = await sameState("ACCEPTED");
+    c.ok("#1 both read Assigned: it is James's the moment it is assigned", s.ok && lib.STATE_WORDS[s.mine!.state] === "Assigned", `${s.mine?.state}/${s.theirs?.state}`);
     await signIn(james);
     const acc = await A.acceptTaskAction(t1!.id);
     s = await sameState("ACCEPTED");
-    c.ok("#1 James accepts on his side: Jordan's view says Accepted too", acc.ok && s.ok, `${acc.message} ${s.mine?.state}/${s.theirs?.state}`);
+    c.ok("#1 an old Accept press changes nothing: still Assigned on both sides", acc.ok && s.ok, `${acc.message} ${s.mine?.state}/${s.theirs?.state}`);
     const upd = await A.updateTaskAction(t1!.id, "Pulled last month's notes, drafting now");
     s = await sameState("IN_PROGRESS");
     c.ok("#1 his update starts it and is the latest update on both screens, word for word", upd.ok && s.ok && s.mine?.latestUpdate === "James: Pulled last month's notes, drafting now", `${s.mine?.state} · ${s.mine?.latestUpdate} | ${s.theirs?.latestUpdate}`);
     const jordanBells = await bells(jordanTm.id);
-    c.ok("…and Jordan hears about it (his bell: accepted, then the update)", jordanBells.some((b) => /James accepted/.test(b.title)) && jordanBells.some((b) => /James: Pulled/.test(b.title)), jordanBells.map((b) => b.title).join(" | "));
+    c.ok("…and Jordan hears about the update (and no 'accepted' bell)", !jordanBells.some((b) => /James accepted/.test(b.title)) && jordanBells.some((b) => /James: Pulled/.test(b.title)), jordanBells.map((b) => b.title).join(" | "));
 
     // ---- verification only when asked ----
     const early = await A.completeTaskAction(t1!.id, "done");
@@ -127,7 +129,7 @@ async function main() {
     const done1 = (await lib.tasksDelegatedBy("info@realtourpilot.com")).find((d) => d.taskId === t1!.id);
     c.ok("Jordan verifies: Completed, evidence kept, and it leaves James's open list", ver.ok && /Verified/.test(ver.message) && done1?.state === "COMPLETED" && done1.evidence === "Read it, good" && !(await lib.tasksAssignedTo("james")).some((d) => d.taskId === t1!.id), ver.message);
     const kinds = done1?.events.map((e) => e.kind).join(",");
-    c.ok("every state change is on its history, with who and when", kinds === "assigned,accepted,started,update,submitted,returned,submitted,completed" && done1!.events.every((e) => !!e.at && !!e.by), kinds);
+    c.ok("every state change is on its history, with who and when", kinds === "assigned,started,update,submitted,returned,submitted,completed" && done1!.events.every((e) => !!e.at && !!e.by), kinds);
     const noVerify = await prisma.smartTask.findFirst({ where: { title: "Order more SD cards" } });
     await signIn(kyle);
     const subNo = await A.submitForVerificationAction(noVerify!.id);
@@ -135,26 +137,26 @@ async function main() {
     c.ok("verification happens only when the task asks for it: Kyle completes his own directly", !subNo.ok && doneNo.ok && (await prisma.smartTask.findUnique({ where: { id: noVerify!.id } }))?.status === "COMPLETED", `${subNo.message} / ${doneNo.message}`);
 
     // =====================================================================
-    c.head("§3 · missed acceptance and overdue work come back to Jordan (#3)");
+    c.head("§3 · overdue and blocked work come back to Jordan (#3)");
     // =====================================================================
     await signIn(owner);
     const late = await A.assignTaskAction({ title: "Call the stager about 5 Birch Ln", assigneeKey: "kyle", dueAt: new Date(T.getTime() + 6 * H).toISOString() });
     const lateTask = await prisma.smartTask.findFirst({ where: { title: "Call the stager about 5 Birch Ln" } });
     const later = new Date(T.getTime() + 2 * D);
     const flagged = (await delegatedByMe({ email: "info@realtourpilot.com", now: later })).rows.find((r) => r.taskId === lateTask!.id);
-    c.ok("#3 past its due time and never accepted: flagged at the top of Delegated by me", late.ok && flagged?.resurface?.kind === "overdue" && (await delegatedByMe({ email: "info@realtourpilot.com", now: later })).rows[0].taskId === lateTask!.id, `${flagged?.resurface?.kind}`);
+    c.ok("#3 past its due time: flagged at the top of Delegated by me", late.ok && flagged?.resurface?.kind === "overdue" && (await delegatedByMe({ email: "info@realtourpilot.com", now: later })).rows[0].taskId === lateTask!.id, `${flagged?.resurface?.kind}`);
     const notAcc = await A.assignTaskAction({ title: "Book the drone permit", assigneeKey: "kyle" });
     const notAccTask = await prisma.smartTask.findFirst({ where: { title: "Book the drone permit" } });
     const rec = lib.parseDelegation(notAccTask!.delegation)!;
     const pastAccept = new Date(Date.parse(rec.acceptBy!) + H);
     const view = (await lib.delegationFor([notAccTask!.id])).get(notAccTask!.id)!;
-    c.ok("#3 not accepted by the end of the next business day: 'Not accepted yet'", notAcc.ok && lib.resurfaceOf(view, pastAccept)?.kind === "not_accepted" && lib.resurfaceOf(view, T) === null, lib.resurfaceOf(view, pastAccept)?.words ?? "none");
+    c.ok("#3 nothing comes back as 'not accepted' (Oct 30 2026: assigned is theirs)", notAcc.ok && lib.resurfaceOf(view, pastAccept) === null && lib.resurfaceOf(view, T) === null, lib.resurfaceOf(view, pastAccept)?.words ?? "none");
     const bellsBefore = (await bells(jordanTm.id)).length;
     const sweep1 = await lib.resurfaceDelegations(pastAccept);
     const sweep2 = await lib.resurfaceDelegations(pastAccept);
     const after = await bells(jordanTm.id);
-    c.ok("#3 the hourly sweep rings Jordan once per task per reason per day (a second run adds nothing)", sweep1.rang >= 2 && after.length === bellsBefore + sweep1.rang && after.filter((b) => b.kind === "delegation_followup").length === sweep1.rang && sweep2.rang === sweep1.rang, `${sweep1.rang}/${sweep2.rang} rows ${after.length - bellsBefore}`);
-    c.ok("…the bells name the task and the person", after.some((b) => b.title === "Not accepted: Book the drone permit" && /Kyle/.test(b.body ?? "")) && after.some((b) => b.title === "Overdue: Call the stager about 5 Birch Ln"), after.slice(bellsBefore).map((b) => `${b.title} (${b.body})`).join(" | "));
+    c.ok("#3 the hourly sweep rings Jordan once per task per reason per day (a second run adds nothing)", sweep1.rang >= 1 && after.length === bellsBefore + sweep1.rang && after.filter((b) => b.kind === "delegation_followup").length === sweep1.rang && sweep2.rang === sweep1.rang, `${sweep1.rang}/${sweep2.rang} rows ${after.length - bellsBefore}`);
+    c.ok("…the bells name the task and the person, and none says 'Not accepted'", !after.some((b) => /^Not accepted/.test(b.title)) && after.some((b) => b.title === "Overdue: Call the stager about 5 Birch Ln" && /Kyle/.test(b.body ?? "")), after.slice(bellsBefore).map((b) => `${b.title} (${b.body})`).join(" | "));
     await signIn(kyle);
     const blk = await A.flagBlockerAction(notAccTask!.id, "The FAA portal is down");
     const blocked = (await lib.tasksAssignedTo("kyle")).find((d) => d.taskId === notAccTask!.id);
@@ -169,7 +171,7 @@ async function main() {
     await signIn(owner);
     const re = await A.reassignTaskAction(lateTask!.id, "james");
     const moved = (await lib.delegationFor([lateTask!.id])).get(lateTask!.id)!;
-    c.ok("moved to James: his now, awaiting HIS acceptance, gone from Kyle's list", re.ok && moved.assigneeKey === "james" && moved.state === "ASSIGNED" && (await lib.tasksAssignedTo("james")).some((d) => d.taskId === lateTask!.id) && !(await lib.tasksAssignedTo("kyle")).some((d) => d.taskId === lateTask!.id), re.message);
+    c.ok("moved to James: his at once (nothing to accept), gone from Kyle's list", re.ok && moved.assigneeKey === "james" && moved.state === "ACCEPTED" && (await lib.tasksAssignedTo("james")).some((d) => d.taskId === lateTask!.id) && !(await lib.tasksAssignedTo("kyle")).some((d) => d.taskId === lateTask!.id), re.message);
     c.ok("…the history keeps both: assigned to Kyle, then moved from Kyle to James", moved.events.map((e) => `${e.kind}:${e.to ?? ""}`).join(",") === "assigned:Kyle,reassigned:James" && moved.events[1].from === "Kyle");
     const kb = await bells(kyleTm.id);
     c.ok("…James is told it's his; Kyle is told it moved", (await bells(jamesTm.id)).some((b) => /Call the stager/.test(b.title) && b.kind === "task_assigned") && kb.some((b) => /Moved to James: Call the stager/.test(b.title)));
@@ -253,7 +255,7 @@ async function main() {
     const p1 = await A.assignTaskAction({ title: "Preview write", assigneeKey: "kyle" });
     const p2 = await A.acceptTaskAction(lateTask!.id);
     const p3 = await A.completeTaskAction(notAccTask!.id, "x");
-    c.ok("#14 'view as James' is read-only: every action refuses and nothing is written", !p1.ok && !p2.ok && !p3.ok && /previewing/i.test(p1.message) && (await tasks()) === n4 && (await lib.delegationFor([lateTask!.id])).get(lateTask!.id)!.state === "ASSIGNED", p1.message);
+    c.ok("#14 'view as James' is read-only: every action refuses and nothing is written", !p1.ok && !p2.ok && !p3.ok && /previewing/i.test(p1.message) && (await tasks()) === n4 && (await lib.delegationFor([lateTask!.id])).get(lateTask!.id)!.state === "ACCEPTED", p1.message);
 
     // =====================================================================
     c.head("§6 · My Day's 'Create task for Kyle' is a thin wrapper");

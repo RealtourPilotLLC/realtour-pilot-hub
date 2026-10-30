@@ -438,7 +438,7 @@ async function main() {
     await signIn(james);
     d = await desk();
     const del = d.assigned.items.find((x) => x.title === "Review a client's creative concern");
-    c.ok("H: a delegated task shows who assigned it, its outcome, its due time and 'Awaiting acceptance'", !!del && del.delegated && del.assignedBy === "Jordan" && del.outcome === "A recovery plan" && del.stateWords === "Awaiting acceptance" && del.urgent, JSON.stringify(del));
+    c.ok("H: a delegated task shows who assigned it, its outcome, its due time and 'Assigned' (no acceptance step, Oct 30 2026)", !!del && del.delegated && del.assignedBy === "Jordan" && del.outcome === "A recovery plan" && del.stateWords === "Assigned" && del.urgent, JSON.stringify(del));
 
     // =====================================================================
     c.head("§8 · the end-of-day check: a record per person per day, a tick completes nothing");

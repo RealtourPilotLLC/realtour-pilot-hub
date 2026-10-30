@@ -133,10 +133,10 @@ async function main() {
     c.ok("#13 the panel the tile opens lists exactly those rows", preHtml.includes('data-panel-list="1"') && preHtml.includes("10 Shoot Ave") && preHtml.includes("No photographer assigned"));
     const delegatedRows = Number((oHtml.match(/data-delegated="(\d+)"/) ?? [])[1]);
     c.ok("#13 Delegated by me lists the two open assignments (the overdue one flagged first, with Follow up)", delegatedRows === 2 && (oHtml.match(/data-delegated-row=/g) ?? []).length === 2 && oHtml.indexOf("Prepare the strategy brief") < oHtml.indexOf("Confirm the reshoot") && oHtml.includes(">Follow up<"), String(delegatedRows));
-    c.ok("#13 'awaiting acceptance' under Team coverage is the same two", oHtml.includes('data-awaiting="2"'));
+    c.ok("#13 Team coverage counts the same two open assignments (no 'awaiting acceptance' since Oct 30 2026)", oHtml.includes('data-open-assignments="2"') && !oHtml.includes("awaiting acceptance"));
     const taskSpec = buttons.find((b) => b.spec.kind === "task")!.spec;
     const taskHtml = panel(taskSpec);
-    c.ok("a delegated task's panel: status, who and when, the history, and Jordan's actions (Request update, Reassign, Mark complete, Cancel)", taskHtml.includes("Awaiting acceptance") && taskHtml.includes("data-task-history") && taskHtml.includes("assigned it to James") && ["Request update", "Reassign", "Cancel it"].every((w) => taskHtml.includes(w)), taskHtml.slice(taskHtml.indexOf("data-side-panel"), taskHtml.indexOf("data-side-panel") + 300));
+    c.ok("a delegated task's panel: status, who and when, the history, and Jordan's actions (Request update, Reassign, Mark complete, Cancel)", taskHtml.includes(">Assigned<") && !taskHtml.includes("Awaiting acceptance") && taskHtml.includes("data-task-history") && taskHtml.includes("assigned it to James") && ["Request update", "Reassign", "Cancel it"].every((w) => taskHtml.includes(w)), taskHtml.slice(taskHtml.indexOf("data-side-panel"), taskHtml.indexOf("data-side-panel") + 300));
     const assignHtml = panel({ kind: "assign", seed: { title: "" } });
     c.ok("Assign task opens a compact form: task, outcome, person, due, verification, note", assignHtml.includes("data-assign-form") && ["Expected outcome", "Assign to", "Due (5 PM ET)", "I verify it before it counts as done"].every((w) => assignHtml.includes(w)) && assignHtml.includes(">Kyle<") && assignHtml.includes(">James<"));
 

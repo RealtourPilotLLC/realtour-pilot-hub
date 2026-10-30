@@ -187,7 +187,7 @@ export async function loadOwnerTopics(opts: { now: Date; bottlenecks: Bottleneck
     for (const t of topics) {
       const task = tasks.find((x) => x.dedupeKey === `deleg:${topicHref(t.key)}`.slice(0, 190));
       const v = task ? views.get(task.id) : null;
-      if (v) t.handledBy = { taskId: v.taskId, words: `${v.assigneeName ?? "Someone"} has it · ${v.state === "ASSIGNED" ? "not accepted yet" : String(v.state).toLowerCase().replace(/_/g, " ")}` };
+      if (v) t.handledBy = { taskId: v.taskId, words: `${v.assigneeName ?? "Someone"} has it · ${v.state === "ASSIGNED" || v.state === "ACCEPTED" ? "assigned" : String(v.state).toLowerCase().replace(/_/g, " ")}` };
     }
   }
 

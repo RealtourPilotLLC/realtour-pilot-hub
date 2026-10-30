@@ -164,7 +164,7 @@ async function main() {
     await signIn(owner);
     const rec = await A.assignTaskAction({ ...b(pLate.id)!.assign, assigneeKey: "kyle", title: b(pLate.id)!.assign.title });
     h = await od.productionHealth({ now: T, includeTest: true, excludeClientIds: [] });
-    c.ok("…once someone has it, the row says who and how far along (and the client update given)", rec.ok && /Kyle has it · not accepted yet/.test(b(pLate.id)?.handledBy?.words ?? "") && /Client updated/.test(b(pLate.id)?.clientUpdate ?? "") && !!b(pLate.id)?.taskId, `${b(pLate.id)?.handledBy?.words} · ${b(pLate.id)?.clientUpdate}`);
+    c.ok("…once someone has it, the row says who and how far along (and the client update given)", rec.ok && /Kyle has it · assigned/.test(b(pLate.id)?.handledBy?.words ?? "") && /Client updated/.test(b(pLate.id)?.clientUpdate ?? "") && !!b(pLate.id)?.taskId, `${b(pLate.id)?.handledBy?.words} · ${b(pLate.id)?.clientUpdate}`);
     const again = await A.assignTaskAction({ ...b(pLate.id)!.assign, assigneeKey: "kyle" });
     c.ok("…and pressing Assign on it again is the same task (one canonical)", again.ok && /Already with Kyle/.test(again.message));
     videoLanes = null;
@@ -197,7 +197,8 @@ async function main() {
     await prisma.appSetting.create({ data: { key: `pto:${jamesTm!.id}:2026`, value: JSON.stringify({ v: 1, entries: [{ id: "e1", startKey: tomorrowKey, endKey: tomorrowKey, type: "vacation", fraction: 1, note: "", by: "Jordan", at: T.toISOString() }], log: [] }) } });
     const team = await od.teamCoverage({ now: T, includeTest: true, production: h });
     c.ok("time off on record shows on the person's row (PTO)", team.timeOff.some((o) => o.name === "James" && /Off/.test(o.words)), JSON.stringify(team.timeOff));
-    c.ok("#13 'awaiting acceptance' is the count of the open assignments nobody accepted", team.awaitingAcceptance.length === (await lib.openDelegations()).filter((d) => d.state === "ASSIGNED").length && team.awaitingAcceptance.length >= 1);
+    // Oct 30 2026: no acceptance step, so nothing waits on it.
+    c.ok("#13 nothing is 'awaiting acceptance' any more (assigned is the assignee's)", team.awaitingAcceptance.length === 0 && (await lib.openDelegations()).every((d) => d.state !== "ASSIGNED"));
     c.ok("the office row names Kyle and the shoot with no photographer; capacity is never estimated", team.rows.some((r) => r.person === "Kyle" && /no photographer/.test(r.status)) && /isn't estimated/.test(team.note), team.rows.map((r) => `${r.person}: ${r.status}`).join(" | "));
 
     // =====================================================================
@@ -273,7 +274,7 @@ async function main() {
     await signIn(owner);
     const reopen = await A.assignTaskAction({ ...row()!.assign, assigneeKey: "kyle" });
     const reView = (await lib.delegationFor([replyTaskId])).get(replyTaskId);
-    c.ok("#4 delegating it again reopens the SAME task (one canonical), with the reopening on its history", reopen.ok && !!reView && reView.state === "ASSIGNED" && reView.events.some((e2) => e2.kind === "reopened") && (await prisma.smartTask.count({ where: { dedupeKey: { startsWith: "deleg:/communications" } } })) === 1, reopen.message);
+    c.ok("#4 delegating it again reopens the SAME task (one canonical), with the reopening on its history", reopen.ok && !!reView && reView.state === "ACCEPTED" && reView.events.some((e2) => e2.kind === "reopened") && (await prisma.smartTask.count({ where: { dedupeKey: { startsWith: "deleg:/communications" } } })) === 1, reopen.message);
     // The comms engine's own reopen: a new message merged into a closed reply task.
     const engineTask = await prisma.smartTask.create({ data: { taskType: "client_reply", title: "Reply to Real Agent (texts)", source: "openphone", clientId: client.id, assignedKey: "kyle", status: "OPEN" } });
     await A.assignTaskAction({ title: "Reply to Real Agent (texts)", assigneeKey: "kyle", sourceTaskId: engineTask.id });

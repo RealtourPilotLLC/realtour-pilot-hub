@@ -21,7 +21,7 @@ import type { BottleneckTopic } from "@/lib/ownerTopicsCore";
 import type { DelegatedTaskView } from "@/lib/delegation";
 import {
   creativeDecisions, delegatedByMe, emailNeedingReply, meetingsSection, EMAIL_CLASS_WORDS,
-  type CreativeDecisions, type DelegatedByMe, type EmailSection, type Meetings,
+  type CreativeDecisions, type DelegatedByMe, type DelegatedRow, type EmailSection, type Meetings,
 } from "@/lib/ownerWork";
 import { OwnerShell, PanelButton, RowActionButton, PRIMARY, QUIET } from "@/components/owner/OwnerShell";
 import { RevenueMonthPanel } from "@/components/finance/RevenueMonthPanel";
@@ -315,7 +315,7 @@ async function TeamSection({ p, nowMs }: { p: Promise<TeamCoverage | null>; nowM
   const { resurfaceOf } = await import("@/lib/delegation");
   const now = new Date(nowMs);
   const workload: ListRow[] = [
-    ...Object.values(t.byPerson).flat().map((d) => ({ id: d.taskId, title: `${d.assigneeName ?? "Nobody"}: ${d.title}`, sub: [d.state === "ASSIGNED" ? "Awaiting acceptance" : d.state.toLowerCase().replace(/_/g, " "), d.dueAt ? `due ${etDateTime(d.dueAt)}` : null, d.assignedBy ? `from ${d.assignedBy}` : null].filter(Boolean).join(" · "), tone: (d.dueAt && Date.parse(d.dueAt) < nowMs ? "bad" : d.state === "ASSIGNED" ? "warn" : "ok") as Tone, open: { kind: "task" as const, task: { ...d, resurface: resurfaceOf(d, now) } } })),
+    ...Object.values(t.byPerson).flat().map((d) => ({ id: d.taskId, title: `${d.assigneeName ?? "Nobody"}: ${d.title}`, sub: [(STATE_WORD[d.state] ?? d.state).toLowerCase(), d.dueAt ? `due ${etDateTime(d.dueAt)}` : null, d.assignedBy ? `from ${d.assignedBy}` : null].filter(Boolean).join(" · "), tone: (d.dueAt && Date.parse(d.dueAt) < nowMs ? "bad" : d.state === "ASSIGNED" ? "warn" : "ok") as Tone, open: { kind: "task" as const, task: { ...d, resurface: resurfaceOf(d, now) } } })),
     ...t.unassigned.map((u) => ({ id: `un:${u.what}`, title: `${u.count} ${u.what.charAt(0).toLowerCase()}${u.what.slice(1)}`, sub: u.what.includes(" while off") ? "Booked on someone who is off" : "Unassigned", tone: "bad" as Tone, href: u.href })),
     ...t.timeOff.map((o, i) => ({ id: `off:${i}`, title: `${o.name}: ${o.words}`, sub: "Time off", tone: "warn" as Tone })),
   ];
@@ -336,7 +336,10 @@ async function TeamSection({ p, nowMs }: { p: Promise<TeamCoverage | null>; nowM
         </ul>
       </div>
       <div className="mt-auto flex flex-wrap items-center gap-2 pt-3">
-        <p className="mr-auto flex items-center gap-1.5 text-sm text-muted" data-awaiting={t.awaitingAcceptance.length}><Users aria-hidden className="size-4" /> {t.awaitingAcceptance.length} assignment{t.awaitingAcceptance.length === 1 ? "" : "s"} awaiting acceptance{t.overdue.length ? ` · ${t.overdue.length} overdue` : ""}</p>
+        {/* No acceptance step (Oct 30 2026): the line counts the open assignments and the late ones. */}
+        {(() => { const n = Object.values(t.byPerson).flat().length; return (
+          <p className="mr-auto flex items-center gap-1.5 text-sm text-muted" data-open-assignments={n}><Users aria-hidden className="size-4" /> {n} open assignment{n === 1 ? "" : "s"}{t.overdue.length ? ` · ${t.overdue.length} overdue` : ""}</p>
+        ); })()}
         <PanelButton spec={{ kind: "list", title: "Team workload", subtitle: t.note, rows: workload, empty: "No open assignments, unassigned work or time off on record." }}>Review workload</PanelButton>
       </div>
     </Card>
@@ -469,7 +472,7 @@ async function EmailSectionView({ p }: { p: Promise<EmailSection | null> }) {
 // =====================================================================================
 
 const STATE_DOT: Record<string, string> = { ASSIGNED: "bg-warning", ACCEPTED: "bg-success", IN_PROGRESS: "bg-waiting", BLOCKED: "bg-danger", READY_FOR_VERIFICATION: "bg-brand", COMPLETED: "bg-success", CANCELLED: "bg-border-strong" };
-const STATE_WORD: Record<string, string> = { ASSIGNED: "Awaiting acceptance", ACCEPTED: "Accepted", IN_PROGRESS: "In progress", BLOCKED: "Blocked", READY_FOR_VERIFICATION: "Ready to verify", COMPLETED: "Completed", CANCELLED: "Cancelled" };
+const STATE_WORD: Record<string, string> = { ASSIGNED: "Assigned", ACCEPTED: "Assigned", IN_PROGRESS: "In progress", BLOCKED: "Blocked", READY_FOR_VERIFICATION: "Ready to verify", COMPLETED: "Completed", CANCELLED: "Cancelled" };
 
 async function DelegatedSection({ p }: { p: Promise<DelegatedByMe | null> }) {
   const d = await p;
@@ -575,13 +578,53 @@ async function WeeklySection({ p }: { p: Promise<WeeklyPerformance | null> }) {
 }
 
 // =====================================================================================
+// ASSIGNED TO ME (Jordan, Oct 30 2026: Kyle handed him tasks and he had nowhere to find
+// them). Shown only when something is on him; each row opens the task with its notes.
+// =====================================================================================
+
+async function assignedToMe(meKey: string, now: Date): Promise<DelegatedRow[]> {
+  const { tasksAssignedTo, resurfaceOf } = await import("@/lib/delegation");
+  const rows = (await tasksAssignedTo(meKey)).map((d) => ({ ...d, resurface: resurfaceOf(d, now) }));
+  return rows.sort((a, b) => (a.dueAt ?? "9999").localeCompare(b.dueAt ?? "9999"));
+}
+
+async function openTaskPanel(taskId: string, now: Date): Promise<PanelSpec | null> {
+  const { delegationFor, resurfaceOf } = await import("@/lib/delegation");
+  const v = (await delegationFor([taskId])).get(taskId);
+  return v ? { kind: "task", task: { ...v, resurface: resurfaceOf(v, now) } } : null;
+}
+
+async function AssignedToMeSection({ p }: { p: Promise<DelegatedRow[] | null> }) {
+  const rows = (await p) ?? [];
+  if (!rows.length) return null;
+  const all: ListRow[] = rows.map((r) => ({ id: r.taskId, title: r.title, sub: [r.assignedBy ? `from ${r.assignedBy}` : null, r.dueAt ? `due ${etDateTime(r.dueAt)}` : null].filter(Boolean).join(" · "), tone: r.resurface ? "bad" : "warn", open: { kind: "task", task: r } }));
+  return (
+    <Card title="Assigned to me" id="assigned-to-me" right={rows.length > 5 ? <ViewAll n={rows.length} spec={{ kind: "list", title: "Assigned to me", subtitle: "Tasks the team handed to you. Open one to see its notes and finish it or give it back.", rows: all }} /> : undefined}>
+      <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border" data-assigned-to-me={rows.length}>
+        {rows.slice(0, 5).map((r) => (
+          <li key={r.taskId} data-mine-row={r.taskId} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 text-sm">
+            <PanelButton spec={{ kind: "task", task: r }} label={`Open ${r.title}`} className="min-h-11 min-w-0 flex-1 basis-60 text-left hover:underline">
+              <span className="[overflow-wrap:anywhere]">{r.resurface && <AlertTriangle aria-label="Overdue" className="mr-1 inline size-3.5 text-danger" />}{r.title}</span>
+              <span className="block text-[12px] text-muted">{[r.assignedBy ? `From ${r.assignedBy}` : null, r.dueAt ? `due ${etDateTime(r.dueAt)}` : "no deadline", r.notes ? "has notes" : null].filter(Boolean).join(" · ")}</span>
+            </PanelButton>
+            <PanelButton spec={{ kind: "task", task: r }} className={cn(PRIMARY, "shrink-0")}>Open</PanelButton>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+// =====================================================================================
 // THE PAGE
 // =====================================================================================
 
-export async function OwnerHome({ me, includeTest = false, now: at }: {
+export async function OwnerHome({ me, includeTest = false, now: at, openTaskId = null }: {
   me: { email: string; name: string | null; impersonating: boolean } | null;
   includeTest?: boolean;
   now?: Date;
+  /** A task link (/?task=<id>, from an assignment text) opens that task's panel. */
+  openTaskId?: string | null;
 }) {
   const now = at ?? new Date();
   const roster: Assignee[] = await listAssignees().catch(() => []);
@@ -601,11 +644,15 @@ export async function OwnerHome({ me, includeTest = false, now: at }: {
   const emailP = soft("email", emailNeedingReply({ now, excludeClientIds: exclude }));
   const delegatedP = soft("delegated", delegatedByMe({ now, email: ownerEmail, emails: ownerEmails }));
   const weeklyP = soft("weekly", weeklyPerformance({ now, excludeClientIds: exclude }));
+  // Who "me" is on the roster: the owner row with one of his sign-in addresses, else the owner row.
+  const meKey = (roster.find((a) => a.kind === "owner" && !!a.email && ownerEmails.includes(a.email.toLowerCase())) ?? roster.find((a) => a.kind === "owner"))?.key ?? null;
+  const mineP = soft("assigned to me", meKey ? assignedToMe(meKey, now) : Promise.resolve([] as DelegatedRow[]));
+  const initial: PanelSpec | null = openTaskId ? await soft("task link", openTaskPanel(openTaskId, now)) : null;
 
   const minute = etMinutesOfDay(now);
   const first = me?.name?.trim().split(/\s+/)[0] ?? "Jordan";
   return (
-    <OwnerShell roster={people} readOnly={!!me?.impersonating}>
+    <OwnerShell roster={people} readOnly={!!me?.impersonating} initial={initial} meKey={meKey}>
       <AutoRefresh seconds={120} />
       <PageHeader
         eyebrow="Dashboard"
@@ -630,6 +677,7 @@ export async function OwnerHome({ me, includeTest = false, now: at }: {
         </div>
 
         <h2 className="flex items-center gap-3 pt-2 text-xl font-bold tracking-tight">My work<span aria-hidden className="h-px flex-1 bg-border" /></h2>
+        <Suspense fallback={null}><AssignedToMeSection p={mineP} /></Suspense>
         <div className="grid items-stretch gap-5 lg:grid-cols-2">
           <Suspense fallback={<Loading label="Reading meetings…" />}><MeetingsSection p={meetingsP} /></Suspense>
           <Suspense fallback={<Loading label="Reading scripts…" />}><CreativeSection p={creativeP} /></Suspense>

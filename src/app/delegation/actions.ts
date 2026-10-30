@@ -67,6 +67,7 @@ export async function assignTaskAction(input: AssignInput): Promise<Out> {
       projectId: input.projectId ? String(input.projectId) : undefined,
       sourceHref: input.sourceHref ? String(input.sourceHref) : undefined,
       note: input.note ? String(input.note) : undefined,
+      context: input.context ? String(input.context) : undefined,
     });
   });
 }

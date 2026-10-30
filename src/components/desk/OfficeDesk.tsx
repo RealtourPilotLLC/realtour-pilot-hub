@@ -721,6 +721,7 @@ function SidePanel({ item, special, focus, fallbackTitle, desk, includeTest, dra
                     delegates={desk.delegates}
                     ownerKey={desk.people.ownerKey}
                     ownerName={desk.people.owner}
+                    context={handOnContext(item)}
                   />
                 )}
                 {item.href && (
@@ -1010,4 +1011,22 @@ function ActionControl({ a, item, desk, draft }: { a: DeskAction; item: DeskItem
     case "link":
       return item?.href === a.href ? null : <Link href={a.href} className={QUIET}>{a.label}</Link>;
   }
+}
+
+/** What the next person needs from the row: why it is here, and the client's own words or the
+ *  task's facts (Jordan, Oct 30 2026: a hand-off arrived with no notes at all). */
+function handOnContext(item: DeskItem): string | null {
+  const parts: string[] = [];
+  if (item.reason?.trim()) parts.push(item.reason.trim());
+  const p = item.panel;
+  if (p.kind === "thread") {
+    const said = p.messages.slice(-3).map((m) => m.text.trim()).filter(Boolean);
+    if (said.length) parts.push(`${p.client} said:\n${said.map((t) => `"${t}"`).join("\n")}`);
+    if (p.revisionNote?.trim()) parts.push(p.revisionNote.trim());
+  } else if (p.kind === "task") {
+    const lines = p.lines.filter((l) => l.value?.trim()).map((l) => `${l.label}: ${l.value.trim()}`);
+    if (lines.length) parts.push(lines.join("\n"));
+  }
+  const out = parts.join("\n\n").trim();
+  return out ? out.slice(0, 1500) : null;
 }

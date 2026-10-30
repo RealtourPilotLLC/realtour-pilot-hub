@@ -1040,8 +1040,8 @@ export function frictionsFrom(signals: Signal[], improvements: ImprovementRow[])
 }
 
 export const STATE_WORDS: Record<DelegationState | "OPEN" | "WAITING", string> = {
-  ASSIGNED: "Awaiting acceptance",
-  ACCEPTED: "Accepted",
+  ASSIGNED: "Assigned",
+  ACCEPTED: "Assigned",
   IN_PROGRESS: "In progress",
   BLOCKED: "Blocked",
   READY_FOR_VERIFICATION: "Ready for Jordan to verify",

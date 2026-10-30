@@ -630,8 +630,14 @@ async function ensureDeskTask(requestId: string, mode: DeskMode = "BOOK", reason
   const combinedLine = lateRec?.combined && r.kind !== "EXTRA_SESSION" && (mode === "BOOK" || mode === "RESCHEDULE")
     ? combinedDeskLine(lateRec.lateMonthKey, lateRec.hostMonthKey, await combinedVideos(lateRec).catch(() => 4))
     : null;
+  // Oct 30 2026 (Joe Sutow): with no slot picked, "Book it in Aryeo" read as
+  // done-able as written, and the task was handed on as "already done". Say
+  // that a time has to be agreed first, and what with.
+  const noSlot = mode === "BOOK" && !r.slotStart;
   const instruction: Record<DeskMode, string> = {
-    BOOK: "Book it in Aryeo — the request flips to CONFIRMED on its own when the appointment appears (hourly), and the client sees the date.",
+    BOOK: noSlot
+      ? "Nothing is booked yet. Agree a day and time with the client (their preference is above), then book the four-hour session in Aryeo. The request flips to CONFIRMED on its own when the appointment appears (hourly), and the client sees the date."
+      : "Book it in Aryeo — the request flips to CONFIRMED on its own when the appointment appears (hourly), and the client sees the date.",
     CANCEL: `The client asked to cancel this session. Cancel ${r.aryeoAppointmentId ? `appointment ${r.aryeoAppointmentId}` : "the appointment"} in Aryeo — the request flips to CANCELLED on its own when Aryeo shows it cancelled.`,
     RESCHEDULE: `The client asked to move this session. Move ${r.aryeoAppointmentId ? `appointment ${r.aryeoAppointmentId}` : "it"} in Aryeo to the new time — the request confirms on its own when the appointment shows the new time.`,
     RECOVER: `The hub was booking this and could not tell whether Aryeo accepted it. Search Aryeo orders for the note "hub-session:${r.id}" before doing anything else.`,
@@ -654,13 +660,13 @@ async function ensureDeskTask(requestId: string, mode: DeskMode = "BOOK", reason
     lateLine,
     combinedLine,
     ordinalLine,
-    `Time: ${when}`,
+    noSlot ? "Time: the client did not pick one in the portal." : `Time: ${when}`,
     earliestLine,
     r.creativeName ? `Creative the client picked: ${r.creativeName}` : null,
     r.locationText ? `Filming location: ${r.locationText}` : null,
     unmappedLine,
     r.aryeoOrderId ? `Aryeo order: ${r.aryeoOrderId}` : null,
-    r.notes ? r.notes : null,
+    r.notes ? (noSlot ? r.notes.replace(/^Preferred:/m, "Client's preference:") : r.notes) : null,
     "",
     reason ? reason : null,
     // A07: when two real content bookings both fit, the reconcile refuses to
@@ -673,7 +679,9 @@ async function ensureDeskTask(requestId: string, mode: DeskMode = "BOOK", reason
   const title = mode === "BOOK" && ordinal && capacity
     ? `${DESK_TITLE.BOOK} ${ordinal} of ${capacity.sessionsPerMonth} — ${client?.name ?? "client"}`
     : `${DESK_TITLE[mode]} — ${client?.name ?? "client"}`;
-  const summary = clip(`${mode === "BOOK" ? "Requested" : mode === "CANCEL" ? "Cancel" : mode === "RESCHEDULE" ? "Move" : "Check"}: ${when}${r.locationText ? ` · ${r.locationText}` : ""}`, 200);
+  const summary = clip(noSlot
+    ? `Not booked: agree a time with the client, then book it in Aryeo${r.locationText ? ` · ${r.locationText}` : ""}`
+    : `${mode === "BOOK" ? "Requested" : mode === "CANCEL" ? "Cancel" : mode === "RESCHEDULE" ? "Move" : "Check"}: ${when}${r.locationText ? ` · ${r.locationText}` : ""}`, 200);
   // (Oct 19 2026: a portal session request is no longer also filed as a
   // scheduling ask on Kyle's screen; this desk task is the one place it lives.)
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey }, select: { id: true } });

@@ -1179,7 +1179,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   // never a second row under Requests & Follow-Ups. Matched by the thread
   // (lib/emailDelegation), or by the reply to-do it was delegated on before.
   const DELEG_WORDS: Record<DelegationState, string> = {
-    ASSIGNED: "Not accepted yet", ACCEPTED: "Accepted", IN_PROGRESS: "In progress", BLOCKED: "Blocked",
+    ASSIGNED: "Assigned", ACCEPTED: "Assigned", IN_PROGRESS: "In progress", BLOCKED: "Blocked",
     READY_FOR_VERIFICATION: "Waiting on verification", COMPLETED: "Completed", CANCELLED: "Cancelled",
   };
   const emailDelegs = (assigned ?? []).filter((dt) => dt.state !== "COMPLETED" && dt.state !== "CANCELLED");
@@ -1584,7 +1584,7 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
   // each with who assigned it, the outcome wanted and when it is due. One row
   // per task: the same task never shows again as one of his own to-dos.
   const STATE_WORDS: Record<DelegationState, string> = {
-    ASSIGNED: "Not accepted yet", ACCEPTED: "Accepted", IN_PROGRESS: "In progress", BLOCKED: "Blocked",
+    ASSIGNED: "Assigned", ACCEPTED: "Assigned", IN_PROGRESS: "In progress", BLOCKED: "Blocked",
     READY_FOR_VERIFICATION: "Waiting on verification", COMPLETED: "Completed", CANCELLED: "Cancelled",
   };
   // A delegated email whose conversation the walk above does not list (a sender
@@ -1635,7 +1635,8 @@ export async function buildOfficeDesk(opts: BuildOpts): Promise<OfficeDesk> {
       line: [waitingVerify ? `Waiting on ${by} to verify` : STATE_WORDS[dt.state], dt.blocker ? `blocked: ${clean(short(dt.blocker, 50))}` : null, dt.dueAt ? `due ${etDayKey(new Date(dt.dueAt)) === dayKey ? etTime(dt.dueAt) : `${etDate(dt.dueAt)} ${etTime(dt.dueAt)}`}` : null].filter(Boolean).join(" · "),
       reason: [`Assigned by ${by}`, dt.outcome ? `Outcome wanted: ${clean(dt.outcome)}` : null, dt.latestUpdate ? `Latest: ${clean(dt.latestUpdate)}` : null, dt.nextStep ? `Next: ${clean(dt.nextStep)}` : null].filter(Boolean).join(" · "),
       client: null, who: waitingVerify ? by : "You", dueISO: dt.dueAt, dueWords: dt.dueAt ? dueWordsFor(dt.dueAt, now) : null, late,
-      rank: dt.state === "ASSIGNED" || dt.state === "BLOCKED" ? RANK.today : late ? RANK.overdue : RANK.routine,
+      // Assigned and not started yet ranks as today's work (it used to wait on Accept; Oct 30 2026 there is no Accept).
+      rank: dt.state === "ASSIGNED" || dt.state === "ACCEPTED" || dt.state === "BLOCKED" ? RANK.today : late ? RANK.overdue : RANK.routine,
       primary: waitingVerify ? null : { label: dt.state === "ASSIGNED" ? "Accept" : "Update", action },
       actions: [action], href: dt.sourceHref ?? (dt.projectId ? `/projects/${dt.projectId}` : null),
       panel: { kind: "task", lines: [{ label: "Task", value: clean(dt.title) }, { label: "Assigned by", value: by }, ...(dt.outcome ? [{ label: "Outcome", value: clean(dt.outcome) }] : []), ...(dt.assignedAt ? [{ label: "Assigned", value: etDateTime(dt.assignedAt) }] : []), { label: "State", value: STATE_WORDS[dt.state] }, ...(dt.latestUpdate ? [{ label: "Latest update", value: clean(dt.latestUpdate) }] : [])] },

@@ -531,13 +531,13 @@ async function main() {
     // A program message in the conversation (the Content Platform), for its draft.
     await prisma.programMessage.create({ data: { enrollmentId: "enr-erica", clientId: erica.id, authorKind: "CLIENT", authorLabel: "Erica Walker", body: "Can we swap the November topic for the open house one?", createdAt: at(-3 * H) } });
     // A task Jordan assigned Kyle through delegation, not accepted yet.
-    assignedToKyle = [{ taskId: k2.id, title: "Order lockbox keys for the Malvern listings", outcome: "Two spare keys in the office", assigneeKey: "kyle", assigneeName: "Kyle Smith", assignedBy: "Jordan Spackman", assignedAt: at(-2 * H).toISOString(), dueAt: at(5 * H).toISOString(), state: "ASSIGNED", needsVerification: false, latestUpdate: null, blocker: null, nextStep: null, clientId: null, projectId: null, sourceHref: null }];
+    assignedToKyle = [{ taskId: k2.id, title: "Order lockbox keys for the Malvern listings", outcome: "Two spare keys in the office", assigneeKey: "kyle", assigneeName: "Kyle Smith", assignedBy: "Jordan Spackman", assignedAt: at(-2 * H).toISOString(), dueAt: at(5 * H).toISOString(), state: "ACCEPTED", needsVerification: false, latestUpdate: null, blocker: null, nextStep: null, clientId: null, projectId: null, sourceHref: null }];
     await prisma.cronRun.create({ data: { job: "gmail", startedAt: at(-2 * 60_000), finishedAt: at(-60_000), ok: true, summary: JSON.stringify({ ms: { gmail: 100 } }) } });
     d = await build();
     i = media(d, pFixed.id);
     c.ok("'Fixes done' shows in Review & Deliver: the corrections came back and passed, ready to review", i?.state === "now" && i.line === "Fixes done · ready to review" && i.primary?.label === "Review", i?.line);
     const delegated = find(d, `task:${k2.id}`);
-    c.ok("a task Jordan assigned Kyle shows once, in Requests & Follow-Ups, 'From Jordan', not accepted yet, with Accept", delegated?.tag === "jordan" && delegated.line.startsWith("Not accepted yet") && delegated.primary?.label === "Accept" && delegated.actions[0]?.kind === "delegation" && everyItem(d).filter((x) => x.id === `task:${k2.id}`).length === 1);
+    c.ok("a task Jordan assigned Kyle shows once, in Requests & Follow-Ups, 'From Jordan', Assigned (no Accept since Oct 30 2026), with Update", delegated?.tag === "jordan" && delegated.line.startsWith("Assigned") && delegated.primary?.label === "Update" && delegated.actions[0]?.kind === "delegation" && everyItem(d).filter((x) => x.id === `task:${k2.id}`).length === 1);
     assignedToKyle = [{ ...assignedToKyle[0], state: "IN_PROGRESS", latestUpdate: "Keys ordered" }];
     const dAccepted = await build();
     c.ok("…once accepted its button is Update", find(dAccepted, `task:${k2.id}`)?.primary?.label === "Update" && find(dAccepted, `task:${k2.id}`)?.line.startsWith("In progress") === true);

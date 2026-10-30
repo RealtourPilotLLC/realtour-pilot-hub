@@ -855,7 +855,7 @@ function AssignedTable({ rows, onOpen, href, readOnly }: { rows: AssignedRow[]; 
               <p className="text-[12px] text-muted [overflow-wrap:anywhere]">{[r.assignedBy ? `From ${r.assignedBy}` : null, r.blocker ? `Blocked: ${r.blocker}` : r.nextStep ? `Next: ${r.nextStep}` : null, r.closesItself ? "Closes by itself once the editor works from the brief" : null].filter(Boolean).join(" · ")}</p>
             </div>
             <p className={cn("text-[13px]", r.overdue ? "font-medium text-danger" : "text-muted")}>{r.dueWords ?? "No due date"}</p>
-            <p><span className={cn("inline-flex rounded-full px-2 py-0.5 text-[12px] font-medium", STATE_TONE[r.state] ?? "bg-surface-2 text-muted")}>{r.state === "OPEN" ? "Awaiting acceptance" : r.stateWords}</span></p>
+            <p><span className={cn("inline-flex rounded-full px-2 py-0.5 text-[12px] font-medium", STATE_TONE[r.state] ?? "bg-surface-2 text-muted")}>{r.state === "OPEN" ? "Assigned" : r.stateWords}</span></p>
             <AssignedAction r={r} href={href} onOpen={() => onOpen(r.taskId)} readOnly={readOnly} />
           </li>
         ))}

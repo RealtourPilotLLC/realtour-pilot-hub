@@ -845,7 +845,7 @@ async function bottlenecksFrom(o: { now: Date; stages: Stage[]; roster: Assignee
   for (const c of cand) {
     const v = c.assign.sourceHref ? byKey.get(`deleg:${c.assign.sourceHref}`.slice(0, 190)) : undefined;
     if (v) {
-      c.handledBy = { taskId: v.taskId, words: `${v.assigneeName ?? "Someone"} has it · ${v.state === "ASSIGNED" ? "not accepted yet" : v.state.toLowerCase().replace(/_/g, " ")}` };
+      c.handledBy = { taskId: v.taskId, words: `${v.assigneeName ?? "Someone"} has it · ${v.state === "ASSIGNED" || v.state === "ACCEPTED" ? "assigned" : v.state.toLowerCase().replace(/_/g, " ")}` };
       c.taskId = v.taskId;
       c.owner = v.assigneeName ?? c.owner;
       c.rank += v.state === "ASSIGNED" ? 2 : 20; // a credible plan sinks
@@ -1184,7 +1184,7 @@ export async function clientIssuesSection(opts: { now?: Date; excludeClientIds?:
     for (const r of rows) {
       const v = r.assign.sourceHref ? byKey.get(`deleg:${r.assign.sourceHref}`.slice(0, 190)) : undefined;
       if (!v) continue;
-      r.handledBy = { taskId: v.taskId, words: `${v.assigneeName ? firstName(v.assigneeName) : "Someone"} has it · ${v.state === "ASSIGNED" ? "not accepted yet" : v.state.toLowerCase().replace(/_/g, " ")}` };
+      r.handledBy = { taskId: v.taskId, words: `${v.assigneeName ? firstName(v.assigneeName) : "Someone"} has it · ${v.state === "ASSIGNED" || v.state === "ACCEPTED" ? "assigned" : v.state.toLowerCase().replace(/_/g, " ")}` };
       r.owner = v.assigneeName ? firstName(v.assigneeName) : r.owner;
     }
   }
@@ -1278,7 +1278,7 @@ export async function teamCoverage(opts: { now?: Date; includeTest?: boolean; ro
     const od = mine.filter((d) => d.dueAt && Date.parse(d.dueAt) < nowMs && d.state !== "READY_FOR_VERIFICATION").length;
     const aw = mine.filter((d) => d.state === "ASSIGNED").length;
     const timeOff = offOf(r.tmId ?? null);
-    const extra = [od ? `${plural(od, "overdue assignment")}` : null, aw ? `${aw} awaiting acceptance` : null, timeOff].filter(Boolean);
+    const extra = [od ? `${plural(od, "overdue assignment")}` : null, timeOff].filter(Boolean);
     const { tmId, action, ...rest } = r;
     void tmId;
     // Overdue assignments and nothing more pressing: follow up on the oldest one.

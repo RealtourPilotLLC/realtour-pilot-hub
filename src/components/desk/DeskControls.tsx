@@ -501,15 +501,17 @@ export function TaskResolve({ taskId, nextDay, allowNewDate = true, doneLabel = 
  *  through the delegation build (one canonical task; the person is told in
  *  the hub). A row with no task of its own gets one, linked back to it, the
  *  row's id on the link so the desk knows that row went (lib/deskHandOff). */
-export function HandOn({ taskId, rowId, title, href, projectId, clientId, delegates, ownerKey, ownerName }: {
+export function HandOn({ taskId, rowId, title, href, projectId, clientId, delegates, ownerKey, ownerName, context = null }: {
   taskId: string | null; rowId?: string | null; title: string; href: string | null; projectId: string | null; clientId: string | null;
   delegates: { key: string; name: string }[]; ownerKey: string | null; ownerName: string;
+  /** the row's own words, carried onto the task as its notes */
+  context?: string | null;
 }) {
   const { busy, msg, run } = useRun();
   const [who, setWho] = useState(delegates[0]?.key ?? "");
   const [note, setNote] = useState("");
   if (msg?.ok) return <Said msg={msg} />;
-  const send = (to: string) => run(() => assignTaskAction({ title, assigneeKey: to, sourceTaskId: taskId ?? undefined, sourceHref: taskId || !href ? undefined : rowId ? deskRowHref(href, rowId) : href, projectId: projectId ?? undefined, clientId: clientId ?? undefined, note: note || undefined, outcome: note || undefined }));
+  const send = (to: string) => run(() => assignTaskAction({ title, assigneeKey: to, sourceTaskId: taskId ?? undefined, sourceHref: taskId || !href ? undefined : rowId ? deskRowHref(href, rowId) : href, projectId: projectId ?? undefined, clientId: clientId ?? undefined, note: note || undefined, outcome: note || undefined, context: context || undefined }));
   return (
     <fieldset className="space-y-2 rounded-lg border border-border p-3" data-control="hand-on">
       <legend className="px-1 text-sm font-semibold">Hand it on</legend>

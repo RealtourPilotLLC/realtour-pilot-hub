@@ -121,12 +121,15 @@ async function CaughtProblems({ boardP, includeTest, canReview, canEdit }: { boa
 // manager keep theirs. lib/officeDesk builds it; every count is the length
 // of the list it opens.
 // ---------------------------------------------------------------------------
-async function OfficeDeskSection({ deskP, includeTest }: { deskP: Promise<OfficeDeskData | null>; includeTest: boolean }) {
+async function OfficeDeskSection({ deskP, includeTest, openTaskId = null }: { deskP: Promise<OfficeDeskData | null>; includeTest: boolean; openTaskId?: string | null }) {
   const desk = await deskP;
   if (!desk) {
     return <p role="status" className="rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-muted">Your dashboard couldn&rsquo;t load. Refresh to try again.</p>;
   }
-  return <OfficeDesk desk={desk} includeTest={includeTest} />;
+  // ?task=<id> (an assignment text's link, Oct 30 2026) opens that task's row,
+  // only when the row is on this desk; a stale link opens nothing.
+  const linked = openTaskId && desk.sections.some((s) => [...s.now, ...s.waiting, ...s.ok].some((i) => i.id === `task:${openTaskId}`)) ? `task:${openTaskId}` : null;
+  return <OfficeDesk desk={desk} includeTest={includeTest} initialOpen={linked} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,20 +138,22 @@ async function OfficeDeskSection({ deskP, includeTest }: { deskP: Promise<Office
 // review seat and Kyle's desk are untouched. Read-only while the owner
 // previews him.
 // ---------------------------------------------------------------------------
-async function CreativeDeskSection({ deskP, includeTest }: { deskP: Promise<CreativeDeskData | null>; includeTest: boolean }) {
+async function CreativeDeskSection({ deskP, includeTest, openTaskId = null }: { deskP: Promise<CreativeDeskData | null>; includeTest: boolean; openTaskId?: string | null }) {
   const desk = await deskP;
   if (!desk) {
     return <p role="status" className="rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-muted">Your dashboard couldn&rsquo;t load. Refresh to try again.</p>;
   }
-  return <CreativeDesk desk={desk} includeTest={includeTest} />;
+  return <CreativeDesk desk={desk} includeTest={includeTest} initialPanel={openTaskId ? { kind: "task", id: openTaskId } : null} />;
 }
 
 // ---------------------------------------------------------------------------
 
-export default async function HomePage(props: { searchParams?: Promise<{ test?: string | string[] }> }) {
+export default async function HomePage(props: { searchParams?: Promise<{ test?: string | string[]; task?: string | string[] }> }) {
   const { searchParams } = props ?? {};
   // The viewer and the query string are independent — read together.
   const [me, sp] = await Promise.all([getCurrentUser().catch(() => null), searchParams ?? Promise.resolve(undefined)]);
+  // An assignment's own link (lib/delegation taskHrefFor): open that task.
+  const openTaskId = typeof sp?.task === "string" && /^[a-z0-9]{10,40}$/i.test(sp.task) ? sp.task : null;
   // Creatives never see the ops overview (middleware already bounces the roles;
   // this covers per-user "dashboard" permission overrides). Sessionless local
   // dev renders the full owner view.
@@ -167,6 +172,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   if (isOwner) {
     return (
       <OwnerHome
+        openTaskId={openTaskId}
         me={me ? { email: me.email, name: me.name, impersonating: me.impersonating } : null}
         includeTest={sp?.test === "1"}
       />
@@ -204,7 +210,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
             </div>
           )}
           <Suspense fallback={<SectionLoading label="Reading your day…" />}>
-            <CreativeDeskSection deskP={deskP} includeTest={includeTest} />
+            <CreativeDeskSection deskP={deskP} includeTest={includeTest} openTaskId={openTaskId} />
           </Suspense>
         </div>
       </div>
@@ -249,7 +255,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
             </div>
           )}
           <Suspense fallback={<SectionLoading label="Reading your day…" />}>
-            <OfficeDeskSection deskP={deskP} includeTest={includeTest} />
+            <OfficeDeskSection deskP={deskP} includeTest={includeTest} openTaskId={openTaskId} />
           </Suspense>
         </div>
       </div>

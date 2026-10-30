@@ -220,7 +220,7 @@ async function main() {
     c.ok("…a second press is the same task: 'Already with James', nothing new sent", again.ok && /Already with James/.test(again.message) && (await prisma.smartTask.count()) === before + 1, again.message);
     h = await od.productionHealth({ now: T, includeTest: true, excludeClientIds: [] });
     const handled = b(pLateJohn.id, "editing");
-    c.ok("…the row now says James has it, and its buttons nudge him (Request update) or move it (Reassign, its panel)", /James has it · not accepted yet/.test(handled?.handledBy?.words ?? "") && handled?.owner === "James" && handled?.actions.map((a) => a.kind).join(",") === "nudge,task" && labels(handled) === "Request update|Reassign", `${handled?.handledBy?.words} · ${handled?.actions.map((a) => a.kind)}`);
+    c.ok("…the row now says James has it, and its buttons nudge him (Request update) or move it (Reassign, its panel)", /James has it · assigned/.test(handled?.handledBy?.words ?? "") && handled?.owner === "James" && handled?.actions.map((a) => a.kind).join(",") === "nudge,task" && labels(handled) === "Request update|Reassign", `${handled?.handledBy?.words} · ${handled?.actions.map((a) => a.kind)}`);
     const nudged = await A.requestUpdateAction((handled!.actions[0] as { taskId: string }).taskId);
     c.ok("…and the nudge is the delegation's own Request update (it goes to James)", nudged.ok, nudged.message);
 

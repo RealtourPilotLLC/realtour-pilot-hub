@@ -33,10 +33,11 @@ export const PRIMARY = `${BTN} bg-brand-action text-brand-fg hover:brightness-95
 export const QUIET = `${BTN} border border-brand/50 font-medium text-brand hover:bg-brand/10`;
 const FIELD = "w-full rounded-lg border border-border-strong bg-surface px-3 py-2 text-sm";
 
-type Ctx = { open: (p: PanelSpec) => void; roster: RosterOption[]; readOnly: boolean };
-const PanelCtx = createContext<Ctx>({ open: () => {}, roster: [], readOnly: true });
+/** meKey: the viewer's own roster key, so a task assigned to them opens as theirs to do. */
+type Ctx = { open: (p: PanelSpec) => void; roster: RosterOption[]; readOnly: boolean; meKey: string | null };
+const PanelCtx = createContext<Ctx>({ open: () => {}, roster: [], readOnly: true, meKey: null });
 
-export function OwnerShell({ roster, readOnly, initial = null, children }: { roster: RosterOption[]; readOnly: boolean; initial?: PanelSpec | null; children?: ReactNode }) {
+export function OwnerShell({ roster, readOnly, initial = null, meKey = null, children }: { roster: RosterOption[]; readOnly: boolean; initial?: PanelSpec | null; meKey?: string | null; children?: ReactNode }) {
   const [panel, setPanel] = useState<PanelSpec | null>(initial);
   useEffect(() => {
     if (!panel) return;
@@ -45,7 +46,7 @@ export function OwnerShell({ roster, readOnly, initial = null, children }: { ros
     return () => window.removeEventListener("keydown", onKey);
   }, [panel]);
   return (
-    <PanelCtx.Provider value={{ open: setPanel, roster, readOnly }}>
+    <PanelCtx.Provider value={{ open: setPanel, roster, readOnly, meKey }}>
       <div data-owner-dashboard data-readonly={readOnly ? "true" : "false"}>{children}</div>
       {panel && <SidePanel spec={panel} onClose={() => setPanel(null)} />}
     </PanelCtx.Provider>
@@ -221,7 +222,12 @@ export function AssignForm({ seed }: { seed: AssignSeed }) {
 
 function TaskBody({ spec }: { spec: Extract<PanelSpec, { kind: "task" }> }) {
   const t = spec.task;
-  const { roster, readOnly } = useContext(PanelCtx);
+  const { roster, readOnly, meKey } = useContext(PanelCtx);
+  // Assigned to the viewer (Oct 30 2026, Jordan: "I don't even have a place to
+  // accept it or even know what to do with it"): theirs to do, so the panel
+  // offers doing it and handing it back, never "Request update" from themselves.
+  const mine = !!meKey && t.assigneeKey === meKey;
+  const assignerKey = mine && t.assignedBy ? roster.find((r) => r.name === t.assignedBy || r.name.split(/\s+/)[0] === t.assignedBy)?.key ?? null : null;
   const { busy, msg, run } = useRun();
   const [text, setText] = useState("");
   const [to, setTo] = useState("");
@@ -242,6 +248,12 @@ function TaskBody({ spec }: { spec: Extract<PanelSpec, { kind: "task" }> }) {
         ["Verification", t.needsVerification ? "Needed before it counts as done" : null],
         ["Evidence", t.evidence],
       ]} />
+      {t.notes && (
+        <div data-task-notes>
+          <h3 className="text-sm font-semibold">Notes</h3>
+          <p className="mt-1 whitespace-pre-line text-sm text-foreground/90 [overflow-wrap:anywhere]">{t.notes}</p>
+        </div>
+      )}
       {t.sourceHref && <Link href={t.sourceHref} className="inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline">Open the record <ExternalLink aria-hidden className="size-3.5" /></Link>}
       {open && !readOnly && (
         <div className="space-y-3 border-t border-border pt-3">
@@ -249,12 +261,14 @@ function TaskBody({ spec }: { spec: Extract<PanelSpec, { kind: "task" }> }) {
             {recommendedKey && <button type="button" disabled={busy} onClick={() => run(() => reassignTaskAction(t.taskId, recommendedKey))} className={PRIMARY}>Assign to {t.recommendedTo}</button>}
             {t.state === "READY_FOR_VERIFICATION" && <button type="button" disabled={busy} onClick={() => run(() => completeTaskAction(t.taskId, text || undefined))} className={PRIMARY}>Verify and complete</button>}
             {t.state === "READY_FOR_VERIFICATION" && <button type="button" disabled={busy || !text.trim()} onClick={() => run(() => returnForChangesAction(t.taskId, text))} className={QUIET}>Send back</button>}
-            <button type="button" disabled={busy} onClick={() => run(() => requestUpdateAction(t.taskId, text || undefined))} className={t.state === "READY_FOR_VERIFICATION" || recommendedKey ? QUIET : PRIMARY}>Request update</button>
+            {!mine && <button type="button" disabled={busy} onClick={() => run(() => requestUpdateAction(t.taskId, text || undefined))} className={t.state === "READY_FOR_VERIFICATION" || recommendedKey ? QUIET : PRIMARY}>Request update</button>}
+            {mine && t.state !== "READY_FOR_VERIFICATION" && <button type="button" disabled={busy} onClick={() => run(() => completeTaskAction(t.taskId, text || undefined))} className={PRIMARY}>Mark complete</button>}
             <button type="button" disabled={busy || !text.trim()} onClick={() => run(() => updateTaskAction(t.taskId, text))} className={QUIET}>Add a note</button>
-            {t.state !== "READY_FOR_VERIFICATION" && <button type="button" disabled={busy} onClick={() => run(() => completeTaskAction(t.taskId, text || undefined))} className={QUIET}>{t.needsVerification ? "Verify and complete" : "Mark complete"}</button>}
+            {mine && assignerKey && assignerKey !== meKey && <button type="button" disabled={busy} onClick={() => run(async () => { if (text.trim()) await updateTaskAction(t.taskId, text); return reassignTaskAction(t.taskId, assignerKey); })} className={QUIET}>Give back to {t.assignedBy}</button>}
+            {!mine && t.state !== "READY_FOR_VERIFICATION" && <button type="button" disabled={busy} onClick={() => run(() => completeTaskAction(t.taskId, text || undefined))} className={QUIET}>{t.needsVerification ? "Verify and complete" : "Mark complete"}</button>}
             <button type="button" disabled={busy || !text.trim()} onClick={() => run(() => cancelTaskAction(t.taskId, text))} className={QUIET}>Cancel it</button>
           </div>
-          <label className="block text-sm font-medium">Note, reason or evidence<textarea value={text} onChange={(e) => setText(e.target.value)} rows={2} maxLength={600} className={cn(FIELD, "mt-1")} placeholder="Sent with Request update, a note, Send back or Cancel" /></label>
+          <label className="block text-sm font-medium">Note, reason or evidence<textarea value={text} onChange={(e) => setText(e.target.value)} rows={2} maxLength={600} className={cn(FIELD, "mt-1")} placeholder={mine ? "What you did, or a note for them" : "Sent with Request update, a note, Send back or Cancel"} /></label>
           <div className="flex flex-wrap items-end gap-2">
             <label className="block min-w-40 flex-1 text-sm font-medium">Reassign to
               <select value={to} onChange={(e) => setTo(e.target.value)} className={cn(FIELD, "mt-1 min-h-11")}>
@@ -281,7 +295,7 @@ function TaskBody({ spec }: { spec: Extract<PanelSpec, { kind: "task" }> }) {
   );
 }
 
-const stateWords = (s: string) => ({ ASSIGNED: "Awaiting acceptance", ACCEPTED: "Accepted", IN_PROGRESS: "In progress", BLOCKED: "Blocked", READY_FOR_VERIFICATION: "Ready for verification", COMPLETED: "Completed", CANCELLED: "Cancelled" })[s] ?? s;
+const stateWords = (s: string) => ({ ASSIGNED: "Assigned", ACCEPTED: "Assigned", IN_PROGRESS: "In progress", BLOCKED: "Blocked", READY_FOR_VERIFICATION: "Ready for verification", COMPLETED: "Completed", CANCELLED: "Cancelled" })[s] ?? s;
 
 function eventWords(e: { kind: string; text?: string | null; from?: string | null; to?: string | null }): string {
   const t = e.text ? `: ${e.text}` : "";

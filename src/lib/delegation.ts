@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { listAssignees, firstName, type Assignee } from "@/lib/assignees";
 import { endOfBusinessDaysET, etDateTime, etDayKey, etEndOfDay } from "@/lib/datetime";
 import { scrubMoney } from "@/lib/text";
+import { appBase } from "@/lib/appUrl";
 import type { CurrentUser } from "@/lib/auth/user";
 
 // ---------------------------------------------------------------------------
@@ -32,14 +33,18 @@ import type { CurrentUser } from "@/lib/auth/user";
 // plus the task's own status (OPEN · IN_PROGRESS · BLOCKED with blockedReason
 // · WAITING_VERIFICATION · COMPLETED · CANCELLED), assignedKey and dueAt.
 //
-// THE LIFECYCLE: Assigned → Accepted → In progress → (Blocked) → Ready for
-// verification → Completed. Verification only when the task asks for it.
-// Assigned is not accepted; an update is not completion; a submission is not
-// verification. Every change is an event with who and when.
+// THE LIFECYCLE: Assigned → In progress → (Blocked) → Ready for verification
+// → Completed. Verification only when the task asks for it. An update is not
+// completion; a submission is not verification. Every change is an event
+// with who and when.
 //
-// RESURFACING: a task not accepted by its acceptance time, past its due time,
-// or blocked past its follow-up comes back to the ASSIGNER (the dashboard
-// flags it at read time; resurfaceDelegations() rings their bell once a day).
+// NO ACCEPTANCE STEP (Jordan, Oct 30 2026: "I don't want anything to wait for
+// acceptance if I assign it to them it's assigned to them"). Assigning stamps
+// acceptedAt; a task assigned before that reads as assigned too (stateOf).
+//
+// RESURFACING: a task past its due time, or blocked past its follow-up, comes
+// back to the ASSIGNER (the dashboard flags it at read time;
+// resurfaceDelegations() rings their bell once a day).
 // ---------------------------------------------------------------------------
 
 export type DelegationState = "ASSIGNED" | "ACCEPTED" | "IN_PROGRESS" | "BLOCKED" | "READY_FOR_VERIFICATION" | "COMPLETED" | "CANCELLED";
@@ -65,8 +70,8 @@ export type DelegatedTask = {
 
 /** The words for each state (one place, every screen). */
 export const STATE_WORDS: Record<DelegationState, string> = {
-  ASSIGNED: "Awaiting acceptance",
-  ACCEPTED: "Accepted",
+  ASSIGNED: "Assigned",
+  ACCEPTED: "Assigned",
   IN_PROGRESS: "In progress",
   BLOCKED: "Blocked",
   READY_FOR_VERIFICATION: "Ready for verification",
@@ -152,7 +157,8 @@ export function stateOf(t: { status: string; acceptedAt: Date | string | null })
   if (t.status === VERIFY_STATUS) return "READY_FOR_VERIFICATION";
   if (t.status === "BLOCKED") return "BLOCKED";
   if (t.status === "IN_PROGRESS") return "IN_PROGRESS";
-  return t.acceptedAt ? "ACCEPTED" : "ASSIGNED";
+  // Assigned is the assignee's (no acceptance step, Oct 30 2026), stamped or not.
+  return "ACCEPTED";
 }
 
 export const isOpenState = (s: DelegationState) => s !== "COMPLETED" && s !== "CANCELLED";
@@ -166,8 +172,8 @@ export function acceptDeadline(now: Date, dueAt: Date | null): Date {
 /** What should happen next, in words, when nobody typed a next step. */
 function defaultNextStep(state: DelegationState, assignee: string, rec: DelegationRecord): string | null {
   switch (state) {
-    case "ASSIGNED": return `${assignee} to accept`;
-    case "ACCEPTED": return `${assignee} to start`;
+    case "ASSIGNED":
+    case "ACCEPTED": return `${assignee} to do it`;
     case "IN_PROGRESS": return rec.needsVerification ? `${assignee} to finish and submit for verification` : `${assignee} to finish`;
     case "BLOCKED": return `${rec.byName} to clear the blocker or decide`;
     case "READY_FOR_VERIFICATION": return `${rec.byName} to verify`;
@@ -194,6 +200,7 @@ export function resurfaceOf(d: DelegatedTask & { acceptByISO?: string | null; fo
 const TASK_SELECT = {
   id: true, title: true, status: true, assignedKey: true, dueAt: true, clientId: true, projectId: true, blockedReason: true,
   delegatedBy: true, delegatedAt: true, acceptedAt: true, delegation: true, completedAt: true, updatedAt: true,
+  summary: true, description: true,
 } satisfies Prisma.SmartTaskSelect;
 type TaskRow = Prisma.SmartTaskGetPayload<{ select: typeof TASK_SELECT }>;
 
@@ -207,7 +214,21 @@ export type DelegatedTaskView = DelegatedTask & {
   evidence: string | null;
   closedAtISO: string | null;
   events: DelegationEvent[];
+  /** The task's own notes (what the engine or the assigner wrote on it), when
+   *  they say more than the title and the outcome (Oct 30 2026, Jordan: "I
+   *  don't even know where the notes are"). */
+  notes: string | null;
 };
+
+/** The task's own words, when they add anything to the title and outcome. */
+function notesOf(t: { title: string; summary: string | null; description: string | null }, outcome: string | null): string | null {
+  const same = (a: string, b: string | null) => !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+  const raw = (t.description ?? "").trim() || (t.summary ?? "").trim();
+  if (!raw || same(raw, t.title) || same(raw, outcome)) return null;
+  // An assignment's own description is "outcome\n\nnote": the outcome is shown already.
+  const rest = outcome && raw.startsWith(outcome.trim()) ? raw.slice(outcome.trim().length).trim() : raw;
+  return rest ? rest.slice(0, 1500) : null;
+}
 
 function viewOf(t: TaskRow, roster: Assignee[], opts: { scrub?: boolean } = {}): DelegatedTaskView {
   const rec = parseDelegation(t.delegation) ?? { v: 1 as const, byName: "Someone", outcome: null, needsVerification: false, sourceHref: null, acceptBy: null, followUpAt: null, nextStep: null, latestUpdate: null, evidence: null, escalated: null, recommended: null, updateRequestedAt: null, events: [] };
@@ -249,6 +270,7 @@ function viewOf(t: TaskRow, roster: Assignee[], opts: { scrub?: boolean } = {}):
     evidence: clean(rec.evidence),
     closedAtISO: state === "COMPLETED" ? (t.completedAt ?? t.updatedAt).toISOString() : state === "CANCELLED" ? t.updatedAt.toISOString() : null,
     events: rec.events.map((e) => ({ ...e, text: clean(e.text ?? null) })),
+    notes: clean(notesOf(t, rec.outcome)),
   };
 }
 
@@ -421,6 +443,15 @@ async function ring(to: Person | null, n: { kind: string; title: string; body?: 
 
 const hrefFor = (rec: DelegationRecord, projectId: string | null) => rec.sourceHref ?? (projectId ? `/projects/${projectId}` : "/");
 
+/** Where this person acts on the task itself: their own dashboard with the
+ *  task open (app/page ?task=), the Tasks board for anyone without one
+ *  (Oct 30 2026, Jordan: "I should get a link ... and it should take me to
+ *  where I can take an action on it"). */
+export function taskHrefFor(role: string | null | undefined, taskId: string): string {
+  const id = encodeURIComponent(taskId);
+  return role === "OWNER" || role === "ADMIN" || role === "CREATIVE_MANAGER" ? `/?task=${id}` : `/tasks?task=${id}`;
+}
+
 // ---- writes --------------------------------------------------------------------------
 
 /** Read, change, write back only if nobody else wrote in between (one retry). */
@@ -464,6 +495,9 @@ export type AssignInput = {
   projectId?: string | null;
   sourceHref?: string | null;
   note?: string | null;
+  /** The row's own words (the client's message, the job's facts) so the task carries its notes
+   *  (Jordan, Oct 30 2026: "I don't even know where the notes are"). */
+  context?: string | null;
 };
 
 /** "2026-10-24" (5 PM ET that day) or an ISO instant; null when absent or unreadable. */
@@ -515,6 +549,7 @@ export async function assignTask(actor: Actor, input: AssignInput, opts: { now?:
   const sourceHref = safeHref(input.sourceHref);
   const outcome = clip(input.outcome, 600);
   const note = clip(input.note, 600);
+  const context = clip(input.context, 1500);
 
   // ---- a recommendation: the owner decides --------------------------------
   let assignee = target;
@@ -574,9 +609,10 @@ export async function assignTask(actor: Actor, input: AssignInput, opts: { now?:
     };
     const r = await mutate(existing.id, () => ({
       data: {
-        delegatedBy: actor.email.toLowerCase(), delegatedAt: now, acceptedAt: null, assignedKey: assignee.key, ownerId: assignee.teamMemberId, assignedManually: true,
+        delegatedBy: actor.email.toLowerCase(), delegatedAt: now, acceptedAt: now, assignedKey: assignee.key, ownerId: assignee.teamMemberId, assignedManually: true,
         ...(due ? { dueAt: due } : {}), ...(reopening ? { status: "OPEN", completedAt: null } : existing!.status === VERIFY_STATUS ? { status: "OPEN" } : {}),
         ...(input.clientId && !existing!.clientId ? { clientId: input.clientId } : {}), ...(input.projectId && !existing!.projectId ? { projectId: input.projectId } : {}),
+        ...(context && !existing!.description?.trim() ? { description: context } : {}),
       },
       rec: fresh,
       after: () => notifyAssigned(actor, assignee, existing!.id, existing!.title, fresh, existing!.projectId ?? input.projectId ?? null, due ?? existing!.dueAt, now, { decision: upToOwner }),
@@ -597,7 +633,7 @@ export async function assignTask(actor: Actor, input: AssignInput, opts: { now?:
         taskType: opts.taskType ?? "delegated",
         title,
         summary: (outcome ?? title).slice(0, 500),
-        description: [outcome, note].filter(Boolean).join("\n\n") || null,
+        description: [...new Set([outcome, note, context].filter(Boolean))].join("\n\n") || null,
         reasonCreated: `Assigned by ${actor.name}`,
         source: opts.source ?? "delegation",
         sourceDetail: sourceHref,
@@ -614,6 +650,7 @@ export async function assignTask(actor: Actor, input: AssignInput, opts: { now?:
         dedupeKey,
         delegatedBy: actor.email.toLowerCase(),
         delegatedAt: now,
+        acceptedAt: now,
         delegation: JSON.stringify(rec),
       },
       select: { id: true },
@@ -632,17 +669,19 @@ export async function assignTask(actor: Actor, input: AssignInput, opts: { now?:
 async function notifyAssigned(actor: Actor, to: Person, taskId: string, title: string, rec: DelegationRecord, projectId: string | null, due: Date | null, now: Date, opts: { decision?: boolean } = {}): Promise<void> {
   const dueWords = due ? ` · due ${etDateTime(due)}` : "";
   const what = rec.recommended ? `${actor.name} recommends ${rec.recommended.assigneeName}: ${title}` : opts.decision ? `${actor.name} needs your decision: ${title}` : `${actor.name} assigned you: ${title}`;
+  const href = taskHrefFor(to.role, taskId);
   await ring(to, {
     kind: "task_assigned",
     title: what,
     body: [rec.outcome, dueWords.trim()].filter(Boolean).join(" ") || undefined,
-    href: hrefFor(rec, projectId),
-    slack: `${what}${rec.outcome ? `\nOutcome: ${rec.outcome}` : ""}${dueWords ? `\nDue ${etDateTime(due)}` : ""}\nAccept it on your dashboard.`,
+    href,
+    // The link opens the task (its notes, the record, Mark complete); assigned is theirs, nothing to accept.
+    slack: `${what}${rec.outcome ? `\nOutcome: ${rec.outcome}` : ""}${dueWords ? `\nDue ${etDateTime(due)}` : ""}\n${appBase()}${href}`,
     dedupe: `deleg-assign-${taskId}-${to.key}-${rec.events.length}-${now.getTime()}`,
   });
 }
 
-/** Hand the task to someone else. History is kept; the new person must accept. */
+/** Hand the task to someone else. History is kept; it is the new person's at once. */
 export async function reassignTask(actor: Actor, taskId: string, assigneeKey: string, opts: { now?: Date; roster?: Assignee[] } = {}): Promise<Result> {
   const now = opts.now ?? new Date();
   const roster = opts.roster ?? (await listAssignees());
@@ -695,7 +734,7 @@ export async function reassignTask(actor: Actor, taskId: string, assigneeKey: st
     message = `Moved to ${target.name}. ${fromName === "nobody" ? "" : `${fromName} is no longer on it. `}${target.name} has been notified.`;
     const prevKey = t.assignedKey;
     return {
-      data: { assignedKey: target.key, ownerId: target.teamMemberId, acceptedAt: null, status: "OPEN", blockedReason: null, assignedManually: true },
+      data: { assignedKey: target.key, ownerId: target.teamMemberId, acceptedAt: now, status: "OPEN", blockedReason: null, assignedManually: true },
       rec: next,
       after: async () => {
         await notifyAssigned(actor, target, taskId, t.title, next, t.projectId, t.dueAt, now);
