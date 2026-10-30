@@ -107,6 +107,22 @@ async function main() {
     const t3 = await prisma.smartTask.findFirstOrThrow({ where: { dedupeKey: "deleg:/shoots/x" } });
     const toHarrison = (await textsTo(harrisonTm.id)).join("\n");
     c.ok("a photographer's link is the Tasks board with the task open", toHarrison.includes(`/tasks?task=${t3.id}`), toHarrison.slice(-160));
+    // A note from the assigner (or the owner) reaches them whole, with the same link.
+    await signIn(owner);
+    const longNote = "Book Joe's 4-hour content session in Aryeo: Tuesday, November 10, 10 AM to 2 PM ET. Nothing is booked yet.";
+    const up = await A.updateTaskAction(t3.id, "Check the drone battery too");
+    const upBell = await prisma.notification.findFirst({ where: { userKey: `tm:${harrisonTm.id}`, kind: "delegation_update" }, orderBy: { createdAt: "desc" } });
+    c.ok("a note from Jordan opens the task from the bell", up.ok && upBell?.href === `/tasks?task=${t3.id}`, String(upBell?.href));
+    // Same person, a new brief: saved and said again, in full, with the link.
+    const n0 = (await textsTo(harrisonTm.id)).length;
+    const again = await A.assignTaskAction({ title: "Bring the spare battery Friday", assigneeKey: "harrison", sourceTaskId: t3.id, outcome: longNote });
+    const toHarrison2 = (await textsTo(harrisonTm.id)).slice(n0).join("\n");
+    const v3 = await view(t3.id);
+    c.ok("re-assigning to the same person with a new outcome saves it and texts it, with the link", again.ok && /Updated for Harrison/.test(again.message) && v3.outcome === longNote && toHarrison2.includes("10 AM to 2 PM ET. Nothing is booked yet.") && toHarrison2.includes(`/tasks?task=${t3.id}`), `${again.message} | ${toHarrison2.slice(-160)}`);
+    const twice = await A.assignTaskAction({ title: "Bring the spare battery Friday", assigneeKey: "harrison", sourceTaskId: t3.id, outcome: longNote });
+    c.ok("the same press again sends nothing", twice.ok && /Nothing new was sent/.test(twice.message) && (await textsTo(harrisonTm.id)).length === n0 + 1, twice.message);
+    const ask = await A.requestUpdateAction(t3.id, "Where are we?");
+    c.ok("an 'asks for an update' links to the task too", ask.ok && (await textsTo(harrisonTm.id)).some((l) => /asks for an update/.test(l) && l.includes(`/tasks?task=${t3.id}`)), (await textsTo(harrisonTm.id)).slice(-1)[0]);
     c.ok("each role's place", lib.taskHrefFor("OWNER", "a") === "/?task=a" && lib.taskHrefFor("ADMIN", "a") === "/?task=a" && lib.taskHrefFor("CREATIVE_MANAGER", "a") === "/?task=a" && lib.taskHrefFor("EDITOR", "a") === "/tasks?task=a");
 
     // =====================================================================

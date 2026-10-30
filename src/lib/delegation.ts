@@ -593,6 +593,20 @@ export async function assignTask(actor: Actor, input: AssignInput, opts: { now?:
     const rec = parseDelegation(existing.delegation);
     const open = !CLOSED.includes(existing.status);
     if (existing.delegatedAt && open && existing.assignedKey === assignee.key && !recommended) {
+      // Same person, a new brief (Oct 30 2026: Joe Sutow's booking went back to Kyle with the
+      // slot): a changed outcome or due date is saved and said again. A repeat press is not.
+      const newOutcome = !!outcome && outcome !== (rec?.outcome ?? null);
+      const newDue = !!due && due.getTime() !== (existing.dueAt?.getTime() ?? null);
+      if (rec && (newOutcome || newDue)) {
+        const text = [newOutcome ? `New outcome: ${outcome}` : null, newDue ? `Due ${etDateTime(due!)}` : null, note].filter(Boolean).join(". ");
+        const fresh: DelegationRecord = { ...rec, outcome: newOutcome ? outcome : rec.outcome, events: [...rec.events, ev(actor, "update", { text }, now)] };
+        return mutate(existing.id, () => ({
+          data: { ...(newDue ? { dueAt: due } : {}), ...(context && !existing!.description?.trim() ? { description: context } : {}) },
+          rec: fresh,
+          after: () => notifyAssigned(actor, assignee, existing!.id, existing!.title, fresh, existing!.projectId ?? input.projectId ?? null, due ?? existing!.dueAt, now),
+          message: `Updated for ${assignee.name}. They have been notified.`,
+        }));
+      }
       const state = stateOf(existing);
       return say(true, `Already with ${assignee.name} (${STATE_WORDS[state].toLowerCase()}). Nothing new was sent.`, existing.id);
     }
@@ -719,7 +733,7 @@ export async function reassignTask(actor: Actor, taskId: string, assigneeKey: st
     if (recRecommendation) {
       const next: DelegationRecord = { ...rec, recommended, events: [...rec.events, ev(actor, "recommended", { to: target.name, text: `Recommended moving it to ${target.name}; Jordan decides` }, now)] };
       message = `Recommendation recorded: ${target.name}. Jordan decides.`;
-      return { data: {}, rec: next, after: async () => { notifyTo = (await ownerPerson(roster)) ?? target; await ring(notifyTo, { kind: "task_assigned", title: `${actor.name} recommends ${target.name}: ${t.title}`, href: hrefFor(rec, t.projectId), slack: `${actor.name} recommends moving "${t.title}" to ${target.name}. Your decision, on your dashboard.`, dedupe: `deleg-rec-${taskId}-${target.key}-${now.getTime()}` }); }, message };
+      return { data: {}, rec: next, after: async () => { notifyTo = (await ownerPerson(roster)) ?? target; const href = taskHrefFor(notifyTo?.role, taskId); await ring(notifyTo, { kind: "task_assigned", title: `${actor.name} recommends ${target.name}: ${t.title}`, href, slack: `${actor.name} recommends moving "${t.title}" to ${target.name}. Your decision:\n${appBase()}${href}`, dedupe: `deleg-rec-${taskId}-${target.key}-${now.getTime()}` }); }, message };
     }
     const fromName = t.assignedKey ? roster.find((a) => a.key === t.assignedKey)?.name ?? firstName(t.assignedKey) : "nobody";
     const next: DelegationRecord = {
@@ -790,9 +804,13 @@ export async function updateTask(actor: Actor, taskId: string, note: string, opt
     return {
       data: { ...(starts || unblocks ? { status: "IN_PROGRESS", blockedReason: null } : {}), ...(mine && !t.acceptedAt ? { acceptedAt: now } : {}) },
       rec: next,
+      // The whole note and the task's own link (Oct 30 2026): the bell title is cut at 90, the text is not.
       after: async () => {
-        if (mine) await ring(await assignerPerson(t.delegatedBy), { kind: "delegation_update", title: `${actor.name}: ${text}`.slice(0, 90), body: t.title, href: "/", dedupe: `deleg-upd-${taskId}-${now.getTime()}` });
-        else if (t.assignedKey) await ring(await personFor(t.assignedKey), { kind: "delegation_update", title: `${actor.name} on "${t.title}": ${text}`.slice(0, 90), href: hrefFor(rec, t.projectId), dedupe: `deleg-upd-${taskId}-${now.getTime()}` });
+        const to = mine ? await assignerPerson(t.delegatedBy) : t.assignedKey ? await personFor(t.assignedKey) : null;
+        if (!to) return;
+        const href = taskHrefFor(to.role, taskId);
+        const head = mine ? `${actor.name}: ${text}` : `${actor.name} on "${t.title}": ${text}`;
+        await ring(to, { kind: "delegation_update", title: head.slice(0, 90), body: mine ? t.title : undefined, href, slack: `${head}\n${appBase()}${href}`, dedupe: `deleg-upd-${taskId}-${now.getTime()}` });
       },
       message: "Update saved. The task stays open.",
     };
@@ -898,7 +916,7 @@ export async function returnForChanges(actor: Actor, taskId: string, why: string
     return {
       data: { status: "IN_PROGRESS" },
       rec: next,
-      after: async () => { if (t.assignedKey) await ring(await personFor(t.assignedKey), { kind: "task_assigned", title: `Sent back: ${t.title}`, body: text, href: hrefFor(rec, t.projectId), slack: `${actor.name} sent back "${t.title}": ${text}`, dedupe: `deleg-ret-${taskId}-${now.getTime()}` }); },
+      after: async () => { const to = t.assignedKey ? await personFor(t.assignedKey) : null; if (!to) return; const href = taskHrefFor(to.role, taskId); await ring(to, { kind: "task_assigned", title: `Sent back: ${t.title}`, body: text, href, slack: `${actor.name} sent back "${t.title}": ${text}\n${appBase()}${href}`, dedupe: `deleg-ret-${taskId}-${now.getTime()}` }); },
       message: "Sent back. It's open again with the assignee.",
     };
   });
@@ -939,7 +957,7 @@ export async function requestUpdate(actor: Actor, taskId: string, note?: string 
     return {
       data: {},
       rec: next,
-      after: async () => { if (t.assignedKey) await ring(await personFor(t.assignedKey), { kind: "task_assigned", title: `${actor.name} asks for an update: ${t.title}`, body: text ?? undefined, href: hrefFor(rec, t.projectId), slack: `${actor.name} asks for an update on "${t.title}"${text ? `: ${text}` : ""}. Reply with Update on your dashboard.`, dedupe: `deleg-ask-${taskId}-${now.getTime()}` }); },
+      after: async () => { const to = t.assignedKey ? await personFor(t.assignedKey) : null; if (!to) return; const href = taskHrefFor(to.role, taskId); await ring(to, { kind: "task_assigned", title: `${actor.name} asks for an update: ${t.title}`, body: text ?? undefined, href, slack: `${actor.name} asks for an update on "${t.title}"${text ? `: ${text}` : ""}. Add an update on the task:\n${appBase()}${href}`, dedupe: `deleg-ask-${taskId}-${now.getTime()}` }); },
       message: "Asked. The assignee has been notified.",
     };
   });
