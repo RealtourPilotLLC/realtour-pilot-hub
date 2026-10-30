@@ -264,11 +264,14 @@ export async function editorSpeedReport(opts: { days: number; now?: Date; exclud
   const { NOT_A_CUT } = await import("@/lib/reviewCuts");
   const { VIDEO_DUE_SELECT, videoDueOf } = await import("@/lib/editorDue");
   const { videoStyleFor } = await import("@/lib/videoStyles");
-  const { editorMeta } = await import("@/lib/editors");
+  const { editorMeta, videoEditorKeys } = await import("@/lib/editors");
   const now = opts.now ?? new Date();
   const from = new Date(now.getTime() - opts.days * 24 * H);
-  // Kim and John Mark (Remar's history still counts while it is in the window).
-  const IN_HOUSE = ["kim", "john", "remar"];
+  // Every in-house video editor, built-in and onboarded on People (a departed
+  // one's history still counts while it is in the window); a row for each
+  // current one, even before their first video.
+  const IN_HOUSE = videoEditorKeys({ includeDeparted: true });
+  const DESK = videoEditorKeys();
   const named = (rows: SpeedRow[]) => rows.map((r) => ({ ...r, name: editorMeta(r.editorKey)?.name ?? r.editorKey }));
   const firsts = await prisma.reviewSubmission.findMany({
     where: {
@@ -287,7 +290,7 @@ export async function editorSpeedReport(opts: { days: number; now?: Date; exclud
   for (const r of firsts) if (!firstByLane.has(laneOf(r))) firstByLane.set(laneOf(r), r);
   const projectIds = [...new Set(firsts.map((r) => r.projectId))];
   if (!projectIds.length) {
-    return { days: opts.days, readAtISO: now.toISOString(), rows: named(foldEditorSpeed([], { now, editorKeys: ["kim", "john"], days: opts.days })) };
+    return { days: opts.days, readAtISO: now.toISOString(), rows: named(foldEditorSpeed([], { now, editorKeys: DESK, days: opts.days })) };
   }
   const [projects, sent, events, outputs, deliverables] = await Promise.all([
     prisma.project.findMany({
@@ -373,6 +376,6 @@ export async function editorSpeedReport(opts: { days: number; now?: Date; exclud
   return {
     days: opts.days,
     readAtISO: now.toISOString(),
-    rows: named(foldEditorSpeed(videos, { now, editorKeys: ["kim", "john"], days: opts.days })),
+    rows: named(foldEditorSpeed(videos, { now, editorKeys: DESK, days: opts.days })),
   };
 }

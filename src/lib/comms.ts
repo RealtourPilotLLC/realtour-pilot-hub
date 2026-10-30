@@ -953,7 +953,7 @@ async function runRevisionDetailed(opts: DetailedRevisionOpts, receiptTx?: { db:
   // The owner's pinned editor (queue-row / project-page pick) made this cut —
   // a VIDEO revision goes back to them, not to whoever the rules route to
   // today. Photo/3D/floor-plan asks keep their Kyle lane regardless of pin.
-  const { pinnedEditorFor } = await import("@/lib/editors");
+  const { pinnedEditorFor, isVideoEditorKey, keepOrRoute, routingLaneFor, editorKeyForTeamName } = await import("@/lib/editors");
   const primaryIsVideo = primary?.type === "VIDEO" || primary?.type === "SOCIAL_REEL";
   // The work this ask actually IS — used for the per-medium work order below.
   const primaryIsVideoWork = primaryIsVideo;
@@ -964,12 +964,19 @@ async function runRevisionDetailed(opts: DetailedRevisionOpts, receiptTx?: { db:
   // A job pinned to nobody or to the outside shop must not bounce a revision
   // back onto John's or Kim's board — Kyle relays it (review, Sep 7).
   const pin = primaryIsVideo ? pinnedEditorFor(project) : { pinned: false, key: null };
-  const pinnedKey = pin.pinned ? (pin.key === "kim" || pin.key === "john" || pin.key === "remar" ? pin.key : "kyle") : null;
-  const assignedKey = pinnedKey ?? editorForDeliverable(
+  const pinnedKey = pin.pinned ? (isVideoEditorKey(pin.key, { includeDeparted: true }) ? pin.key : "kyle") : null;
+  // Unpinned, a video revision goes back to the editor on the job while they
+  // are still ticked for its lane (Oct 30 2026: with several editors on a
+  // lane, "whoever is next" is for new work, not for fixing someone's cut).
+  const revisionRules = receiptTx?.routing ?? await editorRouting();
+  const revisionMonthly = isMonthlyContentJob(project.deliverables);
+  const assignedKey = pinnedKey ?? (primaryIsVideo
+    ? keepOrRoute(editorKeyForTeamName(project.editor?.name), routingLaneFor(primary?.type, primary?.label, revisionMonthly), revisionRules, null)
+    : null) ?? editorForDeliverable(
     primary?.type,
     primary?.label,
-    isMonthlyContentJob(project.deliverables),
-    receiptTx?.routing ?? await editorRouting(),
+    revisionMonthly,
+    revisionRules,
   );
 
   // The client's request IS the work order — keep it whole (word-boundary clip,

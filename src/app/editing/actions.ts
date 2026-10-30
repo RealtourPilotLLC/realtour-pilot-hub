@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, requireCreativeLead, requireRole, requireShootAccess } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
-import { EDITORS, OUTSIDE_EDITOR_KEYS, editorTeamMemberId, isOutsideEditor, type EditorKey } from "@/lib/editors";
+import { EDITORS, OUTSIDE_EDITOR_KEYS, editorTeamMemberId, isOutsideEditor, isVideoEditorKey, videoEditorKeys, type EditorKey } from "@/lib/editors";
 import { deliveryStamp, neverMadeOnly, outstandingForDelivery, outstandingMessage } from "@/lib/delivery";
 import { owedPhrase } from "@/lib/statusEvidence";
 import { officeQueueReason } from "@/lib/reviewAttribution";
@@ -71,8 +71,8 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
   }
   const unassign = editorKey === "";
   const external = isOutsideEditor(editorKey);
-  if (!unassign && !external && !(VIDEO_EDITOR_KEYS as string[]).includes(editorKey)) {
-    return { ok: false, message: `Pick a video editor (Kim or John Mark), ${OUTSIDE_EDITOR_KEYS.map((k) => EDITORS[k].name).join(", ")}, or Unassigned.` };
+  if (!unassign && !external && !isVideoEditorKey(editorKey)) {
+    return { ok: false, message: `Pick a video editor (${ourEditorsWords()}), ${OUTSIDE_EDITOR_KEYS.map((k) => EDITORS[k].name).join(", ")}, or Unassigned.` };
   }
   const key = unassign ? null : (editorKey as EditorKey);
   const { editorMeta } = await import("@/lib/editors");
@@ -234,10 +234,11 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
 // ---------------------------------------------------------------------------
 
 const QUEUE_STATUSES = ["SHOT", "EDITING", "REVIEW", "REVISION"];
-const VIDEO_EDITOR_KEYS: EditorKey[] = ["kim", "john"];
-// The outside shops (editors.ts OUTSIDE_EDITOR_KEYS) are not in
-// VIDEO_EDITOR_KEYS: work never AUTO-routes there, a human hands it over
-// (Jordan, Sep 7).
+// The video editors a job can be put on: Kim, John Mark and everyone
+// onboarded on People (lib/editors videoEditorKeys, read at call time). The
+// outside shops (OUTSIDE_EDITOR_KEYS) are not among them: work never
+// AUTO-routes there, a human hands it over (Jordan, Sep 7).
+const ourEditorsWords = () => videoEditorKeys().map((k) => EDITORS[k].name).join(" or ");
 
 export type QueueCandidate = {
   id: string;
@@ -341,8 +342,8 @@ export async function addToEditorQueue(
   if (me?.impersonating) return { ok: false, message: "You're previewing another user — exit the preview to make changes." };
   const { displayNameFor } = await import("@/lib/actorName");
   const queuedBy = (await displayNameFor(me)) ?? null;
-  if (!(VIDEO_EDITOR_KEYS as string[]).includes(editorKey)) {
-    return { ok: false, message: "Pick a video editor (Kim or John Mark)." };
+  if (!isVideoEditorKey(editorKey)) {
+    return { ok: false, message: `Pick a video editor (${ourEditorsWords()}).` };
   }
   const key = editorKey as EditorKey;
   const { withEditorAssignmentChange } = await import("@/lib/editorBriefReceipt");
@@ -393,7 +394,7 @@ export async function addToEditorQueue(
   const priorCut = project.status === "DELIVERED" || project._count.reviewSubmissions > 0 || videoEvidence;
 
   // Who gets pinged: Kim/John directly (their channel bridge). Only they can
-  // be picked here (VIDEO_EDITOR_KEYS) — a job goes to Luma Visuals through
+  // be picked here (videoEditorKeys) — a job goes to Luma Visuals through
   // the reassign select instead, whose bell goes to the ADMIN. (A `luma`
   // branch that lived here could never run; it went with O08, Sep 25.)
   const notifyQueued = async (kind: string, title: string) => {
@@ -1459,7 +1460,7 @@ export async function setQueueStatus(projectId: string, label: string, requestId
       if (!proj.revisionRequestedAt) {
         await prisma.project.update({ where: { id: projectId }, data: { revisionRequestedAt: new Date() } });
       }
-      if (assignedKey === "kim" || assignedKey === "john") {
+      if (isVideoEditorKey(assignedKey)) {
         try {
           const { notifyInApp } = await import("@/lib/notify");
           await notifyInApp({
@@ -1588,7 +1589,7 @@ const OVERRIDE_STATUS_LABEL: Record<string, string> = {
   ON_HOLD: "On hold",
   CANCELLED: "Cancelled",
 };
-const EDITOR_SELECT_KEYS = new Set<string>(["", "kim", "john", ...OUTSIDE_EDITOR_KEYS]);
+const editorSelectable = (key: string) => key === "" || isVideoEditorKey(key) || isOutsideEditor(key);
 
 /** §10 rush (Sep 26): what the approver saw and why, sent with a save that
  *  moves a job ahead of others. `seen` = the displaced project ids the dialog
@@ -1641,8 +1642,8 @@ export async function saveEditOverrides(
   const note = input.note === undefined ? undefined : input.note.trim() || null;
   if (note && note.length > 300) return { ok: false, message: "Keep the note under 300 characters." };
   const wantsEditor = input.editorKey != null;
-  if (wantsEditor && !EDITOR_SELECT_KEYS.has(input.editorKey as string)) {
-    return { ok: false, message: `Pick a video editor (Kim or John Mark), ${OUTSIDE_EDITOR_KEYS.map((k) => EDITORS[k].name).join(", ")}, or Unassigned.` };
+  if (wantsEditor && !editorSelectable(input.editorKey as string)) {
+    return { ok: false, message: `Pick a video editor (${ourEditorsWords()}), ${OUTSIDE_EDITOR_KEYS.map((k) => EDITORS[k].name).join(", ")}, or Unassigned.` };
   }
 
   const proj = await prisma.project.findUnique({
@@ -2121,7 +2122,7 @@ function cleanRushChange(change: RushChange): { ok: true; value: RushChange } | 
     out.priority = change.priority;
   }
   if (change.editorKey != null) {
-    if (!EDITOR_SELECT_KEYS.has(change.editorKey)) return { ok: false, message: "Pick a video editor." };
+    if (!editorSelectable(change.editorKey)) return { ok: false, message: "Pick a video editor." };
     out.editorKey = change.editorKey;
   }
   return { ok: true, value: out };

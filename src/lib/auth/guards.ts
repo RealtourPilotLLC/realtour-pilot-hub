@@ -294,6 +294,9 @@ export async function crewKeys(): Promise<Set<string>> {
   const { prisma } = await import("@/lib/prisma");
   const shooters = await prisma.teamMember.findMany({ where: { active: true, role: "PHOTOGRAPHER" }, select: { name: true } }).catch(() => []);
   const keys = new Set(CREW_EDITOR_KEYS);
+  // Every in-house video editor, onboarded on People too (Oct 30 2026).
+  const { videoEditorKeys } = await import("@/lib/editors");
+  for (const k of videoEditorKeys({ includeDeparted: true })) keys.add(k);
   // Jordan's roster row is a photographer too; he is the owner, never "crew".
   for (const s of shooters) if (!/^jordan\b/i.test(s.name.trim())) keys.add(slugForName(s.name));
   keys.delete("");

@@ -6,6 +6,7 @@ import { Route, Package, ArrowRight, MessageSquareText, Clock, BellRing, Clapper
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { RoutingRulesForm } from "@/components/settings/RoutingRulesForm";
+import { videoEditorChoices } from "@/lib/editors";
 import { getCurrentUser } from "@/lib/auth/user";
 import { canAccess, canSeeMoney } from "@/lib/auth/access";
 import { authEnforced } from "@/lib/auth/guards";
@@ -264,12 +265,17 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     "editor-routing": card("editor-routing",
       <Section icon={Route} title="Editor auto-assignment">
         <p className="mb-4 text-sm leading-relaxed text-muted">
-          When raws land on a video job, the hub routes the edit automatically.
-          &ldquo;Manual&rdquo; sends the job to the pinned <strong>Needs assigning</strong> pile
-          on Tasks instead, for you or Kyle to hand off. Reassigning any single job in the
-          Editing Room always overrides these rules.
+          When raws land on a video job, the hub hands the edit to an editor ticked for its lane.
+          With more than one ticked, it goes to whoever would get through it soonest: the videos
+          they already owe, at the pace they have been finishing them, skipping anyone marked out.
+          Nobody ticked sends the job to the pinned <strong>Needs assigning</strong> pile on Tasks
+          instead. A job keeps its editor while they stay ticked, and reassigning any single job
+          in the Editing Room always overrides these rules.{" "}
+          {isOwner
+            ? <>New editors are added on <a href="/users?tab=logins" className="font-medium text-brand underline underline-offset-2">People → Logins</a>.</>
+            : <>New editors are added by Jordan on People → Logins.</>}
         </p>
-        <RoutingRulesForm initial={rules} />
+        <RoutingRulesForm initial={rules} editors={videoEditorChoices()} />
       </Section>),
 
     "automated-texts": card("automated-texts",

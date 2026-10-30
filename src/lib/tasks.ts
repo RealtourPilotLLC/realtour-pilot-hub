@@ -11,7 +11,7 @@ import { slugForName } from "@/lib/assignees";
 import { BRACKET_RATIO, photoTargetFor } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { clip } from "@/lib/text";
-import { TEAM_MEMBER_EDITOR_KEYS, VIDEO_LANE_KEYS, editorKeyForTeamName, editorTeamMemberId, isOutsideEditor, pinnedEditorFor } from "@/lib/editors";
+import { TEAM_MEMBER_EDITOR_KEYS, VIDEO_LANE_KEYS, editorForDeliverable, editorKeyForTeamName, editorTeamMemberId, isOutsideEditor, isVideoEditorKey, keepOrRoute, pinnedEditorFor, routingLaneFor, type EditorKey } from "@/lib/editors";
 import { effectiveTier } from "@/lib/editOverrides";
 import type { Prisma } from "@prisma/client";
 
@@ -2999,6 +2999,36 @@ async function rawsProject(projectId: string): Promise<RawsProject | null> {
   });
 }
 
+/**
+ * WHO A JOB'S VIDEO GOES TO WHEN NOBODY PINNED IT (Oct 30 2026). One answer
+ * for the ready ping, the project's editor link and the edit card, so the
+ * person pinged is the person whose queue it lands in: the editor already on
+ * the job (its live edit card, else the project's editor) while they are
+ * still ticked for its lane, else whoever the workload says is next. Only a
+ * new decision pays for a fresh workload read.
+ */
+async function routedVideoEditor(
+  projectId: string,
+  p: { editor?: { name?: string | null } | null; deliverables: { type: string; label: string | null }[] },
+  v: { type: string; label: string | null },
+): Promise<EditorKey | null> {
+  const { editorRouting } = await import("@/lib/settings");
+  const monthly = isMonthlyContentJob(p.deliverables);
+  const lane = routingLaneFor(v.type, v.label, monthly);
+  const card = await prisma.smartTask
+    .findUnique({ where: { dedupeKey: `edit-video-${projectId}` }, select: { assignedKey: true, assignedManually: true, status: true } })
+    .catch(() => null);
+  const live = card && card.status !== "COMPLETED" && card.status !== "CANCELLED" ? card.assignedKey : null;
+  // A card somebody handed to an editor by hand is theirs whatever the lanes say.
+  if (live && card?.assignedManually) return live;
+  const current = live ?? editorKeyForTeamName(p.editor?.name);
+  const cached = await editorRouting();
+  const kept = keepOrRoute(current, lane, cached, null);
+  if (kept) return kept;
+  const rules = await editorRouting({ fresh: true });
+  return editorForDeliverable(v.type, v.label, monthly, rules);
+}
+
 export async function notifyRawsLanded(projectId: string, opts: RawsLandedOpts = {}): Promise<void> {
   const p = await rawsProject(projectId);
   if (!p) return;
@@ -3138,19 +3168,18 @@ async function announceReady(
 ): Promise<string> {
   const { opsAlert, notifyInApp } = await import("@/lib/notify");
   const { appBase } = await import("@/lib/appUrl");
-  const { editorForDeliverable, editorMeta } = await import("@/lib/editors");
+  const { editorMeta } = await import("@/lib/editors");
   const posted = await opsAlert(
     `🔔 ${opts.combined ? `Raws in for ${street} — ready for editing` : `Ready for editing — ${street} (the brief is complete)`} → ${appBase()}/editing`,
   );
   const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")!;
   const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["ADMIN"] }, { roles: ["EDITOR"] }];
-  const { editorRouting } = await import("@/lib/settings");
   // The owner's pinned editor gets the DM — same precedence as mintEditTask,
   // so the person who's pinged is the person whose queue the task lands in.
   const pin = pinnedEditorFor(p);
-  const key = pin.pinned ? pin.key : editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables), await editorRouting());
+  const key = pin.pinned ? pin.key : await routedVideoEditor(projectId, p, v);
   // Only in-house editors have a reachable channel.
-  const routedKey = key === "kim" || key === "john" ? key : null;
+  const routedKey = isVideoEditorKey(key) ? key : null;
   // Their brief — the one page the EDITOR role can act from.
   if (routedKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${routedKey}`, href: `/edit/${projectId}` });
   // Oct 22 2026: the editor hears WHEN it is due, in their own time too
@@ -3217,7 +3246,7 @@ export async function ensureEditorLoginNudge(editorKey: string): Promise<void> {
         title: `Send ${name} their Hub login — need their email`.slice(0, 120),
         summary:
           `Work keeps getting pinged to ${name}'s bell, but no Hub login exists for editor key "${editorKey}" — everything addressed to them is invisible in-app (they're reached only by Slack/SMS/ops relay for now). ` +
-          `Invite them on /users with role EDITOR and first name "${name}" so their editor key wires up automatically` +
+          `Add them on People → Logins with the Editor role (or press "Set up as editor" on their login) so the key wires up` +
           (editorKey === "john" ? ", and add John Mark's phone to his Team row so texts can reach him too." : "."),
         reasonCreated: "Editor-addressed notification landed with no editor login to see it",
         source: "system",
@@ -3293,7 +3322,7 @@ export async function mintEditTask(projectId: string): Promise<void> {
   if (!v) return;
 
   const { videoTier } = await import("@/lib/projectStatus");
-  const { editorForDeliverable, editorMeta, editorKeyForTeamName } = await import("@/lib/editors");
+  const { editorMeta } = await import("@/lib/editors");
   const { dropboxWebUrl, actualFolderPaths } = await import("@/lib/dropboxFolders");
 
   const monthly = isMonthlyContentJob(p.deliverables);
@@ -3301,7 +3330,6 @@ export async function mintEditTask(projectId: string): Promise<void> {
   const isPremium = tier === "premium";
   // null = personal branding: deliberately unrouted (Jordan assigns by hand);
   // edit_video is in TRIAGE_TYPES so the unassigned task sits in "Needs assigning".
-  const { editorRouting } = await import("@/lib/settings");
   // A hand-picked editor on the PROJECT (queue-row reassign while the job was
   // still upcoming, before any task existed) beats the routing rules — that's
   // the whole point of editorManual. Falls through to the rules when the pinned
@@ -3309,8 +3337,9 @@ export async function mintEditTask(projectId: string): Promise<void> {
   // pinnedEditorFor: a pin to nobody or to the outside shop is a human pick too,
   // and the rules must not route John or Kim back onto it (review, Sep 7).
   const pin = pinnedEditorFor(p);
-  const pinnedKey = pin.key;
-  const assignedKey = pin.pinned ? pin.key : editorForDeliverable(v.type, v.label, monthly, await editorRouting()); // per /settings rules; null = manual
+  // Per /settings rules (null = manual); the editor already on the job keeps
+  // it while still ticked for its lane (routedVideoEditor).
+  const assignedKey = pin.pinned ? pin.key : await routedVideoEditor(projectId, p, v);
   const editorName = assignedKey ? editorMeta(assignedKey)?.name ?? assignedKey : "manual assignment";
   const street = (p.title || "this job").split(",")[0].trim();
 
@@ -4082,9 +4111,7 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
   // reassign) — never auto-revert their choice, same deal as photographerManual.
   if (!manualTask && !p.editorManual) {
     try {
-      const { editorForDeliverable, editorTeamMemberId } = await import("@/lib/editors");
-      const { editorRouting: er } = await import("@/lib/settings");
-      const key = editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables), await er());
+      const key = await routedVideoEditor(projectId, p, v);
       const tmId = await editorTeamMemberId(key);
       if (tmId && p.editorId !== tmId) {
         const { withEditorAssignmentChange } = await import("@/lib/editorBriefReceipt");

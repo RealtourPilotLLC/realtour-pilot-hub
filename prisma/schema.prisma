@@ -92,6 +92,14 @@ model TeamMember {
   phone             String?
   // Slack user id (U…) for direct pings; resolved from email on first use.
   slackId           String?
+  // In-house VIDEO EDITOR (Oct 30 2026): the roster key their tasks, desk and
+  // bell are filed under (lib/editors applyEditorRoster). Set when the office
+  // onboards an editor on People; Kim and John Mark carry their built-in keys.
+  // Null for everyone who is not a video editor.
+  editorKey         String?   @unique
+  // Their own clock (IANA, e.g. "Asia/Manila") for "12:40am your time" on the
+  // editor desk. Null = the editor default (Asia/Manila).
+  timezone          String?
   avatarColor       String    @default("#6366f1") // for UI avatars
   // "Work-ons for your next shoot" — the AI-summarized THEMES of this person's
   // open capture feedback, cached so the page never waits on a model call.

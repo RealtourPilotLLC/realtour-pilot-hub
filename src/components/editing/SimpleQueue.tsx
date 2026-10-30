@@ -22,6 +22,7 @@ import { badgeColors } from "@/components/ui/Badge";
 import { ActionMenu } from "@/components/ui/ActionMenu";
 import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 import { EditOverridesButton, OverrideChip, hasOverride } from "@/components/editing/EditOverridesDialog";
+import { BUILT_IN_VIDEO_EDITORS, type VideoEditorChoice } from "@/components/editing/videoEditorChoices";
 import { RemoveFromQueueButton } from "@/components/editing/RemoveFromQueue";
 import { RemindPhotographerButton, type RemindView } from "@/components/editing/RemindPhotographer";
 import { EDIT_STATUS_LABELS, type EditComputedView, type EditOverrideView } from "@/lib/editOverrideDefaults";
@@ -198,11 +199,8 @@ const WORN_ONLY: Record<string, { color: string }> = {
 // server with the truth (and its chip) instead.
 const WORK_MOVES = new Set(["In editing", "Paused"]);
 
-// The queue's assignable video editors (matches VIDEO_EDITOR_KEYS server-side).
-const VIDEO_EDITORS = [
-  { key: "john", name: "John Mark" },
-  { key: "kim", name: "Kim" },
-] as const;
+// The queue's assignable video editors come from the page (the videoEditors
+// prop): Kim, John Mark and everyone onboarded on People, as the server checks them.
 
 // Jordan, Sep 7: "I want to be able to unassign projects from editors and
 // reassign them to an external agency. That way, our editors don't see jobs
@@ -364,9 +362,10 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
 }
 
 /** Office-only rare actions retain their existing dialogs and server guards. */
-function QueueActions({ row, office, chatHref, queueHref, onReceipt }: {
+function QueueActions({ row, office, chatHref, queueHref, onReceipt, videoEditors }: {
   row: QueueRow; office: boolean; chatHref: string; queueHref: string;
   onReceipt: (message: string, ok?: boolean) => void;
+  videoEditors: VideoEditorChoice[];
 }) {
   const router = useRouter();
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -392,6 +391,7 @@ function QueueActions({ row, office, chatHref, queueHref, onReceipt }: {
     job={{ projectId: row.id, street: row.street, status: row.status, editorKey: row.editorKey, editorName: row.editor, editorAuto: row.auto, overrides: row.overrides, computed: row.computed }}
     onReceipt={onReceipt}
     onDialogClose={returnFocus}
+    videoEditors={videoEditors}
     renderTrigger={(openOverride) => <RemoveFromQueueButton
       projectId={row.id} street={row.street} onReceipt={onReceipt} onDialogClose={returnFocus}
       renderTrigger={(openRemove) => menu([
@@ -407,7 +407,7 @@ function QueueActions({ row, office, chatHref, queueHref, onReceipt }: {
 // or pick Unassigned / External agency and it leaves our editors' queues.
 // Optimistic with snap-back, same contract as the status pill; a refusal keeps
 // the server's reason on the control's tooltip instead of failing silently.
-function EditorSelect({ row }: { row: QueueRow }) {
+function EditorSelect({ row, videoEditors: VIDEO_EDITORS }: { row: QueueRow; videoEditors: VideoEditorChoice[] }) {
   const [key, setKey] = useState(row.assignmentState === "predicted" ? SUGGESTED : row.savedEditorKey ?? UNASSIGN);
   const [pending, start] = useTransition();
   const [err, setErr] = useState<string | null>(null);
@@ -577,9 +577,11 @@ const DUE_LABEL: Record<DueFilter, { due: string; shoot: string }> = {
 };
 
 export function SimpleQueue({
-  notDone, upcoming, done, hideEditor = false,
+  notDone, upcoming, done, hideEditor = false, videoEditors = BUILT_IN_VIDEO_EDITORS,
 }: {
   notDone: QueueRow[]; upcoming: QueueRow[]; done: QueueRow[];
+  /** who the Editor pickers offer (lib/editors videoEditorChoices) */
+  videoEditors?: VideoEditorChoice[];
   // The editor's own view (Jordan, Aug 27: "the same queue I do, just with the
   // jobs assigned to them and no editor section") — every row is already
   // theirs, so the Editor column is dead weight and the reassign control is
@@ -1058,7 +1060,7 @@ export function SimpleQueue({
                           <span className="text-xs font-medium">{r.editor ?? "—"}</span>
                         ) : (
                           // key = server truth, same deal as the status pill.
-                          <EditorSelect key={`${r.assignmentState}:${r.savedEditorKey ?? "none"}`} row={r} />
+                          <EditorSelect key={`${r.assignmentState}:${r.savedEditorKey ?? "none"}`} row={r} videoEditors={videoEditors} />
                         )}
                       </td>
                     )}
@@ -1076,6 +1078,7 @@ export function SimpleQueue({
                         {hideEditor ? editorNextAction(r, view) : "Open"}
                       </Link>
                       <QueueActions
+                        videoEditors={videoEditors}
                         key={`${r.status}|${r.editorKey ?? ""}|${r.overrides.at ?? ""}`}
                         row={r} office={!hideEditor} chatHref={`${jobHref(r.id)}#messages`} queueHref={queueHref}
                         onReceipt={receive}

@@ -97,12 +97,16 @@ async function settle(briefId: string, dryRun: boolean): Promise<LaneMove | null
   let assignedKey: string | null = "kyle";
   if (want === "video") {
     // The same routing raiseRevision uses for a video ask: the pinned editor, else the rules.
-    const { editorForDeliverable, pinnedEditorFor } = await import("@/lib/editors");
+    const { editorForDeliverable, pinnedEditorFor, isVideoEditorKey, keepOrRoute, routingLaneFor, editorKeyForTeamName } = await import("@/lib/editors");
     const { isMonthlyContentJob } = await import("@/lib/pipeline");
     const { editorRouting } = await import("@/lib/settings");
     const pin = pinnedEditorFor(project);
-    const pinnedKey = pin.pinned ? (pin.key === "kim" || pin.key === "john" || pin.key === "remar" ? pin.key : "kyle") : null;
-    assignedKey = pinnedKey ?? editorForDeliverable(videoDeliv!.type, videoDeliv!.label, isMonthlyContentJob(project.deliverables), await editorRouting());
+    const pinnedKey = pin.pinned ? (isVideoEditorKey(pin.key, { includeDeparted: true }) ? pin.key : "kyle") : null;
+    const rules = await editorRouting();
+    const monthly = isMonthlyContentJob(project.deliverables);
+    assignedKey = pinnedKey
+      ?? keepOrRoute(editorKeyForTeamName(project.editor?.name), routingLaneFor(videoDeliv!.type, videoDeliv!.label, monthly), rules, null)
+      ?? editorForDeliverable(videoDeliv!.type, videoDeliv!.label, monthly, rules);
   }
   const toKey = want === "video" ? videoKey : photoKey;
   const title = `${want === "video" ? "Video revision" : "Photo revision"} — ${project.title}`;

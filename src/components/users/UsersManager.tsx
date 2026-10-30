@@ -2,14 +2,23 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { UserPlus, Copy, ChevronDown, Shield, Ban, RotateCcw, Trash2, X, Eye } from "lucide-react";
+import { UserPlus, Copy, ChevronDown, Shield, Ban, RotateCcw, Trash2, X, Eye, UserCog, AlertTriangle } from "lucide-react";
 import { ROLES, ROLE_LABEL, PAGES, roleHasByDefault, parsePermissions, canAccess, type PageKey } from "@/lib/auth/access";
-import { inviteUser, inviteLinkFor, setUserRole, setUserPermission, resetUserPermissions, setUserStatus, removeUser, viewAs, type UserActionResult } from "@/app/users/actions";
+import { inviteUser, inviteLinkFor, setUserRole, setUserPermission, resetUserPermissions, setUserStatus, removeUser, viewAs, saveTeammateSetup, type UserActionResult } from "@/app/users/actions";
+import { EDITOR_TIMEZONES, ROUTING_LANES, ROUTING_LANE_LABEL } from "@/lib/editors";
+import { CheckboxDropdown } from "@/components/ui/CheckboxDropdown";
 import { etMonthDay } from "@/lib/datetime";
 import { Button } from "@/components/ui/Action";
 import { CopyButton } from "@/components/ui/CopyButton";
 
-export type UserView = { id: string; email: string; name: string | null; role: string; permissions: string | null; status: string; lastLoginAt: string | null; isSelf: boolean };
+export type TeamCardView = { name: string; slackId: string | null; phone: string | null; timezone: string | null; editorKey: string | null };
+export type UserView = {
+  id: string; email: string; name: string | null; role: string; permissions: string | null; status: string; lastLoginAt: string | null; isSelf: boolean;
+  /** their team card (Slack ID, phone, editor desk); null = none yet */
+  team: TeamCardView | null;
+  /** editor only: the auto-assignment lanes they're ticked for */
+  lanes: string[];
+};
 const STATUS_STYLE: Record<string, string> = { ACTIVE: "bg-success/10 text-success", INVITED: "bg-warning/10 text-warning", DISABLED: "bg-danger/10 text-danger" };
 const field = "min-h-11 w-full rounded-lg border border-border-strong bg-surface px-3 py-2 text-base focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60";
 type Receipt = UserActionResult & { label: string };
@@ -87,10 +96,50 @@ function CopyLink({ link }: { link: string }) {
   </div>;
 }
 
-type InviteDraft = { email: string; name: string; role: string };
+// The Assignment dropdown (Jordan, Oct 30 2026: "the dropdown for assignment
+// could be a dropdown of checkboxes"): the lanes on Settings → Editor
+// auto-assignment, ticked per editor here.
+const LANE_HINT: Record<string, string> = {
+  standardVideo: "One-off listing reels and videos",
+  premiumVideo: "The all-out premium edits",
+  personalBranding: "Monthly content batches",
+};
+const LANE_OPTIONS = ROUTING_LANES.map((l) => ({ value: l, label: ROUTING_LANE_LABEL[l], hint: LANE_HINT[l] }));
+const laneWords = (lanes: string[]) => lanes.map((l) => ROUTING_LANE_LABEL[l as keyof typeof ROUTING_LANE_LABEL] ?? l).join(", ");
+
+type SetupDraft = { slackId: string; phone: string; timezone: string; lanes: string[] };
+/** Slack ID + phone for anyone; time zone + Assignment for an editor. */
+function SetupFields({ draft, change, isEditor, disabled, idPrefix }: { draft: SetupDraft; change: (p: Partial<SetupDraft>) => void; isEditor: boolean; disabled: boolean; idPrefix: string }) {
+  const zones = EDITOR_TIMEZONES.some((z) => z.value === draft.timezone) || !draft.timezone ? EDITOR_TIMEZONES : [{ value: draft.timezone, label: draft.timezone }, ...EDITOR_TIMEZONES];
+  return <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+    <label className="flex min-w-0 flex-col gap-1 text-sm text-muted">Slack member ID
+      <input value={draft.slackId} disabled={disabled} onChange={(e) => change({ slackId: e.target.value })} placeholder="U07SCBTPDC7" autoComplete="off" spellCheck={false} className={`${field} font-mono`} />
+      <span className="text-ui-status leading-snug">In Slack: click their name → ⋯ → Copy member ID. Left blank, the hub looks them up by email.</span>
+    </label>
+    <label className="flex min-w-0 flex-col gap-1 text-sm text-muted">Phone (for texts)
+      <input type="tel" value={draft.phone} disabled={disabled} onChange={(e) => change({ phone: e.target.value })} placeholder="+63 917 123 4567" autoComplete="off" className={field} />
+      <span className="text-ui-status leading-snug">Outside the US, start with + and the country code.</span>
+    </label>
+    {isEditor && <>
+      <label htmlFor={`${idPrefix}-tz`} className="flex min-w-0 flex-col gap-1 text-sm text-muted">Time zone
+        <select id={`${idPrefix}-tz`} value={draft.timezone} disabled={disabled} onChange={(e) => change({ timezone: e.target.value })} className={field}>
+          {zones.map((z) => <option key={z.value} value={z.value}>{z.label}</option>)}
+        </select>
+        <span className="text-ui-status leading-snug">Their working hours and reminders run on this clock.</span>
+      </label>
+      <div className="flex min-w-0 flex-col gap-1 text-sm text-muted">
+        <span id={`${idPrefix}-lanes`}>Assignment</span>
+        <CheckboxDropdown label="Assignment" options={LANE_OPTIONS} value={draft.lanes} disabled={disabled} onChange={(lanes) => change({ lanes })} emptyText="No lanes: work only by hand" />
+        <span className="text-ui-status leading-snug">New edits in a ticked lane can go to them automatically.</span>
+      </div>
+    </>}
+  </div>;
+}
+
+type InviteDraft = { email: string; name: string; role: string } & SetupDraft;
 function AddUser() {
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState<InviteDraft>({ email: "", name: "", role: "PHOTOGRAPHER" });
+  const [draft, setDraft] = useState<InviteDraft>({ email: "", name: "", role: "PHOTOGRAPHER", slackId: "", phone: "", timezone: "Asia/Manila", lanes: [] });
   const current = useRef(draft);
   const [link, setLink] = useState<{ value: string; email: string; role: string; keptNewer: boolean } | null>(null);
   const { busy, receipt, run, held, isPending } = useUserMutation("invite-form");
@@ -102,12 +151,18 @@ function AddUser() {
     if (!submitted.email.trim()) return;
     run(`Invite for ${submitted.email}`, async () => {
       setLink(null); // A re-invite can replace the earlier token for this email.
-      const r = await inviteUser(submitted);
+      const { timezone, lanes, slackId, phone, ...base } = submitted;
+      const r = await inviteUser({
+        ...base,
+        ...(slackId.trim() ? { slackId } : {}),
+        ...(phone.trim() ? { phone } : {}),
+        ...(submitted.role === "EDITOR" ? { timezone, lanes } : {}),
+      });
       return r.ok && !r.link ? { ok: false, outcome: "unknown", message: "The invite response did not include its link." } : r;
     }, (r) => {
       const unchanged = JSON.stringify(current.current) === JSON.stringify(submitted);
       setLink({ value: r.link!, email: submitted.email, role: submitted.role, keptNewer: !unchanged });
-      if (unchanged) change({ email: "", name: "" });
+      if (unchanged) change({ email: "", name: "", slackId: "", phone: "", lanes: [] });
     });
   };
   return <div>
@@ -121,6 +176,12 @@ function AddUser() {
         <label className="flex min-w-0 flex-1 flex-col gap-1 text-sm text-muted">Email (their Google login)<input ref={emailInput} type="email" value={draft.email} onChange={(e) => change({ email: e.target.value })} placeholder="name@example.com" className={field} /></label>
         <label className="flex flex-col gap-1 text-sm text-muted">Name (optional)<input value={draft.name} onChange={(e) => change({ name: e.target.value })} placeholder="First Last" className={field} /></label>
         <label className="flex flex-col gap-1 text-sm text-muted">Role<select value={draft.role} onChange={(e) => change({ role: e.target.value })} className={field}>{ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}</select></label>
+      </div>
+      <div className="mt-3 rounded-xl border border-border bg-surface-2/40 p-3">
+        <p className="mb-2 text-sm font-semibold">Team card <span className="font-normal text-muted">(how the hub reaches them{draft.role === "EDITOR" ? " and hands them work" : ""})</span></p>
+        <SetupFields draft={draft} change={change} isEditor={draft.role === "EDITOR"} disabled={busy} idPrefix="invite" />
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-3">
         <Button busy={busy} disabled={held || !draft.email.trim()} onClick={submit}><UserPlus className="size-4" /> Create invite</Button>
       </div>
       <UserReceipt receipt={receipt} />
@@ -157,8 +218,30 @@ function AccessToggles({ u, busy, held, run }: { u: UserView; busy: boolean; hel
   </div>;
 }
 
+/** A login's team card: what the hub reaches them by and, for an editor, the
+ * desk and lanes work is handed out on. An editor without a desk gets the
+ * warning, because nothing can be assigned to them until it exists. */
+function TeamCard({ u, open, busy, held, run }: { u: UserView; open: boolean; busy: boolean; held: boolean; run: Run }) {
+  const isEditor = u.role === "EDITOR", needsDesk = isEditor && !u.team?.editorKey;
+  const [draft, setDraft] = useState<SetupDraft>({ slackId: u.team?.slackId ?? "", phone: u.team?.phone ?? "", timezone: u.team?.timezone ?? "Asia/Manila", lanes: u.lanes });
+  const change = (p: Partial<SetupDraft>) => setDraft((d) => ({ ...d, ...p }));
+  const save = () => run(needsDesk ? "Editor setup" : "Team card", () =>
+    saveTeammateSetup(u.id, { slackId: draft.slackId, phone: draft.phone, ...(isEditor ? { timezone: draft.timezone, lanes: draft.lanes } : {}) }));
+  return <div id={`team-${u.id}`} hidden={!open} className="mt-3 rounded-xl border border-border bg-surface-2/40 p-3">
+    <p className="mb-2 text-sm font-semibold text-muted">Team card</p>
+    <SetupFields draft={draft} change={change} isEditor={isEditor} disabled={busy || held} idPrefix={`team-${u.id}`} />
+    {isEditor && <p className="mt-3 max-w-prose text-ui-status leading-relaxed text-muted">When more than one editor is ticked for a lane, each new edit goes to whoever would finish it soonest: the videos they owe, divided by how many they finish a day, skipping anyone marked out. A new editor counts at the team&apos;s pace until they have their own. Revisions go back to whoever cut the video.</p>}
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      <Button busy={busy} disabled={held} onClick={save}><UserCog className="size-4" /> {needsDesk ? "Set up as editor" : "Save team card"}</Button>
+      <span className="text-ui-status text-muted">Blank fields keep what&apos;s on file.</span>
+    </div>
+  </div>;
+}
+
 function UserCard({ u }: { u: UserView }) {
   const [expanded, setExpanded] = useState(false);
+  const needsDesk = u.role === "EDITOR" && !u.team?.editorKey;
+  const [teamOpen, setTeamOpen] = useState(false);
   const [link, setLink] = useState<string | null>(null);
   const { busy, receipt, run, held } = useUserMutation(`account:${u.id}`);
   const router = useRouter();
@@ -173,11 +256,17 @@ function UserCard({ u }: { u: UserView }) {
           <span className={`rounded-full px-2 py-1 text-ui-status font-medium ${STATUS_STYLE[u.status] ?? "bg-surface-2 text-muted"}`}>{u.status.toLowerCase()}</span>
         </div>
         <div className="break-words text-ui-secondary leading-relaxed text-muted">{u.email}{u.lastLoginAt ? ` · last in ${etMonthDay(u.lastLoginAt)}` : " · hasn't signed in yet"}</div>
+        {u.team && <div className="mt-1 flex flex-wrap gap-1.5 text-ui-status">
+          {u.team.editorKey && <span className="rounded-full bg-brand/10 px-2 py-0.5 text-brand">{u.lanes.length ? `Editor · ${laneWords(u.lanes)}` : "Editor · work by hand only"}</span>}
+          <span className={`rounded-full px-2 py-0.5 ${u.team.slackId ? "bg-surface-2 text-muted" : "bg-warning/10 text-warning"}`}>{u.team.slackId ? "Slack linked" : "No Slack ID"}</span>
+          {!u.team.phone && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-muted">No phone</span>}
+        </div>}
       </div>
       <div className="flex max-w-full flex-wrap items-center gap-2">
         <select aria-label={`Role for ${name}`} value={u.role} disabled={disabled || (u.isSelf && isOwner)} onChange={(e) => changeRole(e.target.value)} className={`${field} w-auto`}>
           {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
         </select>
+        <Button variant="secondary" aria-expanded={teamOpen} aria-controls={`team-${u.id}`} onClick={() => setTeamOpen((v) => !v)}><UserCog className="size-4" /> Team card</Button>
         {!isOwner && <Button variant="secondary" aria-expanded={expanded} aria-controls={`access-${u.id}`} onClick={() => setExpanded((v) => !v)}><Shield className="size-4" /> Access <ChevronDown className={`size-4 transition-transform ${expanded ? "rotate-180" : ""}`} /></Button>}
         {!u.isSelf && <Button variant="secondary" disabled={disabled} onClick={() => run(neverLoggedIn ? "Invite link" : "Password setup link", async () => { const r = await inviteLinkFor(u.id); return r.ok && !r.link ? { ok: false, outcome: "unknown", message: "The response did not include its link." } : r; }, (r) => setLink(r.link!))} title={neverLoggedIn ? "Get an invite link to share" : "Get a password setup link to share"}><Copy className="size-4" /> {neverLoggedIn ? "Invite link" : "Reset password"}</Button>}
         {!u.isSelf && u.status === "ACTIVE" && <Button variant="secondary" disabled={disabled} onClick={() => run("View as", () => viewAs(u.id), () => { router.push("/"); router.refresh(); })} title="Preview this person's view (read-only)"><Eye className="size-4" /> View as</Button>}
@@ -185,6 +274,12 @@ function UserCard({ u }: { u: UserView }) {
         {!u.isSelf && <Button variant="quiet" disabled={disabled} aria-label={`Remove ${name}`} title="Remove user" onClick={() => run("Remove account", () => removeUser(u.id))}><Trash2 className="size-4" /></Button>}
       </div>
     </div>
+    {needsDesk && !teamOpen && <div role="note" className="mt-3 flex flex-wrap items-center gap-3 rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm">
+      <AlertTriangle aria-hidden className="size-4 shrink-0 text-warning" />
+      <p className="min-w-0 flex-1 basis-60 leading-relaxed">Not set up as an editor yet. No edits can be assigned to {u.name?.split(" ")[0] || "them"} and Slack pings can&apos;t reach them.</p>
+      <Button variant="secondary" disabled={disabled} onClick={() => setTeamOpen(true)}><UserCog className="size-4" /> Set up as editor</Button>
+    </div>}
+    <TeamCard u={u} open={teamOpen} busy={busy} held={held} run={run} />
     {isOwner && <p className="mt-2 text-ui-status text-muted">Full access — owners see everything.</p>}
     {!isOwner && <div id={`access-${u.id}`} hidden={!expanded}><AccessToggles u={u} busy={busy} held={held} run={run} /></div>}
     {link && <CopyLink link={link} />}

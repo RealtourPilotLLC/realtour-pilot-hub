@@ -4833,9 +4833,16 @@ export async function syncAryeoTeam(): Promise<{ team: number }> {
 
   // Drop placeholder/seed members that aren't part of the real Aryeo roster
   // (only those not referenced by any project, to respect foreign keys).
+  // A teammate the office onboarded on People is not a placeholder: an editor
+  // (editorKey) or anyone with a hub login linked to the row keeps it, with
+  // the Slack ID and phone on it, before their first job (Oct 30 2026).
+  const linked = (await prisma.appUser.findMany({ where: { teamMemberId: { not: null } }, select: { teamMemberId: true } }))
+    .map((u) => u.teamMemberId as string);
   const stale = await prisma.teamMember.findMany({
     where: {
       aryeoTeamMemberId: null,
+      editorKey: null,
+      id: { notIn: linked },
       shootsAsPhotographer: { none: {} },
       projectsAsEditor: { none: {} },
       projectsAsVa: { none: {} },

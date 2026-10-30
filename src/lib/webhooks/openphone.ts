@@ -23,6 +23,8 @@ export const dynamic = "force-dynamic";
 const UNSIGNED_MARKER = "UNSIGNED: accepted without verification — no webhook token configured";
 
 export async function POST(req: NextRequest) {
+  // Editors onboarded on People join the roster before anything routes or pings one.
+  await import("@/lib/editorRoster").then((m) => m.ensureEditorRoster()).catch(() => {});
   // Reject spoofed events once the webhook has been (re)registered with a shared
   // token (backward compatible: allowed until a token is stored). See
   // registerOpenPhoneWebhooks / openPhoneRequestAuthorized.

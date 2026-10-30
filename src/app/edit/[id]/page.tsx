@@ -73,7 +73,7 @@ import { EditOverridesButton, RushButton } from "@/components/editing/EditOverri
 import { AssetDependencyCard } from "@/components/editing/AssetDependencyCard";
 import { computedView, computedVideosOwed, effectiveDue, effectiveTypeDetail, overrideView } from "@/lib/editOverrides";
 import { STATUS_LABEL } from "@/lib/editorQueue";
-import { DEFAULT_EDITOR_TZ, editorKeyForTeamName, editorMeta, isOutsideEditor } from "@/lib/editors";
+import { DEFAULT_EDITOR_TZ, editorKeyForTeamName, editorMeta, isOutsideEditor, videoEditorChoices } from "@/lib/editors";
 import { barWords, openSlotKeys as openSlotKeysFor, yourClock } from "@/lib/editorDesk";
 // Oct 15 2026: the job bar's upload buttons open the one upload row's picker,
 // and office links land on the office's tools.
@@ -1880,6 +1880,7 @@ export default async function EditBriefPage({
                 {isOwnerAdmin && !viewer?.impersonating && (
                   <EditOverridesButton
                     variant="header"
+                    videoEditors={videoEditorChoices()}
                     job={{
                       projectId: project.id,
                       street,

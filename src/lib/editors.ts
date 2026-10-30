@@ -17,7 +17,12 @@
 // virtual/digital STAGING direction — is the ADMIN's (Kyle), even "for the video".
 // ---------------------------------------------------------------------------
 
-export type EditorKey = "kyle" | "jordan" | "creative_director" | "kim" | "john" | "remar" | "luma" | "autohdr" | "cubicasa" | "external_agency" | "cliffside_cuts";
+export type BuiltinEditorKey = "kyle" | "jordan" | "creative_director" | "kim" | "john" | "remar" | "luma" | "autohdr" | "cubicasa" | "external_agency" | "cliffside_cuts";
+// An editor onboarded on People (Oct 30 2026, Reychelle) has a key that is not
+// in this file: it lives on her TeamMember row (TeamMember.editorKey) and joins
+// the roster below at runtime (applyEditorRoster). So a key is any string; the
+// built-in names above still autocomplete.
+export type EditorKey = BuiltinEditorKey | (string & {});
 
 export type EditorMeta = {
   key: EditorKey;
@@ -44,11 +49,29 @@ export type EditorMeta = {
   // their name; they are excluded from every picker and routing rule, so nothing
   // new can be assigned to them.
   departed?: boolean;
+  // An in-house VIDEO editor: has a desk in the Editing Room, can be picked on
+  // a job, and can be ticked on an auto-assignment lane (Kim, John Mark, and
+  // everyone onboarded on People since Oct 30 2026).
+  video?: boolean;
 };
 
 // Timezone default when an editor has no explicit tz. The in-house video
 // editors (Kim, John) are in the Philippines.
 export const DEFAULT_EDITOR_TZ = "Asia/Manila";
+
+/** The clocks an onboarded editor can be on (People → Logins). */
+export const EDITOR_TIMEZONES: { value: string; label: string }[] = [
+  { value: "Asia/Manila", label: "Philippines (Manila)" },
+  { value: "America/New_York", label: "US Eastern" },
+  { value: "America/Chicago", label: "US Central" },
+  { value: "America/Denver", label: "US Mountain" },
+  { value: "America/Los_Angeles", label: "US Pacific" },
+  { value: "Europe/London", label: "UK (London)" },
+  { value: "Asia/Kolkata", label: "India" },
+  { value: "Asia/Karachi", label: "Pakistan" },
+  { value: "Africa/Lagos", label: "Nigeria (Lagos)" },
+  { value: "America/Sao_Paulo", label: "Brazil (São Paulo)" },
+];
 
 export const EDITORS: Record<EditorKey, EditorMeta> = {
   kyle: { key: "kyle", name: "Kyle", kind: "admin", does: "QC (photos, floor plans, 3D, video), item removal, virtual staging, declutter, photo fixes", teamMemberName: "Kyle", tz: "America/New_York" },
@@ -58,16 +81,16 @@ export const EDITORS: Record<EditorKey, EditorMeta> = {
   // The Creative Director owns scripting + creative direction (currently Jordan).
   creative_director: { key: "creative_director", name: "Creative Director", kind: "in_house", does: "video scripting + creative direction", tz: "America/New_York" },
   // Kim Miguel — Manila. Has a TeamMember row with a phone → SMS reaches her.
-  kim: { key: "kim", name: "Kim", kind: "in_house", does: "personal-branding / monthly social content", teamMemberName: "Kim", tz: "Asia/Manila" },
+  kim: { key: "kim", name: "Kim", kind: "in_house", does: "personal-branding / monthly social content", teamMemberName: "Kim", tz: "Asia/Manila", video: true },
   // John Mark — Manila. Took over Remar's lane (standard reels + horizontal video)
   // in Aug 2026. Needs a phone on his Team row before SMS can reach him.
-  john: { key: "john", name: "John Mark", kind: "in_house", does: "standard reels + horizontal video", teamMemberName: "John Mark", tz: "Asia/Manila" },
+  john: { key: "john", name: "John Mark", kind: "in_house", does: "standard reels + horizontal video", teamMemberName: "John Mark", tz: "Asia/Manila", video: true },
   // Remar — DEPARTED Aug 2026, replaced by John. The key is retained ONLY so his
   // finished work still resolves to his name: 12 completed tasks and 8 delivered
   // jobs carry it, and re-pointing those at John would credit his work to someone
   // who never did it. He is absent from every picker and routing rule below, so
   // nothing new can land on him.
-  remar: { key: "remar", name: "Remar", kind: "in_house", does: "standard reels + horizontal video (departed)", teamMemberName: "Remar", tz: "Asia/Manila", departed: true },
+  remar: { key: "remar", name: "Remar", kind: "in_house", does: "standard reels + horizontal video (departed)", teamMemberName: "Remar", tz: "Asia/Manila", departed: true, video: true },
   // Luma's OLD lane — the automatic premium-reel routing that ENDED Aug 2026
   // (premium moved in-house to John Mark). Key retained so historical tasks and
   // jobs still render; absent from all pickers. The agency itself is still
@@ -140,6 +163,9 @@ export const VIDEO_LANE_KEYS: EditorKey[] = ["kim", "john", "remar", "luma", "ex
 // Includes `remar` so his historical jobs still resolve to a TeamMember. New
 // work never routes to him — see DELEGATE_KEYS and the routing rules below.
 export const TEAM_MEMBER_EDITOR_KEYS: EditorKey[] = ["kim", "john", "remar"];
+// The ones of them still here (a desk in the Editing Room). Grown in place by
+// applyEditorRoster, like the two lists above.
+export const DESK_VIDEO_EDITOR_KEYS: EditorKey[] = ["kim", "john"];
 
 // Resolve an editor key → its TeamMember id (for the phone / Project.editorId),
 // or null when the editor isn't a linkable person (external/vendor) or has no
@@ -149,10 +175,11 @@ export async function editorTeamMemberId(key: EditorKey | string | null | undefi
   if (!meta?.teamMemberName) return null;
   try {
     const { prisma } = await import("@/lib/prisma");
-    const tm = await prisma.teamMember.findFirst({
-      where: { name: { contains: meta.teamMemberName } },
-      select: { id: true },
-    });
+    // The row that carries the key wins; the name match is for a built-in
+    // editor whose row predates TeamMember.editorKey.
+    const tm =
+      (await prisma.teamMember.findFirst({ where: { editorKey: meta.key }, select: { id: true } })) ??
+      (await prisma.teamMember.findFirst({ where: { name: { contains: meta.teamMemberName } }, select: { id: true } }));
     return tm?.id ?? null;
   } catch {
     return null;
@@ -162,10 +189,16 @@ export async function editorTeamMemberId(key: EditorKey | string | null | undefi
 // Reverse of editorTeamMemberId: a TeamMember's name → the editor key it
 // represents (Kim Miguel → "kim"). Used to read Project.editor back into the
 // key space the routing/tasks engines speak. Null for non-editor team members.
+// The whole name first: a new "Kimberly" must not read as Kim because her
+// name happens to contain his.
 export function editorKeyForTeamName(name: string | null | undefined): EditorKey | null {
   if (!name) return null;
-  const n = name.toLowerCase();
-  for (const meta of Object.values(EDITORS)) {
+  const n = name.trim().toLowerCase();
+  const metas = Object.values(EDITORS);
+  for (const meta of metas) {
+    if (meta.teamMemberName && n === meta.teamMemberName.trim().toLowerCase()) return meta.key;
+  }
+  for (const meta of metas) {
     if (meta.teamMemberName && n.includes(meta.teamMemberName.toLowerCase())) return meta.key;
   }
   return null;
@@ -181,7 +214,99 @@ export const OPERATOR_KEYS: EditorKey[] = ["kyle", "jordan"];
 export const DELEGATE_KEYS: EditorKey[] = ["creative_director", "kim", "john", "autohdr", "cubicasa", "external_agency", "cliffside_cuts"];
 
 export function editorMeta(key: string | null | undefined): EditorMeta | null {
-  return key && key in EDITORS ? EDITORS[key as EditorKey] : null;
+  return key && Object.hasOwn(EDITORS, key) ? EDITORS[key as EditorKey] : null;
+}
+
+// ---------------------------------------------------------------------------
+// EDITORS ONBOARDED ON PEOPLE (Jordan, Oct 30 2026: "I just onboarded a new
+// editor her name is Reychelle. I need to make sure the ops hub is set up to
+// be able to onboard new editors and new users, and add their Slack ID,
+// assignment, etc."). Kim and John Mark were written into this file; nobody
+// else could ever hold a desk. Now an in-house video editor is a TeamMember
+// row with an editorKey, and lib/editorRoster reads those rows into the
+// roster above (60 s cache) on every sign-in, routing call and cron run. The
+// lists below are the SAME arrays every engine already imports, grown in
+// place, so a key on a row reaches the Editing Room, the pickers, the bell
+// and the routing without each of them learning about the database.
+//
+// Server only: a client component sees the built-in roster, so a picker is
+// handed its people by the page (videoEditorChoices).
+// ---------------------------------------------------------------------------
+
+export type RosterEditorRow = {
+  key: string;
+  /** the TeamMember's name, as the office typed it */
+  name: string;
+  active: boolean;
+  timezone?: string | null;
+};
+
+/** Keys that came from the database rather than this file. */
+const LOADED = new Set<string>();
+
+const BUILTIN_KEYS = new Set<string>(Object.keys(EDITORS));
+const SLUG_RE = /^[a-z][a-z0-9_]{1,31}$/;
+
+/** Is this a key a new editor may be given (not a built-in, not malformed)? */
+export function isFreshEditorKey(key: string): boolean {
+  return SLUG_RE.test(key) && !BUILTIN_KEYS.has(key);
+}
+
+const addOnce = (list: EditorKey[], key: string) => { if (!list.includes(key)) list.push(key); };
+const removeFrom = (list: EditorKey[], key: string) => { const i = list.indexOf(key); if (i >= 0) list.splice(i, 1); };
+
+/** Read the database's editors into the roster. A built-in key on a row
+ *  changes nothing (Kim stays Kim); a key that left the database stays on the
+ *  roster as departed, so the work it did keeps its name. */
+export function applyEditorRoster(rows: RosterEditorRow[]): void {
+  const seen = new Set<string>();
+  for (const r of rows) {
+    if (!r.key || BUILTIN_KEYS.has(r.key) || !SLUG_RE.test(r.key)) continue;
+    seen.add(r.key);
+    LOADED.add(r.key);
+    const name = r.name.trim() || r.key;
+    EDITORS[r.key] = {
+      key: r.key,
+      name,
+      kind: "in_house",
+      does: "video editing",
+      teamMemberName: name,
+      tz: r.timezone || DEFAULT_EDITOR_TZ,
+      video: true,
+      ...(r.active ? {} : { departed: true }),
+    };
+    addOnce(EDITOR_KEYS, r.key);
+    addOnce(TEAM_MEMBER_EDITOR_KEYS, r.key);
+    addOnce(VIDEO_LANE_KEYS, r.key);
+    for (const list of [DELEGATE_KEYS, DESK_VIDEO_EDITOR_KEYS]) {
+      if (r.active) addOnce(list, r.key);
+      else removeFrom(list, r.key);
+    }
+  }
+  for (const key of LOADED) {
+    if (seen.has(key)) continue;
+    EDITORS[key] = { ...EDITORS[key], departed: true };
+    removeFrom(DELEGATE_KEYS, key);
+    removeFrom(DESK_VIDEO_EDITOR_KEYS, key);
+  }
+}
+
+/** The in-house video editors, built-in and onboarded, in roster order.
+ *  Departed ones only when asked for (history: their finished work). */
+export function videoEditorKeys(opts: { includeDeparted?: boolean } = {}): EditorKey[] {
+  return Object.values(EDITORS)
+    .filter((m) => m.video && (opts.includeDeparted || !m.departed))
+    .map((m) => m.key);
+}
+
+export function isVideoEditorKey(key: string | null | undefined, opts: { includeDeparted?: boolean } = {}): boolean {
+  const m = editorMeta(key);
+  return !!m?.video && (!!opts.includeDeparted || !m.departed);
+}
+
+/** Who a page hands a client-side editor picker: the current video editors. */
+export function videoEditorChoices(): { key: string; name: string }[] {
+  return videoEditorKeys().map((key) => ({ key, name: EDITORS[key].name }));
 }
 
 // A task is "delegated" when it's assigned to an EDITOR — i.e. not one of the
@@ -237,12 +362,38 @@ export function routeEditWork(text: string): EditorKey | null {
 // overlays these code defaults). Callers on a routing path fetch the rules
 // once via editorRouting() and pass them; omitting `rules` applies the
 // defaults, so nothing breaks if a caller skips the fetch.
+// SEVERAL EDITORS ON A LANE (Oct 30 2026, Jordan: "the dropdown for
+// assignment could be a dropdown of checkboxes, and then edits get assigned
+// based on current workload, turnaround times, etc."). Each lane holds
+// everyone ticked for it (`pools`); the single key per lane is whoever the
+// workload says is next right now (lib/editorBalance). A job keeps the editor
+// it was given while they stay ticked for its lane (keepOrRoute): the next
+// pick is for the next job, never a reason to move this one.
+export type RoutingLane = "standardVideo" | "premiumVideo" | "personalBranding";
+export const ROUTING_LANES: RoutingLane[] = ["standardVideo", "premiumVideo", "personalBranding"];
+export const ROUTING_LANE_LABEL: Record<RoutingLane, string> = {
+  standardVideo: "Standard reels & video",
+  premiumVideo: "Premium reels",
+  personalBranding: "Personal branding (monthly)",
+};
+
 export type VideoRoutingRules = {
   standardVideo: EditorKey | null;
   premiumVideo: EditorKey | null;
   personalBranding: EditorKey | null; // null = manual (Needs assigning)
+  /** everyone ticked for each lane; absent = the single keys above are the whole lane */
+  pools?: Partial<Record<RoutingLane, EditorKey[]>>;
 };
 const CODE_DEFAULT_ROUTING: VideoRoutingRules = { standardVideo: "john", premiumVideo: "john", personalBranding: null };
+
+/** Which auto-assignment lane a deliverable belongs to; null = not video work. */
+export function routingLaneFor(type: string | null | undefined, label?: string | null, monthly = false): RoutingLane | null {
+  const t = (type || "").toUpperCase();
+  if (t !== "SOCIAL_REEL" && t !== "VIDEO") return null;
+  if (monthly) return "personalBranding";
+  if (/premium|influencer/i.test(label ?? "")) return "premiumVideo";
+  return "standardVideo";
+}
 
 export function editorForDeliverable(
   type: string | null | undefined,
@@ -252,12 +403,26 @@ export function editorForDeliverable(
 ): EditorKey | null {
   const t = (type || "").toUpperCase();
   if (t === "FLOORPLAN") return "cubicasa";
-  if (t === "SOCIAL_REEL" || t === "VIDEO") {
-    if (monthly) return rules.personalBranding;
-    if (/premium|influencer/i.test(label ?? "")) return rules.premiumVideo;
-    return rules.standardVideo;
-  }
+  const lane = routingLaneFor(type, label, monthly);
+  if (lane) return rules[lane];
   // Photos / drone / twilight / headshots / staging / 3D → Kyle handles the QC
   // + corrections in-house (AutoHDR does the base AI pass automatically).
   return "kyle";
+}
+
+/**
+ * The editor already on a job keeps it while they are still ticked for its
+ * lane; otherwise the rules' pick (`ruled`). With one editor per lane this is
+ * exactly the rules, as before. With several it is what stops the hourly
+ * refresh from moving an unstarted job each time someone else's queue gets
+ * shorter.
+ */
+export function keepOrRoute(
+  current: string | null | undefined,
+  lane: RoutingLane | null,
+  rules: VideoRoutingRules,
+  ruled: EditorKey | null,
+): EditorKey | null {
+  if (current && lane && rules.pools?.[lane]?.includes(current) && isVideoEditorKey(current)) return current;
+  return ruled;
 }

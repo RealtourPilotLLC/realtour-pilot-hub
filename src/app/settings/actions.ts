@@ -4,14 +4,13 @@ import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth/user";
 import { requireAdmin } from "@/lib/auth/guards";
 import {
-  editorRouting, putSetting, ROUTABLE_EDITORS, autoTextRules, DEFAULT_AUTO_TEXTS,
+  editorRouting, saveEditorPools, putSetting, autoTextRules, DEFAULT_AUTO_TEXTS,
   turnaroundRules, internalAlertRules,
   type EditorRoutingRules, type AutoTextRules, type TurnaroundRules,
   type InternalAlertRules,
   reviewRoomRules, type ReviewRoomRules, EVENING_SEND_HOURS,
   topazSettings, saveTopazSettings, type TopazSettings,
 } from "@/lib/settings";
-import type { EditorKey } from "@/lib/editors";
 import { NOTIFY_EVENTS, clearInapplicable, parseNotifyPrefs, type NotifyPrefs } from "@/lib/notifyPrefDefaults";
 import { staffTextNumber } from "@/lib/hubSms";
 
@@ -22,25 +21,20 @@ async function requireSettingsActor() {
   return getCurrentUser().catch(() => null);
 }
 
-const parseKey = (v: string): EditorKey | null =>
-  v === "manual" ? null : (ROUTABLE_EDITORS as string[]).includes(v) ? (v as EditorKey) : null;
-
+// Who is ticked for each lane (Oct 30 2026: a list per lane, not one name).
+// An empty list is "manual": new work waits in Needs assigning.
 export async function saveEditorRouting(input: {
-  standardVideo: string;
-  premiumVideo: string;
-  personalBranding: string;
+  standardVideo: string[];
+  premiumVideo: string[];
+  personalBranding: string[];
 }): Promise<{ ok: boolean; message: string }> {
   try {
     const me = await requireSettingsActor();
-    const rules: EditorRoutingRules = {
-      standardVideo: parseKey(input.standardVideo),
-      premiumVideo: parseKey(input.premiumVideo),
-      personalBranding: parseKey(input.personalBranding),
-    };
-    await putSetting("editor_routing", rules, me?.email ?? null);
+    await saveEditorPools(input, me?.email ?? null);
     revalidatePath("/settings");
     revalidatePath("/editing");
-    return { ok: true, message: "Routing updated — new jobs follow these rules within a minute." };
+    revalidatePath("/users");
+    return { ok: true, message: "Saved. The next job on each lane goes by these ticks; jobs already handed out stay where they are." };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Failed." };
   }

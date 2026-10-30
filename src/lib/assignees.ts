@@ -43,12 +43,15 @@ const isOwnerName = (name: string) => /^jordan\b/i.test(name.trim());
 export async function listAssignees(): Promise<Assignee[]> {
   const members = await prisma.teamMember.findMany({
     where: { active: true },
-    select: { id: true, name: true, role: true, email: true },
+    select: { id: true, name: true, role: true, email: true, editorKey: true },
   });
+  // A video editor's key is the one on their row (Oct 30 2026), which is the
+  // first-name slug unless that was taken, so a task assigned here lands on
+  // their desk.
   const team: Assignee[] = members.map((m) => ({
-    key: slugForName(m.name),
+    key: m.editorKey ?? slugForName(m.name),
     name: firstName(m.name),
-    kind: isOwnerName(m.name) ? "owner" : m.role === "MANAGER" ? "manager" : "photographer",
+    kind: isOwnerName(m.name) ? "owner" : m.editorKey ? "editor" : m.role === "MANAGER" ? "manager" : "photographer",
     teamMemberId: m.id,
     email: m.email,
   }));

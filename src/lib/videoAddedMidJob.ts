@@ -39,7 +39,6 @@ export type VideoAddedReport = {
   skipped: string | null;
 };
 
-const IN_HOUSE = new Set(["kim", "john"]);
 
 export async function announceVideosAddedMidJob(
   projectId: string,
@@ -72,7 +71,7 @@ export async function announceVideosAddedMidJob(
   if (p.status === "CANCELLED") return { ...report, skipped: "the job is cancelled" };
   if (!rows.length) return { ...report, skipped: "the new video is not one of the job's owed videos (waived, retired, or a monthly batch slot)" };
   if (!handedOff) return { ...report, skipped: "not handed to editing yet: the upload page and the handoff already show every video" };
-  const { editorMeta } = await import("@/lib/editors");
+  const { editorMeta, isVideoEditorKey } = await import("@/lib/editors");
   report.editor.name = card?.assignedKey ? editorMeta(card.assignedKey)?.name ?? card.assignedKey : null;
   if (opts.dryRun) return { ...report, card: liveCard ? "would refresh" : "no card", editor: { ...report.editor, pinged: "would" } };
 
@@ -97,7 +96,7 @@ export async function announceVideosAddedMidJob(
   try {
     const { notifyInApp } = await import("@/lib/notify");
     const href = `/edit/${projectId}`;
-    const editorKey = report.editor.key && IN_HOUSE.has(report.editor.key) ? report.editor.key : null;
+    const editorKey = isVideoEditorKey(report.editor.key) ? report.editor.key : null;
     const due = editorKey ? await import("@/lib/editorDue").then((m) => m.editDueWords(projectId, editorKey)).catch(() => "") : "";
     if (editorKey) {
       await notifyInApp({

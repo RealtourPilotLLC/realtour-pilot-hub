@@ -40,6 +40,14 @@ const validRole = (r: string) => (ROLES as string[]).includes(r);
 // by first name (Kim → "kim", John → "john"), falling back to the email’s
 // local part (kim@…) so a blank invite name can't mint a dead login.
 async function deriveEditorKey(name: string | null | undefined, email?: string | null): Promise<string | null> {
+  // The key on their team card wins (an editor onboarded here, Oct 30 2026).
+  // A failed read falls through to the name match below.
+  if (email) {
+    try {
+      const card = await prisma.teamMember.findFirst({ where: { email: { equals: email, mode: "insensitive" }, editorKey: { not: null } }, select: { editorKey: true } });
+      if (card?.editorKey) return card.editorKey;
+    } catch { /* the name match decides */ }
+  }
   const { TEAM_MEMBER_EDITOR_KEYS, EDITORS } = await import("@/lib/editors");
   const matchKey = (candidate: string | undefined): string | null =>
     candidate
@@ -51,14 +59,18 @@ async function deriveEditorKey(name: string | null | undefined, email?: string |
   return matchKey(first) ?? matchKey((email ?? "").split("@")[0]?.trim().toLowerCase() || undefined);
 }
 
-export async function inviteUser(input: { email: string; name?: string; role: string }): Promise<Res> {
+export async function inviteUser(input: { email: string; name?: string; role: string } & TeammateSetup): Promise<Res> {
   let writing = false;
   try {
-    await requireOwnerActor();
+    const actor = await requireOwnerActor();
     const email = (input.email || "").trim().toLowerCase();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return { ok: false, outcome: "refused", message: "Enter a valid email." };
     const role = validRole(input.role) ? input.role : "PHOTOGRAPHER";
     const token = randomUUID();
+    // The team card's fields are checked before anything is written, so a
+    // bad Slack ID can't leave half an onboarding behind.
+    const setup = await checkSetup(input, null);
+    if (!setup.ok) return { ok: false, outcome: "refused", message: setup.message };
 
     const editorKey = role === "EDITOR" ? await deriveEditorKey(input.name, email) : null;
 
@@ -82,8 +94,20 @@ export async function inviteUser(input: { email: string; name?: string; role: st
         data: { email, name: input.name?.trim() || null, role, editorKey, status: "INVITED", inviteToken: token, invitedAt: new Date() },
       });
     }
+    // Their team card: Slack ID, phone, and for an editor the desk key, clock
+    // and the lanes they take work on.
+    let setupWords = "";
+    const user = await prisma.appUser.findUnique({ where: { email } });
+    if (user && (role === "EDITOR" || setup.value.slackId || setup.value.phone)) {
+      try {
+        const r = await applyTeammateSetup(user, setup.value, actor.email);
+        setupWords = ` ${r.message}`;
+      } catch (e) {
+        setupWords = ` The login is ready, but the team card was not set up (${e instanceof Error ? e.message : "unknown error"}). Press "Set up" on their card to finish.`;
+      }
+    }
     revalidatePath("/users");
-    return { ok: true, outcome: "confirmed", message: existing ? "Re-invited." : "Invite created.", link: `${appBase()}/invite/${token}` };
+    return { ok: true, outcome: "confirmed", message: `${existing ? "Re-invited." : "Invite created."}${setupWords}`, link: `${appBase()}/invite/${token}` };
   } catch (e) {
     return failed(e, writing);
   }
@@ -157,7 +181,8 @@ export async function setUserRole(id: string, role: string, expected?: UserAcces
     if (!changed.count) return staleAccess();
     await auditRosterChange(actor.email, "role_change", u.email, `${u.role} → ${role}`);
     revalidatePath("/users");
-    return { ok: true, outcome: "confirmed", message: "Role updated." };
+    const needsDesk = role === "EDITOR" && !u.editorKey && !editorKey;
+    return { ok: true, outcome: "confirmed", message: needsDesk ? "Role updated. Press \"Set up as editor\" on their card so work can reach them." : "Role updated." };
   } catch (e) {
     return failed(e, writing);
   }
@@ -266,6 +291,179 @@ export async function exitViewAs(): Promise<Res> {
     return { ok: true, message: "Exited preview." };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Failed." };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ONBOARDING A TEAMMATE (Jordan, Oct 30 2026: "I just onboarded a new editor
+// her name is Reychelle. I need to make sure the ops hub is set up to be able
+// to onboard new editors and new users, and add their Slack ID, assignment,
+// etc."). A login (AppUser) is who can sign in; the TEAM CARD (TeamMember) is
+// who the hub can reach and hand work to: the Slack ID a mention DMs, the
+// phone a text goes to, and for a video editor the desk key their jobs, bell
+// and Editing Room are filed under, their clock, and the lanes ticked for
+// them on Settings → Editor auto-assignment. Reychelle had a login and no
+// card, so nothing could ever reach her. One writer for both doors: the
+// "Add a user" form and "Set up" on an existing login.
+// ---------------------------------------------------------------------------
+export type TeammateSetup = {
+  phone?: string | null;
+  slackId?: string | null;
+  timezone?: string | null;
+  /** editor only: the auto-assignment lanes (lib/editors ROUTING_LANES) */
+  lanes?: string[] | null;
+};
+type CleanSetup = { phone: string | null; slackId: string | null; timezone: string | null; lanes: string[] | null };
+
+const cleanPhone = (raw: string): string | null => {
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length < 10 || digits.length > 15) return null;
+  if (raw.trim().startsWith("+")) return `+${digits}`;
+  return digits.length === 10 ? `+1${digits}` : `+${digits}`;
+};
+
+async function checkSetup(input: TeammateSetup, teamMemberId: string | null): Promise<{ ok: true; value: CleanSetup } | { ok: false; message: string }> {
+  const { SLACK_MEMBER_ID_RE } = await import("@/lib/slackScopes");
+  const { ROUTING_LANES } = await import("@/lib/editors");
+  const slackId = (input.slackId ?? "").trim().toUpperCase() || null;
+  if (slackId && !SLACK_MEMBER_ID_RE.test(slackId)) {
+    return { ok: false, message: "That doesn't look like a Slack member ID. It starts with U or W (e.g. U07SCBTPDC7). In Slack: click the person → ⋯ → Copy member ID." };
+  }
+  if (slackId) {
+    const other = await prisma.teamMember.findFirst({ where: { slackId, ...(teamMemberId ? { NOT: { id: teamMemberId } } : {}) }, select: { name: true, email: true } });
+    if (other) return { ok: false, message: `That Slack ID is already on ${other.name}'s card. One Slack account, one person.` };
+  }
+  const rawPhone = (input.phone ?? "").trim();
+  const phone = rawPhone ? cleanPhone(rawPhone) : null;
+  if (rawPhone && !phone) return { ok: false, message: "That phone number doesn't look right. Include the country code for a number outside the US (e.g. +63 917 123 4567)." };
+  const timezone = (input.timezone ?? "").trim() || null;
+  if (timezone) {
+    try { new Intl.DateTimeFormat("en-US", { timeZone: timezone }); } catch { return { ok: false, message: "Unknown time zone." }; }
+  }
+  const lanes = input.lanes == null ? null : [...new Set(input.lanes)].filter((l) => (ROUTING_LANES as string[]).includes(l));
+  return { ok: true, value: { phone, slackId, timezone, lanes } };
+}
+
+// AppUser role → the team card's role (TeamMember.role is the older enum).
+const CARD_ROLE: Record<string, "EDITOR" | "PHOTOGRAPHER" | "MANAGER"> = {
+  EDITOR: "EDITOR", PHOTOGRAPHER: "PHOTOGRAPHER", CREATIVE_MANAGER: "PHOTOGRAPHER", ADMIN: "MANAGER", OWNER: "MANAGER",
+};
+
+/** A desk key nobody holds: their first name, then name2, name3… */
+async function freshEditorKey(name: string, email: string): Promise<string> {
+  const { slugForName } = await import("@/lib/assignees");
+  const { EDITORS, isFreshEditorKey } = await import("@/lib/editors");
+  let base = slugForName(name) || slugForName(email.split("@")[0].replace(/[._-]+/g, " "));
+  if (!/^[a-z]/.test(base)) base = `editor${base}`;
+  base = base.slice(0, 24);
+  for (let n = 1; n < 50; n++) {
+    const key = n === 1 ? base : `${base}${n}`;
+    if (!isFreshEditorKey(key) || key in EDITORS) continue;
+    const held = await prisma.teamMember.count({ where: { editorKey: key } }) + await prisma.appUser.count({ where: { editorKey: key, NOT: { email } } });
+    if (!held) return key;
+  }
+  throw new Error("Could not find a free editor key for this name.");
+}
+
+async function applyTeammateSetup(
+  user: { id: string; email: string; name: string | null; role: string; teamMemberId: string | null; editorKey: string | null },
+  input: CleanSetup,
+  actorEmail: string,
+): Promise<{ teamMemberId: string; editorKey: string | null; message: string }> {
+  const { editorKeyForTeamName, isVideoEditorKey } = await import("@/lib/editors");
+  const { ensureEditorRoster } = await import("@/lib/editorRoster");
+  const isEditor = user.role === "EDITOR";
+  const displayName = user.name?.trim() || user.email.split("@")[0];
+
+  // Their card: the one linked, else the one under their email, else a new one.
+  let tm =
+    (user.teamMemberId ? await prisma.teamMember.findUnique({ where: { id: user.teamMemberId } }) : null) ??
+    (await prisma.teamMember.findFirst({ where: { email: { equals: user.email, mode: "insensitive" } } }));
+  const notes: string[] = [];
+  if (!tm) {
+    tm = await prisma.teamMember.create({
+      data: {
+        name: displayName, email: user.email, role: CARD_ROLE[user.role] ?? "PHOTOGRAPHER", active: true,
+        phone: input.phone, slackId: input.slackId, timezone: input.timezone ?? (isEditor ? "Asia/Manila" : null),
+        ...(isEditor ? { title: "Video Editor" } : {}),
+      },
+    });
+    notes.push(`Team card created for ${displayName}.`);
+  } else {
+    const data: { phone?: string; slackId?: string; timezone?: string; active?: boolean } = {};
+    if (input.phone) data.phone = input.phone;
+    if (input.slackId) data.slackId = input.slackId;
+    if (input.timezone) data.timezone = input.timezone;
+    if (!tm.active) data.active = true;
+    if (Object.keys(data).length) tm = await prisma.teamMember.update({ where: { id: tm.id }, data });
+  }
+
+  // A video editor's desk key: the card's, else a built-in editor this card
+  // already is (Kim's, John Mark's), else a new one from their first name.
+  let editorKey: string | null = null;
+  if (isEditor) {
+    editorKey = tm.editorKey;
+    if (!editorKey) {
+      const builtin = editorKeyForTeamName(tm.name);
+      const builtinFree = builtin && isVideoEditorKey(builtin) && !(await prisma.teamMember.count({ where: { editorKey: builtin } }));
+      editorKey = builtinFree ? builtin : await freshEditorKey(tm.name, user.email);
+      tm = await prisma.teamMember.update({ where: { id: tm.id }, data: { editorKey } });
+      notes.push(`Editor desk ready (${tm.name}).`);
+    }
+  }
+  await prisma.appUser.update({
+    where: { id: user.id },
+    data: { teamMemberId: tm.id, ...(editorKey ? { editorKey } : {}) },
+  });
+  await ensureEditorRoster({ force: true });
+
+  if (isEditor && editorKey && input.lanes) {
+    const { setEditorLanes } = await import("@/lib/settings");
+    const { ROUTING_LANE_LABEL } = await import("@/lib/editors");
+    await setEditorLanes(editorKey, input.lanes as import("@/lib/editors").RoutingLane[], actorEmail);
+    notes.push(input.lanes.length
+      ? `Takes new work on: ${input.lanes.map((l) => ROUTING_LANE_LABEL[l as keyof typeof ROUTING_LANE_LABEL]).join(", ")}.`
+      : "Not ticked for any lane yet, so no work is handed to them automatically.");
+  }
+
+  // No Slack ID typed: ask Slack by their email (works once the bot can read emails).
+  if (!tm.slackId) {
+    try {
+      const { slackLookupByEmail } = await import("@/lib/integrations/slack");
+      const r = await slackLookupByEmail(tm.email);
+      if (r.ok && !(await prisma.teamMember.count({ where: { slackId: r.id, NOT: { id: tm.id } } }))) {
+        await prisma.teamMember.update({ where: { id: tm.id }, data: { slackId: r.id } });
+        notes.push(`Found on Slack (${r.id}).`);
+      } else {
+        notes.push("No Slack ID yet: add it on their card so mentions reach them on Slack.");
+      }
+    } catch {
+      notes.push("No Slack ID yet: add it on their card so mentions reach them on Slack.");
+    }
+  }
+  await auditRosterChange(actorEmail, "teammate_setup", user.email,
+    `card ${tm.id}${editorKey ? ` · editor ${editorKey}` : ""}${input.lanes ? ` · lanes ${input.lanes.join(",") || "none"}` : ""}`);
+  revalidatePath("/users");
+  revalidatePath("/settings");
+  revalidatePath("/editing");
+  return { teamMemberId: tm.id, editorKey, message: notes.join(" ") };
+}
+
+/** "Set up" / "Save" on a login's team card. Owner only, like every roster change. */
+export async function saveTeammateSetup(id: string, input: TeammateSetup): Promise<Res> {
+  let writing = false;
+  try {
+    const actor = await requireOwnerActor();
+    const user = await prisma.appUser.findUnique({ where: { id } });
+    if (!user) return { ok: false, outcome: "refused", message: "User not found." };
+    const linked = user.teamMemberId ?? (await prisma.teamMember.findFirst({ where: { email: { equals: user.email, mode: "insensitive" } }, select: { id: true } }))?.id ?? null;
+    const setup = await checkSetup(input, linked);
+    if (!setup.ok) return { ok: false, outcome: "refused", message: setup.message };
+    writing = true;
+    const r = await applyTeammateSetup(user, setup.value, actor.email);
+    return { ok: true, outcome: "confirmed", message: r.message || "Saved." };
+  } catch (e) {
+    return failed(e, writing);
   }
 }
 

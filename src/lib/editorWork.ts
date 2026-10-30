@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma, type ProjectStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { lockAdvisory } from "@/lib/dbLocks";
-import { EDITORS, TEAM_MEMBER_EDITOR_KEYS, VIDEO_LANE_KEYS, editorKeyForTeamName, editorMeta } from "@/lib/editors";
+import { DESK_VIDEO_EDITOR_KEYS, TEAM_MEMBER_EDITOR_KEYS, VIDEO_LANE_KEYS, editorKeyForTeamName, editorMeta } from "@/lib/editors";
 import { etDayKey, etMonthDay, etTime } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
@@ -101,7 +101,9 @@ export const SYSTEM_ACTOR: WorkActor = { userId: null, name: "The hub", role: "S
  *  the external agency" and are never "active". */
 export const WORK_EDITOR_KEYS: readonly string[] = TEAM_MEMBER_EDITOR_KEYS;
 /** The editors the office panel lists even when they are on nothing. */
-export const DESK_EDITOR_KEYS: readonly string[] = TEAM_MEMBER_EDITOR_KEYS.filter((k) => !EDITORS[k].departed);
+// The same array lib/editors grows in place, not a copy taken at load:
+// editors onboarded on People join after this module loads.
+export const DESK_EDITOR_KEYS: readonly string[] = DESK_VIDEO_EDITOR_KEYS;
 
 export type WorkResult = { ok: boolean; message: string; replay?: boolean };
 

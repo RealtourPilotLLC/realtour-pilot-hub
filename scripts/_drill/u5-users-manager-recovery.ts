@@ -49,7 +49,7 @@ async function main() {
   const actionFile = req.resolve("../../src/app/users/actions.ts");
   const calls: { operation: string; args: unknown[] }[] = []; let response = deferred<UserActionResult>();
   const fake = (operation: string) => async (...args: unknown[]) => { calls.push({ operation, args }); return response.promise; };
-  stub(actionFile, Object.fromEntries(["inviteUser", "inviteLinkFor", "setUserRole", "setUserPermission", "resetUserPermissions", "setUserStatus", "removeUser", "viewAs"].map((op) => [op, fake(op)])));
+  stub(actionFile, Object.fromEntries(["inviteUser", "inviteLinkFor", "setUserRole", "setUserPermission", "resetUserPermissions", "setUserStatus", "removeUser", "viewAs", "saveTeammateSetup"].map((op) => [op, fake(op)])));
   const nav = req("next/navigation") as { useRouter: () => unknown }, oldRouter = nav.useRouter; let refreshes = 0;
   nav.useRouter = () => ({ refresh: () => { refreshes++; }, push: () => {} });
   try {
@@ -74,7 +74,7 @@ async function main() {
     const reopenedAdd = mount(() => invoke(addElement)); click(reopenedAdd(), "Add a user"); change(input(reopenedAdd(), "name@example.com"), "later@example.test"); click(reopenedAdd(), "Create invite");
     c.ok("opaque invite marker restores hold on full form remount before another action", calls.length === 3 && text(reopenedAdd()).includes("previous request") && [...markers.values()].every((v) => /^opaque-attempt-\d+$/.test(v)));
 
-    const u: UserView = { id: "fixture-user", email: "member@example.test", name: "Fixture member", role: "ADMIN", permissions: '{"mypay":true}', status: "ACTIVE", lastLoginAt: null, isSelf: false };
+    const u: UserView = { id: "fixture-user", email: "member@example.test", name: "Fixture member", role: "ADMIN", permissions: '{"mypay":true}', status: "ACTIVE", lastLoginAt: null, isSelf: false, team: null, lanes: [] };
     const cardElement = elements(UsersManager({ users: [u] }), "UserCard")[0]; const card = mount(() => invoke(cardElement));
     const access = () => invoke(elements(card(), "AccessToggles")[0]);
     const checkbox = (label: string) => elements(access(), "label").find((e) => text(e).includes(label))!;

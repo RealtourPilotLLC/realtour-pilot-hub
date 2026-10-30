@@ -208,6 +208,7 @@ export function cronBudget(budgetMs: number, startedAtMs: number, job?: string):
   };
   const timings: Record<string, number> = {};
   out.ms = timings;
+  let rosterReady: Promise<void> | null = null;
   const timedOut: string[] = [];
   /** Steps whose error was a transient provider failure that has not
    *  persisted — recorded, but no "degraded" page for them (cronNoise.ts). */
@@ -218,6 +219,9 @@ export function cronBudget(budgetMs: number, startedAtMs: number, job?: string):
     elapsed: () => Date.now() - startedAtMs,
     remaining: () => Math.max(0, budgetMs - (Date.now() - startedAtMs)),
     async step(name, fn, opts) {
+      // The editors onboarded on People, before any step routes or pings one.
+      if (!rosterReady) rosterReady = import("@/lib/editorRoster").then((m) => m.ensureEditorRoster()).catch(() => {});
+      await rosterReady;
       if (Date.now() - startedAtMs >= budgetMs) {
         skipped.push(name);
         return;

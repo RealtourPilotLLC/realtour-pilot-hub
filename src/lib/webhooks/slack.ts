@@ -34,6 +34,8 @@ async function later(fn: () => Promise<void>): Promise<void> {
 }
 
 export async function POST(req: NextRequest) {
+  // Editors onboarded on People join the roster before anything routes or pings one.
+  await import("@/lib/editorRoster").then((m) => m.ensureEditorRoster()).catch(() => {});
   const raw = await req.text();
   let payload: Record<string, unknown> = {};
   try {

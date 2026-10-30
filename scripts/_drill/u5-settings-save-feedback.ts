@@ -46,8 +46,18 @@ async function main() {
     const templateHtml = renderToStaticMarkup(createElement(TextMessagesSettings, { rows, isOwner: true }));
     c.ok("an unedited template shows its default words, not an empty box", templateHtml.includes(`>${TEXT_TEMPLATES.client_confirmation.body}</textarea>`));
     c.ok("saved template words are unchanged on first paint", templateHtml.includes(">exact saved wording {feedbackUrl}</textarea>") && templateHtml.includes("Last edited by Jordan"));
-    const routing = renderToStaticMarkup(createElement(RoutingRulesForm, { initial: { standardVideo: "kim", premiumVideo: "john", personalBranding: null } }));
-    c.ok("routing retains all three existing values and a named section save", routing.includes('value="kim" selected') && routing.includes('value="john" selected') && routing.includes('value="manual" selected') && routing.includes("Save routing rules"));
+    // Oct 30 2026: a dropdown of checkboxes per lane (everyone ticked), not one name.
+    const routing = renderToStaticMarkup(createElement(RoutingRulesForm, {
+      initial: {
+        standardVideo: "kim", premiumVideo: "john", personalBranding: null,
+        pools: { standardVideo: ["kim", "reychelle"], premiumVideo: ["john"], personalBranding: [] },
+        why: { standardVideo: "Kim gets it.", premiumVideo: "John Mark is the only editor ticked for this lane.", personalBranding: "Nobody is ticked for this lane, so new work waits in Needs assigning." },
+      },
+      editors: [{ key: "kim", name: "Kim" }, { key: "john", name: "John Mark" }, { key: "reychelle", name: "Reychelle" }],
+    }));
+    c.ok("routing reads back every lane's ticks, the empty lane as manual, and a named section save",
+      routing.includes("Kim, Reychelle") && routing.includes(">John Mark<") && routing.includes("Nobody: Needs assigning") && routing.includes("Save routing rules"));
+    c.ok("each lane says who gets the next job", routing.includes("Next job: Kim gets it.") && routing.includes("Next job: John Mark is the only editor ticked"));
     const turns = renderToStaticMarkup(createElement(TurnaroundSettings, { initial: DEFAULT_TURNAROUNDS }));
     const review = renderToStaticMarkup(createElement(ReviewRoomSettings, { initial: DEFAULT_REVIEW_ROOM }));
     c.ok("turnaround and review use distinct section save and loaded states", turns.includes("Save turnaround promises") && review.includes("Save review rules") && turns.includes("Loaded settings") && review.includes("Loaded settings"));

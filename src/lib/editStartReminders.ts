@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { buildEditorQueue, STATUS_LABEL } from "@/lib/editorQueue";
 import { toDeskJobs } from "@/lib/editorDesk";
-import { editorMeta, DEFAULT_EDITOR_TZ } from "@/lib/editors";
+import { editorMeta, DEFAULT_EDITOR_TZ, videoEditorKeys } from "@/lib/editors";
 import { appBase } from "@/lib/appUrl";
 import { etDayKey, etHour } from "@/lib/datetime";
 import { dueWordsFor, titleWithDue } from "@/lib/editorDue";
@@ -33,7 +33,9 @@ import { escapeSlack } from "@/lib/text";
 // a client. It changes nothing: Start is still theirs to press.
 // ---------------------------------------------------------------------------
 
-export const START_REMIND_EDITORS = ["kim", "john"] as const;
+/** The editors reminded: every current in-house video editor (Kim, John Mark
+ *  and anyone onboarded on People since Oct 30 2026), read when the run starts. */
+export const startRemindEditors = (): string[] => videoEditorKeys();
 export const REMIND_DUE_WITHIN_HOURS = 48;
 export const REMIND_READY_FOR_HOURS = 96;
 export const REMIND_WINDOW_ET = { fromHour: 9, toHour: 18 } as const;
@@ -87,7 +89,7 @@ export async function startReminderJobs(): Promise<StartReminderJob[]> {
   const excludeClientIds = await syntheticClientIds();
   const { notDone } = await buildEditorQueue({ excludeClientIds });
   const out: StartReminderJob[] = [];
-  for (const key of START_REMIND_EDITORS) {
+  for (const key of startRemindEditors()) {
     const rows = notDone.filter((r) => r.editorKey === key && r.status !== STATUS_LABEL.REVISION);
     const byId = new Map(rows.map((r) => [r.id, r]));
     for (const j of toDeskJobs(rows, key, [])) {

@@ -285,6 +285,8 @@ function selfTestNote(marker: string | null, realEventType: string | null, why: 
 }
 
 export async function POST(req: NextRequest) {
+  // Editors onboarded on People join the roster before anything routes or pings one.
+  await import("@/lib/editorRoster").then((m) => m.ensureEditorRoster()).catch(() => {});
   const raw = await req.text();
 
   // WHO IS ALLOWED IN, AND WHEN WE START INSISTING.

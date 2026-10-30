@@ -30,6 +30,8 @@ export const dynamic = "force-dynamic";
 const UNSIGNED_MARKER = "UNSIGNED: accepted without verification — no webhook secret configured";
 
 export async function POST(req: NextRequest) {
+  // Editors onboarded on People join the roster before anything routes or pings one.
+  await import("@/lib/editorRoster").then((m) => m.ensureEditorRoster()).catch(() => {});
   const raw = await req.text();
 
   const secret = process.env.SCRIPTING_WEBHOOK_SECRET || "";

@@ -7,6 +7,7 @@ import { CheckCircle2, ChevronLeft, Clapperboard, Loader2, Plus, Search, X } fro
 import { cn } from "@/lib/utils";
 import { etFullDate } from "@/lib/datetime";
 import { EDITORS, type EditorKey } from "@/lib/editors";
+import { BUILT_IN_VIDEO_EDITORS, type VideoEditorChoice } from "@/components/editing/videoEditorChoices";
 import { addToEditorQueue, searchQueueCandidates, type QueueCandidate } from "@/app/editing/actions";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
@@ -16,7 +17,8 @@ import { AutoTextarea } from "@/components/ui/AutoTextarea";
 // the routing rules would send it) → optional note → it's in the queue and the
 // editor gets pinged.
 
-const EDITOR_CHOICES: EditorKey[] = ["kim", "john"];
+// The choices are the page's video editors (the videoEditors prop): Kim, John
+// Mark and everyone onboarded on People.
 
 const STATUS_CHIP: Record<string, string> = {
   BOOKED: "bg-surface-2 text-muted",
@@ -29,14 +31,16 @@ const STATUS_CHIP: Record<string, string> = {
   ON_HOLD: "bg-warning/10 text-warning",
 };
 
-export function AddToQueue() {
+export function AddToQueue({ videoEditors: choices = BUILT_IN_VIDEO_EDITORS }: { videoEditors?: VideoEditorChoice[] } = {}) {
+  const EDITOR_CHOICES = choices.map((c) => c.key);
+  const nameOf = (k: string) => choices.find((c) => c.key === k)?.name ?? EDITORS[k]?.name ?? k;
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [results, setResults] = useState<QueueCandidate[]>([]);
   const [searching, setSearching] = useState(false);
   const [picked, setPicked] = useState<QueueCandidate | null>(null);
-  const [editor, setEditor] = useState<EditorKey>("john");
+  const [editor, setEditor] = useState<EditorKey>(EDITOR_CHOICES[0] ?? "john");
   const [note, setNote] = useState("");
   const [done, setDone] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -77,7 +81,7 @@ export function AddToQueue() {
 
   const pick = (c: QueueCandidate) => {
     setPicked(c);
-    setEditor(c.suggestedEditor && EDITOR_CHOICES.includes(c.suggestedEditor) ? c.suggestedEditor : "john");
+    setEditor(c.suggestedEditor && EDITOR_CHOICES.includes(c.suggestedEditor) ? c.suggestedEditor : EDITOR_CHOICES[0] ?? "john");
     setErr(null);
     setDone(null);
   };
@@ -197,7 +201,7 @@ export function AddToQueue() {
             <label className="text-xs font-medium text-muted">Who edits it?</label>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {EDITOR_CHOICES.map((k) => {
-                const m = EDITORS[k];
+                const m = { name: nameOf(k), does: EDITORS[k]?.does ?? "video editing" };
                 const active = editor === k;
                 return (
                   <button
@@ -233,10 +237,10 @@ export function AddToQueue() {
             >
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} Add to queue
             </button>
-            {/* Kim or John only (EDITOR_CHOICES). A job goes to Luma Visuals
+            {/* Our editors only (EDITOR_CHOICES). A job goes to Luma Visuals
                 through the row's reassign select, where the send is recorded. */}
             <span className="text-[11px] text-muted-2">
-              {`Opens the ${picked.priorCut ? "new-cut" : "edit"} task for ${EDITORS[editor].name} and pings them.`}
+              {`Opens the ${picked.priorCut ? "new-cut" : "edit"} task for ${nameOf(editor)} and pings them.`}
             </span>
           </div>
           {err && <p className="text-xs font-medium text-danger">{err}</p>}

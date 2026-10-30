@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import type { EditorKey } from "@/lib/editors";
+import { ROUTING_LANES, editorMeta, isVideoEditorKey, type EditorKey, type RoutingLane, type VideoRoutingRules } from "@/lib/editors";
+import { ensureEditorRoster } from "@/lib/editorRoster";
 import { TEXT_TEMPLATES } from "@/lib/textTemplates";
 
 // ---------------------------------------------------------------------------
@@ -17,8 +18,17 @@ import { TEXT_TEMPLATES } from "@/lib/textTemplates";
 // for rules that change a few times a year.
 // ---------------------------------------------------------------------------
 
-export type EditorRoutingRules = {
-  // null = "manual": the job lands in Needs assigning instead of auto-routing.
+// The single key per lane is who gets the NEXT job on it (several editors
+// ticked → the workload decides, lib/editorBalance); `pools` is everyone
+// ticked; `why` is that decision in words, for the settings card and the
+// card a routed job is filed on.
+export type EditorRoutingRules = VideoRoutingRules & {
+  pools: Record<RoutingLane, EditorKey[]>;
+  why: Record<RoutingLane, string>;
+};
+
+/** The pre-Oct 30 stored shape: one editor (or null = manual) per lane. */
+export type LegacyEditorRouting = {
   standardVideo: EditorKey | null;
   premiumVideo: EditorKey | null;
   personalBranding: EditorKey | null;
@@ -26,15 +36,11 @@ export type EditorRoutingRules = {
 
 // Code defaults = Jordan's Aug 14 2026 decision. The settings page edits the
 // stored overlay; these apply until then (and whenever a row is missing).
-export const DEFAULT_ROUTING: EditorRoutingRules = {
+export const DEFAULT_ROUTING: LegacyEditorRouting = {
   standardVideo: "john",
   premiumVideo: "john",
   personalBranding: null, // manual — Jordan assigns each batch by hand
 };
-
-// Keys a routing rule may point at. Kyle/vendors are reachable through other
-// lanes; the video rules only ever route to a video editor or to manual.
-export const ROUTABLE_EDITORS: EditorKey[] = ["john", "kim"];
 
 const cache = new Map<string, { at: number; value: unknown }>();
 const TTL = 60_000;
@@ -62,16 +68,108 @@ export async function putSetting<T>(key: string, value: T, updatedBy?: string | 
   cache.delete(key);
 }
 
-export async function editorRouting(): Promise<EditorRoutingRules> {
-  const r = await getSetting<EditorRoutingRules>("editor_routing", DEFAULT_ROUTING);
-  // Guard against a stale row pointing at a retired key (luma, remar): fall
-  // back to the default for that rule rather than routing work to a ghost.
-  const ok = (k: EditorKey | null) => k === null || ROUTABLE_EDITORS.includes(k);
-  return {
-    standardVideo: ok(r.standardVideo) ? r.standardVideo : DEFAULT_ROUTING.standardVideo,
-    premiumVideo: ok(r.premiumVideo) ? r.premiumVideo : DEFAULT_ROUTING.premiumVideo,
-    personalBranding: ok(r.personalBranding) ? r.personalBranding : DEFAULT_ROUTING.personalBranding,
+// ---------------------------------------------------------------------------
+// WHO IS TICKED FOR EACH LANE (Oct 30 2026). Stored under its own key,
+// `editor_pools`, as a list per lane. Until the first save the lists are read
+// off the old one-editor-per-lane row (`editor_routing`), so nothing changes
+// for anyone until the office ticks a second box. (The old row is left as it
+// is: a deployment still running the old code reads it.)
+// ---------------------------------------------------------------------------
+export type EditorPools = Record<RoutingLane, EditorKey[]>;
+
+const cleanPool = (v: unknown): EditorKey[] => {
+  const list = Array.isArray(v) ? v : typeof v === "string" ? [v] : [];
+  // Only a current video editor can be ticked: a stale row naming a retired
+  // key (luma, remar) or someone since let go routes nothing to them.
+  return [...new Set(list.filter((k): k is string => typeof k === "string" && isVideoEditorKey(k)))];
+};
+
+export async function editorPools(): Promise<EditorPools> {
+  await ensureEditorRoster();
+  const saved = await getSetting<Partial<Record<RoutingLane, unknown>> | null>("editor_pools", null);
+  if (saved) return { standardVideo: cleanPool(saved.standardVideo), premiumVideo: cleanPool(saved.premiumVideo), personalBranding: cleanPool(saved.personalBranding) };
+  const legacy = await getSetting<LegacyEditorRouting>("editor_routing", DEFAULT_ROUTING);
+  // An unknown key on the old row fell back to the default for that lane, so
+  // it still does.
+  const lane = (l: RoutingLane) => {
+    const v = legacy[l];
+    if (v == null) return [];
+    const p = cleanPool(v);
+    return p.length ? p : cleanPool(DEFAULT_ROUTING[l]);
   };
+  return { standardVideo: lane("standardVideo"), premiumVideo: lane("premiumVideo"), personalBranding: lane("personalBranding") };
+}
+
+export async function saveEditorPools(pools: Partial<Record<RoutingLane, string[]>>, updatedBy?: string | null): Promise<EditorPools> {
+  const cur = await editorPools();
+  const next: EditorPools = {
+    standardVideo: pools.standardVideo ? cleanPool(pools.standardVideo) : cur.standardVideo,
+    premiumVideo: pools.premiumVideo ? cleanPool(pools.premiumVideo) : cur.premiumVideo,
+    personalBranding: pools.personalBranding ? cleanPool(pools.personalBranding) : cur.personalBranding,
+  };
+  await putSetting("editor_pools", next, updatedBy);
+  routingCache = null;
+  return next;
+}
+
+/** Tick exactly these lanes for one editor (People: an editor's Assignment). */
+export async function setEditorLanes(key: string, lanes: RoutingLane[], updatedBy?: string | null): Promise<EditorPools> {
+  const cur = await editorPools();
+  const next = { ...cur };
+  for (const l of ROUTING_LANES) {
+    const without = cur[l].filter((k) => k !== key);
+    next[l] = lanes.includes(l) ? [...without, key] : without;
+  }
+  return saveEditorPools(next, updatedBy);
+}
+
+let routingCache: { at: number; value: EditorRoutingRules } | null = null;
+
+/** Drop the cached decision, so the next job is weighed against the load
+ *  this one just added. */
+export function invalidateEditorRouting(): void {
+  routingCache = null;
+}
+
+/**
+ * The rules every routing site reads. Cached 60 s (queue renders read it on
+ * every load); a site that is about to HAND OUT a job passes `fresh` so it is
+ * weighed against the workload as it is now, not as it was a minute ago.
+ */
+export async function editorRouting(opts: { fresh?: boolean } = {}): Promise<EditorRoutingRules> {
+  await ensureEditorRoster();
+  if (!opts.fresh && routingCache && Date.now() - routingCache.at < TTL) return routingCache.value;
+  const pools = await editorPools();
+  const shared = [...new Set(ROUTING_LANES.filter((l) => pools[l].length > 1).flatMap((l) => pools[l]))];
+  let facts: Map<string, import("@/lib/editorBalance").BalanceFacts> | null = null;
+  if (shared.length) {
+    try {
+      facts = await (await import("@/lib/editorBalance")).balanceFacts(shared);
+    } catch {
+      facts = null; // the workload could not be read: the first one ticked, and the reason says so
+    }
+  }
+  const { rankPool } = await import("@/lib/editorBalance");
+  const picks = {} as Record<RoutingLane, EditorKey | null>;
+  const why = {} as Record<RoutingLane, string>;
+  for (const l of ROUTING_LANES) {
+    const pool = pools[l];
+    if (pool.length > 1 && !facts) {
+      picks[l] = pool[0];
+      why[l] = `The workload could not be read just now, so new work goes to ${editorMeta(pool[0])?.name ?? pool[0]}, the first ticked.`;
+      continue;
+    }
+    // A lane nobody shares has no workload read; its one editor still goes
+    // by their name, not their desk key.
+    const known = new Map(facts ?? []);
+    for (const k of pool) if (!known.has(k)) known.set(k, { key: k, name: editorMeta(k)?.name ?? k, owed: 0, approved: 0, weekdays: 0, out: null });
+    const r = rankPool(pool, known);
+    picks[l] = r.pick;
+    why[l] = r.why;
+  }
+  const value: EditorRoutingRules = { ...picks, pools, why };
+  routingCache = { at: Date.now(), value };
+  return value;
 }
 
 // ---------------------------------------------------------------------------

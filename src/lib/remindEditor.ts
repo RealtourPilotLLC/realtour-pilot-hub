@@ -70,7 +70,6 @@ export type RemindItem = {
   revisionSinceISO?: string | null;
 };
 
-const IN_HOUSE = new Set(["kim", "john", "remar"]);
 
 function firstNameOf(name: string): string {
   return name.trim().split(/\s+/)[0] || name;
@@ -133,7 +132,7 @@ export async function remindStatesFor(items: RemindItem[], opts: { now?: Date; v
       recordByKey.set(r.key.slice("video_remind:".length), JSON.parse(r.value) as RemindRecord);
     } catch { /* an unreadable record is no record */ }
   }
-  const { editorMeta, editorTeamMemberId } = await import("@/lib/editors");
+  const { editorMeta, editorTeamMemberId, isVideoEditorKey } = await import("@/lib/editors");
   // Reviewer names, and the seat that holds an unassigned cut.
   const reviewerIds = [...new Set(cuts.map((c) => c.reviewerTeamMemberId).filter((x): x is string => !!x))];
   const names = new Map((reviewerIds.length ? await prisma.teamMember.findMany({ where: { id: { in: reviewerIds } }, select: { id: true, name: true } }) : []).map((t) => [t.id, t.name]));
@@ -152,7 +151,7 @@ export async function remindStatesFor(items: RemindItem[], opts: { now?: Date; v
     if (meta.kind === "external") return { kind: "none", waitsOn: `With ${meta.name}, who has no hub login. Message them yourself.` };
     const tm = await editorTeamMemberId(key).catch(() => null);
     if (tm && opts.viewerTeamMemberId && tm === opts.viewerTeamMemberId) return { kind: "none", waitsOn: "With you." };
-    if (!IN_HOUSE.has(key)) return { kind: "none", waitsOn: `With ${meta.name}.` };
+    if (!isVideoEditorKey(key, { includeDeparted: true })) return { kind: "none", waitsOn: `With ${meta.name}.` };
     return { kind: "editor", editorKey: key, name: meta.name, teamMemberId: tm };
   };
 

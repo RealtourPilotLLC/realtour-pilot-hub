@@ -5,6 +5,7 @@ import { ModalDialog } from "@/components/ui/ModalDialog";
 import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/utils";
 import { AlertTriangle, Check, Loader2, Pin, PinOff, Send, SlidersHorizontal, X, Zap } from "lucide-react";
+import { BUILT_IN_VIDEO_EDITORS, type VideoEditorChoice } from "@/components/editing/videoEditorChoices";
 import { escalateRushToJordan, previewPriorityImpact, saveEditOverrides, type RushGate } from "@/app/editing/actions";
 import { etAt, etDateTime } from "@/lib/datetime";
 import {
@@ -42,12 +43,9 @@ import {
 // nothing) and lucide — never Prisma, settings or the task engine.
 
 // The queue's assignable video editors — same options as the row's Editor
-// select (Unassigned / John Mark / Kim / the outside shops), same key words the
-// server's setEditVideoEditor takes.
-const VIDEO_EDITORS = [
-  { key: "john", name: "John Mark" },
-  { key: "kim", name: "Kim" },
-] as const;
+// select (Unassigned / our editors / the outside shops), same key words the
+// server's setEditVideoEditor takes. Our editors come from the page (the
+// videoEditors prop), since Oct 30 2026 anyone onboarded on People.
 const UNASSIGN = "";
 const OUTSIDE_EDITORS = [
   { key: "external_agency", name: "Luma Visuals" },
@@ -369,7 +367,7 @@ export function RushPanel({
 export type RushAsk = { by: string | null; atISO: string | null; words: string };
 
 function OverridesDialog({
-  job, onClose, onSaved, mode = "all", ask = null,
+  job, onClose, onSaved, mode = "all", ask = null, videoEditors: VIDEO_EDITORS = BUILT_IN_VIDEO_EDITORS,
 }: {
   job: EditOverridesJob;
   onClose: () => void;
@@ -377,6 +375,8 @@ function OverridesDialog({
   /** "rush" = only the due date and priority, with what they push back (the job page's Rush button). */
   mode?: "all" | "rush";
   ask?: RushAsk | null;
+  /** who the Editor field offers */
+  videoEditors?: VideoEditorChoice[];
 }) {
   const rushOnly = mode === "rush";
   const [init] = useState(() => draftFrom(job));
@@ -682,13 +682,15 @@ function OverridesDialog({
     survives the row moving to another view); without it, the sentence is
     shown as a note under the control. */
 export function EditOverridesButton({
-  job, variant = "row", onReceipt, renderTrigger, onDialogClose,
+  job, variant = "row", onReceipt, renderTrigger, onDialogClose, videoEditors,
 }: {
   job: EditOverridesJob;
   variant?: "row" | "header";
   onReceipt?: (msg: string) => void;
   renderTrigger?: (open: () => void) => ReactNode;
   onDialogClose?: () => void;
+  /** who the Editor field offers (lib/editors videoEditorChoices) */
+  videoEditors?: VideoEditorChoice[];
 }) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -728,7 +730,7 @@ export function EditOverridesButton({
           </button>
         </span>
       )}
-      {open && <OverridesDialog job={job} onClose={() => { setOpen(false); onDialogClose?.(); }} onSaved={saved} />}
+      {open && <OverridesDialog job={job} onClose={() => { setOpen(false); onDialogClose?.(); }} onSaved={saved} videoEditors={videoEditors} />}
     </span>
   );
 }

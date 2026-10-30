@@ -3,6 +3,7 @@ import { cache } from "react";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "./session";
+import { ensureEditorRoster } from "@/lib/editorRoster";
 import { canAccess, type PageKey } from "./access";
 
 // The current logged-in person, resolved from the session and re-read from the DB
@@ -28,7 +29,9 @@ export type CurrentUser = {
 // Wrapped in React `cache()` so the layout + the page + any guard share ONE
 // AppUser read per request instead of each re-querying the DB.
 export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
-  const s = await getSession();
+  // The editors onboarded on People join the roster here, so every page and
+  // server action sees them (lib/editorRoster, 60 s cache, never throws).
+  const [s] = await Promise.all([getSession(), ensureEditorRoster()]);
   if (!s) return null;
 
   // The real session user must still be active.

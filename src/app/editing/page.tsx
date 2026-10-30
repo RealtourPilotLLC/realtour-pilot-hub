@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { getCurrentUser } from "@/lib/auth/user";
 import { editorScopeOf, isUnmappedEditor } from "@/lib/auth/guards";
 import { AddToQueue } from "@/components/editing/AddToQueue";
+import { videoEditorChoices } from "@/lib/editors";
 import { FloatingStyleGuide } from "@/components/editing/FloatingStyleGuide";
 import { SimpleQueue, type QueueRow } from "@/components/editing/SimpleQueue";
 import { EditorQualityCard } from "@/components/editing/EditorQualityCard";
@@ -340,9 +341,9 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
               <p className="mt-0.5 hidden text-sm text-muted sm:block">Soonest due first. Open a project for its brief, files and latest cut.</p>
             </div>
             {/* The manual handoff stays available beside its queue. */}
-            <div className="contents [&>div]:basis-full"><AddToQueue /></div>
+            <div className="contents [&>div]:basis-full"><AddToQueue videoEditors={videoEditorChoices()} /></div>
           </div>
-          <SimpleQueue notDone={notDone.map((r) => ({ ...r, lastAction: rowEvidence(r, act, now), remind: reminders.get(r.id) ?? null }))} upcoming={upcomingRows} done={done} />
+          <SimpleQueue notDone={notDone.map((r) => ({ ...r, lastAction: rowEvidence(r, act, now), remind: reminders.get(r.id) ?? null }))} upcoming={upcomingRows} done={done} videoEditors={videoEditorChoices()} />
         </section>
         {/* The undo window for a job taken off the board, made visible. Renders
             nothing when nothing is in it. */}
