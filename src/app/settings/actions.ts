@@ -380,6 +380,12 @@ export async function loadNotifySchedules(): Promise<{
   return { rows: await scheduleRows([me.teamMemberId]), canEditAll: false };
 }
 
+/** The signed-in person's own quiet-time row, for /profile (Oct 30 2026). */
+export async function loadMyNotifySchedule(): Promise<import("@/lib/notifyPrefDefaults").NotifyScheduleRow | null> {
+  const me = await getCurrentUser().catch(() => null);
+  if (!me?.teamMemberId) return null;
+  return (await scheduleRows([me.teamMemberId]))[0] ?? null;
+}
 export async function saveNotifySchedule(
   teamMemberId: string,
   windows: import("@/lib/notifyPrefDefaults").QuietWindow[] | null,

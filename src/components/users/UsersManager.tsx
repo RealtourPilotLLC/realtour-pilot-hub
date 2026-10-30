@@ -11,7 +11,7 @@ import { etMonthDay } from "@/lib/datetime";
 import { Button } from "@/components/ui/Action";
 import { CopyButton } from "@/components/ui/CopyButton";
 
-export type TeamCardView = { name: string; slackId: string | null; phone: string | null; timezone: string | null; editorKey: string | null };
+export type TeamCardView = { name: string; slackId: string | null; phone: string | null; timezone: string | null; location: string | null; editorKey: string | null };
 export type UserView = {
   id: string; email: string; name: string | null; role: string; permissions: string | null; status: string; lastLoginAt: string | null; isSelf: boolean;
   /** their team card (Slack ID, phone, editor desk); null = none yet */
@@ -107,10 +107,12 @@ const LANE_HINT: Record<string, string> = {
 const LANE_OPTIONS = ROUTING_LANES.map((l) => ({ value: l, label: ROUTING_LANE_LABEL[l], hint: LANE_HINT[l] }));
 const laneWords = (lanes: string[]) => lanes.map((l) => ROUTING_LANE_LABEL[l as keyof typeof ROUTING_LANE_LABEL] ?? l).join(", ");
 
-type SetupDraft = { slackId: string; phone: string; timezone: string; lanes: string[] };
-/** Slack ID + phone for anyone; time zone + Assignment for an editor. */
+type SetupDraft = { slackId: string; phone: string; timezone: string; location: string; lanes: string[] };
+/** Slack ID, phone, location and time zone for anyone; Assignment for an editor.
+ *  A blank time zone is the office's (US Eastern); an editor's defaults to Manila. */
 function SetupFields({ draft, change, isEditor, disabled, idPrefix }: { draft: SetupDraft; change: (p: Partial<SetupDraft>) => void; isEditor: boolean; disabled: boolean; idPrefix: string }) {
-  const zones = EDITOR_TIMEZONES.some((z) => z.value === draft.timezone) || !draft.timezone ? EDITOR_TIMEZONES : [{ value: draft.timezone, label: draft.timezone }, ...EDITOR_TIMEZONES];
+  const known = EDITOR_TIMEZONES.some((z) => z.value === draft.timezone) || !draft.timezone ? EDITOR_TIMEZONES : [{ value: draft.timezone, label: draft.timezone }, ...EDITOR_TIMEZONES];
+  const zones = isEditor ? known : [{ value: "", label: "Not set (US Eastern)" }, ...known];
   return <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
     <label className="flex min-w-0 flex-col gap-1 text-sm text-muted">Slack member ID
       <input value={draft.slackId} disabled={disabled} onChange={(e) => change({ slackId: e.target.value })} placeholder="U07SCBTPDC7" autoComplete="off" spellCheck={false} className={`${field} font-mono`} />
@@ -120,13 +122,16 @@ function SetupFields({ draft, change, isEditor, disabled, idPrefix }: { draft: S
       <input type="tel" value={draft.phone} disabled={disabled} onChange={(e) => change({ phone: e.target.value })} placeholder="+63 917 123 4567" autoComplete="off" className={field} />
       <span className="text-ui-status leading-snug">Outside the US, start with + and the country code.</span>
     </label>
+    <label className="flex min-w-0 flex-col gap-1 text-sm text-muted">Location
+      <input value={draft.location} disabled={disabled} onChange={(e) => change({ location: e.target.value })} placeholder="Manila, Philippines" maxLength={80} autoComplete="off" className={field} />
+    </label>
+    <label htmlFor={`${idPrefix}-tz`} className="flex min-w-0 flex-col gap-1 text-sm text-muted">Time zone
+      <select id={`${idPrefix}-tz`} value={draft.timezone} disabled={disabled} onChange={(e) => change({ timezone: e.target.value })} className={field}>
+        {zones.map((z) => <option key={z.value} value={z.value}>{z.label}</option>)}
+      </select>
+      <span className="text-ui-status leading-snug">{isEditor ? "Their working hours and reminders run on this clock." : "People shows their local time from this."}</span>
+    </label>
     {isEditor && <>
-      <label htmlFor={`${idPrefix}-tz`} className="flex min-w-0 flex-col gap-1 text-sm text-muted">Time zone
-        <select id={`${idPrefix}-tz`} value={draft.timezone} disabled={disabled} onChange={(e) => change({ timezone: e.target.value })} className={field}>
-          {zones.map((z) => <option key={z.value} value={z.value}>{z.label}</option>)}
-        </select>
-        <span className="text-ui-status leading-snug">Their working hours and reminders run on this clock.</span>
-      </label>
       <div className="flex min-w-0 flex-col gap-1 text-sm text-muted">
         <span id={`${idPrefix}-lanes`}>Assignment</span>
         <CheckboxDropdown label="Assignment" options={LANE_OPTIONS} value={draft.lanes} disabled={disabled} onChange={(lanes) => change({ lanes })} emptyText="No lanes: work only by hand" />
@@ -139,7 +144,7 @@ function SetupFields({ draft, change, isEditor, disabled, idPrefix }: { draft: S
 type InviteDraft = { email: string; name: string; role: string } & SetupDraft;
 function AddUser() {
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState<InviteDraft>({ email: "", name: "", role: "PHOTOGRAPHER", slackId: "", phone: "", timezone: "Asia/Manila", lanes: [] });
+  const [draft, setDraft] = useState<InviteDraft>({ email: "", name: "", role: "PHOTOGRAPHER", slackId: "", phone: "", timezone: "", location: "", lanes: [] });
   const current = useRef(draft);
   const [link, setLink] = useState<{ value: string; email: string; role: string; keptNewer: boolean } | null>(null);
   const { busy, receipt, run, held, isPending } = useUserMutation("invite-form");
@@ -151,18 +156,19 @@ function AddUser() {
     if (!submitted.email.trim()) return;
     run(`Invite for ${submitted.email}`, async () => {
       setLink(null); // A re-invite can replace the earlier token for this email.
-      const { timezone, lanes, slackId, phone, ...base } = submitted;
+      const { timezone, lanes, slackId, phone, location, ...base } = submitted;
       const r = await inviteUser({
         ...base,
         ...(slackId.trim() ? { slackId } : {}),
         ...(phone.trim() ? { phone } : {}),
-        ...(submitted.role === "EDITOR" ? { timezone, lanes } : {}),
+        ...(location.trim() ? { location } : {}),
+        ...(submitted.role === "EDITOR" ? { timezone: timezone || "Asia/Manila", lanes } : timezone ? { timezone } : {}),
       });
       return r.ok && !r.link ? { ok: false, outcome: "unknown", message: "The invite response did not include its link." } : r;
     }, (r) => {
       const unchanged = JSON.stringify(current.current) === JSON.stringify(submitted);
       setLink({ value: r.link!, email: submitted.email, role: submitted.role, keptNewer: !unchanged });
-      if (unchanged) change({ email: "", name: "", slackId: "", phone: "", lanes: [] });
+      if (unchanged) change({ email: "", name: "", slackId: "", phone: "", location: "", lanes: [] });
     });
   };
   return <div>
@@ -223,10 +229,10 @@ function AccessToggles({ u, busy, held, run }: { u: UserView; busy: boolean; hel
  * warning, because nothing can be assigned to them until it exists. */
 function TeamCard({ u, open, busy, held, run }: { u: UserView; open: boolean; busy: boolean; held: boolean; run: Run }) {
   const isEditor = u.role === "EDITOR", needsDesk = isEditor && !u.team?.editorKey;
-  const [draft, setDraft] = useState<SetupDraft>({ slackId: u.team?.slackId ?? "", phone: u.team?.phone ?? "", timezone: u.team?.timezone ?? "Asia/Manila", lanes: u.lanes });
+  const [draft, setDraft] = useState<SetupDraft>({ slackId: u.team?.slackId ?? "", phone: u.team?.phone ?? "", timezone: u.team?.timezone ?? (isEditor ? "Asia/Manila" : ""), location: u.team?.location ?? "", lanes: u.lanes });
   const change = (p: Partial<SetupDraft>) => setDraft((d) => ({ ...d, ...p }));
   const save = () => run(needsDesk ? "Editor setup" : "Team card", () =>
-    saveTeammateSetup(u.id, { slackId: draft.slackId, phone: draft.phone, ...(isEditor ? { timezone: draft.timezone, lanes: draft.lanes } : {}) }));
+    saveTeammateSetup(u.id, { slackId: draft.slackId, phone: draft.phone, location: draft.location, timezone: draft.timezone || null, ...(isEditor ? { lanes: draft.lanes } : {}) }));
   return <div id={`team-${u.id}`} hidden={!open} className="mt-3 rounded-xl border border-border bg-surface-2/40 p-3">
     <p className="mb-2 text-sm font-semibold text-muted">Team card</p>
     <SetupFields draft={draft} change={change} isEditor={isEditor} disabled={busy || held} idPrefix={`team-${u.id}`} />

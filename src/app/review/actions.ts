@@ -2052,7 +2052,7 @@ async function standingApprovedCutIsTheirs(
 // ten approved slots drew the door, for either editor account, and of those
 // twenty (slot × editor) pairs the server would take two — both Kim's, and only
 // because her two jobs happen to still carry an open task of hers, which is not
-// the delivered-and-done case the door was built for. John Mark had personally
+// the delivered-and-done case the door was built for. Jhon Mark had personally
 // submitted the approved version on six of the slots it refused him, 322 N 62nd
 // St — the silent-audio job the feature is named after — among them. The editor
 // found out after picking the file and typing their justification.

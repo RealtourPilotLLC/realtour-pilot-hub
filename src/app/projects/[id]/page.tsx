@@ -1030,7 +1030,7 @@ export default async function ProjectPage({
           <Section id="team" icon={Users} title="Team" flush>
             <AssignmentPanel
               projectId={project.id}
-              team={team.map((m) => ({ id: m.id, name: m.name, avatarColor: m.avatarColor }))}
+              team={team.map((m) => ({ id: m.id, name: m.name, avatarColor: m.avatarColor, photoAt: m.photoAt ?? null }))}
               current={{
                 photographer: project.photographerId,
                 editor: project.editorId,

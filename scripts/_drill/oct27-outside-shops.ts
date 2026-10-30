@@ -158,7 +158,7 @@ async function main() {
   c.ok("CONTROL: John's job nobody started still says 'In editing — not confirmed'", rj2?.status === "In editing — not confirmed", rj2?.status);
   const vs = await videoStatesFor([C, L, J]);
   c.ok("Kyle's board: 'In editing — Cliffside Cuts' / 'In editing — Luma Visuals'; John's still unconfirmed",
-    vs.get(C)?.detail === "In editing — Cliffside Cuts" && vs.get(L)?.detail === "In editing — Luma Visuals" && /^In editing — not confirmed — John/.test(vs.get(J)?.detail ?? ""),
+    vs.get(C)?.detail === "In editing — Cliffside Cuts" && vs.get(L)?.detail === "In editing — Luma Visuals" && /^In editing — not confirmed — Jhon/.test(vs.get(J)?.detail ?? ""),
     [C, L, J].map((id) => vs.get(id)?.detail).join(" | "));
   // The raws are in (the photographer's upload), so the board reads who has it.
   await prisma.deliverable.updateMany({ where: { projectId: { in: [C, L, J] } }, data: { status: "UPLOADED" } });

@@ -200,7 +200,7 @@ const WORN_ONLY: Record<string, { color: string }> = {
 const WORK_MOVES = new Set(["In editing", "Paused"]);
 
 // The queue's assignable video editors come from the page (the videoEditors
-// prop): Kim, John Mark and everyone onboarded on People, as the server checks them.
+// prop): Kim, Jhon Mark and everyone onboarded on People, as the server checks them.
 
 // Jordan, Sep 7: "I want to be able to unassign projects from editors and
 // reassign them to an external agency. That way, our editors don't see jobs
@@ -508,7 +508,7 @@ function LinkChip({
 //
 // DATES ARE THE JOB HERE and all of them are Eastern. "Today" is the ET
 // CALENDAR DAY via etDayKey — not a rolling 24 hours, and not the browser's
-// day: John Mark and Kim edit from Manila, twelve hours ahead, and "due today"
+// day: Jhon Mark and Kim edit from Manila, twelve hours ahead, and "due today"
 // has to name the same square on their screen as on Jordan's. It is also not
 // `dueISO.slice(0, 10)`, which is the UTC date: 24 of the 540 jobs carrying a
 // deliveryDue on the live board sit on a different UTC date than ET one (probe,

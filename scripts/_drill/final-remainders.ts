@@ -228,7 +228,7 @@ async function main() {
   const kyleTm = await tm("Kyle Cabrera", "kyle-tm@drill.invalid", "MANAGER");
   const jordanTm = await tm("Jordan Spackman", "jordan-tm@drill.invalid", "PHOTOGRAPHER");
   const kimTm = await tm("Kim Miguel", "kim-tm@drill.invalid", "EDITOR");
-  await tm("John Mark", "john-tm@drill.invalid", "EDITOR");
+  await tm("Jhon Mark", "john-tm@drill.invalid", "EDITOR");
   const harrisonTm = await tm("Harrison Drill", "harrison-fr@drill.invalid", "PHOTOGRAPHER");
   await putSetting("review_room", { creativeApproverTeamMemberId: null, backupReviewerTeamMemberId: kyleTm.id, fallbackReviewerTeamMemberId: jordanTm.id });
   const mkUser = (email: string, name: string, role: string, teamMemberId: string | null, editorKey: string | null = null) =>
@@ -312,7 +312,7 @@ async function main() {
     c.ok("…nothing waiting yet, and the read did not fail", !!jo.props && jo.props.open.length === 0 && jo.props.readFailed === false);
     c.ok("…\"which video\" offers the job's two owed videos by name", JSON.stringify(jo.props?.videos) === JSON.stringify([{ outputId: v1.outputId, label: `Video 1: ${v1.label}` }, { outputId: v2.outputId, label: `Video 2: ${v2.label}` }]), JSON.stringify(jo.props?.videos));
     c.ok("…\"who\" offers exactly the lib's INTERPRETER_KEYS, Jordan first, by name",
-      JSON.stringify(jo.props?.people) === JSON.stringify([{ key: "jordan", name: "Jordan" }, { key: "kyle", name: "Kyle" }, { key: "kim", name: "Kim" }, { key: "john", name: "John Mark" }]), JSON.stringify(jo.props?.people));
+      JSON.stringify(jo.props?.people) === JSON.stringify([{ key: "jordan", name: "Jordan" }, { key: "kyle", name: "Kyle" }, { key: "kim", name: "Kim" }, { key: "john", name: "Jhon Mark" }]), JSON.stringify(jo.props?.people));
     const ki = await cardOf(kim);
     c.ok("Kim (EDITOR, her own job): the page renders, with no card", ki.n === 0 && !ki.err, ki.err || "rendered, no card");
     const pvKim = await cardOf(jordan, kim);
@@ -321,7 +321,7 @@ async function main() {
   }
 
   c.head("§A2 · the card's words, rendered (nothing waiting)");
-  const cardBase = { projectId: job.id, videos: [{ outputId: v1.outputId, label: `Video 1: ${v1.label}` }, { outputId: v2.outputId, label: `Video 2: ${v2.label}` }], people: [{ key: "jordan", name: "Jordan" }, { key: "kyle", name: "Kyle" }, { key: "kim", name: "Kim" }, { key: "john", name: "John Mark" }] };
+  const cardBase = { projectId: job.id, videos: [{ outputId: v1.outputId, label: `Video 1: ${v1.label}` }, { outputId: v2.outputId, label: `Video 2: ${v2.label}` }], people: [{ key: "jordan", name: "Jordan" }, { key: "kyle", name: "Kyle" }, { key: "kim", name: "Kim" }, { key: "john", name: "Jhon Mark" }] };
   {
     const out = child([
       { name: "empty", file: CARD, exp: "AssetDependencyCard", props: { ...cardBase, open: [], readFailed: false } },

@@ -4,7 +4,7 @@ import { etDayKey, etDayKeyPlus } from "@/lib/datetime";
 // EDITOR SPEED, PER EDITOR AND PER KIND OF VIDEO (Jordan, Oct 27 2026: "I
 // would like to see the average time of how long it takes Kim to work on
 // specific videos of personal branding, how long it takes him to start. Start
-// one video and then get the video to us. Same thing with John Mark ... so
+// one video and then get the video to us. Same thing with Jhon Mark ... so
 // that I can keep track of that and know when to hire other editors, and
 // also make sure that they are hitting turnaround times").
 //
@@ -32,7 +32,7 @@ import { etDayKey, etDayKeyPlus } from "@/lib/datetime";
 // start to finish ... It would have to work that way for each individual
 // video so we can track how long it takes them"). Added:
 //   · videos a day  first versions sent in the window ÷ the weekdays (Mon to
-//                   Fri, Eastern: Kim and John Mark work Manila nights, which
+//                   Fri, Eastern: Kim and Jhon Mark work Manila nights, which
 //                   is the Eastern day) among its last 7 / 30 / 90 days; and
 //                   ÷ the days they actually sent one;
 //   · Start to sent the clock time from their first Start on that video to

@@ -100,6 +100,12 @@ model TeamMember {
   // Their own clock (IANA, e.g. "Asia/Manila") for "12:40am your time" on the
   // editor desk. Null = the editor default (Asia/Manila).
   timezone          String?
+  // Their own profile (Oct 30 2026, /profile): where they are, as they wrote
+  // it ("Manila, Philippines"), and when their photo last changed. The photo's
+  // bytes live in TeamPhoto so no TeamMember read ever carries an image; the
+  // stamp is the cache key in its URL (lib/teamPhoto). Null = no photo.
+  location          String?
+  photoAt           DateTime?
   avatarColor       String    @default("#6366f1") // for UI avatars
   // "Work-ons for your next shoot" — the AI-summarized THEMES of this person's
   // open capture feedback, cached so the page never waits on a model call.
@@ -2250,6 +2256,17 @@ model HubMessage {
 // denied. `role` drives default page access + the content-sensitivity tier; the
 // `permissions` JSON overrides specific pages per person.
 // ---------------------------------------------------------------------------
+// A teammate's profile photo (Oct 30 2026): one small square JPEG per team
+// card, uploaded by the person on /profile and served by /api/team-photo/<id>
+// to signed-in teammates. A table of its own on purpose: TeamMember is
+// included on hundreds of job rows, and none of them should haul an image.
+model TeamPhoto {
+  teamMemberId String   @id
+  bytes        Bytes
+  contentType  String   @default("image/jpeg")
+  updatedAt    DateTime @updatedAt
+}
+
 model AppUser {
   id                  String    @id @default(cuid())
   email               String    @unique // Google login email, lowercased

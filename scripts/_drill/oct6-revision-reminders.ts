@@ -374,7 +374,7 @@ async function main() {
     const { notDone } = await buildEditorQueue();
     c.ok("…and its row has left Revisions", notDone.find((r) => r.id === A.id)?.status !== "Revisions", notDone.find((r) => r.id === A.id)?.status);
     const fri = dms(S.kyle, k3).filter((m) => /stuck with an editor/.test(m.text));
-    c.ok("Friday: the next day's ONE line — K2 (Kim, 4 days) then Portal Way (John Mark, 3 days), oldest first, no Luma/unassigned jobs", r4.stuck === "sent" && fri.length === 1 && fri[0].text.startsWith("2 revisions stuck with an editor 3+ days: 48 Stuck Ln (Paula Prospect) — Kim, 4 days; 22 Portal Way (Ann Lee) — John Mark, 3 days.") && fri[0].text.includes(`${BASE}/editing?stage=changes`) && !/Agency|Nobody|Hamilton/.test(fri[0].text), fri.map((m) => m.text).join(" | ") || JSON.stringify(r4));
+    c.ok("Friday: the next day's ONE line — K2 (Kim, 4 days) then Portal Way (Jhon Mark, 3 days), oldest first, no Luma/unassigned jobs", r4.stuck === "sent" && fri.length === 1 && fri[0].text.startsWith("2 revisions stuck with an editor 3+ days: 48 Stuck Ln (Paula Prospect) — Kim, 4 days; 22 Portal Way (Ann Lee) — Jhon Mark, 3 days.") && fri[0].text.includes(`${BASE}/editing?stage=changes`) && !/Agency|Nobody|Hamilton/.test(fri[0].text), fri.map((m) => m.text).join(" | ") || JSON.stringify(r4));
     c.ok("…two list bell rows in two days, no more", (await bells("revision_stuck")).length === 2);
     // John hands in his v2 too.
     await mkCut(B, { round: 2, status: "PENDING", createdAt: edt(10, 16, 11, 30), by: "john" });

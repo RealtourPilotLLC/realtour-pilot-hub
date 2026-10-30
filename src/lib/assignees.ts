@@ -16,7 +16,7 @@ export type Assignee = { key: string; name: string; kind: AssigneeKind; teamMemb
 // Editors / vendors / roles that are NOT in the TeamMember table.
 const NON_TEAM: Assignee[] = [
   { key: "creative_director", name: "Creative Director", kind: "editor" },
-  { key: "john", name: "John Mark", kind: "editor" },
+  { key: "john", name: "Jhon Mark", kind: "editor" },
   // Luma removed Aug 25 — the engagement ended Aug 14; historical tasks
   // with assignedKey "luma" still display via the firstName fallback.
   { key: "autohdr", name: "AutoHDR", kind: "vendor" },
@@ -25,10 +25,17 @@ const NON_TEAM: Assignee[] = [
 
 const KIND_ORDER: Record<AssigneeKind, number> = { owner: 0, manager: 1, photographer: 2, editor: 3, vendor: 4 };
 
+// A key is minted once and KEPT when the spelling of a name is corrected:
+// Jhon Mark's tasks, desk and history have been filed under "john" since Aug
+// 2026, and his name was put right on Oct 30 2026 (Jordan: "fix Johns name to
+// be Jhon"). Every place that keys a person by first name goes through here.
+const KEPT_KEYS: Record<string, string> = { jhon: "john" };
+
 /** Stable assignment key for a person = their first name, lowercased + alnum. */
 export function slugForName(name: string): string {
   const first = (name || "").trim().split(/\s+/)[0] || name || "";
-  return first.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const slug = first.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return KEPT_KEYS[slug] ?? slug;
 }
 
 /** First name, for compact display (Kyle, James, …). */

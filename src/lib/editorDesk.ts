@@ -140,7 +140,7 @@ const dayKey = (d: Date, tz: string) =>
 /**
  * "12:40am" when the moment falls on today's calendar day IN `tz`, otherwise
  * "Sep 28 12:40am"; "" for nothing. The editor's own Start and Pause read in
- * their own timezone (Manila for Kim and John Mark) — Kim pressing Start at
+ * their own timezone (Manila for Kim and Jhon Mark) — Kim pressing Start at
  * 11:02pm and being told "since 11:02am" is the confusion this fixes. The
  * office always passes Eastern.
  */

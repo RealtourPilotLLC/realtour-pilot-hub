@@ -203,7 +203,7 @@ async function editorTmIdMap(): Promise<Map<string, string>> {
 // were tagged on this job" item, not a pile. What was wrong was that the row
 // only ever remembered the LAST tag. Both mint sites did
 // `update({ data: { ...data } })`, which replaced title, summary, description
-// and dueAt wholesale — so on 632 Greenridge Rd, John Mark's cut note ("here's
+// and dueAt wholesale — so on 632 Greenridge Rd, Jhon Mark's cut note ("here's
 // the revised version") landed on top of his own earlier team-chat question
 // ("please let me know if you have any concern for the video") and Kyle's
 // board simply stopped showing the question. Two asks, one row, one survivor.
@@ -269,7 +269,7 @@ export function appendMentionAsk(
 // A tag that ASKS something ("please re-cut the intro", "she wants a version
 // without the voiceover", anything with a question mark) is work. A tag that
 // TELLS you something ("here's the revised version") is an FYI. Until Sep 20
-// every tag was HIGH with a four-hour clock, so John Mark's "here's the revised
+// every tag was HIGH with a four-hour clock, so Jhon Mark's "here's the revised
 // version" paged two people as urgently as a client's revision request, and
 // 12 of 12 live rows were HIGH. Deliberately generous about what counts as an
 // ask: the cost of calling an FYI urgent is noise, the cost of calling a real
@@ -309,8 +309,8 @@ function withoutTags(text: string, names: string[] = []): string {
   let t = stripInvisible(text);
   for (const name of [...new Set(names.filter((n) => n && n.trim()))].sort((a, b) => b.length - a.length)) {
     const esc = name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
-    // Ends on a word boundary, so a roster "John Mark" does not swallow the
-    // "ets" out of a hand-typed "@John Markets".
+    // Ends on a word boundary, so a roster "Jhon Mark" does not swallow the
+    // "ets" out of a hand-typed "@Jhon Markets".
     t = t.replace(new RegExp(`@${esc}(?![A-Za-z0-9])`, "gi"), " ");
   }
   return t
@@ -338,8 +338,8 @@ const GREETING = /^(hi|hey|hello|good (morning|afternoon|evening))\b[\s,!.]*/i;
 
 /**
  * Is this reply a bare acknowledgement or a question back, rather than an
- * answer? (Sep 20, from 358 N Church St.) Kyle asked John Mark for a cut with
- * no voiceover; John Mark replied "May I know where to upload the no V.O
+ * answer? (Sep 20, from 358 N Church St.) Kyle asked Jhon Mark for a cut with
+ * no voiceover; Jhon Mark replied "May I know where to upload the no V.O
  * Version I don't have a button for that in my Interface" and the hub closed
  * his task and rang Kyle "John finished your tag". He had not finished
  * anything — he had asked where to put it. A question back and an "on it" are
@@ -1072,7 +1072,7 @@ export async function notifyProjectMessage(opts: {
     // 1. The job's editor (Sep 15) — once there is something to edit (Oct 5
     //    2026). The editor of record is named at booking, so a photographer's
     //    "running 10 min late" or a gate-code thread on a job still being
-    //    shot used to DM Kim or John Mark in Manila at 3 AM their time about a
+    //    shot used to DM Kim or Jhon Mark in Manila at 3 AM their time about a
     //    job they could not start for days. Before the raws are in, the post
     //    stays on the job's chat (which their brief shows when it lands) and
     //    nobody in the edit lane is pinged; a tag still reaches them by name.

@@ -210,7 +210,7 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
   // The truth about WHO has an in-flight edit is the open task's assignedKey
   // (reassignments land there) — the routing rules only PREDICT for jobs with
   // no task yet. Without this, every row showed the current rule's editor and
-  // misattributed Kim's and Luma's in-flight work to John Mark.
+  // misattributed Kim's and Luma's in-flight work to Jhon Mark.
   const allIds = [...inflight, ...scheduled, ...deliveredRaw].map((p) => p.id);
   const [videoStates, openTasks, msgCounts, cutRows, work, holders] = await Promise.all([
     videoStatesFor(allIds),

@@ -77,6 +77,15 @@ export const NOTIFY_EVENTS = [
 export type NotifyEvent = (typeof NOTIFY_EVENTS)[number]["key"];
 export const NOTIFY_EVENT_KEYS: NotifyEvent[] = NOTIFY_EVENTS.map((e) => e.key);
 
+/** What a person must keep hearing about on at least one channel when they
+ *  change their OWN notifications on /profile (Oct 30 2026): an editor's new
+ *  work and footage, a photographer's reschedules and missing raws. The
+ *  office can still switch anything on Settings → Team notifications. */
+export const SELF_MUST_REACH: Partial<Record<NotifyGroup, NotifyEvent>> = {
+  Editor: "job_ping",
+  Photographer: "shoot_change",
+};
+
 /** Does any emitter address this group for this event? (The card greys the
  *  row out otherwise; the save action clears it.) */
 export function eventAppliesTo(event: NotifyEvent, group: NotifyGroup): boolean {
@@ -204,7 +213,7 @@ const allOff = (): NotifyPrefs => ({
 
 /**
  * The default table. `role` is the roster role, except that the server passes
- * "EDITOR" for anyone holding an editor key (Kim and John Mark are MANAGER /
+ * "EDITOR" for anyone holding an editor key (Kim and Jhon Mark are MANAGER /
  * VA on the roster — the key is what makes them editors). `isOwner` wins over
  * the role: Jordan is PHOTOGRAPHER on the roster and the owner by login.
  *   · owner        — tags: text + Slack; a video waiting on review: bell only

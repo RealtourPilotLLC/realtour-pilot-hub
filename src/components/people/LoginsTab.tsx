@@ -16,7 +16,7 @@ export async function LoginsTab({ show, me }: { show: PeopleTab[]; me: CurrentUs
     prisma.appUser.findMany({ orderBy: [{ status: "asc" }, { name: "asc" }] }),
     // Team cards (Oct 30 2026): the Slack ID, phone, clock and editor desk the
     // hub reaches someone by. Linked by id, else matched on email.
-    prisma.teamMember.findMany({ select: { id: true, name: true, email: true, slackId: true, phone: true, timezone: true, editorKey: true } }),
+    prisma.teamMember.findMany({ select: { id: true, name: true, email: true, slackId: true, phone: true, timezone: true, location: true, editorKey: true } }),
     editorPools(),
   ]);
   const cardFor = (u: { teamMemberId: string | null; email: string }) =>
@@ -35,7 +35,7 @@ export async function LoginsTab({ show, me }: { show: PeopleTab[]; me: CurrentUs
       isSelf: u.id === me?.id,
       team: (() => {
         const c = cardFor(u);
-        return c ? { name: c.name, slackId: c.slackId, phone: c.phone, timezone: c.timezone, editorKey: c.editorKey } : null;
+        return c ? { name: c.name, slackId: c.slackId, phone: c.phone, timezone: c.timezone, location: c.location, editorKey: c.editorKey } : null;
       })(),
       lanes: (() => {
         const key = cardFor(u)?.editorKey;

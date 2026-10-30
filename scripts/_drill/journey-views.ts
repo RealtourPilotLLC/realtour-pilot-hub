@@ -160,7 +160,7 @@ async function main() {
     select: { id: true },
   });
   const john = await prisma.teamMember.create({
-    data: { name: "John Mark", email: "john@drill.invalid", role: "EDITOR", payPercent: 0.3, payFloor: 50 },
+    data: { name: "Jhon Mark", email: "john@drill.invalid", role: "EDITOR", payPercent: 0.3, payFloor: 50 },
     select: { id: true },
   });
 
@@ -309,7 +309,7 @@ async function main() {
     data: {
       projectId: P2.id, deliverableId: reel2.id, slot: 1, round: 2, kind: "video", source: "upload",
       status: "CHANGES_REQUESTED", decidedAt: ago(2 * HOUR), decidedBy: "Jordan",
-      submittedByKey: "john", submittedByName: "John Mark", fileName: "slot1-v2.mp4",
+      submittedByKey: "john", submittedByName: "Jhon Mark", fileName: "slot1-v2.mp4",
     },
   });
   const sweep2b = await sweepOutputUnits({ max: 200 });
@@ -457,7 +457,7 @@ async function main() {
     data: {
       projectId: M.id, deliverableId: mReel.id, slot: 1, round: 1, kind: "video", source: "upload",
       status: "CHANGES_REQUESTED", decidedAt: ago(DAY), decidedBy: "Jordan",
-      submittedByKey: "john", submittedByName: "John Mark", fileName: "matlack-v1.mp4",
+      submittedByKey: "john", submittedByName: "Jhon Mark", fileName: "matlack-v1.mp4",
     },
     select: { id: true },
   });
@@ -542,7 +542,7 @@ async function main() {
 
   // (b) THE REEL IS IN REVISION — everywhere.
   ok("the per-video row says the reel is back with the editor", outs5.some((o) => o.state === "in_revisions"), outs5.map((o) => o.state).join(","));
-  ok("the brief puts the next move on the editor who has it", brief?.owner.who === "John Mark" && brief?.owner.whose === "editor", `${brief?.owner.who}/${brief?.owner.whose}`);
+  ok("the brief puts the next move on the editor who has it", brief?.owner.who === "Jhon Mark" && brief?.owner.whose === "editor", `${brief?.owner.who}/${brief?.owner.whose}`);
   ok("…and asks for the next version, not a verdict and not a send", /next version/i.test(brief?.nextAction ?? ""), brief?.nextAction ?? "");
   ok("the Editing Room row reads Revisions", qRow?.status === "Revisions", qRow?.status ?? "");
   ok("Kyle's board calls the blocker a revision", bJob?.blocker === "revision", `${bJob?.blocker} / ${bJob?.blockerLabel}`);

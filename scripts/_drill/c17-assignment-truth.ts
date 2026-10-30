@@ -41,7 +41,7 @@ async function main() {
     c.ok("outside vendor remains assigned outside the in-house queue", row(ids.vendor)?.assignmentState === "assigned" && row(ids.vendor)?.editorKey === "external_agency");
     const home = await opsExceptionsBoard();
     const gap = (id: string) => home.rows.find((r) => r.id === `unassigned:${id}`);
-    c.ok("Home explains a routing suggestion instead of claiming an owner", /Routing suggests John Mark/.test(gap(ids.predicted)?.why ?? "") && gap(ids.predicted)?.owner === "Kyle");
+    c.ok("Home explains a routing suggestion instead of claiming an owner", /Routing suggests Jhon Mark/.test(gap(ids.predicted)?.why ?? "") && gap(ids.predicted)?.owner === "Kyle");
     c.ok("Home does not ask to assign a saved task, project editor or vendor", !gap(ids.task) && !gap(ids.project) && !gap(ids.vendor));
     c.ok("Home still lists a deliberate manual unassignment", !!gap(ids.manual));
     const predictedBrief = await projectBrief(ids.predicted);

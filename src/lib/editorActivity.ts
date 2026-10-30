@@ -37,7 +37,7 @@ import { DESK_EDITOR_KEYS, workClock, type DeskItem, type WorkingNow } from "@/l
 //   E5 message  ProjectMessage whose authorId is the editor's TeamMember,
 //               resolved with the SAME three rungs postProjectMessage uses to
 //               stamp it (linked id → exact name → active roster email). Never
-//               `contains`: "Mark" must not become John Mark.
+//               `contains`: "Mark" must not become Jhon Mark.
 //
 // WHAT DOES NOT, on purpose (drill-asserted): opening a page or AutoRefresh;
 // ThreadRead (reading a chat); the Dropbox folder sweep (source "folder");

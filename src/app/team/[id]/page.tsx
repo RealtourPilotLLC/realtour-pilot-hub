@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { BackLink } from "@/components/ui/BackLink";
 import { Avatar } from "@/components/ui/Avatar";
+import { teamPhotoSrc } from "@/lib/teamPhoto";
 import { Badge } from "@/components/ui/Badge";
 import { TeamTextComposer } from "@/components/team/TeamTextComposer";
 import { PaySettings } from "@/components/team/PaySettings";
@@ -64,7 +65,7 @@ export default async function TeamMemberPage({ params }: { params: Promise<{ id:
       <div className="border-b border-border px-4 py-4 sm:px-6">
         <BackLink href="/team" label="All team" className="mb-3" />
         <div className="flex flex-wrap items-center gap-4">
-          <Avatar name={member.name} size={56} color={member.avatarColor} />
+          <Avatar name={member.name} src={teamPhotoSrc(member)} size={56} color={member.avatarColor} />
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-2xl font-semibold tracking-tight">{member.name}</h1>

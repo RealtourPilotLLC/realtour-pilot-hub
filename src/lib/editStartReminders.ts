@@ -20,11 +20,11 @@ import { escapeSlack } from "@/lib/text";
 // revision reminder (lib/revisionReminders), which already pings them daily.
 // WHEN: the job is late, or due within REMIND_DUE_WITHIN_HOURS, or its
 // footage has been ready REMIND_READY_FOR_HOURS with no Start. Thresholds from
-// the live data on Oct 29 2026 (45 days): John Mark's median from handoff to
+// the live data on Oct 29 2026 (45 days): Jhon Mark's median from handoff to
 // his first Start was 86 h and Kim's 222 h, and 41 of 167 versions were sent
 // with no Start at all, so "ready four days" catches the forgotten ones
 // without pinging the day a job lands.
-// HOURS: weekdays, 9 AM to 6 PM Eastern: the hours Kim and John Mark actually
+// HOURS: weekdays, 9 AM to 6 PM Eastern: the hours Kim and Jhon Mark actually
 // press Start and send (Manila nights). The staff bridge still holds anything
 // inside a quiet time saved on their card.
 // HOW OFTEN: once per job per Eastern day (the bell row's dedupeKey is the
@@ -33,7 +33,7 @@ import { escapeSlack } from "@/lib/text";
 // a client. It changes nothing: Start is still theirs to press.
 // ---------------------------------------------------------------------------
 
-/** The editors reminded: every current in-house video editor (Kim, John Mark
+/** The editors reminded: every current in-house video editor (Kim, Jhon Mark
  *  and anyone onboarded on People since Oct 30 2026), read when the run starts. */
 export const startRemindEditors = (): string[] => videoEditorKeys();
 export const REMIND_DUE_WITHIN_HOURS = 48;
@@ -84,7 +84,7 @@ export function startReminderLine(j: Pick<StartReminderJob, "street" | "dueISO" 
   return `Press Start on ${j.street} when you begin. ${why}, and nobody has pressed Start on it. The brief opens when you press Start.`;
 }
 
-/** Every job on Kim's and John Mark's desks, with what the reminder needs. Read-only. */
+/** Every job on Kim's and Jhon Mark's desks, with what the reminder needs. Read-only. */
 export async function startReminderJobs(): Promise<StartReminderJob[]> {
   const excludeClientIds = await syntheticClientIds();
   const { notDone } = await buildEditorQueue({ excludeClientIds });

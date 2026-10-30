@@ -197,7 +197,7 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
   return {
     ok: true,
     message: unassign
-      ? "Unassigned — it's off John's and Kim's queues and waiting in “Needs assigning”."
+      ? "Unassigned — it's off every editor's queue and waiting in “Needs assigning”."
       : external
         ? // An upcoming job has no edit task to carry the agency's name yet,
           // so all we can truthfully record is "not one of ours". Say that
@@ -234,7 +234,7 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
 // ---------------------------------------------------------------------------
 
 const QUEUE_STATUSES = ["SHOT", "EDITING", "REVIEW", "REVISION"];
-// The video editors a job can be put on: Kim, John Mark and everyone
+// The video editors a job can be put on: Kim, Jhon Mark and everyone
 // onboarded on People (lib/editors videoEditorKeys, read at call time). The
 // outside shops (OUTSIDE_EDITOR_KEYS) are not among them: work never
 // AUTO-routes there, a human hands it over (Jordan, Sep 7).

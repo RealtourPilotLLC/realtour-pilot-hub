@@ -94,7 +94,7 @@ export async function recordAssetDependency(input: AssetDependencyInput): Promis
   if (!need) return { ok: false, message: "Say what file is needed.", created: 0 };
   const ownerKey = input.interpretation?.what ? input.interpretation.ownerKey || null : null;
   if (ownerKey && !(INTERPRETER_KEYS as readonly string[]).includes(ownerKey)) {
-    return { ok: false, message: "Pick who works from the file: Jordan, Kyle, Kim or John Mark.", created: 0 };
+    return { ok: false, message: "Pick who works from the file: Jordan, Kyle, Kim or Jhon Mark.", created: 0 };
   }
   const p = await prisma.project.findUnique({ where: { id: input.projectId }, select: { id: true, title: true, clientId: true } });
   if (!p) return { ok: false, message: "That job no longer exists.", created: 0 };

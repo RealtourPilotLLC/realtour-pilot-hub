@@ -184,7 +184,7 @@ export default async function EditBriefPage({
 
   // THE BRIEF OPENS ON START, FOR THE EDITORS (Jordan, Oct 29 2026: "to see
   // all details and instructions, they press start"; lib/editorBriefGate).
-  // Kim and John Mark get the short summary and Start until their work on
+  // Kim and Jhon Mark get the short summary and Start until their work on
   // this job is active or paused; sending a video for review closes it again.
   // Returned BEFORE any detail is read, so none is sent. Everyone else, and a
   // started editor, gets the whole page below as before.
@@ -930,7 +930,7 @@ export default async function EditBriefPage({
   // task an approved, submitted and delivered cut has already closed. Ten doors
   // rendered on the real board and the server would take two; the other eight
   // refused the editor AFTER they had picked the file and typed their reason,
-  // John Mark's six own submissions among them. The server now also admits the
+  // Jhon Mark's six own submissions among them. The server now also admits the
   // editor whose key is on the approved version, and this asks it per row so
   // the two sets are the same set. One cheap call per approved row: owner/admin
   // answers without touching the database at all.
@@ -951,7 +951,7 @@ export default async function EditBriefPage({
   );
   const shownCutRows = cutRows.filter((row) => `${row.deliverableId}:${row.slot}` === selectedKey).map((row) => ({ ...row, canReplace: replaceableCuts.has(`${row.deliverableId}:${row.slot}`) }));
   // THE EDITOR'S OWN CLOCK (Sep 28): their Start / Pause read in their own
-  // timezone (Manila for Kim and John Mark); everyone else reads Eastern.
+  // timezone (Manila for Kim and Jhon Mark); everyone else reads Eastern.
   const deskTz =
     viewer?.role === "EDITOR" && viewer.editorKey ? (editorMeta(viewer.editorKey)?.tz ?? DEFAULT_EDITOR_TZ) : "America/New_York";
   // "SENT. ARE YOU STILL WORKING ON THIS JOB?" (Jordan, Sep 28). Handing a
@@ -990,7 +990,7 @@ export default async function EditBriefPage({
 
   // =========================================================================
   // ONE PAGE, IN THE ORDER THE WORK HAPPENS (Oct 15 2026, the brief audit,
-  // approved by Jordan). Kim and John Mark open the brief 300 times a month and
+  // approved by Jordan). Kim and Jhon Mark open the brief 300 times a month and
   // a third of their versions come back, so the page reads top to bottom as
   // the job goes:
   //   1. THE JOB BAR — client · street, which video (only when there are
@@ -1031,7 +1031,7 @@ export default async function EditBriefPage({
   const listingFlow = isVideoJob ? listingFlowFor(styleKey, { monthly: !!project.contentMonthId }) : null;
   const videoTitle = selectedBrief?.topicTitle || selectedBrief?.format || selectedSlot?.deliverableLabel || styleType?.name || "Video";
   const fmtDue = (d: Date, tz: string) => d.toLocaleString("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  // ONE deadline, in the reader's own clock (Kim and John Mark are in Manila):
+  // ONE deadline, in the reader's own clock (Kim and Jhon Mark are in Manila):
   // "Sat, Oct 17, 5:00 AM your time"; the office reads Eastern.
   const dueLine = selectedDue ? (deskTz === ET ? `${fmtDue(selectedDue, ET)} ET` : `${fmtDue(selectedDue, deskTz)} your time`) : null;
   const dueWhy = !selectedPromise && reopened ? (reopened.at ? reopened.words : "Reopened. No due date yet: Kyle sets it.") : null;

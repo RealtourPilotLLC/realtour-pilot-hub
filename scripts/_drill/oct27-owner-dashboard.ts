@@ -157,7 +157,7 @@ async function main() {
     jobRows = [
       job(pRaw.id, "20 Raw St", { photos: { label: "Not uploaded", tone: "waiting" } as JobRow["photos"] }),
       job(pRawNobody.id, "21 Lost Card Ln", { photos: { label: "Not uploaded", tone: "waiting" } as JobRow["photos"] }),
-      job(pLateJohn.id, "30 Late Rd", { video: { label: "Changes · John", tone: "late" } as JobRow["video"] }),
+      job(pLateJohn.id, "30 Late Rd", { video: { label: "Changes · Jhon", tone: "late" } as JobRow["video"] }),
     ];
     const vrow = (o: Partial<VideoRow> & { key: string; projectId: string; street: string; lane: VideoRow["lane"] }) => ({ submissionId: null, clientName: "Real Agent", label: "Listing video", round: 2, stage: "Editing", cutStatus: null, sinceISO: new Date(T.getTime() - 40 * H).toISOString(), promiseISO: null, promiseWords: "", late: false, dueToday: false, lateHours: null, approvedAtISO: null, deliveredAtISO: null, deliveredBy: null, push: null, heldWhy: null, reviewHref: null, aryeoUrl: null, waitingSinceISO: null, send: null, heldRender: null, ...o }) as VideoRow;
     const lateBy = (h: number) => ({ promiseISO: new Date(T.getTime() - h * H).toISOString(), late: true, lateHours: h });
@@ -171,7 +171,7 @@ async function main() {
       review: [vrow({ key: "v-review", projectId: pReview.id, street: "40 Review Way", lane: "review", cutStatus: "PENDING", ...lateBy(4) })],
       sending: [vrow({ key: "v-send", projectId: pSend.id, street: "50 Send Blvd", lane: "sending", cutStatus: "APPROVED", approvedAtISO: new Date(T.getTime() - 9 * H).toISOString(), waitingSinceISO: new Date(T.getTime() - 9 * H).toISOString(), ...lateBy(6) })],
     };
-    reviewPending = [{ id: "cut-27", projectId: pReview.id, street: "40 Review Way", clientName: "Real Agent", round: 1, fileName: "v1.mp4", editorName: "John Mark", createdAt: new Date(T.getTime() - 26 * H).toISOString(), reviewer: { id: jamesTm.id, name: "James Livingston" } }];
+    reviewPending = [{ id: "cut-27", projectId: pReview.id, street: "40 Review Way", clientName: "Real Agent", round: 1, fileName: "v1.mp4", editorName: "Jhon Mark", createdAt: new Date(T.getTime() - 26 * H).toISOString(), reviewer: { id: jamesTm.id, name: "James Livingston" } }];
     exceptionRows = [{ id: "ex-27", kind: "unassigned", severity: "high", title: "60 Nobody Ln", why: "A video is owed and no editor holds it", owner: "Kyle", nextAction: "Assign an editor", href: `/projects/${pNoEditor.id}`, ageDays: 2 }];
     // A premium reel shooting within the day with no script: Jordan's listing script.
     const premium = (pid: string) => prisma.deliverable.create({ data: { projectId: pid, type: "SOCIAL_REEL", label: "Premium Social Media Reel", productTitle: "Social Influencer", videoStyle: "premium_social_reel" } as never });
@@ -188,8 +188,8 @@ async function main() {
     const link = (x: Bottleneck | undefined, label: string) => (x?.actions.find((a) => a.kind === "link" && a.label === label) as { href: string } | undefined)?.href;
     const john = b(pLateJohn.id, "editing");
     c.ok("a late edit: Request update (to James, the creative manager, for a recovery plan) and Reassign (the job's Team section)", labels(john) === "Request update|Reassign" && ask(john)?.seed.assigneeKey === "james" && link(john, "Reassign") === `/projects/${pLateJohn.id}#team` && john?.nextStep === "Recovery plan and new ETA", `${labels(john)} · ${ask(john)?.seed.assigneeKey} · ${link(john, "Reassign")}`);
-    c.ok("…the owner is the editor by name (the board's chip): John", john?.owner === "John", john?.owner);
-    c.ok("…no chip, but an open edit card: the editor it names (John), never 'The editor'", b(pLateCard.id, "editing")?.owner === "John", b(pLateCard.id, "editing")?.owner);
+    c.ok("…the owner is the editor by name (the board's chip): Jhon", john?.owner === "Jhon", john?.owner);
+    c.ok("…no chip, but an open edit card: the editor it names (Jhon), never 'The editor'", b(pLateCard.id, "editing")?.owner === "Jhon", b(pLateCard.id, "editing")?.owner);
     c.ok("…nobody named at all: the creative manager answers for it (James), never 'The editor'", b(pLateNobody.id, "editing")?.owner === "James", b(pLateNobody.id, "editing")?.owner);
     const raw = b(pRaw.id, "capture");
     c.ok("a missing upload: Remind photographer, to Harrison (his job), owner Harrison", labels(raw) === "Remind photographer" && ask(raw)?.seed.assigneeKey === "harrison" && raw?.owner === "Harrison" && /Upload the photos: 20 Raw St/.test(ask(raw)?.seed.title ?? ""), `${labels(raw)} · ${raw?.owner} · ${ask(raw)?.seed.assigneeKey}`);

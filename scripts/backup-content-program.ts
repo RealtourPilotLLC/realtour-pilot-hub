@@ -137,6 +137,10 @@ export const OPERATIONAL_CORE = [
   // Oct 28 2026: the Review Room's note edits and deletes (with the full copy
   // Undo restores), and the team channel with message files. Operational.
   "NoteChange", "TeamChannelMessage", "MessageAttachment",
+  // Oct 29 2026: the steps of a client complaint plan. Operational.
+  "ClientIssueStep",
+  // Oct 30 2026: each teammate's profile photo (/profile). People, operational.
+  "TeamPhoto",
 ] as const;
 
 /** Schema models in neither list, and listed names the schema does not have. */

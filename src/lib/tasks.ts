@@ -3247,7 +3247,7 @@ export async function ensureEditorLoginNudge(editorKey: string): Promise<void> {
         summary:
           `Work keeps getting pinged to ${name}'s bell, but no Hub login exists for editor key "${editorKey}" — everything addressed to them is invisible in-app (they're reached only by Slack/SMS/ops relay for now). ` +
           `Add them on People → Logins with the Editor role (or press "Set up as editor" on their login) so the key wires up` +
-          (editorKey === "john" ? ", and add John Mark's phone to his Team row so texts can reach him too." : "."),
+          (editorKey === "john" ? ", and add Jhon Mark's phone to his Team row so texts can reach him too." : "."),
         reasonCreated: "Editor-addressed notification landed with no editor login to see it",
         source: "system",
         priority: "HIGH",
@@ -3525,7 +3525,7 @@ export async function mintEditTask(projectId: string): Promise<void> {
  * override's reopen and the first pinned pick itself all set that flag). So
  * picking John on the project page of a job Kim held by hand left the card
  * Kim's, Kim ACTIVE with a live Start button, and John refused "isn't assigned
- * to you" — while the page said John Mark. The pick is the office's word and
+ * to you" — while the page said Jhon Mark. The pick is the office's word and
  * beats an older hand assignment, exactly as the reassign does.
  *
  * In the Start's lock order (editorWork.underJobLock) because it updates two

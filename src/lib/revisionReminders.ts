@@ -29,7 +29,7 @@ import { dayWords, HOUR_MS, waitedDays, type RevisionAsk } from "@/lib/openRevis
 //   · the video's own owner (DeliverableOutput.ownerKey) when it names one of
 //     our editors or the agency, else the row's editor — the same ladder the
 //     queue row shows;
-//   · Kim or John Mark: their bell row, and their Slack / text on their own
+//   · Kim or Jhon Mark: their bell row, and their Slack / text on their own
 //     "Job pings" switch, through the existing staff bridge (notifyInApp) —
 //     held only by a quiet time saved on their card;
 //   · Luma Visuals' job: Kyle, to relay it (they have no login);

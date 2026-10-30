@@ -124,13 +124,13 @@ async function main() {
   const client = await prisma.client.create({ data: { name: "Drill Agent" }, select: { id: true } });
   const harrison = await prisma.teamMember.create({ data: { name: "Harrison Wells", email: "harrison@drill.invalid", role: "PHOTOGRAPHER" }, select: { id: true } });
   const kimTm = await prisma.teamMember.create({ data: { name: "Kim Miguel", email: "kim@drill.invalid", role: "EDITOR" }, select: { id: true } });
-  const johnTm = await prisma.teamMember.create({ data: { name: "John Mark", email: "john@drill.invalid", role: "EDITOR" }, select: { id: true } });
+  const johnTm = await prisma.teamMember.create({ data: { name: "Jhon Mark", email: "john@drill.invalid", role: "EDITOR" }, select: { id: true } });
   const mkUser = (email: string, name: string, role: string, editorKey: string | null = null) =>
     prisma.appUser.create({ data: { email, name, role, status: "ACTIVE", editorKey }, select: { id: true, email: true, name: true, role: true } });
   const jordan = await mkUser("jordan@drill.invalid", "Jordan Spackman", "OWNER");
   const kyle = await mkUser("kyle@drill.invalid", "Kyle Cabrera", "ADMIN");
   const kim = await mkUser("kimm@drill.invalid", "Kim Miguel", "EDITOR", "kim");
-  const john = await mkUser("johnm@drill.invalid", "John Mark", "EDITOR", "john");
+  const john = await mkUser("johnm@drill.invalid", "Jhon Mark", "EDITOR", "john");
   const shooter = await mkUser("harrison@drill.invalid", "Harrison Wells", "PHOTOGRAPHER");
   type U = { id: string; email: string; name: string | null; role: string };
   const as = (u: U, actingAs?: U) => setSession({ uid: u.id, email: u.email, role: u.role, name: u.name ?? undefined, ...(actingAs ? { actingAs: actingAs.id } : {}) });
@@ -418,7 +418,7 @@ async function main() {
   c.ok("John's J1 stays ACTIVE with the SAME activeSince — Kim's start never touches John", ij?.state === "ACTIVE" && ij.activeSince!.getTime() === sinceJ);
   c.ok("Kim's own K1 paused; her J1 item carries the video she picked", ikK1?.state === "PAUSED" && ik?.state === "ACTIVE" && ik.outputId === outs[1].id);
   const rowJ1 = await rowOf(J1.id);
-  c.ok("the row reads \"In editing\" naming both", rowJ1?.status === "In editing" && rowJ1.work.active.length === 2 && /Kim/.test(rowJ1.workChip ?? "") && /John Mark/.test(rowJ1.workChip ?? ""), `${rowJ1?.status} · ${rowJ1?.workChip}`);
+  c.ok("the row reads \"In editing\" naming both", rowJ1?.status === "In editing" && rowJ1.work.active.length === 2 && /Kim/.test(rowJ1.workChip ?? "") && /Jhon Mark/.test(rowJ1.workChip ?? ""), `${rowJ1?.status} · ${rowJ1?.workChip}`);
   const J2 = await mkJob({ street: "3 John Only Way", status: "SHOT", editor: "john" });
   const kJ2 = await work.startEditing({ projectId: J2.id, requestId: "kim-J2" });
   c.ok("Kim (EDITOR) starting John's job is refused", !kJ2.ok && (await item("kim", J2.id)) === null, kJ2.message);
@@ -428,13 +428,13 @@ async function main() {
   const oJ2 = await work.startEditing({ projectId: J2.id, requestId: "office-J2" });
   const evO = await prisma.editorWorkEvent.findFirst({ where: { projectId: J2.id, kind: "START" } });
   c.ok("the office starts J2 for John: onBehalf, actor = Jordan (OWNER)", oJ2.ok && evO?.onBehalf === true && evO.actorName === "Jordan Spackman" && evO.actorRole === "OWNER" && evO.editorKey === "john", oJ2.message);
-  c.ok("the timeline names both people and says it was a correction", (await lines(J2.id, "Jordan Spackman started editing for John Mark (office correction)")) === 1);
-  c.ok("the bell says who did it", (await prisma.notification.count({ where: { title: { contains: "Jordan Spackman started 3 John Only Way for John Mark" } } })) === 1);
+  c.ok("the timeline names both people and says it was a correction", (await lines(J2.id, "Jordan Spackman started editing for Jhon Mark (office correction)")) === 1);
+  c.ok("the bell says who did it", (await prisma.notification.count({ where: { title: { contains: "Jordan Spackman started 3 John Only Way for Jhon Mark" } } })) === 1);
   c.ok("John's J1 was auto-paused by that start (one active per editor, whoever pressed)", (await item("john", J1.id))?.state === "PAUSED" && (await activeOf("john")).length === 1);
   await as(kyle);
   const kP = await work.pauseEditing({ projectId: J2.id, requestId: "kyle-pause-J2" });
   const evK = await prisma.editorWorkEvent.findFirst({ where: { projectId: J2.id, kind: "PAUSE" } });
-  c.ok("Kyle (ADMIN) pauses J2 for John: recorded as Kyle, on John's behalf", kP.ok && evK?.onBehalf === true && evK.actorName === "Kyle Cabrera" && evK.actorRole === "ADMIN" && (await lines(J2.id, "Kyle Cabrera paused John Mark's editing (office correction).")) === 1, kP.message);
+  c.ok("Kyle (ADMIN) pauses J2 for John: recorded as Kyle, on John's behalf", kP.ok && evK?.onBehalf === true && evK.actorName === "Kyle Cabrera" && evK.actorRole === "ADMIN" && (await lines(J2.id, "Kyle Cabrera paused Jhon Mark's editing (office correction).")) === 1, kP.message);
   const X = await mkJob({ street: "4 Agency Pl", status: "SHOT", editor: "external_agency" });
   const oX = await work.startEditing({ projectId: X.id, requestId: "office-X" });
   c.ok("a vendor (the external agency — no login) can't be marked active", !oX.ok && (await prisma.editorWorkItem.count({ where: { projectId: X.id } })) === 0, oX.message);
@@ -490,7 +490,7 @@ async function main() {
   await as(jordan);
   const reas = await editing.setEditVideoEditor(M.id, "john");
   const iM2 = await item("kim", M.id);
-  c.ok("reassigned to John: Kim's item CLOSED(REASSIGNED), recorded as the office", reas.ok && iM2?.state === "CLOSED" && iM2.closeReason === "REASSIGNED" && (await lines(M.id, "reassigned to John Mark by Jordan Spackman")) === 1, reas.message);
+  c.ok("reassigned to John: Kim's item CLOSED(REASSIGNED), recorded as the office", reas.ok && iM2?.state === "CLOSED" && iM2.closeReason === "REASSIGNED" && (await lines(M.id, "reassigned to Jhon Mark by Jordan Spackman")) === 1, reas.message);
   c.ok("John is NOT started on it", (await item("john", M.id)) === null);
 
   const N = await mkJob({ street: "7 November Ct", status: "SHOT", editor: "kim" });
@@ -976,7 +976,7 @@ async function main() {
       c.ok(`old (${PREV}): the restore wrote the removal's record over a card that had since gone to John — back to Kim`, o3.restore.ok && o3.card.assignedKey === "kim", `${o3.restore.message} · card ${o3.card.assignedKey}`);
       const n3 = await cardMoved(editing, "73 Card Moved Rd");
       c.ok("new: the restore brings the job back but leaves the changed card John's, and says so",
-        n3.restore.ok && n3.card.assignedKey === "john" && n3.card.status === "OPEN" && !isRemoved(n3.marker) && /changed after it was taken off \(it's John Mark's now\), so it was left as it is/.test(n3.restore.message),
+        n3.restore.ok && n3.card.assignedKey === "john" && n3.card.status === "OPEN" && !isRemoved(n3.marker) && /changed after it was taken off \(it's Jhon Mark's now\), so it was left as it is/.test(n3.restore.message),
         `${n3.restore.message} · card ${n3.card.assignedKey}/${n3.card.status}`);
       const n3b = await (async () => {
         const j = await mkJob({ street: "74 Untouched Restore Rd", status: "SHOT", editor: "kim" });

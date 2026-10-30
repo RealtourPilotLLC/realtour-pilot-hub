@@ -1460,7 +1460,7 @@ export async function assignMember(
   // route rule never moves a card a human hand-assigned, and most live cards
   // are (a queue add, a reassign, the first pinned pick itself). Picking John
   // on the project page of a job Kim held by hand left the card Kim's, Kim
-  // ACTIVE and startable, John refused, while the page said John Mark. Now it
+  // ACTIVE and startable, John refused, while the page said Jhon Mark. Now it
   // is the same writer as the Editing Room's reassign (tasks.moveLiveVideoWork:
   // the edit card and the video-lane revisions, pinned, in the Start's lock
   // order), then whoever lost the job is closed as reassigned, recorded as the

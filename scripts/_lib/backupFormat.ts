@@ -61,9 +61,12 @@ export type HeaderRead = {
 // ---- JSON -----------------------------------------------------------------
 
 /** What every writer passes to JSON.stringify: BigInt as text, and bytes as
- *  Postgres hex so a restore can cast them back (no model has Bytes today). */
+ *  Postgres hex so a restore can cast them back. Prisma 6 hands Bytes over as
+ *  a Uint8Array (TeamPhoto, Oct 30 2026), which has no toJSON of its own; a
+ *  Node Buffer arrives already turned into {type:"Buffer",data}. */
 export function jsonReplacer(_k: string, v: unknown): unknown {
   if (typeof v === "bigint") return v.toString();
+  if (v instanceof Uint8Array) return `\\x${Buffer.from(v).toString("hex")}`;
   if (v && typeof v === "object" && (v as { type?: unknown }).type === "Buffer" && Array.isArray((v as { data?: unknown }).data)) {
     return `\\x${Buffer.from((v as { data: number[] }).data).toString("hex")}`;
   }

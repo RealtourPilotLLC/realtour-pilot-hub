@@ -39,7 +39,7 @@ export const dynamic = "force-dynamic";
 //     it set up in Slack"): Queue | Upcoming edits | Delivered, one row per
 //     job. The old SLA-panel + tracker-spreadsheet stack is gone — per-job
 //     controls (reassign, review, chat) live on /edit/<id>.
-//   · EDITOR (Kim / John Mark) → the SAME queue (Jordan, Aug 27: "I want them
+//   · EDITOR (Kim / Jhon Mark) → the SAME queue (Jordan, Aug 27: "I want them
 //     to see the same queue I do, just with the jobs assigned to them and no
 //     editor section"), scoped to rows whose resolved editor is them. Their
 //     pings stay in the bell (Jordan, Aug 27: no For-you card here). The old

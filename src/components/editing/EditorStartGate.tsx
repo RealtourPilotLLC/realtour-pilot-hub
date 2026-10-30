@@ -9,7 +9,7 @@ import type { WorkBar } from "@/lib/editorWork";
 // ---------------------------------------------------------------------------
 // THE SUMMARY BEFORE START (Jordan, Oct 29 2026: "they see a brief project
 // summary, and to see all details and instructions, they press start").
-// What Kim or John Mark sees on /edit/<id> until they press Start: the
+// What Kim or Jhon Mark sees on /edit/<id> until they press Start: the
 // client, the property, each video with its kind, due date and state, and the
 // Start button (the same WorkStateBar the brief uses, so the one-job rule and
 // the refusals are the server's). Start refreshes the page into the whole

@@ -76,7 +76,7 @@ export type PhotographerJob = {
 // through to the routing rules when no task and no editor of record says
 // otherwise, and `auto` is the row's own marker for exactly that — the office
 // table draws it differently for the same reason. This board printed it as
-// "with John Mark", which on the live board was 8 of Harrison's 18 rows,
+// "with Jhon Mark", which on the live board was 8 of Harrison's 18 rows,
 // telling a photographer their job is with an editor nobody has handed it to.
 // An honest blank is worth more than a name here: the only thing they do with
 // it is decide whom they are answering.

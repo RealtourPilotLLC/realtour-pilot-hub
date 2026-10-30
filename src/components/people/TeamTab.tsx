@@ -1,7 +1,9 @@
 import Link from "next/link";
-import { Mail, Phone } from "lucide-react";
+import { Clock, Mail, MapPin, Phone } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
+import { teamPhotoSrc } from "@/lib/teamPhoto";
+import { zonedTime } from "@/lib/datetime";
 import { Badge } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
 import { ROLE_META } from "@/lib/pipeline";
@@ -90,7 +92,7 @@ export async function TeamTab({ show, canEditSlack, showFormer = false }: { show
             return (
               <div key={m.id} className="panel-shadow rounded-2xl border bg-surface p-5">
                 <Link href={`/team/${m.id}`} className="flex min-h-11 items-center gap-3 rounded-lg hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
-                  <Avatar name={m.name} size={44} color={m.avatarColor} />
+                  <Avatar name={m.name} src={teamPhotoSrc(m)} size={44} color={m.avatarColor} />
                   <div className="min-w-0">
                     <div className="truncate font-semibold">{m.name}</div>
                     <Badge color={role.color} soft={`${role.color}1a`}>
@@ -105,6 +107,17 @@ export async function TeamTab({ show, canEditSlack, showFormer = false }: { show
                   {m.phone && (
                     <div className="flex items-center gap-2">
                       <Phone className="size-3.5" /> {m.phone}
+                    </div>
+                  )}
+                  {/* Oct 30 2026: set on their own profile (or the Team card on Logins). */}
+                  {m.location && (
+                    <div className="flex items-center gap-2">
+                      <MapPin className="size-3.5 shrink-0" /> {m.location}
+                    </div>
+                  )}
+                  {m.timezone && m.timezone !== "America/New_York" && (
+                    <div className="flex items-center gap-2">
+                      <Clock className="size-3.5 shrink-0" /> {zonedTime(new Date(), m.timezone)} their time
                     </div>
                   )}
                 </div>

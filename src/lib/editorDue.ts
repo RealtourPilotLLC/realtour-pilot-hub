@@ -8,7 +8,7 @@ import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 // THE EDIT'S DUE DATE IN EVERY "YOU HAVE WORK" MESSAGE (Oct 22 2026). Jordan:
 // "it would be helpful for the editors to know when a project is due." The
 // brief's header already counted down, but the Slack DMs and texts that tell
-// Kim and John Mark about work ("Ready for editing", "New edit", "Reassigned to
+// Kim and Jhon Mark about work ("Ready for editing", "New edit", "Reassigned to
 // you", "Task for you") never said when, and their desk list showed only the
 // day. One reading of the date, the same as the brief's header (the video
 // clock from the visit that shot it, the office's tier, then an office date

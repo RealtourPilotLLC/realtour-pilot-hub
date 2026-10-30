@@ -72,7 +72,7 @@ async function main() {
     c.ok("James completes Kim's revision (refused with the Reload message on Oct 28)", (s1 == null || s1.ok) && kimAfter?.status === "COMPLETED", JSON.stringify(s1));
     const s2 = await actions.setTaskAssignee(kimMention.id, "john");
     const mAfter = await prisma.smartTask.findUnique({ where: { id: kimMention.id } });
-    c.ok("James moves Kim's @mention to John, and it says so", s2?.ok === true && /Moved to John/.test(s2.message) && mAfter?.assignedKey === "john", JSON.stringify(s2));
+    c.ok("James moves Kim's @mention to John, and it says so", s2?.ok === true && /Moved to Jhon/.test(s2.message) && mAfter?.assignedKey === "john", JSON.stringify(s2));
     const s3 = await actions.setSmartTaskStatus(kyleQc.id, "COMPLETED");
     const qcAfter = await prisma.smartTask.findUnique({ where: { id: kyleQc.id } });
     c.ok("Kyle's QC: refused in words that name Kyle and the way up, nothing changed", s3?.ok === false && /Kyle's/.test(s3.message) && /Nothing was changed/.test(s3.message) && /Send to Jordan/.test(s3.message) && qcAfter?.status === "OPEN", JSON.stringify(s3));

@@ -2,9 +2,10 @@
 
 import { useTransition } from "react";
 import { Avatar } from "@/components/ui/Avatar";
+import { teamPhotoSrc } from "@/lib/teamPhoto";
 import { assignMember } from "@/app/actions";
 
-type Member = { id: string; name: string; avatarColor: string };
+type Member = { id: string; name: string; avatarColor: string; photoAt?: Date | string | null };
 type Role = "photographer" | "editor" | "va";
 
 const ROLES: { role: Role; label: string }[] = [
@@ -35,7 +36,7 @@ export function AssignmentPanel({
             <div key={role} className="flex items-center justify-between gap-3">
               <dt className="text-xs uppercase tracking-wide text-muted-2">{label}</dt>
               <dd className="flex items-center gap-2 text-sm">
-                {member && <Avatar name={member.name} color={member.avatarColor} size={22} />}
+                {member && <Avatar name={member.name} src={teamPhotoSrc(member)} color={member.avatarColor} size={22} />}
                 {member?.name ?? <span className="text-muted">Unassigned</span>}
               </dd>
             </div>
@@ -54,7 +55,7 @@ export function AssignmentPanel({
           <div key={role} className="flex items-center justify-between gap-3">
             <span className="text-xs uppercase tracking-wide text-muted-2">{label}</span>
             <div className="flex items-center gap-2">
-              {member && <Avatar name={member.name} color={member.avatarColor} size={22} />}
+              {member && <Avatar name={member.name} src={teamPhotoSrc(member)} color={member.avatarColor} size={22} />}
               <select
                 value={value}
                 disabled={pending}

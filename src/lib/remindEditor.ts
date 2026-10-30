@@ -21,7 +21,7 @@ import { prisma } from "@/lib/prisma";
 //     on, or a video not cut yet: the edit card's editor;
 //   · not shot yet, the footage not in yet, nobody on it, an outside agency
 //     with no hub login, or yourself: no button, the row says what it waits on.
-// Only the in-house editors with a roster row (Kim, John Mark) are messaged
+// Only the in-house editors with a roster row (Kim, Jhon Mark) are messaged
 // directly; that is the same rule the daily revision reminders use
 // (revisionReminders.laneFor).
 //

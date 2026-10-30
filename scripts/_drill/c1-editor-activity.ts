@@ -166,7 +166,7 @@ async function main() {
   const client = await prisma.client.create({ data: { name: "Drill Agent" }, select: { id: true } });
   const harrison = await prisma.teamMember.create({ data: { name: "Harrison Wells", email: "harrison@drill.invalid", role: "PHOTOGRAPHER" }, select: { id: true } });
   const kimTm = await prisma.teamMember.create({ data: { name: "Kim Miguel", email: "kim@drill.invalid", role: "EDITOR" }, select: { id: true } });
-  const johnTm = await prisma.teamMember.create({ data: { name: "John Mark", email: "john@drill.invalid", role: "EDITOR" }, select: { id: true } });
+  const johnTm = await prisma.teamMember.create({ data: { name: "Jhon Mark", email: "john@drill.invalid", role: "EDITOR" }, select: { id: true } });
   // A lookalike: "Kim" is inside her name. The chat rungs are exact, so her
   // messages must never be Kim's.
   const kimberly = await prisma.teamMember.create({ data: { name: "Kimberly Vance", email: "kimberly@drill.invalid", role: "VA" }, select: { id: true } });
@@ -174,7 +174,7 @@ async function main() {
     prisma.appUser.create({ data: { email, name, role, status: "ACTIVE", editorKey, teamMemberId }, select: { id: true, email: true, name: true, role: true } });
   const jordan = await mkUser("jordan@drill.invalid", "Jordan Spackman", "OWNER");
   const kim = await mkUser("kimm@drill.invalid", "Kim Miguel", "EDITOR", "kim", kimTm.id);
-  const john = await mkUser("johnm@drill.invalid", "John Mark", "EDITOR", "john", johnTm.id);
+  const john = await mkUser("johnm@drill.invalid", "Jhon Mark", "EDITOR", "john", johnTm.id);
   type U = { id: string; email: string; name: string | null; role: string };
   const as = (u: U) => setSession({ uid: u.id, email: u.email, role: u.role, name: u.name ?? undefined });
 
@@ -239,7 +239,7 @@ async function main() {
       select: { id: true },
     });
     const ev = (kind: string, when: Date) =>
-      prisma.editorWorkEvent.create({ data: { itemId: it.id, editorKey: "john", projectId: Jn.id, kind, at: when, actorUserId: john.id, actorName: "John Mark", actorRole: "EDITOR", onBehalf: false, reason: kind === "SUBMIT" ? "SUBMITTED" : null } });
+      prisma.editorWorkEvent.create({ data: { itemId: it.id, editorKey: "john", projectId: Jn.id, kind, at: when, actorUserId: john.id, actorName: "Jhon Mark", actorRole: "EDITOR", onBehalf: false, reason: kind === "SUBMIT" ? "SUBMITTED" : null } });
     await ev("START", d26(15, 0));
     await ev("SUBMIT", d26(15, 25));
     await ev("START", d26(16, 41));
@@ -493,7 +493,7 @@ async function main() {
   });
   await included("John's message through the NAME rung (login not linked; exact roster name)", "posted in the chat on", async () => {
     await prisma.appUser.update({ where: { id: john.id }, data: { teamMemberId: null } });
-    const m = await prisma.projectMessage.create({ data: { projectId: P.id, authorId: johnTm.id, authorName: "John Mark", body: "Can take video 4", createdAt: at(16, 20) }, select: { id: true } });
+    const m = await prisma.projectMessage.create({ data: { projectId: P.id, authorId: johnTm.id, authorName: "Jhon Mark", body: "Can take video 4", createdAt: at(16, 20) }, select: { id: true } });
     return async () => {
       await prisma.projectMessage.delete({ where: { id: m.id } });
       await prisma.appUser.update({ where: { id: john.id }, data: { teamMemberId: johnTm.id } });
@@ -612,7 +612,7 @@ async function main() {
   {
     const S = await mkJob({ street: "5 Shared Ln", editor: "kim", videos: 2 });
     // John carries video 2 — how two editors share one job (holdersFor).
-    await prisma.deliverableOutput.updateMany({ where: { projectId: S.id, slot: 2 }, data: { ownerKey: "john", ownerName: "John Mark" } });
+    await prisma.deliverableOutput.updateMany({ where: { projectId: S.id, slot: 2 }, data: { ownerKey: "john", ownerName: "Jhon Mark" } });
     clockTo(at(16, 54));
     await as(john);
     const js = await work.startEditing({ projectId: S.id, requestId: "c1-john-shared" });
@@ -659,7 +659,7 @@ async function main() {
   {
     const t = textOf(get("old-panel"));
     c.ok(`1 · OLD panel (${BASE}) rendered with that data: "Kim Not on anything … Nobody has pressed Start on anything right now." — the screen Jordan read`,
-      /Working now/.test(t) && /Kim Not on anything/.test(t) && /John Mark Not on anything/.test(t) && t.includes("Nobody has pressed Start on anything right now.") && !/upload/i.test(t),
+      /Working now/.test(t) && /Kim Not on anything/.test(t) && /Jhon Mark Not on anything/.test(t) && t.includes("Nobody has pressed Start on anything right now.") && !/upload/i.test(t),
       t.slice(0, 160));
   }
   {
@@ -667,7 +667,7 @@ async function main() {
     const stale = get("panel-stale");
     const tf = textOf(fresh);
     c.ok("new panel: \"Editors today · as of 12:34pm\", Kim's evidence sentence, John \"Nothing in the hub today\"",
-      tf.includes("Editors today") && tf.includes("as of 12:34pm") && tf.includes(`Kim ${KIM_1234}`) && tf.includes("John Mark Nothing in the hub today") && !/No activity/.test(tf), tf.slice(0, 220));
+      tf.includes("Editors today") && tf.includes("as of 12:34pm") && tf.includes(`Kim ${KIM_1234}`) && tf.includes("Jhon Mark Nothing in the hub today") && !/No activity/.test(tf), tf.slice(0, 220));
     c.ok("…and \"Not on anything\" is gone from it", !/Not on anything/.test(tf));
     c.ok("…the street is a link to the job, and the amber tail is text-warning",
       fresh.includes(`href="/edit/${P.id}"`) && /text-warning">· hasn&#x27;t pressed Start today</.test(fresh));
@@ -704,7 +704,7 @@ async function main() {
   {
     const w = get("workload");
     const tw = textOf(w);
-    c.ok("Who is holding what: one line per editor — \"Kim · N to edit\" / \"nothing to edit\"", /Who is holding what/.test(tw) && /Kim · (\d+ to edit|nothing to edit)/.test(tw) && /John Mark · (\d+ to edit|nothing to edit)/.test(tw), tw.slice(0, 200));
+    c.ok("Who is holding what: one line per editor — \"Kim · N to edit\" / \"nothing to edit\"", /Who is holding what/.test(tw) && /Kim · (\d+ to edit|nothing to edit)/.test(tw) && /Jhon Mark · (\d+ to edit|nothing to edit)/.test(tw), tw.slice(0, 200));
     const how = w.indexOf(">How these numbers work</summary>");
     c.ok("…\"Work owed, not work happening now — who is on what is in Editors today, above.\" is inside \"How these numbers work\"",
       how > 0 && w.indexOf("Work owed, not work happening now — who is on what is in Editors today, above.") > how);

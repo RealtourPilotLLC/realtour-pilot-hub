@@ -107,13 +107,13 @@ async function main() {
       steps(jb.photoStepsOf({ jobStage: "REVISION_REQUESTED", shootOver: true, rawsIn: true, liveOnAryeo: true, late: false })) === "Shot:done,Edited:done,QC:done,Revisions:now,Delivered:todo" &&
       steps(jb.photoStepsOf({ jobStage: null, shootOver: false, rawsIn: false, liveOnAryeo: false, late: false })) === "Shot:now,Edited:todo,QC:todo,Delivered:todo");
     const vf = (...p: [string, boolean?][]) => p.map(([phase, late]) => ({ phase: phase as Parameters<typeof jb.videoStageOf>[0][number]["phase"], late: !!late }));
-    c.ok("video: the furthest-behind video leads ('Not cut · John' over 'Ready to send'), with the editor",
-      jb.videoStageOf(vf(["ready"], ["not_cut"]), "John")?.label === "Not cut · John" && jb.videoStageOf(vf(["changes", true]), "John")?.label === "Changes · John" &&
+    c.ok("video: the furthest-behind video leads ('Not cut · Jhon' over 'Ready to send'), with the editor",
+      jb.videoStageOf(vf(["ready"], ["not_cut"]), "Jhon")?.label === "Not cut · Jhon" && jb.videoStageOf(vf(["changes", true]), "Jhon")?.label === "Changes · Jhon" &&
       jb.videoStageOf(vf(["editing"]), "outside")?.label === "Editing · outside" && jb.videoStageOf(vf(["review"], ["sent"]), null)?.label === "In review" &&
       jb.videoStageOf(vf(["ready", true]), null)?.label === "Ready to send" && jb.videoStageOf(vf(["sent"]), null)?.label === "Sent" && jb.videoStageOf([], null) === null);
     c.ok("…no editor: 'Not cut yet', 'Changes asked'; late only short of approved (Ready to send stays green)",
       jb.videoStageOf(vf(["not_cut"]), null)?.label === "Not cut yet" && jb.videoStageOf(vf(["changes"]), null)?.label === "Changes asked" &&
-      jb.videoStageOf(vf(["not_cut", true]), "John")?.tone === "late" && jb.videoStageOf(vf(["ready", true]), null)?.tone === "done");
+      jb.videoStageOf(vf(["not_cut", true]), "Jhon")?.tone === "late" && jb.videoStageOf(vf(["ready", true]), null)?.tone === "done");
     c.ok("video step bar: Shot, Edited, Reviewed, Ready, Sent; monthly skips Ready",
       steps(jb.videoStepsOf(vf(["ready"]), false)) === "Shot:done,Edited:done,Reviewed:done,Ready:now,Sent:todo" &&
       steps(jb.videoStepsOf(vf(["review"]), false)) === "Shot:done,Edited:done,Reviewed:now,Ready:todo,Sent:todo" &&
@@ -126,11 +126,11 @@ async function main() {
     const rq = jb.countRequests([{ medium: "photo" }, { medium: "video" }, { medium: "both" }, { medium: "unclear" }, { medium: null }], true);
     c.ok("requests: both counts for photos and video; unclear needs an owner once the shoot is over",
       rq.open === 5 && rq.photo === 2 && rq.video === 2 && rq.needsOwner === 2 && jb.countRequests([{ medium: "unclear" }], false).needsOwner === 0, JSON.stringify(rq));
-    const own = (medium: string | null, ctx: Partial<Parameters<typeof ca.requestOwner>[1]> = {}, kind = "SPECIAL_REQUEST") => ca.requestOwner({ kind, medium }, { shootOver: true, creative: "Harrison Wells", editor: "John Mark", ...ctx }).label;
+    const own = (medium: string | null, ctx: Partial<Parameters<typeof ca.requestOwner>[1]> = {}, kind = "SPECIAL_REQUEST") => ca.requestOwner({ kind, medium }, { shootOver: true, creative: "Harrison Wells", editor: "Jhon Mark", ...ctx }).label;
     c.ok("owners: before the shoot the creative, then Kyle for photos, the editor for video, both per card, unclear needs an owner",
       own("video", { shootOver: false }) === "Harrison · at the shoot" && own("unclear", { shootOver: false }) === "Harrison · at the shoot" &&
-      own("photo") === "Kyle · photo editing" && own("video") === "John · video editing" && own("both", { card: "photo" }) === "Kyle · photo editing" &&
-      own("both", { card: "video" }) === "John · video editing" && own("unclear") === "Needs an owner" && own(null) === "Needs an owner" &&
+      own("photo") === "Kyle · photo editing" && own("video") === "Jhon · video editing" && own("both", { card: "photo" }) === "Kyle · photo editing" &&
+      own("both", { card: "video" }) === "Jhon · video editing" && own("unclear") === "Needs an owner" && own(null) === "Needs an owner" &&
       own("video", { editor: null }) === "Video editor not assigned" && own("photo", { shootOver: false, creative: null }) === "Creative not assigned · at the shoot" &&
       own(null, {}, "SCHEDULING") === "Kyle · scheduling");
     c.ok("the shoot is over: a stage past it, or the appointment's end (start + 2 h when no end)",
@@ -205,8 +205,8 @@ async function main() {
       !row(F) && !row(G) && [A, B, C, D, E, H, I].every((id) => !!row(id)) && board.counts.total === 7, board.rows.map((r) => r.street).join(", "));
     c.ok("photo only: photos 'In QC', no video", row(A)?.photos?.label === "In QC" && ["active", "late"].includes(row(A)!.photos!.tone) && row(A)?.video === null, JSON.stringify(row(A)));
     c.ok("video only: 'In review' (version 2 waiting), no photos", row(B)?.video?.label === "In review" && row(B)?.photos === null, JSON.stringify(row(B)?.video));
-    c.ok("both: photos 'Delivered' (green), video 'Not cut · John' (late on its own promise, red)",
-      row(C)?.photos?.label === "Delivered" && row(C)?.photos?.tone === "done" && row(C)?.video?.label === "Not cut · John" && row(C)?.video?.tone === "late", JSON.stringify([row(C)?.photos, row(C)?.video]));
+    c.ok("both: photos 'Delivered' (green), video 'Not cut · Jhon' (late on its own promise, red)",
+      row(C)?.photos?.label === "Delivered" && row(C)?.photos?.tone === "done" && row(C)?.video?.label === "Not cut · Jhon" && row(C)?.video?.tone === "late", JSON.stringify([row(C)?.photos, row(C)?.video]));
     c.ok("…its requests: 4 open, 2 photo, 2 video, 1 needs an owner (the order note and the scheduling ask are not counted)",
       JSON.stringify(row(C)?.requests) === JSON.stringify({ open: 4, photo: 2, video: 2, needsOwner: 1 }), JSON.stringify(row(C)?.requests));
     c.ok("monthly content is marked monthly (no photos ordered)", row(D)?.monthly === true && row(D)?.photos === null && !!row(D)?.video && !row(C)?.monthly);
@@ -259,7 +259,7 @@ async function main() {
       [A, C, E, I].every((id) => h.includes(`href="/projects/${id}"`)) &&
       /Photos In the photo check/.test(rowText("10 Photo Ln")) &&
       /Video Version 2 waiting on review/.test(rowText("20 Video Ct")) &&
-      /Photos Sent [A-Z][a-z]{2} \d+/.test(rowText("30 Both Rd")) && /Video Waiting on John to start, late/.test(rowText("30 Both Rd")) &&
+      /Photos Sent [A-Z][a-z]{2} \d+/.test(rowText("30 Both Rd")) && /Video Waiting on Jhon to start, late/.test(rowText("30 Both Rd")) &&
       /Photos Waiting on review, late/.test(rowText("50 Late St")) &&
       /Photos Waiting on the shoot/.test(rowText("80 Future Pl")) && /Video Waiting on the shoot/.test(rowText("80 Future Pl")) &&
       /Video Approved, ready to send/.test(rowText("90 Ready Rd")),
@@ -309,14 +309,14 @@ async function main() {
     c.ok("two cards side by side (stacked on a phone): Photos and Video", /data-card="photos"/.test(hC) && /data-card="video"/.test(hC) && /grid-cols-1[^"]*md:grid-cols-2/.test(hC));
     c.ok("…the job's due line, the board's own", /Due [A-Z][a-z]{2} \d+, \d+ (days|h) late/.test(tC) && dC.data.due.late, dC.data.due.line ?? "");
     c.ok("Photos: 'Delivered', the step bar all done", text(card(hC, "photos")).includes("Delivered") && (card(hC, "photos").match(/data-step="done"/g) ?? []).length === 4 && !/data-step="now"/.test(card(hC, "photos")));
-    c.ok("Video: 'Not cut · John', the bar at Edited, the video listed 'Not cut yet · John'",
-      text(card(hC, "video")).includes("Not cut · John") && /aria-current="step"[^>]*data-step="now"[^>]*>[\s\S]*?Edited/.test(card(hC, "video")) && text(card(hC, "video")).includes("Not cut yet · John"));
+    c.ok("Video: 'Not cut · Jhon', the bar at Edited, the video listed 'Not cut yet · Jhon'",
+      text(card(hC, "video")).includes("Not cut · Jhon") && /aria-current="step"[^>]*data-step="now"[^>]*>[\s\S]*?Edited/.test(card(hC, "video")) && text(card(hC, "video")).includes("Not cut yet · Jhon"));
     const pc = text(card(hC, "photos"));
     const vc = text(card(hC, "video"));
     c.ok("photo requests with their owners: the photo and the both one 'Kyle · photo editing', the unclear one 'Needs an owner'",
       pc.includes("Brighten the kitchen photos") && pc.includes("Lot lines on everything") && (pc.match(/Kyle · photo editing/g) ?? []).length === 2 && pc.includes("Make the backyard pop") && pc.includes("Needs an owner") && !pc.includes("Use the upbeat song"), pc);
-    c.ok("video requests with their owners: 'John · video editing' twice, the unclear one 'Needs an owner'",
-      vc.includes("Use the upbeat song") && (vc.match(/John · video editing/g) ?? []).length === 2 && vc.includes("Needs an owner") && !vc.includes("Brighten the kitchen"), vc);
+    c.ok("video requests with their owners: 'Jhon · video editing' twice, the unclear one 'Needs an owner'",
+      vc.includes("Use the upbeat song") && (vc.match(/Jhon · video editing/g) ?? []).length === 2 && vc.includes("Needs an owner") && !vc.includes("Brighten the kitchen"), vc);
     c.ok("the picker on the unclear request (Photos, Video, Both), one Checked per card",
       (hC.match(new RegExp(`data-owner-picker="${cUnclear!.id}"`, "g")) ?? []).length === 2 && /Photos<\/button>[\s\S]*Video<\/button>[\s\S]*Both<\/button>/.test(hC) && (hC.match(/data-job-checked/g) ?? []).length === 2);
     c.ok("the order note and the scheduling ask are not requests here; the owner sees the amount", !/Ordered: Lot Lines/.test(tC) && !/move the next shoot/.test(tC) && /\$350k/.test(tC));
@@ -371,8 +371,8 @@ async function main() {
     c.ok("…pressed again: nothing changed", /Nothing changed/.test((await setJobRequestMedium(cUnclear!.id, "video")).message));
     const after = (await loadJobDeliverables(C))!;
     const hAfter = html(createElement(JobDeliverablesView, after));
-    c.ok("the owner follows: on the video card as 'John · video editing', gone from the photos, no picker left",
-      after.video.requests.some((r) => r.id === cUnclear!.id && r.owner?.label === "John · video editing") && !after.photo.requests.some((r) => r.id === cUnclear!.id) && !hAfter.includes(`data-owner-picker="${cUnclear!.id}"`));
+    c.ok("the owner follows: on the video card as 'Jhon · video editing', gone from the photos, no picker left",
+      after.video.requests.some((r) => r.id === cUnclear!.id && r.owner?.label === "Jhon · video editing") && !after.photo.requests.some((r) => r.id === cUnclear!.id) && !hAfter.includes(`data-owner-picker="${cUnclear!.id}"`));
     c.ok("…and the Shoots row: nothing needs an owner, 3 on the video", JSON.stringify((await jb.jobsBoard(new Date())).rows.find((r) => r.projectId === C)?.requests) === JSON.stringify({ open: 4, photo: 2, video: 3, needsOwner: 0 }));
     const closedPress = await confirmJobRequests(C, "photo");
     c.ok("Checked (kept) still confirms the photo card's requests", closedPress.ok && /Checked 2 requests/.test(closedPress.message), closedPress.message);

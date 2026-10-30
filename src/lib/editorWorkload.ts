@@ -36,7 +36,7 @@ import { capacityWindows, type CapacityWindows } from "@/lib/capacity";
 //     The sample is thin, because this is a hub that has never run at scale, so
 //     the number is reported WITH its sample and is null rather than misleading
 //     when there is too little. No counts are written into this comment: they
-//     rot. This line read "John Mark 9 in eight weeks, Kim 3" while the panel
+//     rot. This line read "Jhon Mark 9 in eight weeks, Kim 3" while the panel
 //     was printing 13 and 5, and the panel prints the sample beside every rate
 //     anyway, which is the copy a reader should trust.
 //   · turnaround — the median hours from shoot to first cut. Same rule about

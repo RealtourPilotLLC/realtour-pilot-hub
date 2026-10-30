@@ -98,7 +98,7 @@ export async function inviteUser(input: { email: string; name?: string; role: st
     // and the lanes they take work on.
     let setupWords = "";
     const user = await prisma.appUser.findUnique({ where: { email } });
-    if (user && (role === "EDITOR" || setup.value.slackId || setup.value.phone)) {
+    if (user && (role === "EDITOR" || setup.value.slackId || setup.value.phone || setup.value.location || setup.value.timezone)) {
       try {
         const r = await applyTeammateSetup(user, setup.value, actor.email);
         setupWords = ` ${r.message}`;
@@ -310,17 +310,13 @@ export type TeammateSetup = {
   phone?: string | null;
   slackId?: string | null;
   timezone?: string | null;
+  /** where they are, as written ("Manila, Philippines") */
+  location?: string | null;
   /** editor only: the auto-assignment lanes (lib/editors ROUTING_LANES) */
   lanes?: string[] | null;
 };
-type CleanSetup = { phone: string | null; slackId: string | null; timezone: string | null; lanes: string[] | null };
+type CleanSetup = { phone: string | null; slackId: string | null; timezone: string | null; location: string | null; lanes: string[] | null };
 
-const cleanPhone = (raw: string): string | null => {
-  const digits = raw.replace(/\D/g, "");
-  if (digits.length < 10 || digits.length > 15) return null;
-  if (raw.trim().startsWith("+")) return `+${digits}`;
-  return digits.length === 10 ? `+1${digits}` : `+${digits}`;
-};
 
 async function checkSetup(input: TeammateSetup, teamMemberId: string | null): Promise<{ ok: true; value: CleanSetup } | { ok: false; message: string }> {
   const { SLACK_MEMBER_ID_RE } = await import("@/lib/slackScopes");
@@ -334,14 +330,16 @@ async function checkSetup(input: TeammateSetup, teamMemberId: string | null): Pr
     if (other) return { ok: false, message: `That Slack ID is already on ${other.name}'s card. One Slack account, one person.` };
   }
   const rawPhone = (input.phone ?? "").trim();
-  const phone = rawPhone ? cleanPhone(rawPhone) : null;
+  const { cleanTeamPhone, isTimeZone } = await import("@/lib/phoneKey");
+  const phone = rawPhone ? cleanTeamPhone(rawPhone) : null;
   if (rawPhone && !phone) return { ok: false, message: "That phone number doesn't look right. Include the country code for a number outside the US (e.g. +63 917 123 4567)." };
   const timezone = (input.timezone ?? "").trim() || null;
   if (timezone) {
-    try { new Intl.DateTimeFormat("en-US", { timeZone: timezone }); } catch { return { ok: false, message: "Unknown time zone." }; }
+    if (!isTimeZone(timezone)) return { ok: false, message: "Unknown time zone." };
   }
   const lanes = input.lanes == null ? null : [...new Set(input.lanes)].filter((l) => (ROUTING_LANES as string[]).includes(l));
-  return { ok: true, value: { phone, slackId, timezone, lanes } };
+  const location = (input.location ?? "").replace(/\s+/g, " ").trim().slice(0, 80) || null;
+  return { ok: true, value: { phone, slackId, timezone, location, lanes } };
 }
 
 // AppUser role → the team card's role (TeamMember.role is the older enum).
@@ -384,22 +382,23 @@ async function applyTeammateSetup(
     tm = await prisma.teamMember.create({
       data: {
         name: displayName, email: user.email, role: CARD_ROLE[user.role] ?? "PHOTOGRAPHER", active: true,
-        phone: input.phone, slackId: input.slackId, timezone: input.timezone ?? (isEditor ? "Asia/Manila" : null),
+        phone: input.phone, slackId: input.slackId, timezone: input.timezone ?? (isEditor ? "Asia/Manila" : null), location: input.location,
         ...(isEditor ? { title: "Video Editor" } : {}),
       },
     });
     notes.push(`Team card created for ${displayName}.`);
   } else {
-    const data: { phone?: string; slackId?: string; timezone?: string; active?: boolean } = {};
+    const data: { phone?: string; slackId?: string; timezone?: string; location?: string; active?: boolean } = {};
     if (input.phone) data.phone = input.phone;
     if (input.slackId) data.slackId = input.slackId;
     if (input.timezone) data.timezone = input.timezone;
+    if (input.location) data.location = input.location;
     if (!tm.active) data.active = true;
     if (Object.keys(data).length) tm = await prisma.teamMember.update({ where: { id: tm.id }, data });
   }
 
   // A video editor's desk key: the card's, else a built-in editor this card
-  // already is (Kim's, John Mark's), else a new one from their first name.
+  // already is (Kim's, Jhon Mark's), else a new one from their first name.
   let editorKey: string | null = null;
   if (isEditor) {
     editorKey = tm.editorKey;

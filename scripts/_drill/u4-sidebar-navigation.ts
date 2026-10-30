@@ -64,7 +64,8 @@ async function main() {
       // (merged into /communications) are no destinations any more. Oct 21
       // 2026: Your list (/ops/checklist, owner + office) under More → Lists.
       // Oct 23 2026: Media (/media, owner, office, creative manager) under More → Work.
-      const ADDED = new Set(["/content/activity", "/ops/photo-delivery", "/jobs", "/day", "/ops/checklist", "/media"]);
+      // Oct 30 2026: Your profile (/profile, every signed-in login) on the name at the foot.
+      const ADDED = new Set(["/content/activity", "/ops/photo-delivery", "/jobs", "/day", "/ops/checklist", "/media", "/profile"]);
       // Oct 22 2026 (Jordan's approved role menus): menu entries taken OFF a
       // role (still reachable by URL, no permission changed): the Style Guide
       // and Communication coaching for the office, the Editing Room for

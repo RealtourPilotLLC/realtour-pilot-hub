@@ -6,6 +6,7 @@ import { CalendarDays, MapPin as MapPinIcon, Camera } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { ShootsScheduleTabs } from "@/components/jobs/ShootsScheduleTabs";
 import { Avatar } from "@/components/ui/Avatar";
+import { teamPhotoSrc } from "@/lib/teamPhoto";
 import { Badge } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
 import { stageMeta } from "@/lib/pipeline";
@@ -120,7 +121,7 @@ async function ListView({ excludeClientIds, includeTest, office, tabs }: { exclu
                     </span>
                     {a.assignedTo ? (
                       <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted sm:w-24">
-                        <Avatar name={a.assignedTo.name} color={a.assignedTo.avatarColor} size={22} />
+                        <Avatar name={a.assignedTo.name} src={teamPhotoSrc(a.assignedTo)} color={a.assignedTo.avatarColor} size={22} />
                         <span className="hidden sm:inline">{a.assignedTo.name.split(" ")[0]}</span>
                       </span>
                     ) : (

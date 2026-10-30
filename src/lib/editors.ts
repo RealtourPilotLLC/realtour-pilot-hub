@@ -9,7 +9,7 @@
 // reels (external) · Kyle → QC (photos/floor plans/3D/video) + item removal /
 // virtual staging / declutter / fixes · AutoHDR → AI photo editing (external) ·
 // CubiCasa → floor plans (external). (Adrian was let go — not an editor.)
-// Since then: John Mark replaced Remar (Aug 2026); premium moved in-house; and
+// Since then: Jhon Mark replaced Remar (Aug 2026); premium moved in-house; and
 // Luma Visuals is the outside shop jobs are HANDED to by hand — the
 // `external_agency` key below (Jordan, Sep 25 2026).
 // The Creative Director (Jordan) = scripting / creative direction ONLY.
@@ -43,6 +43,9 @@ export type EditorMeta = {
   // editors get night-time pings (Jordan). Default Asia/Manila for the
   // offshore in-house editors.
   teamMemberName?: string;
+  /** Older spellings of `teamMemberName` still found on cards and records
+   *  ("John Mark", Oct 30 2026), matched like it so nothing loses them. */
+  formerNames?: string[];
   slackUserId?: string;
   tz?: string;
   // No longer with us. The entry stays so their finished work still renders with
@@ -50,7 +53,7 @@ export type EditorMeta = {
   // new can be assigned to them.
   departed?: boolean;
   // An in-house VIDEO editor: has a desk in the Editing Room, can be picked on
-  // a job, and can be ticked on an auto-assignment lane (Kim, John Mark, and
+  // a job, and can be ticked on an auto-assignment lane (Kim, Jhon Mark, and
   // everyone onboarded on People since Oct 30 2026).
   video?: boolean;
 };
@@ -82,9 +85,12 @@ export const EDITORS: Record<EditorKey, EditorMeta> = {
   creative_director: { key: "creative_director", name: "Creative Director", kind: "in_house", does: "video scripting + creative direction", tz: "America/New_York" },
   // Kim Miguel — Manila. Has a TeamMember row with a phone → SMS reaches her.
   kim: { key: "kim", name: "Kim", kind: "in_house", does: "personal-branding / monthly social content", teamMemberName: "Kim", tz: "Asia/Manila", video: true },
-  // John Mark — Manila. Took over Remar's lane (standard reels + horizontal video)
-  // in Aug 2026. Needs a phone on his Team row before SMS can reach him.
-  john: { key: "john", name: "John Mark", kind: "in_house", does: "standard reels + horizontal video", teamMemberName: "John Mark", tz: "Asia/Manila", video: true },
+  // Jhon Mark — Manila. Took over Remar's lane (standard reels + horizontal video)
+  // in Aug 2026. Spelled JHON (Jordan, Oct 30 2026: "I didn't realize his name
+  // was spelled differently"); the desk key stays "john" because his tasks,
+  // jobs and history are filed under it. Needs a phone on his Team row before
+  // SMS can reach him.
+  john: { key: "john", name: "Jhon Mark", kind: "in_house", does: "standard reels + horizontal video", teamMemberName: "Jhon Mark", formerNames: ["John Mark"], tz: "Asia/Manila", video: true },
   // Remar — DEPARTED Aug 2026, replaced by John. The key is retained ONLY so his
   // finished work still resolves to his name: 12 completed tasks and 8 delivered
   // jobs carry it, and re-pointing those at John would credit his work to someone
@@ -92,7 +98,7 @@ export const EDITORS: Record<EditorKey, EditorMeta> = {
   // nothing new can land on him.
   remar: { key: "remar", name: "Remar", kind: "in_house", does: "standard reels + horizontal video (departed)", teamMemberName: "Remar", tz: "Asia/Manila", departed: true, video: true },
   // Luma's OLD lane — the automatic premium-reel routing that ENDED Aug 2026
-  // (premium moved in-house to John Mark). Key retained so historical tasks and
+  // (premium moved in-house to Jhon Mark). Key retained so historical tasks and
   // jobs still render; absent from all pickers. The agency itself is still
   // used: jobs are handed to Luma Visuals by hand through `external_agency`
   // below — this key is never written again.
@@ -177,9 +183,10 @@ export async function editorTeamMemberId(key: EditorKey | string | null | undefi
     const { prisma } = await import("@/lib/prisma");
     // The row that carries the key wins; the name match is for a built-in
     // editor whose row predates TeamMember.editorKey.
-    const tm =
-      (await prisma.teamMember.findFirst({ where: { editorKey: meta.key }, select: { id: true } })) ??
-      (await prisma.teamMember.findFirst({ where: { name: { contains: meta.teamMemberName } }, select: { id: true } }));
+    let tm = await prisma.teamMember.findFirst({ where: { editorKey: meta.key }, select: { id: true } });
+    for (const name of [meta.teamMemberName, ...(meta.formerNames ?? [])]) {
+      tm ??= await prisma.teamMember.findFirst({ where: { name: { contains: name } }, select: { id: true } });
+    }
     return tm?.id ?? null;
   } catch {
     return null;
@@ -195,11 +202,12 @@ export function editorKeyForTeamName(name: string | null | undefined): EditorKey
   if (!name) return null;
   const n = name.trim().toLowerCase();
   const metas = Object.values(EDITORS);
+  const names = (meta: EditorMeta) => (meta.teamMemberName ? [meta.teamMemberName, ...(meta.formerNames ?? [])] : []).map((x) => x.trim().toLowerCase());
   for (const meta of metas) {
-    if (meta.teamMemberName && n === meta.teamMemberName.trim().toLowerCase()) return meta.key;
+    if (names(meta).includes(n)) return meta.key;
   }
   for (const meta of metas) {
-    if (meta.teamMemberName && n.includes(meta.teamMemberName.toLowerCase())) return meta.key;
+    if (names(meta).some((x) => n.includes(x))) return meta.key;
   }
   return null;
 }
@@ -221,7 +229,7 @@ export function editorMeta(key: string | null | undefined): EditorMeta | null {
 // EDITORS ONBOARDED ON PEOPLE (Jordan, Oct 30 2026: "I just onboarded a new
 // editor her name is Reychelle. I need to make sure the ops hub is set up to
 // be able to onboard new editors and new users, and add their Slack ID,
-// assignment, etc."). Kim and John Mark were written into this file; nobody
+// assignment, etc."). Kim and Jhon Mark were written into this file; nobody
 // else could ever hold a desk. Now an in-house video editor is a TeamMember
 // row with an editorKey, and lib/editorRoster reads those rows into the
 // roster above (60 s cache) on every sign-in, routing call and cron run. The
@@ -245,6 +253,8 @@ export type RosterEditorRow = {
 const LOADED = new Set<string>();
 
 const BUILTIN_KEYS = new Set<string>(Object.keys(EDITORS));
+/** Each built-in editor's clock in this file, for when their card has none. */
+const BUILTIN_TZ = new Map<string, string | undefined>(Object.values(EDITORS).map((m) => [m.key, m.tz]));
 const SLUG_RE = /^[a-z][a-z0-9_]{1,31}$/;
 
 /** Is this a key a new editor may be given (not a built-in, not malformed)? */
@@ -256,12 +266,19 @@ const addOnce = (list: EditorKey[], key: string) => { if (!list.includes(key)) l
 const removeFrom = (list: EditorKey[], key: string) => { const i = list.indexOf(key); if (i >= 0) list.splice(i, 1); };
 
 /** Read the database's editors into the roster. A built-in key on a row
- *  changes nothing (Kim stays Kim); a key that left the database stays on the
- *  roster as departed, so the work it did keeps its name. */
+ *  keeps its name and place (Kim stays Kim) and takes only the clock on the
+ *  card, which the editor sets on their own profile (Oct 30 2026); a key that
+ *  left the database stays on the roster as departed, so the work it did
+ *  keeps its name. */
 export function applyEditorRoster(rows: RosterEditorRow[]): void {
   const seen = new Set<string>();
   for (const r of rows) {
-    if (!r.key || BUILTIN_KEYS.has(r.key) || !SLUG_RE.test(r.key)) continue;
+    if (r.key && BUILTIN_KEYS.has(r.key)) {
+      const tz = r.timezone || BUILTIN_TZ.get(r.key);
+      if (EDITORS[r.key] && EDITORS[r.key].tz !== tz) EDITORS[r.key] = { ...EDITORS[r.key], tz };
+      continue;
+    }
+    if (!r.key || !SLUG_RE.test(r.key)) continue;
     seen.add(r.key);
     LOADED.add(r.key);
     const name = r.name.trim() || r.key;
@@ -337,7 +354,7 @@ export function routeEditWork(text: string): EditorKey | null {
   if (/\bscript(ing|s)?\b|storyboard/.test(t)) return "creative_director";
 
   if (/floor ?plan/.test(t)) return "cubicasa";
-  // Premium / influencer social reels → John Mark (Luma engagement ended Aug 2026).
+  // Premium / influencer social reels → Jhon Mark (Luma engagement ended Aug 2026).
   if (/(premium|influencer)/.test(t) && /(reel|video|social|bundle)/.test(t)) return "john";
   // Personal-branding / monthly social, plus logo + animation work → Kim.
   if (/personal ?brand|\bbranding\b|monthly|social (media )?(content|post)|\blogo\b|animat/.test(t)) return "kim";
@@ -352,7 +369,7 @@ export function routeEditWork(text: string): EditorKey | null {
 // in-house to the actual editor (John standard video, Kim social, Kyle QC).
 // Jordan, Aug 14 2026 (Luma engagement ended): "John gets standard reels,
 // premium, and we can manually assign John the personal branding reels."
-// So: every one-off video auto-routes to John Mark; monthly personal-branding
+// So: every one-off video auto-routes to Jhon Mark; monthly personal-branding
 // content returns NULL on purpose — it lands in "Needs assigning" and a human
 // picks the editor per batch. The old label heuristic (/monthly|brand|social/)
 // is gone with it: "Standard Social Media Reel" matches /social/, and the

@@ -39,9 +39,15 @@ export default async function RootLayout({
   // door on the grouped menu only; Harrison's and James's role menus
   // (lib/sidebarNavigation) name it "My Performance" whatever it says, and
   // the page behind it now carries their own pay too.
-  const payHidden = cu ? await import("@/lib/settings").then((m) => m.payHiddenFor(cu)).catch(() => true) : true;
+  // Oct 30 2026: the face on the menu's name chip (their own team card's photo).
+  const [payHidden, photoSrc] = cu
+    ? await Promise.all([
+        import("@/lib/settings").then((m) => m.payHiddenFor(cu)).catch(() => true),
+        import("@/lib/profile").then((m) => m.myTeamCard(cu)).then(async (c) => (await import("@/lib/teamPhoto")).teamPhotoSrc(c)).catch(() => null),
+      ])
+    : [true, null];
   const user = cu
-    ? { name: cu.name, email: cu.email, role: cu.role, permissions: cu.permissions, impersonating: cu.impersonating, realName: cu.realName, payHidden }
+    ? { name: cu.name, email: cu.email, role: cu.role, permissions: cu.permissions, impersonating: cu.impersonating, realName: cu.realName, payHidden, photoSrc }
     : null;
   return (
     <html

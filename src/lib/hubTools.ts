@@ -184,12 +184,12 @@ export const HUB_TOOLS: HubTool[] = [
   },
   {
     name: "assign_task",
-    description: "Assign a hub task to a person (or take it yourself). Use for 'give the Ruth Ridge edit to John', 'I'll take the Slack to-dos about Marcee', 'assign the unowned confirmation texts to Kyle'. Finds the task by title words; person by first name.",
+    description: "Assign a hub task to a person (or take it yourself). Use for 'give the Ruth Ridge edit to Jhon', 'I'll take the Slack to-dos about Marcee', 'assign the unowned confirmation texts to Kyle'. Finds the task by title words; person by first name.",
     input_schema: {
       type: "object",
       properties: {
         task: { type: "string", description: "Words from the task title." },
-        person: { type: "string", description: "First name of who owns it (Kyle, Jordan, James, John, Kim…) — or 'me'." },
+        person: { type: "string", description: "First name of who owns it (Kyle, Jordan, James, Jhon, Kim, Reychelle…) — or 'me'." },
       },
       required: ["task", "person"],
     },
@@ -429,7 +429,7 @@ function resolveRange(input: { range?: string; from?: string; to?: string }): { 
 // signed-in person is the owner or the office; `ownKeys` are the assignment
 // keys that are theirs. A caller that passes neither keeps the tier rule.
 // `appRole` + `editorKey` (Oct 29 2026): the signed-in login's own role and
-// editor key, so a job's details wait for Start for Kim and John Mark here
+// editor key, so a job's details wait for Start for Kim and Jhon Mark here
 // too (lib/editorBriefGate).
 type HubToolCtx = { role: string; impersonating?: boolean; who?: string | null; office?: boolean; ownKeys?: string[]; appRole?: string | null; editorKey?: string | null };
 const notOffice = (ctx: HubToolCtx) => ctx.office === false;

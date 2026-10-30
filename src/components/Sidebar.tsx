@@ -44,6 +44,7 @@ import { canAccess, isCreativeLead, isOffice, parsePermissions, ROLE_LABEL, type
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { MessagesButton } from "@/components/comms/MessagesButton";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { Avatar } from "@/components/ui/Avatar";
 import { groupSidebarDestinations, officeMenuDestinations, OTHER_PAGES_ARIA, PHOTO_DELIVERY_LABEL, PROJECTS_LABEL, usesRoleMenu, VIDEO_DELIVERY_LABEL } from "@/lib/sidebarNavigation";
 
 export type ShellUser = {
@@ -55,6 +56,8 @@ export type ShellUser = {
   realName?: string | null;
   /** Oct 14 2026: pay is hidden for this login, so "My Pay" is their performance and bonus page. */
   payHidden?: boolean;
+  /** Oct 30 2026: their profile photo (lib/teamPhoto), null for the initials. */
+  photoSrc?: string | null;
 };
 
 type NavItem = {
@@ -414,10 +417,14 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
         {/* Connections lives in the System nav section — no duplicate here. */}
         {user ? (
           <div className="mt-1 space-y-2 rounded-lg bg-surface-2/60 px-3 py-2">
-            <div className="min-w-0">
-              <div className="truncate text-sm font-medium">{user.name || user.email}</div>
-              <div className="text-[11px] text-muted-2">{ROLE_LABEL[user.role] ?? user.role}</div>
-            </div>
+            {/* Oct 30 2026: your name opens your profile (photo, phone, clock, notifications). */}
+            <Link href="/profile" onClick={onNavigate} title="Your profile" className="-mx-1 flex min-h-11 min-w-0 items-center gap-2.5 rounded-lg px-1 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+              <Avatar name={user.name || user.email} src={user.photoSrc} size={32} color="#4f46e5" />
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-medium">{user.name || user.email}</span>
+                <span className="block text-[11px] text-muted-2">{ROLE_LABEL[user.role] ?? user.role} · Your profile</span>
+              </span>
+            </Link>
             <div className="flex items-center justify-end gap-2">
               <ThemeToggle />
               {/* Oct 27 2026 Loom: the messages icon, beside the bell (always on screen on a desktop). */}

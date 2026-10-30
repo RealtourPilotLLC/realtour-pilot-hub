@@ -9,7 +9,7 @@ import { TEAM_MEMBER_EDITOR_KEYS, editorMeta, DEFAULT_EDITOR_TZ } from "@/lib/ed
 // brief project summary, and to see all details and instructions, they press
 // start").
 //
-// WHO: an editor login with a desk (Kim, John Mark). "View as" one of them
+// WHO: an editor login with a desk (Kim, Jhon Mark). "View as" one of them
 // shows the same summary, so the office can see what the editor sees. The
 // owner, the office, the creative manager and everybody else see the whole
 // brief exactly as before.

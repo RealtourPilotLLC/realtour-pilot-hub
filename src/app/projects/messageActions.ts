@@ -413,8 +413,8 @@ export async function postProjectMessage(
  * tag row, and closes the row when nothing is left on it.
  *
  * Sep 20, from 358 N Church St. This used to close the row on every successful
- * post, whatever the post said. Kyle asked John Mark for a cut with no
- * voiceover; John Mark replied "May I know where to upload the no V.O Version
+ * post, whatever the post said. Kyle asked Jhon Mark for a cut with no
+ * voiceover; Jhon Mark replied "May I know where to upload the no V.O Version
  * I don't have a button for that in my Interface"; his task went COMPLETED 285
  * milliseconds later and Kyle's bell read "John finished your tag". Nothing had
  * been finished. Worse, because one row is shared by all six @mention
@@ -430,7 +430,7 @@ export async function postProjectMessage(
  *     that tags the person who asked and hands the ball back (their own row
  *     opens in the same request, so the loop never dies with no owner);
  *   · and it is not a bare "on it" or a question back — the exact shape that
- *     bit John Mark. Reading that off the text means taking the @tags off
+ *     bit Jhon Mark. Reading that off the text means taking the @tags off
  *     first, which is why the roster's names are passed in: guessing a surname
  *     off a capital letter ate "What" out of "@Kyle What time do you need it"
  *     and handed the question back as an answer.

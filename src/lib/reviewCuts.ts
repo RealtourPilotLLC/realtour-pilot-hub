@@ -2741,7 +2741,7 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
       // handed in, or a legacy EDITING nobody confirmed are still the editing
       // stage, in their own words below. An open edit card on its own is
       // footage waiting for the editor — Kyle's QC card read "Video: In
-      // editing — John Mark" for a job nobody had opened (Jordan, Sep 10).
+      // editing — Jhon Mark" for a job nobody had opened (Jordan, Sep 10).
       else if (work.has(p.id) || p.status === "EDITING" || cuts.length > 0) stage = "editing";
       else if (editByProject.has(p.id)) stage = "ready_to_edit";
       else stage = "not_started";

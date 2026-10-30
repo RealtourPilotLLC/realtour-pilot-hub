@@ -74,8 +74,8 @@ async function main() {
     const harrison = await prisma.appUser.create({ data: { email: "harrison-vf@drill.invalid", name: "Harrison Drill", role: "PHOTOGRAPHER", status: "ACTIVE", teamMemberId: harrisonTm.id } });
     await prisma.appSetting.create({ data: { key: "upload-ack-harrison-vf@drill.invalid", value: "true" } });
     await prisma.teamMember.create({ data: { name: "James Drill", email: "james-vf@drill.invalid", role: "PHOTOGRAPHER", active: true, creativeManager: true } });
-    const johnTm = await prisma.teamMember.create({ data: { name: "John Mark", email: "john-vf@drill.invalid", role: "EDITOR", active: true } });
-    await prisma.appUser.create({ data: { email: "john-vf@drill.invalid", name: "John Mark", role: "EDITOR", status: "ACTIVE", teamMemberId: johnTm.id, editorKey: "john" } });
+    const johnTm = await prisma.teamMember.create({ data: { name: "Jhon Mark", email: "john-vf@drill.invalid", role: "EDITOR", active: true } });
+    await prisma.appUser.create({ data: { email: "john-vf@drill.invalid", name: "Jhon Mark", role: "EDITOR", status: "ACTIVE", teamMemberId: johnTm.id, editorKey: "john" } });
     const client = await prisma.client.create({ data: { name: "Joe Drill" } });
     const SHOT = at("2026-10-21T12:00:00.000Z"); // Wed Oct 21, 8:00 AM ET
     const HANDED = at("2026-10-22T16:06:31.000Z"); // Thu Oct 22, 12:06 PM ET (Jordan, at the office)
@@ -128,7 +128,7 @@ async function main() {
     const bells = await prisma.notification.findMany({ where: { dedupeKey: { startsWith: `video-added-${job}` } } });
     c.ok("John's job-ping bell names video 2", bells.length === 1 && bells[0].kind === "raws_landed" && bells[0].userKey === "editor:john" && /^Another video on 538 Onward Ave: video 2 \(Standard Reel\)/.test(bells[0].title) && !/—/.test(bells[0].title), JSON.stringify(bells.map((b) => [b.kind, b.userKey, b.title])));
     const line1 = await prisma.activity.findFirst({ where: { projectId: job, body: { startsWith: "Another video was added after the edit started" } } });
-    c.ok("the timeline says it, and what Harrison will be asked", !!line1 && /video 2 \(Standard Reel\)/.test(line1.body) && /John Mark was told/.test(line1.body) && /Harrison is asked for the instructions for video 2/.test(line1.body), line1?.body ?? "");
+    c.ok("the timeline says it, and what Harrison will be asked", !!line1 && /video 2 \(Standard Reel\)/.test(line1.body) && /Jhon Mark was told/.test(line1.body) && /Harrison is asked for the instructions for video 2/.test(line1.body), line1?.body ?? "");
     console.warn = () => {};
     await aryeo.reconcileDeliverablesToOrder(job, { id: "order-vf-1", number: 1709, items: JOE } as never);
     console.warn = warn;

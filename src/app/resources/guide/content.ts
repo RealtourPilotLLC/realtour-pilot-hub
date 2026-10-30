@@ -337,7 +337,7 @@ Both evening texts are switchable and their hours are set in Settings by Jordan,
 };
 
 // ---------------------------------------------------------------------------
-// EDITOR — John Mark, Kim Miguel (Manila)
+// EDITOR — the video editors: Jhon Mark, Kim Miguel, Reychelle (Manila)
 // ---------------------------------------------------------------------------
 
 const EDITOR: Guide = {
@@ -345,7 +345,7 @@ const EDITOR: Guide = {
   eyebrow: "Walkthrough",
   title: "Editor guide",
   subtitle: "Your queue, the brief, the raw and the final, and how a cut gets approved",
-  who: "John and Kim",
+  who: "The video editors",
   runbook: [
     { when: "Start of your day", what: "Open the Editing Room. Not Done is your list — top to bottom, oldest due date first. Anything in red is late." },
     { when: "Picking up a job", what: "Click the row. That opens the job page: the tracker at the top says where it stands and when it is due." },

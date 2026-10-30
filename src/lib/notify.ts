@@ -1088,7 +1088,7 @@ export async function flushPendingSms(): Promise<{ flushed: number; failed: stri
       }
       continue;
     }
-    // Any hour (Oct 6 2026 — no texting window; Kim's and John Mark's Manila
+    // Any hour (Oct 6 2026 — no texting window; Kim's and Jhon Mark's Manila
     // night included). flushMemberSms still asks the person's own quiet time.
     const recentSend = await prisma.pendingSms.findFirst({
       where: { teamMemberId: p.teamMemberId, sentAt: { gte: new Date(Date.now() - SMS_BATCH_WINDOW_MS) } },

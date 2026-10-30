@@ -244,7 +244,7 @@ async function main() {
     c.ok("…and the request's own history: who, when, what", h1.some((e) => e.by === "Kyle Smith" && e.what === "moved to 512 Firethorn Rd (not for 825 State St)" && !!Date.parse(e.at) && e.placed?.lines.length === 1), JSON.stringify(h1.map((e) => e.what)));
     c.ok("gone from 825's cards and the Projects tab; on Firethorn's, for its video editor",
       !(await vid(state)).includes(reel) && (await vid(fire)).includes(reel) &&
-      !(await rp.openRequestCards([state])).get(state)!.some((x) => x.id === reel) && (await rp.openRequestCards([fire])).get(fire)!.find((x) => x.id === reel)?.forLine === "John · video editing");
+      !(await rp.openRequestCards([state])).get(state)!.some((x) => x.id === reel) && (await rp.openRequestCards([fire])).get(fire)!.find((x) => x.id === reel)?.forLine === "Jhon · video editing");
     const brief1 = await briefOf();
     c.ok("gone from Harrison's shoot brief for 825 (the other request is still there)", !/reel like this/i.test(brief1) && /blur the neighbor/i.test(brief1), brief1);
     const off1 = await rp.takenOffProjectList(state);
@@ -481,7 +481,7 @@ async function main() {
     };
     const fireRow = rowOf(tab, "512 Firethorn Rd");
     c.ok("Requests tab: each request in plain words, who it is for, who asked how and when",
-      fireRow.includes(`data-request-card="${both!.id}"`) && /Lot lines on the photos and the video/.test(text(fireRow)) && /Kyle · photo editing and John · video editing/.test(text(fireRow)) && /Ashley Brunner by email, /.test(text(fireRow)),
+      fireRow.includes(`data-request-card="${both!.id}"`) && /Lot lines on the photos and the video/.test(text(fireRow)) && /Kyle · photo editing and Jhon · video editing/.test(text(fireRow)) && /Ashley Brunner by email, /.test(text(fireRow)),
       text(fireRow).slice(0, 500));
     c.ok("…with its presses: Checked and Not for this project", fireRow.includes(`data-request-actions="${both!.id}"`) && fireRow.includes(`data-not-for-project="${both!.id}"`) && fireRow.includes("data-request-check"));
     c.ok("…the client's words folded under it", /The client’s words/.test(text(fireRow)) && /Lot lines on the photos and the video please/.test(text(fireRow)));

@@ -91,9 +91,10 @@ export type SlackAddressee = {
   how: "leading" | "mention" | "self" | "title" | "dm";
 };
 
-// Slack display names that are not the roster spelling. "Jhon Mark" is what
-// John Mark's Slack profile says, and it is how the poll unwraps his @mention.
-const SLACK_NAME_ALIASES: Record<string, string> = { "jhon mark": "john", jhon: "john" };
+// Names that are not the roster spelling. Until Oct 30 2026 the roster said
+// "John Mark" while his Slack profile said "Jhon Mark"; the roster is right
+// now, and the old spelling stays here so messages that use it still find him.
+const SLACK_NAME_ALIASES: Record<string, string> = { "john mark": "john", john: "john" };
 
 /** The active team, keyed the way assignedKey is stored. Inactive rows (Remar,
  *  departed photographers) are excluded so nothing new can land on them. */
@@ -102,10 +103,12 @@ export async function loadSlackRoster(): Promise<SlackRosterEntry[]> {
   const { slugForName, firstName } = await import("@/lib/assignees");
   const members = await prisma.teamMember.findMany({
     where: { active: true },
-    select: { id: true, name: true, slackId: true },
+    select: { id: true, name: true, slackId: true, editorKey: true },
   });
   return members.map((m) => {
-    const key = slugForName(m.name);
+    // An editor's desk key is the one on their card (Oct 30 2026), as on the
+    // assignee list, so a task read off Slack lands on their desk.
+    const key = m.editorKey ?? slugForName(m.name);
     const full = m.name.trim().toLowerCase().replace(/\s+/g, " ");
     const aliases = new Set<string>([full, full.split(" ")[0]]);
     for (const [alias, k] of Object.entries(SLACK_NAME_ALIASES)) if (k === key) aliases.add(alias);

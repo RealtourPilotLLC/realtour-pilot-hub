@@ -23,7 +23,7 @@ import type { EvidenceVerdict } from "@/lib/taskEvidence";
 //     location, days, wardrobe, teleprompter: never an editor's, see
 //     brandProfile.SHOOT_DETAIL_FIELD_PREFIX) or already acknowledged; or
 //   · AN EDITOR HAS WORKED FROM THE BRIEF SINCE THE LAST ONE: on one of this
-//     client's jobs, after the newest change, a desk editor (Kim, John Mark)
+//     client's jobs, after the newest change, a desk editor (Kim, Jhon Mark)
 //     sent a version, pressed Start or Resume themselves, or accepted the
 //     brief. The banner is at the top of that brief until they answer it, so
 //     the work was done with the update in front of them.
