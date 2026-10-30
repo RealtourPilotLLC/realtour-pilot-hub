@@ -361,6 +361,14 @@ export async function ensureProjectFolders(p: EnsureProject): Promise<EnsureResu
   // off under this job's name; the younger job starts fresh below instead.
   if (p.dropboxFolder && p.dropboxFolder !== own.target && !p.dropboxFolder.includes("/Canceled/") && !own.sharedWith) {
     const oldExists = (await listingSubfolders(p.dropboxFolder)) !== null;
+    // A split job whose first visit already happened is not a reschedule
+    // (Oct 30 2026, Laura Kaplan): shootDate moved on to the NEXT visit, and
+    // the folder went from October to November at 4 PM while Harrison was
+    // driving home to upload the 3 PM drone visit. Once a live visit has
+    // started, the folder stays where it is.
+    if (oldExists && (await prisma.appointment.count({
+      where: { projectId: p.id, startAt: { lte: new Date() }, OR: [{ status: null }, { status: { not: "CANCELED" } }] },
+    })) > 0) return "exists";
     if (oldExists) {
       const ok = await dropboxMoveFolder(p.dropboxFolder, own.target);
       if (!ok) return "conflict"; // both old and new exist — a human must merge; do NOT clobber

@@ -205,13 +205,35 @@ export async function processScriptingEvent(
     const prior = await prisma.smartTask.findUnique({ where: { dedupeKey: key }, select: { assignedManually: true, delegatedAt: true } });
     return { status: "OPEN" as const, completedAt: null, ...(prior && !prior.assignedManually && !prior.delegatedAt && scriptsDesk.assignedKey ? scriptsDesk : {}) };
   };
-  if (event === "project.script_generated") {
+  if (event === "project.hooks_proposed") {
+    // OPTIONS FIRST (the platform, Oct 30 2026): an intake now ends in 10 to
+    // 15 options and no script until someone picks one on the project page.
+    // Nothing told the desk, so the job sat at "options ready" with no script.
+    await prisma.smartTask.upsert({
+      where: { dedupeKey: `scripting-pick-${project.id}` },
+      create: {
+        taskType: "internal_instruction",
+        title: `Pick a script option — ${street}`.slice(0, 120),
+        summary: "Script Writing wrote 10 to 15 options for this reel's opening. Open the project there and pick one; the script is written around it, keeping the hook word for word.",
+        reasonCreated: "Script Writing proposed script options.",
+        source: "system",
+        priority: "MEDIUM",
+        dueAt: new Date(Date.now() + 24 * 3600_000),
+        ...scriptsDesk,
+        projectId: project.id,
+        clientId: project.clientId,
+        dedupeKey: `scripting-pick-${project.id}`,
+      },
+      update: await reopen(`scripting-pick-${project.id}`),
+    });
+  } else if (event === "project.script_generated") {
+    await closeScriptingTasks(project.id, ["pick"]);
     await prisma.smartTask.upsert({
       where: { dedupeKey: `scripting-script-${project.id}` },
       create: {
         taskType: "internal_instruction",
         title: `Script ready — ${street}`.slice(0, 120),
-        summary: "Script Studio generated the hooks + script for this reel. Open it, pick/lock the recipe (hook · script · song), then it's ready to shoot.",
+        summary: "A new script version is in Script Writing for this reel. Read it, approve it and send it to the agent; it reaches the creative when it is released.",
         reasonCreated: "Script Studio finished generating the script.",
         source: "system",
         priority: "MEDIUM",
@@ -227,7 +249,9 @@ export async function processScriptingEvent(
     // "client responded" nudge rather than leaving both open.
     await closeScriptingTasks(project.id, ["client"]);
   } else if (event === "project.client_responded") {
-    const revision = String(data.status ?? "").includes("revision");
+    // The reply's own type (approved | revision_requested); the status only when an older payload has none.
+    const replyType = data.client_response && typeof data.client_response === "object" ? String((data.client_response as Record<string, unknown>).type ?? "") : "";
+    const revision = replyType ? replyType === "revision_requested" : String(data.status ?? "").includes("revision");
     await prisma.smartTask.upsert({
       where: { dedupeKey: `scripting-client-${project.id}` },
       create: {
@@ -249,16 +273,17 @@ export async function processScriptingEvent(
     });
   } else if (event === "project.sent_to_client") {
     // The script was locked + sent — the "Script ready" review step is done.
-    await closeScriptingTasks(project.id, ["script"]);
+    await closeScriptingTasks(project.id, ["pick", "script"]);
   } else if (event === "project.done") {
     // The scripting loop is finished — both nudges are moot.
-    await closeScriptingTasks(project.id, ["script", "client"]);
+    await closeScriptingTasks(project.id, ["pick", "script", "client"]);
   }
 }
 
-// Complete the hub's Studio-nudge tasks for a project ("script" = review/lock the
-// generated script, "client" = handle the client's response).
-async function closeScriptingTasks(projectId: string, kinds: ("script" | "client")[]): Promise<void> {
+// Complete the hub's Studio-nudge tasks for a project ("pick" = pick one of the
+// proposed options, "script" = review/lock the generated script, "client" =
+// handle the client's response).
+async function closeScriptingTasks(projectId: string, kinds: ("pick" | "script" | "client")[]): Promise<void> {
   await prisma.smartTask.updateMany({
     where: {
       dedupeKey: { in: kinds.map((k) => `scripting-${k}-${projectId}`) },

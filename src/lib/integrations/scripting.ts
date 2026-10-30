@@ -33,9 +33,13 @@ export function scriptingConfigured(): boolean {
 
 // One known Studio status → is the script far enough along to pull/review?
 const READY_STATUSES = new Set([
-  "hooks_proposed", "generating", "awaiting_review", "approved",
+  "generating", "awaiting_review", "approved",
   "sent_to_client", "done", "client_approved", "client_revision_requested", "revising",
 ]);
+// Options first (the platform, Oct 30 2026): an intake now ends in 10 to 15
+// script options and NO script until the producer picks one on the project
+// page. Until then the creative page is empty; the console is where the pick is.
+const PICKING_STATUSES = new Set(["intake_submitted", "generating_hooks", "hooks_proposed"]);
 
 // JSON-in/JSON-out wrapper. Errors surface as `{ error }` with a 4xx/5xx.
 async function sc<T = unknown>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
@@ -193,19 +197,15 @@ function unwrap(raw: unknown): Record<string, unknown> {
   return (r ?? {}) as Record<string, unknown>;
 }
 
-// The chosen hook text: chosen_hook when a hook is picked, else the recommended
-// option. Handles options being strings or {hook/text/...} objects.
+// The chosen hook text: chosen_hook once a hook is picked, else null. Never
+// the recommended option (Oct 30 2026): options first means nothing is the
+// hook until the producer picks, and recommended_index counts from 1 while
+// this read it as an array position, so it named the option after it.
 function chosenHookText(hooks: unknown): string | null {
   if (typeof hooks === "string") return hooks.trim() || null;
   if (!hooks || typeof hooks !== "object") return null;
   const h = hooks as Record<string, unknown>;
-  const chosen = firstString(h.chosen_hook, at(h, "chosen", "text"), h.chosen, at(h, "selected", "text"));
-  if (chosen) return chosen;
-  const opts = Array.isArray(h.options) ? h.options : [];
-  const idx = typeof h.recommended_index === "number" ? h.recommended_index : 0;
-  const o = opts[idx] ?? opts[0];
-  if (typeof o === "string") return o.trim() || null;
-  return firstString(at(o, "hook"), at(o, "text"), at(o, "hook_text"), at(o, "line"), at(o, "value"));
+  return firstString(h.chosen_hook, at(h, "chosen", "text"), h.chosen, at(h, "selected", "text"));
 }
 
 // The best single link to open in the Studio for a project, given its status.
@@ -217,7 +217,9 @@ export function studioBestLink(raw: StudioProject | unknown): string | null {
   const creative = firstString(links.creative_url, links.creative);
   const intake = firstString(p.intake_url, links.intake_url, links.intake);
   const admin = firstString(links.admin_url, links.admin);
-  const ready = READY_STATUSES.has(String(p.status ?? ""));
+  const status = String(p.status ?? "");
+  if (PICKING_STATUSES.has(status)) return admin || intake || creative || null;
+  const ready = READY_STATUSES.has(status);
   // Once a script exists, the creative page shows it; before that, the intake form.
   return (ready ? creative || intake || admin : intake || creative || admin) || creative || intake || admin || null;
 }

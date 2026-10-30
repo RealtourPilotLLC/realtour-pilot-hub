@@ -173,11 +173,53 @@ const PRESENCE =
   /\b(?:vacant|occupied)\b|\b(?:i|we|seller|sellers|owner|owners|homeowner|homeowners|tenant|tenants|agent|buyer|buyers|someone|nobody|no one)\b[^.!?\n]{0,40}?\b(?:be (?:there|home|present|on ?site)|present at|let (?:you|him|her|them) in|meet (?:you|him|her|them))\b/i;
 const isAccessSentence = (s: string) => isAccessNote(s) || PRESENCE.test(s);
 
-/** A note split into sentences (a blank or "n/a" note is none). */
+/** A note split into sentences (a blank or "n/a" note is none). A paragraph
+ *  ends a sentence even with no stop ("No floor plans or drone on this one"),
+ *  and a label paragraph ("Shots to include in drone:") runs into the next. */
 export function sentencesOf(text: string | null | undefined): string[] {
-  const f = flat(text);
-  if (!f || BLANK.test(f)) return [];
-  return f.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter((s) => s && !BLANK.test(s));
+  if (!flat(text) || BLANK.test(flat(text))) return [];
+  const paras: string[] = [];
+  for (const p of (text ?? "").split(/\n[ \t]*\n/).map(flat).filter(Boolean)) {
+    if (paras.length && /:$/.test(paras[paras.length - 1])) paras[paras.length - 1] += ` ${p}`;
+    else paras.push(p);
+  }
+  return paras.flatMap((p) => p.split(/(?<=[.!?])\s+/)).map((s) => s.trim()).filter((s) => s && !BLANK.test(s));
+}
+
+/** A heading the office types over split notes ("Split Appointment Instructions", "Second Appointment Notes"). */
+const NOTE_HEADING = /^[\s_*-]*(?:[A-Z][\w']*\s+){0,3}(?:Instructions?|Notes?|Details)[\s:_*-]*$/;
+/** "For Harrison:" / "For James" / "_____ For Harrison: only drone…" opening a creative's part. */
+const ADDRESSEE = /^[\s_*-]*for\s+([a-z][\w'-]*)\b[ \t]*:?[ \t]*(.*)$/i;
+
+/**
+ * THE ORDER NOTE, AS THIS VISIT'S CREATIVE SHOULD READ IT (Oct 30 2026, Laura
+ * Kaplan's split shoot). The office writes a split job's notes as one block:
+ * "Split Appointment Instructions / For Harrison: only drone that day… / For
+ * James: the rest of the shoot". A part opened by "For <first name>" of a
+ * creative on one of this job's visits is that creative's alone, up to the next
+ * such opener; text before any opener is everyone's. A "For" that names nobody
+ * on the job ("For Pheasant Hill shoot:", "For editing") is ordinary text, and
+ * a bare heading line is left out. Pure.
+ */
+export function orderNotesFor(block: string | null | undefined, creative: string | null | undefined, jobCreatives: (string | null | undefined)[]): string {
+  const first = (n: string | null | undefined) => (n ?? "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  const names = new Set(jobCreatives.map(first).filter(Boolean));
+  const me = first(creative);
+  const kept: string[] = [];
+  let owner: string | null = null;
+  for (const line of (block ?? "").split("\n")) {
+    const m = line.match(ADDRESSEE);
+    if (m && names.has(m[1].toLowerCase())) {
+      owner = m[1].toLowerCase();
+      if (owner === me && m[2].trim()) kept.push(m[2].trim().replace(/^[a-z]/, (ch) => ch.toUpperCase()));
+      else if (owner === me) kept.push("");
+      continue;
+    }
+    if (owner && owner !== me) continue;
+    if (NOTE_HEADING.test(line) && line.trim()) continue;
+    kept.push(line);
+  }
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 // ---- the request kinds -------------------------------------------------------------
@@ -202,8 +244,9 @@ export type VisitFactsInput = {
   startAt: Date;
   description: string | null;
   rawJson: string | null;
-  /** This job's live (not cancelled) visits, any order: numbering and the previous visit. */
-  liveVisits: { id: string; startAt: Date | null }[];
+  /** This job's live (not cancelled) visits, any order: numbering, the previous
+   *  visit, and whose part of a split note is whose (`creative`, a name). */
+  liveVisits: { id: string; startAt: Date | null; creative?: string | null }[];
   project: {
     id: string;
     title: string;
@@ -327,7 +370,9 @@ export function visitFacts(i: VisitFactsInput): VisitFacts {
   // sentences go to access; the rest are this visit's on a first or only visit,
   // and on a later visit only when first seen after the previous visit started.
   const orderSentences: string[] = [];
-  for (const block of [parsed?.special ?? null, parsed?.orderNotes ?? null]) {
+  const mineOf = visits.find((v) => v.id === i.appointmentId)?.creative ?? null;
+  const creatives = visits.map((v) => v.creative);
+  for (const block of [parsed?.special ?? null, parsed?.orderNotes ? orderNotesFor(parsed.orderNotes, mineOf, creatives) : null]) {
     for (const s of sentencesOf(block)) {
       if (isAccessSentence(s)) { pushAccess(s); continue; }
       orderSentences.push(s);

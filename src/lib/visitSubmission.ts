@@ -49,3 +49,34 @@ export function currentVisitStamps<T extends { debriefSubmittedAt: Date | null; 
     earlierVisitSubmittedAt: p.debriefSubmittedAt && p.debriefSubmittedAt.getTime() < floor.getTime() ? p.debriefSubmittedAt : null,
   };
 }
+
+// ---------------------------------------------------------------------------
+// WHICH VISIT AN /upload ROW IS ABOUT (Oct 30 2026, Laura Kaplan's split
+// shoot). Project.shootDate moves to the NEXT visit the moment one starts
+// (integrations/aryeo betterShoot), so Harrison's 3 PM drone visit sat under
+// "Upcoming · Wed Nov 4" (James's visit) while he drove home to upload it.
+// For a job with two or more live visits the row is filed under:
+//   · a photographer's own latest visit that started inside the 7-day window,
+//     else their own next visit;
+//   · for the office (or a viewer with no visit of their own), the latest
+//     visit that started inside the window.
+// Null (file by shootDate, as before) when nothing applies, and always for an
+// ordinary one-visit job.
+// ---------------------------------------------------------------------------
+
+/** The visit an upload-list row of a split job is about: its start, and its place among the job's live visits. */
+export function listVisit(
+  appointments: (Appt & { assignedToId?: string | null })[],
+  now: Date,
+  windowStart: Date,
+  viewer: string | null,
+): { at: Date; n: number; of: number } | null {
+  const live = appointments.filter((a) => a.startAt && !/cancel/i.test(a.status ?? "")).sort((a, b) => a.startAt!.getTime() - b.startAt!.getTime());
+  if (live.length < 2) return null;
+  const started = (a: Appt) => a.startAt!.getTime() <= now.getTime();
+  const inWindow = (a: Appt) => started(a) && a.startAt!.getTime() >= windowStart.getTime();
+  const own = viewer ? live.filter((a) => a.assignedToId === viewer) : [];
+  const pool = own.length ? own : live;
+  const pick = [...pool].reverse().find(inWindow) ?? (own.length ? own.find((a) => !started(a)) : undefined);
+  return pick ? { at: pick.startAt!, n: live.indexOf(pick) + 1, of: live.length } : null;
+}

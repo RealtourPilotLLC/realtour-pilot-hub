@@ -291,6 +291,7 @@ async function listingScriptsWaiting(now: Date, until: Date, exclude: string[]):
     let what: string | null = null;
     let next = "";
     if (!p.reelScript && !p.scriptingId) { what = "No script yet"; next = "Generate or write the script"; }
+    else if (st === "hooks_proposed" && p.scriptingDraftVersion == null) { what = "Script options ready to pick"; next = "Pick an option in Script Writing"; }
     else if (p.scriptingDraftVersion != null || st === "awaiting_review" || st === "hooks_proposed") { what = `Draft${p.scriptingDraftVersion ? ` v${p.scriptingDraftVersion}` : ""} waiting for approval`; next = "Review the script"; }
     else if (st === "client_revision_requested") { what = "The client asked for changes"; next = "Revise the script"; }
     if (!what) continue;
@@ -550,14 +551,14 @@ export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: s
   // SCRIPT STUDIO'S OWN NUDGES (Oct 27 2026: the package it generated, and the
   // client's reply on it, are routed to the listing-scripts owner: James since
   // the Loom, else Jordan).
-  // One per job, keyed by the webhook ("scripting-script-<job>",
-  // "scripting-client-<job>"); Done closes it, and the Studio reopens it on
-  // its next event.
+  // One per job, keyed by the webhook ("scripting-pick-<job>" since options
+  // first, Oct 30 2026, "scripting-script-<job>", "scripting-client-<job>");
+  // Done closes it, and the Studio reopens it on its next event.
   const studio = await prisma.smartTask.findMany({
     where: {
       status: { notIn: ["COMPLETED", "CANCELLED"] },
       AND: [
-        { OR: [{ dedupeKey: { startsWith: "scripting-script-" } }, { dedupeKey: { startsWith: "scripting-client-" } }] },
+        { OR: [{ dedupeKey: { startsWith: "scripting-pick-" } }, { dedupeKey: { startsWith: "scripting-script-" } }, { dedupeKey: { startsWith: "scripting-client-" } }] },
         ...(exclude.length ? [{ OR: [{ clientId: null }, { clientId: { notIn: exclude } }] }] : []),
       ],
     },
@@ -604,6 +605,7 @@ export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: s
   // A Studio nudge on a job the 7-day list doesn't hold (shooting later, or the script is in but the client replied).
   for (const [pid, t] of studioByProject) {
     const client = t.dedupeKey?.startsWith("scripting-client-");
+    const pick = t.dedupeKey?.startsWith("scripting-pick-");
     const changes = /changes/i.test(t.title);
     listingRows.push(listingRow({
       projectId: pid,
@@ -611,9 +613,9 @@ export async function creativeDecisions(opts: { now?: Date; excludeClientIds?: s
       client: t.project?.client?.name ?? "A client",
       street: t.project?.title ? t.project.title.split(",")[0] : t.title.split(/\s[\u2014-]\s/).pop() || "A job",
       shootISO: t.project?.shootDate?.toISOString() ?? null,
-      what: client ? (changes ? "The client asked for changes in Script Studio" : "The client replied on the script in Script Studio") : "Script Studio's package is ready to review",
-      next: client ? (changes ? "Revise the script" : "Check the client's reply") : "Review and lock the script",
-      hasScript: true,
+      what: client ? (changes ? "The client asked for changes in Script Studio" : "The client replied on the script in Script Studio") : pick ? "Script options ready to pick" : "Script Studio's package is ready to review",
+      next: client ? (changes ? "Revise the script" : "Check the client's reply") : pick ? "Pick an option in Script Writing" : "Review and lock the script",
+      hasScript: !pick,
     }, t.id));
   }
   // LISTING SCRIPTS ARE JAMES'S NOW (Jordan's Loom, Oct 27 2026, 3:51: "I

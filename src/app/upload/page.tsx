@@ -1,5 +1,5 @@
 import { requirePageAccess } from "@/lib/auth/guards";
-import { currentVisitStamps } from "@/lib/visitSubmission";
+import { currentVisitStamps, listVisit } from "@/lib/visitSubmission";
 import Link from "next/link";
 import { CheckCircle2, Camera, ArrowRight, Upload, FolderOpen, Scissors, CalendarPlus } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -100,6 +100,14 @@ export default async function UploadListPage() {
             // is that a DELIVERED job is listed here again, without its status,
             // its delivery date or its promise being touched.
             { ...REOPENED_FOR_ADDITIONAL_SHOOT, status: { not: "CANCELLED" } },
+            // …AND A SPLIT JOB WHOSE EARLIER VISIT WAS THIS WEEK (Oct 30 2026,
+            // Laura Kaplan). Its shootDate already moved to the next visit, so
+            // the window clause misses it once the job leaves the pending
+            // statuses. shootDate in the future keeps it out of Past uploads.
+            {
+              status: { not: "CANCELLED" }, shootDate: { gt: now },
+              appointments: { some: { startAt: { gte: windowStart, lte: now }, OR: [{ status: null }, { status: { not: "CANCELED" } }] } },
+            },
           ],
         },
       ],
@@ -185,9 +193,12 @@ export default async function UploadListPage() {
   // filmed — bucketing a job re-shot yesterday under a shoot date from three
   // weeks ago would file it in "Previous weeks", which is the one place the
   // photographer will not look for today's upload.
+  // A split job (lib/visitSubmission listVisit) files under the visit the
+  // viewer has to upload, not the next visit shootDate already moved to.
   const rows = shoots.map((s) => {
     const extra = extraShootDay(s.deliverables);
-    return { s, extra, when: extra ?? s.shootDate };
+    const visit = listVisit(s.appointments, now, windowStart, meMember);
+    return { s, extra, visit, when: extra ?? visit?.at ?? s.shootDate };
   });
   rows.sort((a, b) => (b.when?.getTime() ?? 0) - (a.when?.getTime() ?? 0));
 
@@ -246,7 +257,7 @@ export default async function UploadListPage() {
               </div>
               <div className="space-y-2">
                 {items.map((r) => (
-                  <JobRow key={r.s.id} s={r.s} extraShoot={r.extra} overBudget={overBudget.has(r.s.id)} nowMs={now.getTime()} payHidden={payHidden} myPartWaitingOn={myPartIn.get(r.s.id) ?? null} />
+                  <JobRow key={r.s.id} s={r.s} extraShoot={r.extra} visit={r.visit} overBudget={overBudget.has(r.s.id)} nowMs={now.getTime()} payHidden={payHidden} myPartWaitingOn={myPartIn.get(r.s.id) ?? null} />
                 ))}
               </div>
             </section>
@@ -306,8 +317,10 @@ function extraShootDay(
 // auto-stamp). The row says so until they do.
 
 // `nowMs` comes from the page's one `now` (a render must not read the clock).
-function JobRow({ s, extraShoot, overBudget, nowMs, payHidden, myPartWaitingOn = null }: {
+function JobRow({ s, extraShoot, visit = null, overBudget, nowMs, payHidden, myPartWaitingOn = null }: {
   s: Shoot; extraShoot: Date | null; overBudget: boolean; nowMs: number; payHidden: boolean;
+  /** a split job: the visit this row is about (lib/visitSubmission listVisit) */
+  visit?: { at: Date; n: number; of: number } | null;
   /** a shared shoot whose page THIS photographer submitted their part of: who the rest is still with (audit, Oct 23 2026) */
   myPartWaitingOn?: string[] | null;
 }) {
@@ -316,12 +329,13 @@ function JobRow({ s, extraShoot, overBudget, nowMs, payHidden, myPartWaitingOn =
   // stamp belongs to the first shoot, and a delivered job carries it.
   const uploaded = s.uploadedAt != null && !extraShoot;
   const myPartIn = myPartWaitingOn != null && !extraShoot;
+  const shotAt = visit?.at ?? s.shootDate;
   const payrollPending =
     !myPartIn &&
     !s.debriefSubmittedAt &&
-    s.shootDate != null &&
-    s.shootDate.getTime() >= DEBRIEF_PAY_GATE_FROM &&
-    s.shootDate.getTime() <= nowMs;
+    shotAt != null &&
+    shotAt.getTime() >= DEBRIEF_PAY_GATE_FROM &&
+    shotAt.getTime() <= nowMs;
   // Distinct deliverable types = the checklist of what to capture/upload.
   const types = [...new Set(s.deliverables.map((d) => d.type))];
   return (
@@ -364,6 +378,11 @@ function JobRow({ s, extraShoot, overBudget, nowMs, payHidden, myPartWaitingOn =
             <Badge color="#34d399" soft="rgba(52,211,153,0.14)">Uploaded</Badge>
           ) : null}
           {/* Raw pile blew past this home's budget — cull before it goes to edit. */}
+          {visit && (
+            <span className="inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-semibold text-muted">
+              Split shoot · visit {visit.n} of {visit.of}
+            </span>
+          )}
           {overBudget && (
             <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">
               <Scissors className="size-3" /> Over budget
@@ -378,7 +397,7 @@ function JobRow({ s, extraShoot, overBudget, nowMs, payHidden, myPartWaitingOn =
         <div className="flex items-center gap-1.5 truncate text-xs text-muted">
           <Avatar name={s.client.name} src={s.client.avatarUrl} size={16} />
           {s.client.name}
-          {s.shootDate ? ` · ${etDateTime(s.shootDate)}` : ""}
+          {shotAt ? ` · ${etDateTime(shotAt)}` : ""}
           {s._count.uploads > 0 ? ` · ${s._count.uploads} file${s._count.uploads === 1 ? "" : "s"}` : ""}
         </div>
         {types.length > 0 && (

@@ -4643,7 +4643,7 @@ type TaskProject = {
 // use — audit crack #20). Externally-minted tasks are closed by their OWN flows.
 // "frameio-review-" stays so legacy rows from the retired integration (removed
 // Sep 1 2026) are never auto-closed by this reconciler.
-const EXTERNAL_KEY_PREFIXES = ["frameio-review-", "scripting-script-", "scripting-client-", "luma-", "slack-", "lead-", "edit-video-"];
+const EXTERNAL_KEY_PREFIXES = ["frameio-review-", "scripting-script-", "scripting-client-", "scripting-pick-", "luma-", "slack-", "lead-", "edit-video-"];
 
 // Reconcile one active project's expected tasks (create missing, refresh QC /
 // delivery, retire what's no longer expected). Returns how many it created.

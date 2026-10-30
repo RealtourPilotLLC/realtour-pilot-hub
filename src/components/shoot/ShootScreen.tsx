@@ -179,7 +179,9 @@ export function ShootScreen({
     ) : view.session || !project.scriptExpected ? null : (
       <div className="rounded-2xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-foreground/85">
         <span className="font-semibold">No script yet.</span>{" "}
-        {project.currentScript?.status && ["awaiting_review", "generating", "revising", "generating_hooks", "hooks_proposed", "approved"].includes(project.currentScript.status)
+        {project.currentScript?.status && ["intake_submitted", "generating_hooks", "hooks_proposed"].includes(project.currentScript.status)
+          ? "The office is picking its opening in Script Writing, then it is written. It shows up here automatically once it is released to you; check back before you press record, or ask Jordan."
+          : project.currentScript?.status && ["awaiting_review", "generating", "revising", "approved"].includes(project.currentScript.status)
           ? "It is written and waiting on review in Script Writing. It shows up here automatically once it is released to you; check back before you press record, or ask Jordan."
           : <>This reel&rsquo;s script is written in Script Studio and shows up here automatically once it&rsquo;s ready — check back before you press record, or ask Jordan.</>}
       </div>

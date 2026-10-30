@@ -325,7 +325,12 @@ const waitedWords = (h: number | null) => (h == null ? "waiting" : h < 1 ? "unde
 /** Script Studio's status, in words for the creative. */
 const STUDIO_WORDS: Record<string, string> = {
   awaiting_intake: "waiting on the agent's intake",
-  hooks_proposed: "being written",
+  // Options first (Oct 30 2026): no script is written until an option is picked.
+  intake_submitted: "options being written",
+  generating_hooks: "options being written",
+  hooks_proposed: "options ready to pick",
+  held: "on hold",
+  cancelled: "cancelled with the booking",
   generating: "being written",
   awaiting_review: "waiting on your review",
   approved: "approved",

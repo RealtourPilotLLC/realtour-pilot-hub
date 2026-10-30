@@ -75,7 +75,11 @@ export function parseShootBrief(text: string): ShootBrief | null {
   // on this order).", lib/sessionBooking) is the office's bookkeeping, never a
   // request: audit Oct 25 2026 found it in Erica Walker's Oct 29 photographer
   // brief as "Requests: hub-session:…", Stripe id and all.
-  const on = text.match(/Order Notes:\s*\n+([\s\S]*?)(?:\n\s*\n|Order Questions:|Or View Full)/i);
+  // The block runs to the next section, never to the first blank line (Oct 30
+  // 2026, Laura Kaplan's split shoot): notes written in paragraphs ("Split
+  // Appointment Instructions", blank line, "For Harrison: only drone…") were
+  // read as their heading alone, on 19 bookings since July.
+  const on = text.match(/Order Notes:\s*\n+([\s\S]*?)(?:\n[ \t]*Order Questions:|\n[ \t]*Or View Full|$)/i);
   const notes = on ? on[1].split("\n").filter((l) => !HUB_BOOKING_LINE.test(l)).join("\n").trim() : "";
   if (notes && !isBlank(notes)) out.orderNotes = notes;
 
