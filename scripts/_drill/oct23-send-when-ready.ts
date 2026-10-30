@@ -663,6 +663,47 @@ async function main() {
     await renderBack(CK.subId, true);
     await drive(CK.subId, ["done"]);
     c.ok("…and once the file is checked it goes (one requestVideoPush, started)", callsFor(CK.subId).length === 1 && callsFor(CK.subId)[0].result.started);
+
+    // 265 Mill Rd (Oct 30 2026): a request made BEFORE the job's latest
+    // delivery (the photos went out again three hours later) holds the send
+    // but is left off the job checklist. Both presses show it, so both must
+    // check it: it used to stay open and hold the video for good.
+    const CA = await import("@/lib/clientAsks");
+    const millRd = async (street: string) => {
+      const M = await mkPending(street);
+      await prisma.clientAsk.create({ data: { clientId: client.id, projectId: M.projectId, kind: "SPECIAL_REQUEST", medium: "video", text: "Video must follow logical flow: front door, first floor, second floor", summary: "Video must follow logical flow", source: "text", askedBy: "Tim", askedAt: new Date(Date.now() - 3 * 3_600_000), holdsDelivery: true } });
+      await prisma.project.update({ where: { id: M.projectId }, data: { status: "REVISION", deliveredAt: new Date(Date.now() - 3_600_000) } });
+      return M;
+    };
+    const MR = await millRd("10e Mill Rd");
+    const listed = await CA.jobRequests(MR.projectId, "video");
+    const holding = await CA.openAsksHolding(MR.projectId, "video");
+    const mrOffer = await swr.approveAndSendOffer(MR.subId);
+    c.ok("(setup) the job checklist leaves the request out, the send is held on it, and Approve and send shows it", listed.length === 0 && holding.length === 1 && mrOffer?.openAsks.length === 1, JSON.stringify({ listed: listed.length, holding: holding.length, offer: mrOffer?.openAsks }));
+    const mr = await approveAndSend(JORDAN, MR.subId, { checkedRequests: true });
+    const mrAsk = await prisma.clientAsk.findFirstOrThrow({ where: { projectId: MR.projectId } });
+    c.ok("\"Checked, approve and send\" checks it too, signed by the presser", mr.ok && mrAsk.state === "CONFIRMED" && /Jordan Drill/.test(mrAsk.confirmedBy ?? ""), `${mr.message} · ${mrAsk.state} ${mrAsk.confirmedBy}`);
+    await landOriginal(MR);
+    await toProcessing(MR.subId);
+    await renderBack(MR.subId, true);
+    await drive(MR.subId, ["done"]);
+    const mrRun = await runOf(MR.subId);
+    c.ok("…and once the file is checked it goes, not held on the request", callsFor(MR.subId).length === 1 && callsFor(MR.subId)[0].result.started && mrRun?.hold?.gate !== "asks", JSON.stringify({ s: mrRun?.state, g: mrRun?.hold?.gate }));
+
+    // The row already stuck (approved under the old press): Try again shows
+    // the request, and "Checked, upload and send" checks it and sends.
+    const TA = await millRd("10f Mill Rd Stuck");
+    await approveAndSend(JORDAN, TA.subId);
+    await landOriginal(TA);
+    await toProcessing(TA.subId);
+    await renderBack(TA.subId, true);
+    await drive(TA.subId, ["done"]);
+    const taHeld = await runOf(TA.subId);
+    c.ok("(setup) approved without checking: the send is held on the request", taHeld?.state === "HELD" && taHeld.hold?.gate === "asks", JSON.stringify({ s: taHeld?.state, g: taHeld?.hold?.gate }));
+    const ta = await withViewer(JORDAN, () => import("@/app/review/videoSendActions").then((m) => m.sendVideoToAryeoAction(TA.subId, { checkedRequests: true })));
+    const taAsk = await prisma.clientAsk.findFirstOrThrow({ where: { projectId: TA.projectId } });
+    const taRun = await runOf(TA.subId);
+    c.ok("Try again, \"Checked, upload and send\": the request is checked and the send starts", ta.ok && taAsk.state === "CONFIRMED" && taRun?.state === "PREPARING" && !taRun.hold && /^Uploading it to the Aryeo listing, then sending/.test(ta.message), `${ta.message} · ${taAsk.state} · ${taRun?.state} ${taRun?.hold?.gate}`);
   }
 
   // =========================================================================

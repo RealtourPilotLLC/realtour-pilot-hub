@@ -11,7 +11,7 @@ import { prisma } from "@/lib/prisma";
 //   · Upload to Aryeo and send: one listing video, ONLY on this press (button
 //     only: lib/videoAryeoPush never starts a video by itself). When the job
 //     has open client requests the press first shows them; "Checked, upload
-//     and send" records them checked (the job box's confirmJobRequests) and
+//     and send" records them checked (clientAsks.confirmAsksForSend) and
 //     then starts the upload.
 //   · Upload to Aryeo only (Jordan, Oct 23 2026): the same press with
 //     `uploadOnly`: every gate and the same upload, stopped on the listing
@@ -68,13 +68,18 @@ export async function sendVideoToAryeoAction(submissionId: string, opts: { check
   try {
     const cut = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true } });
     if (!cut) return { ok: false, message: "That video no longer exists." };
+    const by = (await actor()).name;
+    // Every request the press showed, the ones the send is held on included
+    // (clientAsks.confirmAsksForSend, Oct 30 2026: 265 Mill Rd stuck).
     if (opts?.checkedRequests === true) {
-      const { confirmJobRequests } = await import("@/app/jobs/actions");
-      const c = await confirmJobRequests(cut.projectId, "video");
-      if (!c.ok) return { ok: false, message: `Nothing was sent: the client's requests could not be marked checked (${c.message})` };
+      const { confirmAsksForSend } = await import("@/lib/clientAsks");
+      const c = await confirmAsksForSend(cut.projectId, "video", by).then(() => null, (e: unknown) => (e as Error)?.message || "the save failed");
+      if (c) return { ok: false, message: `Nothing was sent: the client's requests could not be marked checked (${c})` };
+      revalidatePath(`/projects/${cut.projectId}`);
+      revalidatePath(`/review/${cut.projectId}`);
     }
     const { startVideoSend } = await import("@/lib/videoAryeoPush");
-    const r = await startVideoSend(submissionId, (await actor()).name, { budgetMs: 25_000, uploadOnly });
+    const r = await startVideoSend(submissionId, by, { budgetMs: 25_000, uploadOnly });
     refresh();
     return { ok: r.ok, started: r.started, message: r.message };
   } catch (e) {

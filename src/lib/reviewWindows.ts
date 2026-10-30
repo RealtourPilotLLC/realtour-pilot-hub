@@ -899,12 +899,15 @@ export const reviewTagOf = (openedAt: Date) => `r${etDayKey(openedAt).replace(/-
  * jobs (never LAZY — nobody told those clients about a clock; never a cut
  * Kyle already sent, which the client has), the earliest release, and the
  * earliest PERSISTED deadline. `windows` lets the cadence count reminders PER
- * WINDOW (reviewCadenceTarget) instead of per batch tag.
+ * WINDOW (reviewCadenceTarget) instead of per batch tag. `liveAt` (a past
+ * month, Oct 30 2026) keeps only windows whose deadline is still ahead: Mike
+ * Ciunci's September month held a version from Oct 5, long past its deadline,
+ * and a notice about it would have quoted that date.
  */
-export async function reviewLaneFacts(projectIds: string[]): Promise<ReviewLaneFacts> {
+export async function reviewLaneFacts(projectIds: string[], opts: { liveAt?: Date } = {}): Promise<ReviewLaneFacts> {
   const none: ReviewLaneFacts = { count: 0, oldestOpenedAt: null, deadlineAt: null, tag: null, windows: [] };
   if (!projectIds.length) return none;
-  const open = await prisma.contentReviewWindow.findMany({ where: { projectId: { in: projectIds }, state: "OPEN", source: { not: "LAZY" } }, select: { submissionId: true, openedAt: true, deadlineAt: true } });
+  const open = await prisma.contentReviewWindow.findMany({ where: { projectId: { in: projectIds }, state: "OPEN", source: { not: "LAZY" }, ...(opts.liveAt ? { deadlineAt: { gt: opts.liveAt } } : {}) }, select: { submissionId: true, openedAt: true, deadlineAt: true } });
   const sent = await sentOutsidePortal(open.map((r) => r.submissionId));
   const rows = open.filter((r) => !sent.has(r.submissionId));
   if (!rows.length) return none;
@@ -938,12 +941,15 @@ export function reviewCadenceTarget(windows: ReviewLaneWindow[], sends: Date[], 
 }
 
 /** A review reminder actually went out: the windows it was about now carry
- *  the evidence that the client was told (an auto-approval precondition). */
+ *  the evidence that the client was told (an auto-approval precondition).
+ *  Never a window whose deadline had already passed (Oct 30 2026): the email
+ *  was not about it, and marking it told would let it be approved
+ *  automatically for a client who never heard of it. */
 export async function markReviewWindowsNotified(monthId: string, at: Date): Promise<number> {
   const projects = await prisma.project.findMany({ where: { contentMonthId: monthId }, select: { id: true } });
   if (!projects.length) return 0;
   const r = await prisma.contentReviewWindow.updateMany({
-    where: { projectId: { in: projects.map((p) => p.id) }, state: "OPEN", source: { not: "LAZY" }, clientNotifiedAt: null, openedAt: { lte: at } },
+    where: { projectId: { in: projects.map((p) => p.id) }, state: "OPEN", source: { not: "LAZY" }, clientNotifiedAt: null, openedAt: { lte: at }, deadlineAt: { gt: at } },
     data: { clientNotifiedAt: at },
   });
   return r.count;

@@ -366,7 +366,7 @@ export function RemindersPanel({ state }: { state: RemindersPanelState }) {
                             <span className="flex gap-1">
                               <Btn busy={pending} title={`Render the text + a portal link to paste yourself (records an attempt). Acts on this row's ${laneOfRow(r) === "REVIEW" ? "review" : "planning"} lane.`} onClick={() => start(async () => { const c = await copyReminderLinkAction(rowActionId(r)); setMsg({ ok: c.ok, text: c.message }); if (c.ok && c.link && c.body) setCopied({ monthId: r.monthId, link: c.link, body: c.body }); })}><Copy className="size-3" /> Copy link</Btn>
                               <Btn busy={pending} title={`Owner only. Still blocked while the switch is off; still holds outside the send window. Sends this row's ${laneOfRow(r) === "REVIEW" ? "review" : "planning"} message.`} onClick={() => run(() => sendReminderNowAction(rowActionId(r)))}><Send className="size-3" /> Send now</Btn>
-                              <Btn busy={pending} title="Snooze this month's reminders for 7 days" onClick={() => { const reason = window.prompt("Why snooze this month's reminders?"); if (reason) run(() => snoozeRemindersAction(r.monthId, 7, reason)); }}><MoonStar className="size-3" /></Btn>
+                              <Btn busy={pending} title="Snooze this month's reminders for 7 days (a video ready for review is still announced)" onClick={() => { const reason = window.prompt("Why snooze this month's reminders?"); if (reason) run(() => snoozeRemindersAction(r.monthId, 7, reason)); }}><MoonStar className="size-3" /></Btn>
                             </span>
                           )}
                         </td>

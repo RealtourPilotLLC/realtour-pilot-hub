@@ -16,7 +16,7 @@ import { prisma } from "@/lib/prisma";
 //     name, through every gate "Upload to Aryeo and send" has. When the job
 //     has open client requests the press first shows them and asks
 //     "Checked, approve and send"; that is recorded as the job box's own
-//     Checked (confirmJobRequests), after the approval lands.
+//     Checked (clientAsks.confirmAsksForSend), after the approval lands.
 //   · Don't send it automatically (the With Topaz row): the waiting intent
 //     ends; the video waits for a person's press on Ready to send.
 // The OWNER and the OFFICE only: requireAdmin (the REAL role; "view as"
@@ -93,16 +93,18 @@ export async function approveAndSendAction(
     const now = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { status: true, topazJob: { select: { id: true } } } });
     if (now?.status !== "APPROVED") return { ok: false, message: "Approved, then changed again a moment ago. Reload the page." };
 
+    const by = await actor();
+    // Every request the press showed, the ones the send is held on included
+    // (clientAsks.confirmAsksForSend, Oct 30 2026: 265 Mill Rd stuck).
     if (opts?.checkedRequests === true) {
-      const { confirmJobRequests } = await import("@/app/jobs/actions");
-      const c = await confirmJobRequests(sub.projectId, "video");
-      if (!c.ok) {
+      const { confirmAsksForSend } = await import("@/lib/clientAsks");
+      const c = await confirmAsksForSend(sub.projectId, "video", by).then(() => null, (e: unknown) => (e as Error)?.message || "the save failed");
+      if (c) {
         refresh(sub.projectId);
-        return { ok: true, message: `Approved, but not set to send: the client's requests could not be marked checked (${c.message}). Send it from Ready to send once they are.` };
+        return { ok: true, message: `Approved, but not set to send: the client's requests could not be marked checked (${c}). Send it from Ready to send once they are.` };
       }
     }
 
-    const by = await actor();
     await swr.putSendIntent(prisma, { submissionId, projectId: sub.projectId, by, at: new Date().toISOString(), source: "approve", topazJobId: now.topazJob?.id ?? null });
     // No Topaz pass to wait for (or one already finished): it goes now.
     const outcome = await swr.settleSendWhenReady(submissionId);

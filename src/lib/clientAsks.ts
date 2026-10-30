@@ -471,6 +471,26 @@ export async function confirmAsks(ids: string[], by: string, what: string): Prom
   return { confirmed, projectIds: [...touched.keys()] };
 }
 
+/**
+ * WHAT A SEND PRESS CHECKS (Oct 30 2026). "Checked, approve and send" and
+ * "Checked, upload and send" show the requests the send is held on
+ * (openAsksHolding), but marked checked only the job's checklist
+ * (jobRequests), which leaves out a request made before the job's latest
+ * delivery. Tim Bonner's "Video must follow logical flow", asked at 6:01 PM
+ * Oct 29, sat behind the photos' 9:01 PM re-delivery: Jordan approved and
+ * checked version 2 at 9:46 AM, the one request still holding it stayed
+ * open, and the video never went. Jordan: "if we approve it, it completes
+ * the check and sends". A send press now checks every request it showed.
+ */
+export async function confirmAsksForSend(projectId: string, medium: "video" | "photo", by: string): Promise<{ confirmed: number }> {
+  if (!projectId) return { confirmed: 0 };
+  const [holding, listed] = await Promise.all([openAsksHolding(projectId, medium), jobRequests(projectId, medium)]);
+  const ids = [...new Set([...holding.map((a) => a.id), ...listed.map((a) => a.id)])];
+  if (!ids.length) return { confirmed: 0 };
+  const r = await confirmAsks(ids, by, `checked on the ${medium === "photo" ? "photos" : "video"} before sending`);
+  return { confirmed: r.confirmed };
+}
+
 /** Not needed after all (a person's call, or the client's own words). Releases a delivery hold. */
 export async function markNotNeeded(id: string, by: string, reason?: string | null): Promise<AskResult> {
   const why = reason?.trim() ? clip(reason.trim(), 500) : null;

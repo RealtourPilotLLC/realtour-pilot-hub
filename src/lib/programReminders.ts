@@ -921,7 +921,7 @@ function aryeoLastChangedAt(rawJson: string | null): Date | null {
  * confirmed request that already points at a counted project is the SAME
  * session seen twice, so it is not added again.
  */
-async function monthFacts(monthId: string, clientId: string, now: Date, sessionsRequired: number) {
+async function monthFacts(monthId: string, clientId: string, now: Date, sessionsRequired: number, reviewLiveOnly = false) {
   // Oct 13 2026: a host month's combined late session is its session too, and
   // its ask waiting on the office is the client's ask (programMonths.sessionSourceMonthIds).
   const sources = await sessionSourceMonthIds(monthId).catch(() => [monthId]);
@@ -992,7 +992,7 @@ async function monthFacts(monthId: string, clientId: string, now: Date, sessions
   // at release, and a LAZY window (released before windows were recorded) is
   // never chased: nobody told that client about a clock.
   const { reviewLaneFacts } = await import("@/lib/reviewWindows");
-  const review = await reviewLaneFacts(projects.map((p) => p.id));
+  const review = await reviewLaneFacts(projects.map((p) => p.id), reviewLiveOnly ? { liveAt: now } : {});
   const oldest = review.oldestOpenedAt;
   // A cancelled APPOINTMENT is the other way a month loses a session, and
   // dating it is where the first version of this went wrong.
@@ -1217,7 +1217,10 @@ async function evaluateMonth(
   const recalc = await recalcProgramMonth(month.id, { now, dryRun: true });
   const d: DerivedMonthState | null = recalc?.after ?? null;
   // The MONTH's sessions (Oct 7 2026): the derivation already counts a catch-up's extra session.
-  const facts = await monthFacts(month.id, e.clientId, now, d?.sessionsRequired ?? e.sessionsPerMonth);
+  // A PAST month is in view only for a video whose review clock is still
+  // running (evaluateReminders, Oct 30 2026), so its review lane reads just
+  // those windows: one whose deadline already passed is the office's to settle.
+  const facts = await monthFacts(month.id, e.clientId, now, d?.sessionsRequired ?? e.sessionsPerMonth, month.monthKey < currentMonthKey(now));
   const firstCycle = !!e.firstMonthKey && e.firstMonthKey === month.monthKey;
   const state: EvaluatedState = {
     strategyCallStatus: d?.strategyCallStatus ?? "?", planningMode: d?.planningMode ?? "?", preparationStatus: d?.preparationStatus ?? null, callMode: d?.callMode ?? "?",
@@ -1375,7 +1378,12 @@ async function evaluateMonth(
   // login link they were holding. The share-notice drain already suppresses on
   // this; the evaluator must agree with it.
   if (e.accessRevokedAt) return sup("access_revoked", "portal access for this enrollment has been revoked");
-  if (month.remindersSnoozedUntil && month.remindersSnoozedUntil > now) return sup("snoozed", `snoozed until ${month.remindersSnoozedUntil.toISOString()}`);
+  // A SNOOZE QUIETS THE ASKS, NOT THE NEWS (Oct 30 2026). Mike Ciunci's month
+  // was snoozed to stop booking emails for a session he had already filmed,
+  // and the same snooze held back "your video is ready". Jordan: "Fix the
+  // snooze". The review lane tells the client about a video whatever the
+  // month's snooze says.
+  if (lane !== "REVIEW" && month.remindersSnoozedUntil && month.remindersSnoozedUntil > now) return sup("snoozed", `snoozed until ${month.remindersSnoozedUntil.toISOString()}`);
   // Oct 21 2026 (strategyGate.ts, Kristen Pavillard): no strategy call, answers
   // or filming ask before the client's content strategy is in their portal —
   // and no Kyle "help with the booking" task or escalation either (sup carries
@@ -2186,10 +2194,23 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
   // so there is no planning cadence and no 48-script approval chase.
   const { bulkMonthIds } = await import("@/lib/bulkPlan");
   const bulkMonths = await bulkMonthIds();
+  // A PAST MONTH'S VIDEO STILL WAITING ON THE CLIENT (Oct 30 2026). Mike
+  // Ciunci's revised Video 2 reached his portal Oct 27 and the hub never told
+  // him: its job sits in his September month, and only this month and later
+  // were in view. A past month whose job holds a video with its review clock
+  // still running stays in view for the review lane alone.
+  const liveReviewProjects = await prisma.contentReviewWindow.findMany({
+    where: { enrollmentId: { in: enrollments.map((e) => e.id) }, state: "OPEN", source: { not: "LAZY" }, deadlineAt: { gt: now } },
+    select: { projectId: true },
+  });
+  const reviewMonths = new Set((await prisma.project.findMany({
+    where: { id: { in: [...new Set(liveReviewProjects.map((w) => w.projectId))] }, contentMonthId: { not: null } },
+    select: { contentMonthId: true },
+  })).map((p) => p.contentMonthId as string));
   const months = await prisma.contentMonth.findMany({
     where: {
       enrollmentId: { in: enrollments.map((e) => e.id) }, historical: false,
-      ...(policy.includePastMonths ? {} : { OR: [{ monthKey: { gte: cur } }, { id: { in: [...bulkMonths] } }] }),
+      ...(policy.includePastMonths ? {} : { OR: [{ monthKey: { gte: cur } }, { id: { in: [...bulkMonths, ...reviewMonths] } }] }),
     },
     select: { id: true, enrollmentId: true, monthKey: true, status: true, remindersSnoozedUntil: true },
     orderBy: [{ monthKey: "asc" }],
@@ -2216,6 +2237,10 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     // has already booked and that session's own clock: the exact address
     // before filming, and the scripts to approve before it.
     const started = monthStarted(m.monthKey, now);
+    // A past month in view only for a video still under review (reviewMonths
+    // above) runs the review lane alone: its planning, booking, scripts,
+    // questions and brand kit are long settled.
+    const reviewOnly = !!opts.reviewOnly || (!policy.includePastMonths && m.monthKey < cur && !bulkMonths.has(m.id));
     // ONE MONTH, THE LANES IN ORDER. Planning/session first — it is the lane
     // §12's calendar belongs to — then review on its own clock. The one-email-
     // a-day rule inside the derivation is what stops the second lane doubling
@@ -2224,7 +2249,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     // ADDRESS FIRST (CP-05). A session starting in two days with no street on
     // file is the one message that cannot wait for tomorrow, so it takes the
     // one-email-a-day slot and the planning cadence waits a day behind it.
-    const address = opts.reviewOnly ? [] : await evaluateAddressLane(e, m, now, policy, feeds, clientWindowOpen, { dryRun: opts.dryRun }, rollout);
+    const address = reviewOnly ? [] : await evaluateAddressLane(e, m, now, policy, feeds, clientWindowOpen, { dryRun: opts.dryRun }, rollout);
     addressLane.push(...address);
     if (!opts.dryRun) {
       for (const a of address) {
@@ -2238,7 +2263,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     // SCRIPTS SECOND (6.5): an approval deadline a day away beats the planning
     // cadence to the one-email-a-day slot, and loses it only to a missing address.
     const bulkMonth = bulkMonths.has(m.id);
-    const scripts = bulkMonth || opts.reviewOnly ? [] : await evaluateScriptApprovalLane(e, m, now, policy, clientWindowOpen, {}, rollout);
+    const scripts = bulkMonth || reviewOnly ? [] : await evaluateScriptApprovalLane(e, m, now, policy, clientWindowOpen, {}, rollout);
     scriptApprovalLane.push(...scripts);
     if (!opts.dryRun) {
       for (const a of scripts) {
@@ -2250,7 +2275,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
       }
     }
     for (const lane of ["PRIMARY", "REVIEW"] as const) {
-      if ((bulkMonth || opts.reviewOnly) && lane === "PRIMARY") continue;
+      if ((bulkMonth || reviewOnly) && lane === "PRIMARY") continue;
       if (!started) continue;
       const c = await evaluateMonth(e, m, now, policy, feeds, clientWindowOpen, lane, null, rollout);
       // A forfeited month's internal chasing stops with it (Oct 8 2026).
@@ -2276,7 +2301,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     // QUESTION REQUESTS (Oct 23 2026): a held press, a retry, or the next
     // follow-up for an open request on this month. Not gated on the month
     // having started: the office asked about this month's topic on purpose.
-    const qr = opts.reviewOnly ? [] : await evaluateQuestionRequestLane(e, m, now, policy, clientWindowOpen, { dryRun: opts.dryRun }, rollout).catch(() => [] as QuestionRequestPreview[]);
+    const qr = reviewOnly ? [] : await evaluateQuestionRequestLane(e, m, now, policy, clientWindowOpen, { dryRun: opts.dryRun }, rollout).catch(() => [] as QuestionRequestPreview[]);
     questionRequestLane.push(...qr);
     if (!opts.dryRun) {
       for (const a of qr) {
@@ -2289,7 +2314,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     }
     // THE BRAND KIT LAST (Oct 20 2026): once per client per pass, on its first
     // month in view, and only into a day nothing more urgent took.
-    if (started && !opts.reviewOnly && !brandKitDone.has(e.id)) {
+    if (started && !reviewOnly && !brandKitDone.has(e.id)) {
       brandKitDone.add(e.id);
       const b = await evaluateBrandKitLane(e, m, now, policy, clientWindowOpen, {}, rollout).catch(() => null);
       if (b) {
@@ -3458,7 +3483,9 @@ export async function reconcileReminderOutcomes(opts: { now?: Date } = {}): Prom
         const addressIn = (r.action === "CONFIRM_ADDRESS" && (await addressReceived(r.dedupeKey))) || (r.action === "APPROVE_SCRIPTS" && !!r.monthId && (await monthScriptApprovals(r.monthId)).awaitingClient.length === 0) || (r.action === "BRAND_KIT" && (await brandKitReceived(r.enrollmentId, r.clientId)));
         const outOfScope = scopeOf(r.clientId, r.action);
         const strategyPending = STRATEGY_GATED_ACTIONS.has(r.action as ReminderAction) && gates.get(r.enrollmentId)?.open === false;
-        const stop = switchOff || !!outOfScope || en?.status !== "ACTIVE" || (month?.remindersSnoozedUntil && month.remindersSnoozedUntil > now) || ((r.action === "BOOK_CALL" || r.action === "CHOOSE_PATH") && booked) || addressIn || strategyPending;
+        // A snooze never pulls back a video-review email or its text (Oct 30 2026).
+        const snoozed = r.action !== "REVIEW_WORK" && r.action !== "REVIEW_TEXT" && !!month?.remindersSnoozedUntil && month.remindersSnoozedUntil > now;
+        const stop = switchOff || !!outOfScope || en?.status !== "ACTIVE" || snoozed || ((r.action === "BOOK_CALL" || r.action === "CHOOSE_PATH") && booked) || addressIn || strategyPending;
         if (stop) {
           const why = switchOff ? "the automation was switched off" : outOfScope ? outOfScope : en?.status !== "ACTIVE" ? (en?.status === "PAUSED" ? "paused" : "ended") : addressIn ? (r.action === "APPROVE_SCRIPTS" ? "scripts_approved" : r.action === "BRAND_KIT" ? "brand_kit_received" : "address_received") : strategyPending ? "strategy_pending" : booked ? "booked" : "snoozed";
           const released = await markFailed(r.outboxMessageId, `cancelled before send: ${why}`);

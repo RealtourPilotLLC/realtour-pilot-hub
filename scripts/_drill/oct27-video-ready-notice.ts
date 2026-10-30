@@ -21,6 +21,11 @@
 //   5. A second video released while the first is mid-cadence is told at once.
 //   6. No mobile number: the email still goes, the text row says why.
 //   7. The policy and the copy.
+//   8. Oct 30 (Mike Ciunci): a video on last month's job is still told, with
+//      its own deadline; a stale version beside it is neither quoted nor
+//      marked told; a past month with only an expired one sends nothing.
+//   9. Oct 30: a snoozed month still hears about a new video; its own asks
+//      stay snoozed.
 //
 // ISOLATION: PGlite via the shared harness; Gmail and OpenPhone are faked at
 // the fetch fence; every "now" is passed explicitly.
@@ -220,6 +225,62 @@ async function main() {
   const eText = await prisma.programReminder.findFirst({ where: { enrollmentId: E.f.enrollmentId, action: "REVIEW_TEXT" } });
   c.ok("the email went, no text", mails.length === m4 + 1 && texts.length === t4);
   c.ok("…and the text row says why", eText?.state === "SUPPRESSED" && eText.suppressionReason === "no_recipient", `${eText?.state} ${eText?.suppressionReason}`);
+
+  // =========================================================================
+  c.head("8 · Mike Ciunci (Oct 30): a video on LAST month's job is still told");
+  // =========================================================================
+  // His revised Video 2 reached his portal Oct 27; its job sits in his
+  // September month, and only this month and later were in view, so nothing
+  // went. Here: October's job, a version released Fri Oct 30, read Mon Nov 2.
+  const NOV2_905 = et(2026, 11, 2, 9, 5);
+  const F = await mk("Fay Lastmonth");
+  const fw = await releaseAt(F, 1, et(2026, 10, 30, 15));
+  const oldF = await oldR.evaluateReminders({ dryRun: true, enrollmentIds: [F.f.enrollmentId], reviewOnly: true, now: NOV2_905 });
+  c.ok("OLD: on Nov 2 the October job's video is out of view (no review candidate at all)", !oldF.candidates.some((x) => x.lane === "REVIEW" && x.action), JSON.stringify(oldF.candidates.map((x) => [x.lane, x.monthKey, x.decision])));
+  const m5 = mails.length, t5 = texts.length;
+  await run(F, NOV2_905);
+  const fEmail = (await prisma.outboxMessage.findFirst({ where: { clientId: F.f.clientId, channel: "email" } }))?.body ?? "";
+  c.ok("NEW: Nov 2 9:05, the client is emailed and texted", mails.length === m5 + 1 && texts.length === t5 + 1, `${mails.length - m5} / ${texts.length - t5}`);
+  c.ok("…quoting that version's own deadline (Thu Nov 5)", /Please review by Thu, Nov 5, 5:00 PM ET/.test(fEmail), /Please review by [^(]+/.exec(fEmail)?.[0] ?? "(none)");
+  c.ok("…the window reads 'client told'", (await prisma.contentReviewWindow.findUniqueOrThrow({ where: { submissionId: fw.submissionId } })).clientNotifiedAt?.getTime() === NOV2_905.getTime());
+  c.ok("…and only the review lane ran for that past month (no booking, planning or brand-kit row)", (await rows(F)).every((r) => r.action === "REVIEW_WORK" || r.action === "REVIEW_TEXT"), (await rows(F)).map((r) => r.action).join(" "));
+
+  const G = await mk("Gus Stale");
+  const gOld = await releaseAt(G, 1, MON_10); // Oct 5: deadline Oct 9, never told
+  const gNew = await releaseAt(G, 2, et(2026, 10, 30, 15));
+  await run(G, NOV2_905);
+  const gEmail = (await prisma.outboxMessage.findFirst({ where: { clientId: G.f.clientId, channel: "email" } }))?.body ?? "";
+  const gText = (await prisma.outboxMessage.findFirst({ where: { clientId: G.f.clientId, channel: "sms" } }))?.body ?? "";
+  c.ok("a stale version beside it (deadline Oct 9) is not what the email is about: it quotes Nov 5", /Please review by Thu, Nov 5, 5:00 PM ET/.test(gEmail) && !/Oct 9/.test(gEmail), /Please review by [^(]+/.exec(gEmail)?.[0] ?? "(none)");
+  c.ok("…the text names one new video", gText.startsWith("Hi Gus! Your new video is ready to review"), gText.slice(0, 80));
+  const [gOldW, gNewW] = await Promise.all([gOld, gNew].map((w) => prisma.contentReviewWindow.findUniqueOrThrow({ where: { submissionId: w.submissionId } })));
+  c.ok("…and the stale one is NOT marked told (it would then be approved automatically for a client who never heard of it)", !gOldW.clientNotifiedAt && !!gNewW.clientNotifiedAt, `${wall(gOldW.clientNotifiedAt)} / ${wall(gNewW.clientNotifiedAt)}`);
+
+  const H = await mk("Hal Expired");
+  await releaseAt(H, 1, MON_10);
+  const m6 = mails.length;
+  await run(H, NOV2_905);
+  c.ok("a past month holding only an expired version sends nothing (the office settles it)", mails.length === m6 && (await rows(H)).length === 0, `${mails.length - m6} email(s)`);
+
+  // =========================================================================
+  c.head("9 · a snoozed month still hears about a new video (Oct 30)");
+  // =========================================================================
+  // Mike Ciunci's October was snoozed to stop booking emails for a session he
+  // had filmed; the snooze also held back "your video is ready".
+  const S = await mk("Sue Snoozed");
+  await prisma.contentMonth.update({ where: { id: S.f.monthId }, data: { remindersSnoozedUntil: et(2026, 11, 1, 0), remindersSnoozedBy: "drill", remindersSnoozeReason: "session already filmed" } });
+  await releaseAt(S, 1, et(2026, 10, 12, 10));
+  const SNZ = et(2026, 10, 12, 10, 5);
+  const oldS = await review(oldR, S, SNZ);
+  c.ok("OLD: the review email is suppressed as snoozed", oldS.decision === "suppressed" && oldS.suppressionReason === "snoozed", `${oldS.decision} ${oldS.suppressionReason}`);
+  const newS = await review(R, S, SNZ);
+  c.ok("NEW: it is due", newS.decision === "send", `${newS.decision} ${newS.reason}`);
+  const sPrimary = (await R.previewReminders(S.f.monthId, { now: SNZ })).lanes.find((l) => l.lane === "PRIMARY")!.candidate;
+  c.ok("…while the month's own asks stay snoozed", sPrimary.decision === "suppressed" && sPrimary.suppressionReason === "snoozed", `${sPrimary.decision} ${sPrimary.suppressionReason}`);
+  const m7 = mails.length, t7 = texts.length;
+  await run(S, SNZ);
+  c.ok("…and the run sends the email and the text", mails.length === m7 + 1 && texts.length === t7 + 1, `${mails.length - m7} / ${texts.length - t7}`);
+  c.ok("the snooze button says so", /a video ready for review is still announced/.test(fs.readFileSync(path.join(REPO, "src/components/settings/RemindersPanel.tsx"), "utf8")));
 
   // =========================================================================
   c.head("7 · the policy and the copy");
